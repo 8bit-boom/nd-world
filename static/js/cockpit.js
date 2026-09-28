@@ -42,6 +42,19 @@
   const KIND_ICONS = { character: '👤', creature: '🐉', location: '📍', organization: '🏛',
     item: '🗡', note: '📝', event: '⚡', race: '🧬', profession: '🎭', feat: '✨' };
   const COMPACT = window.matchMedia('(max-width: 900px)');
+  // Player mode (the same route, adapted server-side): a tailored panel set
+  // and localStorage-only persistence — the workspace API stays GM-only,
+  // because the server-side workspace is ONE shared layout per world and a
+  // player saving would stomp the GM's arrangement.
+  const PLAYER = CK_PLAYER_MODE === true;
+  const PLAYER_TYPES = ['map', 'wmap', 'dice', 'party', 'quests', 'entity',
+    'ecard', 'notes', 'ai_chat', 'timer', 'calendar', 'gallery', 'audio', 'video'];
+  function panelTypes() {
+    if (!PLAYER) return CK_TYPES;
+    const out = {};
+    PLAYER_TYPES.forEach(function (k) { if (CK_TYPES[k]) out[k] = CK_TYPES[k]; });
+    return out;
+  }
 
   let panels = [];
   let presets = {};
@@ -93,6 +106,7 @@
   function saveNow() {
     const ws = { current: { panels: panels }, presets: presets };
     try { localStorage.setItem('nd_cockpit_ws_' + CK_WORLD, JSON.stringify(ws)); } catch (e) {}
+    if (PLAYER) return;  // server workspace is GM-only
     fetch('/api/cockpit/workspace', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -127,6 +141,14 @@
   }
 
   async function load() {
+    if (PLAYER) {
+      // Players: localStorage-only persistence (server workspace is GM-only).
+      let mirror = null;
+      try { mirror = JSON.parse(localStorage.getItem('nd_cockpit_ws_' + CK_WORLD) || 'null'); } catch (e) {}
+      adopt(mirror);
+      clampX();
+      return;
+    }
     // Instant paint: the localStorage mirror renders immediately, so the
     // cockpit is up before the network round trip. The server copy is the
     // cross-device truth and reconciles over the mirror below — unless the
@@ -446,6 +468,12 @@
         if (!r.ok) throw new Error();
         renderParty(await r.json(), live);
       } catch (e) { live.innerHTML = '<p class="ck-empty">Party unavailable.</p>'; }
+    } else if (PLAYER) {
+      try {
+        const r = await fetch('/api/cockpit/player-board');
+        if (!r.ok) throw new Error();
+        renderQuests(await r.json(), live);
+      } catch (e) { live.innerHTML = '<p class="ck-empty">Quest board unavailable.</p>'; }
     } else {
       try {
         const r = await fetch('/api/quests/board');
@@ -487,6 +515,7 @@
   }
 
   function renderQuests(d, live) {
+    if (d.parties) d = { quests: d.quests || [] };  // player-board payload
     if (!(d.quests || []).length) {
       live.innerHTML = '<p class="ck-empty">No active quests — <a href="/quests?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank">quest board</a>.</p>';
       return;
@@ -1342,7 +1371,7 @@
     pickerType = null;
     pickerRows = [];
     addTypes.innerHTML = '';
-    Object.keys(CK_TYPES).forEach(function (key) {
+    Object.keys(panelTypes()).forEach(function (key) {
       const t = CK_TYPES[key];
       const b = document.createElement('button');
       b.type = 'button';

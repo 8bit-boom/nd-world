@@ -295,12 +295,65 @@ def test_cockpit_gm_renders_workspace_shell(client, seed):
     assert '"name": "Vanguard"' in html
 
 
-def test_cockpit_player_forbidden(client, seed):
-    """GM-only by default — not in _is_player_safe, so a plain player's
-    auth_gate 403s before the handler even runs."""
+def test_cockpit_player_gets_player_mode(client, seed):
+    """The cockpit adapts by role: a player gets the player-mode shell
+    (tailored panels, no GM toolbar, localStorage-only persistence flag)
+    instead of the GM workspace."""
+    pc_id = _mk_pc(seed.world_a.id, "Vex", owner_user_id=seed.player_a.id)
+    _mk_party(seed.world_a.id, "Vanguard", pc_ids=[pc_id])
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
-    assert client.get("/cockpit").status_code == 403
+    r = client.get("/cockpit")
+    assert r.status_code == 200
+    html = r.text
+    assert "CK_PLAYER_MODE = true" in html
+    assert "Find AI" not in html          # GM toolbar hidden
+    assert '"name": "Vex"' in html        # their own party's vitals present
+    # and the workspace API stays GM-only
+    assert client.get("/api/cockpit/workspace").status_code == 403
+    assert client.post("/api/cockpit/workspace", json={}).status_code == 403
+
+
+def test_cockpit_player_board_visibility(client, seed):
+    """/api/cockpit/player-board: the player's own parties (vitals) and
+    player-visible active quests — hidden quests never leave the server."""
+    from app.models import Quest
+
+    pc_id = _mk_pc(seed.world_a.id, "Vex", owner_user_id=seed.player_a.id)
+    party_id = _mk_party(seed.world_a.id, "Vanguard", pc_ids=[pc_id])
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Quest(world_id=seed.world_a.id, title="Public Thread",
+                  status="active", visible_to_players=True),
+            Quest(world_id=seed.world_a.id, title="Secret Thread",
+                  status="active", visible_to_players=False),
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/cockpit/player-board")
+    assert r.status_code == 200
+    d = r.json()
+    assert [p["name"] for p in d["parties"]] == ["Vanguard"]
+    members = d["parties"][0]["members"]
+    assert members and members[0]["name"] == "Vex"
+    titles = [q["title"] for q in d["quests"]]
+    assert "Public Thread" in titles and "Secret Thread" not in titles
+
+
+def test_cockpit_player_board_other_world_empty(client, seed):
+    """A player only ever sees data for worlds they belong to; player B
+    poking at world A gets empty lists, never world A's content."""
+    pc_id = _mk_pc(seed.world_a.id, "Vex")
+    _mk_party(seed.world_a.id, "Vanguard", pc_ids=[pc_id])
+    login(client, seed.player_b.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    d = client.get("/api/cockpit/player-board").json()
+    assert d["parties"] == [] and d["quests"] == []
 
 
 def test_cockpit_nav_entry_present_for_gm(client, seed):

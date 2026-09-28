@@ -1328,8 +1328,8 @@ def ai_attachment_audio_job_list(request: Request, db=Depends(get_db), active_wo
 # out arbitrarily.
 _DEFAULT_PLAYER_RAG_ENTITY_LIMIT = 15
 _DEFAULT_PLAYER_RAG_NOTES_LIMIT = 3
-_MAX_PLAYER_RAG_ENTITY_LIMIT = 25
-_MAX_PLAYER_RAG_NOTES_LIMIT = 10
+_MAX_PLAYER_RAG_ENTITY_LIMIT = 100
+_MAX_PLAYER_RAG_NOTES_LIMIT = 100
 
 
 class PlayerContextBody(BaseModel):

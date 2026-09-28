@@ -375,6 +375,16 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/spotlight":
         return True
+    if path == "/cockpit":
+        # The cockpit route adapts by role: GMs get the full workspace,
+        # players get a player-mode shell whose data comes from player-safe
+        # endpoints only (visibility enforced per panel). Workspace saving
+        # stays GM-only (those routes are NOT allowlisted here).
+        return True
+    if path == "/api/cockpit/player-board":
+        # Player cockpit's live data: the caller's own parties (vitals) and
+        # player-visible quests. Handler enforces visibility per row.
+        return True
     if path == "/api/live":
         # Live-sync change counter (app/live.py). Payload is a bare integer
         # for whatever world get_world_ctx resolves for THIS viewer — no

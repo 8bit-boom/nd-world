@@ -11,7 +11,7 @@
       <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows">🗂 Windows</button>
       <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout">💾 Save layout</button>
       <button type="button" class="ck-btn" id="ck-pin-btn" title="Auto-arrange all windows in a grid from top-left — scroll down if the grid outgrows the screen">📌 Auto-arrange</button>
-      <button type="button" class="ck-btn" id="ck-find-btn" title="Find entities & notes connected to a query — or to a focused entity (AI, thinking + RAG)">🔍 Find AI</button>
+      {% if not player_mode %}<button type="button" class="ck-btn" id="ck-find-btn" title="Find entities & notes connected to a query — or to a focused entity (AI, thinking + RAG)">🔍 Find AI</button>{% endif %}
       <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
       <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺ Reset</button>
       <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
@@ -325,6 +325,7 @@ const CK_MAPS = {{ maps_json | tojson }};
 const CK_WORLD_MAPS = {{ world_maps_json | tojson }};
 const CK_PARTIES = {{ parties_json | tojson }};
 const CK_WORLD = {{ world.slug | tojson }};
+const CK_PLAYER_MODE = {{ 'true' if player_mode else 'false' }};
 const CK_TYPES = {
   map:     { icon: '📐', label: 'Schematic',    sub: 'live battle map (SVG canvas)',  w: 780, h: 560, picker: 'map' },
   wmap:    { icon: '🗺', label: 'World map',    sub: 'Leaflet map with markers',      w: 780, h: 560, picker: 'wmap' },

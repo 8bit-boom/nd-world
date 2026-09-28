@@ -32,7 +32,8 @@ from .. import ai as _ai
 from .. import retrieval as _retrieval
 from ..database import get_db, SessionLocal
 from ..deps import get_world_ctx
-from ..models import Entity, Party, Schematic
+from ..models import Entity, Party, PlayerCharacter, Quest, Schematic
+from .parties import _member_vitals
 from ..templating import templates
 
 router = APIRouter()
@@ -120,6 +121,9 @@ def cockpit(request: Request, db: Session = Depends(get_db), active_world: str =
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        return _player_cockpit(request, db, world, worlds)
 
     # Pickers for the Add-panel modal: floatable maps (non-HTML schematics
     # — HTML-type maps are external files with no embeddable view), the
@@ -372,3 +376,92 @@ async def _cockpit_find_task(job_id: int, world_id: int, query: str,
             status="error", error=str(exc) or exc.__class__.__name__)
     finally:
         db.close()
+
+
+# ── Player Cockpit ───────────────────────────────────────────────────────────
+# The cockpit route adapts by role: a non-GM member gets the same window
+# workspace rendered in player mode (cockpit.html hands cockpit.js a
+# CK_PLAYER_MODE flag) — panels tailored to what players can already see,
+# data from player-safe endpoints only. Player workspaces persist in
+# localStorage: the workspace API routes stay GM-only, because World.
+# cockpit_ws_json is ONE shared blob per world and a player saving would
+# stomp the GM's layout.
+
+def _player_parties(db: Session, world, user) -> list:
+    """Parties the player's own PCs belong to, with member vitals — the
+    same strip the party detail page shows viewers with parties
+    visibility."""
+    if not user:
+        return []
+    my_pc_ids = [pc.id for pc in db.query(PlayerCharacter)
+                 .filter(PlayerCharacter.world_id == world.id,
+                         PlayerCharacter.owner_user_id == user.id).all()]
+    if not my_pc_ids:
+        return []
+    out = []
+    for p in db.query(Party).filter(Party.world_id == world.id).order_by(Party.name).all():
+        try:
+            member_ids = json.loads(p.member_pc_ids_json or "[]")
+        except ValueError:
+            continue
+        if not [i for i in my_pc_ids if i in member_ids]:
+            continue
+        members = (db.query(PlayerCharacter)
+                   .filter(PlayerCharacter.id.in_(member_ids)).all())
+        out.append({"id": p.id, "name": p.name,
+                    "members": _member_vitals(db, members)})
+    return out
+
+
+def _player_quests(db: Session, world) -> list:
+    """Active top-level quests the world shows players (visible_to_players),
+    party names attached — the player-mode counterpart of quests.py's GM
+    board."""
+    quests = (db.query(Quest)
+              .filter(Quest.world_id == world.id, Quest.status == "active",
+                      Quest.parent_id.is_(None), Quest.visible_to_players.is_(True))
+              .order_by(Quest.category, Quest.title)
+              .limit(12)
+              .all())
+    party_names = {p.id: p.name for p in db.query(Party).filter(Party.world_id == world.id).all()}
+    return [{"id": q.id, "title": q.title, "category": q.category or "main",
+             "summary": q.summary or "", "party_id": q.assigned_party_id,
+             "party": party_names.get(q.assigned_party_id)} for q in quests]
+
+
+def _player_cockpit(request: Request, db: Session, world, worlds):
+    """Render the cockpit shell in player mode: player-safe panel types
+    (cockpit.js gates by CK_PLAYER_MODE), the player's parties (with
+    vitals) as picker data, localStorage-only persistence."""
+    maps = (db.query(Schematic)
+            .filter(Schematic.world_id == world.id, Schematic.is_html.is_(False))
+            .order_by(Schematic.name)
+            .all())
+    parties = _player_parties(db, world, getattr(request.state, "user", None))
+    return templates.TemplateResponse("cockpit.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
+        "world_maps_json": _world_maps(world.id),
+        "parties_json": parties,
+        "player_mode": True,
+    })
+
+
+@router.get("/api/cockpit/player-board")
+async def cockpit_player_board(request: Request, db: Session = Depends(get_db),
+                               active_world: str = Cookie(None)):
+    """Live data for the player cockpit's party-vitals and quests panels:
+    the player's own parties (member vitals included) and the world's
+    player-visible active quests. Player-safe via the /cockpit +
+    /api/cockpit/player-board allowlist entries; visibility is enforced
+    here — hidden quests never leave the server."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return {
+        "parties": _player_parties(db, world, user),
+        "quests": _player_quests(db, world),
+    }

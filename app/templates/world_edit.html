@@ -78,10 +78,10 @@
     <div class="form-group" style="margin-left:1.7rem">
       <label style="font-size:.8rem;color:var(--text-dim)">
         Lore lookup for players' questions (Ask AI / AI Chat) — up to
-        <input type="number" name="ai_chat_rag_entity_limit" min="0" max="25" style="width:4.5rem;display:inline-block"
+        <input type="number" name="ai_chat_rag_entity_limit" min="0" max="100" style="width:4.5rem;display:inline-block"
                placeholder="15" value="{{ edit_world.ai_chat_rag_entity_limit if edit_world.ai_chat_rag_entity_limit is not none else '' }}">
         entities and
-        <input type="number" name="ai_chat_rag_notes_limit" min="0" max="10" style="width:4.5rem;display:inline-block"
+        <input type="number" name="ai_chat_rag_notes_limit" min="0" max="100" style="width:4.5rem;display:inline-block"
                placeholder="3" value="{{ edit_world.ai_chat_rag_notes_limit if edit_world.ai_chat_rag_notes_limit is not none else '' }}">
         notes per question
       </label>

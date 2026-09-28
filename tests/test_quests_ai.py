@@ -235,3 +235,61 @@ def test_quest_panel_uses_background_job_flow(client, seed):
     assert "/api/quests/suggest/start" in html
     assert "/api/quests/suggest/' + jobId" in html or "/api/quests/suggest/" in html
     assert "fetch('/api/quests/suggest'," not in html  # the stale single-shot call
+
+
+def test_suggest_honors_model_think_rag_flags(client, seed, monkeypatch):
+    """The AI-sync panel's controls must reach the model call: model and
+    thinking verbatim, and use_rag:false must skip the world-context
+    retrieval entirely (the toggle's promise)."""
+    from app.routers import quests as quests_module
+
+    gs_id = _session(seed.world_a.id)
+    captured = {}
+
+    async def _fake_generate_chat(messages, system="", model="", options=None,
+                                  think=False, format=None):
+        captured["model"] = model
+        captured["think"] = think
+        return '{"new_quests": [], "quest_updates": []}'
+
+    rag_calls = []
+
+    def _fake_smart_context(db, world_id, material, entity_limit=8, notes_limit=2):
+        rag_calls.append(material[:40])
+        return ("", 0, [])
+
+    monkeypatch.setattr(quests_module._ai, "generate_chat", _fake_generate_chat)
+    monkeypatch.setattr(quests_module._ai, "UNSLOTH_API_KEY", "sk-test")
+    monkeypatch.setattr(quests_module._retrieval, "smart_world_context",
+                        _fake_smart_context)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+
+    # explicit flags: model chosen, thinking OFF, RAG OFF
+    r = client.post("/api/quests/suggest/start", json={
+        "session_id": gs_id, "model": "custom-x", "think": False, "use_rag": False})
+    assert r.status_code == 200, r.text
+    data = {}
+    for _ in range(40):
+        data = client.get(f"/api/quests/suggest/{r.json()['job_id']}").json()
+        if data["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert data["status"] == "done", data
+    assert captured["model"] == "custom-x"
+    assert captured["think"] is False
+    assert rag_calls == []  # RAG off → no world-context retrieval
+
+    # defaults: thinking + RAG back on
+    r2 = client.post("/api/quests/suggest/start", json={"session_id": gs_id})
+    assert r2.status_code == 200
+    data2 = {}
+    for _ in range(40):
+        data2 = client.get(f"/api/quests/suggest/{r2.json()['job_id']}").json()
+        if data2["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert data2["status"] == "done", data2
+    assert captured["think"] is True
+    assert len(rag_calls) == 1  # RAG on → the world context was retrieved
