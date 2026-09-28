@@ -31,6 +31,8 @@
   const deletePresetBtn = document.getElementById('ck-delete-preset');
   const windowsBtn = document.getElementById('ck-windows-btn');
   const windowsPop = document.getElementById('ck-windows-pop');
+  const kindSelect = document.getElementById('ck-add-kind');
+  const pinBtn = document.getElementById('ck-pin-btn');
 
   const GRID = 8;              // snap-to-grid (px)
   const DOCK_ZONE = 28;        // edge width that triggers half-dock (px)
@@ -106,6 +108,7 @@
     // (a deleted map, a disbanded party) rather than rendering dead panels.
     panels = panels.filter(function (p) {
       if (p.type === 'map') return CK_MAPS.some(function (m) { return m.slug === p.ref; });
+      if (p.type === 'wmap') return (CK_WORLD_MAPS || []).some(function (m) { return m.slug === p.ref; });
       if (p.type === 'party') return CK_PARTIES.some(function (x) { return String(x.id) === String(p.ref); });
       return true;
     });
@@ -275,6 +278,8 @@
   function fillBody(p, body) {
     if (p.type === 'map') {
       body.appendChild(mkIframe('/maps/schematic/' + encodeURIComponent(p.ref) + '/view'));
+    } else if (p.type === 'wmap') {
+      body.appendChild(mkIframe('/maps/' + encodeURIComponent(p.ref)));
     } else if (p.type === 'dice') {
       body.appendChild(mkIframe('/dice'));
     } else if (p.type === 'entity') {
@@ -490,10 +495,12 @@
       if (e.target.closest('.ck-wbtn') || COMPACT.matches || win.classList.contains('maxed')) return;
       e.preventDefault();
       handle.setPointerCapture(e.pointerId);
-      const sx = e.clientX - p.x, sy = e.clientY - p.y;
+      // Y math includes scrollTop on both ends: the workspace scrolls
+      // vertically now, and p.y is a content coordinate, not a screen one.
+      const sx = e.clientX - p.x, sy = e.clientY - p.y + viewport.scrollTop;
       function move(ev) {
         p.x = Math.max(0, Math.min(viewport.clientWidth - 60, ev.clientX - sx));
-        p.y = Math.max(0, Math.min(viewport.clientHeight - 24, ev.clientY - sy));
+        p.y = Math.max(0, ev.clientY - sy + viewport.scrollTop);
         win.style.left = p.x + 'px';
         win.style.top = p.y + 'px';
         // Edge-dock preview: hover near the left/right edge to see the half
@@ -534,10 +541,10 @@
       e.preventDefault();
       e.stopPropagation();
       handle.setPointerCapture(e.pointerId);
-      const sx = e.clientX - p.w, sy = e.clientY - p.h;
+      const sx = e.clientX - p.w, sy = e.clientY - p.h + viewport.scrollTop;
       function move(ev) {
         p.w = Math.max(240, Math.min(viewport.clientWidth, ev.clientX - sx));
-        p.h = Math.max(140, Math.min(viewport.clientHeight, ev.clientY - sy));
+        p.h = Math.max(140, Math.min(8000, ev.clientY - sy + viewport.scrollTop));
         win.style.width = p.w + 'px';
         win.style.height = p.h + 'px';
       }
@@ -637,13 +644,38 @@
 
   function chooseType(key) {
     pickerType = key;
-    if (key === 'map' || key === 'party' || key === 'entity' || key === 'ecard' || key === 'combat') {
+    const wantsKindFilter = (key === 'entity' || key === 'ecard');
+    kindSelect.style.display = wantsKindFilter ? '' : 'none';
+    if (wantsKindFilter) {
+      // Rebuild the kind dropdown from what this world actually has — a GM
+      // with 80 creatures filters by kind, not by scrolling sixty rows.
+      kindSelect.innerHTML = '<option value="">All kinds</option>';
+      ensureEntities().then(function () {
+        const kinds = [];
+        entityCache.forEach(function (e) {
+          if (e.kind && kinds.indexOf(e.kind) === -1) kinds.push(e.kind);
+        });
+        kinds.sort();
+        kinds.forEach(function (k) {
+          const o = document.createElement('option');
+          o.value = k;
+          o.textContent = (KIND_ICONS[k] || '?') + ' ' + k;
+          kindSelect.appendChild(o);
+        });
+      });
+    }
+    if (key === 'map' || key === 'wmap' || key === 'party' || key === 'entity' || key === 'ecard' || key === 'combat') {
       addPicker.style.display = '';
       addSearch.value = '';
-      addSearch.placeholder = key === 'entity' ? 'Search entities…' : 'Filter…';
+      addSearch.placeholder = (key === 'entity' || key === 'ecard') ? 'Search entities…' : 'Filter…';
       addList.innerHTML = '';
       if (key === 'map') {
-        pickerRows = CK_MAPS.map(function (m) { return { ref: m.slug, label: '🗺 ' + m.name, sub: 'map' }; });
+        pickerRows = CK_MAPS.map(function (m) { return { ref: m.slug, label: '📐 ' + m.name, sub: 'schematic' }; });
+        fillPicker(pickerRows);
+      } else if (key === 'wmap') {
+        pickerRows = (CK_WORLD_MAPS || []).map(function (m) {
+          return { ref: m.slug, label: '🗺 ' + m.name, sub: m.markers ? m.markers + ' markers' : 'map' };
+        });
         fillPicker(pickerRows);
       } else if (key === 'party') {
         pickerRows = CK_PARTIES.map(function (x) { return { ref: String(x.id), label: '❤ ' + x.name, sub: 'party' }; });
@@ -680,10 +712,12 @@
   function filterEntities(q) {
     q = q.trim().toLowerCase();
     if (!entityCache.length && pickerRows.length) { fillPicker(pickerRows); return; }
+    const kind = kindSelect.value || '';
     const rows = entityCache.filter(function (e) {
-      return !q || e.name.toLowerCase().indexOf(q) !== -1 || (e.kind || '').toLowerCase().indexOf(q) !== -1;
+      if (kind && e.kind !== kind) return false;
+      return !q || e.name.toLowerCase().indexOf(q) !== -1 || (e.folder || '').toLowerCase().indexOf(q) !== -1;
     }).slice(0, 60).map(function (e) {
-      return { ref: String(e.id), label: (KIND_ICONS[e.kind] || '👤') + ' ' + e.name, sub: e.kind };
+      return { ref: String(e.id), label: (KIND_ICONS[e.kind] || '👤') + ' ' + e.name, sub: e.folder || e.kind };
     });
     pickerRows = rows;
     fillPicker(rows);
@@ -785,6 +819,9 @@
   addSearch.addEventListener('input', function () {
     filterPicker(this.value);
   });
+  kindSelect.addEventListener('change', function () {
+    filterPicker(addSearch.value);
+  });
 
   document.getElementById('ck-reset').addEventListener('click', function () {
     if (!confirm('Reset the cockpit to the default panel set?')) return;
@@ -792,6 +829,44 @@
     render();
     save();
   });
+
+  // ── auto-arrange (📌) ───────────────────────────────────────────────
+  // Packs every window into a tidy grid, starting at the top-left and
+  // flowing left-to-right, row by row. Columns fit the viewport width;
+  // cell height has a 320px floor, so a grid with many windows simply
+  // outgrows the screen — and the workspace scrolls down instead of
+  // squeezing anything. One-time arrangement: dragging stays free after.
+  function autoArrange() {
+    if (COMPACT.matches || !panels.length) return;
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    const n = panels.length;
+    const cols = Math.max(1, Math.min(n, Math.round(vw / 640)));
+    const rows = Math.ceil(n / cols);
+    const gap = 8;
+    const cellW = Math.floor(vw / cols) - gap;
+    const cellH = Math.max(320, Math.floor(vh / rows) - gap);
+    const ordered = panels.slice().sort(function (a, b) {
+      return (a.y - b.y) || (a.x - b.x);
+    });
+    ordered.forEach(function (p, i) {
+      const col = i % cols, row = Math.floor(i / cols);
+      p.x = col * (cellW + gap);
+      p.y = row * (cellH + gap);
+      p.w = cellW;
+      p.h = cellH;
+      p.collapsed = false;
+      const win = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
+      if (win) {
+        win.style.left = p.x + 'px';
+        win.style.top = p.y + 'px';
+        win.style.width = p.w + 'px';
+        win.style.height = p.h + 'px';
+        win.classList.remove('collapsed', 'maxed');
+      }
+    });
+    save();
+  }
+  pinBtn.addEventListener('click', autoArrange);
 
   // Size the workspace to the REAL topbar height (the fixed 52px guess in
   // CSS is wrong whenever the nav wraps — the wrap then overflows the body
@@ -801,19 +876,18 @@
     const wrap = document.getElementById('ck-wrap');
     if (!tb || !wrap) return;
     wrap.style.height = (window.innerHeight - tb.offsetHeight) + 'px';
-    // Pull back any window the last layout left below/right of the (possibly
-    // smaller) viewport, so panels can't get lost off-screen.
+    // Pull back any window the last layout left RIGHT of the viewport —
+    // horizontal overflow is hidden. Vertical overflow is fine now: the
+    // workspace scrolls, so below-the-fold windows stay reachable.
     let moved = false;
     panels.forEach(function (p) {
       const maxX = Math.max(8, viewport.clientWidth - 60);
-      const maxY = Math.max(8, viewport.clientHeight - 24);
       if (p.x > maxX) { p.x = maxX; moved = true; }
-      if (p.y > maxY) { p.y = maxY; moved = true; }
     });
     if (moved) {
       panels.forEach(function (p) {
         const win = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
-        if (win) { win.style.left = p.x + 'px'; win.style.top = p.y + 'px'; }
+        if (win) win.style.left = p.x + 'px';
       });
       save();
     }

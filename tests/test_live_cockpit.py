@@ -275,6 +275,10 @@ def test_cockpit_gm_renders_workspace_shell(client, seed):
     assert 'id="ck-viewport"' in html
     assert 'id="ck-add-overlay"' in html and "Add panel" in html
     assert 'id="ck-save-preset"' in html          # named layouts
+    assert 'id="ck-pin-btn"' in html              # auto-arrange
+    assert 'id="ck-add-kind"' in html             # entity picker kind filter
+    assert "CK_WORLD_MAPS" in html                # file-based map picker data
+    assert "'wmap'" in html                       # world-map panel type
     assert "/static/js/cockpit.js" in html
     assert '"slug": "tavern-map"' in html          # picker data for the modal
     assert '"name": "Vanguard"' in html
@@ -318,6 +322,31 @@ def test_cockpit_empty_world_renders_shell(client, seed):
 def _login_gm(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_cockpit_lists_file_based_maps(client, seed):
+    """The world-map panel picker is fed from the DB-side maps dir (the same
+    JSON-marker files /maps/{slug} serves), not from the schematics table."""
+    import os
+
+    from app.main import UPLOADS_DIR
+
+    maps_dir = UPLOADS_DIR.parent / "maps"
+    maps_dir.mkdir(parents=True, exist_ok=True)
+    (maps_dir / "city-map.json").write_text(
+        json.dumps({"world_id": seed.world_a.id, "name": "City of Yorm",
+                    "width": 2000, "height": 1200,
+                    "markers": [{"name": "Gate"}, {"name": "Harbor"}]}),
+        encoding="utf-8")
+    (maps_dir / "other-world.json").write_text(
+        json.dumps({"world_id": seed.world_b.id, "name": "Not Mine"}),
+        encoding="utf-8")
+    _login_gm(client, seed)
+    html = client.get("/cockpit").text
+    assert '"slug": "city-map"' in html
+    assert '"City of Yorm"' in html
+    assert '"markers": 2' in html
+    assert "other-world" not in html  # another world's map must not leak
 
 
 def test_workspace_roundtrip(client, seed):
@@ -470,11 +499,14 @@ def test_workspace_accepts_new_types_and_accent(client, seed):
          "w": 560, "h": 560, "z": 3, "accent": "javascript:alert(1)"},
         {"id": "c4", "type": "calendar", "ref": "", "title": "Cal", "x": 0, "y": 0,
          "w": 520, "h": 480, "z": 4},
+        {"id": "c5", "type": "wmap", "ref": "city-map", "title": "Yorm", "x": 0, "y": 0,
+         "w": 780, "h": 560, "z": 5},
     ]}, "presets": {}}
     assert client.post("/api/cockpit/workspace", json=ws).status_code == 200
     panels = client.get("/api/cockpit/workspace").json()["workspace"]["current"]["panels"]
     types = [p["type"] for p in panels]
-    assert types == ["ecard", "tables", "combat", "calendar"]
+    assert types == ["ecard", "tables", "combat", "calendar", "wmap"]
+    assert panels[4]["ref"] == "city-map"
     assert panels[0]["accent"] == "#ff2d78"
     assert panels[2]["accent"] == ""  # non-color string dropped
 

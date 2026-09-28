@@ -11,6 +11,7 @@
       <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows">🗂 Windows</button>
       <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout">💾 Save layout</button>
       <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
+      <button type="button" class="ck-btn" id="ck-pin-btn" title="Auto-arrange all windows in a grid from top-left — scroll down if the grid outgrows the screen">📌 Auto-arrange</button>
       <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
       <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺ Reset</button>
       <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
@@ -41,7 +42,10 @@
     </div>
     <div id="ck-add-types"></div>
     <div id="ck-add-picker" style="display:none">
-      <input id="ck-add-search" type="search" placeholder="Search…" autocomplete="off"/>
+      <div style="display:flex;gap:.4rem;margin-bottom:.5rem">
+        <select id="ck-add-kind" title="Filter by kind" style="display:none"></select>
+        <input id="ck-add-search" type="search" placeholder="Search…" autocomplete="off" style="flex:1;min-width:0"/>
+      </div>
       <div id="ck-add-list"></div>
     </div>
   </div>
@@ -74,7 +78,7 @@ body:has(#ck-wrap) > footer { display: none; }
 .ck-btn:hover { color: var(--neon); border-color: var(--neon); }
 .ck-btn-primary { color: var(--neon); border-color: var(--neon); }
 
-#ck-viewport { position: relative; flex: 1; overflow: hidden; min-height: 0;
+#ck-viewport { position: relative; flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0;
   background:
     radial-gradient(rgba(255,255,255,.028) 1px, transparent 1px) 0 0/22px 22px,
     var(--bg); }
@@ -194,9 +198,12 @@ body:has(#ck-wrap) > footer { display: none; }
 .ck-type:hover { border-color: var(--neon); }
 .ck-type small { display: block; color: var(--text-dim); font-size: .68rem; }
 #ck-add-picker { padding: .8rem; border-top: 1px solid var(--border); }
-#ck-add-search { width: 100%; box-sizing: border-box; background: var(--bg3);
+#ck-add-search { background: var(--bg3);
   border: 1px solid var(--border); color: var(--text); border-radius: 4px;
-  padding: .4rem .55rem; font-family: inherit; font-size: .85rem; margin-bottom: .5rem; }
+  padding: .4rem .55rem; font-family: inherit; font-size: .85rem; }
+#ck-add-kind { max-width: 150px; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: .78rem;
+  border-radius: 4px; padding: .3rem .25rem; }
 #ck-add-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: .25rem; }
 .ck-pick { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
   padding: .4rem .55rem; color: var(--text); cursor: pointer; font-size: .82rem;
@@ -216,10 +223,12 @@ body:has(#ck-wrap) > footer { display: none; }
 
 <script>
 const CK_MAPS = {{ maps_json | tojson }};
+const CK_WORLD_MAPS = {{ world_maps_json | tojson }};
 const CK_PARTIES = {{ parties_json | tojson }};
 const CK_WORLD = {{ world.slug | tojson }};
 const CK_TYPES = {
-  map:     { icon: '🗺', label: 'Map',          sub: 'live battle map',               w: 780, h: 560, picker: null },
+  map:     { icon: '📐', label: 'Schematic',    sub: 'live battle map (SVG canvas)',  w: 780, h: 560, picker: 'map' },
+  wmap:    { icon: '🗺', label: 'World map',    sub: 'Leaflet map with markers',      w: 780, h: 560, picker: 'wmap' },
   dice:    { icon: '🎲', label: 'Dice',         sub: 'shared roll log',               w: 420, h: 480, picker: null },
   party:   { icon: '❤', label: 'Party vitals', sub: 'live HP / conditions',          w: 420, h: 380, picker: 'party' },
   quests:  { icon: '📜', label: 'Quests',       sub: 'active quest board',            w: 420, h: 340, picker: null },

@@ -18,7 +18,9 @@ composition of GM-facing tools, and the nav entry (nav_menus.py, id
 """
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
@@ -34,8 +36,8 @@ router = APIRouter()
 
 # The panel types the Add-panel modal offers. Everything else in a posted
 # layout is dropped by the sanitizer.
-PANEL_TYPES = {"map", "dice", "party", "quests", "entity", "ecard", "notes",
-               "ai", "combat", "tables", "calendar"}
+PANEL_TYPES = {"map", "wmap", "dice", "party", "quests", "entity", "ecard",
+               "notes", "ai", "combat", "tables", "calendar"}
 
 MAX_PANELS = 24          # per layout
 MAX_PRESETS = 12         # named layouts per world
@@ -119,9 +121,11 @@ def cockpit(request: Request, db: Session = Depends(get_db), active_world: str =
         raise HTTPException(404)
 
     # Pickers for the Add-panel modal: floatable maps (non-HTML schematics
-    # — HTML-type maps are external files with no embeddable view) and the
-    # world's parties. Entities come from the existing /api/entities/picker
-    # (fetched on first use of the modal, client-side filtered).
+    # — HTML-type maps are external files with no embeddable view), the
+    # world's file-based maps (the Leaflet viewer at /maps/{slug} — the
+    # JSON-marker maps under <DB dir>/maps), and the world's parties.
+    # Entities come from the existing /api/entities/picker (fetched on first
+    # use of the modal, client-side filtered).
     maps = (
         db.query(Schematic)
         .filter(Schematic.world_id == world.id, Schematic.is_html.is_(False))
@@ -133,8 +137,40 @@ def cockpit(request: Request, db: Session = Depends(get_db), active_world: str =
     return templates.TemplateResponse("cockpit.html", {
         "request": request, "world": world, "worlds": worlds,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
+        "world_maps_json": _world_maps(world.id),
         "parties_json": [{"id": p.id, "name": p.name} for p in parties],
     })
+
+
+def _maps_dir() -> Path:
+    # Same derivation as main.py's _MAPS_DIR (routers can't import main —
+    # circular): the maps dir sits beside the SQLite file.
+    return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
+
+
+def _world_maps(world_id: int) -> list:
+    """The world's file-based (Leaflet) maps for the cockpit's world-map
+    picker: [{slug, name, markers}]. Mirrors main.py's _iter_world_maps
+    shape tolerantly — malformed/legacy files are skipped, never raised —
+    kept local because importing main from a router would be circular."""
+    out = []
+    maps_dir = _maps_dir()
+    if not maps_dir.exists():
+        return out
+    for jf in sorted(maps_dir.glob("*.json")):
+        try:
+            data = json.loads(jf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("world_id", 1) != world_id:
+            continue
+        markers = data.get("markers")
+        out.append({
+            "slug": jf.stem,
+            "name": str(data.get("name") or jf.stem)[:120],
+            "markers": len(markers) if isinstance(markers, list) else 0,
+        })
+    return out
 
 
 @router.get("/api/cockpit/workspace")
