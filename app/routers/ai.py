@@ -3529,6 +3529,59 @@ async def unsloth_prefs_get():
     }
 
 
+@router.get("/unsloth/audio-models")
+async def unsloth_audio_models():
+    """Cached Studio hub models classified as TTS / STT, for the Settings
+    model pickers and the audio library's per-generation chooser. Tolerant
+    classification — unknown tasks surface in tasks_seen rather than being
+    dropped (Studio's audio task names are not in the verified Phase-0
+    set). GM-only."""
+    _unsloth_or_400()
+    try:
+        data = await _unsloth_extras.audio_models()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+    data["defaults"] = {
+        "tts_model": _ai.get_tts_model(),
+        "tts_voice": _ai.get_tts_voice(),
+        "stt_model": _ai.get_stt_model(),
+        "stt_backend": _ai.get_stt_backend(),
+    }
+    return data
+
+
+@router.get("/unsloth/version")
+async def unsloth_version():
+    """Studio's own version, feature-detected — builds without /api/version
+    come back available:false (a valid answer, not an error) with the
+    manual path in the hint. GM-only."""
+    _unsloth_or_400()
+    try:
+        version = await _unsloth_extras.studio_version()
+    except _unsloth_extras.StudioEndpointMissing:
+        return {"available": False,
+                "hint": "This Studio build doesn't expose /api/version — "
+                        "check the version in Studio's own UI."}
+    return {"available": True, "version": version}
+
+
+@router.post("/unsloth/update")
+async def unsloth_update():
+    """Ask Studio to update itself (feature-detected POST /api/update).
+    nd-world never shells out to Docker — builds without the endpoint get a
+    clean 400 pointing at the manual update path. GM-only."""
+    _unsloth_or_400()
+    try:
+        result = await _unsloth_extras.studio_update()
+    except _unsloth_extras.StudioEndpointMissing:
+        raise HTTPException(
+            400, "This Studio build doesn't expose an update API — update the "
+                 "Docker image (or Desktop app) and recreate the container.")
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, f"Unsloth Studio update: {exc}")
+    return {"ok": True, "result": result}
+
+
 @router.post("/unsloth/prefs")
 async def unsloth_prefs_set(body: dict):
     if "tts_model" in body:

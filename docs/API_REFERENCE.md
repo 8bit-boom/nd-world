@@ -718,6 +718,9 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |
 | GET | `/api/ai/resident` | GM | Models actually resident in memory (VRAM/RAM), for the Models tab's residency cockpit. |
 | GET | `/api/ai/hardware` | GM | Best-effort CPU/RAM/GPU detection plus a coarse per-model settings recommendation (per-request options and server env vars) for each installed Ollama model, for the Settings → System "Detected hardware" panel. |
+| GET | `/api/ai/unsloth/audio-models` | GM | Cached Studio hub models classified as TTS / STT (tolerant task matching — unknown tasks surface in `tasks_seen`), with the persisted defaults. Backs the Settings pickers and the audio library's per-generation model chooser. |
+| GET | `/api/ai/unsloth/version` | GM | Studio's version via feature-detected `/api/version`; builds without it return `available:false` with the manual path. |
+| POST | `/api/ai/unsloth/update` | GM | Asks Studio to update itself (feature-detected `POST /api/update`); builds without the endpoint get a clean 400 pointing at the Docker/Desktop path. |
 | GET | `/api/ai/unsloth/models` | GM | Every model cached in the Unsloth Studio hub (chat, image, audio — with `task` per row), joined with the `loaded` flag. Backs the Models tab's Studio hub section under the Unsloth backend. |
 | POST | `/api/ai/unsloth/hub/download` | GM | Starts downloading a hub model by repo id (returns immediately; poll the progress route). Optional `gguf_variant` for repos requiring one. |
 | GET | `/api/ai/unsloth/hub/download-progress` | GM | Real per-repo download progress (bytes + fraction) from Studio. |
