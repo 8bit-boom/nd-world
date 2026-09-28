@@ -13,7 +13,12 @@
       } catch(e) {}
     })();
   </script>
-  {% if request.state.user and request.state.user.is_gm %}
+  {% if request.state.user and request.state.user.is_gm and request.query_params.get('embed') != '1' %}
+  {# GM Activity log — never on embed pages: every cockpit window / floated
+     panel is an ?embed=1 iframe, and shipping the logger to each one meant
+     a fixed-position 🐞 button per window plus N copies of the
+     console/fetch/XHR/click hooks writing duplicate entries into the ONE
+     shared localStorage log. Debug a panel by opening its page directly. #}
   <script src="/static/js/nd-logger.js?v={{ asset_v('js/nd-logger.js') }}"></script>
   {% endif %}
   <script src="/static/js/nd-poll.js?v={{ asset_v('js/nd-poll.js') }}"></script>
@@ -55,7 +60,9 @@
   body.nd-embed .spotlight-banner,
   body.nd-embed .skip-link,
   body.nd-embed #nd-now-playing,
-  body.nd-embed .nd-float-btn { display: none !important; }
+  body.nd-embed .nd-float-btn,
+  body.nd-embed #nd-logger-toggle,
+  body.nd-embed #nd-logger-panel { display: none !important; }
   body.nd-embed #main-content { padding: 0.5rem !important; margin: 0 !important; max-width: none !important; }
   body.nd-embed #sv-wrap { height: 100vh; }
 </style>

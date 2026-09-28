@@ -117,3 +117,23 @@ def test_panel_toggle_and_clear_wired():
     assert "nd-logger-clear" in _JS
     assert "confirm(" in _JS
     assert "nd-logger-dl" in _JS
+
+
+def test_script_not_shipped_to_embed_pages(client, seed):
+    """Cockpit windows and floated panels are ?embed=1 iframes of real GM
+    pages — without this, every window rendered its own fixed-position
+    Activity-log button (the "multiple Activity logs" bug) and N copies of
+    the logging hooks wrote duplicates into the shared localStorage log."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert "nd-logger.js" not in client.get("/dice?embed=1").text
+    assert "nd-logger.js" not in client.get("/maps/schematic/x/view?embed=1").text
+
+
+def test_logger_widget_hidden_by_embed_css(client, seed):
+    """Belt-and-braces: even if the script ever loads in an embed document
+    (stale cache, future include), the embed stylesheet hides the widget."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get("/dice?embed=1").text
+    assert "#nd-logger-toggle" in html and "#nd-logger-panel" in html
