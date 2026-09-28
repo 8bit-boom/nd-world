@@ -38,9 +38,10 @@ class StudioError(Exception):
     """The Studio server rejected or failed a call — carries the server's
     own message so the UI can show exactly what Studio said."""
 
-    def __init__(self, message: str, status_code: int = 502):
+    def __init__(self, message: str, status_code: int = 502, headers: dict | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.headers = headers or {}
 
 
 class StudioEndpointMissing(StudioError):
@@ -91,7 +92,7 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
             or (body.get("detail") if isinstance(body.get("detail"), str) else None)
             or str(body)[:300]
         ) or f"HTTP {resp.status_code}"
-        raise StudioError(message, resp.status_code)
+        raise StudioError(message, resp.status_code, headers=dict(resp.headers))
     if not resp.content:
         return {}
     try:
@@ -331,19 +332,25 @@ async def studio_version() -> str:
 
 
 async def studio_update() -> dict:
-    """Ask Studio to update itself — feature-detected, with a real-world
-    twist: a live Studio confirmed the /api/update path exists but rejects
-    POST with 405 Method Not Allowed (it is GET-routed there), so POST
-    falls back to GET before giving up. Builds without any /api/update
-    raise StudioEndpointMissing and the route tells the GM the manual
-    path; nd-world never shells out to Docker."""
+    """Ask Studio to update itself — feature-detected via /api/update. A
+    live Studio 405s POST and 404s GET, so the real method is discovered
+    from the 405 response's standard Allow header (falling back to GET
+    when the header is absent). Builds without any /api/update raise
+    StudioEndpointMissing and the route tells the GM the manual path;
+    nd-world never shells out to Docker."""
     try:
         return await _request("POST", "/api/update", timeout=_ACTION_TIMEOUT)
     except StudioError as exc:
         if exc.status_code != 405:
             raise
-    # 405: the route exists but not as POST — try GET.
-    return await _request("GET", "/api/update", timeout=_ACTION_TIMEOUT)
+        allow = str((exc.headers or {}).get("allow") or "")
+    method = next((m.strip().upper() for m in allow.split(",")
+                   if m.strip().upper() not in ("HEAD", "OPTIONS", "POST")), "")
+    if not method:
+        raise
+    # 405: the path exists but POST isn't allowed — retry with the method
+    # the server itself named (typically GET).
+    return await _request(method, "/api/update", timeout=_ACTION_TIMEOUT)
 
 
 async def stt(audio: bytes, filename: str, model: str = "small") -> str:

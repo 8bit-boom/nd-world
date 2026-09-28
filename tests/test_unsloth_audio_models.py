@@ -176,17 +176,19 @@ def test_tts_route_per_request_model_passthrough(client, seed, monkeypatch):
     assert captured["model"] == get_tts_model()
 
 
-def test_update_route_falls_back_to_get_on_405(client, seed, monkeypatch):
+def test_update_route_falls_back_to_allow_method(client, seed, monkeypatch):
     """Real-world finding from the GM's deployment: Studio's /api/update
-    exists but rejects POST with 405 Method Not Allowed (GET-routed) —
-    the fallback must try GET before surfacing an error."""
+    exists but 405s POST and 404s GET — the 405 response's standard Allow
+    header is the only truthful way to learn the real method (here: PUT)."""
+    from app.unsloth_extras import StudioError
+
     calls = []
 
     async def fake_request(method, path, **kw):
         calls.append(method)
         if method == "POST":
-            from app.unsloth_extras import StudioError
-            raise StudioError("Method Not Allowed", 405)
+            raise StudioError("Method Not Allowed", 405,
+                              headers={"allow": "PUT"})
         return {"status": "updating"}
 
     monkeypatch.setattr("app.unsloth_extras._request", fake_request)
@@ -196,7 +198,46 @@ def test_update_route_falls_back_to_get_on_405(client, seed, monkeypatch):
     r = client.post("/api/ai/unsloth/update")
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "result": {"status": "updating"}}
-    assert calls == ["POST", "GET"]  # POST first, GET fallback second
+    assert calls == ["POST", "PUT"]  # POST first, then the Allow-named method
+
+
+def test_update_route_get_fallback_when_allow_says_get(client, seed, monkeypatch):
+    """Allow: GET, HEAD → the fallback picks GET."""
+    from app.unsloth_extras import StudioError
+
+    calls = []
+
+    async def fake_request(method, path, **kw):
+        calls.append(method)
+        if method == "POST":
+            raise StudioError("Method Not Allowed", 405,
+                              headers={"allow": "GET, HEAD"})
+        return {"status": "updating"}
+
+    monkeypatch.setattr("app.unsloth_extras._request", fake_request)
+    _patch_key(monkeypatch)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/unsloth/update")
+    assert r.status_code == 200
+    assert calls == ["POST", "GET"]
+
+
+def test_update_route_surfaces_persistent_405(client, seed, monkeypatch):
+    """No Allow header to work with (or the retry also fails) — the 405
+    surfaces as-is instead of a misleading message."""
+    from app.unsloth_extras import StudioError
+
+    async def both_rejected(*a, **kw):
+        raise StudioError("Method Not Allowed", 405)  # no headers
+
+    monkeypatch.setattr("app.unsloth_extras.studio_update", both_rejected)
+    _patch_key(monkeypatch)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/unsloth/update")
+    assert r.status_code == 405
+    assert "Method Not Allowed" in r.json()["detail"]
 
 
 def test_update_route_surfaces_persistent_405(client, seed, monkeypatch):
