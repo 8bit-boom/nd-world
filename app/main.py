@@ -1061,6 +1061,17 @@ if not _env_secret_key:
 SECRET_KEY = _env_secret_key or secrets.token_hex(32)
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "true"
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
+# ── Response-perf middlewares (app/http_perf.py) ────────────────────────────
+# GZip compresses HTML/JSON/static (~4-5x — cockpit.js alone is ~75 KB raw).
+# PerfMiddleware sits OUTSIDE it (last added = first to see the request) and
+# (a) strips Accept-Encoding on SSE paths so streams never get gzip-buffered
+# behind proxies, and (b) stamps /static responses immutable — every /static
+# URL is content-versioned via templating.asset_v, so a year-long immutable
+# cache is safe and kills one revalidation round trip per asset per visit.
+from fastapi.middleware.gzip import GZipMiddleware
+from .http_perf import PerfMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(PerfMiddleware)
 
 
 def _rules_toc(html_str: str, levels: str = "23"):
@@ -2347,10 +2358,10 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     })
 
 def _map_data(jf: Path) -> Optional[dict]:
-    try:
-        return json.loads(jf.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    # memoized parse keyed by (path, mtime_ns, size) — /maps and the map
+    # viewer re-read every map JSON per request otherwise (app/http_perf.py)
+    from .http_perf import map_json_cached
+    return map_json_cached(jf)
 
 
 def _iter_world_maps(world_id: int):
