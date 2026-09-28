@@ -42,6 +42,19 @@
     </select>
     <button type="button" id="ai-suggest-btn" class="btn-secondary" style="font-size:.8rem">✨ Generate suggestions</button>
   </div>
+  <div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:center;margin-top:.5rem;font-size:.78rem;color:var(--text-dim)">
+    <label style="display:flex;gap:.4rem;align-items:center">Model
+      <select id="ai-model" title="Model — blank = the configured default" style="max-width:280px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:.78rem;border-radius:3px;padding:.25rem .3rem">
+        <option value="">— default model —</option>
+      </select>
+    </label>
+    <label style="display:flex;gap:.35rem;align-items:center;cursor:pointer">
+      <input type="checkbox" id="ai-think" checked style="width:auto"> 🧠 Thinking
+    </label>
+    <label style="display:flex;gap:.35rem;align-items:center;cursor:pointer" title="Ground the suggestions in this world's entities and notes">
+      <input type="checkbox" id="ai-rag" checked style="width:auto"> 🔍 RAG <span>(this world's defaults)</span>
+    </label>
+  </div>
   <div id="ai-suggest-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.4rem"></div>
   <form id="ai-apply-form" style="display:none;margin-top:.7rem">
     <div id="ai-suggestions"></div>
@@ -81,6 +94,20 @@
   const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   let suggestions = null;
 
+  // model choices from the catalog — loaded models marked ●, blank = the
+  // configured default for this surface
+  fetch('/api/ai/models').then(r => r.ok ? r.json() : null).then(d => {
+    if (!d) return;
+    const sel = document.getElementById('ai-model');
+    (d.models || []).slice(0, 40).forEach(m => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = (m.loaded ? '● ' : '') + (m.label || m.id);
+      sel.appendChild(o);
+    });
+    if (d.default) sel.value = d.default;
+  }).catch(() => {});
+
   // The generation runs as a server-side background job (reasoning + RAG
   // regularly outlives Cloudflare Tunnel's ~100 s no-byte timeout — a plain
   // blocking request 524s), so this client STARTs the job and then polls
@@ -97,7 +124,12 @@
     try {
       const r = await fetch('/api/quests/suggest/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: Number(sessionId) }),
+        body: JSON.stringify({
+          session_id: Number(sessionId),
+          model: document.getElementById('ai-model').value,
+          think: document.getElementById('ai-think').checked,
+          use_rag: document.getElementById('ai-rag').checked,
+        }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
@@ -120,7 +152,7 @@
     }).then(d => {
       if (d.status === 'running') {
         const el = d.elapsed || 0, m = Math.floor(el / 60), s = el % 60;
-        statusEl.textContent = `⏳ The AI is reading the session against the quest board… (${m > 0 ? m + 'm ' : ''}${s}s elapsed) — thinking on, this can take a couple of minutes`;
+        statusEl.textContent = `⏳ The AI is reading the session against the quest board… (${m > 0 ? m + 'm ' : ''}${s}s elapsed) ` + ' — thinking ' + (document.getElementById('ai-think').checked ? 'on' : 'off') + ', this can take a couple of minutes`;
         setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
       } else if (d.status === 'error') {
         fail(d.error || 'The AI sync failed.');

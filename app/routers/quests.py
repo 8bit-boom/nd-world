@@ -401,6 +401,7 @@ async def quests_suggest_start(request: Request, db: Session = Depends(get_db), 
         session_id=int(session_id) if session_id else None,
         text=text, model=str(body.get("model") or "").strip(),
         use_rag=bool(body.get("use_rag", True)),
+        think=bool(body.get("think", True)),
     ))
     return {"job_id": job_id, "status": "running"}
 
@@ -420,7 +421,8 @@ async def quests_suggest_poll(job_id: int):
 
 
 async def _quests_suggest_task(job_id: int, world_id: int,
-                               session_id: Optional[int], text: str, model: str, use_rag: bool):
+                               session_id: Optional[int], text: str, model: str,
+                               use_rag: bool, think: bool = True):
     db = SessionLocal()
     try:
         world = db.get(World, world_id)
@@ -447,7 +449,10 @@ async def _quests_suggest_task(job_id: int, world_id: int,
         world_ctx = ""
         if use_rag:
             try:
-                from . import retrieval as _retrieval
+                # _retrieval is the module-level import (app.retrieval) — a
+                # local `from . import retrieval` here once shadowed it with
+                # app.routers.retrieval (nonexistent) and the blanket except
+                # silently turned quest-sync RAG off.
                 rag, _n, _notes = _retrieval.smart_world_context(
                     db, world_id, material[:1500], entity_limit=8, notes_limit=2,
                 )
@@ -477,7 +482,7 @@ async def _quests_suggest_task(job_id: int, world_id: int,
 
     raw = await _ai.generate_chat(
         [{"role": "user", "content": user_text}],
-        system=system, model=model, think=True,
+        system=system, model=model, think=think,
         format={"type": "object",
                 "properties": {
                     "new_quests": {"type": "array"},
