@@ -426,10 +426,17 @@ class WorldMembership(Base):
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     joined_at = Column(DateTime, default=datetime.utcnow)
-    # "player" (default — join a world, see what players see) or "assistant"
+    # "player" (default — join a world, see what players see), "assistant"
     # (a trusted table helper: player visibility — existing visibility filters
     # stay keyed on is_gm — but may create/edit world CONTENT; the route-level
-    # half of that promise lives in _is_assistant_safe in app/main.py).
+    # half of that promise lives in _is_assistant_safe in app/main.py), or
+    # "owner" (full GM-equivalent power — content AND administration: world
+    # settings, invites, members, backups/export, deletion — but scoped to
+    # exactly this one world; see _is_owner_safe in app/main.py). Granting
+    # "owner" is itself GM-only (member_set_role rejects it from a non-GM
+    # caller, including another Owner) — an Owner can do anything to their
+    # own world except mint co-owners of it or touch any other world or
+    # instance-wide Settings.
     # server_default matters alongside the Python default: it's what makes a
     # fresh create_all() schema carry DEFAULT 'player' in the DDL itself,
     # matching the ALTER TABLE _migrate() issues for existing installs (so a

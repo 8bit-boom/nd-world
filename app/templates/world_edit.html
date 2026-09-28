@@ -256,12 +256,20 @@
           <td style="padding:.4rem .3rem">
             {# GM-Assistant (WorldMembership.role == "assistant"): player
                visibility, but may create/edit world content — see
-               _is_assistant_safe in app/main.py. Same inline form style as
-               the Remove form on the right. #}
+               _is_assistant_safe in app/main.py. "owner" is full GM-equivalent
+               power scoped to this one world (_is_owner_safe) — only a real
+               GM can grant it (member_set_role enforces this server-side;
+               the option is hidden here for anyone else, including an Owner
+               managing their own world's Members table, so it can't look
+               selectable when it isn't). Same inline form style as the
+               Remove form on the right. #}
             <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/role" style="display:inline-flex;gap:.3rem;align-items:center">
               <select name="role" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:.78rem;border-radius:4px;padding:.15rem .3rem">
                 <option value="player" {% if (membership.role or 'player') == 'player' %}selected{% endif %}>Player</option>
                 <option value="assistant" {% if membership.role == 'assistant' %}selected{% endif %}>GM-Assistant</option>
+                {% if viewer_is_gm or membership.role == 'owner' %}
+                <option value="owner" {% if membership.role == 'owner' %}selected{% endif %}>World Owner</option>
+                {% endif %}
               </select>
               <button type="submit" title="Save role" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .5rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">✓</button>
             </form>

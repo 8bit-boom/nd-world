@@ -649,21 +649,25 @@ def _is_player_safe(method: str, path: str) -> bool:
 
 
 # ── GM-Assistant allowlist ─────────────────────────────────────────────────────
-# POLICY: a GM-Assistant (a WorldMembership with role="assistant" in the
-# ACTIVE world — checked per-request by _is_assistant_member below) may
-# create/edit/delete world CONTENT — entities and their notes, sessions and
-# the session-recording tooling, the calendar, random tables, investigation
-# boards, maps and schematics, pages, gallery albums, audio/video clips, and
-# the bulk-content import tools — everything a GM does to fill the world, on
-# top of seeing exactly what a player sees (visibility filters stay keyed on
-# is_gm; an assistant never sees hidden rows a player wouldn't).
-# World ADMINISTRATION stays GM-only: Settings, world create/edit/delete and
-# everything under /worlds/*, memberships/invites, backups, export, AI model
-# management and system info (/settings/system, /api/ai model/preset/whisper
-# routes), imagegen backends, MCP (which keeps its own is_gm checks). Like
-# _is_player_safe above, this list must be extended DELIBERATELY: any route
-# not matched here is GM-only for an assistant too, so new routes stay safe
-# by default.
+# POLICY: a GM-Assistant (a WorldMembership with role="assistant" — or
+# "owner", which includes everything "assistant" gets — in the ACTIVE world,
+# checked per-request by _active_membership below) may create/edit/delete
+# world CONTENT — entities and their notes, sessions and the session-recording
+# tooling, the calendar, random tables, investigation boards, maps and
+# schematics, pages, gallery albums, audio/video clips, and the bulk-content
+# import tools — everything a GM does to fill the world, on top of seeing
+# exactly what a player sees (visibility filters stay keyed on is_gm; an
+# assistant never sees hidden rows a player wouldn't).
+# World ADMINISTRATION stays GM-only for a plain assistant: Settings, world
+# create/edit/delete and everything under /worlds/*, memberships/invites,
+# backups, export, AI model management and system info (/settings/system,
+# /api/ai model/preset/whisper routes), imagegen backends, MCP (which keeps
+# its own is_gm checks). A role="owner" membership gets the /worlds/{id}/*
+# administration surface too, but ONLY for their own world — see
+# _is_owner_safe just below _is_assistant_safe. Like _is_player_safe above,
+# this list must be extended DELIBERATELY: any route not matched here (or in
+# _is_owner_safe, for an Owner) is GM-only, so new routes stay safe by
+# default.
 def _is_assistant_safe(method: str, path: str) -> bool:
     # Entities — every POST under /entity/* is content mutation (edit,
     # duplicate, delete, link/unlink, notes add/import/toggle/delete); the
@@ -866,17 +870,18 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     return False
 
 
-def _is_assistant_member(db, request: Request, user) -> bool:
-    """Does this non-GM user hold role="assistant" in their ACTIVE world?
+def _active_membership(db, request: Request, user) -> tuple:
+    """This non-GM user's WorldMembership (role, world_id) in their ACTIVE
+    world, or (None, None).
 
     Resolves the active world exactly like get_world_ctx does — ?w=<slug>
     query param over the active_world cookie, falling back to the first
     world the user is a member of when the cookie is absent or stale — then
-    checks that world's WorldMembership row. Missing world/membership →
-    False. Only called for non-GM requests (GMs are can_edit everywhere
-    already); runs one indexed query over the user's own memberships, the
-    same query get_world_ctx would run downstream anyway, so the per-request
-    cost is one extra SQLite-local lookup."""
+    returns that world's WorldMembership row's role and world_id. Only
+    called for non-GM requests (GMs are can_edit everywhere already); runs
+    one indexed query over the user's own memberships, the same query
+    get_world_ctx would run downstream anyway, so the per-request cost is
+    one extra SQLite-local lookup."""
     active = resolve_world_slug(request, request.cookies.get(DEFAULT_WORLD_COOKIE))
     rows = (
         db.query(WorldMembership, World.slug)
@@ -886,11 +891,60 @@ def _is_assistant_member(db, request: Request, user) -> bool:
         .all()
     )
     if not rows:
-        return False
+        return None, None
     membership = next((m for m, slug in rows if slug == active), None)
     if membership is None:
         membership = rows[0][0]  # same first-accessible-world fallback as get_world_ctx
-    return membership.role == "assistant"
+    return membership.role, membership.world_id
+
+
+# ── World-Owner allowlist ────────────────────────────────────────────────────
+# POLICY: a world Owner (WorldMembership.role == "owner" in the ACTIVE world —
+# full GM-equivalent power, but scoped to exactly that one world; granted only
+# by a real GM via the Members table, see member_set_role's own guard, never
+# self- or peer-granted) gets everything _is_assistant_safe already gives an
+# assistant (folded in below: is_assistant is True whenever the active role is
+# "assistant" OR "owner"), PLUS the world ADMINISTRATION _is_assistant_safe
+# deliberately withholds — but ONLY for the specific world_id they own, never
+# any other world. Settings (instance-wide AI backend/system config), other
+# worlds, and granting "owner" itself stay out of this allowlist on purpose —
+# an Owner never gets instance-wide power, just full control of their own
+# sandbox. world_id here is always the caller's OWN active-and-owned world
+# (the gate only calls this when active role == "owner"), so a plain string
+# prefix match is safe — there's no cross-world path to confuse it with.
+def _is_owner_safe(method: str, path: str, world_id: int) -> bool:
+    prefix = f"/worlds/{world_id}"
+    if path == f"{prefix}/edit" and method in ("GET", "POST"):
+        return True
+    if method == "POST" and path in (f"{prefix}/theme/import", f"{prefix}/theme/clear"):
+        return True
+    if method == "POST" and path == f"{prefix}/invites/new":
+        return True
+    if method == "POST" and re.match(rf"^{re.escape(prefix)}/invites/\d+/revoke$", path):
+        return True
+    if method == "POST" and re.match(rf"^{re.escape(prefix)}/members/\d+/(remove|role|reset-password|clear-2fa)$", path):
+        return True
+    if method == "GET" and re.match(rf"^{re.escape(prefix)}/notes/\d+$", path):
+        return True
+    if method == "POST" and re.match(rf"^{re.escape(prefix)}/notes/\d+/new$", path):
+        return True
+    if method == "POST" and re.match(rf"^{re.escape(prefix)}/notes/\d+/\d+/delete$", path):
+        return True
+    if method == "GET" and path == f"{prefix}/export":
+        return True
+    if method == "POST" and path == f"{prefix}/import":
+        return True
+    if path == f"{prefix}/rules/edit" and method in ("GET", "POST"):
+        return True
+    if method == "POST" and path in (f"{prefix}/rules/import", f"{prefix}/rules/overlay/suggest"):
+        return True
+    if method == "POST" and path == f"{prefix}/delete":
+        return True
+    if method == "POST" and path == f"{prefix}/ai-instructions/import":
+        return True
+    if method == "POST" and re.match(rf"^{re.escape(prefix)}/ai-instructions/\d+/(toggle|toggle-players|delete)$", path):
+        return True
+    return False
 
 
 @app.middleware("http")
@@ -920,8 +974,11 @@ async def auth_gate(request: Request, call_next):
     try:
         user = db.query(User).filter(User.id == user_id).first()
         # Assistant flag for the GM-Assistant role (WorldMembership.role ==
-        # "assistant"): computed for EVERY non-GM request, not just ones that
-        # fail the player-safe check, because templates consult can_edit(request)
+        # "assistant") — also True for role == "owner" (an Owner gets at
+        # least everything an assistant gets, in their own active world, on
+        # top of the extra admin power _is_owner_safe grants below):
+        # computed for EVERY non-GM request, not just ones that fail the
+        # player-safe check, because templates consult can_edit(request)
         # (request.state.is_assistant underneath) to decide whether to render
         # content-creation controls on player-visible pages too (the entity
         # detail page's note form, the "+ New" nav button, ...). Tradeoff,
@@ -930,7 +987,11 @@ async def auth_gate(request: Request, call_next):
         # downstream on most pages anyway. GMs skip it (they can already edit
         # everything); a user who turns out to be logged-out/session-stale
         # wastes the lookup, which is the rare path.
-        is_assistant = bool(user and not user.is_gm and _is_assistant_member(db, request, user))
+        active_role, active_world_id = (
+            _active_membership(db, request, user) if user and not user.is_gm else (None, None)
+        )
+        is_assistant = active_role in ("assistant", "owner")
+        is_world_owner = active_role == "owner"
     finally:
         db.close()
     if not user:
@@ -950,9 +1011,16 @@ async def auth_gate(request: Request, call_next):
     # Always present so templates can read it unconditionally (a GM renders
     # the same controls via can_edit()'s is_gm half — always False here).
     request.state.is_assistant = is_assistant
+    # World Owner — full GM-equivalent power, scoped to this one world (see
+    # _is_owner_safe). Templates use this to show admin controls
+    # (Settings/Members/Delete-world) that a plain assistant doesn't get.
+    request.state.is_world_owner = is_world_owner
+    request.state.owner_world_id = active_world_id if is_world_owner else None
 
     if not user.is_gm and not _is_player_safe(request.method, path):
-        if not (is_assistant and _is_assistant_safe(request.method, path)):
+        assistant_ok = is_assistant and _is_assistant_safe(request.method, path)
+        owner_ok = is_world_owner and _is_owner_safe(request.method, path, active_world_id)
+        if not (assistant_ok or owner_ok):
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "GM access required"}, status_code=403)
             return HTMLResponse(
@@ -1560,11 +1628,17 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
         db.query(AiInstruction).filter(AiInstruction.world_id == world_id)
         .order_by(AiInstruction.created_at).all()
     )
+    viewer = getattr(request.state, "user", None)
     return templates.TemplateResponse("world_edit.html", {
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
         "invites": invites, "members": members,
         "ai_instructions": ai_instructions,
+        # Only a real GM can grant/see the "owner" role option below — an
+        # Owner viewing their own world's Members table can still manage
+        # player/assistant roles, just not mint a co-owner (member_set_role
+        # enforces this server-side regardless of what the form shows).
+        "viewer_is_gm": bool(viewer and viewer.is_gm),
     })
 
 @app.post("/worlds/{world_id}/edit")
@@ -1707,16 +1781,23 @@ def member_remove(world_id: int, user_id: int, db: Session = Depends(get_db)):
 
 @app.post("/worlds/{world_id}/members/{user_id}/role")
 def member_set_role(
-    world_id: int, user_id: int, role: str = Form(...), db: Session = Depends(get_db)
+    world_id: int, user_id: int, request: Request, role: str = Form(...), db: Session = Depends(get_db)
 ):
-    """Promote/demote a member between "player" and "assistant" (see
-    WorldMembership.role in app/models.py). GM-only — it's not in
-    _is_player_safe or _is_assistant_safe, so the auth_gate already turned
-    any non-GM away before we get here (an assistant managing their own
-    role would defeat the whole tier). Unknown roles are a 400 rather than
-    a silent no-op so a template typo can't quietly reset someone."""
-    if role not in ("player", "assistant"):
-        raise HTTPException(400, "Role must be 'player' or 'assistant'")
+    """Promote/demote a member between "player", "assistant", and "owner"
+    (see WorldMembership.role in app/models.py). Reachable by a real GM
+    (any world) or that world's own Owner (via _is_owner_safe) — a plain
+    assistant managing their own role would defeat the whole tier, which is
+    why this stays out of _is_assistant_safe. Granting role="owner" itself
+    is GM-only regardless of who's calling: an Owner could otherwise mint
+    unlimited co-owners of their own world with no oversight, which is the
+    one thing "full power over their own world" deliberately excludes.
+    Unknown roles are a 400 rather than a silent no-op so a template typo
+    can't quietly reset someone."""
+    if role not in ("player", "assistant", "owner"):
+        raise HTTPException(400, "Role must be 'player', 'assistant', or 'owner'")
+    caller = getattr(request.state, "user", None)
+    if role == "owner" and not (caller and caller.is_gm):
+        raise HTTPException(403, "Only a GM can grant world ownership")
     m = db.query(WorldMembership).filter(
         WorldMembership.world_id == world_id, WorldMembership.user_id == user_id
     ).first()

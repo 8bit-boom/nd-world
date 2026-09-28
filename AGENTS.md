@@ -67,6 +67,15 @@ tools that require GM access still check `is_gm` at call time.)
   backups, export, AI model/system management) stays GM-only for them too,
   and new routes default GM-only for them as well. Assistants always see what
   players see: visibility filters stay keyed on `is_gm`.
+  A third tier, World **Owner** (`WorldMembership.role == "owner"`), gets
+  everything an Assistant gets *plus* the `/worlds/*` administration surface
+  — but only for the one world they own, via `_is_owner_safe()` right below
+  `_is_assistant_safe()`, matched against their own `world_id` so it can
+  never reach a different world. Instance-wide Settings, every other world,
+  and granting `"owner"` itself stay GM-only regardless — only a real GM can
+  create an Owner (`member_set_role` 403s an Owner who tries to mint a
+  co-owner). It's how a GM hands an assistant a fully independent world of
+  their own without making them a global GM.
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before
   assuming an endpoint doesn't exist, and add a row there for any new route.
