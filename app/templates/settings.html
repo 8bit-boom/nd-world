@@ -256,7 +256,13 @@
       </div>
       <div class="form-group">
         <label for="studio-tts-model">TTS model (hub repo id)</label>
-        <input id="studio-tts-model" style="max-width:420px" placeholder="e.g. unsloth/orpheus-3b — must be downloaded in Studio"/>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <input id="studio-tts-model" list="tts-model-options" style="max-width:420px;flex:1;min-width:260px" placeholder="e.g. unsloth/orpheus-3b — must be downloaded in Studio"/>
+          <button type="button" class="btn-secondary" id="studio-detect-models" title="Ask the Studio hub which audio models are downloaded">↻ Detect models</button>
+        </div>
+        <datalist id="tts-model-options"></datalist>
+        <datalist id="stt-model-options"></datalist>
+        <div id="studio-models-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
       </div>
       <div class="form-group">
         <label for="studio-tts-voice">TTS voice (optional)</label>
@@ -271,7 +277,16 @@
       </div>
       <div class="form-group">
         <label for="studio-stt-model">Studio STT model name (when backend is Unsloth)</label>
-        <input id="studio-stt-model" style="max-width:160px" placeholder="small"/>
+        <input id="studio-stt-model" list="stt-model-options" style="max-width:220px" placeholder="small"/>
+      </div>
+      <div class="form-group">
+        <label>Unsloth Studio version & updates</label>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <span id="studio-version-line" style="font-size:.8rem;color:var(--text-dim)">not checked</span>
+          <button type="button" class="btn-secondary" id="studio-version-btn">Check version</button>
+          <button type="button" class="btn-secondary" id="studio-update-btn" title="Ask Studio to update itself (feature-detected)">Update Studio</button>
+        </div>
+        <div id="studio-update-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
       </div>
       <div class="form-group">
         <label for="studio-console-url">Studio Console URL override (optional)</label>
@@ -967,6 +982,62 @@ function ndCopyRestartCmd() {
     s.style.color = ok ? 'var(--neon)' : 'var(--neon2)';
   };
 
+  async function detectStudioModels() {
+    const st = el('studio-models-status');
+    st.textContent = '⏳ Asking the Studio hub…';
+    try {
+      const r = await fetch('/api/ai/unsloth/audio-models');
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      const fill = (id, rows) => {
+        const dl = document.getElementById(id);
+        dl.innerHTML = '';
+        (rows || []).forEach(m => {
+          const o = document.createElement('option');
+          o.value = m.repo_id;
+          o.label = m.task || 'audio';
+          dl.appendChild(o);
+        });
+      };
+      fill('tts-model-options', d.tts);
+      fill('stt-model-options', d.stt);
+      const extras = (d.tasks_seen || []).filter(t =>
+        !/text-generation|text-to-image/i.test(t));
+      st.textContent = (d.error ? ('⚠ ' + d.error + ' ') : '') +
+        `${(d.tts || []).length} TTS · ${(d.stt || []).length} STT models found in Studio's hub` +
+        (extras.length ? ` — other tasks: ${extras.join(', ')}` : '');
+    } catch (e) {
+      st.textContent = '⚠ ' + e.message;
+    }
+  }
+  async function checkStudioVersion() {
+    const st = el('studio-version-line');
+    st.textContent = '⏳ checking…';
+    try {
+      const r = await fetch('/api/ai/unsloth/version');
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      st.textContent = d.available ? ('Studio version: ' + (d.version || 'unknown'))
+                                   : (d.hint || 'not exposed by this build');
+    } catch (e) {
+      st.textContent = '⚠ ' + e.message;
+    }
+  }
+  async function updateStudio() {
+    if (!confirm('Ask Unsloth Studio to update itself? This may restart Studio and interrupt in-flight audio/AI jobs.')) return;
+    const st = el('studio-update-status');
+    st.textContent = '⏳ Update requested…';
+    try {
+      const r = await fetch('/api/ai/unsloth/update', { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      st.textContent = '✓ Studio accepted the update request — it manages the rest itself. Reload in a minute.';
+      checkStudioVersion();
+    } catch (e) {
+      st.textContent = '⚠ ' + e.message;
+    }
+  }
+
   function loadPrefs() {
     // Studio-side auto-switch state (404/400 when no backend — degrade)
     fetch('/api/ai/unsloth/auto-switch').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(d => {
@@ -979,6 +1050,10 @@ function ndCopyRestartCmd() {
       el('studio-tts-voice').value = d.tts_voice || '';
       el('studio-stt-backend').value = d.stt_backend || 'whisper';
       el('studio-stt-model').value = d.stt_model || '';
+      detectStudioModels();
+      el('studio-detect-models').addEventListener('click', detectStudioModels);
+      el('studio-version-btn').addEventListener('click', checkStudioVersion);
+      el('studio-update-btn').addEventListener('click', updateStudio);
     }).catch(() => {});
   }
 

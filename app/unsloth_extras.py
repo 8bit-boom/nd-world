@@ -281,6 +281,62 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = "mp
     return audio, resp.headers.get("content-type", "audio/mpeg")
 
 
+_TTS_TASK_HINTS = ("text-to-speech", "tts", "voice")
+_STT_TASK_HINTS = ("speech-recognition", "speech-to-text", "automatic-speech",
+                   "transcri", "whisper", "asr")
+
+
+def _classify_audio_model(row: dict) -> str:
+    """'tts' | 'stt' | ''. Studio's task taxonomy for AUDIO rows is not in
+    the verified Phase-0 set (only text-generation / text-to-image were
+    confirmed), so this matches tolerantly on task + repo_id — STT first
+    (its hints are the more specific strings), then TTS. Unrecognized rows
+    come back "" and surface via tasks_seen for the Settings UI."""
+    hay = (str(row.get("task") or "") + " " + str(row.get("repo_id") or "")).lower()
+    if any(h in hay for h in _STT_TASK_HINTS):
+        return "stt"
+    if any(h in hay for h in _TTS_TASK_HINTS):
+        return "tts"
+    return ""
+
+
+async def audio_models() -> dict:
+    """Cached hub models classified as TTS / STT, for the Settings pickers
+    and the audio library's per-generation model chooser. Tolerant on
+    purpose: anything whose task/repo_id doesn't read as speech-related is
+    not dropped silently — its task lands in tasks_seen."""
+    cached = await hub_cached()
+    out = {"tts": [], "stt": [], "tasks_seen": []}
+    for row in cached:
+        task = str(row.get("task") or "")
+        if task and task not in out["tasks_seen"]:
+            out["tasks_seen"].append(task)
+        kind = _classify_audio_model(row)
+        if kind:
+            out[kind].append({
+                "repo_id": row.get("repo_id", ""),
+                "task": task,
+                "size_bytes": row.get("size_bytes"),
+                "capabilities": row.get("capabilities") or {},
+            })
+    return out
+
+
+async def studio_version() -> str:
+    """Studio's version via GET /api/version — feature-detected: builds
+    without the endpoint raise StudioEndpointMissing (the route degrades to
+    a clean "not available" instead of an error)."""
+    data = await _request("GET", "/api/version")
+    return str(data.get("version") or data.get("build") or "")
+
+
+async def studio_update() -> dict:
+    """Ask Studio to update itself — POST /api/update, feature-detected.
+    nd-world never shells out to Docker: builds without the endpoint raise
+    StudioEndpointMissing and the route tells the GM the manual path."""
+    return await _request("POST", "/api/update", timeout=_ACTION_TIMEOUT)
+
+
 async def stt(audio: bytes, filename: str, model: str = "small") -> str:
     """POST /v1/audio/transcriptions (multipart) → transcript text. `model`
     maps to a Studio-managed STT model name (e.g. "small") — a missing one
