@@ -24,6 +24,7 @@ CASES = [
     ("POST", "/worlds/1/edit", 1, True),
     ("POST", "/worlds/1/theme/import", 1, True),
     ("POST", "/worlds/1/theme/clear", 1, True),
+    ("POST", "/worlds/1/theme/preset", 1, True),
     ("POST", "/worlds/1/invites/new", 1, True),
     ("POST", "/worlds/1/invites/9/revoke", 1, True),
     ("POST", "/worlds/1/members/2/remove", 1, True),
@@ -53,6 +54,7 @@ CASES = [
     ("POST", "/worlds/2/delete", 1, False),
     ("POST", "/worlds/2/invites/new", 1, False),
     ("POST", "/worlds/2/members/2/role", 1, False),
+    ("POST", "/worlds/2/theme/preset", 1, False),
     ("GET", "/worlds/2/export", 1, False),
     # Never granted to an Owner regardless of world_id — instance-wide and
     # cross-world surfaces stay GM-only no matter what.

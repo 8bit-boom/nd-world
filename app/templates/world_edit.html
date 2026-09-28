@@ -140,14 +140,35 @@
   <h2 style="margin-top:2rem">🎨 Visual Theme</h2>
   <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
     <p style="color:var(--text-dim);font-size:.85rem;margin-bottom:.75rem">
-      Import a JSON theme file to reskin this world's palette and fonts (colors, headings) —
-      applies everywhere in the app, on top of the accent colour above. A theme can also set
-      a fancier <code>font_display</code> just for the hero title, a tight/negative
+      Pick a genre preset below to reskin this world's palette and fonts in one click, or
+      import your own JSON theme for full control — either way it applies everywhere in the
+      app, on top of the accent colour above. A theme can also set a fancier
+      <code>font_display</code> just for the hero title, a tight/negative
       <code>hero_letter_spacing</code> (lets a decorative font's glyphs touch, e.g. two linked
       "O"s), a <code>hero_glow_color</code>, and a <code>hero_graphic</code> ("moon", "circle",
-      or "none") — see <code>docs/world-theme-gothic-moonlight.json</code> for an example.
-      {% if edit_theme %}Current theme: <strong style="color:var(--text)">{{ edit_theme.name or 'Untitled' }}</strong>.{% else %}No theme imported yet — the app uses its default look.{% endif %}
+      or "none") — see <code>app/theme_presets.py</code> or
+      <code>docs/world-theme-gothic-moonlight.json</code> for examples.
+      {% if edit_theme %}Current theme: <strong style="color:var(--text)">{{ edit_theme.name or 'Untitled' }}</strong>.{% else %}No theme applied yet — the app uses its default look.{% endif %}
     </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;margin-bottom:1rem">
+      {% for preset_key, preset in theme_presets.items() %}
+      <form method="post" action="/worlds/{{ edit_world.id }}/theme/preset" style="margin:0">
+        <input type="hidden" name="preset" value="{{ preset_key }}"/>
+        <button type="submit" title="Apply {{ preset.name }}"
+                style="width:100%;text-align:left;cursor:pointer;padding:.5rem;border-radius:6px;font-family:var(--font);font-size:.75rem;color:var(--text)
+                       {%- if edit_theme.name == preset.name %};background:var(--bg);border:1px solid {{ preset.accent }}{%- else %};background:var(--bg3);border:1px solid var(--border){%- endif %}">
+          <div style="display:flex;gap:3px;margin-bottom:.4rem">
+            <span style="flex:1;height:16px;border-radius:2px;background:{{ preset.bg }}"></span>
+            <span style="flex:1;height:16px;border-radius:2px;background:{{ preset.accent }}"></span>
+            <span style="flex:1;height:16px;border-radius:2px;background:{{ preset.neon2 }}"></span>
+            <span style="flex:1;height:16px;border-radius:2px;background:{{ preset.neon3 }}"></span>
+          </div>
+          {{ preset.name }}{% if edit_theme.name == preset.name %} ✓{% endif %}
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+    <p style="color:var(--text-dim);font-size:.78rem;margin:0 0 .5rem">Or import your own custom JSON theme:</p>
     <form method="post" action="/worlds/{{ edit_world.id }}/theme/import" enctype="multipart/form-data"
           style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.75rem 1rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px">
       <label style="font-size:.82rem;color:var(--text-dim)">Import from JSON</label>

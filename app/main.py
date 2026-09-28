@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import ai_instructions as _ai_instructions
 from . import deps
+from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import streaming_export as _streaming_export
@@ -916,7 +917,7 @@ def _is_owner_safe(method: str, path: str, world_id: int) -> bool:
     prefix = f"/worlds/{world_id}"
     if path == f"{prefix}/edit" and method in ("GET", "POST"):
         return True
-    if method == "POST" and path in (f"{prefix}/theme/import", f"{prefix}/theme/clear"):
+    if method == "POST" and path in (f"{prefix}/theme/import", f"{prefix}/theme/clear", f"{prefix}/theme/preset"):
         return True
     if method == "POST" and path == f"{prefix}/invites/new":
         return True
@@ -1724,6 +1725,28 @@ def world_theme_clear(world_id: int, db: Session = Depends(get_db)):
     if not w:
         raise HTTPException(404)
     w.theme_json = None
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/theme/preset")
+def world_theme_preset(world_id: int, preset: str = Form(...), db: Session = Depends(get_db)):
+    """Apply one of the built-in genre presets (app/theme_presets.py) —
+    same effect as uploading its JSON via /theme/import, just one click
+    from the gallery in world_edit.html instead of hand-authoring a file.
+    Still routed through _sanitize_theme(), same as an uploaded file, so a
+    future edit to a preset that breaks its own shape is caught by
+    tests/test_theme_presets.py rather than silently reaching base.html."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    data = THEME_PRESETS.get(preset)
+    if not data:
+        raise HTTPException(404, "Unknown theme preset")
+    cleaned = _sanitize_theme(data)
+    if "accent" in cleaned:
+        w.accent = cleaned.pop("accent")
+    w.theme_json = json.dumps(cleaned)
     db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 

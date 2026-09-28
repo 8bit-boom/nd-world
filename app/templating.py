@@ -24,6 +24,7 @@ from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .database import SessionLocal, get_app_settings_flags_cached
 from .imaging import thumbnail_path_for
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_gm_only, strip_md
+from .theme_presets import THEME_PRESETS
 
 # Duplicated from main.py's DEFAULT_WORLD_COOKIE — same rationale as this
 # file's own docstring: importing from main.py here would be circular.
@@ -57,6 +58,7 @@ def _kinds_context_processor(request: Request) -> dict:
             "king_in_yellow_enabled": flags["king_in_yellow_enabled"],
             "nav_menus": nav_menus, "nav_ungrouped_items": nav_ungrouped_items,
             "world_theme": _parse_world_theme(world),
+            "theme_presets": THEME_PRESETS,
         }
     finally:
         db.close()
