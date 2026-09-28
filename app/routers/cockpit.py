@@ -44,9 +44,6 @@ MAX_PANELS = 24          # per layout
 MAX_PRESETS = 12         # named layouts per world
 MAX_PANELS_BYTES = 128 * 1024  # whole workspace JSON cap
 
-_ALLOWED_PANEL_KEYS = {"id", "type", "ref", "title", "x", "y", "w", "h", "z",
-                       "collapsed", "accent", "data"}
-
 _ACCENT_RE = re.compile(r"^$|^#[0-9a-fA-F]{6}$")
 
 

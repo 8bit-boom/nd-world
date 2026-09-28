@@ -118,6 +118,7 @@
     panels.forEach(function (p) { p.id = newId(); });
     renderPresetSelect();
     render();
+    clampX();
   }
 
   async function load() {
@@ -180,6 +181,19 @@
   function render() {
     viewport.querySelectorAll('.ck-win').forEach(function (el) { el.remove(); });
     liveLoaders.clear();
+    // Re-renders re-mint ids (preset switch) or drop panels — chat state
+    // keyed to ids that no longer exist is an orphan: abort any stream
+    // still writing into it and free the history.
+    const liveIds = new Set(panels.map(function (p) { return p.id; }));
+    [chatHistory, chatAborts].forEach(function (m) {
+      Array.from(m.keys()).forEach(function (k) {
+        if (!liveIds.has(k)) {
+          const c = chatAborts.get(k);
+          if (c) c.abort();
+          m.delete(k);
+        }
+      });
+    });
     panels.forEach(function (p) { viewport.appendChild(buildWin(p)); });
     // Everything registered a loader in fillBody — fire them all now that
     // the nodes are attached (the loaders query the DOM by panel id).
@@ -236,7 +250,7 @@
     const closeBtn = mkBtn('✕', 'Remove this panel', function () {
       panels = panels.filter(function (x) { return x.id !== p.id; });
       win.remove();
-      liveLoaders.delete(p.id);
+      cleanupPanel(p.id);
       if (welcome) welcome.style.display = panels.length ? 'none' : '';
       save();
     });
@@ -588,6 +602,14 @@
   const chatHistory = new Map();  // panel id -> [{role, content}]
   const chatAborts = new Map();   // panel id -> AbortController
 
+  function cleanupPanel(panelId) {
+    const c = chatAborts.get(panelId);
+    if (c) c.abort();  // stop tokens streaming into a window nobody sees
+    chatAborts.delete(panelId);
+    chatHistory.delete(panelId);
+    liveLoaders.delete(panelId);
+  }
+
   function buildAiChat(p, body) {
     const wrap = document.createElement('div');
     wrap.className = 'ck-aichat';
@@ -867,7 +889,7 @@
         panels = panels.filter(function (q) { return q.id !== p.id; });
         const el = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
         if (el) el.remove();
-        liveLoaders.delete(p.id);
+        cleanupPanel(p.id);
         if (welcome) welcome.style.display = panels.length ? 'none' : '';
         renderWindowList();
         save();
@@ -1006,7 +1028,7 @@
   }
 
   function filterPicker(q) {
-    if (pickerType === 'entity') { filterEntities(q); return; }
+    if (pickerType === 'entity' || pickerType === 'ecard') { filterEntities(q); return; }
     q = q.trim().toLowerCase();
     fillPicker(pickerRows.filter(function (r) {
       return !q || r.label.toLowerCase().indexOf(q) !== -1;
@@ -1068,13 +1090,19 @@
     recomputeSeq();
     panels.forEach(function (p) { p.id = newId(); });
     render();
+    clampX();
     save();
   });
 
   document.getElementById('ck-save-preset').addEventListener('click', function () {
     const current = presetSelect.value;
-    const name = current || prompt('Name this layout (e.g. Combat, Exploration):');
-    if (!name) return;
+    let name = current;
+    if (!name) {
+      name = prompt('Name this layout (e.g. Combat, Exploration):');
+      if (!name) return;
+    } else if (!confirm('Overwrite the saved layout "' + current + '" with the current windows?')) {
+      return;
+    }
     presets[name.trim().slice(0, 40)] = clone({ panels: panels });
     renderPresetSelect(name.trim().slice(0, 40));
     save();
@@ -1158,12 +1186,17 @@
     const wrap = document.getElementById('ck-wrap');
     if (!tb || !wrap) return;
     wrap.style.height = (window.innerHeight - tb.offsetHeight) + 'px';
-    // Pull back any window the last layout left RIGHT of the viewport —
-    // horizontal overflow is hidden. Vertical overflow is fine now: the
-    // workspace scrolls, so below-the-fold windows stay reachable.
+    clampX();
+  }
+  // Pull back any window the last layout left RIGHT of the viewport —
+  // horizontal overflow is hidden, so a window past the right edge is
+  // unreachable, not merely scrolled (vertical overflow scrolls fine).
+  // Runs on resize AND after every adoption: a layout arranged on a wide
+  // monitor must survive being reopened on a narrower window.
+  function clampX() {
     let moved = false;
+    const maxX = Math.max(8, viewport.clientWidth - 60);
     panels.forEach(function (p) {
-      const maxX = Math.max(8, viewport.clientWidth - 60);
       if (p.x > maxX) { p.x = maxX; moved = true; }
     });
     if (moved) {
@@ -1174,6 +1207,7 @@
       save();
     }
   }
+
   window.addEventListener('resize', fitViewport);
   fitViewport();
 
