@@ -67,6 +67,7 @@
       <button type="button" id="bulk-download-btn" disabled>⬇ Download Selected</button>
       <button type="button" id="bulk-vis-toggle-btn" disabled>👁 Set Visibility</button>
       <button type="button" id="bulk-folder-toggle-btn" disabled>📁 Move to Folder</button>
+      <button type="button" id="bulk-tag-toggle-btn" disabled>✨ Auto-tag</button>
       <button type="button" id="bulk-delete-btn" disabled>🗑 Delete Selected</button>
       <span id="bulk-status" style="font-size:.78rem;color:var(--text-dim)"></span>
     </div>
@@ -88,6 +89,17 @@
         {% endfor %}
       </div>
       <button type="button" id="bulk-vis-apply-btn" class="btn-primary">Apply</button>
+    </div>
+
+    <div id="bulk-tag-panel" style="display:none;flex-wrap:wrap;align-items:center;gap:.6rem;margin:-.3rem 0 .7rem;padding:.5rem .8rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px;font-size:.82rem">
+      <label style="display:flex;align-items:center;gap:.3rem;font-size:.78rem;font-weight:normal">
+        <input type="checkbox" id="bulk-tag-think" checked style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="display:flex;align-items:center;gap:.3rem;font-size:.78rem;font-weight:normal">
+        <input type="checkbox" id="bulk-tag-overwrite" style="width:auto"> Replace existing tags
+      </label>
+      <button type="button" id="bulk-tag-apply-btn" class="btn-primary">✨ Tag with AI</button>
+      <span style="font-size:.75rem;color:var(--text-dim)">Notes are entities too — select them the same way. Untouched unless "Replace" is on.</span>
     </div>
 
     <div id="bulk-folder-panel" style="display:none;flex-wrap:wrap;align-items:center;gap:.5rem;margin:-.3rem 0 .7rem;padding:.5rem .8rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px;font-size:.82rem">
@@ -527,9 +539,11 @@ function updateBulkBar() {
   document.getElementById('bulk-delete-btn').disabled = checked.length === 0;
   document.getElementById('bulk-vis-toggle-btn').disabled = checked.length === 0;
   document.getElementById('bulk-folder-toggle-btn').disabled = checked.length === 0;
+  document.getElementById('bulk-tag-toggle-btn').disabled = checked.length === 0;
   if (checked.length === 0) {
     document.getElementById('bulk-vis-panel').style.display = 'none';
     document.getElementById('bulk-folder-panel').style.display = 'none';
+    document.getElementById('bulk-tag-panel').style.display = 'none';
   }
   const allSelected = all.length > 0 && checked.length === all.length;
   document.getElementById('bulk-select-all-btn').textContent = allSelected ? '☐ Deselect All' : '☑ Select All';
@@ -607,6 +621,57 @@ const bulkVisModeSelect = document.getElementById('bulk-vis-mode-select');
 const bulkVisPlayerPicker = document.getElementById('bulk-vis-player-picker');
 bulkVisModeSelect.addEventListener('change', () => {
   bulkVisPlayerPicker.style.display = bulkVisModeSelect.value === 'players' ? 'flex' : 'none';
+});
+
+// ── Bulk AI auto-tagging ────────────────────────────────────────────────────
+const bulkTagPanel = document.getElementById('bulk-tag-panel');
+document.getElementById('bulk-tag-toggle-btn').addEventListener('click', () => {
+  bulkVisPanel.style.display = 'none';
+  bulkFolderPanel.style.display = 'none';
+  bulkTagPanel.style.display = bulkTagPanel.style.display === 'none' ? 'flex' : 'none';
+});
+document.getElementById('bulk-tag-apply-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('bulk-tag-apply-btn');
+  const checked = allRowCbs().filter(cb => cb.checked);
+  if (!checked.length) return;
+  const ids = checked.map(cb => parseInt(cb.dataset.id, 10)).filter(Boolean);
+  btn.disabled = true;
+  bulkStatus.textContent = '⏳ Starting AI tagging…';
+  try {
+    const res = await fetch('/api/ai/auto-tag/start' + (WORLD_SLUG ? '?w=' + encodeURIComponent(WORLD_SLUG) : ''), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entity_ids: ids,
+        overwrite: document.getElementById('bulk-tag-overwrite').checked,
+        think: document.getElementById('bulk-tag-think').checked,
+      }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+    bulkStatus.textContent = '⏳ Tagging 0/' + d.total + '…';
+    const poll = (tries) => {
+      fetch('/api/ai/auto-tag/' + d.job_id).then(r => r.json()).then(s => {
+        if (s.status === 'running') {
+          bulkStatus.textContent = '⏳ Tagging ' + s.processed + '/' + s.total + '… (' + s.tagged + ' tagged)';
+          if ((tries || 0) < 600) setTimeout(() => poll((tries || 0) + 1), 2500);
+          else { bulkStatus.textContent = '⚠ Still running after ~25 minutes — reload later to see the tags.'; btn.disabled = false; }
+        } else if (s.status === 'error') {
+          bulkStatus.textContent = '⚠ ' + s.error;
+          btn.disabled = false;
+        } else {
+          bulkStatus.textContent = '✓ Done — ' + s.tagged + ' of ' + s.total + ' entities now have AI tags. Reloading…';
+          setTimeout(() => window.location.reload(), 1400);
+        }
+      }).catch(() => {
+        // a dropped poll doesn't abandon the job — the server task keeps running
+        if ((tries || 0) < 600) setTimeout(() => poll((tries || 0) + 1), 2500);
+      });
+    };
+    poll(0);
+  } catch (e) {
+    bulkStatus.textContent = '⚠ ' + e.message;
+    btn.disabled = false;
+  }
 });
 
 document.getElementById('bulk-vis-apply-btn').addEventListener('click', async () => {

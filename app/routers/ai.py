@@ -1,6 +1,7 @@
 import asyncio as _asyncio
 import base64 as _base64
 import json as _json
+import re
 import csv as _csv
 import logging
 import os as _os
@@ -3580,6 +3581,177 @@ async def unsloth_update():
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, f"Unsloth Studio update: {exc}")
     return {"ok": True, "result": result}
+
+
+# ── AI auto-tagging ──────────────────────────────────────────────────────────
+# Bulk tag generation for entities and notes (notes are entities — kind
+# "note"): the entity list's bulk bar sends a selection, this job tags them
+# in small batches with the local model, and "fill empty" mode never touches
+# a tag a GM already wrote. Progress lives in-process (the quest-sync/AI-
+# Build pattern); the blanket except is the AI-Build lesson — a stuck
+# "running" job is worse than a failed one.
+_AUTO_TAG_JOBS: dict = {}
+_AUTO_TAG_SEQ: list = [0]
+_AUTO_TAG_BATCH = 8
+
+
+def _auto_tag_normalize(raw) -> list:
+    """Trim, drop empties and case-insensitive dupes, cap each tag at 40
+    chars and the set at 10 — what a String(512) comma-separated column
+    deserves."""
+    out, seen = [], set()
+    for t in (raw if isinstance(raw, list) else []):
+        t = str(t).strip()[:40]
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+        if len(out) >= 10:
+            break
+    return out
+
+
+def _auto_tag_batch_text(batch) -> str:
+    lines = []
+    for e in batch:
+        lines.append(f"- id={e.id} [{e.kind or '?'}] {e.name}"
+                     + (f" — {(e.summary or '')[:150]}" if e.summary else ""))
+        excerpt = " ".join((e.body or "").split())[:600]
+        if excerpt:
+            lines.append(f"  text: {excerpt}")
+    return "\n".join(lines)
+
+
+@router.post("/auto-tag/start")
+async def auto_tag_start(request: Request, db: Session = Depends(get_db),
+                         active_world: str = Cookie(None)):
+    """Start bulk AI tagging for a selection of entities (the entity list's
+    bulk bar). Body: {entity_ids: [int], overwrite?: bool, think?: bool}.
+    overwrite=false (default) only fills entities whose tags are empty — a
+    GM's hand-written tags are never touched without asking. Gated to
+    content editors (GM + assistants), the same tier as /api/ai/assist."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    body = await request.json()
+    ids = body.get("entity_ids")
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(400, "Select at least one entity first")
+    try:
+        ids = [int(i) for i in ids][:500]
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Invalid entity ids")
+    overwrite = bool(body.get("overwrite"))
+    think = bool(body.get("think", True))
+
+    query = db.query(Entity).filter(Entity.world_id == world.id, Entity.id.in_(ids))
+    if not overwrite:
+        query = query.filter((Entity.tags.is_(None)) | (Entity.tags == ""))
+    ents = query.order_by(Entity.id).all()
+    if not ents:
+        raise HTTPException(400, "Nothing to tag — the selected entities already have tags.")
+
+    job_id = _AUTO_TAG_SEQ[0] + 1
+    _AUTO_TAG_SEQ[0] = job_id
+    _AUTO_TAG_JOBS[job_id] = {"status": "running", "started": _time.time(),
+                              "processed": 0, "total": len(ents), "tagged": 0,
+                              "error": ""}
+    done = [j for j, v in _AUTO_TAG_JOBS.items() if v["status"] != "running"]
+    while len(done) > 12:
+        _AUTO_TAG_JOBS.pop(done.pop(0), None)
+
+    import asyncio as _asyncio
+    _asyncio.get_running_loop().create_task(_auto_tag_task(
+        job_id, world.id, [e.id for e in ents], overwrite, think))
+    return {"job_id": job_id, "total": len(ents), "status": "running"}
+
+
+@router.get("/auto-tag/{job_id}")
+async def auto_tag_poll(job_id: int):
+    """Poll an auto-tag job: running (processed/total/tagged), done, or
+    error (with the reason)."""
+    job = _AUTO_TAG_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown auto-tag job")
+    if job["status"] == "error":
+        return {"status": "error", "error": job["error"]}
+    return {"status": job["status"], "processed": job["processed"],
+            "total": job["total"], "tagged": job["tagged"]}
+
+
+async def _auto_tag_task(job_id: int, world_id: int, entity_ids: list,
+                         overwrite: bool, think: bool):
+    """The tagging worker: batches of _AUTO_TAG_BATCH entities per local-
+    model call (one generate_chat with strict-JSON format per batch), tags
+    normalized, hallucinated ids dropped, GM-written tags only replaced
+    when overwrite was asked for. Runs in its own session — the instances
+    the start route touched were detached when that session closed."""
+    db = SessionLocal()
+    try:
+        system = (
+            "You are tagging a tabletop RPG campaign's entities and notes. For "
+            "EACH entity in the list choose 3-8 short tags describing what it "
+            "is (type, faction, role, location, mood). Return STRICT JSON only:\n"
+            '{"entities": [{"id": int, "tags": [str]}]}\n'
+            "Rules: every id in your reply must appear verbatim in the list; "
+            "each tag is 1-3 words; no comments, no markdown fences."
+        )
+        total = len(entity_ids)
+        ents = (db.query(Entity).filter(Entity.id.in_(entity_ids))
+                .order_by(Entity.id).all())
+        for i in range(0, total, _AUTO_TAG_BATCH):
+            batch = ents[i:i + _AUTO_TAG_BATCH]
+            raw = await _ai.generate_chat(
+                [{"role": "user",
+                  "content": "=== ENTITIES TO TAG ===\n" + _auto_tag_batch_text(batch)}],
+                system=system, model="", think=think,
+                format={"type": "object",
+                        "properties": {"entities": {"type": "array",
+                                        "items": {"type": "object",
+                                                  "properties": {"id": {"type": "integer"},
+                                                                 "tags": {"type": "array"}}}}}},
+            )
+            parsed = None
+            m = re.search(r"\{.*\}", raw or "", re.S)
+            if m:
+                try:
+                    parsed = _json.loads(m.group(0))
+                except ValueError:
+                    parsed = None
+            if isinstance(parsed, dict):
+                by_id = {e.id: e for e in batch}
+                for item in (parsed.get("entities") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        eid = int(item.get("id"))
+                    except (TypeError, ValueError):
+                        continue
+                    e = by_id.get(eid)
+                    if not e:
+                        continue  # hallucinated id — drop
+                    tags = _auto_tag_normalize(item.get("tags"))
+                    if not tags:
+                        continue
+                    if not overwrite and (e.tags or "").strip():
+                        continue  # a GM tagged it while the job ran — keep theirs
+                    e.tags = ", ".join(tags)[:512]
+                db.commit()
+            _AUTO_TAG_JOBS[job_id]["processed"] = min(total, i + len(batch))
+            _AUTO_TAG_JOBS[job_id]["tagged"] = sum(
+                1 for e in ents if (e.tags or "").strip())
+        _AUTO_TAG_JOBS[job_id]["status"] = "done"
+    except Exception as exc:
+        db.rollback()
+        _AUTO_TAG_JOBS[job_id].update(
+            status="error", error=str(exc) or exc.__class__.__name__)
+    finally:
+        db.close()
+
 
 
 @router.post("/unsloth/prefs")

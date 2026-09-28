@@ -849,12 +849,13 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         "/api/ai/world-context-smart",
         "/api/ai/assist",
         "/api/ai/assist-job",
+        "/api/ai/auto-tag/start",
         "/api/ai/world-summary",
     ):
         return True
     if path == "/api/ai/world-context" and method == "GET":
         return True
-    if method == "GET" and (path == "/api/ai/world-summary" or re.match(r"^/api/ai/assist-job/\d+$", path)):
+    if method == "GET" and (path == "/api/ai/world-summary" or re.match(r"^/api/ai/(assist-job|auto-tag)/\d+$", path)):
         # Assist-job polling + the world-summary read — the write side of
         # both is in the POST list above; without these, a GM-Assistant's
         # panel could START an assist job but never watch it finish.
