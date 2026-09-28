@@ -150,8 +150,7 @@
       <code>docs/world-theme-gothic-moonlight.json</code> for examples.
       {% if edit_theme %}Current theme: <strong style="color:var(--text)">{{ edit_theme.name or 'Untitled' }}</strong>.{% else %}No theme applied yet — the app uses its default look.{% endif %}
     </p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;margin-bottom:1rem">
-      {% for preset_key, preset in theme_presets.items() %}
+    {% macro theme_preset_button(preset_key, preset) %}
       <form method="post" action="/worlds/{{ edit_world.id }}/theme/preset" style="margin:0">
         <input type="hidden" name="preset" value="{{ preset_key }}"/>
         <button type="submit" title="Apply {{ preset.name }}"
@@ -166,6 +165,17 @@
           {{ preset.name }}{% if edit_theme.name == preset.name %} ✓{% endif %}
         </button>
       </form>
+    {% endmacro %}
+    <p style="color:var(--text-dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin:0 0 .4rem">By genre</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;margin-bottom:1rem">
+      {% for preset_key in genre_preset_keys %}
+        {{ theme_preset_button(preset_key, theme_presets[preset_key]) }}
+      {% endfor %}
+    </div>
+    <p style="color:var(--text-dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin:0 0 .4rem">By game — matches a built-in character sheet where one exists</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;margin-bottom:1rem">
+      {% for preset_key in game_preset_keys %}
+        {{ theme_preset_button(preset_key, theme_presets[preset_key]) }}
       {% endfor %}
     </div>
     <p style="color:var(--text-dim);font-size:.78rem;margin:0 0 .5rem">Or import your own custom JSON theme:</p>

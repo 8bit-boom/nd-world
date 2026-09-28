@@ -1,4 +1,4 @@
-"""Built-in genre theme presets for a world's Visual Theme (World.theme_json).
+"""Built-in theme presets for a world's Visual Theme (World.theme_json).
 
 Each entry is a complete, pre-validated theme object in exactly the shape
 _sanitize_theme() (app/main.py) accepts from an uploaded JSON file — see
@@ -14,6 +14,17 @@ app/main.py) — the same effect as uploading the equivalent JSON through
 of hand-authoring a file. Keys are stable identifiers referenced by the
 preset picker in world_edit.html and by the route's form field; renaming
 one is a breaking change for that dropdown, not just cosmetic.
+
+Two flavors share the one THEME_PRESETS dict, split for display purposes
+only by GENRE_PRESET_KEYS/GAME_PRESET_KEYS just below it (both purely
+UI grouping — the apply route and _sanitize_theme() don't care which
+group a key is in): generic genre presets (dark_fantasy, sci_fi, ...) a
+GM picks by vibe, and presets tied to one of this app's own bundled/
+companion rule systems (Asterion, Chronicles of the Worm, Neon & Dragons,
+Hunt in the Moonlight) for a GM running that specific game who wants an
+exact match rather than a close genre approximation. The Hunt in the
+Moonlight preset mirrors docs/world-theme-gothic-moonlight.json (the
+shipped example theme file) field for field — same game, same look.
 """
 
 THEME_PRESETS = {
@@ -256,4 +267,101 @@ THEME_PRESETS = {
         "hero_graphic": "circle",
         "google_fonts_url": "https://fonts.googleapis.com/css2?family=Almendra:ital,wght@0,400;0,700;1,400&family=Almendra+SC&family=Alegreya:ital,wght@0,400;0,700;1,400&display=swap",
     },
+    # ── Game-specific presets ────────────────────────────────────────────
+    # Keyed to match the built-in SheetTemplate.slug for the same game where
+    # one exists (see _ASTERION_FIELDS/_HITM_FIELDS in app/database.py) —
+    # picking the matching character-sheet template and the matching theme
+    # preset is meant to feel like one decision, not two unrelated ones.
+    "asterion": {
+        "name": "Game of Gods — Asterion, City of Nine Thousand Shrines",
+        "accent": "#d4af37",
+        "bg": "#0a0806",
+        "bg2": "#100d09",
+        "bg3": "#16120c",
+        "border": "#2b2417",
+        "neon2": "#a3222b",
+        "neon3": "#4a7a6e",
+        "yellow": "#e0b23c",
+        "text": "#e6ddc8",
+        "text_dim": "#9c9280",
+        "font": "'Cormorant', Georgia, serif",
+        "font_heading": "'Cinzel', Georgia, serif",
+        "font_display": "'Cinzel Decorative', 'Cinzel', serif",
+        "hero_letter_spacing": "0.02em",
+        "hero_glow_color": "#d4af37",
+        "hero_graphic": "circle",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Cinzel+Decorative:wght@700&family=Cormorant:ital,wght@0,400;0,600;1,400&display=swap",
+    },
+    "chronicles_of_the_worm": {
+        "name": "Chronicles of the Worm — The Yellow Under Neon",
+        "accent": "#c9d43a",
+        "bg": "#07080b",
+        "bg2": "#0b0d12",
+        "bg3": "#0f1218",
+        "border": "#1e2430",
+        "neon2": "#ff2d95",
+        "neon3": "#6f42c1",
+        "yellow": "#c9d43a",
+        "text": "#d6dce8",
+        "text_dim": "#7b8496",
+        "font": "'Chakra Petch', sans-serif",
+        "font_heading": "'Rajdhani', sans-serif",
+        "font_display": "'Zen Dots', sans-serif",
+        "hero_letter_spacing": "0.1em",
+        "hero_glow_color": "#c9d43a",
+        "hero_graphic": "circle",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Chakra+Petch:ital,wght@0,400;0,600;1,400&family=Zen+Dots&display=swap",
+    },
+    "neon_dragons": {
+        "name": "Neon Dragons — Chrome and Scale",
+        "accent": "#00f0ff",
+        "bg": "#08060a",
+        "bg2": "#0d0a12",
+        "bg3": "#12101a",
+        "border": "#241f30",
+        "neon2": "#ff2d78",
+        "neon3": "#39ff8f",
+        "yellow": "#ffe600",
+        "text": "#d6d0e8",
+        "text_dim": "#8b84a3",
+        "font": "'Titillium Web', sans-serif",
+        "font_heading": "'Audiowide', cursive",
+        "font_display": "'Audiowide', cursive",
+        "hero_letter_spacing": "0.06em",
+        "hero_glow_color": "#39ff8f",
+        "hero_graphic": "circle",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Audiowide&family=Titillium+Web:ital,wght@0,400;0,600;1,400&display=swap",
+    },
+    "hunt-in-the-moonlight": {
+        "name": "Hunt in the Moonlight — Gothic Cosmic Horror",
+        "accent": "#c9a25c",
+        "bg": "#0b0a10",
+        "bg2": "#131019",
+        "bg3": "#17131f",
+        "border": "#2c2536",
+        "neon2": "#b3455a",
+        "neon3": "#8b6fb0",
+        "yellow": "#c9a25c",
+        "text": "#d9d2c9",
+        "text_dim": "#a89fb0",
+        "font": "'EB Garamond', Georgia, serif",
+        "font_heading": "'Cinzel', Georgia, serif",
+        "font_display": "'Cinzel Decorative', 'Cinzel', Georgia, serif",
+        "hero_letter_spacing": "-0.02em",
+        "hero_glow_color": "#c9a25c",
+        "hero_graphic": "moon",
+        "google_fonts_url": "https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Cinzel+Decorative:wght@700&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&display=swap",
+    },
 }
+
+# UI-grouping only (see module docstring) — every THEME_PRESETS key must
+# appear in exactly one of these two tuples; tests/test_theme_presets.py
+# enforces that partition so a new preset can't be forgotten here.
+GENRE_PRESET_KEYS = (
+    "dark_fantasy", "high_fantasy", "post_apocalypse", "horror", "pirate",
+    "sci_fi", "fantasy_sci_fi", "numenera", "stalker", "victorian",
+    "gothic", "lovecraftian",
+)
+GAME_PRESET_KEYS = (
+    "asterion", "chronicles_of_the_worm", "neon_dragons", "hunt-in-the-moonlight",
+)

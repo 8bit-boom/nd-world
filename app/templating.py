@@ -24,7 +24,7 @@ from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .database import SessionLocal, get_app_settings_flags_cached
 from .imaging import thumbnail_path_for
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_gm_only, strip_md
-from .theme_presets import THEME_PRESETS
+from .theme_presets import GAME_PRESET_KEYS, GENRE_PRESET_KEYS, THEME_PRESETS
 
 # Duplicated from main.py's DEFAULT_WORLD_COOKIE — same rationale as this
 # file's own docstring: importing from main.py here would be circular.
@@ -59,6 +59,8 @@ def _kinds_context_processor(request: Request) -> dict:
             "nav_menus": nav_menus, "nav_ungrouped_items": nav_ungrouped_items,
             "world_theme": _parse_world_theme(world),
             "theme_presets": THEME_PRESETS,
+            "genre_preset_keys": GENRE_PRESET_KEYS,
+            "game_preset_keys": GAME_PRESET_KEYS,
         }
     finally:
         db.close()
