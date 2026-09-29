@@ -383,9 +383,10 @@ def test_transcribe_unsloth_small_file_single_call(client, seed, monkeypatch, tm
     assert calls == [("clip.flac", 1024)]
 
 
-def test_transcribe_unsloth_splits_and_joins(client, seed, monkeypatch, tmp_path):
-    """Over the limit: ffprobe duration → ffmpeg split → per-part stt calls
-    in order → newline-joined transcript, temp dir cleaned up."""
+def test_transcribe_unsloth_transcodes_then_splits(client, seed, monkeypatch, tmp_path):
+    """Over the limit: re-encode to compact mono MP3 first (the high-bitrate
+    FLAC stream-copy path couldn't shrink enough), then split the MP3 into
+    proportional parts, transcribe in order, newline-join, and clean up."""
     import asyncio
 
     from app import ai as ai_module
@@ -396,9 +397,17 @@ def test_transcribe_unsloth_splits_and_joins(client, seed, monkeypatch, tmp_path
     async def fake_probe(path):
         return 3600.0
 
+    transcoded_to = []
+
+    async def fake_transcode(path, tmpdir):
+        out = tmpdir / "session-nd-stt.mp3"
+        out.write_bytes(b"m" * (25 * 1024 * 1024))  # still over → must split
+        transcoded_to.append(str(out))
+        return out
+
     async def fake_split(path, chunk_seconds):
-        p1 = tmp_path / "part-001.flac"; p1.write_bytes(b"x" * 1000)
-        p2 = tmp_path / "part-002.flac"; p2.write_bytes(b"y" * 1000)
+        p1 = tmp_path / "part-001.mp3"; p1.write_bytes(b"x" * 500)
+        p2 = tmp_path / "part-002.mp3"; p2.write_bytes(b"y" * 500)
         return [p1, p2], tmp_path
 
     calls = []
@@ -408,13 +417,46 @@ def test_transcribe_unsloth_splits_and_joins(client, seed, monkeypatch, tmp_path
         return "part text"
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
     monkeypatch.setattr("app.unsloth_extras.stt", fake_stt)
     monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
 
     text = asyncio.run(ai_module._transcribe_one_file_unsloth(f))
-    assert calls == ["part-001.flac", "part-002.flac"]
+    assert calls == ["part-001.mp3", "part-002.mp3"]
     assert text == "part text\npart text"
+    assert transcoded_to  # the FLAC was re-encoded before splitting
+
+
+def test_transcribe_unsloth_transcode_failure_clear_error(client, seed, monkeypatch, tmp_path):
+    """ffmpeg present but failing (or missing the MP3 encoder) surfaces the
+    manual fallback (convert to MP3/OGG) instead of a bare 413."""
+    import asyncio
+
+    from app import ai as ai_module
+    from app.ai import WhisperError
+
+    f = tmp_path / "big.flac"
+    f.write_bytes(b"b" * (24 * 1024 * 1024))
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_transcode(path, tmpdir):
+        raise WhisperError(
+            "Re-encoding big.flac failed — ffmpeg may lack the MP3 encoder. "
+            "Convert it to MP3/OGG manually, or switch the STT backend to whisper.cpp.")
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcode_audio_to_mp3", fake_transcode)
+    monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
+
+    try:
+        asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+        raised = None
+    except WhisperError as e:
+        raised = str(e)
+    assert raised and "MP3/OGG" in raised
 
 
 def test_transcribe_unsloth_no_duration_clear_error(client, seed, monkeypatch, tmp_path):
