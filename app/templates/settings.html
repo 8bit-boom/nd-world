@@ -257,13 +257,13 @@
         <input id="studio-idle-unload" type="number" min="0" step="30" style="max-width:160px" placeholder="0"/>
       </div>
       <div class="form-group">
-        <label for="studio-tts-model">TTS model (hub repo id)</label>
+        <label for="studio-tts-model">TTS model (downloaded in Studio)</label>
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-          <input id="studio-tts-model" list="tts-model-options" style="max-width:420px;flex:1;min-width:260px" placeholder="e.g. unsloth/orpheus-3b — must be downloaded in Studio"/>
-          <button type="button" class="btn-secondary" id="studio-detect-models" title="Ask the Studio hub which audio models are downloaded">↻ Detect models</button>
+          <select id="studio-tts-model" style="max-width:420px;flex:1;min-width:260px">
+            <option value="">— none yet: run ↻ Detect models —</option>
+          </select>
+          <button type="button" class="btn-secondary" id="studio-detect-models" title="List the TTS/STT models downloaded in Studio">↻ Detect models</button>
         </div>
-        <datalist id="tts-model-options"></datalist>
-        <datalist id="stt-model-options"></datalist>
         <div id="studio-models-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
       </div>
       <div class="form-group">
@@ -278,8 +278,17 @@
         </select>
       </div>
       <div class="form-group">
-        <label for="studio-stt-model">Studio STT model name (when backend is Unsloth)</label>
-        <input id="studio-stt-model" list="stt-model-options" style="max-width:220px" placeholder="small"/>
+        <label for="studio-stt-model">STT model (Whisper family — Studio downloads it on first use)</label>
+        <select id="studio-stt-model" style="max-width:220px">
+          <option value="tiny">tiny</option>
+          <option value="base">base</option>
+          <option value="small" selected>small</option>
+          <option value="medium">medium</option>
+          <option value="turbo">turbo</option>
+          <option value="large-v3-turbo">large-v3-turbo</option>
+          <option value="large-v3">large-v3</option>
+          <option value="large">large</option>
+        </select>
       </div>
       <div class="form-group">
         <label>Unsloth Studio version & updates</label>
@@ -1009,18 +1018,23 @@ function ndCopyRestartCmd() {
       const r = await fetch('/api/ai/unsloth/audio-models');
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-      const fill = (id, rows) => {
-        const dl = document.getElementById(id);
-        dl.innerHTML = '';
-        (rows || []).forEach(m => {
-          const o = document.createElement('option');
-          o.value = m.repo_id;
-          o.label = m.task || 'audio';
-          dl.appendChild(o);
-        });
-      };
-      fill('tts-model-options', d.tts);
-      fill('stt-model-options', d.stt);
+      // the TTS picker IS the select now — refill it, keeping the saved value
+      const ttsSel = el('studio-tts-model');
+      const keepTts = ttsSel.value;
+      ttsSel.innerHTML = '<option value="">— none downloaded —</option>';
+      (d.tts || []).forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.repo_id;
+        o.textContent = m.repo_id;
+        ttsSel.appendChild(o);
+      });
+      if (keepTts && !Array.from(ttsSel.options).some(o => o.value === keepTts)) {
+        const o = document.createElement('option');
+        o.value = keepTts;
+        o.textContent = keepTts + ' (saved)';
+        ttsSel.appendChild(o);
+      }
+      ttsSel.value = keepTts;
       const extras = (d.tasks_seen || []).filter(t =>
         !/text-generation|text-to-image/i.test(t));
       st.textContent = (d.error ? ('⚠ ' + d.error + ' ') : '') +
@@ -1083,10 +1097,22 @@ function ndCopyRestartCmd() {
       el('studio-idle-unload').value = d.auto_unload_idle_seconds ?? 0;
     }).catch(() => status('Studio not configured — showing saved prefs only', false));
     fetch('/api/ai/unsloth/prefs').then(r => r.json()).then(d => {
-      el('studio-tts-model').value = d.tts_model || '';
+      // select-aware: a stored custom name that isn't among the options is
+      // added as an option rather than silently dropped
+      const setSelect = (id, value, placeholder) => {
+        const s = el(id);
+        if (value && !Array.from(s.options).some(o => o.value === value)) {
+          const o = document.createElement('option');
+          o.value = value;
+          o.textContent = value + ' (saved)';
+          s.insertBefore(o, s.options[1] || null);
+        }
+        s.value = value || '';
+      };
+      setSelect('studio-tts-model', d.tts_model || '');
       el('studio-tts-voice').value = d.tts_voice || '';
       el('studio-stt-backend').value = d.stt_backend || 'whisper';
-      el('studio-stt-model').value = d.stt_model || '';
+      setSelect('studio-stt-model', d.stt_model || 'small');
       detectStudioModels();
       el('studio-detect-models').addEventListener('click', detectStudioModels);
       el('studio-version-btn').addEventListener('click', checkStudioVersion);

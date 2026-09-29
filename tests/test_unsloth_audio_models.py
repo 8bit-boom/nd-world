@@ -74,6 +74,10 @@ def test_audio_models_route_buckets_and_defaults(client, seed, monkeypatch):
     d = r.json()
     assert [m["repo_id"] for m in d["tts"]] == ["unsloth/orpheus-3b"]
     assert [m["repo_id"] for m in d["stt"]] == ["unsloth/whisper-small"]
+    # standard Whisper sizes ride along for the STT dropdown (downloadable
+    # on first use — Studio's own 409 message names sizes like "small")
+    assert "large-v3-turbo" in d["stt_standards"]
+    assert "small" in d["stt_standards"]
     assert d["defaults"]["tts_model"]  # persisted defaults ride along
     # text-generation is NOT an audio task, but its task still surfaces so
     # the Settings UI can show what Studio actually reports

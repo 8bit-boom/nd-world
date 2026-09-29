@@ -3556,6 +3556,12 @@ async def unsloth_audio_models():
         data = await _unsloth_extras.audio_models()
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, str(exc))
+    # Studio's STT models are the standard Whisper family (its own UI shows
+    # "Whisper Large v3 Turbo", and its 409 message names sizes like
+    # "small") — offered as proper choices since they're downloadable
+    # on first use, no name-typing needed.
+    data["stt_standards"] = ["tiny", "base", "small", "medium", "turbo",
+                             "large-v3-turbo", "large-v3", "large"]
     data["defaults"] = {
         "tts_model": _ai.get_tts_model(),
         "tts_voice": _ai.get_tts_voice(),
