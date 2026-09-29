@@ -35,6 +35,23 @@
   </footer>
 </div>
 
+<!-- ── Mobile / tablet shell (≤900px): app-style — one panel at a time,
+     bottom tab bar, no floating windows. Same /cockpit and
+     /player-cockpit URLs; cockpit.js switches modes via matchMedia and
+     re-renders on rotate/resize. Panels reuse fillBody, so every panel
+     type works identically in both modes. ── -->
+<div id="ck-mwrap">
+  <div id="ck-mhead">
+    <span id="ck-m-title">🎛 Cockpit</span>
+    <span id="ck-m-world"></span>
+    <div id="ck-m-actions">
+      <button type="button" class="ck-mbtn" id="ck-m-add" title="Add a panel">＋</button>
+    </div>
+  </div>
+  <div id="ck-mcontent"></div>
+  <div id="ck-mtabs"></div>
+</div>
+
 <!-- Window list popover -->
 <div id="ck-windows-pop"></div>
 
@@ -280,6 +297,53 @@ body:has(#ck-wrap) > footer { display: none; }
   font-family: inherit; text-align: left; color: var(--text); }
 .ck-find-res:hover { border-color: var(--neon); }
 .ck-find-res small { color: var(--text-dim); font-size: .7rem; }
+
+/* ── mobile / tablet shell (body.ck-mobile) ── */
+#ck-mwrap { display: none; }
+body.ck-mobile #ck-wrap { display: none; }
+body.ck-mobile #ck-mwrap { display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh; }
+body.ck-mobile .topbar + .skip-link, body.ck-mobile footer { display: none !important; }
+#ck-mhead { display: flex; align-items: center; gap: .6rem; padding: .5rem .7rem;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  flex-shrink: 0; }
+#ck-m-title { color: var(--neon); font-weight: bold; font-size: .95rem; }
+#ck-m-world { color: var(--text-dim); font-size: .78rem; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+#ck-m-actions { margin-left: auto; }
+.ck-mbtn { background: var(--bg3); border: 1px solid var(--neon); color: var(--neon);
+  font-family: inherit; font-size: 1rem; width: 2.2rem; height: 2.2rem;
+  border-radius: 50%; cursor: pointer; line-height: 1; }
+#ck-mcontent { flex: 1; min-height: 0; position: relative; background: var(--bg); }
+.ck-mpanel { position: absolute; inset: 0; display: none; flex-direction: column;
+  background: var(--bg2); }
+.ck-mpanel.active { display: flex; }
+.ck-mpanel-head { display: flex; align-items: center; gap: .4rem; padding: .35rem .6rem;
+  background: var(--bg3); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.ck-mpanel-title { flex: 1; font-size: .85rem; font-weight: bold; color: var(--neon);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-mpanel-body { flex: 1; min-height: 0; position: relative; }
+.ck-mpanel-body iframe { width: 100%; height: 100%; border: 0; }
+.ck-mpanel-body .ck-live, .ck-mpanel-body .ck-card, .ck-mpanel-body .ck-aichat,
+.ck-mpanel-body .ck-notes, .ck-mpanel-body .ck-tables, .ck-mpanel-body .ck-find,
+.ck-mpanel-body .ck-timer { height: 100%; }
+#ck-mtabs { display: flex; gap: .25rem; padding: .35rem .4rem; background: var(--bg2);
+  border-top: 1px solid var(--border); overflow-x: auto; flex-shrink: 0;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+#ck-mtabs::-webkit-scrollbar { display: none; }
+.ck-mtab { display: flex; flex-direction: column; align-items: center; gap: .1rem;
+  background: none; border: 1px solid transparent; color: var(--text-dim);
+  font-family: inherit; font-size: .62rem; padding: .3rem .5rem; border-radius: 6px;
+  cursor: pointer; flex-shrink: 0; min-width: 3.6rem; }
+.ck-mtab .ck-mtab-ic { font-size: 1.15rem; line-height: 1; }
+.ck-mtab.active { color: var(--neon); border-color: var(--neon);
+  background: var(--bg3); }
+.ck-m-empty { display: flex; flex-direction: column; align-items: center;
+  justify-content: center; height: 100%; color: var(--text-dim); gap: .6rem;
+  text-align: center; padding: 1rem; font-size: .9rem; }
+.ck-m-empty button { background: var(--bg2); border: 1px solid var(--neon);
+  color: var(--neon); font-family: inherit; font-size: .9rem; padding: .6rem 1.2rem;
+  border-radius: 6px; cursor: pointer; }
 
 /* add-modal */
 #ck-add-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);

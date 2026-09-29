@@ -42,6 +42,19 @@
   const KIND_ICONS = { character: '👤', creature: '🐉', location: '📍', organization: '🏛',
     item: '🗡', note: '📝', event: '⚡', race: '🧬', profession: '🎭', feat: '✨' };
   const COMPACT = window.matchMedia('(max-width: 900px)');
+  // ── mobile / tablet mode ─────────────────────────────────────────────
+  // The SAME cockpit (GM /cockpit and Player /player-cockpit) renders an
+  // app-style shell at ≤900px: one panel at a time, bottom tab bar, no
+  // floating windows (drag/resize are unusable on touch anyway). Panels
+  // reuse fillBody verbatim, and each section carries the same
+  // .ck-win[data-pid] contract the live loaders query, so party vitals /
+  // quests / cards refresh identically in both modes.
+  const mqlMobile = window.matchMedia('(max-width: 900px)');
+  function MOBILE() { return mqlMobile.matches; }
+  let mActiveId = null;
+  const mWrap = document.getElementById('ck-mwrap');
+  const mContent = document.getElementById('ck-mcontent');
+  const mTabs = document.getElementById('ck-mtabs');
   // Player mode (the same route, adapted server-side): a tailored panel set
   // and localStorage-only persistence — the workspace API stays GM-only,
   // because the server-side workspace is ONE shared layout per world and a
@@ -206,6 +219,7 @@
 
   // ── rendering ──────────────────────────────────────────────────────────
   function render() {
+    if (MOBILE()) { renderMobile(); return; }
     viewport.querySelectorAll('.ck-win').forEach(function (el) { el.remove(); });
     liveLoaders.clear();
     // Re-renders re-mint ids (preset switch) or drop panels — chat state
@@ -1503,7 +1517,11 @@
     };
     panels.push(p);
     if (welcome) welcome.style.display = 'none';
-    viewport.appendChild(buildWin(p));
+    if (MOBILE()) {
+      renderMobile();
+    } else {
+      viewport.appendChild(buildWin(p));
+    }
     const fn = liveLoaders.get(p.id);
     if (fn) fn();
     save();
@@ -1593,6 +1611,116 @@
     save();
   });
 
+  // ── mobile / tablet renderer ──────────────────────────────────────────
+  function buildMobilePanel(p) {
+    const sec = document.createElement('div');
+    sec.className = 'ck-mpanel ck-win';  // .ck-win + data-pid: the live
+    sec.dataset.pid = p.id;              // loaders query exactly this
+    const head = document.createElement('div');
+    head.className = 'ck-mpanel-head';
+    const title = document.createElement('span');
+    title.className = 'ck-mpanel-title';
+    title.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+    const reload = mkBtn('⟳', 'Reload this panel', function () {
+      const f = sec.querySelector('.ck-mpanel-body iframe');
+      if (f) { f.src = f.src; return; }
+      const fn = liveLoaders.get(p.id);
+      if (fn) fn();
+    });
+    const close = mkBtn('✕', 'Remove this panel', function () { closePanel(p, sec); });
+    head.append(title, reload, close);
+    const body = document.createElement('div');
+    body.className = 'ck-mpanel-body';
+    fillBody(p, body);
+    sec.append(head, body);
+    return sec;
+  }
+
+  function renderMobile() {
+    document.body.classList.add('ck-mobile');
+    document.getElementById('ck-m-world').textContent = CK_WORLD;
+    if (mqlMobile.addEventListener) mqlMobile.addEventListener('change', onModeChange);
+    mContent.innerHTML = '';
+    mTabs.innerHTML = '';
+    liveLoaders.clear();
+    pruneOrphanChatState();
+    if (!panels.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ck-m-empty';
+      const msg = document.createElement('div');
+      msg.textContent = PLAYER ? 'Pin your first panels — your parties, the quest board, dice…'
+                               : 'Pin your first panels — map, vitals, quests, dice…';
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.textContent = '＋ Add panel';
+      add.addEventListener('click', openAdd);
+      empty.append(msg, add);
+      mContent.appendChild(empty);
+      updateStatus();
+      return;
+    }
+    panels.forEach(function (p) {
+      const sec = buildMobilePanel(p);
+      mContent.appendChild(sec);
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'ck-mtab';
+      tab.dataset.pid = p.id;
+      // the panel title already carries its emoji — one icon per tab
+      tab.innerHTML = '<span class="ck-mtab-ic">' + esc(shortTitle(p)) + '</span>';
+      tab.addEventListener('click', function () { activateMobile(p.id); });
+      mTabs.appendChild(tab);
+    });
+    if (!panels.some(function (p) { return p.id === mActiveId; })) mActiveId = panels[0].id;
+    activateMobile(mActiveId);
+    liveLoaders.forEach(function (fn) { fn(); });
+    updateStatus();
+  }
+
+  function shortTitle(p) {
+    const t = p.title || CK_TYPES[p.type].label;
+    return t.length > 12 ? t.slice(0, 11) + '…' : t;
+  }
+
+  function activateMobile(pid) {
+    mActiveId = pid;
+    mContent.querySelectorAll('.ck-mpanel').forEach(function (s) {
+      s.classList.toggle('active', s.dataset.pid === pid);
+    });
+    mTabs.querySelectorAll('.ck-mtab').forEach(function (t) {
+      t.classList.toggle('active', t.dataset.pid === pid);
+    });
+  }
+
+  function pruneOrphanChatState() {
+    const liveIds = new Set(panels.map(function (p) { return p.id; }));
+    [chatHistory, chatAborts].forEach(function (m) {
+      Array.from(m.keys()).forEach(function (k) {
+        if (!liveIds.has(k)) {
+          const c = chatAborts.get(k);
+          if (c) c.abort();
+          m.delete(k);
+        }
+      });
+    });
+    Array.from(panelCleanups.keys()).forEach(function (k) {
+      if (!liveIds.has(k)) {
+        panelCleanups.get(k)();
+        panelCleanups.delete(k);
+      }
+    });
+  }
+
+  function onModeChange() {
+    if (MOBILE()) {
+      renderMobile();
+    } else {
+      document.body.classList.remove('ck-mobile');
+      render();
+      clampX();
+    }
+  }
+
   // ── auto-arrange (📌) ───────────────────────────────────────────────
   // Packs every window into a tidy grid, starting at the top-left and
   // flowing left-to-right, row by row. Columns fit the viewport width;
@@ -1661,10 +1789,24 @@
     }
   }
 
-  window.addEventListener('resize', fitViewport);
+  // matchMedia's change event is the primary mode switch (rotate), but
+  // some embedded webviews don't fire it on viewport changes — the resize
+  // listener reconciles the body class with the actual width either way.
+  function syncMode() {
+    if (MOBILE() && !document.body.classList.contains('ck-mobile')) renderMobile();
+    else if (!MOBILE() && document.body.classList.contains('ck-mobile')) {
+      document.body.classList.remove('ck-mobile');
+      render();
+      clampX();
+    }
+  }
+  window.addEventListener('resize', function () { fitViewport(); syncMode(); });
   fitViewport();
   buildWelcomeTiles();
   updateStatus();
+  const mAddBtn = document.getElementById('ck-m-add');
+  if (mAddBtn) mAddBtn.addEventListener('click', openAdd);
+  if (MOBILE()) renderMobile();
 
   load();
 })();
