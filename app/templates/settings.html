@@ -1035,6 +1035,19 @@ function ndCopyRestartCmd() {
         ttsSel.appendChild(o);
       }
       ttsSel.value = keepTts;
+      // the STT picker grows hub-downloaded STT models (e.g. Qwen3-ASR)
+      // alongside the always-valid standard Whisper sizes
+      const sttSel = el('studio-stt-model');
+      const keepStt = sttSel.value;
+      (d.stt || []).forEach(m => {
+        if (!Array.from(sttSel.options).some(o => o.value === m.repo_id)) {
+          const o = document.createElement('option');
+          o.value = m.repo_id;
+          o.textContent = m.repo_id + ' (downloaded)';
+          sttSel.appendChild(o);
+        }
+      });
+      if (keepStt) sttSel.value = keepStt;
       const extras = (d.tasks_seen || []).filter(t =>
         !/text-generation|text-to-image/i.test(t));
       st.textContent = (d.error ? ('⚠ ' + d.error + ' ') : '') +
