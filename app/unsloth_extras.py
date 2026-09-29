@@ -168,6 +168,10 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
 _PROBE_PATHS = (
     "/api/version", "/version", "/api/about", "/api/status",
     "/api/health", "/health", "/api/hub/cached-gguf", "/v1/models",
+    # 404 on every Studio build verified so far (Phase 0.6) — probed so a
+    # future build that exposes a Voice-model API gets DISCOVERED here
+    # the day it ships, unlocking nd-world-side STT/TTS model downloads.
+    "/api/settings/voice",
 )
 
 

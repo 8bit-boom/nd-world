@@ -116,3 +116,47 @@ rather than reimplementing model management for them.
 4. **Thinking: `chat_template_kwargs.enable_thinking` per request** (I-4); `_InlineThinkSplitter` kept as safety net per §6.4.
 5. **Compose must document auto-switch + idle-unload settings** as one-time Studio provisioning steps (I-5/I-8) — the plan's §5.3 gains these steps.
 6. **I-7 remains the top environment risk for the V100** — needs the pinned-tag conversation on the TrueNAS box before cutover.
+
+## Appendix — Phase 0.6 live verification (TrueNAS Docker Studio, 2026-09-29)
+
+Verified live against the GM's production box: `unsloth/unsloth:latest`
+Docker image on TrueNAS SCALE (CPU-only), reached container-to-container
+as `http://unsloth:8000` from the nd-world app, via LAN IP from a browser.
+Every result below came from a probe run inside the nd-world container
+with the app's own stored key and model names — not from documentation.
+
+| Probe | Result |
+|---|---|
+| `POST /v1/audio/transcriptions` `model=large-v3-turbo` | **200** `{"text":"Thank you."}` over a synthesized tone — the working STT model on this build (the transcript itself is noise on a pure tone; the status is the signal) |
+| `POST /v1/audio/transcriptions` `model=unslothai/Qwen3-ASR-1.7B-GGUF` | **409** `STT model '…' is not downloaded. Download it in Settings, then Voice, before loading it.` — while Studio's own audio page shows the model **On Device** (blue dot, 2.2 GB). Reproduced twice, hours apart, across a container restart. |
+| `POST /v1/audio/transcriptions` `model=Qwen3-ASR-1.7B-GGUF` (bare basename) | **422** `STT model must be one of Unsloth's defaults or a Hugging Face repository in 'owner/model' form.` |
+
+**Conclusions:**
+
+1. **Qwen3-ASR is unreachable through the OpenAI-dialect API on this
+   build** — the full hub id (the form its own format check demands) is
+   rejected as "not downloaded" even when Studio's UI shows it on disk,
+   and no other spelling passes the format check. Studio's own /audio
+   page evidently uses an internal path, not `/v1/audio/transcriptions`.
+   This is a Studio bug to report upstream; nd-world's side is already
+   correct (sends the full id verbatim, surfaces the 409 verbatim).
+   When a fixed Studio build lands, retest with the Settings ▷ Test STT
+   button — no code change expected.
+2. **`/api/settings/voice` → 404** on this build — no API surface for
+   Voice-model management (the Settings → Voice UI is UI-only). The
+   "download an STT model from nd-world" flow stays blocked upstream.
+3. **Host-shell loopback quirk (operational, not an API finding):** from
+   the TrueNAS host shell, `curl http://localhost:8000` fails with
+   `Recv failure: Connection reset by peer` while Studio serves fine on
+   the LAN IP and container-to-container. Debug from a browser/LAN IP or
+   inside a container, not from the host shell's localhost.
+4. **Video endpoints remain envelope-verified only** — `GET /v1/videos`
+   returns the OpenAI list shape; the generation POST's response and the
+   content fetch were NOT live-verified (no video model on the box).
+   app/video_jobs.py is defensive by design for exactly this reason;
+   update this appendix with the real shapes once a generation runs.
+
+**nd-world features grounded in this appendix:** the Settings ▷ Test
+STT/TTS health-check buttons (the probe itself, productized), the 401
+key-death banner (I-8 confirmed in the compose deployment context), and
+the large-v3-turbo STT default that shipped from it.
