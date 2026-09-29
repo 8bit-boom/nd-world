@@ -577,6 +577,10 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/video/{clip_id}/attach` | GM / Assistant | Attaches the video to a lore entity (form `entity_id`; empty detaches) — renders in that entity page's 🎧 Media section. Clip and entity must share a world. |
 | POST | `/video/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper — same as the Audio Library's, and works directly on the video file (ffmpeg decodes its audio track). |
 | POST | `/video/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file (and poster, if one was generated). |
+| POST | `/api/video-jobs/start` | GM | Starts an AI video generation via Studio's `/v1/videos` as a durable background job (`{prompt, model?, seconds?, size?, name?}`); returns the job id immediately. |
+| GET | `/api/video-jobs` | GM | This world's video generation jobs (latest 20), with the finished clip's URL once done. |
+| POST | `/api/video-jobs/{job_id}/cancel` | GM | Cancels an in-flight video job (the Studio-side generation itself keeps running; nd-world just stops polling). |
+| DELETE | `/api/video-jobs/{job_id}` | GM | Removes a finished/cancelled job row — the VideoClip it produced stays in the library. |
 
 ## Gallery (Images)
 
@@ -741,9 +745,15 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/unsloth/image/status` | GM | The loaded diffusion model's full status (repo, device, dtype, engine). |
 | GET | `/api/ai/unsloth/auto-switch` | GM | Studio's model auto-switch settings (chat + media + idle unload), read live from the Studio server. |
 | POST | `/api/ai/unsloth/auto-switch` | GM | Writes auto-switch settings through to Studio (applied immediately, no Studio restart). |
-| GET | `/api/ai/unsloth/prefs` | GM | nd-world-side Studio preferences: TTS model/voice, STT backend/model, Studio Console URL. |
+| GET | `/api/ai/unsloth/prefs` | GM | nd-world-side Studio preferences: TTS model/voice/instructions/language, STT backend/model, Studio Console URL. |
 | POST | `/api/ai/unsloth/prefs` | GM | Saves those preferences. |
-| POST | `/api/ai/tts` | GM | Generates speech from `text` via Studio's /v1/audio/speech and saves it as an AudioClip in the active world (GM-only visible until shared) — NPC voice lines and read-aloud passages. Uses the Settings → System TTS defaults unless overridden per call. |
+| GET | `/api/ai/unsloth/auth-status` | GM | Whether Studio has 401-rejected the API key with no successful call since (keys don't survive Studio container recreations) — feeds the "key died" banner on the AI and Settings pages. |
+| GET | `/api/ai/unsloth/status` | GM | Consolidated Studio snapshot for the Models tab status strip: loaded models, auto-switch/idle-unload settings, auth health. Degrades to error fields instead of 5xx. |
+| POST | `/api/ai/unsloth/stt-check` | GM | Health-checks the STT model: the exact transcription call over a synthesized tone, so an undownloaded/broken model surfaces at setup time. Always returns `{ok, message}`. |
+| POST | `/api/ai/unsloth/tts-check` | GM | Health-checks the TTS model/voice/style by synthesizing a two-word clip (audio discarded). Always returns `{ok, message}`. |
+| GET | `/api/ai/unsloth/context-overrides` | GM | Studio's per-model load overrides (`max_seq_length`, …), passthrough; `available:false` on builds without the endpoint. |
+| POST | `/api/ai/unsloth/context-overrides` | GM | Writes one per-model override entry through to Studio (body is Studio's own shape, passed verbatim). |
+| POST | `/api/ai/tts` | GM | Generates speech from `text` via Studio's /v1/audio/speech and saves it as an AudioClip in the active world (GM-only visible until shared) — NPC voice lines and read-aloud passages. Uses the Settings → System TTS defaults (model, voice, delivery-style `instructions`, language) unless overridden per call. |
 | GET | `/studio` | GM | The full Unsloth Studio web UI embedded (projects, fine-tuning/recipe workflows, agent skills, voice settings, model hub, video generation). Embeds the Studio server URL — an explicit Studio Console override or UNSLOTH_URL. |
 | POST | `/api/ai/unload` | GM | Unloads a model from memory. |
 | GET | `/api/ai/defaults` | GM | Per-surface (`chat`/`ask_ai`/`image`) default model ids. |

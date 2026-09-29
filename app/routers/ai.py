@@ -3538,10 +3538,97 @@ async def unsloth_prefs_get():
     return {
         "tts_model": _ai.get_tts_model(),
         "tts_voice": _ai.get_tts_voice(),
+        "tts_instructions": _ai.get_tts_instructions(),
+        "tts_language": _ai.get_tts_language(),
         "stt_backend": _ai.get_stt_backend(),
         "stt_model": _ai.get_stt_model(),
         "studio_console_url": _ai.get_studio_console_url(),
     }
+
+
+@router.get("/unsloth/auth-status")
+async def unsloth_auth_status():
+    """Whether Studio has rejected the API key (401) with no successful
+    call since — the 'key died with a container recreation' banner's data
+    source. GM-only."""
+    return _unsloth_extras.auth_status()
+
+
+@router.get("/unsloth/status")
+async def unsloth_status():
+    """One consolidated Studio snapshot for the AI page's status card:
+    loaded models, auto-switch/idle-unload settings, auth health. Degrades
+    to {reachable: false, …} instead of erroring so the card can render
+    'unreachable' rather than blank. GM-only."""
+    _unsloth_or_400()
+    out: dict = {"reachable": True, "auth": _unsloth_extras.auth_status()}
+    try:
+        out["loaded_models"] = await _unsloth_extras.loaded_models()
+    except _unsloth_extras.StudioError as exc:
+        out["loaded_models_error"] = f"{exc.status_code}: {exc}"
+    try:
+        out["auto_switch"] = await _unsloth_extras.auto_switch_get()
+    except _unsloth_extras.StudioError as exc:
+        out["auto_switch_error"] = f"{exc.status_code}: {exc}"
+    return out
+
+
+@router.post("/unsloth/stt-check")
+async def unsloth_stt_check(body: dict):
+    """Run the exact /v1/audio/transcriptions call the transcription
+    pipeline makes, over a synthesized tone, so a broken/undownloaded STT
+    model surfaces at setup time instead of as a failed background job.
+    Never 5xxs — {ok, message} is the whole contract. GM-only."""
+    _unsloth_or_400()
+    model = str(body.get("model") or "").strip() or _ai.get_stt_model()
+    return await _unsloth_extras.stt_health(model)
+
+
+@router.post("/unsloth/tts-check")
+async def unsloth_tts_check(body: dict):
+    """Same health-check for TTS — synthesize a two-word clip through the
+    given model/voice/style and discard the audio. GM-only."""
+    _unsloth_or_400()
+    return await _unsloth_extras.tts_health(
+        str(body.get("model") or "").strip() or _ai.get_tts_model(),
+        voice=str(body.get("voice") or "").strip(),
+        instructions=str(body.get("instructions") or "").strip() or _ai.get_tts_instructions(),
+        language=str(body.get("language") or "").strip() or _ai.get_tts_language(),
+    )
+
+
+@router.get("/unsloth/context-overrides")
+async def unsloth_context_overrides_get():
+    """Studio's per-model load overrides (max_seq_length, llama args) —
+    passthrough with a clean 'not available' for builds without the
+    endpoint. GM-only."""
+    _unsloth_or_400()
+    try:
+        return {"available": True, "data": await _unsloth_extras.auto_switch_overrides_get()}
+    except _unsloth_extras.StudioEndpointMissing:
+        return {"available": False,
+                "hint": "This Studio build doesn't expose per-model overrides — "
+                        "update Studio to manage them here."}
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.post("/unsloth/context-overrides")
+async def unsloth_context_overrides_set(body: dict):
+    """Write one per-model override entry through to Studio. The body is
+    Studio's own shape ({model_id, max_seq_length, …}) passed verbatim —
+    nd-world adds nothing, so fields this build doesn't know about
+    survive. GM-only."""
+    _unsloth_or_400()
+    model_id = str(body.get("model_id") or "").strip()
+    if not model_id:
+        raise HTTPException(400, "model_id is required")
+    try:
+        return await _unsloth_extras.auto_switch_overrides_set(body)
+    except _unsloth_extras.StudioEndpointMissing:
+        raise HTTPException(404, "This Studio build doesn't expose per-model overrides")
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
 
 
 @router.get("/unsloth/audio-models")
@@ -3794,6 +3881,10 @@ async def unsloth_prefs_set(body: dict):
         _ai.set_tts_model(str(body.get("tts_model") or "").strip())
     if "tts_voice" in body:
         _ai.set_tts_voice(str(body.get("tts_voice") or "").strip())
+    if "tts_instructions" in body:
+        _ai.set_tts_instructions(str(body.get("tts_instructions") or "").strip())
+    if "tts_language" in body:
+        _ai.set_tts_language(str(body.get("tts_language") or "").strip())
     if "stt_backend" in body:
         try:
             _ai.set_stt_backend(str(body.get("stt_backend") or "").strip())
@@ -3812,6 +3903,8 @@ class TtsBody(BaseModel):
     description: str = ""
     voice: str = ""
     model: str = ""
+    instructions: str = ""
+    language: str = ""
 
 
 @router.post("/tts")
@@ -3836,6 +3929,8 @@ async def unsloth_tts(body: TtsBody, request: Request, db: Session = Depends(get
             text,
             model=(body.model or "").strip() or _ai.get_tts_model(),
             voice=(body.voice or "").strip() or _ai.get_tts_voice(),
+            instructions=(body.instructions or "").strip() or _ai.get_tts_instructions(),
+            language=(body.language or "").strip() or _ai.get_tts_language(),
         )
     except _unsloth_extras.StudioMissing as exc:
         raise HTTPException(400, str(exc))

@@ -235,6 +235,10 @@
         <input id="whisper-url" name="whisper_url" value="{{ settings.whisper_url or '' }}" placeholder="{{ env_whisper_url or 'not set' }}">
       </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Unsloth Studio server</h2>
+      <div id="studio-auth-banner" style="display:none;border:1px solid #a33;background:rgba(170,51,51,.12);border-radius:6px;padding:.7rem .9rem;margin-bottom:1rem;font-size:.85rem">
+        <strong style="color:#e07070">🔑 Studio rejected the API key.</strong>
+        <span id="studio-auth-banner-text" style="color:var(--text-dim)"></span>
+      </div>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Writes through to the running Studio server immediately (no restart). Auto-switch
         loads a requested model by name on demand; media auto-switch covers image/TTS/STT
@@ -263,12 +267,25 @@
             <option value="">— none yet: run ↻ Detect models —</option>
           </select>
           <button type="button" class="btn-secondary" id="studio-detect-models" title="List the TTS/STT models downloaded in Studio">↻ Detect models</button>
+          <button type="button" class="btn-secondary" id="studio-tts-test" title="Synthesize a two-word clip through the selected model — catches broken models at setup time">▷ Test TTS</button>
         </div>
+        <div id="studio-tts-test-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
         <div id="studio-models-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
       </div>
       <div class="form-group">
         <label for="studio-tts-voice">TTS voice (optional)</label>
         <input id="studio-tts-voice" style="max-width:220px" placeholder="voice name, blank = model default"/>
+      </div>
+      <div class="form-group">
+        <label for="studio-tts-instructions">TTS delivery style (optional)</label>
+        <input id="studio-tts-instructions" style="max-width:420px" placeholder="e.g. gruff, tired dockworker — sent to Studio's `instructions`"/>
+        <p style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0">
+          How the voice should sound — the default for every "Generate speech"; leave blank for the model's natural delivery.
+        </p>
+      </div>
+      <div class="form-group">
+        <label for="studio-tts-language">TTS language hint (optional)</label>
+        <input id="studio-tts-language" style="max-width:220px" placeholder="e.g. en or de — blank = model default"/>
       </div>
       <div class="form-group">
         <label for="studio-stt-backend">Speech-to-text backend</label>
@@ -279,16 +296,36 @@
       </div>
       <div class="form-group">
         <label for="studio-stt-model">STT model (Whisper family — Studio downloads it on first use)</label>
-        <select id="studio-stt-model" style="max-width:220px">
-          <option value="tiny">tiny</option>
-          <option value="base">base</option>
-          <option value="small" selected>small</option>
-          <option value="medium">medium</option>
-          <option value="turbo">turbo</option>
-          <option value="large-v3-turbo">large-v3-turbo</option>
-          <option value="large-v3">large-v3</option>
-          <option value="large">large</option>
-        </select>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <select id="studio-stt-model" style="max-width:220px">
+            <option value="tiny">tiny</option>
+            <option value="base">base</option>
+            <option value="small" selected>small</option>
+            <option value="medium">medium</option>
+            <option value="turbo">turbo</option>
+            <option value="large-v3-turbo">large-v3-turbo</option>
+            <option value="large-v3">large-v3</option>
+            <option value="large">large</option>
+          </select>
+          <button type="button" class="btn-secondary" id="studio-stt-test" title="Transcribe a synthesized tone through the selected model — catches undownloaded/broken models at setup time">▷ Test STT</button>
+        </div>
+        <div id="studio-stt-test-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
+      </div>
+      <div class="form-group">
+        <label>Per-model context overrides (Studio-side)</label>
+        <p style="font-size:.75rem;color:var(--text-dim);margin:.2rem 0 .4rem">
+          max_seq_length per model, written straight to Studio's own override list — lets a big chat model and a
+          small utility model coexist with sane context sizes. Read from Studio on open.
+        </p>
+        <div id="studio-ctx-overrides" style="display:flex;flex-direction:column;gap:.35rem;max-width:560px">
+          <div style="font-size:.78rem;color:var(--text-dim)">—</div>
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.4rem">
+          <input id="studio-ctx-new-model" placeholder="model id — e.g. unsloth/gemma-4-26B-A4B-it-GGUF" style="flex:1;min-width:240px"/>
+          <input id="studio-ctx-new-tokens" type="number" min="512" step="512" placeholder="max_seq_length" style="width:140px"/>
+          <button type="button" class="btn-secondary" id="studio-ctx-add">+ Set override</button>
+        </div>
+        <div id="studio-ctx-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
       </div>
       <div class="form-group">
         <label>Unsloth Studio version & updates</label>
@@ -1109,6 +1146,16 @@ function ndCopyRestartCmd() {
       el('studio-media-autoswitch').checked = !!d.media_auto_switch_model;
       el('studio-idle-unload').value = d.auto_unload_idle_seconds ?? 0;
     }).catch(() => status('Studio not configured — showing saved prefs only', false));
+    // "Key died" banner — shows only while Studio has 401'd the key with
+    // no successful call since (see app/unsloth_extras.py auth_status)
+    fetch('/api/ai/unsloth/auth-status').then(r => r.json()).then(d => {
+      if (d && d.key_failed) {
+        el('studio-auth-banner-text').textContent = ' ' + (d.hint || '');
+        el('studio-auth-banner').style.display = '';
+      } else {
+        el('studio-auth-banner').style.display = 'none';
+      }
+    }).catch(() => {});
     fetch('/api/ai/unsloth/prefs').then(r => r.json()).then(d => {
       // select-aware: a stored custom name that isn't among the options is
       // added as an option rather than silently dropped
@@ -1124,6 +1171,8 @@ function ndCopyRestartCmd() {
       };
       setSelect('studio-tts-model', d.tts_model || '');
       el('studio-tts-voice').value = d.tts_voice || '';
+      el('studio-tts-instructions').value = d.tts_instructions || '';
+      el('studio-tts-language').value = d.tts_language || '';
       el('studio-stt-backend').value = d.stt_backend || 'whisper';
       setSelect('studio-stt-model', d.stt_model || 'small');
       detectStudioModels();
@@ -1132,6 +1181,101 @@ function ndCopyRestartCmd() {
       el('studio-probe-btn').addEventListener('click', probeStudio);
       el('studio-update-btn').addEventListener('click', updateStudio);
     }).catch(() => {});
+    loadCtxOverrides();
+  }
+
+  async function runModelCheck(kind) {
+    const st = el(kind === 'stt' ? 'studio-stt-test-status' : 'studio-tts-test-status');
+    const btn = el(kind === 'stt' ? 'studio-stt-test' : 'studio-tts-test');
+    st.textContent = '⏳ Asking Studio…';
+    st.style.color = 'var(--text-dim)';
+    btn.disabled = true;
+    try {
+      const body = kind === 'stt'
+        ? { model: el('studio-stt-model').value }
+        : { model: el('studio-tts-model').value, voice: el('studio-tts-voice').value,
+            instructions: el('studio-tts-instructions').value, language: el('studio-tts-language').value };
+      const r = await fetch('/api/ai/unsloth/' + kind + '-check', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      st.textContent = (d.ok ? '✓ ' : '✗ ') + (d.message || ('HTTP ' + r.status));
+      st.style.color = d.ok ? '#6ecf6e' : '#e07070';
+    } catch (e) {
+      st.textContent = '✗ ' + e.message;
+      st.style.color = '#e07070';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── Per-model context overrides (Studio's own list; nd-world only
+  // renders it — shape is whatever this Studio build returns) ──────────
+  function renderCtxOverrides(rows) {
+    const wrap = el('studio-ctx-overrides');
+    wrap.innerHTML = '';
+    if (!rows.length) {
+      wrap.innerHTML = '<div style="font-size:.78rem;color:var(--text-dim)">No overrides set.</div>';
+      return;
+    }
+    rows.forEach(row => {
+      const model = row.model_id || row.model || '?';
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;gap:.5rem;align-items:center;font-size:.8rem;flex-wrap:wrap';
+      const tokens = document.createElement('input');
+      tokens.type = 'number';
+      tokens.min = 512; tokens.step = 512;
+      tokens.value = row.max_seq_length || '';
+      tokens.style.cssText = 'width:130px';
+      const label = document.createElement('span');
+      label.textContent = model;
+      label.style.cssText = 'flex:1;min-width:200px;color:var(--text-dim);word-break:break-all';
+      const save = document.createElement('button');
+      save.type = 'button'; save.className = 'btn-secondary'; save.textContent = 'Save';
+      save.onclick = () => ctxOverrideSet(model, tokens.value);
+      div.append(label, tokens, save);
+      wrap.appendChild(div);
+    });
+  }
+
+  async function ctxOverrideSet(model, tokens) {
+    const st = el('studio-ctx-status');
+    st.textContent = '⏳ Saving ' + model + '…';
+    try {
+      const r = await fetch('/api/ai/unsloth/context-overrides', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: model, max_seq_length: parseInt(tokens, 10) || 0 }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 120));
+      st.textContent = '✓ Saved';
+      loadCtxOverrides();
+    } catch (e) {
+      st.textContent = '⚠ ' + e.message;
+    }
+  }
+
+  async function loadCtxOverrides() {
+    try {
+      const r = await fetch('/api/ai/unsloth/context-overrides');
+      const d = await r.json();
+      if (!d.available) {
+        el('studio-ctx-overrides').innerHTML =
+          '<div style="font-size:.78rem;color:var(--text-dim)">' + (d.hint || 'Not available on this Studio build.') + '</div>';
+        el('studio-ctx-add').disabled = true;
+        return;
+      }
+      // Studio's exact GET shape isn't live-verified — take a list from
+      // whichever key holds one (overrides / data / data.overrides / bare)
+      const data = d.data;
+      const rows = Array.isArray(data) ? data
+        : Array.isArray(data && data.overrides) ? data.overrides
+        : Array.isArray(data && data.data) ? data.data : [];
+      renderCtxOverrides(rows);
+    } catch (e) {
+      el('studio-ctx-overrides').innerHTML =
+        '<div style="font-size:.78rem;color:var(--text-dim)">Studio unreachable — overrides not loaded.</div>';
+    }
   }
 
   saveBtn.addEventListener('click', async () => {
@@ -1156,6 +1300,8 @@ function ndCopyRestartCmd() {
         body: JSON.stringify({
           tts_model: el('studio-tts-model').value,
           tts_voice: el('studio-tts-voice').value,
+          tts_instructions: el('studio-tts-instructions').value,
+          tts_language: el('studio-tts-language').value,
           stt_backend: el('studio-stt-backend').value,
           stt_model: el('studio-stt-model').value,
           studio_console_url: el('studio-console-url').value,
@@ -1169,6 +1315,25 @@ function ndCopyRestartCmd() {
       saveBtn.disabled = false;
     }
   });
+
+  el('studio-stt-test').addEventListener('click', () => runModelCheck('stt'));
+  el('studio-tts-test').addEventListener('click', () => runModelCheck('tts'));
+  el('studio-ctx-add').addEventListener('click', () => {
+    const model = el('studio-ctx-new-model').value.trim();
+    const tokens = el('studio-ctx-new-tokens').value.trim();
+    if (!model || !tokens) {
+      el('studio-ctx-status').textContent = 'Both model id and max_seq_length are needed.';
+      return;
+    }
+    ctxOverrideSet(model, tokens);
+  });
+  // STT test only makes sense against Studio — hide it on the whisper sidecar
+  const syncSttTestVisibility = () => {
+    el('studio-stt-test').style.display =
+      el('studio-stt-backend').value === 'unsloth' ? '' : 'none';
+  };
+  el('studio-stt-backend').addEventListener('change', syncSttTestVisibility);
+  syncSttTestVisibility();
 
   if ({{ 'true' if active_tab == 'system' else 'false' }}) loadPrefs();
   // Also load when the tab is first opened (switchSettingsTab lazy-load hook)

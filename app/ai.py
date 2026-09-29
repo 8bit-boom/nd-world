@@ -783,6 +783,31 @@ def set_tts_voice(voice: str) -> None:
     _save_data(data)
 
 
+def get_tts_instructions() -> str:
+    """Default delivery style for generated speech (Studio's
+    `instructions` field — "gruff, tired dockworker"). Overridable per
+    call; blank = the model's natural delivery."""
+    return _load_data().get("tts_instructions") or ""
+
+
+def set_tts_instructions(text: str) -> None:
+    data = _load_data()
+    data["tts_instructions"] = text
+    _save_data(data)
+
+
+def get_tts_language() -> str:
+    """Language hint for TTS (blank = model default). Sent only when set —
+    Studios that don't know the key never see it."""
+    return _load_data().get("tts_language") or ""
+
+
+def set_tts_language(language: str) -> None:
+    data = _load_data()
+    data["tts_language"] = language
+    _save_data(data)
+
+
 def get_stt_backend() -> str:
     """'whisper' (the whisper.cpp sidecar, default) or 'unsloth' (Studio's
     /v1/audio/transcriptions — STT models are managed in Studio's own

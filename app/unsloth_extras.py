@@ -12,6 +12,7 @@ errors; ``_ollama.ResponseError`` shapes are reused so existing error
 handling stays uniform.
 """
 import logging
+import time
 
 import httpx as _httpx
 
@@ -67,6 +68,51 @@ def _base_key() -> tuple[str, str]:
     return url, key
 
 
+# ── API-key death detection ──────────────────────────────────────────────────
+# Live-verified quirk (Phase 0 findings I-8): Studio API keys survive a
+# container restart but NOT a recreation — and TrueNAS app updates recreate
+# containers. When that happens every AI feature silently breaks with 401
+# "Not authenticated" while nothing in nd-world explains why. These two
+# timestamps let the UI tell the GM exactly what happened and how to fix it.
+# In-memory on purpose: a restart clears the banner, but the next failing
+# call re-arms it within seconds, and no DB state can go stale this way.
+_last_auth_failure: float = 0.0
+_last_auth_ok: float = 0.0
+
+
+def _note_auth_failure() -> None:
+    global _last_auth_failure
+    _last_auth_failure = time.time()
+
+
+def _note_auth_ok() -> None:
+    global _last_auth_ok
+    _last_auth_ok = time.time()
+
+
+def auth_status() -> dict:
+    """Snapshot for the 'Studio key died' banner: whether the failure is
+    still standing (no successful call since it was recorded) and when it
+    happened. `url` is included so the banner can link the right Studio."""
+    try:
+        url, _key = _base_key()
+        configured = True
+    except StudioMissing:
+        url, configured = "", False
+    standing = configured and _last_auth_failure > 0 and _last_auth_failure > _last_auth_ok
+    return {
+        "configured": configured,
+        "url": url,
+        "key_failed": standing,
+        "failed_at": _last_auth_failure if standing else None,
+        "ok_at": _last_auth_ok if _last_auth_ok else None,
+        "hint": ("Studio rejected the API key (401). Keys do not survive Studio container "
+                 "recreations (TrueNAS app updates recreate it) — re-create the key in "
+                 "Studio → Settings → API, then paste it into nd-world Settings → System.")
+        if standing else "",
+    }
+
+
 def _headers(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}
 
@@ -85,6 +131,8 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
                                    headers=headers)
     except _httpx.HTTPError as exc:
         raise StudioError(f"Unsloth Studio unreachable: {type(exc).__name__}: {exc}", 503) from exc
+    if resp.status_code == 401:
+        _note_auth_failure()
     if resp.status_code == 404:
         raise StudioEndpointMissing(path)
     if resp.status_code >= 400:
@@ -100,6 +148,8 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
             or str(body)[:300]
         ) or f"HTTP {resp.status_code}"
         raise StudioError(message, resp.status_code, headers=dict(resp.headers))
+    if resp.status_code < 300:
+        _note_auth_ok()
     if not resp.content:
         return {}
     try:
@@ -304,12 +354,15 @@ async def auto_switch_update(enabled: bool | None = None, media_auto_switch_mode
 # ── TTS / STT ────────────────────────────────────────────────────────────────
 
 async def tts(text: str, model: str, voice: str = "", response_format: str = "mp3",
-              speed: float = 1.0) -> tuple[bytes, str]:
+              speed: float = 1.0, instructions: str = "", language: str = "") -> tuple[bytes, str]:
     """POST /v1/audio/speech → (audio_bytes, content_type). The TTS model
     must be loaded in Studio (or media auto-switch on) — a missing model
     surfaces as StudioError with Studio's own message. `voice` is free
     text (OpenAI-style voice names; Studio's Voice settings page manages
-    the actual TTS model/voices)."""
+    the actual TTS model/voices). `instructions` (delivery style — "gruff,
+    tired dockworker") and `language` are schema-verified optional fields
+    (Phase 0 findings I-9) sent only when set, so older Studios that
+    reject unknown keys never see them."""
     if not text.strip():
         raise StudioError("No text to speak", 400)
     if not model.strip():
@@ -320,12 +373,18 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = "mp
                   "speed": float(speed)}
     if voice:
         body["voice"] = voice
+    if instructions.strip():
+        body["instructions"] = instructions.strip()
+    if language.strip():
+        body["language"] = language.strip()
     url, key = _base_key()
     try:
         async with _httpx.AsyncClient(timeout=_AUDIO_TIMEOUT, follow_redirects=True) as c:
             resp = await c.post(f"{url}/v1/audio/speech", json=body, headers=_headers(key))
     except _httpx.HTTPError as exc:
         raise StudioError(f"Unsloth Studio unreachable: {type(exc).__name__}: {exc}", 503) from exc
+    if resp.status_code == 401:
+        _note_auth_failure()
     if resp.status_code >= 400:
         try:
             body_err = resp.json()
@@ -333,10 +392,61 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = "mp
             body_err = {}
         message = ((body_err.get("error") or {}).get("message")) or f"HTTP {resp.status_code}"
         raise StudioError(message, resp.status_code)
+    _note_auth_ok()
     audio = resp.content
     if not audio:
         raise StudioError("Studio returned no audio for this TTS request", 502)
     return audio, resp.headers.get("content-type", "audio/mpeg")
+
+
+def _tone_wav_bytes(seconds: float = 1.0) -> bytes:
+    """A tiny in-memory WAV (16 kHz mono, soft sine tone) for health checks
+    — no fixture file to ship, transcribes on Studio in ~a second even on
+    a CPU-only box. ASR models hallucinate a word or return empty text for
+    a pure tone; the HTTP status is the signal, never the transcript."""
+    import io
+    import math
+    import struct
+    import wave
+    buf = io.BytesIO()
+    w = wave.open(buf, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(16000)
+    n = int(16000 * seconds)
+    w.writeframes(b"".join(
+        struct.pack("<h", int(3000 * math.sin(2 * math.pi * 220 * i / 16000)))
+        for i in range(n)))
+    w.close()
+    return buf.getvalue()
+
+
+async def stt_health(model: str) -> dict:
+    """One-shot 'does this STT model actually work' probe — the exact call
+    nd-world's transcription pipeline makes, over a synthesized tone, so a
+    'not downloaded' 409 or bad model name surfaces at setup time in
+    Settings instead of as a failed background job hours later. Never
+    raises: every failure mode comes back as {ok: False, message}."""
+    try:
+        await stt(_tone_wav_bytes(), "nd-health-check.wav", model=model or "small")
+        return {"ok": True, "message": "Studio accepted the audio — model is ready."}
+    except StudioMissing as exc:
+        return {"ok": False, "message": str(exc)}
+    except StudioError as exc:
+        return {"ok": False, "status": exc.status_code, "message": str(exc)}
+
+
+async def tts_health(model: str, voice: str = "", instructions: str = "", language: str = "") -> dict:
+    """Same idea for TTS: synthesize a two-word clip through the configured
+    model/voice/style. Audio is discarded — ok + message is the result."""
+    try:
+        audio, _ct = await tts("Ready.", model=model or "", voice=voice,
+                               instructions=instructions, language=language)
+        return {"ok": True, "message": f"Studio synthesized {len(audio)} bytes — model is ready."}
+    except StudioMissing as exc:
+        return {"ok": False, "message": str(exc)}
+    except StudioError as exc:
+        return {"ok": False, "status": exc.status_code, "message": str(exc)}
 
 
 _TTS_TASK_HINTS = ("text-to-speech", "tts", "voice")
@@ -447,6 +557,8 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
         resp = await c.post(f"{url}/v1/audio/transcriptions",
                             files={"file": (filename, audio)},
                             data={"model": model}, headers=_headers(key))
+    if resp.status_code == 401:
+        _note_auth_failure()
     if resp.status_code >= 400:
         try:
             body_err = resp.json()
@@ -456,5 +568,75 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
                   (body_err.get("detail") if isinstance(body_err.get("detail"), str) else None) or \
                   f"HTTP {resp.status_code}"
         raise StudioError(message, resp.status_code)
+    _note_auth_ok()
     data = resp.json()
     return data.get("text") or ""
+
+
+# ── Per-model load overrides ─────────────────────────────────────────────────
+# Studio's own per-model knobs (max_seq_length, llama_extra_args, …) —
+# PUT shape verified in Phase 0 findings I-5; the GET side is passthrough
+# because only the PUT was live-verified, so unknown/changed shapes flow
+# through untouched instead of breaking on a schema guess.
+
+async def auto_switch_overrides_get() -> dict:
+    """GET /api/settings/openai-auto-switch/overrides — current per-model
+    overrides, Studio's own shape. Raises StudioEndpointMissing on builds
+    without the subpath (the route degrades to 'not available')."""
+    return await _request("GET", "/api/settings/openai-auto-switch/overrides",
+                          timeout=_ACTION_TIMEOUT)
+
+
+async def auto_switch_overrides_set(body: dict) -> dict:
+    """PUT /api/settings/openai-auto-switch/overrides — one override entry
+    ({model_id, max_seq_length, …}); body is passed through verbatim so
+    fields this build doesn't know about survive the round-trip."""
+    return await _request("PUT", "/api/settings/openai-auto-switch/overrides",
+                          json_body=body, timeout=_ACTION_TIMEOUT)
+
+
+# ── Video generation ─────────────────────────────────────────────────────────
+# /v1/videos exists on current Studio builds (Phase 0 findings I-9: list
+# shape {object:"list", data:[]} verified; generation POST and content
+# fetch are shape-defensive until live-verified on the GM's box). All
+# polling/assembly decisions live in app/video_jobs.py — these helpers
+# only speak HTTP.
+
+async def video_generate(body: dict) -> dict:
+    """POST /v1/videos — start a generation; body (model, prompt, size,
+    seconds, …) passes through verbatim. Returns Studio's response as-is:
+    the video id is extracted defensively by the caller because the exact
+    key has not been live-verified."""
+    return await _request("POST", "/v1/videos", json_body=body,
+                          timeout=_ACTION_TIMEOUT)
+
+
+async def video_list() -> dict:
+    """GET /v1/videos — the jobs/generations list (OpenAI list shape)."""
+    return await _request("GET", "/v1/videos", timeout=_PROBE_TIMEOUT)
+
+
+async def video_content(video_id: str) -> tuple[bytes, str]:
+    """GET /v1/videos/{id}/content → (video_bytes, content_type). A long
+    read budget: the bytes ARE the deliverable and video files are large."""
+    url, key = _base_key()
+    try:
+        async with _httpx.AsyncClient(timeout=_httpx.Timeout(900.0, connect=10.0),
+                                      follow_redirects=True) as c:
+            resp = await c.get(f"{url}/v1/videos/{video_id}/content",
+                               headers=_headers(key))
+    except _httpx.HTTPError as exc:
+        raise StudioError(f"Unsloth Studio unreachable: {type(exc).__name__}: {exc}", 503) from exc
+    if resp.status_code == 401:
+        _note_auth_failure()
+    if resp.status_code >= 400:
+        try:
+            body_err = resp.json()
+        except ValueError:
+            body_err = {}
+        message = ((body_err.get("error") or {}).get("message")) or f"HTTP {resp.status_code}"
+        raise StudioError(message, resp.status_code)
+    if not resp.content:
+        raise StudioError("Studio returned an empty video file", 502)
+    _note_auth_ok()
+    return resp.content, resp.headers.get("content-type", "video/mp4")

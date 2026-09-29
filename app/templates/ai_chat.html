@@ -12,6 +12,11 @@
   <span id="ig-dot" title="Image gen unavailable"
         style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle;flex-shrink:0"></span>
 </div>
+<div id="ai-auth-banner" style="display:none;border:1px solid #a33;background:rgba(170,51,51,.12);border-radius:6px;padding:.7rem .9rem;margin:.6rem 1.2rem;font-size:.85rem">
+  <strong style="color:#e07070">🔑 Studio rejected the API key.</strong>
+  <span id="ai-auth-banner-text" style="color:var(--text-dim)"></span>
+  <a href="/settings#system" style="color:var(--neon);margin-left:.4rem">Fix it in Settings → System</a>
+</div>
 {% include "ai_chat/_tab_chat.html" %}
 {% include "ai_chat/_tab_image.html" %}
 {% include "ai_chat/_tab_models.html" %}
@@ -28,6 +33,17 @@ const WORLD_SYSTEM = {{ world_system | tojson }};
 const ENTITY_KINDS = {{ kinds | tojson }};
 const ENTITY_KIND_ICONS = {{ kind_icons | tojson }};
 const WORLD_NAME = {{ (world.name if world else 'World') | tojson }};
+// Studio keys don't survive container recreations (Phase 0 findings I-8)
+// — when every Studio call 401s, say so at the top of the AI page instead
+// of letting each feature fail with its own cryptic error. Kept in this
+// bootstrap block: the split-asset contract allows exactly ONE inline
+// script tag on this page (tests/test_ai_chat_split.py).
+fetch('/api/ai/unsloth/auth-status').then(r => r.json()).then(d => {
+  if (d && d.key_failed) {
+    document.getElementById('ai-auth-banner-text').textContent = ' ' + (d.hint || '');
+    document.getElementById('ai-auth-banner').style.display = '';
+  }
+}).catch(() => {});
 </script>
 <script src="/static/js/ai-chat-core.js?v={{ asset_v('js/ai-chat-core.js') }}"></script>
 <script src="/static/js/ai-chat-image.js?v={{ asset_v('js/ai-chat-image.js') }}"></script>

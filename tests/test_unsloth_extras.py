@@ -192,7 +192,8 @@ def test_tts_route_saves_a_gm_only_audio_clip(client, seed, monkeypatch):
     from app.database import SessionLocal
     from app.models import AudioClip
 
-    async def _fake_tts(text, model, voice="", response_format="mp3", speed=1.0):
+    async def _fake_tts(text, model, voice="", response_format="mp3", speed=1.0,
+                        instructions="", language=""):
         return b"AUDIOBYTES", "audio/mpeg"
 
     monkeypatch.setattr(ux, "tts", _fake_tts)
@@ -216,7 +217,8 @@ def test_tts_route_saves_a_gm_only_audio_clip(client, seed, monkeypatch):
 
 
 def test_tts_route_requires_world_and_text(client, seed, monkeypatch):
-    async def _fake_tts(text, model, voice="", response_format="mp3", speed=1.0):
+    async def _fake_tts(text, model, voice="", response_format="mp3", speed=1.0,
+                        instructions="", language=""):
         return b"A", "audio/mpeg"
     monkeypatch.setattr("app.routers.ai._unsloth_extras.tts", _fake_tts)
     from .conftest import GM_PASSWORD, login
@@ -240,3 +242,192 @@ def test_studio_console_page_renders_for_gm(client, seed):
     # Players are denied (GM-only route).
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     assert client.get("/studio").status_code == 403
+
+
+# ── TTS instructions/language, health checks, auth tracking, overrides ────────
+
+@pytest.mark.asyncio
+async def test_tts_sends_instructions_and_language_only_when_set(monkeypatch):
+    state = {}
+    _patch_transport(monkeypatch, _recorder(state, httpx.Response(
+        200, content=b"X", headers={"content-type": "audio/mpeg"})))
+    await ux.tts("hi", model="m", voice="ann", instructions=" gruff ", language="de")
+    body = json.loads(state["request"].content.decode())
+    assert body["instructions"] == "gruff"
+    assert body["language"] == "de"
+    await ux.tts("hi", model="m")
+    body = json.loads(state["request"].content.decode())
+    assert "instructions" not in body and "language" not in body
+
+
+def _reset_auth_state(monkeypatch):
+    monkeypatch.setattr(ux, "_last_auth_failure", 0.0)
+    monkeypatch.setattr(ux, "_last_auth_ok", 0.0)
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_is_tracked_and_cleared_by_success(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(401, json={"error": {"message": "Not authenticated"}})
+        return _json_response({"models": []})
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(ux.StudioError) as exc:
+        await ux.loaded_models()
+    assert exc.value.status_code == 401
+    st = ux.auth_status()
+    assert st["key_failed"] is True
+    assert "Settings → API" in st["hint"]
+    await ux.loaded_models()
+    assert ux.auth_status()["key_failed"] is False
+
+
+def test_auth_status_when_no_backend_configured(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    monkeypatch.setattr(ux, "effective_llm_api_key", lambda: "")
+    st = ux.auth_status()
+    assert st["configured"] is False and st["key_failed"] is False
+
+
+@pytest.mark.asyncio
+async def test_stt_health_reports_ok_and_409(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    # One stateful handler, not two _patch_transport calls — the helper's
+    # fake AsyncClient closes over the FIRST handler, so re-patching within
+    # a test silently keeps hitting it (see test_tts_health below, same).
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        assert b'name="model"' in request.content  # multipart form carries the model
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"text": "Thank you."})
+        return httpx.Response(409, json={
+            "error": {"message": "STT model 'x' is not downloaded. Download it in Settings, then Voice."}})
+
+    _patch_transport(monkeypatch, handler)
+    assert (await ux.stt_health("large-v3-turbo"))["ok"] is True
+    out = await ux.stt_health("x")
+    assert out["ok"] is False
+    assert out["status"] == 409
+    assert "not downloaded" in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_tts_health_reports_ok_and_missing_model(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, content=b"aud", headers={"content-type": "audio/mpeg"})
+        return httpx.Response(400, json={"error": {"message": "No model loaded."}})
+
+    _patch_transport(monkeypatch, handler)
+    out = await ux.tts_health("m", voice="v")
+    assert out["ok"] is True and "bytes" in out["message"]
+    out = await ux.tts_health("m")
+    assert out["ok"] is False and out["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_auto_switch_overrides_passthrough(monkeypatch):
+    state = {}
+    _patch_transport(monkeypatch, _recorder(state, _json_response(
+        {"overrides": [{"model_id": "a/B", "max_seq_length": 8192}]})))
+    out = await ux.auto_switch_overrides_get()
+    assert "/api/settings/openai-auto-switch/overrides" in state["url"]
+    await ux.auto_switch_overrides_set({"model_id": "a/B", "max_seq_length": 4096})
+    assert state["request"].method == "PUT"
+    assert json.loads(state["request"].content.decode())["max_seq_length"] == 4096
+
+
+# ── Video helpers ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_video_generate_posts_body_verbatim(monkeypatch):
+    state = {}
+    _patch_transport(monkeypatch, _recorder(state, _json_response({"id": "vid-1"})))
+    out = await ux.video_generate({"model": "m", "prompt": "p", "seconds": 5})
+    assert out["id"] == "vid-1"
+    assert state["url"].endswith("/v1/videos")
+    assert json.loads(state["request"].content.decode())["seconds"] == 5
+
+
+@pytest.mark.asyncio
+async def test_video_content_returns_bytes(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    _patch_transport(monkeypatch, _recorder({}, httpx.Response(
+        200, content=b"MP4BYTES", headers={"content-type": "video/mp4"})))
+    data, ct = await ux.video_content("vid-1")
+    assert data == b"MP4BYTES" and ct == "video/mp4"
+
+
+@pytest.mark.asyncio
+async def test_video_content_empty_is_an_error(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    _patch_transport(monkeypatch, _recorder({}, httpx.Response(200, content=b"")))
+    with pytest.raises(ux.StudioError):
+        await ux.video_content("vid-1")
+
+
+# ── New routes: checks, auth-status, overrides, prefs fields ─────────────────
+
+def test_check_and_auth_routes_are_gm_only(client, seed):
+    from .conftest import PLAYER_PASSWORD, login
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.post("/api/ai/unsloth/stt-check", json={}).status_code == 403
+    assert client.post("/api/ai/unsloth/tts-check", json={}).status_code == 403
+    assert client.get("/api/ai/unsloth/auth-status").status_code == 403
+    assert client.get("/api/ai/unsloth/status").status_code == 403
+    assert client.get("/api/ai/unsloth/context-overrides").status_code == 403
+
+
+def test_stt_check_route_never_5xx(client, seed, monkeypatch):
+    async def _fail(model):
+        return {"ok": False, "status": 409, "message": "not downloaded"}
+    monkeypatch.setattr("app.routers.ai._unsloth_or_400", lambda: None)
+    monkeypatch.setattr("app.routers.ai._unsloth_extras.stt_health", _fail)
+    from .conftest import GM_PASSWORD, login
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/unsloth/stt-check", json={"model": "large-v3-turbo"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "status": 409, "message": "not downloaded"}
+
+
+def test_auth_status_route_shape(client, seed):
+    from .conftest import GM_PASSWORD, login
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/api/ai/unsloth/auth-status")
+    assert r.status_code == 200
+    d = r.json()
+    assert set(d) >= {"configured", "url", "key_failed", "hint"}
+
+
+def test_context_overrides_route_degrades_when_endpoint_missing(client, seed, monkeypatch):
+    async def _missing():
+        raise ux.StudioEndpointMissing("/api/settings/openai-auto-switch/overrides")
+    monkeypatch.setattr("app.routers.ai._unsloth_or_400", lambda: None)
+    monkeypatch.setattr("app.routers.ai._unsloth_extras.auto_switch_overrides_get", _missing)
+    from .conftest import GM_PASSWORD, login
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/api/ai/unsloth/context-overrides")
+    assert r.status_code == 200
+    assert r.json()["available"] is False
+
+
+def test_prefs_roundtrip_tts_instructions_and_language(client, seed):
+    from .conftest import GM_PASSWORD, login
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/unsloth/prefs", json={
+        "tts_instructions": "gruff dockworker", "tts_language": "en"})
+    assert r.status_code == 200
+    d = client.get("/api/ai/unsloth/prefs").json()
+    assert d["tts_instructions"] == "gruff dockworker"
+    assert d["tts_language"] == "en"

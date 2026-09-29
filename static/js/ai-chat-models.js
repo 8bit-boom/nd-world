@@ -687,6 +687,7 @@ async function mpUnslothLoad() {
     data = await r.json();
   } catch (e) { hubEl.style.display = 'none'; return; }
   hubEl.style.display = '';
+  mpStudioStatus();
   const models = data.models || [];
   if (!models.length) {
     listEl.innerHTML = '<div style="color:var(--text-dim);font-size:.8rem">The Studio hub cache is empty — download models via the box above or the 🧠 Studio Console.</div>';
@@ -797,6 +798,46 @@ async function mpUnslothDownload() {
     alert('Download failed: ' + e.message);
     prog.style.display = 'none';
   }
+}
+
+// ── Studio status strip ─────────────────────────────────────────────────────
+// One glance at what the single AI backend is doing: which models are
+// resident, whether auto-switch is on, and when idle-unload will free the
+// VRAM. Fed by /api/ai/unsloth/status (never throws — unreachable Studio
+// renders as a red "unreachable" chip, not a blank card).
+async function mpStudioStatus() {
+  const textEl = document.getElementById('mp-studio-status-text');
+  if (!textEl) return;
+  let d;
+  try {
+    const r = await fetch('/api/ai/unsloth/status');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    d = await r.json();
+  } catch (e) {
+    textEl.innerHTML = '<span style="color:#e07070">unreachable</span>';
+    return;
+  }
+  if (d.auth && d.auth.key_failed) {
+    textEl.innerHTML = '<span style="color:#e07070">API key rejected — see Settings → System</span>';
+    return;
+  }
+  const parts = [];
+  const asw = d.auto_switch || {};
+  parts.push(asw.enabled
+    ? '<span style="color:#6ecf6e">auto-switch on</span>'
+    : '<span style="color:var(--text-dim)">auto-switch off</span>');
+  const idle = asw.auto_unload_idle_seconds;
+  parts.push(idle
+    ? 'idle-unload ' + (idle >= 60 ? Math.round(idle / 60) + ' min' : idle + ' s')
+    : 'idle-unload never');
+  const loaded = d.loaded_models;
+  if (Array.isArray(loaded) && loaded.length) {
+    const names = loaded.map(m => _mpUnslothEsc(m.model || m.id || m.name || '?')).join(', ');
+    parts.push('<span style="color:#6ecf6e">resident:</span> ' + names);
+  } else if (Array.isArray(loaded)) {
+    parts.push('<span style="color:var(--text-dim)">nothing resident — first request loads a model (~20-40 s)</span>');
+  }
+  textEl.innerHTML = parts.join('<span style="color:var(--border)"> | </span>');
 }
 
 // Probe once at load: an Unsloth backend shows the hub section, others hide it.

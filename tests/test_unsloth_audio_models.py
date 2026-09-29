@@ -159,7 +159,8 @@ def test_tts_route_per_request_model_passthrough(client, seed, monkeypatch):
     default."""
     captured = {}
 
-    async def fake_tts(text, model="", voice="", response_format="mp3", speed=1.0):
+    async def fake_tts(text, model="", voice="", response_format="mp3", speed=1.0,
+                        instructions="", language=""):
         captured["text"] = text
         captured["model"] = model
         captured["voice"] = voice
