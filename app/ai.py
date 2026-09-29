@@ -4488,6 +4488,23 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise
             send_path.unlink(missing_ok=True)
 
 
+# Studio's /v1/audio/transcriptions rejects request bodies over 25 MiB
+# (observed live: 26,214,400 bytes). Stay under it with margin for the
+# multipart framing.
+_UNSLOTH_STT_MAX_BYTES = 23 * 1024 * 1024
+
+
+def _plan_unsloth_chunks(file_size: int, duration: float | None) -> float | None:
+    """Chunk length in seconds so each piece stays under Studio's request-
+    size limit, or None when the file fits whole. Pure math — the async/
+    subprocess work lives in the callers."""
+    if file_size <= _UNSLOTH_STT_MAX_BYTES:
+        return None
+    if not duration or duration <= 0:
+        return None  # no duration → can't size chunks; caller raises clearly
+    return max(30.0, duration * (_UNSLOTH_STT_MAX_BYTES / file_size))
+
+
 async def _transcribe_one_file_unsloth(path: Path) -> str:
     """One audio file through Studio's /v1/audio/transcriptions (OpenAI
     multipart dialect — file + model, verified Phase 0.5). The `model`
@@ -4496,17 +4513,55 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
     WhisperError so the existing job pipeline shows it to the GM. Note
     the whisper.cpp-specific knobs (glossary prompt, beam size, denoise
     flag) have no OpenAI-dialect equivalent — Studio's own STT settings
-    own those."""
+    own those.
+
+    Studio rejects request bodies over 25 MiB, so files larger than that
+    are split with the existing ffmpeg segment machinery into pieces sized
+    to stay under the limit, transcribed in order, and joined with
+    newlines. A multi-hour FLAC therefore transcribes whole instead of
+    failing with "Request body too large"."""
     from . import unsloth_extras as _unsloth_extras
     if not effective_llm_api_key():
         raise WhisperError("STT backend is set to Unsloth but no UNSLOTH_API_KEY is configured (Settings → System).")
     if not path.is_file():
         raise WhisperError(f"Audio file not found: {path.name}")
+
+    parts = [path]
+    tmpdir = None
+    if path.stat().st_size > _UNSLOTH_STT_MAX_BYTES:
+        duration = await _probe_audio_duration(path)
+        chunk_seconds = _plan_unsloth_chunks(path.stat().st_size, duration)
+        if chunk_seconds is None:
+            raise WhisperError(
+                f"{path.name} is {(path.stat().st_size + 1048575) // 1048576} MiB — over Unsloth "
+                "Studio's 25 MiB transcription request limit — and its duration "
+                "couldn't be read to split it (ffmpeg/ffprobe missing?). Convert it "
+                "to MP3/OGG first, or switch the STT backend to whisper.cpp.")
+        parts, tmpdir = await _split_audio_into_chunks(path, chunk_seconds)
+        oversized = [p for p in parts if p.stat().st_size > _UNSLOTH_STT_MAX_BYTES]
+        if oversized:
+            names = ", ".join(p.name for p in oversized[:3])
+            if tmpdir:
+                import shutil
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            raise WhisperError(
+                f"{path.name}: {len(oversized)} split chunk(s) still exceed Studio's "
+                f"25 MiB limit ({names}…) — the audio's bitrate is unusually high; "
+                "convert to MP3/OGG first or use the whisper.cpp backend.")
+
     try:
-        text = await _unsloth_extras.stt(path.read_bytes(), path.name, model=get_stt_model())
-    except _unsloth_extras.StudioError as exc:
-        raise WhisperError(f"Unsloth Studio STT: {exc}") from exc
-    return (text or "").strip()
+        texts = []
+        for part in parts:
+            try:
+                text = await _unsloth_extras.stt(part.read_bytes(), part.name, model=get_stt_model())
+            except _unsloth_extras.StudioError as exc:
+                raise WhisperError(f"Unsloth Studio STT: {exc}") from exc
+            texts.append((text or "").strip())
+        return chr(10).join(t for t in texts if t)
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None,

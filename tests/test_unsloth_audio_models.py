@@ -335,3 +335,102 @@ def test_probe_extracts_version_from_200(client, seed, monkeypatch):
     client.cookies.set("active_world", seed.world_a.slug)
     d = client.get("/api/ai/unsloth/probe").json()
     assert d["version"] == "1.4.2-docker"
+
+
+# ── over-25MiB auto-split ────────────────────────────────────────────────────
+
+def test_plan_unsloth_chunks_math():
+    from app.ai import _plan_unsloth_chunks
+
+    LIMIT = 23 * 1024 * 1024
+    # fits whole → no chunking
+    assert _plan_unsloth_chunks(LIMIT, 3600.0) is None
+    # 32 MiB over 1 hour → chunk length proportional, ≥ 30s floor
+    cs = _plan_unsloth_chunks(32 * 1024 * 1024, 3600.0)
+    assert cs is not None and cs >= 30.0
+    # proportionality: bigger file → shorter chunks
+    cs2 = _plan_unsloth_chunks(64 * 1024 * 1024, 3600.0)
+    assert cs2 < cs
+    # no duration → can't plan
+    assert _plan_unsloth_chunks(32 * 1024 * 1024, None) is None
+    assert _plan_unsloth_chunks(32 * 1024 * 1024, 0) is None
+
+
+def test_transcribe_unsloth_small_file_single_call(client, seed, monkeypatch, tmp_path):
+    """Under the limit: exactly one stt call with the file's own bytes."""
+    import asyncio
+
+    from app import ai as ai_module
+
+    f = tmp_path / "clip.flac"
+    f.write_bytes(b"a" * 1024)
+
+    calls = []
+
+    async def fake_stt(audio, filename, model="small"):
+        calls.append((filename, len(audio)))
+        return "hello table"
+
+    monkeypatch.setattr("app.unsloth_extras.stt", fake_stt)
+    monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
+
+    text = asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+    assert text == "hello table"
+    assert calls == [("clip.flac", 1024)]
+
+
+def test_transcribe_unsloth_splits_and_joins(client, seed, monkeypatch, tmp_path):
+    """Over the limit: ffprobe duration → ffmpeg split → per-part stt calls
+    in order → newline-joined transcript, temp dir cleaned up."""
+    import asyncio
+
+    from app import ai as ai_module
+
+    f = tmp_path / "session.flac"
+    f.write_bytes(b"b" * (24 * 1024 * 1024))  # over the 23 MiB limit
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        p1 = tmp_path / "part-001.flac"; p1.write_bytes(b"x" * 1000)
+        p2 = tmp_path / "part-002.flac"; p2.write_bytes(b"y" * 1000)
+        return [p1, p2], tmp_path
+
+    calls = []
+
+    async def fake_stt(audio, filename, model="small"):
+        calls.append(filename)
+        return "part text"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr("app.unsloth_extras.stt", fake_stt)
+    monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
+
+    text = asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+    assert calls == ["part-001.flac", "part-002.flac"]
+    assert text == "part text\npart text"
+
+
+def test_transcribe_unsloth_no_duration_clear_error(client, seed, monkeypatch, tmp_path):
+    import asyncio
+
+    from app import ai as ai_module
+    from app.ai import WhisperError
+
+    f = tmp_path / "big.flac"
+    f.write_bytes(b"b" * (24 * 1024 * 1024))
+
+    async def fake_probe(path):
+        return None  # ffprobe missing / unreadable
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
+
+    try:
+        asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+        raised = None
+    except WhisperError as e:
+        raised = str(e)
+    assert raised and "25 MiB" in raised and "MP3" in raised
