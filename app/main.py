@@ -40,7 +40,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -98,6 +98,7 @@ from . import audio_jobs as _audio_jobs
 from . import ollama_tuning as _tuning
 from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
+from . import video_jobs as _video_jobs
 from . import job_shutdown as _job_shutdown
 from . import backups as _backups
 from . import diagnostics as _diagnostics
@@ -301,9 +302,11 @@ def _startup_tasks():
     _audio_jobs.sweep_orphaned_job_audio()
     _image_jobs.sweep_interrupted_jobs()
     _chat_jobs.sweep_interrupted_jobs()
+    _video_jobs.sweep_interrupted_jobs()
     _audio_jobs.resume_interrupted_jobs()
     _image_jobs.resume_interrupted_jobs()
     _chat_jobs.resume_interrupted_jobs()
+    _video_jobs.resume_interrupted_jobs()
     # Optional scheduled DB snapshots — no-op unless ND_BACKUP_DIR is set,
     # so the test suite (which never sets it) never grows a thread.
     _backups.start()
@@ -320,11 +323,13 @@ async def _shutdown_tasks():
     not the mechanism (one Whisper chunk can take minutes; no Docker stop
     grace period covers that)."""
     _job_shutdown.request_stop()
-    tasks = _audio_jobs.live_tasks() + _image_jobs.live_tasks() + _chat_jobs.live_tasks()
+    tasks = (_audio_jobs.live_tasks() + _image_jobs.live_tasks()
+             + _chat_jobs.live_tasks() + _video_jobs.live_tasks())
     await _job_shutdown.drain(tasks)
     _audio_jobs.mark_stragglers_interrupted()
     _image_jobs.mark_stragglers_interrupted()
     _chat_jobs.mark_stragglers_interrupted()
+    _video_jobs.mark_stragglers_interrupted()
     _backups.stop()
     # Await, not just cancel, the diagnostics heartbeat so it reaps cleanly
     # inside this still-running loop (see its docstring for the TestClient
@@ -1534,7 +1539,7 @@ _WORLD_DELETE_MODELS = (
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
-    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
+    AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
     EntityRelation, VaultChunk, AiInstruction,
 )
 

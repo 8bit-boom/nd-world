@@ -104,6 +104,98 @@
       <div id="video-upload-progress" style="display:none;font-size:.78rem;color:var(--text-dim);border-top:1px solid var(--border);padding-top:.6rem;margin-top:.2rem"></div>
     </form>
   </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">✨ Generate Video with AI</h2>
+    <p style="font-size:.75rem;color:var(--text-dim);margin:0 0 .7rem">
+      Generates through Unsloth Studio (<code>/v1/videos</code>) as a background job — close the page and check
+      the ⏳ Background Jobs page any time. The finished clip lands in this library, GM-only until you review it.
+      Video is the slowest thing Studio does — expect minutes even on a GPU, much longer without one.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:.5rem">
+      <textarea id="ai-video-prompt" placeholder="Describe the shot — e.g. a rain-slicked neon alley, camera slowly pushing forward, 5 seconds" maxlength="4000" rows="2"
+                style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical"></textarea>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <input type="text" id="ai-video-model" placeholder="Video model (Studio repo id)" maxlength="200"
+               style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        <input type="number" id="ai-video-seconds" min="1" max="60" step="1" placeholder="seconds" style="width:110px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-size:.85rem;border-radius:3px"/>
+        <input type="text" id="ai-video-name" placeholder="Clip name (optional)" maxlength="250"
+               style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        <button type="button" class="btn-save" id="ai-video-start" onclick="aiVideoStart()">✨ Generate</button>
+      </div>
+      <div id="ai-video-status" style="font-size:.78rem;color:var(--text-dim);min-height:1em"></div>
+      <div id="ai-video-jobs" style="display:flex;flex-direction:column;gap:.35rem"></div>
+    </div>
+    <script>
+      async function aiVideoRefresh() {
+        const wrap = document.getElementById('ai-video-jobs');
+        if (!wrap) return;
+        try {
+          const r = await fetch({{ '/api/video-jobs'|tojson }});
+          if (!r.ok) { wrap.innerHTML = ''; return; }
+          const d = await r.json();
+          if (!d.jobs || !d.jobs.length) { wrap.innerHTML = ''; return; }
+          wrap.innerHTML = d.jobs.slice(0, 10).map(j => {
+            const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+            const color = j.status === 'done' ? '#6ecf6e' : (j.status === 'error' ? '#e07070' : 'var(--text-dim)');
+            let right = '';
+            if (j.status === 'done' && j.clip_url) {
+              right = '<a href="' + esc(j.clip_url) + '" style="color:var(--neon);margin-left:.5rem">▶ clip</a> '
+                    + '<a href="/video" style="color:var(--neon);margin-left:.5rem">library</a>';
+            } else if (['pending','generating','fetching'].includes(j.status)) {
+              right = '<button class="btn-cancel" style="font-size:.7rem;padding:.15rem .5rem" onclick="aiVideoCancel(' + j.id + ')">Cancel</button>';
+            } else {
+              right = '<button class="btn-cancel" style="font-size:.7rem;padding:.15rem .5rem" onclick="aiVideoDelete(' + j.id + ')">🗑</button>';
+            }
+            const err = j.error ? ' <span style="color:#e07070">' + esc(j.error.slice(0,160)) + '</span>' : '';
+            return '<div style="display:flex;align-items:center;gap:.5rem;font-size:.78rem;flex-wrap:wrap">'
+                 + '<span style="color:' + color + '">● ' + esc(j.status) + '</span>'
+                 + '<span style="color:var(--text-dim);flex:1;min-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(j.prompt.slice(0,90)) + '</span>'
+                 + err + right + '</div>';
+          }).join('');
+          if (d.jobs.some(j => ['pending','generating','fetching'].includes(j.status))) {
+            setTimeout(aiVideoRefresh, 10000);
+          }
+        } catch (e) { /* transient */ }
+      }
+      async function aiVideoStart() {
+        const st = document.getElementById('ai-video-status');
+        const prompt = document.getElementById('ai-video-prompt').value.trim();
+        if (!prompt) { st.textContent = 'A prompt is required.'; return; }
+        const btn = document.getElementById('ai-video-start');
+        btn.disabled = true; st.textContent = 'Starting…';
+        try {
+          const r = await fetch({{ '/api/video-jobs/start'|tojson }}, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              model: document.getElementById('ai-video-model').value.trim(),
+              seconds: document.getElementById('ai-video-seconds').value || null,
+              name: document.getElementById('ai-video-name').value.trim(),
+            }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || 'HTTP ' + r.status);
+          st.textContent = '✓ Job #' + d.id + ' started — it keeps running in the background.';
+          document.getElementById('ai-video-prompt').value = '';
+          aiVideoRefresh();
+        } catch (e) {
+          st.textContent = '⚠ ' + e.message;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+      async function aiVideoCancel(id) {
+        await fetch('/api/video-jobs/' + id + '/cancel', { method: 'POST' });
+        aiVideoRefresh();
+      }
+      async function aiVideoDelete(id) {
+        await fetch('/api/video-jobs/' + id, { method: 'DELETE' });
+        aiVideoRefresh();
+      }
+      aiVideoRefresh();
+    </script>
+  </div>
   {% endif %}
 
   {% if albums %}

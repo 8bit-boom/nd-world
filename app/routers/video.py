@@ -38,7 +38,7 @@ from .. import media_albums
 from ..database import get_app_settings, get_db, SessionLocal
 from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
 from .. import deps as _deps
-from ..models import VideoAlbum, VideoClip
+from ..models import VideoAlbum, VideoClip, VideoJob
 from ..templating import templates
 from ..uploads import (
     copy_upload_bounded,
@@ -754,3 +754,107 @@ def video_delete(
     db.delete(clip)
     db.commit()
     return RedirectResponse(dest, status_code=303)
+
+
+# ── AI video generation (Unsloth Studio /v1/videos) ──────────────────────────
+# Durable background jobs (app/video_jobs.py, same engine family as the
+# image/audio/chat job pages) — video generation is minutes-to-hours of
+# remote work, so it never runs inside one HTTP request. GM-only: these
+# follow the router's own write-tier idiom rather than the allowlist.
+
+def _video_job_to_dict(db: Session, job) -> dict:
+    out = {
+        "id": job.id,
+        "prompt": job.prompt or "",
+        "status": job.status or "pending",
+        "error": job.error or "",
+        "studio_video_id": job.studio_video_id or "",
+        "clip_id": job.clip_id,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+    }
+    if job.clip_id:
+        clip = db.get(VideoClip, job.clip_id)
+        if clip:
+            out["clip_url"] = clip.file_url
+            out["clip_name"] = clip.name
+    return out
+
+
+@router.post("/api/video-jobs/start")
+async def video_job_start(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Start an AI video generation through Studio's /v1/videos and return
+    its job id immediately. GM-only."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    _require_edit_section(request, world)
+    body = await request.json()
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "A prompt is required")
+    if len(prompt) > 4000:
+        raise HTTPException(400, "Prompt too long (over 4k chars)")
+    if not _ai_module.effective_llm_api_key():
+        raise HTTPException(400, "No Unsloth backend configured — set UNSLOTH_API_KEY (Settings → System)")
+    params = {
+        "prompt": prompt,
+        "model": str(body.get("model") or "").strip(),
+        "seconds": body.get("seconds"),
+        "size": str(body.get("size") or "").strip(),
+        "name": str(body.get("name") or "").strip(),
+    }
+    user = getattr(request.state, "user", None)
+    from .. import video_jobs as _video_jobs
+    job_id = _video_jobs.create_job(
+        world.id, prompt, params, created_by_user_id=(user.id if user else None))
+    job = db.get(VideoJob, job_id)
+    return {"id": job_id, "job": _video_job_to_dict(db, job)}
+
+
+@router.get("/api/video-jobs")
+def video_jobs_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """This world's AI video generation jobs, newest first. GM-only."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    jobs = (db.query(VideoJob).filter(VideoJob.world_id == world.id)
+            .order_by(VideoJob.id.desc()).limit(20).all())
+    return {"jobs": [_video_job_to_dict(db, j) for j in jobs]}
+
+
+@router.post("/api/video-jobs/{job_id}/cancel")
+def video_job_cancel(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.get(VideoJob, job_id)
+    if not job or job.world_id != world.id:
+        raise HTTPException(404)
+    if job.status not in ("pending", "generating", "fetching"):
+        raise HTTPException(400, "Job is not in progress")
+    from .. import video_jobs as _video_jobs
+    if not _video_jobs.cancel_job(job_id):
+        # Not running in this process (restart gap) — mark it cancelled
+        # directly; the Studio-side generation keeps running either way.
+        job.status = "cancelled"
+        job.error = "Cancelled by GM."
+        db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/video-jobs/{job_id}")
+def video_job_delete(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Remove a finished job's row. The VideoClip it produced stays —
+    delete the clip itself from the library if unwanted (see
+    video_jobs.delete_job's docstring for why). GM-only."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    from .. import video_jobs as _video_jobs
+    if not _video_jobs.delete_job(job_id):
+        raise HTTPException(400, "Job is in progress — cancel it first")
+    return {"ok": True}

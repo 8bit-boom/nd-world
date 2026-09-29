@@ -62,17 +62,18 @@
 
 <script src="/static/js/progress-bar.js?v={{ asset_v('js/progress-bar.js') }}"></script>
 <script>
-// Three job engines (app/audio_jobs.py, app/chat_jobs.py, app/image_jobs.py)
-// share this one page — each has its own table/routes/status vocabulary
-// (audio: transcribing/summarizing; chat/image: generating), so every job
-// fetched below is tagged with a `job_type` telling the rest of this file
-// which endpoint base and field names apply to it.
-const JOB_TYPE_ENDPOINT = { audio: '/api/audio-jobs', chat: '/api/ai/chat/jobs', image: '/api/ai/imagegen/jobs' };
-const JOB_TYPE_ICON = { audio: '🎙', chat: '💬', image: '🎨' };
-const JOB_TYPE_LABEL = { audio: null, chat: 'Chat', image: 'Image Gen' };  // audio uses its own purpose_label instead
-const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing', 'generating']);
+// Four job engines (app/audio_jobs.py, app/chat_jobs.py, app/image_jobs.py,
+// app/video_jobs.py) share this one page — each has its own table/routes/
+// status vocabulary (audio: transcribing/summarizing; chat/image/video:
+// generating), so every job fetched below is tagged with a `job_type`
+// telling the rest of this file which endpoint base and field names apply.
+const JOB_TYPE_ENDPOINT = { audio: '/api/audio-jobs', chat: '/api/ai/chat/jobs', image: '/api/ai/imagegen/jobs', video: '/api/video-jobs' };
+const JOB_TYPE_ICON = { audio: '🎙', chat: '💬', image: '🎨', video: '🎬' };
+const JOB_TYPE_LABEL = { audio: null, chat: 'Chat', image: 'Image Gen', video: 'Video Gen' };  // audio uses its own purpose_label instead
+const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing', 'generating', 'fetching']);
 const STATUS_LABEL = {
   pending: 'Queued…', transcribing: 'Transcribing…', summarizing: 'Summarizing…', generating: 'Generating…',
+  fetching: 'Downloading video…',
   done: '✓ Done', error: '✗ Failed', cancelled: '○ Cancelled',
   interrupted: '⏸ Interrupted',
 };
@@ -506,6 +507,22 @@ function bgRenderJob(job) {
       });
       card.appendChild(grid);
     }
+    if (job.job_type === 'video' && job.clip_url) {
+      const label = document.createElement('div');
+      label.className = 'bg-job-result-label';
+      label.textContent = job.clip_name || 'Video clip';
+      card.appendChild(label);
+      const video = document.createElement('video');
+      video.src = job.clip_url;
+      video.controls = true;
+      video.style.cssText = 'width:100%;max-width:420px;border-radius:4px;border:1px solid var(--border);margin-top:.3rem';
+      card.appendChild(video);
+      const libLink = document.createElement('a');
+      libLink.href = '/video';
+      libLink.textContent = 'Open in Video library →';
+      libLink.style.cssText = 'display:inline-block;margin-top:.4rem;color:var(--neon);text-decoration:none;font-size:.8rem';
+      card.appendChild(libLink);
+    }
   }
 
   return card;
@@ -748,14 +765,16 @@ async function bgRefresh() {
   const audioUrl = audioParams.length ? '/api/audio-jobs?' + audioParams.join('&') : '/api/audio-jobs';
   const wantChatImage = !fPurpose;
   const noFetch = Promise.resolve({ list: [], total_pages: 1 });
-  const [audio, chat, image] = await Promise.all([
+  const [audio, chat, image, video] = await Promise.all([
     bgFetchJobs('audio', audioUrl, true),
     wantChatImage ? bgFetchJobs('chat', '/api/ai/chat/jobs', false) : noFetch,
     wantChatImage ? bgFetchJobs('image', '/api/ai/imagegen/jobs', false) : noFetch,
+    wantChatImage ? bgFetchJobs('video', '/api/video-jobs', true) : noFetch,
   ]);
   const statusMatches = (j) => !fStatus
     || (fStatus === 'running' ? IN_PROGRESS.has(j.status) : j.status === fStatus);
-  const jobs = [...audio.list, ...chat.list.filter(statusMatches), ...image.list.filter(statusMatches)]
+  const jobs = [...audio.list, ...chat.list.filter(statusMatches), ...image.list.filter(statusMatches),
+                ...video.list.filter(statusMatches)]
     .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 
   const list = document.getElementById('bg-jobs-list');
@@ -776,6 +795,7 @@ async function bgRefresh() {
   }
   if (chat.list.length >= 20) pageNotes.push('Chat jobs are capped at the latest 20.');
   if (image.list.length >= 20) pageNotes.push('Image jobs are capped at the latest 20.');
+  if (video.list.length >= 20) pageNotes.push('Video jobs are capped at the latest 20.');
   const pageNote = document.getElementById('bg-jobs-pagenote');
   pageNote.textContent = pageNotes.join(' ');
   pageNote.style.display = pageNotes.length ? 'block' : 'none';

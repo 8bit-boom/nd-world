@@ -30,7 +30,7 @@ _log = logging.getLogger("nd.db")
 _GENERICALLY_HEALED_TABLES = (
     "combat_sessions", "parties", "quests", "game_sessions",
     "world_calendars", "calendar_events", "image_albums",
-    "audio_jobs", "image_jobs", "chat_jobs", "chat_sessions",
+    "audio_jobs", "image_jobs", "chat_jobs", "video_jobs", "chat_sessions",
     "prompt_presets", "page_docs", "audio_clips", "video_clips",
     "character_sheets", "page_albums", "audio_albums",
     "video_albums", "calendar_day_icons", "dice_rolls",

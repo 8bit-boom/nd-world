@@ -1536,6 +1536,36 @@ class ImageJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class VideoJob(Base):
+    """A durable background job for AI video generation via Studio's
+    /v1/videos — see app/video_jobs.py. Mirrors ImageJob's shape: video
+    generation is minutes-to-hours of remote work (worse than images on a
+    CPU-only box), so it always runs as a background task, never inside one
+    HTTP request. The Studio-side generation id is persisted so a server
+    restart can re-attach to a generation Studio is still working on
+    instead of paying for it twice; the finished bytes land as a normal
+    VideoClip row (GM-only until reviewed, like every generated asset)."""
+    __tablename__ = "video_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    prompt = Column(Text, default="")
+    # {model, seconds, size, name} as submitted — the fields Studio's
+    # /v1/videos body accepts, kept as one blob like ImageJob.params_json.
+    params_json = Column(Text, default="{}")
+    # Studio's id for the started generation — the re-attach handle.
+    studio_video_id = Column(String(256), default="")
+    # pending -> generating -> fetching -> done, or -> error/cancelled.
+    status = Column(String(32), default="pending")
+    error = Column(Text, default="")
+    # The VideoClip created from the finished bytes, once done.
+    clip_id = Column(Integer, ForeignKey("video_clips.id"), nullable=True)
+    resumed_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ChatJob(Base):
     """A durable background job for a single non-streaming chat completion —
     see app/chat_jobs.py. Same rationale as AudioJob/ImageJob: an opt-in
