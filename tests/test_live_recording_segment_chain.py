@@ -56,7 +56,7 @@ def test_live_start_segment_catches_a_rejected_start_promise(client, seed):
     rejected start() promise (see the ndMicRecorder tests above) vanished —
     the chunk timer was never re-armed and _liveRecording was never cleared."""
     page = _get_page(client, seed)
-    segment_body = page.split("function liveStartSegment()", 1)[1][:2600]
+    segment_body = page.split("function liveStartSegment()", 1)[1][:3400]
     assert ".catch(err => liveHandleMicFailure(err))" in segment_body
     # The non-throwing failure path (started === false) must also route
     # through the recorder's own onError rather than duplicating error UI —
@@ -134,7 +134,7 @@ def test_queue_busy_flag_is_cleared_in_a_finally(client, seed):
     leave _liveQueueBusy stuck true forever, silently wedging every future
     chunk behind this function's own early-return guard."""
     page = _get_page(client, seed)
-    queue_body = page.split("async function liveProcessQueue()", 1)[1][:3300]
+    queue_body = page.split("async function liveProcessQueue()", 1)[1][:6500]
     assert "} finally {" in queue_body
     finally_body = queue_body.split("} finally {", 1)[1][:500]
     assert "_liveQueueBusy = false;" in finally_body
@@ -146,7 +146,7 @@ def test_transcript_display_is_rendered_outside_the_upload_retry_try(client, see
     the server already saved — the exact duplicate-append trigger item 3
     guards against server-side."""
     page = _get_page(client, seed)
-    queue_body = page.split("async function liveProcessQueue()", 1)[1][:3300]
+    queue_body = page.split("async function liveProcessQueue()", 1)[1][:6500]
     assert "if (uploaded) {" in queue_body
     render_guard = queue_body.split("if (uploaded) {", 1)[1][:200]
     assert "liveSetTranscriptDisplay(transcriptText)" in render_guard
@@ -179,3 +179,54 @@ def test_one_shot_mic_buttons_also_catch_a_rejected_start(client, seed):
     assert "_micRecorder.start().then(started => {" in page
     session_mic_body = page.split("_micRecorder.start().then(started => {", 1)[1][:400]
     assert "}).catch(err => {" in session_mic_body
+
+
+# ── docs/STT_LIVE_AUDIT_2026-09.md fixes ─────────────────────────────────────
+
+def test_mic_recovery_is_single_flight(client, seed):
+    """Finding 3: one mic death reaches liveHandleMicFailure from TWO places
+    at once (track.onended and the dead segment's chained start failure) —
+    without a mutex, two concurrent ladders could each acquire a getUserMedia
+    stream (one orphaned, mic left hot), each chain a segment loop, and
+    double-count the attempt budget."""
+    page = _get_page(client, seed)
+    assert "_liveRecovering" in page
+    guard = page.split("async function liveHandleMicFailure(err) {", 1)[1][:400]
+    assert "if (_liveRecovering) return;" in guard
+    # The guard is cleared even on the give-up path.
+    fn = page.split("async function liveHandleMicFailure(err) {", 1)[1]
+    fn = fn.split("\n}", 1)[0] if "\n}" in fn else fn[:4000]
+    assert "finally {" in fn and "_liveRecovering = false" in fn
+    # The backoff re-entry is a loop now, not recursion (a recursive call
+    # would hit its own mutex and strand the failure).
+    assert "return liveHandleMicFailure(" not in fn
+    assert "while (true)" in fn
+
+
+def test_superseded_stream_generation_cannot_chain_or_release(client, seed):
+    """Finding 3's other half: liveStartSegment pins the stream generation it
+    was built on, so a still-draining recorder from a dead generation can
+    neither start a SECOND chain on the recovered stream nor release the
+    recovered stream as if it were the final segment."""
+    page = _get_page(client, seed)
+    assert "const segStream = _liveMicStream;" in page
+    assert "if (_liveMicStream !== segStream) return;" in page
+    # And it refuses to run at all while recording with no stream — recovery
+    # owns the restart then.
+    head = page.split("function liveStartSegment() {", 1)[1][:900]
+    assert "if (_liveRecording && !_liveMicStream) return;" in head
+
+
+def test_upload_queue_waits_patiently_on_the_inflight_409(client, seed):
+    """Finding 1's client half: the server's in-flight 409 means "the first
+    upload of this segment is still transcribing", not "failed" — it must
+    not consume the 3-attempt failure ladder, and the waiting must be
+    bounded so a wedged transcription still parks the chunk for Retry."""
+    page = _get_page(client, seed)
+    assert "res.status === 409" in page
+    assert "MAX_INFLIGHT_WAITS" in page
+    # The 409 branch continues WITHOUT consuming a ladder slot: the for
+    # header no longer increments.
+    assert "for (let attempt = 1; attempt <= 3 && !uploaded; )" in page
+    # attempt increments only on a real failure now.
+    assert "attempt++;  // a real failure" in page

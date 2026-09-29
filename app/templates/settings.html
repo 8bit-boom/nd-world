@@ -293,6 +293,10 @@
           <option value="whisper">whisper.cpp sidecar</option>
           <option value="unsloth">Unsloth Studio</option>
         </select>
+        <p id="studio-stt-backend-note" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0;display:none">
+          On the Unsloth Studio backend, the world's Whisper settings (glossary, language, denoise) don't apply —
+          Studio's own Voice settings own those, and audio goes out with its original format/extension.
+        </p>
       </div>
       <div class="form-group">
         <label for="studio-stt-model">STT model (Whisper family — Studio downloads it on first use)</label>
@@ -1329,8 +1333,9 @@ function ndCopyRestartCmd() {
   });
   // STT test only makes sense against Studio — hide it on the whisper sidecar
   const syncSttTestVisibility = () => {
-    el('studio-stt-test').style.display =
-      el('studio-stt-backend').value === 'unsloth' ? '' : 'none';
+    const unsloth = el('studio-stt-backend').value === 'unsloth';
+    el('studio-stt-test').style.display = unsloth ? '' : 'none';
+    el('studio-stt-backend-note').style.display = unsloth ? '' : 'none';
   };
   el('studio-stt-backend').addEventListener('change', syncSttTestVisibility);
   syncSttTestVisibility();

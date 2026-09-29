@@ -357,3 +357,29 @@ def test_ai_stream_accepts_message_with_attachments(client, seed, monkeypatch):
     })
     assert r.status_code == 200
     assert "ok" in r.text
+
+
+def test_attachment_transcription_timeout_still_saves_the_attachment(client, seed, monkeypatch):
+    """docs/STT_LIVE_AUDIT_2026-09.md finding 2: a slow STT backend must not
+    turn an audio attachment's upload into a proxy 524 (which the browser
+    reads as a failure and re-uploads). The in-request transcription is
+    bounded by _AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS; on timeout the
+    attachment is stored and returned without a transcript, same as a
+    WhisperError."""
+    import asyncio as _asyncio
+
+    async def _slow_transcribe(path, glossary="", language=""):
+        await _asyncio.sleep(30)  # far past the patched 0.2s budget
+        return "never reached"
+
+    monkeypatch.setattr(ai_router._ai, "transcribe_audio", _slow_transcribe)
+    monkeypatch.setattr(ai_router, "_AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS", 0.2)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload_file(client, "clip.mp3", _MP3_BYTES, "audio/mpeg")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["kind"] == "audio"
+    assert data["text"] == ""  # degraded, not failed — the file is attached
+    assert data["url"].startswith("/uploads/ai_attachments/")

@@ -203,3 +203,107 @@ def test_whisper_call_does_not_hold_a_pooled_db_connection(client, seed, monkeyp
     r = _append(client, session_id, 0)
     assert r.status_code == 200
     assert checked_out_during_call["n"] == 0
+
+
+# ── docs/STT_LIVE_AUDIT_2026-09.md fixes ─────────────────────────────────────
+
+def test_transcription_holds_the_whisper_job_semaphore(client, seed, monkeypatch):
+    """Live chunks now take the same single-slot semaphore the background
+    transcription jobs hold (finding 1): the STT backend serves one piece
+    of audio at a time, so letting a live chunk stack against a running
+    session-recap job just queues both with no benefit."""
+    seen = {}
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        seen["value"] = ai_module.whisper_job_semaphore._value
+        return "text"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append(client, session_id, 0)
+    assert r.status_code == 200
+    assert seen["value"] == 0  # held for the duration of the call
+
+
+def test_silent_segment_records_its_key_so_a_retry_skips_whisper(client, seed, monkeypatch):
+    """Finding 4: a chunk that transcribes to "" with the raw archive off
+    used to skip the commit entirely, so its segment key never landed and
+    a retried silent chunk re-burned a full Whisper pass for text that was
+    always going to be empty."""
+    calls = {"n": 0}
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        calls["n"] += 1
+        return ""
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+
+    r1 = _append(client, session_id, 0)
+    assert r1.status_code == 200 and r1.json()["transcript"] == ""
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, session_id)
+        assert json.loads(gs.live_transcript_segments_json or "[]") == [f"{_RID}:0"]
+    finally:
+        db.close()
+
+    r2 = _append(client, session_id, 0)
+    assert r2.status_code == 200
+    assert calls["n"] == 1  # the retry hit the committed key, not Whisper
+
+
+def test_concurrent_duplicate_upload_gets_409_not_a_second_transcription(client, seed, monkeypatch):
+    """Finding 1's server half: the in-flight guard. A retry that arrives
+    while the first upload of the same segment is still transcribing (the
+    exact shape a reverse proxy creates by giving up on the response while
+    the server keeps working) must get a cheap 409, not start a second
+    concurrent transcription of the same audio."""
+    import threading
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0}
+
+    def fake_transcribe(path, glossary="", **kwargs):
+        calls["n"] += 1
+        started.set()
+        # Blocks the first (and only) call's request until the test lets it
+        # finish; a timeout keeps a broken guard from hanging the suite.
+        release.wait(30)
+        return "the only transcription"
+    # _transcribe_chunk awaits transcribe_audio on the request's event loop;
+    # a plain-sync fake would block it, so wrap the block in a thread.
+    import asyncio
+
+    async def fake_async(path, glossary="", **kwargs):
+        return await asyncio.to_thread(fake_transcribe, path, **{"glossary": glossary})
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_async)
+
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+
+    import threading as _t
+    result_a = {}
+
+    def _post_a():
+        result_a["r"] = _append(client, session_id, 0)
+    th = _t.Thread(target=_post_a)
+    th.start()
+    assert started.wait(30), "first upload never reached transcription"
+
+    r_b = _append(client, session_id, 0)  # the proxy-orphaned twin, re-POSTed
+    assert r_b.status_code == 409
+    assert "Still transcribing" in r_b.json()["detail"]
+
+    release.set()
+    th.join(30)
+    assert result_a["r"].status_code == 200
+    assert calls["n"] == 1  # exactly one transcription served both uploads
+
+    # Once committed, the ordinary idempotency path takes over.
+    r_c = _append(client, session_id, 0)
+    assert r_c.status_code == 200
+    assert r_c.json()["transcript"] == "the only transcription"
+    assert calls["n"] == 1

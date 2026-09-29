@@ -62,7 +62,9 @@ def test_status_settles_to_a_final_message_once_idle(client, seed):
     assert "function liveRefreshStatus()" in page
     assert "'Stopped — transcript saved.'" in page
     # Called at the end of the upload loop, not just under `if (_liveRecording)`.
-    assert "liveRefreshStatus();" in page.split("async function liveProcessQueue", 1)[1][:3300]
+    # liveProcessQueue grew with the patient in-flight 409 polling
+    # (docs/STT_LIVE_AUDIT_2026-09.md finding 1) — same assertion, wider window.
+    assert "liveRefreshStatus();" in page.split("async function liveProcessQueue", 1)[1][:6500]
 
 
 def test_backlog_is_shown_while_still_recording(client, seed):

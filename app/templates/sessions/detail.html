@@ -1351,6 +1351,17 @@ async function liveProcessQueue() {
   if (_liveQueueBusy) return;
   _liveQueueBusy = true;
   const status = document.getElementById('live-record-status');
+  // Patient polling for the server's in-flight 409 (docs/
+  // STT_LIVE_AUDIT_2026-09.md finding 1): a slow STT backend (CPU-only
+  // Studio) can't finish a chunk inside one request/response cycle when a
+  // reverse proxy cuts responses at ~100s. The first upload keeps
+  // transcribing server-side; every retry of the SAME segment is answered
+  // by the server's in-flight guard with a cheap 409 until it commits.
+  // Those waits don't consume the 3-attempt failure ladder (they're not
+  // failures), but they're capped so a genuinely wedged transcription
+  // still parks the chunk for manual Retry instead of polling forever.
+  const INFLIGHT_WAIT_MS = 15000;
+  const MAX_INFLIGHT_WAITS = 40;  // ~10 minutes per chunk, then park it
   try {
     while (_liveQueue.length) {
       if (_liveRecording && _liveQueue.length > 1) {
@@ -1361,7 +1372,8 @@ async function liveProcessQueue() {
       const file = _liveQueue[0];
       let uploaded = false;
       let transcriptText = null;
-      for (let attempt = 1; attempt <= 3 && !uploaded; attempt++) {
+      let inflightWaits = 0;
+      for (let attempt = 1; attempt <= 3 && !uploaded; ) {
         try {
           const fd = new FormData();
           fd.append('file', file, file.name);
@@ -1374,12 +1386,24 @@ async function liveProcessQueue() {
           fd.append('recording_id', file.ndRecordingId || '');
           fd.append('segment_index', String(typeof file.ndSegmentIndex === 'number' ? file.ndSegmentIndex : -1));
           const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
+          if (res.status === 409) {
+            // The server's in-flight guard: this exact segment is already
+            // being transcribed by an earlier upload of ours (or its proxy-
+            // orphaned twin). Not a failure — wait and re-ask.
+            if (inflightWaits++ >= MAX_INFLIGHT_WAITS) throw await ndApiErrorFrom(res);
+            status.textContent = _liveRecording
+              ? `Recording… (server still transcribing a chunk — ${_liveQueue.length} waiting)`
+              : 'Finishing — the server is still transcribing the last chunk…';
+            await new Promise(r => setTimeout(r, INFLIGHT_WAIT_MS));
+            continue;  // attempt NOT incremented: this isn't a failure
+          }
           if (!res.ok) throw await ndApiErrorFrom(res);
           const data = await res.json();
           transcriptText = data.transcript;
           uploaded = true;
         } catch (e) {
-          if (attempt >= 3) {
+          attempt++;  // a real failure — consumes one of the 3 ladder slots
+          if (attempt > 3) {
             _liveFailedChunks.push(file);
           } else {
             await new Promise(r => setTimeout(r, 1500 * attempt));
@@ -1412,12 +1436,24 @@ async function liveProcessQueue() {
 }
 
 function liveStartSegment() {
+  // No stream and still "recording" means a mic recovery is in flight (see
+  // liveHandleMicFailure) — it owns restarting the chain once it re-acquires,
+  // and a recorder started here with a null/dead stream would just throw
+  // (or worse, silently acquire its OWN mic — a second concurrent chain).
+  if (_liveRecording && !_liveMicStream) return;
   // Segments stay separate MediaRecorder instances producing complete
   // standalone containers (each is transcribed independently server-side)
   // — deliberately NOT switched to a single long-running recorder with
   // timeslice chunks, whose interior chunks lack container headers Whisper
   // needs. Only the underlying mic STREAM is now shared across segments —
   // see _liveMicStream's own comment.
+  // segStream pins WHICH stream this segment belongs to: if the mic dies
+  // and recovery replaces _liveMicStream mid-flight, a still-draining old
+  // recorder's onStop must neither chain a SECOND segment loop onto the
+  // new stream nor release the new stream thinking it was the last
+  // segment — both were possible when onStop inferred liveness from
+  // _liveRecording alone (docs/STT_LIVE_AUDIT_2026-09.md finding 3).
+  const segStream = _liveMicStream;
   _liveCurrentRecorder = ndMicRecorder(
     (blob, mimeType) => {
       // The segment's archive identity is stamped at capture time, not
@@ -1428,6 +1464,7 @@ function liveStartSegment() {
       segFile.ndSegmentIndex = _liveSegmentIndex++;
       _liveQueue.push(segFile);
       liveProcessQueue().catch(e => console.error('live upload queue', e));
+      if (_liveMicStream !== segStream) return;  // a superseded generation — recovery owns the chain now
       if (_liveRecording) {
         liveStartSegment();  // immediately pick up the next segment, no gap
       } else {
@@ -1435,7 +1472,7 @@ function liveStartSegment() {
       }
     },
     (err) => liveHandleMicFailure(err),
-    _liveMicStream,
+    segStream,
   );
   _liveCurrentRecorder.start().then(started => {
     if (!started) return;  // ndMicRecorder already invoked onError above
@@ -1462,36 +1499,61 @@ function liveStartSegment() {
 let _liveRecoverAttempts = 0;
 const LIVE_MAX_RECOVER_ATTEMPTS = 3;
 let _liveLastError = '';
+// Single-flight mutex: ONE mic death reaches this handler from TWO places
+// at once — track.onended AND the dead segment's own chained
+// liveStartSegment failing on the inactive stream (or, when recovery has
+// already nulled _liveMicStream, that chain acquiring a mic of its own —
+// closed separately by the segStream generation check in liveStartSegment).
+// Without the mutex, two concurrent ladders could each acquire a
+// getUserMedia stream (one orphaned with its tracks never stopped — the
+// mic indicator stays hot), each call liveStartSegment (two chains racing
+// the shared _liveCurrentRecorder/_liveSegmentIndex/_liveChunkTimer), and
+// double-increment the attempt counter toward a spurious "Mic lost"
+// (docs/STT_LIVE_AUDIT_2026-09.md finding 3).
+let _liveRecovering = false;
 
 async function liveHandleMicFailure(err) {
   if (!_liveRecording) return;  // an ordinary Stop, not a failure — nothing to recover
+  if (_liveRecovering) return;  // a twin invocation — the ladder already in flight owns recovery
+  _liveRecovering = true;
   const status = document.getElementById('live-record-status');
-  if (_liveRecoverAttempts >= LIVE_MAX_RECOVER_ATTEMPTS) {
-    _liveRecording = false;
-    clearTimeout(_liveChunkTimer);
-    liveStopMicStream();
-    liveReleaseWakeLock();
-    document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
-    _liveLastError = 'Mic lost and could not be reconnected: ' + (err && err.message ? err.message : err) +
-                      ' — recording stopped. Press Start to resume.';
-    liveRefreshStatus();
-    return;
-  }
-  _liveRecoverAttempts++;
-  status.textContent = `⚠ Mic dropped — reconnecting (${_liveRecoverAttempts}/${LIVE_MAX_RECOVER_ATTEMPTS})…`;
-  liveStopMicStream();  // drop the dead stream before asking for a new one
   try {
-    _liveMicStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch (e) {
-    await new Promise(r => setTimeout(r, 1000 * _liveRecoverAttempts));
-    return liveHandleMicFailure(e);
+    // A loop, not a recursive self-call: recursion would now hit the
+    // mutex above and silently do nothing, stranding the failure.
+    while (true) {
+      if (_liveRecoverAttempts >= LIVE_MAX_RECOVER_ATTEMPTS) {
+        _liveRecording = false;
+        clearTimeout(_liveChunkTimer);
+        liveStopMicStream();
+        liveReleaseWakeLock();
+        document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
+        _liveLastError = 'Mic lost and could not be reconnected: ' + (err && err.message ? err.message : err) +
+                          ' — recording stopped. Press Start to resume.';
+        liveRefreshStatus();
+        return;
+      }
+      _liveRecoverAttempts++;
+      status.textContent = `⚠ Mic dropped — reconnecting (${_liveRecoverAttempts}/${LIVE_MAX_RECOVER_ATTEMPTS})…`;
+      liveStopMicStream();  // drop the dead stream before asking for a new one
+      try {
+        _liveMicStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+        break;  // re-acquired
+      } catch (e) {
+        err = e;  // report the LATEST failure if the ladder gives up
+        await new Promise(r => setTimeout(r, 1000 * _liveRecoverAttempts));
+        // loop: re-check the attempt budget and try again
+      }
+      if (!_liveRecording) { liveStopMicStream(); return; }  // GM pressed Stop while we were reconnecting
+    }
+    if (!_liveRecording) { liveStopMicStream(); return; }  // GM pressed Stop while we were reconnecting
+    liveWatchMicTracks();
+    status.textContent = 'Recording… (mic reconnected)';
+    liveStartSegment();
+  } finally {
+    _liveRecovering = false;
   }
-  if (!_liveRecording) { liveStopMicStream(); return; }  // GM pressed Stop while we were reconnecting
-  liveWatchMicTracks();
-  status.textContent = 'Recording… (mic reconnected)';
-  liveStartSegment();
 }
 
 // Detects the mic dying DURING a segment (not just at the next chunk

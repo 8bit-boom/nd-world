@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -66,6 +67,13 @@ MAX_LIVE_CHUNK_BYTES = int(os.environ.get("MAX_LIVE_CHUNK_BYTES", str(25 * 1024 
 # runaway-client bound (a GM pointing the endpoint at a movie file, say),
 # sized to never reject a real segment, same spirit as MAX_LIVE_CHUNK_BYTES.
 MAX_LIVE_SAVED_SEGMENT_BYTES = int(os.environ.get("MAX_LIVE_SAVED_SEGMENT_BYTES", str(200 * 1024 * 1024)))
+# In-flight transcription markers for api_live_transcript_append — see the
+# route's own comment. Long enough to outlast a real transcription of the
+# longest chunk (15 min of audio at even 10x realtime is 2.5 h; the unsloth
+# backend's own read budget defaults to 30 min), short enough that a marker
+# left behind by a hard crash stops blocking its segment within the hour.
+_LIVE_STT_INFLIGHT_TTL_SECONDS = float(os.environ.get("LIVE_STT_INFLIGHT_TTL_SECONDS", str(45 * 60)))
+_LIVE_STT_INFLIGHT: dict[str, float] = {}
 
 
 def _session_audio_chunks_root() -> Path:
@@ -1316,10 +1324,43 @@ async def api_live_transcript_append(
     if already_appended:
         chunk_text = ""
     else:
+        # In-flight dedup (docs/STT_LIVE_AUDIT_2026-09.md finding 1): the
+        # segment-level idempotency above only sees COMMITTED state, so a
+        # client retry that arrives while the first attempt is still
+        # transcribing (the exact shape a reverse proxy creates — it gives
+        # up on the response at ~100 s while the server keeps working, and
+        # the browser's retry ladder re-POSTs) would start a SECOND
+        # concurrent transcription of the same audio, tripling Studio/Whisper
+        # work per chunk and stacking duplicate jobs in the backend's queue.
+        # The marker is keyed per session+segment, popped in a finally, and
+        # expires after _LIVE_STT_INFLIGHT_TTL_SECONDS so a request that
+        # died without cleanup (a hard crash) can't block its segment
+        # forever.
+        inflight_key = f"{session_id}:{seg_key}" if seg_key else ""
+        now = time.time()
+        if inflight_key and inflight_key in _LIVE_STT_INFLIGHT:
+            started_at = _LIVE_STT_INFLIGHT[inflight_key]
+            if now - started_at < _LIVE_STT_INFLIGHT_TTL_SECONDS:
+                raise HTTPException(
+                    409, "Still transcribing this segment — the server is working on the "
+                         "first upload; retry this request in a few seconds.")
+            _log.warning("live-STT in-flight marker for %s expired after %.0fs", inflight_key, now - started_at)
         try:
-            chunk_text = (await _transcribe_chunk(file, glossary=glossary, language=language, denoise=denoise)).strip()
-        except _ai_module.WhisperError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            if inflight_key:
+                _LIVE_STT_INFLIGHT[inflight_key] = now
+            # Same serialization the background-job transcriptions already
+            # hold (app.ai.whisper_job_semaphore, concurrency 1 by default):
+            # the STT backend serves one piece of audio at a time anyway, so
+            # letting a live chunk cut in line alongside a running session
+            # job just stacks both in the backend's queue with no benefit.
+            async with _ai_module.whisper_job_semaphore:
+                try:
+                    chunk_text = (await _transcribe_chunk(file, glossary=glossary, language=language, denoise=denoise)).strip()
+                except _ai_module.WhisperError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+        finally:
+            if inflight_key:
+                _LIVE_STT_INFLIGHT.pop(inflight_key, None)
 
     # Raw-audio save runs AFTER transcription, so a Whisper failure (the 400
     # above) leaves nothing half-saved, and the DB row below is committed
@@ -1362,11 +1403,20 @@ async def api_live_transcript_append(
             if saved_rel not in files:
                 files.append(saved_rel)
                 gs.live_audio_files_json = json.dumps(files)
-        if chunk_text or saved_rel:
+        # A transcribed-but-SILENT segment (chunk_text "") with save_audio
+        # off must still commit when it carries a segment key: without that,
+        # the key never lands in live_transcript_segments_json and a retried
+        # upload of the same silent segment re-burns a full Whisper pass for
+        # text that was always going to be empty (docs/STT_LIVE_AUDIT_2026-09.md
+        # finding 4). The key append below is additionally gated on the text
+        # actually being new (not already_appended) so a post-commit retry
+        # can't record the same key twice.
+        if chunk_text or saved_rel or (seg_key and not already_appended):
             if chunk_text:
                 gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
-                if seg_key:
-                    keys = _live_transcript_segment_keys(gs)
+            if seg_key and not already_appended:
+                keys = _live_transcript_segment_keys(gs)
+                if seg_key not in keys:
                     keys.append(seg_key)
                     gs.live_transcript_segments_json = json.dumps(keys)
             db.commit()

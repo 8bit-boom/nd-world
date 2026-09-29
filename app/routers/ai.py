@@ -59,6 +59,13 @@ _MAX_ATTACHMENT_AUDIO_BYTES = int(_os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(
 # enough for a handout or a few rulebook pages, bounded so one attachment
 # can't blow the model's context window on its own.
 _MAX_ATTACHMENT_TEXT_CHARS = 12000
+# In-request transcription budget for an audio attachment (see
+# _finish_attachment_upload). 90 s: comfortably under a reverse proxy's
+# response ceiling (Cloudflare tunnels 524 at ~100 s) while giving a fast
+# backend plenty of room for a normal voice memo. Env-tunable for LAN
+# deployments with no proxy in the middle.
+_AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS = float(
+    _os.environ.get("AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS", "90"))
 
 
 def _effective_ai_attachment_bytes(db, kind: Optional[str]) -> int:
@@ -1075,9 +1082,27 @@ async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_f
         # applies them — this direct/blocking path was missing both.
         glossary = (world.whisper_glossary or "").strip() if world else ""
         language = (world.whisper_language or "").strip() if world else ""
+        # Bounded by _AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS, comfortably under
+        # a reverse proxy's response ceiling (Cloudflare tunnels give up at
+        # ~100 s): a voice memo on a slow CPU-only STT backend can outlast
+        # that, and an unbounded wait turns into a 524 the browser reads as
+        # a failed upload — losing the attachment it already sent and
+        # re-uploading (plus re-transcribing) on retry. A timeout here just
+        # degrades to the same non-transcript handling as a WhisperError:
+        # the attachment itself is already safely on disk (docs/
+        # STT_LIVE_AUDIT_2026-09.md finding 2).
         try:
-            text = await _ai.transcribe_audio(dest, glossary=glossary, language=language)
+            text = await _asyncio.wait_for(
+                _ai.transcribe_audio(dest, glossary=glossary, language=language),
+                timeout=_AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS,
+            )
         except _ai.WhisperError:
+            text = ""
+        except _asyncio.TimeoutError:
+            _log.warning(
+                "attachment transcription exceeded %.0fs for %s — attaching without a transcript "
+                "(use the background-job flow for patient transcription)",
+                _AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS, dest.name)
             text = ""
     else:
         text = ""

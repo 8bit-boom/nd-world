@@ -353,3 +353,13 @@ def test_upload_limits_inputs_render_with_env_default_placeholders(client, seed)
     assert 'placeholder="500 (env default)"' in page.text  # gallery
     assert 'placeholder="2048 (env default)"' in page.text # video
     assert 'placeholder="1024 (env default)"' in page.text # audio + AI attachments
+
+
+def test_stt_backend_note_discloses_whisper_knob_no_ops(client, seed):
+    """docs/STT_LIVE_AUDIT_2026-09.md finding 5: the world's glossary/
+    language/denoise settings silently no-op on the Unsloth Studio backend —
+    the Settings page must say so next to the backend selector."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/settings?tab=system").text
+    assert 'id="studio-stt-backend-note"' in page
+    assert "don't apply" in page
