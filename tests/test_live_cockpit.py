@@ -778,3 +778,63 @@ def test_ai_find_error_path(client, seed, monkeypatch):
     data = _find_poll(client, r.json()["job_id"])
     assert data["status"] == "error"
     assert data["error"]
+
+
+def test_player_board_lists_own_pcs(client, seed):
+    """The Player Cockpit's My Character panel data: the viewer's own PCs
+    with live vitals + levelup flag (and never anyone else's)."""
+    mine = _mk_pc(seed.world_a.id, "Vex", owner_user_id=seed.player_a.id,
+                  current_hp=7, max_hp=20, armor_class=15)
+    _mk_pc(seed.world_a.id, "Someone Elses")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    d = client.get("/api/cockpit/player-board").json()
+    names = [m["name"] for m in d["my_pcs"]]
+    assert names == ["Vex"]
+    vex = d["my_pcs"][0]
+    assert vex["hp"] == 7 and vex["max_hp"] == 20 and vex["ac"] == 15
+    assert "level" in vex and "xp" in vex and "levelup" in vex
+
+
+def test_player_hub_on_own_sheet(client, seed):
+    """The character page is the player's management hub: their party (with
+    unclaimed loot + their claims + XP ledger + recent sessions) renders for
+    the OWNER, and never for a GM or another viewer."""
+    from app.models import GameSession as GS, Party as P
+
+    pc_id = _mk_pc(seed.world_a.id, "Vex", owner_user_id=seed.player_a.id)
+    db = SessionLocal()
+    try:
+        party = P(world_id=seed.world_a.id, name="Vanguard",
+                  member_pc_ids_json=json.dumps([pc_id]),
+                  loot_json=json.dumps([
+                      {"name": "Gem", "qty": 1, "notes": "", "claimed_by": []},
+                      {"name": "Rope", "qty": 1, "notes": "", "claimed_by": [pc_id]},
+                  ]),
+                  xp_json=json.dumps([{"ts": "2026-09-01T12:00", "amount": 50,
+                                       "awarded": {"Vex": 50}}]))
+        db.add(party)
+        db.add(GS(world_id=seed.world_a.id, session_num=1, title="The Tavern",
+                  party_id=None, xp_awarded=50))
+        db.commit()
+        gs = db.query(GS).filter(GS.title == "The Tavern").one()
+        party_id = db.query(P).filter(P.name == "Vanguard").one().id
+        gs.party_id = party_id
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/characters/{pc_id}").text
+    assert "Your party" in html and "Vanguard" in html
+    assert "Yours:" in html and "Rope" in html          # own claim
+    assert "1 unclaimed item" in html and "Gem" in html # unclaimed loot
+    assert "+50 XP" in html                             # ledger
+    assert "The Tavern" in html                         # recent session
+
+    # a GM viewing the same sheet gets NO hub (it's the player's surface)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html_gm = client.get(f"/characters/{pc_id}").text
+    assert "Your party" not in html_gm

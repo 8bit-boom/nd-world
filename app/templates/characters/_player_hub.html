@@ -1,0 +1,49 @@
+{% if can_manage and request.state.user and not request.state.user.is_gm and hub_party %}
+<!-- ── Your party hub: everything a player manages from their character's
+     page — party loot claims, XP history, recent sessions. Deliberately
+     different from the Player Cockpit (/player-cockpit): that is the live
+     session dashboard, this is the character's home. ── -->
+<div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin:1rem 0">
+  <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">🧑‍🤝‍🧑 Your party — <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">{{ hub_party.name }}</a></h2>
+
+  {% if hub_loot_unclaimed or hub_loot_mine %}
+  <div style="margin-bottom:.8rem">
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">🎒 Party loot</div>
+    {% if hub_loot_mine %}
+    <div style="font-size:.8rem;margin-bottom:.3rem">Yours: <strong style="color:var(--neon)">{{ hub_loot_mine|join(', ') }}</strong></div>
+    {% endif %}
+    {% if hub_loot_unclaimed %}
+    <details>
+      <summary style="font-size:.78rem;color:var(--text-dim);cursor:pointer">{{ hub_loot_unclaimed|length }} unclaimed item{{ 's' if hub_loot_unclaimed|length != 1 }} — claim from the party page</summary>
+      <div style="font-size:.78rem;color:var(--text-dim);padding:.3rem 0 0 .8rem">
+        {% for item in hub_loot_unclaimed %}• {{ item.get('name', 'item') }}{% if item.get('qty', 1) > 1 %} ×{{ item.qty }}{% endif %}<br/>{% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if hub_xp_ledger %}
+  <div style="margin-bottom:.8rem">
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">⭐ Recent XP</div>
+    {% for entry in hub_xp_ledger %}
+    <div style="font-size:.78rem;color:var(--text-dim)">
+      +{{ entry.get('amount', 0) }} XP{% if entry.get('ts') %} · {{ entry.ts[:10] }}{% endif %}
+      {% if entry.get('awarded') %} · {{ entry.awarded.keys()|join(', ') }}{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if hub_sessions %}
+  <div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">📓 Recent sessions</div>
+    {% for s in hub_sessions %}
+    <a href="{{ ('/sessions/' + s.id|string)|wq }}" style="display:block;font-size:.8rem;color:var(--text);text-decoration:none;padding:.15rem 0">
+      #{{ s.session_num }} — {{ s.title or 'Session' }}{% if s.xp_awarded %} <span style="color:var(--text-dim)">(+{{ s.xp_awarded }} XP)</span>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}

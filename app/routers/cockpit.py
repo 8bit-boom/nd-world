@@ -33,7 +33,7 @@ from .. import retrieval as _retrieval
 from ..database import get_db, SessionLocal
 from ..deps import get_world_ctx
 from ..models import Entity, Party, PlayerCharacter, Quest, Schematic
-from .parties import _member_vitals
+from .parties import _member_vitals, _pc_levelup_ready
 from ..templating import templates
 
 router = APIRouter()
@@ -426,6 +426,26 @@ def _player_quests(db: Session, world) -> list:
              "party": party_names.get(q.assigned_party_id)} for q in quests]
 
 
+def _player_my_pcs(db: Session, world, user) -> list:
+    """The viewer's own PlayerCharacters in this world, with live vitals —
+    feeds the Player Cockpit's My Character panel."""
+    if not user:
+        return []
+    pcs = (db.query(PlayerCharacter)
+           .filter(PlayerCharacter.world_id == world.id,
+                   PlayerCharacter.owner_user_id == user.id)
+           .order_by(PlayerCharacter.name).all())
+    out = []
+    for pc in pcs:
+        out.append({
+            "id": pc.id, "name": pc.name, "level": pc.level,
+            "hp": pc.current_hp, "max_hp": pc.max_hp, "temp_hp": pc.temp_hp,
+            "ac": pc.armor_class,
+            "xp": pc.xp, "levelup": _pc_levelup_ready(pc),
+        })
+    return out
+
+
 def _player_cockpit(request: Request, db: Session, world, worlds):
     """Render the cockpit shell in player mode: player-safe panel types
     (cockpit.js gates by CK_PLAYER_MODE), the player's parties (with
@@ -475,4 +495,5 @@ async def cockpit_player_board(request: Request, db: Session = Depends(get_db),
     return {
         "parties": _player_parties(db, world, user),
         "quests": _player_quests(db, world),
+        "my_pcs": _player_my_pcs(db, world, user),
     }

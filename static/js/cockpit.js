@@ -60,7 +60,7 @@
   // because the server-side workspace is ONE shared layout per world and a
   // player saving would stomp the GM's arrangement.
   const PLAYER = CK_PLAYER_MODE === true;
-  const PLAYER_TYPES = ['map', 'wmap', 'dice', 'party', 'quests', 'entity',
+  const PLAYER_TYPES = ['pc', 'map', 'wmap', 'dice', 'party', 'quests', 'entity',
     'ecard', 'notes', 'ai_chat', 'timer', 'calendar', 'gallery', 'audio', 'video'];
   function panelTypes() {
     if (!PLAYER) return CK_TYPES;
@@ -382,6 +382,8 @@
       buildFind(p, body);
     } else if (p.type === 'timer') {
       buildTimer(p, body);
+    } else if (p.type === 'pc') {
+      buildMyCharacter(p, body);
     } else if (p.type === 'notes') {
       const wrap = document.createElement('div');
       wrap.style.cssText = 'display:flex;flex-direction:column;height:100%;box-sizing:border-box;gap:.35rem';
@@ -1021,7 +1023,7 @@
     if (CK_MAPS.length) quick.push(['map', CK_MAPS[0].slug, '\u{1F5FA}\u{FE0F} ' + CK_MAPS[0].name]);
     if ((CK_WORLD_MAPS || []).length) quick.push(['wmap', CK_WORLD_MAPS[0].slug, '\u{1F5FA}\u{FE0F} ' + CK_WORLD_MAPS[0].name]);
     if (CK_PARTIES.length) quick.push(['party', String(CK_PARTIES[0].id), '\u2764 ' + CK_PARTIES[0].name]);
-    ['quests', 'dice', 'ai_chat', 'find', 'notes', 'timer'].forEach(function (t) {
+    ['pc', 'quests', 'dice', 'ai_chat', 'find', 'notes', 'timer'].forEach(function (t) {
       quick.push([t, '', '']);
     });
     quick.forEach(function (q) {
@@ -1610,6 +1612,70 @@
     render();
     save();
   });
+
+  // ── My Character panel (player mode): the viewer's own PC at a glance ──
+  let myPcCache = null;
+  function buildMyCharacter(p, body) {
+    const live = document.createElement('div');
+    live.className = 'ck-card';
+    live.innerHTML = '<p style="color:var(--text-dim);font-size:.8rem;margin:0">Loading…</p>';
+    body.appendChild(live);
+    liveLoaders.set(p.id, function () { loadMyPc(p, live); });
+  }
+
+  async function loadMyPc(p, live) {
+    const host = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-card') ||
+                 document.querySelector('.ck-mpanel[data-pid="' + p.id + '"] .ck-card');
+    const el = host || live;
+    if (!el) return;
+    try {
+      if (!myPcCache) {
+        const r = await fetch('/api/cockpit/player-board');
+        if (!r.ok) throw new Error();
+        myPcCache = await r.json();
+      }
+      const mine = (myPcCache.my_pcs || []).filter(function (m) { return true; });
+      if (!mine.length) {
+        el.innerHTML = '<p style="color:var(--text-dim);font-size:.82rem;margin:0">No Player Character assigned to you in this world yet — ask your GM.</p>';
+        return;
+      }
+      // p.ref picks a specific PC when several; default = first
+      const pc = mine.find(function (m) { return String(m.id) === String(p.ref); }) || mine[0];
+      let pct = 0;
+      if (pc.max_hp) pct = Math.max(0, Math.min(100, Math.round((pc.hp || 0) * 100 / pc.max_hp)));
+      const cls = pct <= 25 ? 'ck-hp-low' : (pct <= 55 ? 'ck-hp-mid' : 'ck-hp-ok');
+      el.innerHTML =
+        '<h3>🧙 ' + esc(pc.name) + '</h3>' +
+        (pc.max_hp
+          ? '<span class="ck-hpbar" style="display:block;background:var(--bg2);border-radius:3px;height:8px;overflow:hidden;margin:.4rem 0">' +
+            '<span class="ck-hpfill ' + cls + '" style="display:block;height:100%;width:' + pct + '%"></span></span>' +
+            '<p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .4rem">HP ' + esc(pc.hp) + '/' + esc(pc.max_hp) +
+            (pc.temp_hp ? ' (+' + esc(pc.temp_hp) + ')' : '') + ' · AC ' + esc(pc.ac || '—') + '</p>'
+          : '') +
+        '<p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .4rem">Lvl ' + esc(pc.level) + ' · XP ' + esc(pc.xp) +
+        (pc.levelup ? ' · <strong style="color:var(--neon)">⬆ level-up ready</strong>' : '') + '</p>' +
+        '<a href="/characters/' + encodeURIComponent(pc.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank" style="color:var(--neon);font-size:.8rem;text-decoration:none">Open my full sheet →</a>' +
+        (mine.length > 1
+          ? '<div style="margin-top:.5rem;font-size:.75rem;color:var(--text-dim)">Other characters: ' +
+            mine.filter(function (m) { return m.id !== pc.id; })
+                .map(function (m) { return '<button type="button" class="ck-wbtn" data-swap="' + m.id + '" style="margin-left:.3rem">' + esc(m.name) + '</button>'; }).join('') + '</div>'
+          : '');
+      el.querySelectorAll('[data-swap]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          p.ref = b.dataset.swap;
+          const pc2 = mine.find(function (m) { return String(m.id) === String(p.ref); });
+          if (pc2) p.title = '🧙 ' + pc2.name;
+          save();
+          // re-render just this panel's body
+          const host2 = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-body') ||
+                        document.querySelector('.ck-mpanel[data-pid="' + p.id + '"] .ck-mpanel-body');
+          if (host2) { host2.innerHTML = ''; fillBody(p, host2); }
+        });
+      });
+    } catch (e) {
+      el.innerHTML = '<p style="color:var(--text-dim);font-size:.8rem;margin:0">Unavailable.</p>';
+    }
+  }
 
   // ── mobile / tablet renderer ──────────────────────────────────────────
   function buildMobilePanel(p) {

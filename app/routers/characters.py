@@ -620,6 +620,47 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     # for any fillable GM-uploaded HTML sheet the owner has connected here.
     linked_sheets = db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).all()
     levelup_ready = _levelup_ready(pc)
+    # ── Player hub context (owner only): everything ABOUT this character a
+    # player manages from this page — their party (with claimable loot and
+    # their own claims), the party's XP ledger, and recent sessions the
+    # party played. This is the character's HOME (management/editing);
+    # the Player Cockpit is the separate live session dashboard.
+    hub_party = None
+    hub_loot_unclaimed = []
+    hub_loot_mine = []
+    hub_xp_ledger = []
+    hub_sessions = []
+    if can_manage and user and not user.is_gm:
+        from ..models import GameSession as _GS, Party as _Party
+        for party in db.query(_Party).filter(_Party.world_id == pc.world_id).order_by(_Party.name).all():
+            try:
+                member_ids = json.loads(party.member_pc_ids_json or "[]")
+            except ValueError:
+                member_ids = []
+            if pc.id in member_ids:
+                hub_party = party
+                try:
+                    loot = json.loads(party.loot_json or "[]")
+                except ValueError:
+                    loot = []
+                for item in loot:
+                    if not isinstance(item, dict):
+                        continue
+                    claimed = item.get("claimed_by") or []
+                    if pc.id in claimed:
+                        hub_loot_mine.append(item.get("name", "item"))
+                    elif not claimed:
+                        hub_loot_unclaimed.append(item)
+                try:
+                    ledger = json.loads(party.xp_json or "[]")
+                except ValueError:
+                    ledger = []
+                hub_xp_ledger = list(reversed(ledger))[:5]
+                hub_sessions = (
+                    db.query(_GS).filter(_GS.party_id == party.id)
+                    .order_by(_GS.session_num.desc()).limit(5).all()
+                )
+                break
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
         tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
@@ -634,6 +675,11 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "world_members": world_members,
             "linked_sheets": linked_sheets,
             "levelup_ready": levelup_ready,
+            "hub_party": hub_party,
+            "hub_loot_unclaimed": hub_loot_unclaimed,
+            "hub_loot_mine": hub_loot_mine,
+            "hub_xp_ledger": hub_xp_ledger,
+            "hub_sessions": hub_sessions,
         })
 
     d = _derived(pc)
@@ -652,6 +698,11 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "feats_catalog": catalog["feats"],
         "linked_sheets": linked_sheets,
         "levelup_ready": levelup_ready,
+        "hub_party": hub_party,
+        "hub_loot_unclaimed": hub_loot_unclaimed,
+        "hub_loot_mine": hub_loot_mine,
+        "hub_xp_ledger": hub_xp_ledger,
+        "hub_sessions": hub_sessions,
     })
 
 
