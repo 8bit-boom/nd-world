@@ -592,3 +592,53 @@ def test_stt_timeout_env_tunable(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STT_TIMEOUT_SECONDS")
     importlib.reload(ux)
     assert ux._STT_TIMEOUT.as_dict()["read"] == 1800.0
+
+
+def test_stt_name_fallback_strips_org_prefix(client, seed, monkeypatch):
+    """The GM's live build: the hub repo id 'unslothai/Qwen3-ASR-...' gets
+    'not downloaded' (409) — Studio names voice models by basename. The
+    call must retry with the basename before surfacing the error."""
+    import httpx
+    from app import unsloth_extras as ux
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model_name = (request.url.params or {}).get("model") if request.url.params else None
+        calls.append(model_name)
+        if model_name == "Qwen3-ASR-1.7B-GGUF":
+            return httpx.Response(200, json={"text": "hello"})
+        return httpx.Response(409, json={"error": {"message":
+            f"STT model {model_name!r} is not downloaded."}})
+
+    transport = httpx.MockTransport(handler)
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, files=None, data=None, headers=None):
+            req = httpx.Request("POST", url, files=files, data=data, headers=headers)
+            req.url = req.url.copy_merge_params({"model": (data or {}).get("model", "")})
+            return transport.handle_request(req)
+
+    monkeypatch.setattr(ux._httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(ux, "effective_llm_api_key", lambda: "sk-test")
+
+    import asyncio
+
+    text = asyncio.run(ux.stt(b"x", "rec.flac", model="unslothai/Qwen3-ASR-1.7B-GGUF"))
+    assert text == "hello"
+    assert calls == ["unslothai/Qwen3-ASR-1.7B-GGUF", "Qwen3-ASR-1.7B-GGUF"]
+
+
+def test_chat_timeout_default_3600():
+    from app.llm_client import _CHAT_TIMEOUT
+
+    assert _CHAT_TIMEOUT.as_dict()["read"] == 3600.0

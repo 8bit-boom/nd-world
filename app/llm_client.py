@@ -47,10 +47,14 @@ import ollama as _ollama
 _log = logging.getLogger("nd.llm")
 
 # Generous hard cap for ONE chat request — thinking models on a 16 GB card
-# can take minutes; 10 minutes of pure generation time at V100 speeds covers
-# far past any configured num_predict. Connect gets its own short timeout so
-# "backend is down" fails fast instead of eating the whole budget.
-_CHAT_TIMEOUT = _httpx.Timeout(600.0, connect=10.0)
+# can take minutes, and a CPU-only box summarizing a long session transcript
+# (thinking on) can run a single request 20+ minutes (observed live: a
+# summarize ReadTimeout at ~20 min). 60 min default, env-tunable via
+# LLM_CHAT_TIMEOUT_SECONDS. Connect gets its own short timeout so "backend
+# is down" still fails fast instead of eating the whole budget.
+_CHAT_TIMEOUT = _httpx.Timeout(
+    float(__import__("os").environ.get("LLM_CHAT_TIMEOUT_SECONDS", "3600")),
+    connect=10.0)
 # Embeddings are tiny and fast — but a not-yet-downloaded embed model may
 # make the server pull it first (findings Phase 0.5: the hub download of
 # bge-small is real), so don't fail fast on a cold embed call either.
