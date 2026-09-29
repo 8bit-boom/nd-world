@@ -28,6 +28,13 @@ _ACTION_TIMEOUT = _httpx.Timeout(60.0, connect=8.0)
 # TTS synthesizes (seconds-to-minutes for a paragraph); STT runs a full
 # transcription pass over the uploaded audio.
 _AUDIO_TIMEOUT = _httpx.Timeout(600.0, connect=10.0)
+# STT's own read budget: transcription of a long piece on a CPU-only box
+# (the GM's TrueNAS has no GPU yet) can far exceed TTS's 10 minutes —
+# observed live: a Qwen3-ASR job died at exactly the old 600 s read
+# timeout after 10m16s. 30 min default, env-tunable.
+_STT_TIMEOUT = _httpx.Timeout(
+    float(__import__("os").environ.get("UNSLOTH_STT_TIMEOUT_SECONDS", "1800")),
+    connect=10.0)
 
 
 class StudioMissing(Exception):
@@ -434,7 +441,7 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
         raise StudioError("No audio to transcribe", 400)
     url, key = _base_key()
     try:
-        async with _httpx.AsyncClient(timeout=_AUDIO_TIMEOUT, follow_redirects=True) as c:
+        async with _httpx.AsyncClient(timeout=_STT_TIMEOUT, follow_redirects=True) as c:
             resp = await c.post(f"{url}/v1/audio/transcriptions", files={"file": (filename, audio)},
                                 data={"model": model}, headers=_headers(key))
     except _httpx.HTTPError as exc:

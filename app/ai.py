@@ -4492,6 +4492,9 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise
 # (observed live: 26,214,400 bytes). Stay under it with margin for the
 # multipart framing.
 _UNSLOTH_STT_MAX_BYTES = 23 * 1024 * 1024
+# Max MINUTES of audio per transcription request — duration cap alongside
+# the byte cap (see _transcribe_one_file_unsloth).
+_UNSLOTH_STT_CHUNK_SECONDS = 10 * 60
 
 
 def _plan_unsloth_chunks(file_size: int, duration: float | None) -> float | None:
@@ -4571,14 +4574,19 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
             tmpdir = Path(tempfile.mkdtemp(prefix="nd-stt-"))
             cleanup_dirs.append(tmpdir)
             mp3 = await _transcode_audio_to_mp3(path, tmpdir)
-            if mp3.stat().st_size <= _UNSLOTH_STT_MAX_BYTES:
+            # Piece length is capped by DURATION as well as size: a single
+            # request carrying an hour of audio can outrun even a long read
+            # timeout on a CPU-only box (observed live: a Qwen3-ASR job
+            # died at the old 600 s read timeout). ~10 min per request
+            # keeps each call comfortably inside the budget and makes
+            # retries cheap (the audio-jobs pipeline re-runs pieces).
+            if (mp3.stat().st_size <= _UNSLOTH_STT_MAX_BYTES
+                    and duration <= _UNSLOTH_STT_CHUNK_SECONDS):
                 parts = [mp3]
             else:
-                # A recording long enough that even mono 64k MP3 exceeds the
-                # limit: split the MP3 proportionally (every piece then fits
-                # by construction — proportional sizing on the MP3's own
-                # bitrate).
-                chunk_seconds = _plan_unsloth_chunks(mp3.stat().st_size, duration)
+                size_plan = _plan_unsloth_chunks(mp3.stat().st_size, duration)
+                chunk_seconds = min(size_plan or _UNSLOTH_STT_CHUNK_SECONDS,
+                                     _UNSLOTH_STT_CHUNK_SECONDS)
                 mp3_parts, split_dir = await _split_audio_into_chunks(mp3, chunk_seconds)
                 if split_dir:
                     cleanup_dirs.append(split_dir)

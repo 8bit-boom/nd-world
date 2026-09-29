@@ -47,7 +47,13 @@ _SESSION_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus",
 # A session recording can run long — same default ceiling as the Audio
 # Library's own MAX_AUDIO_UPLOAD_BYTES, reusing that env var rather than
 # introducing a second one for what's really the same kind of upload.
-MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
+# Session recordings default higher than the audio LIBRARY cap: a full-table
+# recording runs hours (a GM uploads 8h FLACs — ~1.5-2.5 GB), while library
+# clips are minutes. MAX_SESSION_AUDIO_BYTES overrides, falling back to the
+# shared MAX_AUDIO_UPLOAD_BYTES, falling back to 3 GiB (library keeps 1 GiB).
+MAX_SESSION_AUDIO_BYTES = int(os.environ.get(
+    "MAX_SESSION_AUDIO_BYTES",
+    os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(3 * 1024 * 1024 * 1024))))
 # A live-recording chunk (see the "Live session recording" section below) is
 # GM-configurable from ~1 to ~15 minutes — this just needs to be generous
 # enough that a slightly-longer-than-expected chunk (a slow browser tab, a

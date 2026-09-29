@@ -562,3 +562,33 @@ def test_update_route_tries_slash_update_after_api_update_fails(client, seed, mo
     # the chain stops at the first success — POST /update answered
     assert calls == ["POST /api/update", "GET /api/update", "POST /update"]
 
+
+
+def test_stt_piece_duration_cap():
+    """Each transcription request carries at most ~10 minutes of audio —
+    the duration cap that keeps CPU-slow transcriptions inside the read
+    timeout (a live Qwen3-ASR job died at the old 600 s read timeout)."""
+    from app.ai import _UNSLOTH_STT_CHUNK_SECONDS, _plan_unsloth_chunks
+
+    assert _UNSLOTH_STT_CHUNK_SECONDS == 600
+    # a fitting-but-long MP3 (30 min, under the byte cap) still splits
+    # via the duration gate in _transcribe_one_file_unsloth — pinned by
+    # the transcode test's fake (25 MiB mp3 → split); here we pin the
+    # constant + that min() clamps any size plan to 600 s
+    size_plan = _plan_unsloth_chunks(50 * 1024 * 1024, 2 * 3600)  # 2h, 50MiB
+    assert min(size_plan, _UNSLOTH_STT_CHUNK_SECONDS) == 600
+
+
+def test_stt_timeout_env_tunable(monkeypatch):
+    """UNSLOTH_STT_TIMEOUT_SECONDS overrides the read budget (CPU-only
+    boxes may need more; a GPU box can dial it down)."""
+    import importlib
+
+    import app.unsloth_extras as ux
+
+    monkeypatch.setenv("UNSLOTH_STT_TIMEOUT_SECONDS", "900")
+    importlib.reload(ux)
+    assert ux._STT_TIMEOUT.as_dict()["read"] == 900.0
+    monkeypatch.delenv("UNSLOTH_STT_TIMEOUT_SECONDS")
+    importlib.reload(ux)
+    assert ux._STT_TIMEOUT.as_dict()["read"] == 1800.0

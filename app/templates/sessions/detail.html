@@ -60,7 +60,7 @@
           </label>
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
                  title="Retrieves relevant World entities/notes and gives the model that context for accuracy (correct names, places, established facts) — applies to Condense, 'Summarize from Facts', and 'Process in Background' below; not Expand notes.">
-            <input type="checkbox" id="recap-rag-checkbox"> 🔍 RAG
+            <input type="checkbox" id="recap-rag-checkbox" checked> 🔍 RAG
           </label>
           <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
             Entities
@@ -144,16 +144,12 @@
         </details>
 
         <div id="audio-dropzone" style="margin-top:.6rem;border:1px dashed var(--border);border-radius:4px;padding:.7rem;text-align:center;font-size:.8rem;color:var(--text-dim)">
-          🎙 Drop a session recording here, or
+          🎙 Drop a session recording here (processed as a background job), or
           <label class="ai-recap-btn" style="display:inline-block;cursor:pointer">
             Browse…
             <input type="file" id="audio-file-input" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*" style="display:none">
           </label>
           <button type="button" id="mic-record-btn" class="ai-recap-btn" onclick="toggleMicRecording()">🎤 Record</button>
-          <label class="ai-recap-btn" style="display:inline-block;cursor:pointer" title="Process in the background instead — keeps running even if you close this tab">
-            🔒 Process in Background
-            <input type="file" id="audio-bgjob-input" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*" style="display:none">
-          </label>
           <select id="audio-bgjob-model" title="Which AI model summarizes this recording — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
             <option value="">(default model)</option>
           </select>
@@ -328,10 +324,10 @@
             <option value="">(default model)</option>
           </select>
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer">
-            <input type="checkbox" id="parse-think" style="width:auto"> 🧠 Thinking
+            <input type="checkbox" id="parse-think" checked style="width:auto"> 🧠 Thinking
           </label>
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer">
-            <input type="checkbox" id="parse-rag-checkbox" style="width:auto"> 🔍 RAG
+            <input type="checkbox" id="parse-rag-checkbox" checked style="width:auto"> 🔍 RAG
           </label>
           <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
             Entities
@@ -979,43 +975,37 @@ function aiDiscardRecap() {
 // ── Audio → transcript → recap (file drop/picker or live mic recording) ────
 
 async function aiSummarizeFromAudio(file) {
+  // ALWAYS a durable background job now: transcribe + summarize on a long
+  // recording comfortably outlives Cloudflare's ~100 s no-byte timeout
+  // (the HTTP 524 the one-shot path kept hitting). The job survives
+  // closing the page, reports progress in the jobs panel below, and its
+  // "Use this" lands the recap/transcript here exactly like before.
   const status = document.getElementById('ai-recap-status');
   const micStatus = document.getElementById('mic-record-status');
   const bar = ndProgressBar(document.getElementById('audio-recap-progress'));
   status.textContent = '';
   micStatus.textContent = '';
-  _aiRecapButtons().forEach(b => b.disabled = true);
-  const micBtn = document.getElementById('mic-record-btn');
-  micBtn.disabled = true;
   bar.setPercent(0, 'Uploading… 0%');
   try {
-    const data = await ndChunkedUpload(file, {
-      directUrl: '/api/sessions/ai/summarize-from-audio',
-      chunkUrl: '/api/sessions/ai/summarize-from-audio/chunk',
-      completeUrl: '/api/sessions/ai/summarize-from-audio/complete',
-      extraFields: {
+    const rag = _recapRagOptions();
+    await sessionAudioJobs.startJob(
+      file,
+      {
+        game_session_id: '{{ gsession.id if gsession else "" }}',
+        model: document.getElementById('audio-bgjob-model').value,
         extra_instructions: document.getElementById('audio-recap-instructions').value,
         think: _recapThinkEnabled(),
+        use_rag: rag.use_rag,
+        rag_entity_limit: rag.rag_entity_limit === null ? '' : rag.rag_entity_limit,
+        rag_notes_limit: rag.rag_notes_limit === null ? '' : rag.rag_notes_limit,
       },
-      onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing & summarizing — can take a while for a long recording…'),
-    });
-    if (data.recap_failed) {
-      // The transcribe step succeeded (data.transcript is real, kept
-      // below) but summarize itself returned a failure sentinel — show a
-      // retry option instead of offering that sentinel text as a draft.
-      _aiRecapDraft = '';
-      _showRecapFailed(data.recap || '(no error detail)');
-    } else {
-      _aiRecapDraft = data.recap || '';
-      _showRecapDraft(_aiRecapDraft || '(empty recap)');
-    }
-    if (data.transcript) _setRecapTranscriptText(data.transcript);
+      (e) => ndProgressFromUpload(bar, e, 'Job started — transcribing & summarizing in background…'),
+    );
+    status.textContent = 'Background job started — results land in the jobs list below when ready (safe to close this page).';
   } catch (e) {
-    status.textContent = 'Failed: ' + e.message;
+    status.textContent = 'Failed to start background job: ' + e.message;
   } finally {
     bar.clear();
-    _aiRecapButtons().forEach(b => b.disabled = false);
-    micBtn.disabled = false;
   }
 }
 
@@ -1106,36 +1096,6 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
     });
   } catch (e) { /* picker just stays on "(default model)" */ }
 })();
-
-document.getElementById('audio-bgjob-input').addEventListener('change', async function () {
-  const file = this.files[0];
-  this.value = '';
-  if (!file) return;
-  const status = document.getElementById('ai-recap-status');
-  const bar = ndProgressBar(document.getElementById('audio-recap-progress'));
-  const model = document.getElementById('audio-bgjob-model').value;
-  const instructions = document.getElementById('audio-recap-instructions').value;
-  bar.setPercent(0, 'Uploading… 0%');
-  try {
-    const rag = _recapRagOptions();
-    await sessionAudioJobs.startJob(
-      file,
-      {
-        game_session_id: '{{ gsession.id if gsession else "" }}', model: model,
-        extra_instructions: instructions, think: _recapThinkEnabled(),
-        use_rag: rag.use_rag,
-        rag_entity_limit: rag.rag_entity_limit === null ? '' : rag.rag_entity_limit,
-        rag_notes_limit: rag.rag_notes_limit === null ? '' : rag.rag_notes_limit,
-      },
-      (e) => ndProgressFromUpload(bar, e, 'Job started — processing in background…'),
-    );
-    status.textContent = 'Background job started — see the jobs list below.';
-  } catch (e) {
-    status.textContent = 'Failed to start background job: ' + e.message;
-  } finally {
-    bar.clear();
-  }
-});
 
 document.getElementById('audio-file-input').addEventListener('change', function () {
   if (this.files[0]) aiSummarizeFromAudio(this.files[0]);
