@@ -594,22 +594,26 @@ def test_stt_timeout_env_tunable(monkeypatch):
     assert ux._STT_TIMEOUT.as_dict()["read"] == 1800.0
 
 
-def test_stt_name_fallback_strips_org_prefix(client, seed, monkeypatch):
-    """The GM's live build: the hub repo id 'unslothai/Qwen3-ASR-...' gets
-    'not downloaded' (409) — Studio names voice models by basename. The
-    call must retry with the basename before surfacing the error."""
+def test_stt_model_sent_verbatim_no_basename_retry(client, seed, monkeypatch):
+    """The GM's live build: the hub repo id 'unslothai/Qwen3-ASR-...' is the
+    CORRECT wire form — it passes Studio's format check and reaches the
+    download check (409 'not downloaded', fix-it instructions included).
+    Exactly one attempt is made and the 409 surfaces verbatim: retrying the
+    bare basename only earns a misleading 400 'must be ... owner/model
+    form' (observed live)."""
     import httpx
+    import pytest
     from app import unsloth_extras as ux
+    from app.unsloth_extras import StudioError
 
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         model_name = (request.url.params or {}).get("model") if request.url.params else None
         calls.append(model_name)
-        if model_name == "Qwen3-ASR-1.7B-GGUF":
-            return httpx.Response(200, json={"text": "hello"})
         return httpx.Response(409, json={"error": {"message":
-            f"STT model {model_name!r} is not downloaded."}})
+            "STT model 'unslothai/Qwen3-ASR-1.7B-GGUF' is not downloaded. "
+            "Download it in Settings, then Voice, before loading it."}})
 
     transport = httpx.MockTransport(handler)
 
@@ -633,9 +637,11 @@ def test_stt_name_fallback_strips_org_prefix(client, seed, monkeypatch):
 
     import asyncio
 
-    text = asyncio.run(ux.stt(b"x", "rec.flac", model="unslothai/Qwen3-ASR-1.7B-GGUF"))
-    assert text == "hello"
-    assert calls == ["unslothai/Qwen3-ASR-1.7B-GGUF", "Qwen3-ASR-1.7B-GGUF"]
+    with pytest.raises(StudioError) as exc_info:
+        asyncio.run(ux.stt(b"x", "rec.flac", model="unslothai/Qwen3-ASR-1.7B-GGUF"))
+    assert exc_info.value.status_code == 409
+    assert "not downloaded" in str(exc_info.value)
+    assert calls == ["unslothai/Qwen3-ASR-1.7B-GGUF"]
 
 
 def test_chat_timeout_default_3600():

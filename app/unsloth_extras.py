@@ -435,28 +435,18 @@ async def studio_update() -> dict:
 
 async def stt(audio: bytes, filename: str, model: str = "small") -> str:
     """POST /v1/audio/transcriptions (multipart) → transcript text. `model`
-    maps to a Studio-managed STT model name (e.g. "small") — a missing one
-    409s with Studio's own instructions, surfaced verbatim."""
+    is sent verbatim — the full hub repo id ("unslothai/Qwen3-ASR-1.7B-GGUF")
+    is the form Studio's format check wants (observed live: the bare
+    basename is rejected as "not owner/model form"). A model Studio hasn't
+    downloaded for Voice 409s with its own fix-it instructions; surfaced
+    verbatim rather than retried under another name."""
     if not audio:
         raise StudioError("No audio to transcribe", 400)
     url, key = _base_key()
-    # Studio's Voice settings name STT models with its OWN short names
-    # ("small", or "Qwen3-ASR-1.7B-GGUF" without the hub org) — a full hub
-    # repo id like "unslothai/Qwen3-ASR-1.7B-GGUF" gets a "not downloaded"
-    # rejection (observed live). Try the name as given; on a not-downloaded
-    # /unknown rejection, retry with the basename (org prefix stripped).
-    tried = []
-
-    async def _post_stt(model_name: str):
-        async with _httpx.AsyncClient(timeout=_STT_TIMEOUT, follow_redirects=True) as c:
-            return await c.post(f"{url}/v1/audio/transcriptions",
-                                files={"file": (filename, audio)},
-                                data={"model": model_name}, headers=_headers(key))
-
-    resp = await _post_stt(model)
-    if resp.status_code in (400, 404, 409) and "/" in model:
-        base = model.rsplit("/", 1)[1]
-        resp = await _post_stt(base)
+    async with _httpx.AsyncClient(timeout=_STT_TIMEOUT, follow_redirects=True) as c:
+        resp = await c.post(f"{url}/v1/audio/transcriptions",
+                            files={"file": (filename, audio)},
+                            data={"model": model}, headers=_headers(key))
     if resp.status_code >= 400:
         try:
             body_err = resp.json()
@@ -465,8 +455,6 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
         message = ((body_err.get("error") or {}).get("message")) or \
                   (body_err.get("detail") if isinstance(body_err.get("detail"), str) else None) or \
                   f"HTTP {resp.status_code}"
-        if resp.status_code in (400, 404, 409) and len(tried) == 2 and tried[0] != tried[1]:
-            message += f" (also tried model name {tried[0]!r})"
         raise StudioError(message, resp.status_code)
     data = resp.json()
     return data.get("text") or ""
