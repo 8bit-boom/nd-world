@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Create with AI — Player Characters{% endblock %}
+{% block content %}
+<div style="max-width:760px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;gap:.5rem;flex-wrap:wrap">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">✨ Create a character with AI</h1>
+    <a href="{{ '/characters'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Player Characters</a>
+  </div>
+
+  <details open style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:1rem">
+    <summary style="cursor:pointer;color:var(--neon);font-weight:600;font-size:.9rem">How this works</summary>
+    <div style="font-size:.85rem;color:var(--text-dim);margin-top:.5rem;line-height:1.55">
+      <p style="margin:.3rem 0"><strong style="color:var(--text)">1. Describe</strong> the character you want to play — concept, personality, role in the party, anything you care about. The AI builds the sheet <strong style="color:var(--text)">following this world's rules</strong> ({{ world.name }}).</p>
+      <p style="margin:.3rem 0"><strong style="color:var(--text)">Or import</strong> a character from another system: upload its sheet as <strong>PDF, Markdown, TXT, JSON, or a photo/scan</strong> — the AI reads it and translates it into this world's rules, keeping its identity.</p>
+      <p style="margin:.3rem 0"><strong style="color:var(--text)">2. Review</strong> the draft — you can edit name, race, class, level and backstory right in the review before creating.</p>
+      <p style="margin:.3rem 0"><strong style="color:var(--text)">3. Create</strong> — nothing is saved until you press the button. Scanned PDF with no text? Upload its pages as images instead.</p>
+      <p style="margin:.3rem 0;color:var(--text-dim)">Examples: <em>“a grizzled ex-cop turned fixer, great with a pistol but terrible with people”</em> · <em>“young hacker prodigy, optimistic, owes the wrong people money”</em> · <em>“translate this D&amp;D bard into this world”</em></p>
+    </div>
+  </details>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem">
+    <textarea id="ai-prompt" rows="4" placeholder="Describe the character you want to play…"
+              style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.5rem .7rem;font-family:var(--font);font-size:.88rem;resize:vertical"></textarea>
+
+    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin:.6rem 0">
+      <label style="display:flex;gap:.35rem;align-items:center;font-size:.8rem;color:var(--text-dim);cursor:pointer">
+        <input type="checkbox" id="ai-think" checked style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="display:flex;gap:.35rem;align-items:center;font-size:.8rem;color:var(--text-dim);cursor:pointer" title="Grounds the character in this world's lore">
+        <input type="checkbox" id="ai-rag" checked style="width:auto"> 🔍 World lore
+      </label>
+      <label class="btn-secondary" style="display:inline-flex;gap:.4rem;align-items:center;cursor:pointer;font-size:.8rem">
+        📎 Import a sheet (PDF / MD / TXT / JSON / image)
+        <input type="file" id="ai-file" style="display:none"
+               accept=".pdf,.md,.markdown,.txt,.json,.png,.jpg,.jpeg,.webp">
+      </label>
+      <span id="ai-file-name" style="font-size:.75rem;color:var(--text-dim)"></span>
+    </div>
+
+    <button type="button" class="btn-primary" id="ai-go">✨ Generate my character</button>
+    <span id="ai-status" style="font-size:.8rem;color:var(--text-dim);margin-left:.6rem"></span>
+  </div>
+
+  <!-- Draft review + apply (posts to the existing /characters/new) -->
+  <form id="ai-apply" method="post" action="{{ '/characters/new'|wq }}" enctype="multipart/form-data"
+        style="display:none;background:var(--bg2);border:1px solid var(--neon);border-radius:6px;padding:1rem 1.25rem;margin-top:1rem">
+    <h2 style="color:var(--neon);font-size:1rem;margin:0 0 .7rem">Review your character</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.7rem;margin-bottom:.7rem">
+      <div class="form-group" style="margin:0"><label>Name</label><input name="name" id="d-name"></div>
+      <div class="form-group" style="margin:0"><label>Race</label><input name="race" id="d-race"></div>
+      <div class="form-group" style="margin:0"><label>Class</label><input name="char_class" id="d-class"></div>
+      <div class="form-group" style="margin:0"><label>Level</label><input name="level" type="number" min="1" max="20" id="d-level"></div>
+      <div class="form-group" style="margin:0"><label>XP</label><input name="xp" type="number" min="0" id="d-xp"></div>
+    </div>
+    <div id="d-stats" style="display:flex;gap:.5rem;flex-wrap:wrap;font-size:.8rem;color:var(--text-dim);margin-bottom:.7rem"></div>
+    <input type="hidden" name="stats_json" id="d-stats-json">
+    <input type="hidden" name="max_hp" id="d-maxhp">
+    <input type="hidden" name="current_hp" id="d-curhp">
+    <input type="hidden" name="shock_max" id="d-shock">
+    <input type="hidden" name="player_name" value="{{ display_name }}">
+    <input type="hidden" name="backstory" id="d-backstory">
+    <input type="hidden" name="notes" id="d-notes">
+    <input type="hidden" name="equipment_json" id="d-equip">
+    <div style="font-size:.78rem;color:var(--text-dim);margin-bottom:.6rem">
+      <div><strong style="color:var(--text)">Backstory</strong> (editable in the sheet after creating)</div>
+      <div id="d-backstory-view" style="white-space:pre-wrap;max-height:180px;overflow-y:auto;background:var(--bg3);border-radius:4px;padding:.5rem .7rem;margin-top:.25rem"></div>
+    </div>
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <button type="submit" class="btn-primary">✔ Create this character</button>
+      <button type="button" class="btn-cancel" id="ai-again">↺ Start over</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const WORLD_SLUG = {{ world.slug | tojson }};
+(function () {
+  const status = document.getElementById('ai-status');
+  const form = document.getElementById('ai-apply');
+  let pickedFile = null;
+
+  document.getElementById('ai-file').addEventListener('change', function () {
+    pickedFile = this.files[0] || null;
+    document.getElementById('ai-file-name').textContent = pickedFile ? pickedFile.name : '';
+  });
+
+  document.getElementById('ai-again').addEventListener('click', () => { form.style.display = 'none'; });
+
+  function fillDraft(d) {
+    document.getElementById('d-name').value = d.name || '';
+    document.getElementById('d-race').value = d.race || '';
+    document.getElementById('d-class').value = d.char_class || '';
+    document.getElementById('d-level').value = d.level || 1;
+    document.getElementById('d-xp').value = d.xp || 0;
+    const stats = d.stats || {};
+    document.getElementById('d-stats-json').value = JSON.stringify(
+      Object.entries(stats).map(([id, v]) => ({ id: id, value: Number(v) || 0 })));
+    document.getElementById('d-stats').innerHTML = Object.entries(stats)
+      .map(([k, v]) => '<span style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.1rem .4rem">' + k.toUpperCase() + ' ' + v + '</span>').join('');
+    document.getElementById('d-maxhp').value = d.max_hp || 0;
+    document.getElementById('d-curhp').value = d.max_hp || 0;
+    document.getElementById('d-shock').value = d.shock_max || 0;
+    document.getElementById('d-backstory').value = d.backstory || '';
+    document.getElementById('d-backstory-view').textContent = d.backstory || '(none)';
+    document.getElementById('d-notes').value = d.notes || '';
+    document.getElementById('d-equip').value = JSON.stringify(
+      (d.equipment || []).map(e => ({ name: e.name || '', qty: Number(e.qty) || 1, weight: 0, equipped: false, notes: '' })));
+    form.style.display = '';
+    form.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function poll(jobId, tries) {
+    if ((tries || 0) > 400) { status.textContent = '⚠ Still running after ~20 minutes.'; return; }
+    fetch('/api/characters/ai/' + jobId).then(r => r.json()).then(d => {
+      if (d.status === 'running') {
+        const el = d.elapsed || 0, m = Math.floor(el / 60), s = el % 60;
+        status.textContent = `⏳ Building your character… (${m > 0 ? m + 'm ' : ''}${s}s) — following this world's rules`;
+        setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
+      } else if (d.status === 'error') {
+        status.textContent = '⚠ ' + d.error;
+      } else {
+        status.textContent = '✓ Draft ready — review below.';
+        fillDraft(d.draft);
+      }
+    }).catch(() => setTimeout(() => poll(jobId, (tries || 0) + 1), 3000));
+  }
+
+  document.getElementById('ai-go').addEventListener('click', async () => {
+    const prompt = document.getElementById('ai-prompt').value.trim();
+    if (!prompt && !pickedFile) {
+      status.textContent = 'Describe the character you want, or pick a file to import.';
+      return;
+    }
+    const fd = new FormData();
+    fd.set('prompt', prompt);
+    fd.set('think', document.getElementById('ai-think').checked);
+    fd.set('use_rag', document.getElementById('ai-rag').checked);
+    if (pickedFile) fd.set('file', pickedFile);
+    status.textContent = '⏳ Starting…';
+    form.style.display = 'none';
+    try {
+      const r = await fetch('/api/characters/ai/start' + (WORLD_SLUG ? '?w=' + encodeURIComponent(WORLD_SLUG) : ''), { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      poll(d.job_id, 0);
+    } catch (e) {
+      status.textContent = '⚠ ' + e.message;
+    }
+  });
+})();
+</script>
+{% endblock %}

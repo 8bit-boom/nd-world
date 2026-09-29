@@ -222,6 +222,9 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
+| GET | `/characters/ai-new` | GM / Player | The player's AI character creator: how-to guide, prompt + sheet-import form (thinking + world-RAG on by default), draft review whose Apply posts to the existing create route. |
+| POST | `/api/characters/ai/start` | GM / Player | Starts an AI character draft — from a prompt (create mode) and/or an uploaded sheet (PDF/MD/TXT/JSON/image import; images via the vision transcriber). Grounded in the world's rules; draft-then-apply, nothing is written. Returns `{job_id}`. |
+| GET | `/api/characters/ai/{job_id}` | GM / Player | Polls the draft job (starter or GM only): running (elapsed), done (`draft`), or error. |
 | GET | `/characters` | Player | List of characters in the active world (a player sees the roster read-only if the GM enabled party visibility; always sees their own). |
 | GET | `/characters/new` | Player | The guided Race → Profession → Stats → Feats → Equipment creation wizard. |
 | GET | `/api/characters/catalog` | Player | Race/profession/feat/equipment catalog JSON that powers the wizard frontend. |

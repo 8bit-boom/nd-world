@@ -1,0 +1,270 @@
+"""Player-facing AI character creation + import (draft-then-apply).
+
+A player describes the character they want (or uploads a sheet from
+another system — pdf/md/txt/json/image), the local model drafts a full
+nd-world PlayerCharacter GROUNDED IN THE WORLD'S RULES, the player
+reviews/edits the draft, and Apply posts to the EXISTING
+POST /characters/new — so every permission that route enforces (one
+character per player in a world, ownership) applies unchanged. The AI
+never writes anything directly.
+
+Routes are player-reachable via the blanket /api/characters/ rule in
+_is_player_safe; gating inside: world membership via get_world_ctx,
+and job polls are starter-or-GM only. Thinking + world-RAG default on
+(the app-wide convention for these surfaces). Background job pattern
+(start + poll) because rules-grounded generation with thinking on
+outlives Cloudflare's ~100 s no-byte timeout.
+"""
+import base64
+import json
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse
+from sqlalchemy.orm import Session
+
+from .. import ai as _ai
+from .. import retrieval as _retrieval
+from ..database import SessionLocal, get_db
+from ..deps import get_world_ctx
+from ..models import World
+from ..templating import templates
+
+router = APIRouter()
+
+_PC_AI_JOBS: dict = {}
+_PC_AI_SEQ: list = [0]
+_MAX_IMPORT_BYTES = 12 * 1024 * 1024
+_TEXT_EXTS = {".md", ".txt", ".markdown"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+_DRAFT_FORMAT = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "player_name": {"type": "string"},
+        "race": {"type": "string"},
+        "char_class": {"type": "string"},
+        "level": {"type": "integer"},
+        "xp": {"type": "integer"},
+        "stats": {"type": "object"},
+        "max_hp": {"type": "integer"},
+        "shock_max": {"type": "integer"},
+        "backstory": {"type": "string"},
+        "notes": {"type": "string"},
+        "equipment": {"type": "array"},
+    },
+    "required": ["name"],
+}
+
+
+def _stats_ids() -> list:
+    # N&D's eight stats (order matches the sheet's stat grid)
+    return ["str", "dex", "bod", "per", "int", "wil", "cha", "itu"]
+
+
+def _extract_json(text: str) -> dict:
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        import re
+        raw = re.sub(r"^```[a-zA-Z0-9]*\n?", "", raw)
+        raw = re.sub(r"\n?```\s*$", "", raw)
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in the model's reply")
+    return json.loads(raw[start:end + 1])
+
+
+async def _extract_file_text(data: bytes, ext: str, hint: str) -> str:
+    """File bytes → source text for the generator. Images go through the
+    existing vision transcriber (draft PlayerCharacter shape), text formats
+    are read directly, PDFs via pypdf. Raises ValueError with the actionable
+    fallback for anything unsupported (e.g. .doc — no parser in this
+    deployment)."""
+    ext = ext.lower()
+    if ext in _TEXT_EXTS:
+        return data.decode("utf-8", errors="replace")
+    if ext == ".json":
+        try:
+            return json.dumps(json.loads(data.decode("utf-8", errors="replace")),
+                              indent=1, ensure_ascii=False)
+        except ValueError:
+            return data.decode("utf-8", errors="replace")
+    if ext == ".pdf":
+        try:
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            pages = []
+            for page in reader.pages[:20]:
+                pages.append(page.extract_text() or "")
+            text = "\n".join(pages).strip()
+        except Exception as exc:
+            raise ValueError(f"Reading this PDF failed ({type(exc).__name__}) — "
+                             "try exporting it as text, or paste the sheet's contents.")
+        if not text:
+            raise ValueError("This PDF has no extractable text (it may be a scan) — "
+                             "upload its page as an IMAGE instead so the AI can read it visually.")
+        return text
+    if ext in _IMAGE_EXTS:
+        draft = await _ai.parse_character_from_images([data], hint=hint)
+        return json.dumps(draft, indent=1, ensure_ascii=False)
+    if ext in (".doc", ".docx", ".odt"):
+        raise ValueError("Word documents aren't readable in this deployment — "
+                         "export the sheet to PDF or plain text, or paste its contents.")
+    raise ValueError(f"Unsupported file type {ext!r} — use PDF, MD, TXT, JSON, "
+                     "an image, or paste the text.")
+
+
+async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
+                      source_text: str, think: bool, use_rag: bool):
+    db = SessionLocal()
+    try:
+        world = db.get(World, world_id)
+        rules = ""
+        try:
+            rules = (_retrieval.world_rules_markdown(world) or "")[:6000]
+        except Exception:
+            rules = ""
+        rag = ""
+        if use_rag:
+            try:
+                rag, _n, _notes = _retrieval.smart_world_context(
+                    db, world_id, (prompt or source_text)[:1500],
+                    entity_limit=8, notes_limit=2)
+                if rag:
+                    rag = rag[:3000]
+            except Exception:
+                rag = ""
+
+        stat_ids = ", ".join(_stats_ids())
+        system = (
+            "You are the character-creation assistant for a tabletop RPG. Create or "
+            "translate ONE PlayerCharacter for THIS world, strictly following its rules "
+            "below for stat ranges, level, HP computation, and tone. Return STRICT JSON only:\n"
+            '{"name": str, "player_name": str, "race": str, "char_class": str, '
+            '"level": int, "xp": int, "stats": {' + stat_ids.replace(", ", ": int, ") + ": int}, "
+            '"max_hp": int, "shock_max": int, "backstory": str (2-4 rich paragraphs, '
+            "in-world), \"notes\": str (play hooks, contacts, appearance), "
+            '"equipment": [{"name": str, "qty": int}]}\n'
+            "Rules: stats respect the world's rules (typical range and point budget); "
+            "max_hp follows the world's HP formula at that level; start low-level for a "
+            "new character unless the source clearly says otherwise; equipment is the "
+            "starting kit the rules give this class/race; every id in stats gets a "
+            "value. No comments, no markdown fences."
+        )
+        user_text = "=== WORLD RULES ===\n" + (rules or "(no custom rules — standard N&D)")
+        if rag:
+            user_text += "\n\n=== WORLD LORE (for names/places grounding) ===\n" + rag
+        if source_text:
+            user_text += ("\n\n=== SOURCE SHEET (translate this character into this "
+                          "world's rules; keep its identity) ===\n" + source_text[:12000])
+        if prompt:
+            user_text += "\n\n=== PLAYER'S REQUEST ===\n" + prompt[:4000]
+
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": user_text}],
+            system=system, model="", think=think, format=_DRAFT_FORMAT,
+        )
+        draft = _extract_json(raw)
+        name = str(draft.get("name") or "").strip()
+        if not name:
+            raise ValueError("The model's reply contained no character name — try rephrasing.")
+        # clamp numerics to sane sheet ranges
+        draft["level"] = max(1, min(20, int(draft.get("level") or 1)))
+        draft["xp"] = max(0, int(draft.get("xp") or 0))
+        draft["max_hp"] = max(0, int(draft.get("max_hp") or 0))
+        draft["shock_max"] = max(0, int(draft.get("shock_max") or 0))
+        stats = draft.get("stats") if isinstance(draft.get("stats"), dict) else {}
+        draft["stats"] = {k: max(0, min(30, int(v or 0))) for k, v in stats.items()
+                          if isinstance(v, (int, float, str))}
+        _PC_AI_JOBS[job_id].update(status="done", draft=draft)
+    except Exception as exc:
+        _PC_AI_JOBS[job_id].update(
+            status="error", error=str(exc) or exc.__class__.__name__)
+    finally:
+        db.close()
+
+
+@router.post("/api/characters/ai/start")
+async def pc_ai_start(request: Request,
+                      prompt: str = Form(""),
+                      think: bool = Form(True),
+                      use_rag: bool = Form(True),
+                      file: UploadFile = File(None),
+                      db: Session = Depends(get_db),
+                      active_world: str = Cookie(None)):
+    """Start an AI character draft: from `prompt` (create mode), an uploaded
+    sheet `file` (import mode: pdf/md/txt/json/image), or both. Player-facing
+    — the draft applies only through the existing POST /characters/new."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(403)
+
+    prompt = (prompt or "").strip()
+    source_text = ""
+    if file and file.filename:
+        data = await file.read()
+        if len(data) > _MAX_IMPORT_BYTES:
+            raise HTTPException(400, "File too large (over 12 MB)")
+        if data:
+            try:
+                source_text = await _extract_file_text(
+                    data, Path(file.filename).suffix or "", prompt)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+    if not prompt and not source_text:
+        raise HTTPException(400, "Describe the character you want, or upload a sheet "
+                                 "(PDF / MD / TXT / JSON / image).")
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System).")
+
+    job_id = _PC_AI_SEQ[0] + 1
+    _PC_AI_SEQ[0] = job_id
+    _PC_AI_JOBS[job_id] = {"status": "running", "started": time.time(),
+                           "user_id": user.id, "draft": None, "error": ""}
+    done = [j for j, v in _PC_AI_JOBS.items() if v["status"] != "running"]
+    while len(done) > 12:
+        _PC_AI_JOBS.pop(done.pop(0), None)
+
+    import asyncio
+    asyncio.get_running_loop().create_task(
+        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag))
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/api/characters/ai/{job_id}")
+async def pc_ai_poll(job_id: int, request: Request):
+    """Poll a character-draft job — starter or GM only."""
+    job = _PC_AI_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown character job")
+    user = getattr(request.state, "user", None)
+    if not user or (not user.is_gm and user.id != job["user_id"]):
+        raise HTTPException(403)
+    if job["status"] == "running":
+        return {"status": "running", "elapsed": round(time.time() - job["started"])}
+    if job["status"] == "error":
+        return {"status": "error", "error": job["error"]}
+    return {"status": "done", "draft": job["draft"]}
+
+
+@router.get("/characters/ai-new", response_class=HTMLResponse)
+def pc_ai_page(request: Request, db: Session = Depends(get_db),
+               active_world: str = Cookie(None)):
+    """The player's AI character creator: a short how-to guide, the prompt /
+    import form (thinking + world-RAG on by default), and the draft review
+    whose Apply posts to the existing /characters/new route."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    return templates.TemplateResponse("characters/ai_new.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "display_name": (user.display_name if user and user.display_name else "") if user else "",
+    })

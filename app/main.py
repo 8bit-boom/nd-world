@@ -44,6 +44,7 @@ from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_li
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
+from .routers.character_ai import router as character_ai_router
 from .routers.characters import _pc_to_foundry_journal
 from .routers.auth import router as auth_router
 from .routers.tables import router as tables_router
@@ -141,6 +142,10 @@ _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
 app.include_router(account_router)
+# character_ai BEFORE characters: its /characters/ai-new and /api/characters/ai/*
+# paths would otherwise be swallowed by characters.py's /characters/{pc_id}
+# (registered first wins, and {pc_id}:int then 422s on "ai-new").
+app.include_router(character_ai_router)
 app.include_router(characters_router)
 app.include_router(auth_router)
 app.include_router(tables_router)
