@@ -434,3 +434,85 @@ def test_transcribe_unsloth_no_duration_clear_error(client, seed, monkeypatch, t
     except WhisperError as e:
         raised = str(e)
     assert raised and "25 MiB" in raised and "MP3" in raised
+
+
+def test_studio_version_falls_back_to_slash_version(client, seed, monkeypatch):
+    """The live Docker build serves /version and 404s /api/version — the
+    chain must find it (this is exactly what the GM's deployment does)."""
+    import httpx
+    from app import unsloth_extras as ux
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/version":
+            return httpx.Response(200, json={"version": "dev"})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    transport = httpx.MockTransport(handler)
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, method, url, **kw):
+            return transport.handle_request(
+                httpx.Request(method, url, headers=kw.get("headers") or {}, json=kw.get("json_body")))
+
+    monkeypatch.setattr(ux._httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(ux, "effective_llm_api_key", lambda: "sk-test")
+
+    import asyncio
+
+    async def run():
+        return await ux.studio_version()
+
+    assert asyncio.run(run()) == "dev"
+
+
+def test_update_route_tries_slash_update_after_api_update_fails(client, seed, monkeypatch):
+    """The GM's live build: /api/update 405s POST and 404s GET — the chain
+    must continue to /update (POST) instead of giving up."""
+    import httpx
+    from app import unsloth_extras as ux
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method + " " + request.url.path)
+        if request.url.path == "/update" and request.method == "POST":
+            return httpx.Response(200, json={"status": "updating"})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    transport = httpx.MockTransport(handler)
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, method, url, **kw):
+            return transport.handle_request(httpx.Request(method, url, **kw))
+
+    monkeypatch.setattr(ux._httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(ux, "effective_llm_api_key", lambda: "sk-test")
+
+    import asyncio
+
+    async def run():
+        return await ux.studio_update()
+
+    result = asyncio.run(run())
+    assert result == {"status": "updating"}
+    # the chain stops at the first success — POST /update answered
+    assert calls == ["POST /api/update", "GET /api/update", "POST /update"]
+

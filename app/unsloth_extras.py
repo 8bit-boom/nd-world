@@ -373,12 +373,28 @@ async def audio_models() -> dict:
     return out
 
 
+_VERSION_PATHS = ("/api/version", "/version", "/api/about")
+
+
 async def studio_version() -> str:
-    """Studio's version via GET /api/version — feature-detected: builds
-    without the endpoint raise StudioEndpointMissing (the route degrades to
-    a clean "not available" instead of an error)."""
-    data = await _request("GET", "/api/version")
-    return str(data.get("version") or data.get("build") or "")
+    """Studio's version — probed across the version-ish endpoints different
+    builds expose (the live Docker latest serves /version; /api/version
+    404s there). First 200 with a version-ish field wins; builds without
+    any of them raise StudioEndpointMissing (the route degrades to a clean
+    "not available" instead of an error)."""
+    import json as _json
+    for path in _VERSION_PATHS:
+        try:
+            data = await _request("GET", path)
+        except StudioEndpointMissing:
+            continue
+        for k in ("version", "build", "app_version", "studio_version"):
+            if data.get(k):
+                return str(data[k])
+        # /api/about is a page-ish endpoint — if it 200s with HTML, don't
+        # keep scanning forever for a field that isn't coming.
+        break
+    return ""
 
 
 async def studio_update() -> dict:
@@ -388,19 +404,26 @@ async def studio_update() -> dict:
     when the header is absent). Builds without any /api/update raise
     StudioEndpointMissing and the route tells the GM the manual path;
     nd-world never shells out to Docker."""
-    try:
-        return await _request("POST", "/api/update", timeout=_ACTION_TIMEOUT)
-    except StudioError as exc:
-        if exc.status_code != 405:
-            raise
-        allow = str((exc.headers or {}).get("allow") or "")
-    method = next((m.strip().upper() for m in allow.split(",")
-                   if m.strip().upper() not in ("HEAD", "OPTIONS", "POST")), "")
-    if not method:
-        raise
-    # 405: the path exists but POST isn't allowed — retry with the method
-    # the server itself named (typically GET).
-    return await _request(method, "/api/update", timeout=_ACTION_TIMEOUT)
+    # Try the known update paths/methods in order. A 404 = this build
+    # doesn't have that path — move on. A 405 = the path exists but wrong
+    # method: retry once with the method the standard Allow header names
+    # (the only truthful discovery mechanism), then move on.
+    for path, method in (("/api/update", "POST"), ("/api/update", "GET"),
+                         ("/update", "POST"), ("/update", "GET")):
+        try:
+            return await _request(method, path, timeout=_ACTION_TIMEOUT)
+        except StudioEndpointMissing:
+            continue
+        except StudioError as exc:
+            if exc.status_code != 405:
+                raise
+            allow = str((exc.headers or {}).get("allow") or "")
+            alt = next((m2.strip().upper() for m2 in allow.split(",")
+                        if m2.strip().upper() not in ("HEAD", "OPTIONS", method)), "")
+            if alt:
+                return await _request(alt, path, timeout=_ACTION_TIMEOUT)
+            continue
+    raise StudioEndpointMissing("/api/update (or /update)")
 
 
 async def stt(audio: bytes, filename: str, model: str = "small") -> str:
