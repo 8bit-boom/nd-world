@@ -253,3 +253,85 @@ def test_update_route_surfaces_persistent_405(client, seed, monkeypatch):
     r = client.post("/api/ai/unsloth/update")
     assert r.status_code == 405
     assert "Method Not Allowed" in r.json()["detail"]
+
+
+def test_probe_route_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/ai/unsloth/probe").status_code == 403
+
+
+def test_probe_reports_404s_as_data(client, seed, monkeypatch):
+    """404s are the ANSWER the probe collects, not errors: the live Docker
+    latest exposes neither /api/version nor /api/update, and the probe's
+    whole job is showing that in one click."""
+    import httpx
+    from app import unsloth_extras as ux
+
+    _patch_key(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"object": "list", "data": []})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    transport = httpx.MockTransport(handler)
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            return transport.handle_request(httpx.Request("GET", url, headers=headers or {}))
+
+    monkeypatch.setattr(ux._httpx, "AsyncClient", FakeClient)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/ai/unsloth/probe")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    by_path = {x["path"]: x["status"] for x in d["results"]}
+    assert by_path["/api/version"] == 404       # missing = data
+    assert by_path["/v1/models"] == 200         # known-good confirmed
+    assert d["version"] is None
+
+
+def test_probe_extracts_version_from_200(client, seed, monkeypatch):
+    import httpx
+    from app import unsloth_extras as ux
+
+    _patch_key(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "1.4.2-docker"})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    transport = httpx.MockTransport(handler)
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            return transport.handle_request(httpx.Request("GET", url, headers=headers or {}))
+
+    monkeypatch.setattr(ux._httpx, "AsyncClient", FakeClient)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    d = client.get("/api/ai/unsloth/probe").json()
+    assert d["version"] == "1.4.2-docker"

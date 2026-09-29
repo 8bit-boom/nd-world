@@ -284,9 +284,11 @@
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
           <span id="studio-version-line" style="font-size:.8rem;color:var(--text-dim)">not checked</span>
           <button type="button" class="btn-secondary" id="studio-version-btn">Check version</button>
+          <button type="button" class="btn-secondary" id="studio-probe-btn" title="Enumerate what this Studio build actually exposes (read-only)">🔎 Diagnose Studio</button>
           <button type="button" class="btn-secondary" id="studio-update-btn" title="Ask Studio to update itself (feature-detected)">Update Studio</button>
         </div>
         <div id="studio-update-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
+        <div id="studio-probe-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0;max-width:560px"></div>
       </div>
       <div class="form-group">
         <label for="studio-console-url">Studio Console URL override (optional)</label>
@@ -1023,6 +1025,23 @@ function ndCopyRestartCmd() {
       st.textContent = '⚠ ' + e.message;
     }
   }
+  async function probeStudio() {
+    const st = el('studio-probe-status');
+    st.textContent = '⏳ Probing Studio (read-only)…';
+    try {
+      const r = await fetch('/api/ai/unsloth/probe');
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      const mark = s => s === 200 ? '✓' : (s == null ? '⚠' : '✗ ' + s);
+      st.innerHTML = (d.version ? ('Version: <b>' + d.version + '</b> — ') : '') +
+        (d.results || []).map(x => '<code>' + x.path + '</code> ' + mark(x.status)).join(' · ') +
+        ((d.results || []).some(x => x.path === '/api/version' && x.status === 200)
+          ? ''
+          : '<br>Docker images and the Desktop app are separate release trains — version/update APIs may arrive in Desktop first; the Docker image catches up on its own schedule.');
+    } catch (e) {
+      st.textContent = '⚠ ' + e.message;
+    }
+  }
   async function updateStudio() {
     if (!confirm('Ask Unsloth Studio to update itself? This may restart Studio and interrupt in-flight audio/AI jobs.')) return;
     const st = el('studio-update-status');
@@ -1053,6 +1072,7 @@ function ndCopyRestartCmd() {
       detectStudioModels();
       el('studio-detect-models').addEventListener('click', detectStudioModels);
       el('studio-version-btn').addEventListener('click', checkStudioVersion);
+      el('studio-probe-btn').addEventListener('click', probeStudio);
       el('studio-update-btn').addEventListener('click', updateStudio);
     }).catch(() => {});
   }

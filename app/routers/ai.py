@@ -3580,6 +3580,20 @@ async def unsloth_version():
     return {"available": True, "version": version}
 
 
+@router.get("/unsloth/probe")
+async def unsloth_probe():
+    """Enumerate what THIS Studio build actually exposes: concurrent raw GETs
+    over read-only candidate paths (version/health/status/about + known-good
+    hub/models), reporting status codes and snippets — 404s are the data, not
+    errors. Extracts a version best-effort from any 200 JSON. Read-only by
+    construction (never touches /api/update or any mutating path). GM-only."""
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.studio_probe()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
 @router.post("/unsloth/update")
 async def unsloth_update():
     """Ask Studio to update itself (feature-detected POST /api/update).

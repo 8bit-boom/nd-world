@@ -101,6 +101,56 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
         return {}
 
 
+# ── Studio diagnostic probe ──────────────────────────────────────────────────
+# Read-only candidate paths, probed to answer "what does THIS Studio build
+# actually expose?" in one click — the live Docker latest exposes neither
+# /api/version nor a usable /api/update (Desktop builds run ahead), and the
+# Settings card previously could only say "not exposed" per feature.
+# NEVER add a mutating path here (e.g. /api/update): a probe must be side-
+# effect-free by construction.
+_PROBE_PATHS = (
+    "/api/version", "/version", "/api/about", "/api/status",
+    "/api/health", "/health", "/api/hub/cached-gguf", "/v1/models",
+)
+
+
+async def _probe_one(client: "_httpx.AsyncClient", url: str, key: str, path: str) -> dict:
+    try:
+        resp = await client.get(f"{url}{path}", headers=_headers(key))
+    except _httpx.HTTPError as exc:
+        return {"path": path, "status": None, "note": f"unreachable: {type(exc).__name__}"}
+    snippet = resp.text[:120].replace("\n", " ").strip()
+    return {"path": path, "status": resp.status_code, "snippet": snippet}
+
+
+async def studio_probe() -> dict:
+    """Probe the read-only candidates concurrently (short per-path timeout)
+    and return {results: [...], version: str|None}. 404s are DATA here, not
+    errors — they're the "build doesn't have it" answer. Any 200 JSON body
+    with a version-ish field is extracted best-effort."""
+    import json as _json
+    url, key = _base_key()
+    async with _httpx.AsyncClient(timeout=_httpx.Timeout(6.0, connect=4.0),
+                                  follow_redirects=True) as c:
+        import asyncio as _asyncio
+        raw = await _asyncio.gather(*[_probe_one(c, url, key, p) for p in _PROBE_PATHS])
+    version = None
+    for r in raw:
+        if r.get("status") == 200 and r.get("snippet"):
+            try:
+                body = _json.loads(r["snippet"] + ("}" if r["snippet"].count("{") > r["snippet"].count("}") else ""))
+            except ValueError:
+                continue
+            if isinstance(body, dict):
+                for k in ("version", "build", "app_version", "studio_version"):
+                    if body.get(k):
+                        version = str(body[k])
+                        break
+        if version:
+            break
+    return {"results": raw, "version": version}
+
+
 # ── Model hub ────────────────────────────────────────────────────────────────
 
 async def hub_cached() -> list[dict]:
