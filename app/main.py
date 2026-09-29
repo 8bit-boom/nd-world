@@ -4185,6 +4185,13 @@ def imagestudio(request: Request, db: Session = Depends(get_db), active_world: s
         raise HTTPException(403)
     settings = get_app_settings(db)
     swarmui_url = (settings.swarmui_external_url or SWARMUI_EXTERNAL_URL).rstrip("/")
+    # Unsloth-only deployments don't run SwarmUI: when the Studio key is set
+    # and no SwarmUI URL exists, the SwarmUI setup screen would be a dead end
+    # — send the GM to the AI + Image Gen tab instead, which is the actual
+    # Unsloth image-generation surface.
+    if not swarmui_url and _ai_module.effective_llm_api_key():
+        from urllib.parse import quote as _q
+        return RedirectResponse(f"/ai?w={_q.quote(world.slug)}", status_code=303)
     return templates.TemplateResponse("imagestudio.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
@@ -4300,6 +4307,10 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_unsloth_url": _ai_module.UNSLOTH_URL,
         "env_unsloth_model": _ai_module.UNSLOTH_MODEL,
         "env_unsloth_api_key": _ai_module.UNSLOTH_API_KEY,
+        # When Unsloth is configured, the legacy Ollama/SwarmUI sections are
+        # hidden from the Settings UI entirely (the deployment doesn't use
+        # them; the form routes still accept the fields for API compat).
+        "unsloth_configured": bool(_ai_module.effective_llm_api_key()),
         "env_llm_context_tokens": _ai_module.LLM_CONTEXT_TOKENS,
         "llm_active": bool(_ai_module.effective_llm_api_key()),
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,

@@ -208,6 +208,7 @@
         Only used while the Unsloth API key above is blank (the <code>ollama</code> Compose
         profile). These fields keep working unchanged through the migration cutover.
       </p>
+      {% if not unsloth_configured %}
       <div class="form-group">
         <label for="ollama-model">Ollama model (AI chat)</label>
         <input id="ollama-model" name="ollama_model" value="{{ settings.ollama_model or '' }}" placeholder="{{ env_ollama_model }} (env default)">
@@ -220,6 +221,7 @@
         <label for="swarmui-external-url">SwarmUI external URL (Image Studio iframe)</label>
         <input id="swarmui-external-url" name="swarmui_external_url" value="{{ settings.swarmui_external_url or '' }}" placeholder="{{ env_swarmui_external_url or 'not set' }}">
       </div>
+      {% endif %}
       <div class="form-group">
         <label for="android-emulator-url">Android emulator URL (Android App iframe)</label>
         <input id="android-emulator-url" name="android_emulator_url" value="{{ settings.android_emulator_url or '' }}" placeholder="{{ env_android_emulator_url or 'not set' }}">
@@ -289,6 +291,20 @@
         </div>
         <div id="studio-update-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0"></div>
         <div id="studio-probe-status" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0;max-width:560px"></div>
+        <details style="margin-top:.6rem">
+          <summary style="font-size:.78rem;color:var(--text-dim);cursor:pointer">How to update Unsloth Studio (TrueNAS Docker) — this build has no update API, so it's manual</summary>
+          <div style="font-size:.78rem;color:var(--text-dim);margin-top:.5rem;line-height:1.6">
+            <p style="margin:.2rem 0">SSH into TrueNAS, then (adjust the version path if <code>ls</code> shows a newer one):</p>
+            <pre style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;overflow-x:auto;white-space:pre">sudo docker compose -f /mnt/.ix-apps/app_configs/nd-world/versions/1.0.0/templates/rendered/docker-compose.yaml --profile unsloth --project-name ix-nd-world pull unsloth
+sudo docker compose -f /mnt/.ix-apps/app_configs/nd-world/versions/1.0.0/templates/rendered/docker-compose.yaml --profile unsloth --project-name ix-nd-world up -d unsloth</pre>
+            <p style="margin:.4rem 0 .2rem"><strong style="color:#e0a030">⚠ Recreating the container wipes its API key:</strong></p>
+            <p style="margin:.2rem 0">1. Open Studio's web UI → Settings → API → create a new key<br>
+            2. Update <code>UNSLOTH_API_KEY</code> in your nd-world app configuration<br>
+            3. Recreate the nd-world app container<br>
+            4. Come back here → ↻ Detect models to confirm the link</p>
+            <p style="margin:.2rem 0">The Docker image and the Desktop app are separate release trains — the Desktop app usually runs ahead, so version/update APIs you see mentioned may arrive in the Docker image later.</p>
+          </div>
+        </details>
       </div>
       <div class="form-group">
         <label for="studio-console-url">Studio Console URL override (optional)</label>
@@ -472,7 +488,8 @@
         <button type="button" id="hw-apply" class="btn-secondary" style="display:none;margin-top:.6rem">Apply recommended to the fields below</button>
       </div>
 
-      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">🖥 Ollama server tuning (legacy backend — needs a restart)</h2>
+      {% if not unsloth_configured %}
+            <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">🖥 Ollama server tuning (legacy backend — needs a restart)</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Only applies while the legacy Ollama backend is in use (no Unsloth API key set).
         Under Unsloth these knobs don't exist — the equivalents (context length, precision,
@@ -522,7 +539,8 @@
       </div>
       {% endfor %}
 
-      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Optional extras</h2>
+      {% endif %}
+            <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Optional extras</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Off by default to keep the nav bar focused — turn on whichever bundled lore extras
         your table actually uses. Each adds a link under 🎯 Tools once enabled.
