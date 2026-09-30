@@ -12,6 +12,42 @@
 
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1rem">
     <button type="button" id="next-round-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Next Round</button>
+    <button type="button" id="ai-tactics-btn" onclick="combatAiTactics()"
+            style="background:rgba(239,68,68,.12);border:1px solid #ef4444;color:#f87171;padding:.5rem .9rem;font-size:.85rem;border-radius:3px;cursor:pointer"
+            title="Suggest NPC tactics and a dramatic beat from the current fight — writes nothing">✨ AI Tactics</button>
+    <div id="ai-tactics-panel" style="display:none;margin-top:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .8rem;font-size:.85rem;max-width:640px"></div>
+    <script>
+      async function combatAiTactics() {
+        const btn = document.getElementById('ai-tactics-btn');
+        const panel = document.getElementById('ai-tactics-panel');
+        btn.disabled = true; btn.textContent = '✨ thinking…';
+        panel.style.display = ''; panel.innerHTML = '<span style="color:var(--text-dim)">Asking the AI about this round…</span>';
+        try {
+          const res = await fetch(window.location.pathname + '/ai-tactics', { method: 'POST' });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+          panel.innerHTML = '';
+          (d.tactics || []).forEach(t => {
+            const div = document.createElement('div');
+            div.style.margin = '.25rem 0';
+            div.innerHTML = '<strong style="color:var(--neon)"></strong>: ';
+            div.firstChild.textContent = t.who;
+            div.append(t.move);
+            panel.appendChild(div);
+          });
+          if (d.beat) {
+            const b = document.createElement('div');
+            b.style.cssText = 'margin-top:.4rem;font-style:italic;color:var(--text-dim)';
+            b.textContent = '🎭 ' + d.beat;
+            panel.appendChild(b);
+          }
+        } catch (e) {
+          panel.innerHTML = '<span style="color:#e07070">⚠ ' + e.message + '</span>';
+        } finally {
+          btn.disabled = false; btn.textContent = '✨ AI Tactics';
+        }
+      }
+    </script>
     <button type="button" id="sync-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer">🔄 Sync Characters</button>
     <button type="button" id="delete-btn" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer;margin-left:auto">🗑 Delete Encounter</button>
     <form id="del-form" method="post" action="/combat/{{ combat.id }}/delete" style="display:none"></form>

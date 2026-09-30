@@ -373,3 +373,67 @@ def party_launch_combat(party_id: int, request: Request, db: Session = Depends(g
     db.refresh(cs)
     live.touch(party.world_id)
     return {"redirect": f"/combat/{cs.id}"}
+
+
+# ── AI party oracle ──────────────────────────────────────────────────────────
+# Reads the party's roster (names, races, professions, levels — no secrets)
+# and proposes bonds/tensions/hooks between them. GM suggestion panel;
+# writes nothing.
+
+@router.post("/parties/{party_id}/ai-insights")
+async def party_ai_insights(party_id: int, request: Request,
+                            db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Suggest inter-party bonds, tensions and a personal hook per member
+    from the roster. GM-only; returns a draft, writes nothing."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    party = db.query(Party).filter(Party.id == party_id, Party.world_id == world.id).first()
+    if not party:
+        raise HTTPException(404)
+    from .. import ai as _ai
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
+
+    pc_ids = json.loads(party.member_pc_ids_json or "[]")
+    ent_ids = json.loads(party.member_entity_ids_json or "[]")
+    roster = []
+    for pc in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids or [])).all():
+        roster.append(f"- {pc.name} ({pc.race or '?'} {pc.char_class or '?'}{f' {pc.subclass}' if pc.subclass else ''}, level {pc.level})"
+                      + (f", played by {pc.player_name}" if pc.player_name else ""))
+    for e in db.query(Entity).filter(Entity.id.in_(ent_ids or [])).all():
+        roster.append(f"- {e.name} (NPC ally, {e.kind})")
+    if len(roster) < 2:
+        raise HTTPException(400, "A party needs at least two members for insights")
+
+    system = (
+        "You are a TTRPG party-dynamics assistant. From the roster, propose what makes this "
+        "party tick. Reply ONLY with JSON, no fences:\n"
+        '{"bonds": [str], "tensions": [str], "hooks": [{"who": str, "hook": str}]}\n'
+        "Rules: 2-3 bonds and 1-3 tensions (each one sentence, grounded in who these "
+        "characters are, never contradicting the roster); exactly one hook per member — "
+        "a personal side-quest seed in one sentence; keep everything setting-neutral."
+    )
+    try:
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": f"Party: {party.name}\n" + "\n".join(roster)}],
+            system=system, options={"num_predict": 900}, think=False,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"AI call failed: {exc}") from exc
+    if _ai.is_failure_sentinel(raw or ""):
+        raise HTTPException(502, raw)
+    from .boards_generate import _extract_json_object
+    data = _extract_json_object(raw) or {}
+    out = {
+        "bonds": [str(b)[:240] for b in data.get("bonds", []) if str(b).strip()][:4],
+        "tensions": [str(t)[:240] for t in data.get("tensions", []) if str(t).strip()][:4],
+        "hooks": [{"who": str(h.get("who"))[:80], "hook": str(h.get("hook"))[:240]}
+                  for h in data.get("hooks", []) if isinstance(h, dict) and h.get("who") and h.get("hook")][:8],
+    }
+    if not (out["bonds"] or out["tensions"] or out["hooks"]):
+        raise HTTPException(502, "The AI reply wasn't usable — try again.")
+    return out

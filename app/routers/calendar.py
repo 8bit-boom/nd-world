@@ -642,3 +642,56 @@ def calendar_day_icon_delete(
     db.delete(icon)
     db.commit()
     return {"ok": True}
+
+
+# ── AI day flavor ────────────────────────────────────────────────────────────
+# Proposes weather/omen/sensory texture for a calendar day the GM can copy
+# into an event or just read aloud. The calendar itself stays fully
+# deterministic — this is a flavor generator, not a scheduler.
+
+@router.post("/calendar/ai-day")
+async def calendar_ai_day(request: Request, db: Session = Depends(get_db),
+                          active_world: str = Cookie(None),
+                          date_label: str = Form(""), context: str = Form("")):
+    """Generate a day's sensory texture (weather, an omen, three sights)
+    for the given date label. GM-only; returns text, writes nothing."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    from .. import ai as _ai
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
+    date_label = (date_label or "").strip() or "an unspecified day"
+    context = (context or "").strip()[:500]
+
+    system = (
+        "You are a TTRPG session-prep assistant generating one day's atmospheric texture. "
+        "Reply ONLY with JSON, no fences:\n"
+        '{"weather": str (one sentence), "omen": str (one subtle portent, one sentence), '
+        '"sights": [str, str, str] (three short sensory details of the world that day)}\n'
+        "Match the setting's tone from the context when given; otherwise stay dark "
+        "cyberpunk-fantasy. Never name real places or people."
+    )
+    try:
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": f"Date: {date_label}"
+                                         + (f"\nContext: {context}" if context else "")}],
+            system=system, options={"num_predict": 400}, think=False,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"AI call failed: {exc}") from exc
+    if _ai.is_failure_sentinel(raw or ""):
+        raise HTTPException(502, raw)
+    from .boards_generate import _extract_json_object
+    data = _extract_json_object(raw) or {}
+    out = {
+        "weather": str(data.get("weather") or "")[:240],
+        "omen": str(data.get("omen") or "")[:240],
+        "sights": [str(s)[:160] for s in data.get("sights", []) if str(s).strip()][:3],
+    }
+    if not (out["weather"] or out["omen"] or out["sights"]):
+        raise HTTPException(502, "The AI reply wasn't usable — try again.")
+    return out

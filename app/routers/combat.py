@@ -241,3 +241,72 @@ def combat_sync_characters(combat_id: int, db: Session = Depends(get_db)):
     db.commit()
     live.touch(cs.world_id)
     return {"synced": synced, "skipped": skipped}
+
+
+# ── AI tactics assist ────────────────────────────────────────────────────────
+# Reads the CURRENT combat state (combatants, HP, round — no dice, no
+# math) and proposes NPC tactics + a dramatic beat for the GM to use or
+# ignore. Deterministic mechanics untouched; this is a suggestion panel.
+
+@router.post("/combat/{combat_id}/ai-tactics")
+async def combat_ai_tactics(combat_id: int, request: Request,
+                            db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Suggest NPC tactics and a dramatic beat from the live combat state.
+    Returns a draft ({tactics: [{who, move}], beat}) — writes nothing, so
+    the GM stays the only author of the encounter. GM-only (in-handler,
+    not allowlisted)."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    cs = db.query(CombatSession).filter(
+        CombatSession.id == combat_id, CombatSession.world_id == world.id).first()
+    if not cs:
+        raise HTTPException(404)
+    from .. import ai as _ai
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
+    try:
+        combatants = json.loads(cs.combatants_json or "[]")
+    except ValueError:
+        combatants = []
+    roster = []
+    for c in combatants[:20]:
+        if not isinstance(c, dict):
+            continue
+        hp = c.get("hp")
+        roster.append(f"- {c.get('name', '?')}: hp {hp if hp is not None else '?'}"
+                      + (f", {c.get('notes')}" if c.get("notes") else ""))
+    if not roster:
+        raise HTTPException(400, "No combatants in this fight yet")
+
+    system = (
+        "You are a tactically sharp TTRGM assistant. From the combat roster and round, "
+        "suggest how the NPCs/monsters should act THIS round and one dramatic beat to keep "
+        "the fight exciting. Reply ONLY with JSON, no fences:\n"
+        '{"tactics": [{"who": str (combatant name), "move": str (one concrete action, '
+        '<=160 chars)}], "beat": str (one dramatic twist/turn of the battle, <=200 chars)}\n'
+        "Rules: 2-4 tactics, only for NON-player combatants (names come from the roster; "
+        "PCs are the players' to run); exploit positioning/statuses mentioned; the beat "
+        "should escalate, not end the fight unless it's clearly nearly over."
+    )
+    try:
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": f"Fight: {cs.name}\nRound {cs.round_num}\n"
+                                         + "\n".join(roster)}],
+            system=system, options={"num_predict": 700}, think=False,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"AI call failed: {exc}") from exc
+    if _ai.is_failure_sentinel(raw or ""):
+        raise HTTPException(502, raw)
+    from .boards_generate import _extract_json_object
+    data = _extract_json_object(raw)
+    tactics = [t for t in (data or {}).get("tactics", [])
+               if isinstance(t, dict) and t.get("who") and t.get("move")][:6]
+    if not tactics and not (data or {}).get("beat"):
+        raise HTTPException(502, "The AI reply wasn't usable — try again.")
+    return {"tactics": [{"who": str(t["who"])[:80], "move": str(t["move"])[:200]} for t in tactics],
+            "beat": str((data or {}).get("beat") or "")[:300]}

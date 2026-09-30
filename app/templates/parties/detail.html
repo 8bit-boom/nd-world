@@ -5,6 +5,43 @@
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }}</h1>
+    <button type="button" id="ai-insights-btn" onclick="partyAiInsights()"
+            style="background:rgba(239,68,68,.12);border:1px solid #ef4444;color:#f87171;padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer;margin-left:.6rem"
+            title="Suggest bonds, tensions and personal hooks from the roster — writes nothing">✨ AI Party Insights</button>
+    <div id="ai-insights-panel" style="display:none;margin-top:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .8rem;font-size:.85rem;max-width:640px"></div>
+    <script>
+      async function partyAiInsights() {
+        const btn = document.getElementById('ai-insights-btn');
+        const panel = document.getElementById('ai-insights-panel');
+        btn.disabled = true; btn.textContent = '✨ thinking…';
+        panel.style.display = ''; panel.innerHTML = '<span style="color:var(--text-dim)">Reading the roster…</span>';
+        try {
+          const res = await fetch(window.location.pathname + '/ai-insights', { method: 'POST' });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+          panel.innerHTML = '';
+          const add = (label, arr) => {
+            if (!arr || !arr.length) return;
+            const h = document.createElement('div');
+            h.style.cssText = 'color:var(--neon);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;margin:.4rem 0 .2rem';
+            h.textContent = label;
+            panel.appendChild(h);
+            arr.forEach(x => {
+              const line = document.createElement('div');
+              line.style.margin = '.2rem 0';
+              const text = typeof x === 'string' ? x : (x.who + ': ' + x.hook);
+              line.textContent = '• ' + text;
+              panel.appendChild(line);
+            });
+          };
+          add('Bonds', d.bonds); add('Tensions', d.tensions); add('Hooks', d.hooks);
+        } catch (e) {
+          panel.innerHTML = '<span style="color:#e07070">⚠ ' + e.message + '</span>';
+        } finally {
+          btn.disabled = false; btn.textContent = '✨ AI Party Insights';
+        }
+      }
+    </script>
     <div style="display:flex;gap:.5rem;align-items:center">
       <button type="button" class="nd-float-btn" title="Float this party — vitals keep updating live while you browse other pages"
               onclick="ndFloat('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">⇱ Float</button>

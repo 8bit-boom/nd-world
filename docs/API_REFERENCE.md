@@ -378,6 +378,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/combat/{combat_id}` | GM | Initiative tracker UI. |
 | GET | `/api/combat/recent` | GM | Recent combat sessions as JSON for the GM Cockpit's combat panel picker. |
 | GET | `/api/combat/{combat_id}/state` | GM | Current combat state JSON (combatants, initiative order, round). |
+| POST | `/combat/{combat_id}/ai-tactics` | GM | Suggests NPC tactics (2-4 concrete moves) and one dramatic beat from the live roster/round — a suggestion panel; writes nothing, deterministic combat mechanics untouched. |
 | POST | `/combat/{combat_id}/state` | GM | Saves combat state (HP, conditions, turn order). |
 | POST | `/combat/{combat_id}/delete` | GM | Deletes a combat session. |
 | POST | `/combat/{combat_id}/link-session` | GM | Associates this combat with a `GameSession`. |
@@ -426,6 +427,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/parties` | GM / Player* | Party list. *Read-only for a player once the GM opts them into "Parties" (`World.player_section_access_json`); off by default. |
 | POST | `/parties/new` | GM | Creates a party (a named group of characters). |
 | GET | `/parties/{party_id}` | GM / Player* | Party detail: members, shared loot, location. *Same opt-in as the list above; 404s for an id belonging to a world the viewer can't access. |
+| POST | `/parties/{party_id}/ai-insights` | GM | Suggests inter-party bonds, tensions and a personal hook per member from the roster (races/classes/levels only, no secrets) — draft only, writes nothing. |
 | POST | `/parties/{party_id}/edit` | GM | Saves party edits (membership, name). |
 | POST | `/parties/{party_id}/delete` | GM | Deletes a party. |
 | POST | `/api/parties/{party_id}/loot` | GM | Updates shared party loot/currency. |
@@ -440,6 +442,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/calendar` | GM / Assistant / Player* | Calendar view with logged events. *Read-only for a player once the GM opts them into "Calendar" (`World.player_section_access_json`); off by default. |
+| POST | `/calendar/ai-day` | GM | Generates a day's atmospheric texture (weather, an omen, three sensory sights) for a date label — flavor text to read aloud or copy into an event; the calendar itself stays deterministic. |
 | GET | `/calendar/agenda` | GM / Assistant / Player* | Every day with an event or icon pinned to it, across the whole calendar, sorted chronologically — the "days with content" table, since a many-year calendar can't be browsed month by month to find what's on it. *Same opt-in as the calendar view above. |
 | GET | `/calendar/config` | GM / Assistant | Calendar configuration form (month names/lengths, starting date). |
 | POST | `/calendar/config` | GM / Assistant | Saves calendar configuration. |

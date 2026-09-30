@@ -43,6 +43,44 @@
     <input id="set-date-year" type="number" min="1" value="{{ cur_year }}" title="Year"
            style="width:85px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
     <button type="button" id="set-date-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">📌 Set as Today</button>
+    <button type="button" id="ai-day-btn" onclick="calendarAiDay()"
+            style="background:rgba(239,68,68,.12);border:1px solid #ef4444;color:#f87171;padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer"
+            title="Generate weather, an omen and sensory details for the selected day — copy into an event or read aloud">✨ AI Day</button>
+    <div id="ai-day-panel" style="display:none;margin-top:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .8rem;font-size:.85rem;max-width:640px"></div>
+    <script>
+      async function calendarAiDay() {
+        const btn = document.getElementById('ai-day-btn');
+        const panel = document.getElementById('ai-day-panel');
+        btn.disabled = true; btn.textContent = '✨ thinking…';
+        panel.style.display = ''; panel.innerHTML = '<span style="color:var(--text-dim)">Conjuring the day…</span>';
+        try {
+          const dateLabel = (typeof CURRENT_DATE_LABEL !== 'undefined' && CURRENT_DATE_LABEL)
+            || (document.getElementById('set-date-month') && document.getElementById('set-date-month').value
+                + ' ' + document.getElementById('set-date-dom').value + ', ' + document.getElementById('set-date-year').value)
+            || 'today';
+          const body = new URLSearchParams({ date_label: String(dateLabel) });
+          const res = await fetch((window.location.pathname.startsWith('/calendar') ? '/calendar' : window.location.pathname) + '/ai-day', {
+            method: 'POST', body: body,
+          });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+          panel.innerHTML = '';
+          if (d.weather) { const w = document.createElement('div'); w.textContent = '🌦 ' + d.weather; panel.appendChild(w); }
+          if (d.omen) { const o = document.createElement('div'); o.style.cssText='font-style:italic;margin-top:.3rem'; o.textContent = '👁 ' + d.omen; panel.appendChild(o); }
+          if (d.sights && d.sights.length) {
+            const h = document.createElement('div');
+            h.style.cssText = 'color:var(--neon);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;margin:.5rem 0 .2rem';
+            h.textContent = 'Sights';
+            panel.appendChild(h);
+            d.sights.forEach(t => { const li = document.createElement('div'); li.textContent = '• ' + t; panel.appendChild(li); });
+          }
+        } catch (e) {
+          panel.innerHTML = '<span style="color:#e07070">⚠ ' + e.message + '</span>';
+        } finally {
+          btn.disabled = false; btn.textContent = '✨ AI Day';
+        }
+      }
+    </script>
   </div>
   {% endif %}
 
