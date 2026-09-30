@@ -24,6 +24,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from .character_hub import delete_character_journal
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -625,12 +626,17 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     # their own claims), the party's XP ledger, and recent sessions the
     # party played. This is the character's HOME (management/editing);
     # the Player Cockpit is the separate live session dashboard.
+    # hub_enabled: the viewer OWNS this character (not merely manages it — a
+    # GM looking at a player's sheet gets the plain sheet). Drives the hub
+    # tabs (Journey/Quests/Notes/World/Schedule — see
+    # app/routers/character_hub.py, whose API is owner-only for the same reason).
+    hub_enabled = bool(user and pc.owner_user_id == user.id)
     hub_party = None
     hub_loot_unclaimed = []
     hub_loot_mine = []
     hub_xp_ledger = []
     hub_sessions = []
-    if can_manage and user and not user.is_gm:
+    if hub_enabled:
         from ..models import GameSession as _GS, Party as _Party
         for party in db.query(_Party).filter(_Party.world_id == pc.world_id).order_by(_Party.name).all():
             try:
@@ -675,6 +681,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "world_members": world_members,
             "linked_sheets": linked_sheets,
             "levelup_ready": levelup_ready,
+            "hub_enabled": hub_enabled,
             "hub_party": hub_party,
             "hub_loot_unclaimed": hub_loot_unclaimed,
             "hub_loot_mine": hub_loot_mine,
@@ -698,6 +705,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "feats_catalog": catalog["feats"],
         "linked_sheets": linked_sheets,
         "levelup_ready": levelup_ready,
+        "hub_enabled": hub_enabled,
         "hub_party": hub_party,
         "hub_loot_unclaimed": hub_loot_unclaimed,
         "hub_loot_mine": hub_loot_mine,
@@ -880,6 +888,7 @@ def character_delete(pc_id: int, request: Request, db: Session = Depends(get_db)
     db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).update(
         {"player_character_id": None}, synchronize_session=False,
     )
+    delete_character_journal(db, pc.id)
     db.delete(pc)
     db.commit()
     return RedirectResponse("/characters", status_code=303)
@@ -949,6 +958,7 @@ def character_retire_to_npc(pc_id: int, request: Request, db: Session = Depends(
     db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).update(
         {"player_character_id": None}, synchronize_session=False,
     )
+    delete_character_journal(db, pc.id)
     db.delete(pc)
     db.commit()
     db.refresh(entity)

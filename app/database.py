@@ -55,6 +55,10 @@ _GENERICALLY_HEALED_TABLES = (
     # behavior instructions): brand new, same reasoning as entity_relations/
     # vault_chunks just above.
     "ai_instructions",
+    # character_journal_entries (app.models.CharacterJournalEntry — a
+    # player's private journal/goals per character, the personal half of the
+    # character hub): brand new, same reasoning as ai_instructions above.
+    "character_journal_entries",
 )
 
 

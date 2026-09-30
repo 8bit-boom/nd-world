@@ -645,6 +645,32 @@ class AiInstruction(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CharacterJournalEntry(Base):
+    """A player's own writing about ONE of their characters — the personal
+    half of the character hub (app/routers/character_hub.py). Two kinds
+    share the table: "journal" (free-form entries, optionally tied to a
+    GameSession) and "goal" (something the character is trying to achieve,
+    with a status). PRIVATE TO THE CHARACTER'S OWNER: no route exposes these
+    rows to anyone else (not even a GM) — the hub API checks
+    PlayerCharacter.owner_user_id against the caller for every read and
+    write. Deleted with the character (character_delete / retire-to-NPC)
+    and with the world (_WORLD_DELETE_MODELS). `status` is only meaningful
+    for goals ("active" | "achieved" | "failed" | "dropped"); journal rows
+    leave it empty."""
+    __tablename__ = "character_journal_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=False, index=True)
+    kind = Column(String(16), default="journal", nullable=False)
+    title = Column(String(256), default="")
+    body = Column(Text, default="")
+    status = Column(String(16), default="")
+    session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class EntityNote(Base):
     """A discrete note attached to an entity, separate from its main body —
     the GM can jot several of these and hide/un-hide each independently of

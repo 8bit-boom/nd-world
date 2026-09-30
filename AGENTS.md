@@ -76,6 +76,11 @@ tools that require GM access still check `is_gm` at call time.)
   create an Owner (`member_set_role` 403s an Owner who tries to mint a
   co-owner). It's how a GM hands an assistant a fully independent world of
   their own without making them a global GM.
+  Watch out for the blanket prefixes in `_is_player_safe`: `/characters` and
+  `/api/characters/` admit every logged-in player for *any* method and path
+  beneath them, so a new route there is player-reachable by default and must
+  enforce its own access (see `_owned_pc` in `app/routers/character_hub.py`,
+  which 404s anyone but the character's owner).
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before
   assuming an endpoint doesn't exist, and add a row there for any new route.

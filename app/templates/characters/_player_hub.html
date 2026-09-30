@@ -1,49 +1,381 @@
-{% if can_manage and request.state.user and not request.state.user.is_gm and hub_party %}
-<!-- ── Your party hub: everything a player manages from their character's
-     page — party loot claims, XP history, recent sessions. Deliberately
-     different from the Player Cockpit (/player-cockpit): that is the live
-     session dashboard, this is the character's home. ── -->
-<div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin:1rem 0">
-  <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">🧑‍🤝‍🧑 Your party — <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">{{ hub_party.name }}</a></h2>
+{% if hub_enabled %}
+<!-- ── The player's character hub: a tab bar over the sheet. Included by BOTH
+     sheet renderers (sheet.html and custom_sheet.html); the script hides the
+     sheet's own top-level siblings (via a class, never inline style) when
+     another tab is showing. Data for Quests/Notes/World/Schedule is lazy-loaded
+     from the owner-only /api/characters/{id}/hub/* routes
+     (app/routers/character_hub.py); Journey is the party panel rendered
+     server-side. Distinct from the Player Cockpit (/player-cockpit), which is
+     the live session dashboard — this is the character's home. ── -->
+<style>
+.away-from-sheet { display:none !important; }
+#pc-hub { max-width:1100px; margin:0 auto 1rem; }
+.pch-tabs { display:flex; gap:.35rem; overflow-x:auto; border-bottom:1px solid var(--border); padding-bottom:.4rem; margin-bottom:.9rem; -webkit-overflow-scrolling:touch; }
+.pch-tab { flex:0 0 auto; background:var(--bg2); border:1px solid var(--border); color:var(--text-dim); padding:.4rem .8rem; border-radius:6px; cursor:pointer; font-family:var(--font); font-size:.82rem; white-space:nowrap; }
+.pch-tab:hover { border-color:var(--neon); color:var(--text); }
+.pch-tab[aria-selected="true"] { border-color:var(--neon); color:var(--neon); background:var(--bg3); }
+.pch-panel { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1rem 1.15rem; }
+.pch-panel[hidden] { display:none; }
+.pch-h { color:var(--neon); font-size:.95rem; margin:0 0 .7rem; }
+.pch-sub { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); margin:1rem 0 .4rem; }
+.pch-sub:first-child { margin-top:0; }
+.pch-muted { color:var(--text-dim); font-size:.82rem; }
+.pch-row { padding:.5rem 0; border-bottom:1px solid var(--border); }
+.pch-row:last-child { border-bottom:none; }
+.pch-title { color:var(--text); font-size:.9rem; text-decoration:none; }
+a.pch-title:hover { color:var(--neon); }
+.pch-chip { display:inline-block; font-size:.65rem; padding:.1rem .4rem; border-radius:10px; background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); margin-left:.4rem; vertical-align:middle; }
+.pch-chip.mine { border-color:var(--neon); color:var(--neon); }
+.pch-text { font-size:.85rem; color:var(--text); white-space:pre-wrap; margin:.3rem 0 0; }
+.pch-form { display:flex; flex-direction:column; gap:.4rem; margin:.4rem 0 .8rem; }
+.pch-panel select, .pch-form input, .pch-form textarea, .pch-form select, .pch-search { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .5rem; border-radius:4px; font-family:var(--font); font-size:16px; max-width:100%; }
+.pch-form textarea { min-height:5rem; resize:vertical; }
+.pch-btns { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; }
+.pch-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .7rem; border-radius:4px; cursor:pointer; font-family:var(--font); font-size:.78rem; }
+.pch-btn:hover { border-color:var(--neon); color:var(--neon); }
+.pch-btn.danger:hover { border-color:var(--neon2); color:var(--neon2); }
+.pch-btn:disabled { opacity:.5; cursor:default; }
+.pch-err { color:var(--neon2); font-size:.8rem; margin:.3rem 0; }
+.pch-search { width:100%; box-sizing:border-box; margin-bottom:.6rem; }
+</style>
 
-  {% if hub_loot_unclaimed or hub_loot_mine %}
-  <div style="margin-bottom:.8rem">
-    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">🎒 Party loot</div>
+<div id="pc-hub" data-pc-id="{{ pc.id }}">
+  <div class="pch-tabs" role="tablist" aria-label="Character hub">
+    <button type="button" class="pch-tab" role="tab" data-tab="sheet">📄 Sheet</button>
+    <button type="button" class="pch-tab" role="tab" data-tab="journey">🧑‍🤝‍🧑 Journey</button>
+    <button type="button" class="pch-tab" role="tab" data-tab="quests">📜 Quests &amp; goals</button>
+    <button type="button" class="pch-tab" role="tab" data-tab="notes">📓 Notes &amp; journal</button>
+    <button type="button" class="pch-tab" role="tab" data-tab="world">🌍 Known world</button>
+    <button type="button" class="pch-tab" role="tab" data-tab="schedule">🗓 Schedule</button>
+  </div>
+
+  <section class="pch-panel" data-panel="journey" hidden>
+    {% if hub_party %}
+    <h2 class="pch-h">🧑‍🤝‍🧑 Your party — <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">{{ hub_party.name }}</a></h2>
+
+    {% if hub_loot_unclaimed or hub_loot_mine %}
+    <div class="pch-sub">🎒 Party loot</div>
     {% if hub_loot_mine %}
     <div style="font-size:.8rem;margin-bottom:.3rem">Yours: <strong style="color:var(--neon)">{{ hub_loot_mine|join(', ') }}</strong></div>
     {% endif %}
     {% if hub_loot_unclaimed %}
     <details>
-      <summary style="font-size:.78rem;color:var(--text-dim);cursor:pointer">{{ hub_loot_unclaimed|length }} unclaimed item{{ 's' if hub_loot_unclaimed|length != 1 }} — claim from the party page</summary>
-      <div style="font-size:.78rem;color:var(--text-dim);padding:.3rem 0 0 .8rem">
+      <summary class="pch-muted" style="cursor:pointer">{{ hub_loot_unclaimed|length }} unclaimed item{{ 's' if hub_loot_unclaimed|length != 1 }} — claim from the party page</summary>
+      <div class="pch-muted" style="padding:.3rem 0 0 .8rem">
         {% for item in hub_loot_unclaimed %}• {{ item.get('name', 'item') }}{% if item.get('qty', 1) > 1 %} ×{{ item.qty }}{% endif %}<br/>{% endfor %}
       </div>
     </details>
     {% endif %}
-  </div>
-  {% endif %}
+    {% endif %}
 
-  {% if hub_xp_ledger %}
-  <div style="margin-bottom:.8rem">
-    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">⭐ Recent XP</div>
+    {% if hub_xp_ledger %}
+    <div class="pch-sub">⭐ Recent XP</div>
     {% for entry in hub_xp_ledger %}
-    <div style="font-size:.78rem;color:var(--text-dim)">
+    <div class="pch-muted">
       +{{ entry.get('amount', 0) }} XP{% if entry.get('ts') %} · {{ entry.ts[:10] }}{% endif %}
       {% if entry.get('awarded') %} · {{ entry.awarded.keys()|join(', ') }}{% endif %}
     </div>
     {% endfor %}
-  </div>
-  {% endif %}
+    {% endif %}
 
-  {% if hub_sessions %}
-  <div>
-    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">📓 Recent sessions</div>
+    {% if hub_sessions %}
+    <div class="pch-sub">📓 Recent sessions</div>
     {% for s in hub_sessions %}
-    <a href="{{ ('/sessions/' + s.id|string)|wq }}" style="display:block;font-size:.8rem;color:var(--text);text-decoration:none;padding:.15rem 0">
-      #{{ s.session_num }} — {{ s.title or 'Session' }}{% if s.xp_awarded %} <span style="color:var(--text-dim)">(+{{ s.xp_awarded }} XP)</span>{% endif %}
+    <a href="{{ ('/sessions/' + s.id|string)|wq }}" style="display:block;font-size:.85rem;color:var(--text);text-decoration:none;padding:.15rem 0">
+      #{{ s.session_num }} — {{ s.title or 'Session' }}{% if s.xp_awarded %} <span class="pch-muted">(+{{ s.xp_awarded }} XP)</span>{% endif %}
     </a>
     {% endfor %}
-  </div>
-  {% endif %}
+    {% endif %}
+    {% else %}
+    <h2 class="pch-h">🧑‍🤝‍🧑 Journey</h2>
+    <p class="pch-muted">{{ pc.name }} isn't in a party yet. Once your GM adds them to one, the party's loot, XP history and recent sessions show up here.</p>
+    {% endif %}
+  </section>
+
+  <section class="pch-panel" data-panel="quests" hidden><div data-body="quests" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
 </div>
+
+<script>
+(function () {
+  const hub = document.getElementById('pc-hub');
+  if (!hub) return;
+  const PC_ID = hub.dataset.pcId;
+  const BASE = '/api/characters/' + PC_ID + '/hub/';
+  const TABS = ['sheet', 'journey', 'quests', 'notes', 'world', 'schedule'];
+
+  // ── tiny DOM helpers: everything from the server goes in via textContent /
+  // createTextNode, never innerHTML, so user-written text can't inject markup.
+  function safeHref(u) { return (typeof u === 'string' && u.startsWith('/') && !u.startsWith('//')) ? u : '#'; }
+  function h(tag, props) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(props || {})) {
+      if (v == null || v === false) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k === 'href') el.setAttribute('href', safeHref(v));
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (k === 'value') el.value = v;
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of Array.prototype.slice.call(arguments, 2).flat()) {
+      if (kid == null || kid === false) continue;
+      el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+    }
+    return el;
+  }
+  async function api(path, opts) {
+    const r = await fetch(BASE + path, opts);
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* non-JSON error body */ }
+    if (!r.ok) throw new Error((data && data.detail) || ('HTTP ' + r.status));
+    return data;
+  }
+  const send = (path, body) => api(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+  });
+  const day = iso => (iso || '').slice(0, 10);
+  const body = name => hub.querySelector('[data-body="' + name + '"]');
+
+  function fail(el, err, retry) {
+    el.replaceChildren(
+      h('div', { class: 'pch-err', text: 'Could not load: ' + err.message }),
+      h('button', { type: 'button', class: 'pch-btn', text: 'Retry', onclick: retry }));
+  }
+
+  // ── Quests & goals ─────────────────────────────────────────────────────────
+  const STATUS_LABEL = { active: 'Active', achieved: 'Achieved', failed: 'Failed', dropped: 'Dropped' };
+
+  async function loadQuests() {
+    const el = body('quests');
+    try { renderQuests(el, await api('quests')); } catch (e) { fail(el, e, loadQuests); }
+  }
+
+  function renderQuests(el, d) {
+    const parts = [h('div', { class: 'pch-sub', text: '📜 Quests' })];
+    if (d.section === 'none') {
+      parts.push(h('p', { class: 'pch-muted', text: "Your GM hasn't opened the quest log to players in this world." }));
+    } else if (!d.quests.length) {
+      parts.push(h('p', { class: 'pch-muted', text: 'No quests to show yet.' }));
+    } else {
+      d.quests.forEach(q => parts.push(h('div', { class: 'pch-row' },
+        h('a', { class: 'pch-title', href: q.href, text: q.title }),
+        h('span', { class: 'pch-chip', text: q.status }),
+        q.mine ? h('span', { class: 'pch-chip mine', text: 'your party' }) : (q.party ? h('span', { class: 'pch-chip', text: q.party }) : null),
+        q.subs_total ? h('span', { class: 'pch-chip', text: q.subs_done + '/' + q.subs_total + ' steps' }) : null,
+        q.summary ? h('div', { class: 'pch-muted', text: q.summary }) : null)));
+      if (d.quests_href) parts.push(h('a', { class: 'pch-muted', href: d.quests_href, text: 'Open the full quest log →' }));
+    }
+
+    parts.push(h('div', { class: 'pch-sub', text: '🎯 My goals' }));
+    parts.push(goalForm(d.goal_statuses));
+    if (!d.goals.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing yet — what does your character want?' }));
+    d.goals.forEach(g => parts.push(goalRow(g, d.goal_statuses)));
+    el.replaceChildren(...parts);
+  }
+
+  function goalForm() {
+    const title = h('input', { type: 'text', placeholder: 'A goal for your character…', maxlength: 200 });
+    const text = h('textarea', { placeholder: 'Details (optional)' });
+    const err = h('div', { class: 'pch-err' });
+    const add = h('button', { type: 'button', class: 'pch-btn', text: 'Add goal' });
+    add.addEventListener('click', async () => {
+      err.textContent = ''; add.disabled = true;
+      try { await send('entries', { kind: 'goal', title: title.value, body: text.value }); await loadQuests(); }
+      catch (e) { err.textContent = e.message; add.disabled = false; }
+    });
+    return h('div', { class: 'pch-form' }, title, text, h('div', { class: 'pch-btns' }, add), err);
+  }
+
+  function goalRow(g, statuses) {
+    const sel = h('select', { 'aria-label': 'Goal status' },
+      statuses.map(s => h('option', { value: s, selected: s === g.status, text: STATUS_LABEL[s] || s })));
+    sel.addEventListener('change', async () => {
+      try { await send('entries/' + g.id, { status: sel.value }); await loadQuests(); }
+      catch (e) { alert(e.message); await loadQuests(); }
+    });
+    const del = h('button', { type: 'button', class: 'pch-btn danger', text: 'Delete' });
+    del.addEventListener('click', async () => {
+      if (!confirm('Delete this goal?')) return;
+      try { await send('entries/' + g.id + '/delete'); await loadQuests(); } catch (e) { alert(e.message); }
+    });
+    return h('div', { class: 'pch-row' },
+      h('div', { class: 'pch-title', text: g.title || '(untitled goal)' }),
+      g.body ? h('div', { class: 'pch-text', text: g.body }) : null,
+      h('div', { class: 'pch-btns', style: 'margin-top:.4rem' }, sel, del));
+  }
+
+  // ── Notes & journal ────────────────────────────────────────────────────────
+  async function loadNotes() {
+    const el = body('notes');
+    try { renderNotes(el, await api('notes')); } catch (e) { fail(el, e, loadNotes); }
+  }
+
+  function renderNotes(el, d) {
+    const parts = [h('div', { class: 'pch-sub', text: '🤫 From your GM' })];
+    if (!d.gm_notes.length) parts.push(h('p', { class: 'pch-muted', text: 'No private notes from your GM.' }));
+    d.gm_notes.forEach(n => parts.push(h('div', { class: 'pch-row' },
+      h('span', { class: 'pch-title', text: n.title || 'Note' }),
+      h('span', { class: 'pch-chip', text: day(n.updated_at) }),
+      n.excerpt ? h('div', { class: 'pch-muted', text: n.excerpt }) : null)));
+    if (d.thread_href) parts.push(h('a', { class: 'pch-muted', href: d.thread_href, text: 'Open the full thread →' }));
+
+    parts.push(h('div', { class: 'pch-sub', text: '📓 My journal (private to you)' }));
+    parts.push(journalForm(d.sessions, null, loadNotes));
+    if (!d.journal.length) parts.push(h('p', { class: 'pch-muted', text: 'Your journal is empty — jot down what happened.' }));
+    d.journal.forEach(e => parts.push(journalRow(e, d.sessions)));
+    el.replaceChildren(...parts);
+  }
+
+  function journalForm(sessions, entry, done, cancel) {
+    const title = h('input', { type: 'text', placeholder: 'Title (optional)', maxlength: 200, value: entry ? entry.title : '' });
+    const sess = h('select', { 'aria-label': 'Session' },
+      h('option', { value: '', text: 'Not tied to a session' }),
+      sessions.map(s => h('option', { value: s.id, selected: !!entry && entry.session_id === s.id, text: s.label })));
+    const text = h('textarea', { placeholder: 'What happened? What do you suspect?', value: entry ? entry.body : '' });
+    const err = h('div', { class: 'pch-err' });
+    const save = h('button', { type: 'button', class: 'pch-btn', text: entry ? 'Save changes' : 'Add entry' });
+    save.addEventListener('click', async () => {
+      err.textContent = ''; save.disabled = true;
+      const payload = { title: title.value, body: text.value, session_id: sess.value || null };
+      try {
+        if (entry) await send('entries/' + entry.id, payload);
+        else await send('entries', Object.assign({ kind: 'journal' }, payload));
+        await done();
+      } catch (e) { err.textContent = e.message; save.disabled = false; }
+    });
+    const btns = h('div', { class: 'pch-btns' }, save,
+      cancel ? h('button', { type: 'button', class: 'pch-btn', text: 'Cancel', onclick: cancel }) : null);
+    const wrap = h('div', { class: 'pch-form' }, title, sessions.length ? sess : null, text, btns, err);
+    return wrap;
+  }
+
+  function journalRow(e, sessions) {
+    const row = h('div', { class: 'pch-row' });
+    function view() {
+      const edit = h('button', { type: 'button', class: 'pch-btn', text: 'Edit' });
+      edit.addEventListener('click', () =>
+        row.replaceChildren(journalForm(sessions, e, loadNotes, view)));
+      const del = h('button', { type: 'button', class: 'pch-btn danger', text: 'Delete' });
+      del.addEventListener('click', async () => {
+        if (!confirm('Delete this journal entry?')) return;
+        try { await send('entries/' + e.id + '/delete'); await loadNotes(); } catch (x) { alert(x.message); }
+      });
+      row.replaceChildren(
+        h('span', { class: 'pch-title', text: e.title || 'Entry' }),
+        h('span', { class: 'pch-chip', text: day(e.created_at) }),
+        e.session ? h('span', { class: 'pch-chip', text: e.session }) : null,
+        e.body ? h('div', { class: 'pch-text', text: e.body }) : null,
+        h('div', { class: 'pch-btns', style: 'margin-top:.4rem' }, edit, del));
+    }
+    view();
+    return row;
+  }
+
+  // ── Known world ────────────────────────────────────────────────────────────
+  let worldTimer = null;
+  async function loadWorld(q) {
+    const el = body('world');
+    try { renderWorld(el, await api('world?q=' + encodeURIComponent(q || '')), q || ''); }
+    catch (e) { fail(el, e, () => loadWorld(q)); }
+  }
+
+  function entityRow(e) {
+    return h('div', { class: 'pch-row' },
+      h('a', { class: 'pch-title', href: e.href, text: e.name }),
+      h('span', { class: 'pch-chip', text: e.kind }),
+      e.summary ? h('div', { class: 'pch-muted', text: e.summary }) : null);
+  }
+
+  function renderWorld(el, d, q) {
+    const search = h('input', { type: 'search', class: 'pch-search', placeholder: 'Search what you know…', value: q, 'aria-label': 'Search the world' });
+    search.addEventListener('input', () => {
+      clearTimeout(worldTimer);
+      worldTimer = setTimeout(async () => {
+        await loadWorld(search.value.trim());
+        const again = body('world').querySelector('input[type="search"]');
+        if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      }, 300);
+    });
+    const parts = [search];
+    if (d.q) {
+      parts.push(h('div', { class: 'pch-sub', text: d.results.length + ' result' + (d.results.length === 1 ? '' : 's') }));
+      d.results.forEach(e => parts.push(entityRow(e)));
+    } else {
+      if (d.revealed.length) {
+        parts.push(h('div', { class: 'pch-sub', text: '🔓 Revealed to you' }));
+        d.revealed.forEach(e => parts.push(entityRow(e)));
+      }
+      parts.push(h('div', { class: 'pch-sub', text: '🆕 Recently updated' }));
+      if (!d.recent.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing to show yet.' }));
+      d.recent.forEach(e => parts.push(entityRow(e)));
+    }
+    el.replaceChildren(...parts);
+  }
+
+  // ── Schedule ───────────────────────────────────────────────────────────────
+  async function loadSchedule() {
+    const el = body('schedule');
+    try { renderSchedule(el, await api('schedule')); } catch (e) { fail(el, e, loadSchedule); }
+  }
+
+  function renderSchedule(el, d) {
+    const parts = [];
+    parts.push(h('div', { class: 'pch-sub', text: '🎲 Next sessions' }));
+    if (!d.sessions.length) parts.push(h('p', { class: 'pch-muted', text: 'No upcoming session dates set for your party.' }));
+    d.sessions.forEach(s => parts.push(h('div', { class: 'pch-row' },
+      h('a', { class: 'pch-title', href: s.href, text: '#' + s.num + ' — ' + s.title }),
+      h('span', { class: 'pch-chip', text: s.date }))));
+
+    parts.push(h('div', { class: 'pch-sub', text: '🗓 Upcoming in the world' + (d.today ? ' (today: ' + d.today + ')' : '') }));
+    if (d.calendar_section === 'none') {
+      parts.push(h('p', { class: 'pch-muted', text: "Your GM hasn't opened the calendar to players in this world." }));
+    } else if (!d.events.length) {
+      parts.push(h('p', { class: 'pch-muted', text: 'Nothing pinned to your character or party yet.' }));
+    } else {
+      d.events.forEach(e => parts.push(h('div', { class: 'pch-row' },
+        h('span', { class: 'pch-title', text: e.title }),
+        h('span', { class: 'pch-chip', text: e.date + (e.days_away === 0 ? ' · today' : ' · in ' + e.days_away + ' day' + (e.days_away === 1 ? '' : 's')) }),
+        e.notes ? h('div', { class: 'pch-muted', text: e.notes }) : null)));
+    }
+    if (d.calendar_href) parts.push(h('a', { class: 'pch-muted', href: d.calendar_href, text: 'Open the full calendar →' }));
+    el.replaceChildren(...parts);
+  }
+
+  // ── Tabs ───────────────────────────────────────────────────────────────────
+  const loaders = { quests: loadQuests, notes: loadNotes, world: () => loadWorld(''), schedule: loadSchedule };
+  const loaded = {};
+
+  function sheetNodes() {
+    const out = [];
+    for (let n = hub.nextElementSibling; n; n = n.nextElementSibling) {
+      if (!/^(SCRIPT|STYLE|LINK|TEMPLATE)$/.test(n.tagName)) out.push(n);
+    }
+    return out;
+  }
+
+  function show(tab) {
+    if (TABS.indexOf(tab) < 0) tab = 'sheet';
+    hub.querySelectorAll('.pch-tab').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+    hub.querySelectorAll('.pch-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
+    sheetNodes().forEach(n => n.classList.toggle('away-from-sheet', tab !== 'sheet'));
+    if (loaders[tab] && !loaded[tab]) { loaded[tab] = true; loaders[tab](); }
+    try { history.replaceState(null, '', tab === 'sheet' ? location.pathname + location.search : '#hub-' + tab); } catch (e) { /* ignore */ }
+  }
+
+  hub.querySelectorAll('.pch-tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
+  // The sheet markup follows this include, so on first load it isn't parsed yet:
+  // wait for the DOM before the initial show() or a deep link (#hub-quests) or a
+  // reload on another tab would leave the sheet visible under the panel.
+  function init() {
+    const m = /^#hub-(\w+)$/.exec(location.hash);
+    show(m ? m[1] : 'sheet');
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+  window.addEventListener('hashchange', init);
+})();
+</script>
 {% endif %}
