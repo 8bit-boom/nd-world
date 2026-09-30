@@ -510,6 +510,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/boards/{slug}/delete` | GM / Assistant | Deletes a board. |
 | GET | `/boards/{slug}/export` | GM / Assistant | Exports the board as JSON. |
 | POST | `/boards/generate-orgs` | GM / Assistant | Auto-generates a faction/organization relationship board from `organization`-kind entities and their links (radial cluster layout, plus keyword-classified allies/enemies/controls/rivals edges inferred from entity text). |
+| POST | `/boards/generate-mystery` | GM / Assistant | AI investigation board: describe a mystery (form `premise`, optional `title`/`replace`) and the chat model proposes victim/suspects/witnesses/locations/clues/motives and their connections as a normal editable board. Defensive JSON parse (fences, trailing prose, truncated replies); nothing auto-commits to lore Entities — the board itself is the review surface. |
 | GET | `/api/orgs/graph` | GM / Assistant | The same faction-graph data as JSON without saving a board — for external use. |
 | POST | `/boards/generate-dreamlands` | GM / Assistant | Generates a fixed, bundled 50-location geographic atlas of the Dreamlands (reference content, not derived from world data). |
 
@@ -644,6 +645,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/tables` | GM / Assistant / Player* | Table list. *Read-only for a player once the GM opts them into "Random Tables" (`World.player_section_access_json`); off by default. |
 | GET | `/tables/new` | GM / Assistant | New table form. |
 | POST | `/tables/new` | GM / Assistant | Creates a table. |
+| POST | `/tables/generate-ai` | GM / Assistant | AI random-table generator: describe the table (form `description`, `count` 4-30, `category`) and the chat model writes the entries; creates the RandomTable and redirects to its edit page for review. |
 | GET | `/tables/{table_id}/edit` | GM / Assistant | Edit form. |
 | POST | `/tables/{table_id}/edit` | GM / Assistant | Saves table edits. |
 | POST | `/tables/{table_id}/delete` | GM / Assistant | Deletes a table. |

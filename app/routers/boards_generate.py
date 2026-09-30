@@ -10,11 +10,12 @@ import re
 from types import SimpleNamespace
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Depends, Request
+from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from .. import ai as _ai_module
 from ..deps import get_world_ctx
 from ..models import Entity, InvestBoard, entity_links
 
@@ -327,4 +328,171 @@ def board_generate_dreamlands(request: Request, replace: Optional[str] = None,
         "Geographic map of the 50 canonical Dreamlands locations, colour-coded by region.",
         nodes_payload, edges,
     )
+    return RedirectResponse(f"/boards/{slug}", status_code=303)
+
+
+# ── AI investigation board ───────────────────────────────────────────────────
+# "Describe a mystery" → the chat model proposes the cast (suspects,
+# witnesses, locations, clues, motives) and how they connect → a real
+# InvestBoard the GM opens and edits like any other. The orgs/dreamlands
+# generators above are deterministic; this one is the boards surface's AI
+# integration (audit 2026-09-30: Boards had none). GM-only (both routes
+# already are; this adds no allowlist entry). The AI output lands as a
+# draft the GM reviews on the board itself — nothing is auto-committed to
+# lore Entities, so a hallucinated name is one delete-click, not a world
+# row.
+
+_MYSTERY_NODE_COLORS = {
+    "victim": "#e5e7eb", "suspect": "#ef4444", "witness": "#22c55e",
+    "location": "#3b82f6", "clue": "#f59e0b", "motive": "#a78bfa",
+    "other": "#6b7280",
+}
+_MYSTERY_NODE_ROLES = "victim, suspect, witness, location, clue, motive, other"
+_MAX_MYSTERY_NODES = 14
+_MYSTERY_NUM_PREDICT = 2000
+
+
+def _extract_json_object(raw: str):
+    """Defensive parse of a model reply that should be one JSON object:
+    strips code fences, then raw-decodes from the first '{' — with a
+    fallback for a truncated reply (drop the trailing partial entry and
+    close the open braces), because a 2000-token cap can cut a large
+    board mid-list and everything before the cut is still usable."""
+    import re as _re
+    text = (raw or "").strip()
+    text = _re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=_re.S).strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    text = text[start:]
+    import json as _json
+    try:
+        return _json.loads(text)
+    except ValueError:
+        pass
+    # Trailing prose after a complete object — raw_decode ignores it.
+    try:
+        obj, _end = _json.JSONDecoder().raw_decode(text)
+        if isinstance(obj, dict):
+            return obj
+    except ValueError:
+        pass
+    for cut in range(len(text), start, -max(1, len(text) // 40)):
+        attempt = text[:cut].rstrip().rstrip(",")
+        for close in ("]})", "]}"):
+            try:
+                return _json.loads(attempt + close)
+            except ValueError:
+                continue
+    return None
+
+
+@router.post("/boards/generate-mystery")
+async def boards_generate_mystery(
+    request: Request,
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+    premise: str = Form(""),
+    title: str = Form(""),
+    replace: Optional[str] = Form(None),
+):
+    """AI-generated investigation board from a one-paragraph premise: the
+    model proposes the victim/suspects/witnesses/locations/clues/motives
+    and the connections between them; the result becomes a normal board
+    (edit/delete like any other). GM/assistant content editors."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    premise = (premise or "").strip()
+    if not premise:
+        raise HTTPException(400, "Describe the mystery first")
+    if len(premise) > 4000:
+        raise HTTPException(400, "Premise too long (over 4k chars)")
+    if not _ai_module.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
+
+    system = (
+        "You are a mystery-writing assistant for a tabletop RPG GM. From the premise, "
+        "design an investigation board. Reply with ONLY a JSON object, no markdown fences:\n"
+        '{"title": str, "nodes": [{"role": one of ' + _MYSTERY_NODE_ROLES + ', "title": str, '
+        '"body": str (<=240 chars, what the GM knows/suspects about this entry), '
+        '"links": [indices of nodes this one connects to]}]}\n'
+        f"Rules: {_MAX_MYSTERY_NODES // 2}-{_MAX_MYSTERY_NODES} nodes; exactly one victim (or a crime with "
+        "no body — then role 'other'); 2-4 suspects with at least one innocent; every clue ties "
+        "to at least one suspect or location; every node except the victim has at least one link; "
+        "each link is meaningful (the JSON has no per-link labels — connections speak through the "
+        "node bodies). Never name real people. Keep titles short."
+    )
+    try:
+        raw = await _ai_module.generate_chat(
+            [{"role": "user", "content": premise}],
+            system=system, options={"num_predict": _MYSTERY_NUM_PREDICT}, think=False,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"AI call failed: {exc}") from exc
+    if _ai_module.is_failure_sentinel(raw or ""):
+        raise HTTPException(502, raw)
+    data = _extract_json_object(raw)
+    if not data or not isinstance(data.get("nodes"), list) or len(data["nodes"]) < 3:
+        raise HTTPException(502, "The AI reply wasn't a usable board — try rephrasing the premise.")
+
+    # Normalize + lay out radially by role (same cluster feel as the
+    # faction generator), clamped to the cap.
+    nodes_in = [n for n in data["nodes"] if isinstance(n, dict) and (n.get("title") or "").strip()][:_MAX_MYSTERY_NODES]
+    if len(nodes_in) < 3:
+        raise HTTPException(502, "The AI reply wasn't a usable board — try rephrasing the premise.")
+
+    import math as _math
+    _by_role = {}
+    for i, n in enumerate(nodes_in):
+        _by_role.setdefault(str(n.get("role") or "other").lower(), []).append(i)
+    board_nodes, index_to_id = [], {}
+    cx, cy = 1400, 900
+    roles = list(_by_role.keys())
+    for ri, role in enumerate(roles):
+        angle = (2 * _math.pi * ri / max(len(roles), 1)) - _math.pi / 2
+        ccx = cx + 620 * _math.cos(angle)
+        ccy = cy + 620 * _math.sin(angle)
+        members = _by_role[role]
+        color = _MYSTERY_NODE_COLORS.get(role, _MYSTERY_NODE_COLORS["other"])
+        for ni, idx in enumerate(members):
+            n = nodes_in[idx]
+            nangle = (2 * _math.pi * ni / max(len(members), 1))
+            nx = ccx + 200 * _math.cos(nangle)
+            ny = ccy + 200 * _math.sin(nangle)
+            nid = f"my-{idx}"
+            index_to_id[idx] = nid
+            board_nodes.append({
+                "id": nid, "type": "faction", "title": str(n.get("title"))[:120],
+                "body": str(n.get("body") or "")[:240],
+                "color": color, "image_url": "", "entity_id": None,
+                "status": str(n.get("role") or "other"), "tags": "",
+                "x": round(nx), "y": round(ny),
+            })
+    seen, board_edges = set(), []
+    for idx, n in enumerate(nodes_in):
+        for link in (n.get("links") or []):
+            try:
+                other = int(link)
+            except (TypeError, ValueError):
+                continue
+            if other == idx or other not in index_to_id:
+                continue
+            pair = (min(idx, other), max(idx, other))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            board_edges.append({
+                "id": f"me-{pair[0]}-{pair[1]}", "from": index_to_id[pair[0]],
+                "to": index_to_id[pair[1]], "label": "", "color": "#6b7280",
+                "style": "solid", "kind": "link", "direction": "fwd",
+            })
+
+    name = (title or "").strip() or str(data.get("title") or "Investigation").strip()[:120] or "Investigation"
+    world_name = world.name if world else "World"
+    board_name = name if name.lower().startswith("case") else f"Case — {name}"
+    base_slug = re.sub(r"[^a-z0-9]+", "-", f"case-{name}".lower()).strip("-")[:60] or "case"
+    slug = _upsert_board(db, world.id, replace, board_name, base_slug,
+                         f"AI-generated investigation board. Premise: {premise[:300]}",
+                         {"nodes": board_nodes}, board_edges)
     return RedirectResponse(f"/boards/{slug}", status_code=303)

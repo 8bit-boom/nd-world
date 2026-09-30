@@ -15,6 +15,14 @@
       🗺 Dreamlands Map
     </button>
   </form>
+  <form method="post" action="{{ '/boards/generate-mystery'|wq }}" style="display:inline"
+        onsubmit="const p = prompt('Describe the mystery — who died, where, the hook:\\n(e.g. \\u201cThe harbor-master drowned; his ledger lists three debts nobody can place\\u201d)'); if (!p) { return false; } this.premise.value = p;">
+    <input type="hidden" name="premise" value=""/>
+    <button type="submit" class="btn-primary" style="background:rgba(239,68,68,.12);border-color:#ef4444;color:#f87171"
+            title="Describe a mystery — the AI proposes suspects, witnesses, locations, clues and motives as a board you can edit">
+      ✨ AI Investigation Board
+    </button>
+  </form>
   <a href="{{ '/boards/new'|wq }}" class="btn-primary">+ New Board</a>
 </div>
 

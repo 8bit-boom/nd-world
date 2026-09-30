@@ -12,6 +12,13 @@
       </div>
       <button type="submit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;cursor:pointer">Import</button>
     </form>
+    <form action="{{ '/tables/generate-ai'|wq }}" method="post" style="display:flex;align-items:center;gap:.4rem"
+          onsubmit="const d = prompt('Describe the table — what it rolls and its flavor:\\n(e.g. \\u201cStrange sights in the harbor at night, eerie\\u201d)'); if (!d) { return false; } this.description.value = d;">
+      <input type="hidden" name="description" value=""/>
+      <input type="hidden" name="count" value="20"/>
+      <button type="submit" class="btn-new" style="background:rgba(239,68,68,.12);border:1px solid #ef4444;color:#f87171"
+              title="Describe a table — the AI writes its entries and creates it for you to review">✨ AI Table</button>
+    </form>
     <a href="{{ '/tables/new'|wq }}" class="btn-new">+ New Table</a>
     {% endif %}
   </div>

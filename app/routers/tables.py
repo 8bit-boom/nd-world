@@ -2,11 +2,12 @@ import json
 import random
 import re
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from .. import ai as _ai
 from ..database import get_db
 from ..deps import can_edit_content, get_world_ctx, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import RandomTable, World
@@ -232,3 +233,76 @@ async def tables_import(request: Request, db: Session = Depends(get_db), active_
         ))
     db.commit()
     return RedirectResponse("/tables", status_code=303)
+
+
+# ── AI table generator ───────────────────────────────────────────────────────
+# "Describe a table" → dN entries as a real RandomTable the GM lands on the
+# edit page to review/tweak. Random Tables had zero AI (audit 2026-09-30);
+# this is deliberately human-in-the-loop: the route creates the table and
+# redirects to its editor rather than being a faceless autocommit.
+
+@router.post("/tables/generate-ai")
+async def table_generate_ai(
+    request: Request,
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+    description: str = Form(""),
+    count: int = Form(20),
+    category: str = Form("general"),
+):
+    """Generate a random table from a description via the chat model and
+    create it, redirecting to its edit page for review. GM/assistant
+    content editors (same tier as table_create)."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not world_can_edit_section(request, world, "tables"):
+        raise HTTPException(403)
+    description = (description or "").strip()
+    if not description:
+        raise HTTPException(400, "Describe the table first")
+    if len(description) > 2000:
+        raise HTTPException(400, "Description too long (over 2k chars)")
+    count = max(4, min(int(count or 20), 30))
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
+
+    system = (
+        "You generate random tables for a tabletop RPG GM. Reply with ONLY a JSON object, "
+        "no markdown fences:\n"
+        '{"name": str (short table name), "description": str (one sentence), '
+        '"entries": [str, ...]}\n'
+        f"Rules: exactly {count} entries; each entry one line, evocative but usable at the "
+        "table (a name, a sight, a complication — per the description); vary them across the "
+        "full range the description implies; never name real people; no numbering in the text."
+    )
+    try:
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": description}],
+            system=system, options={"num_predict": 1800}, think=False,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"AI call failed: {exc}") from exc
+    if _ai.is_failure_sentinel(raw or ""):
+        raise HTTPException(502, raw)
+
+    from .boards_generate import _extract_json_object
+    data = _extract_json_object(raw)
+    entries = []
+    if data and isinstance(data.get("entries"), list):
+        entries = [str(e).strip()[:300] for e in data["entries"] if str(e).strip()][:40]
+    if len(entries) < 4:
+        raise HTTPException(502, "The AI reply wasn't a usable table — try rephrasing the description.")
+
+    name = (str(data.get("name") or "").strip() or description[:60])[:200]
+    tbl = RandomTable(
+        world_id=world.id, name=name, slug=_slugify(name, db),
+        category=(category or "general").strip()[:64] or "general",
+        description=(str(data.get("description") or "").strip() or description)[:500],
+        is_builtin=False,
+        entries_json=json.dumps([{"label": e, "weight": 1} for e in entries]),
+    )
+    db.add(tbl)
+    db.commit()
+    db.refresh(tbl)
+    return RedirectResponse(f"/tables/{tbl.id}/edit", status_code=303)
