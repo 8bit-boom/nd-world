@@ -115,3 +115,60 @@ with mtime-based cache invalidation; the repetition-loop mitigation stack
 the unsloth chunk-planning math and transcode ladder; 15 STT/live test
 files; and the Settings ▷ Test STT health-check as a pre-session probe of
 finding 1's precondition.
+
+## Re-audit (same day, after the fixes) — F1/F2 fixed, F3/F4 accepted
+
+A verification pass over the fixing commit re-read every changed hunk and
+traced its races. Two real defects were found in the fixes themselves and
+are fixed; two trade-offs were confirmed acceptable and are recorded here.
+
+### F1. A TTL-expired twin could still append its text twice — **fixed**
+
+The in-flight guard's marker expires after 45 min. A request that aged
+past that while still queued on `whisper_job_semaphore` (e.g. behind a
+multi-hour background transcription) admits a twin; the twin's
+`already_appended` snapshot was read at ITS request start — before the
+first request committed — so its commit block appended the same
+re-transcribed text a second time. (The unconditional text append itself
+predates the audit; the guard made it near-unreachable, and this was the
+last reachable residue.) The commit block now re-checks the segment key
+against the freshly re-fetched row (`duplicate_now`) and skips both the
+text and the key append when the first twin already committed. The wasted
+re-transcription remains — that's the TTL's documented cost — but
+duplicated transcript text is now impossible on this path.
+`test_stale_snapshot_twin_cannot_append_its_text_twice` pins it.
+
+### F2. The STT Test button/note visibility didn't sync after prefs load — **fixed**
+
+`loadPrefs` sets the backend `<select>` programmatically, which doesn't
+fire `change` — so on page load with a stored backend of "unsloth", the
+▷ Test STT button (pre-existing) and the whisper-knobs note (new) stayed
+hidden until the GM manually touched the select. `loadPrefs` now calls
+`syncSttTestVisibility()` after applying the stored value.
+
+### F3. Each patient in-flight poll re-uploads the segment's audio — **accepted**
+
+The 409 path is a full re-POST (multipart file included), so ~10 minutes
+of patient polling can re-send the chunk ~40 times (~a few MB each on a
+typical Opus segment). Functionally harmless — the guard answers before
+reading the body — but not free on a metered upstream. A cheap
+`GET .../live-transcript/status` poll endpoint would remove the traffic;
+not worth the surface area until someone records over a metered link.
+
+### F4. Live chunks may queue arbitrarily long behind a background job — **accepted**
+
+With `WHISPER_JOB_CONCURRENCY=1`, a live chunk arriving while a full
+multi-hour recording job transcribes waits on the semaphore for as long
+as that job runs. The system degrades correctly (the chunk's in-flight
+marker makes the client poll patiently, then park it for Retry once the
+job drains), and the backend genuinely can't serve both at once — but a
+GM who starts a recap job mid-session should expect the live transcript
+to lag until it finishes. Deliberate politeness, not an accident;
+raise `WHISPER_JOB_CONCURRENCY` on hardware that can actually parallelize.
+
+Also re-verified in this pass: the check-and-set of the in-flight marker
+contains no `await` (atomic on the event loop — two truly simultaneous
+requests cannot both pass it); the semaphore has no nested acquisition
+path; `asyncio.wait_for` cancellation on the attach route runs only
+synchronous `finally` cleanup; and the client's restructured retry loop
+increments its attempt counter only on real failures.

@@ -1408,13 +1408,21 @@ async def api_live_transcript_append(
         # the key never lands in live_transcript_segments_json and a retried
         # upload of the same silent segment re-burns a full Whisper pass for
         # text that was always going to be empty (docs/STT_LIVE_AUDIT_2026-09.md
-        # finding 4). The key append below is additionally gated on the text
-        # actually being new (not already_appended) so a post-commit retry
-        # can't record the same key twice.
+        # finding 4).
+        #
+        # duplicate_now RE-CHECKS the key against this freshly re-fetched gs
+        # at COMMIT time, not against already_appended (which was read at
+        # request start, before any twin could commit): if the in-flight
+        # guard missed a twin (a marker that aged past its TTL while the
+        # first request still sat queued on the semaphore, or a non-sequential
+        # client), the twin that commits first records the key, and this
+        # request must not append its (re-transcribed) text on top — the
+        # re-audit's F1, the last duplicate-text path left open.
+        duplicate_now = bool(seg_key) and seg_key in _live_transcript_segment_keys(gs)
         if chunk_text or saved_rel or (seg_key and not already_appended):
-            if chunk_text:
+            if chunk_text and not duplicate_now:
                 gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
-            if seg_key and not already_appended:
+            if seg_key and not already_appended and not duplicate_now:
                 keys = _live_transcript_segment_keys(gs)
                 if seg_key not in keys:
                     keys.append(seg_key)

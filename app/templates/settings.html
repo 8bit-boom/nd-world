@@ -1179,6 +1179,12 @@ function ndCopyRestartCmd() {
       el('studio-tts-language').value = d.tts_language || '';
       el('studio-stt-backend').value = d.stt_backend || 'whisper';
       setSelect('studio-stt-model', d.stt_model || 'small');
+      // A programmatic .value set doesn't fire 'change', and this select was
+      // just flipped from its default to the stored backend — re-sync the
+      // STT Test button and the whisper-knobs note's visibility for it
+      // (otherwise both stay hidden on load when the stored backend is
+      // 'unsloth' until the GM manually touches the select).
+      syncSttTestVisibility();
       detectStudioModels();
       el('studio-detect-models').addEventListener('click', detectStudioModels);
       el('studio-version-btn').addEventListener('click', checkStudioVersion);

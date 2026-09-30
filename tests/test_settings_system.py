@@ -363,3 +363,14 @@ def test_stt_backend_note_discloses_whisper_knob_no_ops(client, seed):
     page = client.get("/settings?tab=system").text
     assert 'id="studio-stt-backend-note"' in page
     assert "don't apply" in page
+
+
+def test_stt_visibility_syncs_after_prefs_load(client, seed):
+    """Re-audit F2: a programmatic select .value set doesn't fire 'change',
+    so the STT Test button and the whisper-knobs note stayed hidden after
+    page load when the stored backend is 'unsloth' — loadPrefs must re-sync
+    (docs/STT_LIVE_AUDIT_2026-09.md)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/settings?tab=system").text
+    load_prefs_body = page.split("function loadPrefs()", 1)[1].split("\n  }", 1)[0]
+    assert "syncSttTestVisibility();" in load_prefs_body

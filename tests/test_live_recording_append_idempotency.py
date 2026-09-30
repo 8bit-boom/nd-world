@@ -307,3 +307,43 @@ def test_concurrent_duplicate_upload_gets_409_not_a_second_transcription(client,
     assert r_c.status_code == 200
     assert r_c.json()["transcript"] == "the only transcription"
     assert calls["n"] == 1
+
+
+def test_stale_snapshot_twin_cannot_append_its_text_twice(client, seed, monkeypatch):
+    """Re-audit F1 (docs/STT_LIVE_AUDIT_2026-09.md): a twin request whose
+    `already_appended` snapshot was read at request START — before the
+    first upload committed, which is exactly what an in-flight-marker TTL
+    expiry (or a non-sequential client) produces — must not append its
+    re-transcribed text on top of the first twin's. Simulated here without
+    thread racing: the first _live_transcript_segment_keys call (the
+    request-start snapshot) is stubbed to see an empty list, the commit-time
+    re-check sees the real one."""
+    from app.routers import sessions as sessions_router
+    calls = {"n": 0}
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        calls["n"] += 1
+        return "the only words"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+
+    r1 = _append(client, session_id, 0)
+    assert r1.status_code == 200 and _get_transcript(session_id) == "the only words"
+
+    real_keys = sessions_router._live_transcript_segment_keys
+    key_reads = {"n": 0}
+
+    def stale_first_read(gs):
+        key_reads["n"] += 1
+        if key_reads["n"] == 1:
+            return []  # the twin's request-start snapshot: key not yet visible
+        return real_keys(gs)  # the commit-time re-check: first twin already committed
+    monkeypatch.setattr(sessions_router, "_live_transcript_segment_keys", stale_first_read)
+
+    r2 = _append(client, session_id, 0)
+    assert r2.status_code == 200
+    assert calls["n"] == 2  # the wasted re-transcription happened — accepted cost
+    assert _get_transcript(session_id) == "the only words"  # …but not appended twice
+    assert r2.json()["transcript"] == "the only words"
