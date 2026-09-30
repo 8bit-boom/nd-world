@@ -578,3 +578,151 @@ def test_member_editor_is_searchable_and_members_first(client, seed):
     assert "wolf" in ent_section.split('data-search="', 1)[1].split('"', 1)[0] or \
            'data-search="mule creature"' in ent_section or \
            'data-search="wolf creature"' in ent_section
+
+
+# ── 2026-09-30 party improvements: quick-add, rest, undo, goals, summary ─────
+
+def _party_with_pc(seed, **pc_kw):
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, name=pc_kw.get("name", "Rusty"),
+                             level=pc_kw.get("level", 2))
+        db.add(pc)
+        db.flush()
+        # Give PP/MP/Shock something to restore: stats drive the maxima.
+        pc.stats_json = json.dumps([
+            {"id": "str", "value": 3}, {"id": "dex", "value": 3},
+            {"id": "bod", "value": 3}, {"id": "per", "value": 3},
+            {"id": "wil", "value": 4}, {"id": "int", "value": 4},
+            {"id": "cha", "value": 4}, {"id": "itu", "value": 4},
+        ])
+        pc.pp_current = 2
+        pc.mp_current = 3
+        pc.shock_current = 1
+        pc.shock_max = 6
+        party = Party(world_id=seed.world_a.id, name="Rest Party",
+                      member_pc_ids_json=json.dumps([pc.id]))
+        db.add(party)
+        db.commit()
+        db.refresh(party)
+        return party.id, pc.id
+    finally:
+        db.close()
+
+
+def test_quick_add_toggle_membership(client, seed, monkeypatch):
+    from app.routers import parties as _pp
+    party_id, _pc_id = _party_with_pc(seed)
+    db = SessionLocal()
+    ent = Entity(world_id=seed.world_a.id, kind="creature", name="War Dog")
+    db.add(ent); db.commit(); db.refresh(ent); ent_id = ent.id
+    db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # by name (what the quick-add UI sends)
+    r = client.post(f"/api/parties/{party_id}/members/toggle",
+                    json={"kind": "entity", "name": "War Dog"})
+    assert r.status_code == 200 and r.json()["added"] is True
+    db = SessionLocal()
+    try:
+        assert ent_id in json.loads(db.get(Party, party_id).member_entity_ids_json)
+    finally:
+        db.close()
+    # toggle again removes
+    r = client.post(f"/api/parties/{party_id}/members/toggle",
+                    json={"kind": "entity", "name": "War Dog"})
+    assert r.json()["added"] is False
+    # player denied (structural change = full tier)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post(f"/api/parties/{party_id}/members/toggle",
+                       json={"kind": "entity", "name": "War Dog"}).status_code == 403
+
+
+def test_rest_applies_nd_rules_and_undo_restores(client, seed):
+    party_id, pc_id = _party_with_pc(seed)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(f"/api/parties/{party_id}/rest")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    snap = d["snapshot"][0]
+    applied = d["applied"][0]
+    # PP max = str+dex+bod+per = 12 → +6 from 2 → 8; MP = wil+int+cha+itu = 16 → +8 from 3 → 11
+    assert applied["pp_max"] == 12 and applied["pp_current"] == 8
+    assert applied["mp_max"] == 16 and applied["mp_current"] == 11
+    db = SessionLocal()
+    try:
+        pc = db.get(PlayerCharacter, pc_id)
+        assert pc.shock_current == pc.shock_max == 6
+        assert pc.current_hp == 10  # HP untouched by rest (medical only)
+    finally:
+        db.close()
+
+    # Undo restores the exact snapshot, and refuses foreign PCs. (The real
+    # client posts the whole snapshot LIST back, same as the route returns.)
+    r = client.post(f"/api/parties/{party_id}/rest/undo", json={"snapshot": d["snapshot"]})
+    assert r.status_code == 200 and r.json()["restored"] == 1
+    db = SessionLocal()
+    try:
+        pc = db.get(PlayerCharacter, pc_id)
+        assert (pc.pp_current, pc.mp_current, pc.shock_current) == (2, 3, 1)
+    finally:
+        db.close()
+
+    # A snapshot entry for a NON-member is ignored, not applied.
+    r = client.post(f"/api/parties/{party_id}/rest/undo",
+                    json={"snapshot": [{"id": 999999, "pp_current": 0, "mp_current": 0, "shock_current": 0}]})
+    assert r.status_code == 200 and r.json()["restored"] == 0
+
+
+def test_goals_save_and_detail_context(client, seed):
+    from app.routers import characters as _chars
+    party_id, pc_id = _party_with_pc(seed)
+    db = SessionLocal()
+    try:
+        pc = db.get(PlayerCharacter, pc_id)
+        pc.xp = 999999  # cross the level-up threshold
+        party = db.get(Party, party_id)
+        party.loot_json = json.dumps([
+            {"name": "Stim", "qty": 1, "claimed_by": [pc_id]},
+            {"name": "Mystery Chip", "qty": 2, "claimed_by": []},
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/parties/{party_id}/edit",
+                    data={"name": "Rest Party", "goals": "Find the chip's owner\nOwe Vex nothing",
+                          "member_pc_ids": str(pc_id)},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    page = client.get(f"/parties/{party_id}").text
+    # banner strip: level-up digest + unclaimed count
+    assert "Level-up ready" in page and "Rusty" in page
+    assert "1</strong> unclaimed loot item" in page
+    # goals persist and render in the edit form
+    assert "Find the chip&#39;s owner" in page or "Find the chip's owner" in page
+    db = SessionLocal()
+    try:
+        assert "Owe Vex nothing" in (db.get(Party, party_id).goals or "")
+    finally:
+        db.close()
+
+
+def test_summary_page_renders(client, seed):
+    party_id, _pc_id = _party_with_pc(seed)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/parties/{party_id}/summary")
+    assert r.status_code == 200
+    assert "Vitals" in r.text and "Shared Loot" in r.text and "Print" in r.text
+    # Player visibility matches the DETAIL page exactly (both gate through
+    # the same world_row_visible + section matrix) — whatever a player gets
+    # for the detail page, the summary gives too.
+    detail_status = client.get(f"/parties/{party_id}").status_code
+    assert client.get(f"/parties/{party_id}/summary").status_code == detail_status

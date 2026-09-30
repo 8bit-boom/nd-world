@@ -35,6 +35,22 @@
             });
           };
           add('Bonds', d.bonds); add('Tensions', d.tensions); add('Hooks', d.hooks);
+          const copy = document.createElement('button');
+          copy.type = 'button'; copy.className = 'btn-secondary';
+          copy.style.cssText = 'margin-top:.5rem;font-size:.75rem';
+          copy.textContent = '➡ Copy bonds & tensions to Party Goals';
+          copy.onclick = () => {
+            const field = document.getElementById('party-goals-field');
+            if (!field) return;
+            const lines = [...(d.bonds || []), ...(d.tensions || [])];
+            field.value = (field.value ? field.value.replace(/\s+$/, '') + '
+' : '')
+              + lines.join('
+');
+            copy.textContent = '✓ Appended to Goals — review and Save';
+            copy.disabled = true;
+          };
+          panel.appendChild(copy);
         } catch (e) {
           panel.innerHTML = '<span style="color:#e07070">⚠ ' + e.message + '</span>';
         } finally {
@@ -43,6 +59,7 @@
       }
     </script>
     <div style="display:flex;gap:.5rem;align-items:center">
+      <a href="{{ ('/parties/' + party.id|string) + '/summary'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none" title="One-page printable party card">🖨 Summary</a>
       <button type="button" class="nd-float-btn" title="Float this party — vitals keep updating live while you browse other pages"
               onclick="ndFloat('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">⇱ Float</button>
       <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"
@@ -54,10 +71,20 @@
   <!-- Live member vitals — the GM's at-a-glance strip. The wrapper id is
        the nd-live refetch target: when anyone's HP/XP/conditions change,
        the live-sync bus re-fetches this page and swaps just this block. -->
+  {% if unclaimed_loot or levelup_names %}
+  <div style="background:rgba(0,240,255,.06);border:1px solid var(--neon3,#a855f7);border-radius:6px;padding:.6rem 1rem;margin-bottom:1rem;font-size:.85rem;display:flex;gap:1.2rem;flex-wrap:wrap;align-items:center">
+    {% if levelup_names %}
+    <span>⬆ <strong>Level-up ready:</strong> {{ levelup_names | join(', ') }} — <a href="{{ ('/characters'|wq) }}" style="color:var(--neon)">open the sheet{{ 's' if levelup_names|length > 1 }}</a></span>
+    {% endif %}
+    {% if unclaimed_loot %}
+    <span>💰 <strong>{{ unclaimed_loot }}</strong> unclaimed loot item{{ 's' if unclaimed_loot != 1 }} below — don't let them rot in the bag of holding</span>
+    {% endif %}
+  </div>
+  {% endif %}
   <div id="party-vitals">
   {% if member_vitals %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
-    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">❤ Member Vitals <span style="color:var(--text-dim);font-size:.75rem;text-transform:none;letter-spacing:0">(live from each sheet)</span></h2>
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">❤ Member Vitals <span style="color:var(--text-dim);font-size:.75rem;text-transform:none;letter-spacing:0">(live from each sheet)</span>{% if condition_summary %} <span style="color:#e0a030;font-size:.78rem;text-transform:none;letter-spacing:0">· ⚕ {{ condition_summary }}</span>{% endif %}</h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.6rem">
       {% for v in member_vitals %}
       <a href="{{ ('/characters/' + v.id|string)|wq }}" style="background:var(--bg3);border:1px solid {% if v.down %}#a33{% else %}var(--border){% endif %};border-radius:4px;padding:.55rem .7rem;text-decoration:none;color:var(--text);display:block">
@@ -88,6 +115,41 @@
       </a>
       {% endfor %}
     </div>
+    {% if edit_level == "full" %}
+    <div style="display:flex;gap:.4rem;align-items:center;margin-top:.7rem;flex-wrap:wrap">
+      <input id="quick-add-input" list="quick-add-options" placeholder="+ quick-add companion…" autocomplete="off"
+             style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .6rem;font-family:var(--font);font-size:.8rem;border-radius:3px"/>
+      <datalist id="quick-add-options">
+        {% for e in all_entities if e.id not in entity_ids %}<option value="{{ e.name }}">{{ e.kind }}</option>{% endfor %}
+      </datalist>
+      <button type="button" id="quick-add-btn" onclick="quickAddCompanion()"
+              style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">+ Add</button>
+      <span id="quick-add-status" style="font-size:.75rem;color:var(--text-dim)"></span>
+    </div>
+    <script>
+      // Mid-session hiring: one POST toggles the membership; a reload
+      // re-renders the whole live strip (simpler and safe — the block is
+      // the live-sync target anyway).
+      async function quickAddCompanion() {
+        const input = document.getElementById('quick-add-input');
+        const st = document.getElementById('quick-add-status');
+        const name = (input.value || '').trim();
+        if (!name) return;
+        const opt = [...document.querySelectorAll('#quick-add-options option')].find(o => o.value === name);
+        if (!opt) { st.textContent = 'No NPC/creature with that name — create it first.'; return; }
+        st.textContent = 'Adding…';
+        try {
+          const res = await fetch('{{ ('/api/parties/' + party.id|string)|wq }}/members/toggle', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind: 'entity', name: name }),
+          });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+          window.location.reload();
+        } catch (e) { st.textContent = '⚠ ' + e.message; }
+      }
+    </script>
+    {% endif %}
   </div>
   {% endif %}
   </div>
@@ -139,6 +201,49 @@
   {% if edit_level == "full" %}
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem">
     <button type="button" id="launch-combat-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⚔ Launch Combat</button>
+    <button type="button" id="rest-btn" onclick="partyRest()"
+            style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer"
+            title="N&D Rest: restores half of each member's max PP and MP (rounded down) and ALL Shock. HP is untouched — that's stims/medical.">🛏 Rest</button>
+    <button type="button" id="rest-undo-btn" onclick="partyRestUndo()" style="display:none;background:var(--bg3);border:1px solid #da4;color:#da4;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer">↩ Undo Rest</button>
+    <span id="rest-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    <script>
+      // Rules Rest (core_rules.md §10) across the whole party, with a
+      // client-held snapshot for one-click undo.
+      let _restSnapshot = null;
+      async function partyRest() {
+        if (!confirm('Apply a Rest to every member PC?
+Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is NOT changed (stims/medical only).')) return;
+        const btn = document.getElementById('rest-btn');
+        const st = document.getElementById('rest-status');
+        btn.disabled = true; st.textContent = 'Resting…';
+        try {
+          const res = await fetch('{{ ('/api/parties/' + party.id|string)|wq }}/rest', { method: 'POST' });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+          _restSnapshot = d.snapshot || [];
+          st.textContent = 'Rest applied — PP/MP topped by half, Shock full.';
+          document.getElementById('rest-undo-btn').style.display = '';
+        } catch (e) {
+          st.textContent = '⚠ ' + e.message;
+        } finally { btn.disabled = false; }
+      }
+      async function partyRestUndo() {
+        if (!_restSnapshot) return;
+        const st = document.getElementById('rest-status');
+        try {
+          const res = await fetch('{{ ('/api/parties/' + party.id|string)|wq }}/rest/undo', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ snapshot: _restSnapshot }),
+          });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+          _restSnapshot = null;
+          st.textContent = 'Rest undone.';
+          document.getElementById('rest-undo-btn').style.display = 'none';
+          setTimeout(() => window.location.reload(), 400);
+        } catch (e) { st.textContent = '⚠ ' + e.message; }
+      }
+    </script>
     <button type="button" id="delete-party-btn" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer;margin-left:auto">🗑 Delete Party</button>
     <form id="del-form" method="post" action="/parties/{{ party.id }}/delete" style="display:none"></form>
   </div>
@@ -241,6 +346,12 @@
     </div>
     {% endif %}
 
+    <!-- Goals — the party's shared "what we're about" -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🎯 Party Goals <span style="color:var(--text-dim);font-size:.75rem;text-transform:none;letter-spacing:0">(standing goals, debts, allies — one per line)</span></h2>
+      <textarea name="goals" rows="3" id="party-goals-field" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px;box-sizing:border-box">{{ party.goals or '' }}</textarea>
+    </div>
+
     <!-- Notes -->
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Notes</h2>
@@ -281,6 +392,13 @@
     <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No members yet.</p>
     {% endif %}
   </div>
+
+  {% if party.goals %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🎯 Party Goals</h2>
+    <div class="rendered-md">{{ party.goals|md_for(request)|safe }}</div>
+  </div>
+  {% endif %}
 
   {% if party.notes %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">

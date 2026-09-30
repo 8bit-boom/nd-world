@@ -427,8 +427,12 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/parties` | GM / Player* | Party list. *Read-only for a player once the GM opts them into "Parties" (`World.player_section_access_json`); off by default. |
 | POST | `/parties/new` | GM | Creates a party (a named group of characters). |
 | GET | `/parties/{party_id}` | GM / Player* | Party detail: members, shared loot, location. *Same opt-in as the list above; 404s for an id belonging to a world the viewer can't access. |
+| POST | `/parties/{party_id}/edit` | GM / Assistant* | Saves the party: name + membership (full tier), notes and party goals (member tier may save those too). |
 | POST | `/parties/{party_id}/ai-insights` | GM | Suggests inter-party bonds, tensions and a personal hook per member from the roster (races/classes/levels only, no secrets) — draft only, writes nothing. |
-| POST | `/parties/{party_id}/edit` | GM | Saves party edits (membership, name). |
+| POST | `/api/parties/{party_id}/members/toggle` | GM / Assistant | Toggles one membership (body `{kind: "pc"\|"entity", id?\|name?}` — the vitals strip's quick-add resolves names world-scoped). Structural change, full-edit tier. |
+| POST | `/api/parties/{party_id}/rest` | GM / Assistant | Applies a rules Rest (core_rules.md §10) to every member PC: +½ max PP and MP (rounded down), ALL Shock; HP untouched (stims/medical). Returns the per-PC snapshot for `/rest/undo`. |
+| POST | `/api/parties/{party_id}/rest/undo` | GM / Assistant | Restores the exact pre-Rest values from the client-held snapshot; only member PCs of this party are touched. |
+| GET | `/parties/{party_id}/summary` | Player* | One-page printable party card (vitals, conditions, goals, loot with holders, quests, notes) with print CSS — same visibility as the party detail page. || POST | `/parties/{party_id}/edit` | GM | Saves party edits (membership, name). |
 | POST | `/parties/{party_id}/delete` | GM | Deletes a party. |
 | POST | `/api/parties/{party_id}/loot` | GM | Updates shared party loot/currency. |
 | POST | `/api/parties/{party_id}/location` | GM | Sets the party's current in-world location. |

@@ -171,6 +171,23 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
     # shared with the JSON refetch route and the GM Cockpit).
     member_vitals = _member_vitals(db, member_pcs)
 
+    # At-a-glance party state (2026-09-30 improvements): level-up digest,
+    # one-line condition summary, unclaimed-loot count.
+    from .characters import _levelup_ready
+    levelup_names = [pc.name for pc in member_pcs if _levelup_ready(pc)]
+    cond_counts = {}
+    downs = 0
+    for v in member_vitals:
+        if v.get("down"):
+            downs += 1
+        for c in (v.get("conditions") or []):
+            cond_counts[str(c).strip().lower()] = cond_counts.get(str(c).strip().lower(), 0) + 1
+    condition_summary = ", ".join(
+        f"{n}×{c}" if c > 1 else n for n, c in sorted(cond_counts.items(), key=lambda kv: -kv[1]))
+    if downs:
+        condition_summary = (condition_summary + ", " if condition_summary else "") + f"{downs} DOWN"
+    unclaimed_loot = sum(1 for item in loot if not (item.get("claimed_by") or []))
+
     # Party history: every session, combat, and calendar event tied to this
     # party, newest first — the "where have we been" view.
     history_sessions = (
@@ -199,6 +216,9 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         "history_sessions": history_sessions,
         "history_combats": history_combats,
         "history_events": history_events,
+        "levelup_names": levelup_names,
+        "condition_summary": condition_summary,
+        "unclaimed_loot": unclaimed_loot,
     })
 
 
@@ -230,6 +250,7 @@ async def party_edit(party_id: int, request: Request, db: Session = Depends(get_
         raise HTTPException(403)
     form = await request.form()
     party.notes = str(form.get("notes", "")).strip()
+    party.goals = str(form.get("goals", "")).strip()
     if level == "full":
         # Name and membership are structural — only a GM/edit-level
         # assistant may change them; a member-level player may only touch
@@ -437,3 +458,179 @@ async def party_ai_insights(party_id: int, request: Request,
     if not (out["bonds"] or out["tensions"] or out["hooks"]):
         raise HTTPException(502, "The AI reply wasn't usable — try again.")
     return out
+
+
+# ── Quick-add companion (vitals strip) ───────────────────────────────────────
+# Mid-session hiring shouldn't require scrolling to the editor and a full
+# Save round-trip. One POST toggles one membership.
+
+@router.post("/api/parties/{party_id}/members/toggle")
+async def party_member_toggle(party_id: int, request: Request, db: Session = Depends(get_db),
+                              active_world: str = Cookie(None)):
+    """Toggle one member's presence in the party ({"kind": "pc"|"entity",
+    "id": int}) — the vitals strip's quick-add. Full-edit tier (structural
+    change, same as the membership form)."""
+    world, _ = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world or party.world_id != world.id:
+        raise HTTPException(404)
+    if _party_edit_level(request, db, world, party) != "full":
+        raise HTTPException(403)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    kind = str(body.get("kind") or "")
+    if kind not in ("pc", "entity"):
+        raise HTTPException(400, "kind must be 'pc' or 'entity'")
+    # Either an id or a name: the quick-add UI sends the name picked from
+    # the datalist (names resolve world-scoped, so an ambiguous name is a
+    # 404 rather than a wrong-party write).
+    member_id = int(body.get("id") or 0)
+    name = str(body.get("name") or "").strip()
+    if kind == "pc":
+        exists = db.get(PlayerCharacter, member_id) if member_id else             db.query(PlayerCharacter).filter(
+                PlayerCharacter.world_id == party.world_id,
+                PlayerCharacter.name == name).first() if name else None
+    else:
+        exists = db.get(Entity, member_id) if member_id else             db.query(Entity).filter(
+                Entity.world_id == party.world_id,
+                Entity.name == name).first() if name else None
+    if not exists or exists.world_id != party.world_id:
+        raise HTTPException(404, "No such member in this world")
+    member_id = exists.id
+    field = "member_pc_ids_json" if kind == "pc" else "member_entity_ids_json"
+    ids = json.loads(getattr(party, field) or "[]")
+    if member_id in ids:
+        ids.remove(member_id)
+        added = False
+    else:
+        ids.append(member_id)
+        added = True
+    setattr(party, field, json.dumps(ids))
+    db.commit()
+    live.touch(party.world_id)
+    return {"ok": True, "added": added}
+
+
+# ── Rest (N&D rules) ─────────────────────────────────────────────────────────
+# core_rules.md §10: Rest restores ½ PP and MP (rounded down) and ALL Shock;
+# HP is medical-treatment territory (stims, capped at 3/rest) and is left
+# alone. The per-character PP/MP routes already implement exactly this math
+# (characters.py's action=="rest" branches) — the party route applies the
+# same formulas across the roster and returns a snapshot the client holds
+# for one-click Undo.
+
+def _pp_mp_max(pc) -> tuple:
+    """(pp_max, mp_max) — mirrors characters.py's own derivations exactly
+    (PP = STR+DEX+BOD+PER, MP = WIL+INT+CHA+ITU from stats_json)."""
+    try:
+        stats = json.loads(pc.stats_json or "[]")
+        stat_val = {s["id"]: int(s.get("value", 0)) for s in stats if isinstance(s, dict)}
+    except ValueError:
+        stat_val = {}
+    pp_max = (stat_val.get("str", 0) + stat_val.get("dex", 0)
+              + stat_val.get("bod", 0) + stat_val.get("per", 0))
+    mp_max = (stat_val.get("wil", 0) + stat_val.get("int", 0)
+              + stat_val.get("cha", 0) + stat_val.get("itu", 0))
+    return pp_max, mp_max
+
+
+@router.post("/api/parties/{party_id}/rest")
+async def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
+                     active_world: str = Cookie(None)):
+    """Apply a rules Rest (core_rules.md §10) to every member PC: +½ max
+    PP and MP (rounded down), all Shock restored. HP is untouched — that's
+    stims/medical. Returns the per-PC snapshot for one-click Undo (the
+    client POSTs it back to /rest/undo). Full-edit tier."""
+    world, _ = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world or party.world_id != world.id:
+        raise HTTPException(404)
+    if _party_edit_level(request, db, world, party) != "full":
+        raise HTTPException(403)
+    pc_ids = json.loads(party.member_pc_ids_json or "[]")
+    member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
+    snapshot, applied = [], []
+    for pc in member_pcs:
+        pp_max, mp_max = _pp_mp_max(pc)
+        snapshot.append({"id": pc.id, "name": pc.name,
+                         "pp_current": pc.pp_current or 0,
+                         "mp_current": pc.mp_current or 0,
+                         "shock_current": pc.shock_current or 0})
+        new_pp = min(pp_max, (pc.pp_current or 0) + pp_max // 2)
+        new_mp = min(mp_max, (pc.mp_current or 0) + mp_max // 2)
+        pc.pp_current, pc.mp_current = new_pp, new_mp
+        pc.shock_current = getattr(pc, "shock_max", 0) or 0
+        applied.append({"id": pc.id, "name": pc.name,
+                        "pp_current": new_pp, "pp_max": pp_max,
+                        "mp_current": new_mp, "mp_max": mp_max})
+    db.commit()
+    live.touch(party.world_id)
+    return {"applied": applied, "snapshot": snapshot}
+
+
+@router.post("/api/parties/{party_id}/rest/undo")
+async def party_rest_undo(party_id: int, request: Request, db: Session = Depends(get_db),
+                          active_world: str = Cookie(None)):
+    """Undo a Rest: the client POSTs back the snapshot /rest returned.
+    Only member PCs of THIS party are touched, and only the three fields
+    the rest changed."""
+    world, _ = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world or party.world_id != world.id:
+        raise HTTPException(404)
+    if _party_edit_level(request, db, world, party) != "full":
+        raise HTTPException(403)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    snapshot = body.get("snapshot")
+    if not isinstance(snapshot, list):
+        raise HTTPException(400, "snapshot must be a list")
+    member_ids = set(json.loads(party.member_pc_ids_json or "[]"))
+    restored = 0
+    for entry in snapshot:
+        if not isinstance(entry, dict):
+            continue
+        pc_id = entry.get("id")
+        if not isinstance(pc_id, int) or pc_id not in member_ids:
+            continue  # refuse to touch non-members
+        pc = db.get(PlayerCharacter, pc_id)
+        if not pc:
+            continue
+        pc.pp_current = max(0, int(entry.get("pp_current") or 0))
+        pc.mp_current = max(0, int(entry.get("mp_current") or 0))
+        pc.shock_current = max(0, int(entry.get("shock_current") or 0))
+        restored += 1
+    db.commit()
+    live.touch(party.world_id)
+    return {"ok": True, "restored": restored}
+
+
+# ── Printable summary ────────────────────────────────────────────────────────
+
+@router.get("/parties/{party_id}/summary", response_class=HTMLResponse)
+def party_summary(party_id: int, request: Request, db: Session = Depends(get_db),
+                  active_world: str = Cookie(None)):
+    """One-page printable party card: vitals, conditions, goals, loot,
+    quests, notes. Same visibility as the detail page; the template's
+    print CSS makes it a clean handout."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world_row_visible(request, db, party.world_id, "parties"):
+        raise HTTPException(404)
+    pc_ids = json.loads(party.member_pc_ids_json or "[]")
+    entity_ids = json.loads(party.member_entity_ids_json or "[]")
+    member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
+    member_entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []
+    assigned_quests = db.query(Quest).filter(Quest.assigned_party_id == party.id).all()
+    return templates.TemplateResponse("parties/summary.html", {
+        "request": request, "world": world, "party": party,
+        "member_pcs": member_pcs, "member_entities": member_entities,
+        "member_vitals": _member_vitals(db, member_pcs),
+        "loot": json.loads(party.loot_json or "[]"),
+        "assigned_quests": assigned_quests,
+        "member_names": {p.id: p.name for p in member_pcs},
+    })

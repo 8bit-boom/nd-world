@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ party.name }} — Summary{% endblock %}
+{% block content %}
+<style>
+  @media print {
+    nav, .page-header .no-print, footer, .no-print { display: none !important; }
+    body { background: #fff !important; color: #000 !important; }
+    .sum-card { border: 1px solid #999 !important; background: #fff !important; break-inside: avoid; }
+    .sum-card h2 { color: #000 !important; }
+    a { color: #000 !important; text-decoration: none; }
+  }
+</style>
+<div style="max-width:760px;margin:0 auto;padding:1.5rem 1rem">
+  <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.2rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }}</h1>
+    <div class="no-print" style="display:flex;gap:.5rem;align-items:center">
+      <button type="button" class="btn-secondary" onclick="window.print()">🖨 Print</button>
+      <a href="{{ ('/parties/' + party.id|string)|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Party</a>
+    </div>
+  </div>
+
+  <div class="sum-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">❤ Vitals</h2>
+    {% for v in member_vitals %}
+    <div style="display:flex;justify-content:space-between;gap:.8rem;padding:.3rem 0;border-bottom:1px solid var(--border);font-size:.85rem;flex-wrap:wrap">
+      <span><strong>{{ v.name }}</strong> <span style="color:var(--text-dim);font-size:.75rem">Lvl {{ v.level }}</span></span>
+      <span style="color:var(--text-dim)">
+        {% if v.max_hp %}HP {{ v.hp }}/{{ v.max_hp }} · {% endif %}{% if v.ac %}AC {{ v.ac }} · {% endif %}
+        {% if v.down %}<span style="color:#e07">DOWN</span> · {% endif %}
+        {{ v.conditions | join(', ') if v.conditions else '—' }}
+      </span>
+    </div>
+    {% endfor %}
+    {% for e in member_entities %}
+    <div style="padding:.3rem 0;border-bottom:1px solid var(--border);font-size:.85rem;color:var(--text-dim)">🧷 {{ e.name }} <span style="font-size:.75rem">({{ e.kind }})</span></div>
+    {% endfor %}
+  </div>
+
+  {% if party.goals %}
+  <div class="sum-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">🎯 Party Goals</h2>
+    <div class="rendered-md" style="font-size:.88rem">{{ party.goals|md_for(request)|safe }}</div>
+  </div>
+  {% endif %}
+
+  <div class="sum-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">💰 Shared Loot</h2>
+    {% for item in loot %}
+    <div style="font-size:.85rem;padding:.2rem 0">{{ item.name }} <span style="color:var(--text-dim)">×{{ item.qty }}</span>
+      {% if item.claimed_by %}<span style="color:var(--text-dim);font-size:.78rem">— held by {% for cid in item.claimed_by %}{{ member_names.get(cid, 'PC #' ~ cid) }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+      {% if item.notes %}<span style="color:var(--text-dim);font-size:.78rem">{{ item.notes }}</span>{% endif %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.85rem;font-style:italic">No loot yet.</p>
+    {% endfor %}
+  </div>
+
+  {% if assigned_quests %}
+  <div class="sum-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">📜 Quests</h2>
+    {% for q in assigned_quests %}
+    <div style="font-size:.85rem;padding:.2rem 0">→ {{ q.title }} <span style="color:var(--text-dim);font-size:.78rem">({{ q.status }})</span></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if party.notes %}
+  <div class="sum-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">📝 Notes</h2>
+    <div class="rendered-md" style="font-size:.88rem">{{ party.notes|md_for(request)|safe }}</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

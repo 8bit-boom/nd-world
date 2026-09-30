@@ -944,6 +944,10 @@ class Party(Base):
     member_entity_ids_json = Column(Text, default="[]")  # [Entity.id, ...] companions/hirelings
     loot_json = Column(Text, default="[]")                # [{name, qty, notes, claimed_by: [PlayerCharacter.id]}]
     notes = Column(Text, default="")
+    # The party's shared "what we're about": standing goals, debts, allies —
+    # GM/member-edited alongside notes; the AI insights panel can copy its
+    # bonds/tensions here for the GM to curate.
+    goals = Column(Text, default="")
     # XP award ledger for the party history view — one entry per bulk award
     # (session XP route): [{ts, amount, session_id, awarded: {pc_name: amount}}].
     # Direct per-PC XP edits from a sheet don't land here (they're not party
