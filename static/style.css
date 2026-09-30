@@ -1622,8 +1622,9 @@ input[type="file"]:hover { border-color: var(--neon); }
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
-.pc-card-portrait img { width: 100%; height: 100%; object-fit: cover; }
+.pc-card-portrait img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .pc-card-portrait-placeholder {
   font-size: 3.5rem;
   color: var(--neon);

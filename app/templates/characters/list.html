@@ -48,10 +48,13 @@
   <a href="{{ ('/characters/' + pc.id|string)|wq }}" class="pc-card"
      {% if my_character and pc.id == my_character.id %}style="outline:2px solid var(--neon);outline-offset:-2px"{% endif %}>
     <div class="pc-card-portrait">
+      {# The initial is ALWAYS the backdrop and the image overlays it when
+         loaded — over a slow tunnel a lazy portrait used to render as a
+         big empty square until its bytes arrived (and forever if it 404s);
+         now the letter shows through the whole time. #}
+      <div class="pc-card-portrait-placeholder">{{ pc.name[0] | upper }}</div>
       {% if pc.portrait_url %}
       <img src="{{ pc.portrait_url|thumb }}" alt="{{ pc.name }}" loading="lazy">
-      {% else %}
-      <div class="pc-card-portrait-placeholder">{{ pc.name[0] | upper }}</div>
       {% endif %}
     </div>
     <div class="pc-card-body">
