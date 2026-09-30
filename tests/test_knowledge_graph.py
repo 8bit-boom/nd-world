@@ -218,9 +218,11 @@ def test_sync_vault_nonexistent_path_raises(client, seed):
 
 
 def test_sync_vault_embedding_failure_is_non_fatal(tmp_path):
-    """A chunk whose embedding call fails (model not pulled, Ollama down)
-    is still stored — with embedding=None, so it's simply invisible to
-    vector_search rather than aborting the whole sync."""
+    """A PARTIAL embedding failure (some chunks embed, some don't) is
+    non-fatal: failed chunks still store with embedding=None, invisible to
+    vector_search. A TOTAL failure (every chunk fails — backend down)
+    aborts the swap instead of destroying the previous index (audit
+    2026-09-30, RAG finding 2 — pinned by the total-failure test below)."""
     _write_vault(tmp_path)
     world_id, *_ = _make_world_with_vault(tmp_path)
 
@@ -234,10 +236,33 @@ def test_sync_vault_embedding_failure_is_non_fatal(tmp_path):
         db = SessionLocal()
         try:
             world = db.get(World, world_id)
+            import pytest
+            with pytest.raises(RuntimeError, match="Every chunk failed to embed"):
+                asyncio.run(vs.sync_vault(db, world))
+            # The swap was refused — nothing landed.
+            assert db.query(VaultChunk).filter(VaultChunk.world_id == world_id).count() == 0
+        finally:
+            db.close()
+
+        # PARTIAL failure stays non-fatal: failed chunks store with
+        # embedding=None, successful ones keep their vectors.
+        calls = {"n": 0}
+
+        async def _half_fail(text, model=""):
+            calls["n"] += 1
+            if calls["n"] % 2 == 0:
+                raise RuntimeError("flaky backend")
+            return [0.1, 0.2, 0.3]
+        ai_module.embed_text = _half_fail
+        db = SessionLocal()
+        try:
+            world = db.get(World, world_id)
             result = asyncio.run(vs.sync_vault(db, world))
             assert result["chunks"] == 4
+            assert result["embed_failures"] == 2
             chunks = db.query(VaultChunk).filter(VaultChunk.world_id == world_id).all()
-            assert all(c.embedding is None for c in chunks)
+            assert sum(1 for c in chunks if c.embedding is None) == 2
+            assert sum(1 for c in chunks if c.embedding is not None) == 2
         finally:
             db.close()
     finally:

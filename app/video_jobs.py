@@ -48,6 +48,8 @@ _INTERRUPTED_NOTE = (
 # env-tunable like the other AI budgets.
 _MAX_WAIT_SECONDS = float(os.environ.get("ND_VIDEO_JOB_MAX_SECONDS", str(4 * 3600)))
 _POLL_INTERVAL_SECONDS = 10.0
+# ~5 minutes of consecutive failed polls (10s apart) before giving up.
+_MAX_CONSECUTIVE_POLL_ERRORS = 30
 
 
 def _forget_task(job_id: int, task: asyncio.Task) -> None:
@@ -125,24 +127,45 @@ _FAILED_MARKERS = ("fail", "error", "cancel")
 _DONE_MARKERS = ("succeed", "done", "complete", "ready")
 
 
+def _status_tokens_match(value: str, markers) -> bool:
+    """Whole-word prefix match on the status string's tokens: 'completed'
+    matches the 'complete' marker, 'incomplete' does NOT, 'not_completed'
+    splits on underscores so its 'not' and 'completed' tokens are examined
+    individually — 'completed' matching there is acceptable (a status
+    literally containing the word 'completed' as its own token is a done
+    signal in every phrasing this defends against)."""
+    import re as _re
+    tokens = [t for t in _re.split(r"[\s_\-]+", value) if t]
+    return any(tok.startswith(m) for m in markers for tok in tokens)
+
+
 def _entry_state(entry) -> str:
     """'running' | 'done' | 'failed' for one /v1/videos list entry,
     decided from whichever of status/state/phase + content-url keys this
     Studio build actually populates. Unknown/absent fields mean
     'running' — the poll loop's deadline is the backstop, never a guess
-    that mistakes a still-running generation for a finished one."""
+    that mistakes a still-running generation for a finished one.
+
+    Status tokens match on whole words: "complete" inside "incomplete"
+    must NOT read as done, and a populated url field only counts when no
+    status field exists at all (REST list entries often carry a self-url
+    while still queued — audit 2026-09-30, unsloth finding 8)."""
     if not isinstance(entry, dict):
         return "running"
+    import re as _re
     for key in ("status", "state", "phase"):
         v = str(entry.get(key) or "").lower()
         if not v:
             continue
-        if any(m in v for m in _FAILED_MARKERS):
+        if _status_tokens_match(v, _FAILED_MARKERS):
             return "failed"
-        if any(m in v for m in _DONE_MARKERS):
+        if _status_tokens_match(v, _DONE_MARKERS):
             return "done"
-    # A populated content/url field is a done signal even without a status
-    for key in ("content_url", "video_url", "url", "output_url"):
+        # A status field EXISTS and said something unrecognized — do not
+        # fall through to url-based guessing below on top of it.
+        return "running"
+    # No status field at all: a populated content/url is the done signal.
+    for key in ("content_url", "video_url", "output_url"):
         if entry.get(key):
             return "done"
     return "running"
@@ -151,10 +174,23 @@ def _entry_state(entry) -> str:
 async def _poll_until_done(video_id: str) -> None:
     """Raise StudioError('failed…') when Studio reports failure; return
     when the entry looks done; keep polling (deadline-bounded) while it's
-    running or hasn't appeared in the list yet."""
+    running or hasn't appeared in the list yet. Transient poll errors (a
+    Studio restart, a network blip) are tolerated up to
+    _MAX_CONSECUTIVE_POLL_ERRORS in a row — one 503 three hours into a
+    CPU-box generation must not abandon a job that may complete fine
+    (audit 2026-09-30, unsloth finding 3)."""
     deadline = asyncio.get_event_loop().time() + _MAX_WAIT_SECONDS
+    poll_errors = 0
     while True:
-        listing = await _studio.video_list()
+        try:
+            listing = await _studio.video_list()
+            poll_errors = 0
+        except _studio.StudioError as exc:
+            poll_errors += 1
+            if poll_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
+                raise
+            _log.warning("video poll %r failed (%s) — retrying, %d/%d",
+                         video_id, exc, poll_errors, _MAX_CONSECUTIVE_POLL_ERRORS)
         entries = listing.get("data") if isinstance(listing, dict) else listing
         entry = None
         if isinstance(entries, list):

@@ -131,7 +131,12 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
                                    headers=headers)
     except _httpx.HTTPError as exc:
         raise StudioError(f"Unsloth Studio unreachable: {type(exc).__name__}: {exc}", 503) from exc
-    if resp.status_code == 401:
+    # Only auth-required surfaces count toward the key-death banner:
+    # /version & friends are commonly public (the live Docker build serves
+    # /version unauthenticated), so a public 200 there would silently clear
+    # a REAL key-death and a public 401 would arm a false one.
+    _auth_relevant = path.startswith("/v1/") or path.startswith("/api/inference/")
+    if resp.status_code == 401 and _auth_relevant:
         _note_auth_failure()
     if resp.status_code == 404:
         raise StudioEndpointMissing(path)
@@ -148,7 +153,7 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
             or str(body)[:300]
         ) or f"HTTP {resp.status_code}"
         raise StudioError(message, resp.status_code, headers=dict(resp.headers))
-    if resp.status_code < 300:
+    if resp.status_code < 300 and _auth_relevant:
         _note_auth_ok()
     if not resp.content:
         return {}
@@ -293,6 +298,8 @@ async def image_gallery_file(image_or_url: dict | str) -> bytes:
             resp = await c.get(f"{url}{url_path}", headers=_headers(key))
     except _httpx.HTTPError as exc:
         raise StudioError(f"Unsloth Studio unreachable: {type(exc).__name__}: {exc}", 503) from exc
+    if resp.status_code == 401:
+        _note_auth_failure()
     if resp.status_code >= 400:
         raise StudioError(f"Fetching generated image failed: HTTP {resp.status_code}", resp.status_code)
     return resp.content
@@ -425,17 +432,33 @@ def _tone_wav_bytes(seconds: float = 1.0) -> bytes:
     return buf.getvalue()
 
 
+# Health checks are diagnostic clicks behind the same proxy as everything
+# else — bound them well under its ~100 s ceiling so the button always
+# ANSWERS (a slow real transcription surfaces as a timeout message, not a
+# hung request; audit 2026-09-30, unsloth finding 4).
+_HEALTHCHECK_TIMEOUT_SECONDS = float(
+    __import__("os").environ.get("UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS", "75"))
+
+
 async def stt_health(model: str) -> dict:
     """One-shot 'does this STT model actually work' probe — the exact call
     nd-world's transcription pipeline makes, over a synthesized tone, so a
     'not downloaded' 409 or bad model name surfaces at setup time in
     Settings instead of as a failed background job hours later. Never
     raises: every failure mode comes back as {ok: False, message}."""
+    import asyncio as _asyncio
     try:
-        await stt(_tone_wav_bytes(), "nd-health-check.wav", model=model or "small")
+        # The tone is ~1 s of audio; the budget covers the slowest real
+        # first-use load of the model, not a full transcription pass.
+        async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
+            await stt(_tone_wav_bytes(), "nd-health-check.wav", model=model or "small")
         return {"ok": True, "message": "Studio accepted the audio — model is ready."}
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
+    except _asyncio.TimeoutError:
+        return {"ok": False, "message": "Studio did not answer within the health-check budget "
+                                        "(UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS) — the backend may be "
+                                        "cold, very slow, or wedged."}
     except StudioError as exc:
         return {"ok": False, "status": exc.status_code, "message": str(exc)}
 
@@ -443,12 +466,18 @@ async def stt_health(model: str) -> dict:
 async def tts_health(model: str, voice: str = "", instructions: str = "", language: str = "") -> dict:
     """Same idea for TTS: synthesize a two-word clip through the configured
     model/voice/style. Audio is discarded — ok + message is the result."""
+    import asyncio as _asyncio
     try:
-        audio, _ct = await tts("Ready.", model=model or "", voice=voice,
-                               instructions=instructions, language=language)
+        async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
+            audio, _ct = await tts("Ready.", model=model or "", voice=voice,
+                                   instructions=instructions, language=language)
         return {"ok": True, "message": f"Studio synthesized {len(audio)} bytes — model is ready."}
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
+    except _asyncio.TimeoutError:
+        return {"ok": False, "message": "Studio did not answer within the health-check budget "
+                                        "(UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS) — the backend may be "
+                                        "cold, very slow, or wedged."}
     except StudioError as exc:
         return {"ok": False, "status": exc.status_code, "message": str(exc)}
 
@@ -557,10 +586,13 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
     if not audio:
         raise StudioError("No audio to transcribe", 400)
     url, key = _base_key()
-    async with _httpx.AsyncClient(timeout=_STT_TIMEOUT, follow_redirects=True) as c:
-        resp = await c.post(f"{url}/v1/audio/transcriptions",
-                            files={"file": (filename, audio)},
-                            data={"model": model}, headers=_headers(key))
+    try:
+        async with _httpx.AsyncClient(timeout=_STT_TIMEOUT, follow_redirects=True) as c:
+            resp = await c.post(f"{url}/v1/audio/transcriptions",
+                                files={"file": (filename, audio)},
+                                data={"model": model}, headers=_headers(key))
+    except _httpx.HTTPError as exc:
+        raise StudioError(f"Unsloth Studio unreachable: {type(exc).__name__}: {exc}", 503) from exc
     if resp.status_code == 401:
         _note_auth_failure()
     if resp.status_code >= 400:
@@ -573,7 +605,10 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
                   f"HTTP {resp.status_code}"
         raise StudioError(message, resp.status_code)
     _note_auth_ok()
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        raise StudioError("Studio returned a non-JSON transcription response", 502)
     return data.get("text") or ""
 
 

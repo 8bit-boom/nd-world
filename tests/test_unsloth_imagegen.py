@@ -160,7 +160,10 @@ async def test_imagegen_generate_posts_b64_json_and_saves_png(unsloth_image_mode
             # must fall back to the /v1 flow.
             return _FakeResponse(404, payload={"detail": "API endpoint not found"})
         assert url == "http://unsloth:8000/v1/images/generations"
-        assert body["model"] == "unsloth/z-image-turbo-GGUF"
+        # The GM's PICKED model is sent verbatim on the /v1 fallback (it
+        # used to be silently swapped for the env default — audit
+        # 2026-09-30, imagegen finding 6).
+        assert body["model"] == "vantagewithai/Krea-2-Turbo-GGUF"
         assert body["size"] == "1024x1024"
         assert body["response_format"] == "b64_json"
         assert body["seed"] == 42
@@ -171,8 +174,8 @@ async def test_imagegen_generate_posts_b64_json_and_saves_png(unsloth_image_mode
 
     _patch_http(monkeypatch, unsloth_image_mode, handler)
     urls = await ai_module.imagegen_generate(
-        prompt="a dragon", negative="", model="ignored", width=1024, height=1024,
-        steps=4, cfg=1.0, seed=42, uploads_dir=tmp_path,
+        prompt="a dragon", negative="", model="vantagewithai/Krea-2-Turbo-GGUF",
+        width=1024, height=1024, steps=4, cfg=1.0, seed=42, uploads_dir=tmp_path,
     )
     assert len(urls) == 2
     for u in urls:

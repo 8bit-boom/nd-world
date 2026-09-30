@@ -8,7 +8,7 @@
     The full Unsloth Studio UI — projects, fine-tuning/recipe workflows, agent skills,
     voice settings, the model hub with download progress, and video generation.
     This page embeds the Studio server at <code style="background:var(--bg3);padding:.15rem .4rem;border-radius:3px">{{ studio_url }}</code>.
-    If the frame stays blank, <a href="{{ studio_url }}" target="_blank">open Studio directly</a>
+    If the frame stays blank, <a rel="noopener noreferrer" href="{{ studio_url }}" target="_blank">open Studio directly</a>
     and sign in there once.
   </p>
   <div id="studio-mixed-content-warning" style="display:none;background:var(--bg2);border:1px solid var(--neon2);border-radius:6px;padding:1rem;margin-bottom:.8rem">
@@ -24,7 +24,7 @@
   </div>
   <iframe src="{{ studio_url }}" title="Unsloth Studio"
           style="width:100%;height:calc(100vh - 190px);border:1px solid var(--border);border-radius:6px;background:#111"
-          allow="clipboard-read; clipboard-write; microphone" loading="lazy"></iframe>
+          sandbox="allow-scripts allow-same-origin allow-forms" allow="clipboard-read; clipboard-write; microphone" loading="lazy"></iframe>
   {% else %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.5rem;max-width:640px;margin-top:1rem">
     <h2 style="font-size:.95rem;color:var(--neon);margin:0 0 .6rem">Studio isn't configured</h2>

@@ -278,10 +278,15 @@ async def cockpit_ai_find_start(request: Request, db: Session = Depends(get_db),
 
 
 @router.get("/api/cockpit/ai/find/{job_id}")
-async def cockpit_ai_find_poll(job_id: int):
+async def cockpit_ai_find_poll(job_id: int, request: Request):
     """Poll a find job: running (with elapsed seconds), done (enriched
     results — hallucinated ids filtered against the real candidates), or
-    error (with the reason)."""
+    error (with the reason). The start route is GM-only and its results
+    carry hidden-entity names + GM-lore reasons — the poll re-checks GM
+    rather than trusting the auth gate's allowlist to stay closed forever
+    (audit 2026-09-30, routers finding 12)."""
+    if not (getattr(getattr(request, "state", None), "user", None) or None) or not request.state.user.is_gm:
+        raise HTTPException(403)
     job = _COCKPIT_FIND_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "Unknown find job")

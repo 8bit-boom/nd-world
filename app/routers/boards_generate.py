@@ -7,6 +7,7 @@ and write it into a normal InvestBoard row — no new model or storage needed.
 import json
 import math
 import re
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Request
@@ -29,16 +30,38 @@ _SUBTYPE_COLOR = {
 _DEFAULT_COLOR = "#6b7280"
 
 
-def _build_faction_graph(db: Session, world_id: int):
+def _build_faction_graph(db: Session, world_id: int, request: Request = None):
     """Return (nodes_payload, edges_list) for all organization entities: a
     radial cluster layout by subtype, plus edges from both explicit
-    entity_links and keyword-classified mentions in entity text."""
-    org_entities = (
-        db.query(Entity)
-        .filter(Entity.world_id == world_id, Entity.kind.in_(_ORG_KINDS))
-        .order_by(Entity.subtype, Entity.name)
-        .all()
-    )
+    entity_links and keyword-classified mentions in entity text.
+
+    Caller-visibility aware when `request` is given (audit 2026-09-30,
+    routers finding 6): without the filter, hidden organizations and
+    [gmonly] body/summary text flowed to players via a generated board and
+    to assistants via /api/orgs/graph. GM callers keep the full graph."""
+    from ..deps import filter_visible_entities
+    from ..rendering import strip_gm_only
+
+    _q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind.in_(_ORG_KINDS))
+    _gm = True
+    if request is not None:
+        _gm = bool(getattr(getattr(request, "state", None), "user", None) and request.state.user.is_gm)
+        if not _gm:
+            _q = filter_visible_entities(_q, request)
+    org_entities = _q.order_by(Entity.subtype, Entity.name).all()
+    if not _gm and org_entities:
+        # View-local copies ONLY — the ORM rows themselves must never be
+        # mutated (this session commits in _upsert_board, which would
+        # persist the stripped text and destroy the GM's [gmonly] content).
+        org_entities = [
+            SimpleNamespace(
+                id=e.id, name=e.name, subtype=e.subtype, kind=e.kind, tags=e.tags,
+                image_url=e.image_url,
+                body=strip_gm_only(e.body or ""),
+                summary=strip_gm_only(e.summary or ""),
+            )
+            for e in org_entities
+        ]
     if not org_entities:
         return {"nodes": [], "groups": []}, []
 
@@ -130,7 +153,8 @@ def _build_faction_graph(db: Session, world_id: int):
 
 def _upsert_board(db: Session, world_id: int, replace: Optional[str], name: str, base_slug: str,
                    description: str, nodes_payload: dict, edges: list) -> str:
-    b = db.query(InvestBoard).filter(InvestBoard.slug == replace).first() if replace else None
+    b = db.query(InvestBoard).filter(
+        InvestBoard.slug == replace, InvestBoard.world_id == world_id).first() if replace else None
     if b:
         b.nodes_json = json.dumps(nodes_payload)
         b.edges_json = json.dumps(edges)
@@ -139,7 +163,8 @@ def _upsert_board(db: Session, world_id: int, replace: Optional[str], name: str,
 
     slug = base_slug
     i = 2
-    while db.query(InvestBoard).filter(InvestBoard.slug == slug).first():
+    while db.query(InvestBoard).filter(
+            InvestBoard.slug == slug, InvestBoard.world_id == world_id).first():
         slug = f"{base_slug}-{i}"
         i += 1
     db.add(InvestBoard(
@@ -155,7 +180,7 @@ def board_generate_orgs(request: Request, replace: Optional[str] = None,
                          db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
-    nodes_payload, edges = _build_faction_graph(db, world_id)
+    nodes_payload, edges = _build_faction_graph(db, world_id, request)
     world_name = world.name if world else "World"
     name = f"Factions — {world_name}"
     base_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "factions"
@@ -168,7 +193,7 @@ def board_generate_orgs(request: Request, replace: Optional[str] = None,
 def orgs_graph_api(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Faction graph data without saving, for external use."""
     world, _ = get_world_ctx(request, db, active_world)
-    nodes_payload, edges = _build_faction_graph(db, world.id if world else 1)
+    nodes_payload, edges = _build_faction_graph(db, world.id if world else 1, request)
     return {"nodes": nodes_payload["nodes"], "edges": edges}
 
 

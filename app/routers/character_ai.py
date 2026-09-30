@@ -205,6 +205,14 @@ async def pc_ai_start(request: Request,
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(403)
+    # RAG retrieval runs UNFILTERED for player callers unless gated (see
+    # _pc_ai_task's smart_world_context call — user=None means GM
+    # visibility: hidden entities, GM-only notes, un-stripped [gmonly]
+    # blocks — and the generated backstory echoes it back to the player).
+    # Same forced-off rule every player-reachable AI surface applies
+    # (npc_talk, facts, session recaps); audit 2026-09-30 finding R1.
+    if use_rag and not user.is_gm:
+        use_rag = False
 
     prompt = (prompt or "").strip()
     source_text = ""

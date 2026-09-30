@@ -432,6 +432,11 @@ async def api_chat_compact(body: ChatBody, request: Request, db=Depends(get_db),
             f"{ceiling}-token ceiling) — try compacting more often, or clear the chat instead",
         )
     summary = await _ai.condense_chat_history(msgs, model=body.model, think=body.think)
+    # A backend failure comes back as the sentinel string, NOT an exception
+    # — returning it here would let the client splice "[AI error: …]" over
+    # the GM's older turns and save it (audit 2026-09-30, chat finding 1).
+    if _ai.is_failure_sentinel(summary) or _ai.is_thinking_starved_sentinel(summary):
+        raise HTTPException(502, f"Compaction failed: {summary}")
     return {"summary": summary}
 
 
@@ -1478,6 +1483,14 @@ async def ai_stream(
     active_world: Optional[str] = Cookie(None),
 ):
     _require_ask_ai_access(request, db, active_world)
+    # The gate was the ONLY db use in this handler — release the pooled
+    # connection before a stream that can legitimately run for minutes
+    # (FastAPI holds yield-dependencies until the response completes;
+    # close() is idempotent when the dependency machinery closes again).
+    # Several concurrent streams + the 4s spotlight poller is exactly the
+    # pool-exhaustion shape database.py warns about (audit 2026-09-30,
+    # chat finding 13).
+    db.close()
 
     user = getattr(request.state, "user", None)
     is_gm = bool(user and user.is_gm)
@@ -2991,7 +3004,12 @@ async def ai_imagegen_custom_template_delete(
 async def api_imagegen_generate(body: ImagegenBody):
     params = _imagegen_params(body, _imagegen_uploads_dir())
     try:
-        urls = await _ai.imagegen_generate(**params)
+        # Same single slot the queued jobs hold (the semaphore's whole
+        # reason to exist is stopping a direct call racing a queued one —
+        # see its docstring); the direct route used to bypass it (audit
+        # 2026-09-30, imagegen finding 3).
+        async with _ai.imagegen_job_semaphore:
+            urls = await _ai.imagegen_generate(**params)
         return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
         _log.error("imagegen_generate failed: %s", exc)
@@ -3436,7 +3454,7 @@ async def unsloth_models_list():
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, str(exc))
     try:
-        loaded_ids = {m.model for m in (await _ai._list_loaded() or [])}
+        loaded_ids = set(await _ai._list_loaded() or [])  # list[str] of model ids
     except Exception:
         loaded_ids = set()
     return {"models": [
@@ -3783,7 +3801,10 @@ async def auto_tag_start(request: Request, db: Session = Depends(get_db),
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
     ids = body.get("entity_ids")
     if not isinstance(ids, list) or not ids:
         raise HTTPException(400, "Select at least one entity first")

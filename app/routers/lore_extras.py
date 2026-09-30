@@ -281,11 +281,40 @@ async def kiy_generate(req: _KiyGenerateReq = _KiyGenerateReq()):
     )
 
     async def _gen():
-        model, _note = await _ai_module.resolve_model(req.model or "")
-        async for token in _ai_module.stream_chat(
-            [{"role": "user", "content": "Write the play. Begin with ACT I."}], system=system, model=model,
-        ):
-            yield f"data: {json.dumps({'token': token})}\n\n"
+        # Bounded like the /models route: a cold/hung Studio here freezes
+        # the stream before ANY byte goes out (audit 2026-09-30, chat
+        # finding 4) — the tunnel kills it at ~100 s with no error event.
+        import asyncio as _asyncio
+        try:
+            model, _note = await _asyncio.wait_for(
+                _ai_module.resolve_model(req.model or ""), 10)
+        except _asyncio.TimeoutError:
+            yield f"data: {json.dumps({'error': 'AI backend did not answer the model check in time — try again.'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # emit_thinking=True so a failure sentinel arrives as an ERROR piece
+        # instead of a plain string that would render — and be saved — as
+        # the opening of the play (chat finding 2). Heartbeat keeps the
+        # connection alive through a slow first token.
+        from .ai import _with_heartbeat
+
+        async def _stream():
+            async for piece in _ai_module.stream_chat(
+                [{"role": "user", "content": "Write the play. Begin with ACT I."}], system=system,
+                model=model, emit_thinking=True,
+            ):
+                yield piece
+
+        async for piece in _with_heartbeat(_stream()):
+            if piece is None:
+                yield ": keep-alive\n\n"
+            elif piece.get("type") == "error":
+                yield f"data: {json.dumps({'error': piece['text']})}\n\n"
+            elif piece.get("type") == "thinking":
+                continue  # the play surface has no thinking pane
+            else:
+                yield f"data: {json.dumps({'token': piece['text']})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream",

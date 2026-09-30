@@ -560,10 +560,20 @@ async def prep_generate(session_id: int, request: Request, db: Session = Depends
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
-    _require_edit_section(request, db.get(World, gs.world_id))
+    _own_world = db.get(World, gs.world_id)
+    # Bare-id lookup + a section check against the ROW's world lets an
+    # assistant of world A read/generate prep for a guessed session id of
+    # world B (the section matrix is evaluated for their ACTIVE world) —
+    # the membership check every sibling route applies (audit 2026-09-30,
+    # routers finding 2).
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm) and not auth.user_can_access_world(db, user, _own_world):
+        raise HTTPException(404)
+    _require_edit_section(request, _own_world)
     context = _session_prep_context(db, gs)
     if not context.strip():
         raise HTTPException(400, "Nothing to generate from yet — add a recap/facts to a prior session, an open quest, or a party first.")
+    db.close()  # release the pooled connection across the AI await (idempotent at teardown)
     try:
         tasks = await _ai_module.generate_session_prep(context)
     except ValueError as exc:

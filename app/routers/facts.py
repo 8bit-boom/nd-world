@@ -355,6 +355,10 @@ async def api_facts_parse(request: Request, active_world: str = Cookie(None)):
             rag_entity_limit if rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT,
             rag_notes_limit if rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT,
         )
+    # Same per-surface fallback the parse-JOB applies (audio_jobs resolves
+    # blank → "recap" default); the sync route used to fall through to the
+    # instance-wide default instead (audit 2026-09-30, routers finding 5).
+    model = model or _ai_module.get_defaults().get("recap", "")
     try:
         facts = await _ai_module.parse_facts_from_recap(
             text, model=model, think=think, world_context=world_context,
@@ -408,6 +412,9 @@ async def api_facts_folk_tale(request: Request, active_world: str = Cookie(None)
             rag_entity_limit if rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT,
             rag_notes_limit if rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT,
         )
+    # ...and the assist surface default for the folk tale, matching the
+    # assist panel/jobs (finding 5's second half).
+    model = model or _ai_module.get_defaults().get("assist", "")
     try:
         result = await _ai_assist.run_assist(
             "folk_tale", content=content, instruction=instruction,

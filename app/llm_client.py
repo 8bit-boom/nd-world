@@ -72,6 +72,22 @@ _OPTION_PASSTHROUGH = {"temperature", "top_p", "top_k", "seed", "min_p"}
 _dropped_options_logged: set[str] = set()
 
 
+def _note_auth(status_code: int) -> None:
+    """Bridge into unsloth_extras' 401 key-death tracker (the AI/Settings
+    banner's data source) from the MAIN chat paths — without this, a dead
+    key 401s every chat/NPC/recap call while the banner stays silent (the
+    tracker only saw unsloth_extras' own requests). Import is local and
+    best-effort: llm_client must never hard-depend on the extras module."""
+    try:
+        from . import unsloth_extras as _ux
+        if status_code == 401:
+            _ux._note_auth_failure()
+        else:
+            _ux._note_auth_ok()
+    except Exception:
+        pass
+
+
 class UnslothResponseError(_ollama.ResponseError):
     """HTTP error from Unsloth, shaped exactly like ollama.ResponseError
     (``error`` message + ``status_code``) so app/ai.py's existing handlers
@@ -205,8 +221,11 @@ class UnslothClient:
         async with self._http() as c:
             resp = await c.post(f"{self._base}/v1/chat/completions", json=body,
                                 headers=self._headers())
+        if resp.status_code == 401:
+            _note_auth(401)
         if resp.status_code >= 400:
             raise _error_from_response(resp)
+        _note_auth(200)
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
@@ -241,10 +260,13 @@ class UnslothClient:
             async with self._http() as c:
                 async with c.stream("POST", f"{self._base}/v1/chat/completions",
                                       json=body, headers=self._headers()) as resp:
+                    if resp.status_code == 401:
+                        _note_auth(401)
                     if resp.status_code >= 400:
                         # Read the body so the error shape parses the same.
                         await resp.aread()
                         raise _error_from_response(resp)
+                    _note_auth(200)
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
                             continue

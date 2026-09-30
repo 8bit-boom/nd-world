@@ -576,7 +576,23 @@ def _is_thinking_rejection(exc: Exception) -> bool:
     as a normal sentinel instead of looping."""
     if "does not support thinking" in (getattr(exc, "error", None) or ""):
         return True
-    return bool(effective_llm_api_key()) and getattr(exc, "status_code", None) == 400
+    if not (bool(effective_llm_api_key()) and getattr(exc, "status_code", None) == 400):
+        return False
+    # Under Unsloth, a 400 that NAMES a non-thinking cause must not be
+    # swallowed by the broad any-400 rule (audit 2026-09-30, chat finding
+    # 3): a model-not-found or prompt-too-large 400 used to be recorded as
+    # a thinking failure (poisoning per-model bookkeeping), retried once at
+    # double cost, and for vouched models re-sent with a literal <|think|>
+    # token appended. Markers are unambiguous non-thinking causes only —
+    # bare "model" is deliberately NOT one, since a thinking rejection can
+    # legitimately name the model too.
+    msg = (getattr(exc, "error", None) or "").lower()
+    _NON_THINKING_400_MARKERS = (
+        "not found", "not loaded", "no model", "context", "num_ctx",
+        "too large", "too many", "exceed", "grammar", "response_format",
+        "invalid request",
+    )
+    return not any(marker in msg for marker in _NON_THINKING_400_MARKERS)
 
 _DATA_DIR = Path(os.getenv("DB_PATH", "/data/world.db")).parent
 _CUSTOM_MODELS_FILE = _DATA_DIR / "ai_models.json"
@@ -1188,7 +1204,19 @@ async def resolve_model(requested: str) -> tuple[str, str | None]:
     call then fails with a clear "model not found" error instead of
     silently answering from the wrong model."""
     target = requested or effective_ollama_model()
-    available = await _list_loaded()
+    import asyncio as _asyncio
+    try:
+        # Bounded like the /models route: resolve_model runs BEFORE the
+        # SSE heartbeat starts on every chat surface, and an unbounded
+        # _list_loaded here (LLM_CHAT_TIMEOUT, default 1 h) is a zero-byte
+        # freeze the proxy kills at ~100 s with no error event (audit
+        # 2026-09-30, chat finding 4). On timeout: return the request
+        # unchanged — the chat call itself then fails with a clear
+        # model-not-found instead of a hang.
+        available = await _asyncio.wait_for(_list_loaded(), 10)
+    except _asyncio.TimeoutError:
+        _log.warning("resolve_model: model list timed out — passing %r through unresolved", target)
+        return target, ""
     if not available or target in available:
         return target, None
     tl = target.lower()
@@ -1784,7 +1812,7 @@ async def _parse_facts_chat_call(m: str, messages: list[dict], think: bool, opti
         _record_thinking_result(m, chat_kwargs["think"], failed=False)
     except _ollama.ResponseError as exc:
         _log.error("parse_facts_from_recap Ollama error: %s %s", exc.status_code, exc.error)
-        if think and "does not support thinking" in (exc.error or ""):
+        if think and _is_thinking_rejection(exc):
             # Ollama flatly refused think=true for this model — recover the
             # same way generate_chat/stream_chat do instead of failing the
             # chunk. Not a transient error, so retrying the identical call
@@ -2993,6 +3021,11 @@ async def condense_chat_history(messages: list[dict], model: str = "", think: bo
         return ""
     system = _with_instructions(_COMPACT_CHAT_SYSTEM, extra_instructions)
     opts = dict(_thinking_num_predict_override(think))
+    # Same degeneration guard its four recap-family siblings apply (audit
+    # 2026-09-30, chat finding 10): with think=False and nothing configured,
+    # an unbounded num_predict lets a repetition loop run until the context
+    # fills — for minutes on a CPU box.
+    _recap_num_predict_default_if_unbounded(opts)
     reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
     opts.update(_ctx_override_if_needed(system + text, reserve))
     return await generate_chat(
@@ -5595,9 +5628,16 @@ async def download_swarmui_model(url: str, subfolder: str = "", filename: str = 
         yield {"status": "done", "subfolder": subfolder, "filename": filename,
                "bytes": dest.stat().st_size, "model_list_refreshed": refreshed}
     except Exception as exc:
-        tmp.unlink(missing_ok=True)
         _log.warning("swarmui model download failed: %s: %s", type(exc).__name__, exc)
         yield {"error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        # In a finally, not the except above: a client disconnect raises
+        # GeneratorExit (a BaseException) at the yield, which except
+        # Exception does NOT catch — the .part file used to be orphaned
+        # where the model list's .part filter made it invisible and
+        # undeletable (audit 2026-09-30, imagegen finding 4). A no-op
+        # after the success path's replace().
+        tmp.unlink(missing_ok=True)
 
 
 def delete_downloaded_swarmui_model(subfolder: str, filename: str) -> bool:
@@ -5769,8 +5809,25 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                 if init_image:
                     # init_image arrives as an /uploads/... URL — inline it
                     # as a data URL (the format Studio's own UI sends).
-                    init_path = Path(uploads_dir) / init_image.split("/uploads/", 1)[-1]
-                    if init_path.is_file():
+                    # Containment-checked like _swarmui_model_path: the
+                    # field is free-form GM input, and an unchecked join
+                    # turns "../../app/world.db" (or a Windows absolute
+                    # path, which replaces the join base) into an
+                    # arbitrary-file read exfiltrated to the remote Studio
+                    # (audit 2026-09-30, imagegen finding 2).
+                    _rel = init_image.split("/uploads/", 1)[-1]
+                    # Subpaths are legitimate (init images live under
+                    # ai-images/); containment is verified by resolve(),
+                    # not by banning separators — a ".." or an absolute
+                    # Windows path (which replaces the join base) must
+                    # never read outside uploads_dir.
+                    _candidate = (Path(uploads_dir) / _rel)
+                    try:
+                        _contained = _candidate.resolve().is_relative_to(Path(uploads_dir).resolve())
+                    except (OSError, ValueError):
+                        _contained = False
+                    init_path = _candidate if _contained else None
+                    if init_path is not None and init_path.is_file():
                         native_body["init_image"] = (
                             "data:image/png;base64,"
                             + _b64.b64encode(init_path.read_bytes()).decode()
@@ -5806,9 +5863,16 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                     # v1 deliberately sends only the verified field set — prompt,
                     # size, seed, batch, model; the turbo-family templates this
                     # backend targets barely use steps/guidance anyway.
-                    _log.info("Unsloth imagegen: native endpoint missing — falling back to /v1/images/generations")
+                    _log.warning("Unsloth imagegen: native endpoint missing — falling back to "
+                                 "/v1/images/generations (a reduced param set; a negative prompt "
+                                 "is dropped there)")
                     v1_body = {
-                        "model": UNSLOTH_IMAGE_MODEL,
+                        # The GM's PICKED model when one was given — the env
+                        # default is the fallback, not the override (audit
+                        # 2026-09-30, imagegen finding 6: this used to
+                        # always send the env default, silently generating
+                        # from a different model than the picker showed).
+                        "model": model or UNSLOTH_IMAGE_MODEL,
                         "prompt": prompt,
                         "size": f"{width}x{height}",
                         "n": max(1, min(batch_size, 8)),

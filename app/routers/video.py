@@ -789,7 +789,10 @@ async def video_job_start(request: Request, db: Session = Depends(get_db), activ
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
     prompt = str(body.get("prompt") or "").strip()
     if not prompt:
         raise HTTPException(400, "A prompt is required")

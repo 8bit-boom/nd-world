@@ -225,6 +225,7 @@ async def _sync_vault_locked(db: Session, world, vault_root: Path, vault_path: s
     chunk_rows: list[VaultChunk] = []
     edge_rows: list[EntityRelation] = []
     unmatched_notes: list[str] = []
+    embed_failures = 0
 
     for rel_path, raw in notes:
         frontmatter, body = parse_frontmatter(raw)
@@ -272,12 +273,25 @@ async def _sync_vault_locked(db: Session, world, vault_root: Path, vault_path: s
                 vec = await _ai.embed_text(text)
                 embedding = _ai.pack_embedding(vec)
             except Exception:
+                embed_failures += 1
                 _log.warning("vault_sync: embedding failed for %s / %s", rel_path, heading, exc_info=True)
             chunk_rows.append(VaultChunk(
                 world_id=world.id, source_path=rel_path, heading=display_heading,
                 text=text, embedding=embedding,
             ))
 
+    # A run whose EVERY embedding failed (backend down or cold-loading)
+    # must not swap out the previous, perfectly-good index for an all-None
+    # one — semantic search would be dead until the next sync with no
+    # signal to the GM (audit 2026-09-30, RAG finding 2). Rows without
+    # embeddings still land (FTS keeps working); a TOTAL failure aborts.
+    if chunk_rows and embed_failures == len(chunk_rows):
+        db.rollback()
+        raise RuntimeError(
+            "Every chunk failed to embed — the embedding backend is down or "
+            "cold. The previous vault index was left untouched; retry the sync "
+            "once the backend answers."
+        )
     db.query(VaultChunk).filter(VaultChunk.world_id == world.id).delete(synchronize_session=False)
     db.query(EntityRelation).filter(
         EntityRelation.world_id == world.id, EntityRelation.source_path.isnot(None),
@@ -292,6 +306,7 @@ async def _sync_vault_locked(db: Session, world, vault_root: Path, vault_path: s
         "chunks": len(chunk_rows),
         "edges": len(edge_rows),
         "unmatched_notes": unmatched_notes,
+        "embed_failures": embed_failures,
     }
 
 
