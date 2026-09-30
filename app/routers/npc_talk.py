@@ -24,6 +24,8 @@ the page. This router is the durable, dedicated version of that:
 """
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
@@ -34,9 +36,10 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai
 from .. import ai_instructions as _ai_instructions
 from .. import retrieval as _retrieval
+from .. import unsloth_extras as _unsloth_extras
 from ..database import SessionLocal, get_db
 from ..deps import filter_visible_entities, get_world_ctx, is_gm
-from ..models import ChatSession, Entity, EntityNote, World
+from ..models import ChatSession, Entity, EntityNote, EntityVoiceHint, World
 from ..templating import templates
 from .ai import _require_ask_ai_access, _with_heartbeat
 
@@ -72,9 +75,114 @@ _ROLEPLAY_SYSTEM = (
     "manner of speech from the context given. If asked about something the character "
     "wouldn't plausibly know, respond the way the character actually would (deflect, "
     "guess, get confused, or admit ignorance in-character) rather than stepping "
-    "outside the role to say you don't have that information. Keep replies "
+    "outside the role to say you don't have this information. Keep replies "
     "conversational — a spoken answer, not a document."
 )
+
+# ── Spoken replies (TTS with an LLM-derived voice) ───────────────────────────
+# The speak route below turns a saved NPC reply into audio through Studio's
+# TTS, using the `instructions` field (delivery style) this app already
+# supports. Instead of making the GM author a voice direction per NPC, the
+# chat model derives one ONCE from the character's own sheet and it's cached
+# in EntityVoiceHint — the LLM "helps in the background" exactly once per
+# character, then every spoken line reuses it.
+_VOICE_HINT_SYSTEM = (
+    "You write text-to-speech voice directions. Given a character sheet, output ONE "
+    "concise instruction sentence (at most ~30 words) describing how this character "
+    "should sound when speaking: apparent age, pitch, pace, texture/roughness, accent "
+    "only if the sheet clearly implies one, and overall attitude. Base it strictly on "
+    "the sheet; where the sheet is silent, choose something plain and neutral. Output "
+    "ONLY the instruction itself — no quotes, no preamble, no explanation."
+)
+# One spoken reply = one TTS call; a roleplay reply longer than this is a
+# document, not a spoken answer, and on a CPU-only TTS backend would outrun
+# any sane request budget anyway.
+_MAX_SPEAK_CHARS = 4000
+
+
+def _voice_card(entity: Entity) -> str:
+    """The derivation input: the character's public-facing card. [gmonly]
+    blocks are stripped for EVERYONE, GM included — the hint is cached per
+    entity and shared by all callers, and it flows into TTS requests and
+    (for GMs) API responses, so secret GM direction must never shape or
+    leak through it; the public personality is plenty for a voice."""
+    from ..rendering import strip_gm_only
+
+    def _clean(text) -> str:
+        return strip_gm_only(text or "").strip()
+
+    lines = [f"{(entity.kind or 'character').capitalize()}: {entity.name}"]
+    if entity.subtype:
+        lines.append(f"Subtype: {entity.subtype}")
+    if entity.tags:
+        lines.append(f"Tags: {entity.tags}")
+    summary = _clean(entity.summary)
+    if summary:
+        lines.append(f"Summary: {summary}")
+    personality = _clean(getattr(entity, "roleplay_personality", ""))
+    if personality:
+        lines.append("How they speak (GM direction):\n" + personality[:_MAX_PERSONALITY_CHARS])
+    body = _clean(entity.body)
+    if body:
+        lines.append("Sheet excerpt:\n" + body[:1200])
+    return "\n".join(lines)
+
+
+async def _voice_hint(entity: Entity, force: bool = False) -> tuple[str, bool]:
+    """(instructions, was_derived) — the cached EntityVoiceHint, deriving it
+    via one small chat-model call when absent (or force). DB reads/writes
+    happen in short-lived sessions so the LLM call never sits on a pooled
+    connection. A derivation that comes back empty/garbage falls back to ""
+    (the model's natural delivery) rather than failing the whole speak."""
+    if not force:
+        db = SessionLocal()
+        try:
+            row = db.get(EntityVoiceHint, entity.id)
+            if row and row.instructions.strip():
+                return row.instructions.strip(), False
+        finally:
+            db.close()
+    model = _ai.get_defaults().get("ask_ai", "")
+    hint = ""
+    try:
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": _voice_card(entity)}],
+            system=_VOICE_HINT_SYSTEM, model=model,
+            options={"num_predict": 120}, think=False,
+        )
+        # Strip the ways small models decorate "output only the instruction"
+        # (surrounding quotes, a "Voice:" label, markdown) — one line max.
+        hint = (raw or "").strip().split("\n")[0].strip()
+        hint = hint.strip('"“”\'').strip()
+        if hint.lower().startswith("voice:"):
+            hint = hint[6:].strip()
+        if len(hint) > 400:
+            hint = hint[:400].rsplit(" ", 1)[0]
+    except Exception as exc:
+        _log.warning("npc-talk voice-hint derivation failed for entity %s: %s", entity.id, exc)
+        return "", False
+    db = SessionLocal()
+    try:
+        row = db.get(EntityVoiceHint, entity.id)
+        if row is None:
+            row = EntityVoiceHint(entity_id=entity.id, world_id=entity.world_id)
+            db.add(row)
+        row.instructions = hint
+        row.model = model
+        db.commit()
+    finally:
+        db.close()
+    return hint, True
+
+
+class NpcSpeakBody(BaseModel):
+    # Index into the CALLER's OWN conversation's messages_json — the server
+    # reads the text from the stored message, never from the request, so a
+    # forged body can't make an NPC speak arbitrary text.
+    index: int
+    # Re-derive the cached voice hint (e.g. after editing the character or
+    # switching models) and re-synthesize even if audio already exists.
+    regenerate: bool = False
 
 
 class NpcTalkBody(BaseModel):
@@ -377,3 +485,94 @@ async def npc_talk_stream(entity_id: int, body: NpcTalkBody, request: Request, d
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+
+@router.post("/api/npc-talk/{entity_id}/speak")
+async def npc_talk_speak(entity_id: int, body: NpcSpeakBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Speak one saved reply of THIS caller's own conversation with the NPC
+    as audio, via Studio TTS. The delivery-style `instructions` come from
+    the cached EntityVoiceHint — derived once by the chat model from the
+    character's sheet (see _voice_hint) — plus the world TTS defaults
+    (model/voice/language) from Settings. The text always comes from the
+    stored message, never the request, and only assistant messages are
+    speakable. Re-speaking an already-spoken message returns the existing
+    audio without re-synthesizing; `regenerate` re-derives the voice hint
+    and re-synthesizes (overwriting the same deterministic file path).
+
+    Deliberately NOT `db: Session = Depends(get_db)` across the LLM/TTS
+    awaits — same pool-exhaustion shape the live-transcript route fixed:
+    bookend with short-lived sessions instead. One accepted race: speaking
+    an older message while a newer reply is still streaming can be undone
+    by that stream's whole-array save (its snapshot predates the audio
+    link) — the button simply reappears; re-speaking regenerates."""
+    _require_ask_ai_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    npc = _npc_or_404(db, request, world, entity_id)
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(403)
+
+    # Phase 1 — read everything needed, then close the session before any
+    # network await.
+    session = _conversation(db, world.id, user.id, entity_id)
+    if not session:
+        raise HTTPException(404, "No conversation with this character yet — talk to them first")
+    messages = json.loads(session.messages_json or "[]")
+    if not (0 <= body.index < len(messages)):
+        raise HTTPException(400, "No such message in your conversation")
+    m = messages[body.index]
+    if m.get("role") != "assistant":
+        raise HTTPException(400, "Only the character's replies can be spoken")
+    text = (m.get("content") or "").strip()
+    if not text:
+        raise HTTPException(400, "That reply has no text to speak")
+    if len(text) > _MAX_SPEAK_CHARS:
+        raise HTTPException(400, f"That reply is too long to speak in one go ({len(text)} chars — the cap is {_MAX_SPEAK_CHARS})")
+    audio_url = m.get("audio") or ""
+    needs_synth = body.regenerate or not audio_url
+    hint = ""
+    db.close()
+
+    # Phase 2 — outside any pooled DB session: (maybe) derive the voice
+    # hint once, then synthesize.
+    if needs_synth:
+        hint, _derived = await _voice_hint(npc, force=body.regenerate)
+        audio, content_type = await _unsloth_extras.tts(
+            text,
+            model=_ai.get_tts_model(),
+            voice=_ai.get_tts_voice(),
+            instructions=hint,
+            language=_ai.get_tts_language(),
+        )
+        ext = ".wav" if "wav" in content_type else ".mp3"
+        # Deterministic per (entity, caller, message) — regeneration
+        # overwrites the same file instead of orphaning the old one.
+        target_dir = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "npc-talk"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dest = target_dir / f"npc{entity_id}-u{user.id}-m{body.index}{ext}"
+        dest.write_bytes(audio)
+        audio_url = f"/uploads/npc-talk/{dest.name}"
+
+    # Phase 3 — re-read fresh and patch the audio link into the message.
+    db2 = SessionLocal()
+    try:
+        row = _conversation(db2, world.id, user.id, entity_id)
+        if row is None:
+            raise HTTPException(404, "Conversation disappeared while speaking")
+        current = json.loads(row.messages_json or "[]")
+        if not (0 <= body.index < len(current)) or current[body.index].get("role") != "assistant":
+            raise HTTPException(409, "Conversation changed while speaking — try again")
+        current[body.index]["audio"] = audio_url
+        row.messages_json = json.dumps(current)
+        db2.commit()
+    finally:
+        db2.close()
+    # The voice hint itself is GM-visibility only — it's derived from the
+    # sheet and shown back so a GM can judge/regenerate it; a player gets
+    # just the audio.
+    out = {"audio_url": audio_url}
+    if user.is_gm:
+        out["voice_hint"] = hint or "(cached earlier)"
+    return out

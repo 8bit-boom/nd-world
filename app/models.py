@@ -1629,6 +1629,28 @@ class ChatSession(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class EntityVoiceHint(Base):
+    """A per-NPC cached TTS delivery-style instruction ("gruff, weary old
+    harbor-master, low pitch, slow pace") derived ONCE by the chat model
+    from the character's own sheet (see app/routers/npc_talk.py's speak
+    route) and then reused for every spoken reply, so speaking doesn't cost
+    an extra LLM call per line. Pure cache, never exported with a world —
+    delete the row and the next speak re-derives it. A brand-new table
+    (create_all covers it; no migration code needed)."""
+    __tablename__ = "entity_voice_hints"
+
+    entity_id = Column(Integer, ForeignKey("entities.id"), primary_key=True, index=True)
+    # Denormalized from the entity so the world-delete loop and the
+    # generically-healed-tables registry (both keyed on world_id) apply
+    # to it like every other world-scoped table.
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    instructions = Column(Text, default="")
+    # Which model derived it — a model switch with a "regenerate" click
+    # re-derives; recording this is just provenance for the log line.
+    model = Column(String(256), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class PromptPreset(Base):
     """A GM-editable, per-world named prompt — feeds AI Chat's Quick Prompts
     sidebar (scope="chat", clicking one inserts `text` into the input for

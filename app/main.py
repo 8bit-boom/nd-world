@@ -40,7 +40,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -458,6 +458,13 @@ def _is_player_safe(method: str, path: str) -> bool:
     if re.match(r"^/api/npc-talk/\d+/export\.md$", path) and method == "GET":
         return True
     if re.match(r"^/api/npc-talk/\d+/stream$", path) and method == "POST":
+        return True
+    if re.match(r"^/api/npc-talk/\d+/speak$", path) and method == "POST":
+        # Same gate and user-scoping as the stream route: the spoken text
+        # comes from the CALLER'S OWN saved conversation (never the
+        # request), and the handler enforces players_can_ask_ai — a player
+        # can only voice replies they already read. TTS cost is the same
+        # class as a chat turn they're already allowed to trigger.
         return True
     if path in (
         "/api/ai/attachments/upload",
@@ -1540,7 +1547,7 @@ _WORLD_DELETE_MODELS = (
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
-    EntityRelation, VaultChunk, AiInstruction,
+    EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint,
 )
 
 
@@ -3955,6 +3962,13 @@ def ai_world_context_smart(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         return {"context": "", "count": 0, "notes": 0, "entities": []}
+    # Same server-side clamps the player route applies (max 100 entities /
+    # 100 notes — audit 2026-09-30, RAG finding 5) plus the 4000-char query
+    # budget its siblings apply before anything reaches an embed call
+    # (finding 6).
+    body.limit = max(0, min(body.limit, 100))
+    body.notes_limit = max(0, min(body.notes_limit, 100))
+    body.query = (body.query or "")[:4000]
     # The retrieval half lives in _retrieval.smart_world_context now (shared
     # with the AI-assist panel's RAG — see its docstring for the top-up and
     # guaranteed-notes behavior this route has always applied). user= keeps
@@ -6257,6 +6271,7 @@ def delete(entity_id: int, request: Request, db: Session = Depends(get_db), acti
     ))
     db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
     db.query(EntityNote).filter(EntityNote.entity_id == entity_id).delete()
+    db.query(EntityVoiceHint).filter(EntityVoiceHint.entity_id == entity_id).delete()
     # Entity.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT), so
     # SQLite can reuse this id for the next entity created — leaving a
     # stale EntityRelation row behind would silently reattach a GM's

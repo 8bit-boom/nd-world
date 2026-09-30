@@ -438,3 +438,148 @@ def test_entity_form_persists_personality(client, seed, monkeypatch):
         assert len(e.roleplay_personality) == 4000  # capped
     finally:
         db.close()
+
+
+# ── Spoken replies (speak route + voice hints) ───────────────────────────────
+
+def _speak_patch(monkeypatch, hint="gruff, weary harbor-master, low and slow", tts_calls=None):
+    from app.routers import npc_talk as _nt
+
+    async def _gen(messages, system="", model="", options=None, think=False, format=None):
+        if tts_calls is not None:
+            tts_calls["derive_prompts"].append(system + " ||| " + messages[0]["content"])
+        return '"Voice: ' + hint + '"'  # decorated the way small models do
+    monkeypatch.setattr(ai_module, "generate_chat", _gen)
+
+    async def _tts(text, model, voice="", response_format="mp3", speed=1.0,
+                   instructions="", language=""):
+        if tts_calls is not None:
+            tts_calls.setdefault("tts", []).append({"text": text, "instructions": instructions})
+        return b"AUDIO" + text[:4].encode(), "audio/mpeg"
+    monkeypatch.setattr(_nt._unsloth_extras, "tts", _tts)
+
+
+def _seed_conversation(entity_id, user_id, world_id, msgs):
+    db = SessionLocal()
+    try:
+        row = ChatSession(world_id=world_id, user_id=user_id, surface="npc",
+                          entity_id=entity_id, title="t")
+        row.messages_json = json.dumps(msgs)
+        db.add(row)
+        db.commit()
+        return row.id
+    finally:
+        db.close()
+
+
+def test_speak_derives_hint_once_and_caches_it(client, seed, monkeypatch):
+    eid = _npc(seed, body="Old salt of the docks.", summary="Harbor-master.")
+    _seed_conversation(eid, seed.gm.id, seed.world_a.id, [
+        {"role": "user", "content": "who runs this dock?"},
+        {"role": "assistant", "content": "Aye, that'd be me."},
+    ])
+    calls = {"derive_prompts": []}
+    _speak_patch(monkeypatch, tts_calls=calls)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+
+    r1 = client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1})
+    assert r1.status_code == 200, r1.text
+    d1 = r1.json()
+    assert d1["audio_url"].startswith("/uploads/npc-talk/")
+    assert "gruff" in d1["voice_hint"]  # cleaned of quotes and the "Voice:" label
+    assert len(calls["derive_prompts"]) == 1  # derived once…
+
+    r2 = client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1})
+    assert r2.status_code == 200
+    assert r2.json()["audio_url"] == d1["audio_url"]  # same deterministic file
+    assert len(calls["derive_prompts"]) == 1  # …then served from the cache
+    assert calls["tts"][0]["instructions"] == "gruff, weary harbor-master, low and slow"
+
+
+def test_speak_isolated_per_user_and_validates_index(client, seed, monkeypatch):
+    eid = _npc(seed)
+    _seed_conversation(eid, seed.gm.id, seed.world_a.id, [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hello."},
+    ])
+    _speak_patch(monkeypatch)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    # index bounds + role
+    assert client.post(f"/api/npc-talk/{eid}/speak", json={"index": 5}).status_code == 400
+    assert client.post(f"/api/npc-talk/{eid}/speak", json={"index": -1}).status_code == 400
+    assert client.post(f"/api/npc-talk/{eid}/speak", json={"index": 0}).status_code == 400  # user msg
+
+    # Another user has no conversation with this NPC — 404, not their text
+    _opt_in(seed)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _pin(client)
+    assert client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1}).status_code == 404
+
+
+def test_speak_player_gets_audio_but_not_the_hint(client, seed, monkeypatch):
+    """The hint is derived from the sheet and cached across callers — a
+    player caller gets the audio only, never the hint text itself."""
+    _opt_in(seed)
+    eid = _npc(seed, summary="Dock warden.")
+    _seed_conversation(eid, seed.player_a.id, seed.world_a.id, [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "Mind the tide."},
+    ])
+    _speak_patch(monkeypatch)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["audio_url"].startswith("/uploads/npc-talk/")
+    assert "voice_hint" not in d
+
+
+def test_speak_hint_derivation_strips_gmonly_even_for_gm(client, seed, monkeypatch):
+    """The cached hint is shared across callers and shapes a player-heard
+    voice — the derivation card must never include [gmonly] blocks, GM or
+    not (secret GM direction must neither leak through the returned hint
+    nor steer a voice players hear)."""
+    captured = {}
+    from app.routers import npc_talk as _nt
+
+    async def _gen(messages, system="", model="", options=None, think=False, format=None):
+        captured["card"] = messages[0]["content"]
+        return "calm and measured"
+    monkeypatch.setattr(ai_module, "generate_chat", _gen)
+
+    async def _tts(text, model, voice="", response_format="mp3", speed=1.0,
+                   instructions="", language=""):
+        return b"A", "audio/mpeg"
+    monkeypatch.setattr(_nt._unsloth_extras, "tts", _tts)
+
+    eid = _npc(seed, body="Public deeds. [gmonly]Secretly a dragon. [/gmonly]")
+    _seed_conversation(eid, seed.gm.id, seed.world_a.id, [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hmm."},
+    ])
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    assert client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1}).status_code == 200
+    assert "dragon" not in captured["card"]
+    assert "Public deeds" in captured["card"]
+
+
+def test_speak_regenerate_rederives_and_resynthesizes(client, seed, monkeypatch):
+    eid = _npc(seed)
+    _seed_conversation(eid, seed.gm.id, seed.world_a.id, [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Well met."},
+    ])
+    calls = {"derive_prompts": [], "tts": []}
+    _speak_patch(monkeypatch, hint="first voice", tts_calls=calls)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1})
+    r = client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1, "regenerate": True})
+    assert r.status_code == 200
+    assert len(calls["derive_prompts"]) == 2  # re-derived
+    assert len(calls["tts"]) == 2  # re-synthesized
+    assert r.json()["audio_url"] == f"/uploads/npc-talk/npc{eid}-u{seed.gm.id}-m1.mp3"

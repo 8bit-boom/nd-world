@@ -107,6 +107,65 @@
     return d;
   }
 
+  // ── Spoken replies ── index is the message's position in the CALLER's
+  // saved conversation (server-authoritative text), tracked as history
+  // loads and as turns persist. Speaking costs one TTS call unless the
+  // message already has audio server-side; 🔊↻ re-derives the character's
+  // cached voice hint and re-synthesizes.
+  let persistedCount = 0;
+  function addSpeakControls(bubble, index, existingAudio) {
+    if (existingAudio) {
+      const a = document.createElement('audio');
+      a.controls = true; a.src = existingAudio; a.preload = 'none';
+      a.style.cssText = 'display:block;margin-top:.4rem;width:100%;max-width:340px;height:2.2em';
+      bubble.appendChild(a);
+      addSpeakAgain(bubble, index);
+      return;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'btn-secondary';
+    btn.style.cssText = 'margin-top:.4rem;font-size:.72rem;padding:.15rem .5rem';
+    btn.textContent = '🔊 Speak as ' + npcName;
+    btn.onclick = () => speakReply(index, btn);
+    bubble.appendChild(btn);
+  }
+  function addSpeakAgain(bubble, index) {
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'btn-secondary';
+    btn.style.cssText = 'margin-top:.3rem;font-size:.68rem;padding:.1rem .4rem';
+    btn.title = 'Re-derive the character\\'s voice from their sheet and re-synthesize';
+    btn.textContent = '🔊↻ re-voice';
+    btn.onclick = () => speakReply(index, btn, true);
+    bubble.appendChild(btn);
+  }
+  async function speakReply(index, btn, regenerate) {
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '🔊 synthesizing… (the character\\'s voice is derived once, then cached)';
+    try {
+      const res = await fetch(`/api/npc-talk/${npcId}/speak`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: index, regenerate: !!regenerate }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+      const bubble = btn.closest('.npc-msg');
+      btn.remove();
+      const anyAudio = bubble.querySelector('audio');
+      if (anyAudio) anyAudio.remove();
+      const a = document.createElement('audio');
+      a.controls = true; a.src = data.audio_url; a.preload = 'none';
+      a.style.cssText = 'display:block;margin-top:.4rem;width:100%;max-width:340px;height:2.2em';
+      bubble.appendChild(a);
+      addSpeakAgain(bubble, index);
+      a.play().catch(() => {});
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = old;
+      alert('Voice failed: ' + e.message);
+    }
+  }
+
   window.ndNpcSelect = async function (id) {
     if (sending) return;
     npcId = id;
@@ -118,12 +177,15 @@
     el('npc-chat-name').textContent = npcName;
     el('npc-messages').innerHTML = '';
     el('npc-input').placeholder = 'Say something to ' + npcName + '… (Enter to send, Shift+Enter for a new line)';
+    persistedCount = 0;
     try {
       const res = await fetch(`/api/npc-talk/${id}/history`);
       if (res.ok) {
         const data = await res.json();
         for (const m of data.messages || []) {
-          addMsg(m.role, m.role === 'user' ? _escHtml(m.content) : _mdToHtml(m.content));
+          const idx = persistedCount++;
+          const bubble = addMsg(m.role, m.role === 'user' ? _escHtml(m.content) : _mdToHtml(m.content));
+          if (m.role === 'assistant' && m.content) addSpeakControls(bubble, idx, m.audio);
         }
       }
     } catch (e) { /* fresh conversation */ }
@@ -207,6 +269,12 @@
       } else if (!full) {
         bubble.className = 'npc-msg error';
         bubble.textContent = '⚠️ No reply — try again.';
+      } else {
+        // Both turns persisted server-side on this clean finish — the
+        // assistant reply is the LAST saved message; only now can 🔊 it.
+        const replyIndex = persistedCount + 1;
+        persistedCount += 2;
+        addSpeakControls(bubble, replyIndex, null);
       }
     } catch (e) {
       bubble.className = 'npc-msg error';
