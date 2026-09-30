@@ -8,7 +8,7 @@ route already accepted a `name` field.
 import json
 
 from app.database import SessionLocal
-from app.models import Party, PlayerCharacter, User, WorldMembership
+from app.models import Entity, Party, PlayerCharacter, User, WorldMembership
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -530,3 +530,51 @@ def test_level_up_badges_on_lists(client, seed):
     # Sheet banner
     r = client.get(f"/characters/{pc_id}")
     assert "Level-up available" in r.text
+
+
+# ── compact searchable member editor (2026-09-30) ────────────────────────────
+
+def test_member_editor_is_searchable_and_members_first(client, seed):
+    """The member pickers used to be a one-per-row checkbox wall of every
+    entity in the world, unsorted. Now: a filter box per list, a live
+    shown/total count, a compact multi-column grid, and current members
+    sorted ahead of everyone else (pinned by data-member for the test)."""
+    db = SessionLocal()
+    try:
+        pc_a = PlayerCharacter(world_id=seed.world_a.id, name="Zed")
+        pc_b = PlayerCharacter(world_id=seed.world_a.id, name="Amy")
+        ent_a = Entity(world_id=seed.world_a.id, kind="creature", name="Mule")
+        ent_b = Entity(world_id=seed.world_a.id, kind="creature", name="Wolf")
+        db.add_all([pc_a, pc_b, ent_a, ent_b])
+        db.commit()
+        pc_a_id, pc_b_id, ent_a_id, ent_b_id = pc_a.id, pc_b.id, ent_a.id, ent_b.id
+        party = Party(world_id=seed.world_a.id, name="Search Party",
+                      member_pc_ids_json=json.dumps([pc_a_id]),
+                      member_entity_ids_json=json.dumps([ent_b_id]))
+        db.add(party)
+        db.commit()
+        db.refresh(party)
+        pid = party.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get(f"/parties/{pid}").text
+
+    # Filter boxes + live counts + the client-side filter hook.
+    assert 'id="pc-search"' in page
+    assert 'id="ent-search"' in page
+    assert 'oninput="filterMembers(' in page
+    assert 'filterMembers(\'pc\', \'\')' in page
+    # Current members pinned first: the checked label appears before the
+    # unchecked one within each list (data-member marks them).
+    pc_section = page.split('id="pc-list"', 1)[1].split("</div>", 1)[0]
+    assert 'data-member="1"' in pc_section and 'data-member="0"' in pc_section
+    assert pc_section.index('data-member="1"') < pc_section.index('data-member="0"')
+    ent_section = page.split('id="ent-list"', 1)[1].split("</div>", 1)[0]
+    assert ent_section.index('data-member="1"') < ent_section.index('data-member="0"')
+    # Companion search matches on kind too (name + kind in data-search).
+    assert "wolf" in ent_section.split('data-search="', 1)[1].split('"', 1)[0] or \
+           'data-search="mule creature"' in ent_section or \
+           'data-search="wolf creature"' in ent_section

@@ -153,35 +153,79 @@
       <input name="name" value="{{ party.name }}" required style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px;box-sizing:border-box"/>
     </div>
 
-    <!-- Members -->
+    <!-- Members — compact, searchable pickers. Both lists sort current
+         members first, filter as you type (name/kind), and show a live
+         count — a world with dozens of NPCs used to be an unsorted
+         checkbox wall. -->
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Members</h2>
 
       <div style="margin-bottom:1rem">
-        <div style="font-size:.78rem;color:var(--text-dim);margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Player Characters</div>
-        {% for pc in all_pcs %}
-        <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;font-size:.85rem">
-          <input type="checkbox" name="member_pc_ids" value="{{ pc.id }}" {% if pc.id in pc_ids %}checked{% endif %} style="width:auto"/>
-          {{ pc.name }}
-          {% if pc.id in pc_ids %}<span style="color:var(--text-dim);font-size:.78rem">HP {{ pc.current_hp }}/{{ pc.max_hp }}{% if pc.shock_max %} · Shock {{ pc.shock_current }}/{{ pc.shock_max }}{% endif %}</span>{% endif %}
-        </label>
-        {% else %}
-        <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No player characters in this world yet.</p>
-        {% endfor %}
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.4rem">
+          <div style="font-size:.78rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em">Player Characters <span id="pc-count" style="text-transform:none;letter-spacing:0"></span></div>
+          <input id="pc-search" placeholder="Filter…" oninput="filterMembers('pc', this.value)"
+                 style="max-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .55rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
+        </div>
+        <div id="pc-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:.15rem .6rem">
+          {% set checked_pcs = all_pcs | selectattr("id", "in", pc_ids) | sort(attribute="name") | list %}
+          {% set other_pcs = all_pcs | rejectattr("id", "in", pc_ids) | sort(attribute="name") | list %}
+          {% for pc in checked_pcs + other_pcs %}
+          <label class="member-option" data-search="{{ pc.name | lower }}" data-member="{{ 1 if pc.id in pc_ids else 0 }}"
+                 style="display:flex;align-items:center;gap:.4rem;padding:.22rem .3rem;font-size:.84rem;border-radius:3px;{% if pc.id in pc_ids %}background:var(--bg3);{% endif %}">
+            <input type="checkbox" name="member_pc_ids" value="{{ pc.id }}" {% if pc.id in pc_ids %}checked{% endif %} style="width:auto"/>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ pc.name }}</span>
+            {% if pc.id in pc_ids %}<span style="color:var(--text-dim);font-size:.72rem;flex-shrink:0">HP {{ pc.current_hp }}/{{ pc.max_hp }}</span>{% endif %}
+          </label>
+          {% else %}
+          <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No player characters in this world yet.</p>
+          {% endfor %}
+        </div>
       </div>
 
       <div>
-        <div style="font-size:.78rem;color:var(--text-dim);margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Companions / Hirelings (NPCs &amp; Creatures)</div>
-        {% for e in all_entities %}
-        <label style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;font-size:.85rem">
-          <input type="checkbox" name="member_entity_ids" value="{{ e.id }}" {% if e.id in entity_ids %}checked{% endif %} style="width:auto"/>
-          {{ e.name }} <span style="color:var(--text-dim);font-size:.78rem">({{ e.kind }})</span>
-        </label>
-        {% else %}
-        <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No NPCs/creatures in this world yet.</p>
-        {% endfor %}
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.4rem">
+          <div style="font-size:.78rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em">Companions / Hirelings <span style="text-transform:none;letter-spacing:0">(NPCs &amp; Creatures)</span> <span id="ent-count" style="text-transform:none;letter-spacing:0"></span></div>
+          <input id="ent-search" placeholder="Filter by name or kind…" oninput="filterMembers('ent', this.value)"
+                 style="max-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .55rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
+        </div>
+        <div id="ent-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:.15rem .6rem;max-height:17rem;overflow-y:auto">
+          {% set checked_ents = all_entities | selectattr("id", "in", entity_ids) | sort(attribute="name") | list %}
+          {% set other_ents = all_entities | rejectattr("id", "in", entity_ids) | sort(attribute="name") | list %}
+          {% for e in checked_ents + other_ents %}
+          <label class="member-option" data-search="{{ (e.name ~ ' ' ~ e.kind) | lower }}" data-member="{{ 1 if e.id in entity_ids else 0 }}"
+                 style="display:flex;align-items:center;gap:.4rem;padding:.22rem .3rem;font-size:.84rem;border-radius:3px;{% if e.id in entity_ids %}background:var(--bg3);{% endif %}">
+            <input type="checkbox" name="member_entity_ids" value="{{ e.id }}" {% if e.id in entity_ids %}checked{% endif %} style="width:auto"/>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ e.name }}</span>
+            <span style="color:var(--text-dim);font-size:.72rem;flex-shrink:0">{{ e.kind }}</span>
+          </label>
+          {% else %}
+          <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No NPCs/creatures in this world yet.</p>
+          {% endfor %}
+        </div>
       </div>
     </div>
+    <script>
+      // Client-side member filtering + live counts. Members float to the
+      // top server-side; the filter matches name (and kind, for companions)
+      // case-insensitively and dims nothing — it simply hides non-matches.
+      function filterMembers(list, q) {
+        q = (q || '').trim().toLowerCase();
+        const wrap = document.getElementById(list + '-list');
+        const countEl = document.getElementById(list + '-count');
+        if (!wrap) return;
+        const opts = wrap.querySelectorAll('.member-option');
+        let shown = 0, total = 0;
+        opts.forEach(l => {
+          total++;
+          const hit = !q || (l.dataset.search || '').includes(q);
+          l.style.display = hit ? '' : 'none';
+          if (hit) shown++;
+        });
+        if (countEl) countEl.textContent = total ? `(${shown}/${total})` : '';
+      }
+      filterMembers('pc', '');
+      filterMembers('ent', '');
+    </script>
     {% else %}
     {# A "member"-level player (in this party via their own PC) may only
        edit notes/loot — see parties.py's _party_edit_level — so name and
