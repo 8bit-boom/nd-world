@@ -442,14 +442,21 @@ async def api_chat_compact(body: ChatBody, request: Request, db=Depends(get_db),
 
 class EntityFromTextBody(BaseModel):
     text: str
+    # Optional kind steering: the new-entity form's ✨ Draft button sends the
+    # form's currently-selected kind, flipping parse_entity_from_text from
+    # extraction to creative generation (audit follow-up: the Entities menu
+    # kinds had no AI draft entry point — only the AI-Chat save flow used
+    # this route).
+    kind: str = ""
 
 
 @router.post("/entity-from-text")
 async def api_entity_from_text(
     body: EntityFromTextBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
 ):
-    """Draft a world entity from a passage of text (an AI Chat reply) —
-    returns the draft without writing anything; the client reviews/edits it,
+    """Draft a world entity from a passage of text (an AI Chat reply) or —
+    with `kind` set — from a short creative brief on the new-entity form.
+    Returns the draft without writing anything; the client reviews/edits it,
     then POSTs the confirmed shape to /api/import/execute (kind=entity_single)
     to actually create it. Content drafting, so a GM-Assistant may call it
     too (can_edit tier) even though the /ai page it was built for stays
@@ -461,8 +468,9 @@ async def api_entity_from_text(
     text = body.text.strip()
     if not text:
         raise HTTPException(400, "No text provided")
+    kind_hint = body.kind.strip() if body.kind.strip() in KINDS else ""
     try:
-        draft = await _ai.parse_entity_from_text(text, KINDS)
+        draft = await _ai.parse_entity_from_text(text, KINDS, kind_hint=kind_hint)
     except ValueError as exc:
         raise HTTPException(502, str(exc))
     return draft

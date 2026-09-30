@@ -5,6 +5,19 @@
 <div class="form-page">
   <h1>{% if entity %}EDIT ENTRY{% else %}NEW ENTRY{% endif %}</h1>
   <form class="entity-form" action="{% if entity %}/entity/{{ entity.id }}/edit{% else %}/new{% endif %}" method="post" enctype="multipart/form-data">
+    {% if not entity %}
+    <div class="form-group" style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem">
+      <label style="margin-bottom:.3rem">✨ Draft with AI <small>(optional — describe it, the model fills the form, you review before saving)</small></label>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <input id="ai-draft-brief" placeholder="e.g. a retired smuggler turned harbor inspector, haunted by one job gone wrong"
+               style="flex:1;min-width:240px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-size:.85rem;border-radius:3px"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();aiDraftEntity();}"/>
+        <button type="button" class="btn-save" id="ai-draft-btn" onclick="aiDraftEntity()" style="white-space:nowrap">✨ Draft</button>
+      </div>
+      <div id="ai-draft-status" style="font-size:.75rem;color:var(--text-dim);margin-top:.3rem;min-height:1em"></div>
+    </div>
+    {% endif %}
+
     <div class="form-row two-col">
       <div class="form-group">
         <label>Type</label>
@@ -591,6 +604,48 @@ ndAiAssist('ent', {
     ui.setStatus('Suggestions ready — apply the ones you want.', 'var(--text-dim)');
   },
 });
+// ── ✨ AI draft (new-entity form only) ── describe it in a sentence, the
+// model fills name/summary/body/tags from the CURRENT kind selection; the
+// GM reviews and saves through the normal submit. Fill is confirmed, not
+// silent, when the form already has content worth keeping.
+async function aiDraftEntity() {
+  const brief = document.getElementById('ai-draft-brief');
+  const btn = document.getElementById('ai-draft-btn');
+  const st = document.getElementById('ai-draft-status');
+  const text = (brief.value || '').trim();
+  if (!text) { st.textContent = 'Describe it first, then press Draft.'; return; }
+  btn.disabled = true;
+  st.textContent = 'Drafting… (a few seconds on a fast backend, longer on CPU)';
+  try {
+    const kind = document.getElementById('kind-select').value;
+    const res = await fetch('/api/ai/entity-from-text', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text, kind: kind }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+    const has = (sel) => String((document.querySelector(sel) || {}).value || '').trim();
+    if ((has('input[name=\"body\"]') || has('input[name=\"name\"]')) &&
+        !confirm('The form already has content — overwrite it with the draft?')) {
+      st.textContent = 'Cancelled — your draft brief is still in the box.';
+      return;
+    }
+    if (d.name) document.querySelector('input[name=\"name\"]').value = d.name;
+    if (d.summary) document.querySelector('input[name=\"summary\"]').value = d.summary;
+    if (d.body) document.querySelector('textarea[name=\"body\"]').value = d.body;
+    if (d.tags) document.querySelector('input[name=\"tags\"]').value = d.tags;
+    if (d.kind) {
+      const sel = document.getElementById('kind-select');
+      if ([...sel.options].some(o => o.value === d.kind)) sel.value = d.kind;
+      if (typeof updateSubtypes === 'function') updateSubtypes();
+    }
+    st.textContent = '✓ Draft filled in — review it, adjust, then save.';
+  } catch (e) {
+    st.textContent = '⚠ ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
 </script>
 <script src="/static/js/text-format-toolbar.js?v={{ asset_v('js/text-format-toolbar.js') }}"></script>
 <script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>

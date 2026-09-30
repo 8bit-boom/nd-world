@@ -2135,18 +2135,35 @@ def _entity_from_text_schema(kinds: list[str]) -> dict:
     }
 
 
-async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "") -> dict:
-    """Turn a passage of text (typically an AI Chat reply) into a draft world
-    entity — same JSON-schema-constrained pattern as parse_facts_from_recap.
-    Raises ValueError on any failure so the caller can surface a clear error;
-    does not write anything to the database itself (see main.py's
-    /api/import/execute, which already knows how to write this exact shape)."""
+async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "",
+                                 kind_hint: str = "") -> dict:
+    """Turn a passage of text (typically an AI Chat reply, or — with
+    `kind_hint` — a short from-scratch description on the new-entity form)
+    into a draft world entity — same JSON-schema-constrained pattern as
+    parse_facts_from_recap. Raises ValueError on any failure so the caller
+    can surface a clear error; does not write anything to the database
+    itself (see main.py's /api/import/execute, which already knows how to
+    write this exact shape).
+
+    `kind_hint` (a kind from `kinds`) flips the framing from EXTRACTION
+    ("only what the text states") to GENERATION ("invent a coherent draft
+    of this kind from the description") — the new-entity form's ✨ Draft
+    button; the schema and validation are unchanged."""
     m = model or effective_ollama_model()
+    system = _ENTITY_FROM_TEXT_SYSTEM
+    if kind_hint:
+        system += (
+            "\n\nThe GM has selected the kind \"" + kind_hint + "\" — frame the entity as a "
+            + kind_hint + " (the kind field MUST be \"" + kind_hint + "\"). The text is a short "
+            "creative BRIEF, not source material: invent coherent, evocative, "
+            "setting-neutral details consistent with it (names, history, hooks) instead of "
+            "only extracting what is stated."
+        )
     try:
         resp = await _client().chat(
             model=m,
             messages=[
-                {"role": "system", "content": _ENTITY_FROM_TEXT_SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": raw_text},
             ],
             format=_entity_from_text_schema(kinds),
