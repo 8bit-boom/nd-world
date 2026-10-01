@@ -521,7 +521,7 @@ function ndToggleAttachMic(btnId, attachments) {
   });
 }
 </script>
-<main id="main-content">
+<main id="main-content"{% block main_attrs %}{% endblock %}>
   {% block content %}{% endblock %}
 </main>
 <footer>{{ world.name if world else 'N&D World' }} — self-hosted</footer>

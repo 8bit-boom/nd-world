@@ -188,3 +188,32 @@ or a pin button in the nav dropdown), reusing the home-edit save endpoint.
 
 Items slot under IMPROVEMENT_PLAN's existing U5–U8 (mobile polish) lines —
 this document is the concrete backlog for them.
+
+## 8. Player Characters, Parties and the character hub on a phone (2026-10)
+
+A player's phone is the main device at the table, so these pages got their own pass
+(`scripts/phone_audit.py` — Playwright, iPhone UA + touch, 375×667 and 390×844, player and
+GM views). Before: **334** findings on the player pages alone (26–34px buttons, 13–14px
+inputs that make iOS zoom, edit-form tables wider than the screen, Delete one thumb-slip
+from Edit, GM owner picker pushing the sheet header off-screen). After: 0 on the player
+pages bar file inputs (iOS doesn't zoom into those) and the dev logger toggle.
+
+How it works — one scope, no per-page forks:
+
+- Every character and party template sets `{% block main_attrs %} class="mp"{% endblock %}`
+  (base.html's `<main>` hook). `static/style.css` ("Phone layout for Player Characters…")
+  then applies, only under `.mp` and ≤768px: 16px fields (`!important`, since page
+  `<style>` blocks and inline styles set 13–14px), ≥44px tap targets for hub tabs, ± steppers,
+  condition chips, dice, claim/give/remove, links (`.tap-link`) and `<summary>`.
+- Sheet header actions: Edit stays one tap away; exports, Retire-to-NPC, Delete and the GM
+  owner picker fold behind **⋯ Export & more** (`.cs-more`, toggled by `_more_menu.html`;
+  it is `display:contents` on desktop and visible-by-default without JS).
+- Edit form: Feats/Equipment/Cyberware/Currency rows become stacked cards at ≤640px (cells
+  carry `data-label`, `data-wide`, `data-check`; the JS that reads rows back is selector-based
+  and unaffected) and the Save/Cancel row is sticky at the bottom.
+- Floating-window (⇱/📌) buttons are hidden on phones; party loot rows put the item name on
+  its own line above big Claim / Give / ✕ controls.
+
+New pages under characters/ or parties/ should set `main_attrs` the same way;
+`tests/test_phone_layout.py` pins the wiring (scope class on every page, the folded menu's
+DOM nesting, row labels, the CSS rules themselves).

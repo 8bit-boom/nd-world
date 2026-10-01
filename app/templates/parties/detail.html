@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block main_attrs %} class="mp"{% endblock %}
 {% import '_ai_assist_panel.html' as _aa %}
 {% block title %}{{ party.name }} — Parties{% endblock %}
 {% block content %}
@@ -91,7 +92,7 @@
               onclick="ndFloat('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">⇱ Float</button>
       <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"
               onclick="ndFloatPip('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">📌</button>
-      <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
+      <a href="{{ '/parties'|wq }}" class="tap-link" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
     </div>
   </div>
 
@@ -217,7 +218,7 @@
     <div style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Calendar events</div>
     <div style="display:flex;flex-direction:column;gap:.25rem">
       {% for ev in history_events %}
-      <a href="{{ ('/calendar?w=' + world.slug)|wq }}" style="font-size:.83rem;color:var(--text);text-decoration:none">{{ ev.title or 'Event' }} <span style="color:var(--text-dim);font-size:.75rem">· day {{ ev.day }}</span></a>
+      <a href="{{ ('/calendar?w=' + world.slug)|wq }}" class="tap-link" style="font-size:.83rem;color:var(--text);text-decoration:none">{{ ev.title or 'Event' }} <span style="color:var(--text-dim);font-size:.75rem">· day {{ ev.day }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -331,7 +332,7 @@
           <label class="member-option" title="{{ pc.name }}" data-search="{{ pc.name | lower }}" data-member="{{ 1 if pc.id in pc_ids else 0 }}">
             <input type="checkbox" name="member_pc_ids" value="{{ pc.id }}" {% if pc.id in pc_ids %}checked{% endif %}/>
             <span class="mo-name">{{ pc.name }}</span>
-            {% if pc.id in pc_ids and pc.max_hp %}<span class="mo-meta">HP {{ pc.current_hp }}/{{ pc.max_hp }}</span>{% endif %}
+            {% set _v = vitals_by_id.get(pc.id) %}{% if _v and _v.max_hp %}<span class="mo-meta">{{ _v.hp_label }} {{ _v.hp }}/{{ _v.max_hp }}</span>{% endif %}
           </label>
           {% else %}
           <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No player characters in this world yet.</p>
@@ -442,7 +443,8 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Members</h2>
     {% for pc in member_pcs %}
-    <div style="padding:.3rem 0;font-size:.85rem">{{ pc.name }} <span style="color:var(--text-dim);font-size:.78rem">HP {{ pc.current_hp }}/{{ pc.max_hp }}{% if pc.shock_max %} · Shock {{ pc.shock_current }}/{{ pc.shock_max }}{% endif %}</span></div>
+    {% set _v = vitals_by_id.get(pc.id) %}
+    <div style="padding:.3rem 0;font-size:.85rem">{{ pc.name }} <span style="color:var(--text-dim);font-size:.78rem">{% if _v and _v.max_hp %}{{ _v.hp_label }} {{ _v.hp }}/{{ _v.max_hp }}{% endif %}{% if _v and _v.native and pc.shock_max %} · Shock {{ pc.shock_current }}/{{ pc.shock_max }}{% endif %}</span></div>
     {% endfor %}
     {% for e in member_entities %}
     <div style="padding:.3rem 0;font-size:.85rem">{{ e.name }} <span style="color:var(--text-dim);font-size:.78rem">({{ e.kind }})</span></div>
@@ -505,6 +507,7 @@ function renderLoot() {
   list.innerHTML = loot.length ? '' : '<p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No loot yet.</p>';
   loot.forEach((item) => {
     const row = document.createElement('div');
+    row.className = 'loot-row';
     row.style.cssText = 'display:flex;align-items:center;gap:.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.4rem .6rem;font-size:.85rem;flex-wrap:wrap';
     const claimed = item.claimed_by || [];
     const claimedHtml = claimed.map(pid =>
@@ -512,10 +515,10 @@ function renderLoot() {
     const actable = Object.entries(MEMBER_NAMES).filter(([pid]) => EDIT_LEVEL === 'full' || MY_PC_IDS.includes(Number(pid)));
     row.innerHTML = `<span style="flex:1;min-width:160px">${esc(item.name)} <span style="color:var(--text-dim)">×${item.qty}</span>${item.notes ? ' — <span style="color:var(--text-dim);font-size:.8rem">' + esc(item.notes) + '</span>' : ''}</span>
       <span style="display:flex;gap:.25rem;flex-wrap:wrap">${claimedHtml}</span>
-      <span style="display:flex;gap:.25rem">
+      <span class="loot-claims" style="display:flex;gap:.25rem;flex-wrap:wrap">
         ${actable.map(([pid, name]) => {
           const isClaimed = claimed.includes(Number(pid));
-          return `<button type="button" data-pid="${pid}" title="${isClaimed ? 'Unclaim' : 'Claim'} for ${esc(name)}"
+          return `<button type="button" class="loot-claim-btn" data-pid="${pid}" title="${isClaimed ? 'Unclaim' : 'Claim'} for ${esc(name)}"
             style="background:none;border:1px solid ${isClaimed ? 'var(--neon)' : 'var(--border)'};color:${isClaimed ? 'var(--neon)' : 'var(--text-dim)'};border-radius:3px;padding:.1rem .4rem;font-size:.7rem;cursor:pointer">${isClaimed ? '✓ ' : ''}${esc(name)}</button>`;
         }).join('')}
       </span>

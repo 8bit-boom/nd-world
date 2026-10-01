@@ -1,0 +1,17 @@
+<script>
+/* Phone layout: the export links, Retire and Delete fold behind one "Export & more"
+   button so a thumb can't hit Delete by accident. The button only appears once this
+   script has run (no JS = everything stays visible); at desktop width the wrapper is
+   display:contents, so nothing changes there (see .cs-more in static/style.css). */
+(function () {
+  var m = document.getElementById('cs-more');
+  if (!m) return;
+  var t = m.querySelector('.cs-more-toggle');
+  m.classList.add('js');
+  t.setAttribute('aria-expanded', 'false');
+  t.addEventListener('click', function () {
+    var open = m.classList.toggle('open');
+    t.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+})();
+</script>

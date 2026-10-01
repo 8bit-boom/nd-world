@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block main_attrs %} class="mp"{% endblock %}
 {% block title %}{% if pc %}Edit {{ pc.name }}{% else %}New Character{% endif %} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <style>
@@ -74,7 +75,7 @@
 
 <div class="cf">
   <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;">
-    <a href="{% if pc %}/characters/{{ pc.id }}{% else %}/characters{% endif %}" style="color:var(--text-dim);font-size:.85rem;">←</a>
+    <a href="{% if pc %}/characters/{{ pc.id }}{% else %}/characters{% endif %}" class="tap-link" style="color:var(--text-dim);font-size:.85rem;" aria-label="Back">←</a>
     <h1 style="color:var(--neon);font-size:1.3rem;">{% if pc %}Edit {{ pc.name }}{% else %}New Character{% endif %}</h1>
   </div>
 
@@ -82,7 +83,7 @@
 
     <!-- Sheet Template selector -->
     <div class="cf-section" style="margin-bottom:1rem">
-      <div class="cf-section-title"><span>Sheet Template</span> <a href="{{ '/characters/templates'|wq }}" style="font-size:.72rem;color:var(--text-dim)">Manage Templates</a></div>
+      <div class="cf-section-title"><span>Sheet Template</span> <a href="{{ '/characters/templates'|wq }}" class="tap-link" style="font-size:.72rem;color:var(--text-dim)">Manage Templates</a></div>
       <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
         <select id="template-sel" onchange="switchTemplate(this.value)"
                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:4px;flex:1;min-width:180px;max-width:340px">
@@ -456,10 +457,10 @@ function renderCurrency() {
   const tbody = document.getElementById('currency-body');
   tbody.innerHTML = _currency.map((c, i) => `
     <tr>
-      <td><input type="text" class="curr-label" value="${escVal(c.label||'')}" placeholder="Currency name"></td>
-      <td><input type="text" class="curr-abbr" value="${escVal(c.abbr||'')}" placeholder="CR" maxlength="4"
+      <td data-label="Currency" data-wide><input type="text" class="curr-label" value="${escVal(c.label||'')}" placeholder="Currency name"></td>
+      <td data-label="Abbr"><input type="text" class="curr-abbr" value="${escVal(c.abbr||'')}" placeholder="CR" maxlength="4"
                  style="text-transform:uppercase"></td>
-      <td><input type="number" class="curr-val" value="${c.value !== undefined ? c.value : 0}" min="0"></td>
+      <td data-label="Amount"><input type="number" class="curr-val" value="${c.value !== undefined ? c.value : 0}" min="0"></td>
       <td>${delBtn('delCurrency('+i+')')}</td>
     </tr>
   `).join('');
@@ -494,10 +495,10 @@ function renderFeats() {
     // data-id preserves a catalog id (from the creation wizard) across saves —
     // otherwise it's silently dropped since there's no input for it here.
     return `<tr${f.id ? ` data-id="${escVal(f.id)}"` : ''}>
-      <td><input type="text" value="${escVal(f.name)}" placeholder="Feat name"></td>
-      <td><select>${typeOpts}</select></td>
-      <td><input type="number" value="${f.rank||1}" min="1" max="10" style="width:55px;min-width:0"></td>
-      <td><input type="text" value="${escVal(f.notes||f.description||'')}" placeholder="Notes"></td>
+      <td data-label="Feat" data-wide><input type="text" value="${escVal(f.name)}" placeholder="Feat name"></td>
+      <td data-label="Type"><select>${typeOpts}</select></td>
+      <td data-label="Rank"><input type="number" value="${f.rank||1}" min="1" max="10" style="width:55px;min-width:0"></td>
+      <td data-label="Notes / description" data-wide><input type="text" value="${escVal(f.notes||f.description||'')}" placeholder="Notes"></td>
       <td>${delBtn('delFeat('+i+')')}</td>
     </tr>`;
   }).join('');
@@ -536,11 +537,11 @@ function renderEquipment() {
     ].join('');
     return `
     <tr${extra}>
-      <td><input type="text" value="${escVal(e.name)}" placeholder="Item name"></td>
-      <td><input type="number" value="${e.qty||1}" style="width:55px;min-width:0"></td>
-      <td><input type="number" value="${e.weight||0}" step="0.1" style="width:65px;min-width:0"></td>
-      <td style="text-align:center"><input type="checkbox" ${e.equipped?'checked':''} style="width:auto;accent-color:var(--neon)"></td>
-      <td><input type="text" value="${escVal(e.notes||'')}" placeholder="notes"></td>
+      <td data-label="Item" data-wide><input type="text" value="${escVal(e.name)}" placeholder="Item name"></td>
+      <td data-label="Qty"><input type="number" value="${e.qty||1}" style="width:55px;min-width:0"></td>
+      <td data-label="Weight"><input type="number" value="${e.weight||0}" step="0.1" style="width:65px;min-width:0"></td>
+      <td data-label="Equipped" data-check style="text-align:center"><input type="checkbox" ${e.equipped?'checked':''} style="width:auto;accent-color:var(--neon)"></td>
+      <td data-label="Notes" data-wide><input type="text" value="${escVal(e.notes||'')}" placeholder="notes"></td>
       <td>${delBtn('delEquipment('+i+')')}</td>
     </tr>
   `;
@@ -555,9 +556,9 @@ function renderCyberware() {
   const tbody = document.getElementById('cyberware-body');
   tbody.innerHTML = _cyberware.map((c, i) => `
     <tr>
-      <td><input type="text" value="${escVal(c.name||'')}" placeholder="Implant name"></td>
-      <td><input type="number" value="${c.ca_cost||0}" min="0" style="width:65px;min-width:0"></td>
-      <td><input type="text" value="${escVal(c.notes||'')}" placeholder="Notes"></td>
+      <td data-label="Implant" data-wide><input type="text" value="${escVal(c.name||'')}" placeholder="Implant name"></td>
+      <td data-label="CA cost"><input type="number" value="${c.ca_cost||0}" min="0" style="width:65px;min-width:0"></td>
+      <td data-label="Notes" data-wide><input type="text" value="${escVal(c.notes||'')}" placeholder="Notes"></td>
       <td>${delBtn('delCyberware('+i+')')}</td>
     </tr>
   `).join('');
