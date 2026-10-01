@@ -179,3 +179,44 @@ def test_embedded_cockpit_hides_its_exit_button():
     from pathlib import Path
     tpl = (Path(__file__).parent.parent / "app" / "templates" / "cockpit.html").read_text()
     assert 'id="ck-exit"' in tpl and "body.nd-embed #ck-exit" in tpl
+
+
+# ── closing the full-screen cockpit returns to where you came from ───────────
+
+def _exits(html):
+    """(desktop ✕ href, phone ✕ href) from the cockpit page."""
+    desk = re.search(r'<a[^>]*id="ck-exit"[^>]*href="([^"]*)"|<a[^>]*href="([^"]*)"[^>]*id="ck-exit"', html)
+    phone = re.search(r'<a[^>]*id="ck-m-exit"[^>]*href="([^"]*)"|<a[^>]*href="([^"]*)"[^>]*id="ck-m-exit"', html)
+    pick = lambda m: next(g for g in m.groups() if g) if m else None
+    return pick(desk), pick(phone)
+
+
+def test_closing_the_cockpit_returns_to_the_character_sheet(client, seed):
+    mine = _pc(seed, "a", "Anders")
+    _player(client, seed)
+    desk, phone = _exits(client.get(f"/player-cockpit?pc={mine}").text)
+    assert desk.startswith(f"/characters/{mine}") and phone.startswith(f"/characters/{mine}"), (desk, phone)
+    assert "#hub-" not in desk, "back to the Sheet, not to another hub tab"
+    # opened without a character: the Player Characters list
+    desk, phone = _exits(client.get("/player-cockpit").text)
+    assert desk.split("?")[0] == "/characters" and phone.split("?")[0] == "/characters"
+    # somebody else's character is not a place to return to
+    other = _pc(seed, "b", "Vex")
+    desk, _ = _exits(client.get(f"/player-cockpit?pc={other}").text)
+    assert desk.split("?")[0] == "/characters"
+
+
+def test_a_gm_closing_the_player_view_returns_to_that_sheet_and_the_gm_cockpit_still_exits_home(client, seed):
+    mine = _pc(seed, "a", "Anders")
+    _gm(client, seed)
+    desk, phone = _exits(client.get(f"/player-cockpit?pc={mine}").text)
+    assert desk.startswith(f"/characters/{mine}") and phone.startswith(f"/characters/{mine}")
+    desk, phone = _exits(client.get("/cockpit").text)
+    assert desk.split("?")[0] == "/" and phone.split("?")[0] == "/"
+
+
+def test_the_exit_keeps_the_world(client, seed):
+    mine = _pc(seed, "a", "Anders")
+    _player(client, seed)
+    desk, _ = _exits(client.get(f"/player-cockpit?pc={mine}").text)
+    assert f"w={seed.world_a.slug}" in desk, "the sheet opens in the same world"

@@ -15,7 +15,7 @@
       <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
       <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺ Reset</button>
       <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
-      <a class="ck-btn" id="ck-exit" href="{{ '/'|wq }}" title="Exit the cockpit">✕</a>
+      <a class="ck-btn" id="ck-exit" href="{{ (exit_href or '/')|wq }}" title="{{ 'Close the cockpit — back to the character sheet' if exit_href and exit_href != '/characters' else 'Exit the cockpit' }}">✕</a>
     </div>
   </header>
 
@@ -45,6 +45,7 @@
     <span id="ck-m-title">🎛 Cockpit</span>
     <span id="ck-m-world"></span>
     <div id="ck-m-actions">
+      <a class="ck-mbtn" id="ck-m-exit" href="{{ (exit_href or '/')|wq }}" title="Close the cockpit" aria-label="Close the cockpit">✕</a>
       <button type="button" class="ck-mbtn" id="ck-m-add" title="Add a panel">＋</button>
     </div>
   </div>
@@ -86,7 +87,8 @@ body:has(#ck-wrap) > footer { display: none; }
 }
 #ck-title { color: var(--neon); font-weight: bold; font-size: 1rem; }
 /* Inside a character's Cockpit tab (an ?embed=1 iframe) there is nowhere to "exit" to. */
-body.nd-embed #ck-exit { display: none !important; }
+body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
+#ck-m-exit { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; margin-right: .4rem; }
 #ck-world { color: var(--text-dim); font-size: .82rem; }
 #ck-head-actions { margin-left: auto; display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
 #ck-preset-select {

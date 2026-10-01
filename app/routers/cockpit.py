@@ -491,6 +491,9 @@ def _player_cockpit(request: Request, db: Session, world, worlds, focus_pc: int 
         "my_pcs_json": my_pcs,
         "focus_pc_id": focus,
         "view_as": view_as,
+        # Closing the full-screen cockpit goes back to where it was opened from: the character's sheet, or
+        # the Player Characters list when it was opened without one.
+        "exit_href": f"/characters/{focus}" if focus else "/characters",
         "player_mode": True,
     })
 
