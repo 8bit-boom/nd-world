@@ -49,7 +49,7 @@ a.pch-title:hover { color:var(--neon); }
 <div id="pc-hub" data-pc-id="{{ pc.id }}" data-mode="{{ hub_mode }}">
   <div class="pch-tabs" role="tablist" aria-label="Character hub">
     <button type="button" class="pch-tab" role="tab" data-tab="sheet">📄 Sheet</button>
-    {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="cockpit">🎛 Cockpit</button>{% endif %}
+    <button type="button" class="pch-tab" role="tab" data-tab="cockpit">🎛 Cockpit</button>
     <button type="button" class="pch-tab" role="tab" data-tab="journey">🧑‍🤝‍🧑 Journey</button>
     <button type="button" class="pch-tab" role="tab" data-tab="quests">📜 Quests &amp; goals</button>
     {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="notes">📓 Notes &amp; journal</button>{% endif %}
@@ -122,17 +122,16 @@ a.pch-title:hover { color:var(--neon); }
     {% endif %}
   </section>
 
-  {% if own %}
   {# The Player Cockpit, inside the character: the same live dashboard as /player-cockpit (party vitals, quests,
-     dice, maps, notes, AI chat) opened on THIS character. Loaded only when the tab is first opened. #}
+     dice, maps, notes, AI chat) opened on THIS character. Loaded only when the tab is first opened. A GM looking
+     in gets it from the player's point of view (the page keeps their layout apart from the GM Cockpit's). #}
   <section class="pch-panel pch-cockpit" data-panel="cockpit" hidden>
     <div class="pch-cockpit-bar">
-      <span class="pch-muted">Your live table dashboard for {{ pc.name }} — party vitals, quests, dice, maps, notes and AI chat, arranged your way.</span>
+      <span class="pch-muted">{% if own %}Your live table dashboard for {{ pc.name }} — party vitals, quests, dice, maps, notes and AI chat, arranged your way.{% else %}The Player Cockpit as {{ hub_owner_name or 'a player' }} sees it for {{ pc.name }} — their party, the quests they can see, dice and maps. Your own GM Cockpit is separate.{% endif %}</span>
       <a class="pch-btn" id="pch-cockpit-full" href="{{ ('/player-cockpit?pc=' ~ pc.id)|wq }}" target="_top" title="Open the cockpit full screen">⛶ Full screen</a>
     </div>
     <iframe id="pch-cockpit-frame" title="Player Cockpit" data-src="{{ ('/player-cockpit?pc=' ~ pc.id ~ '&embed=1')|wq }}" allow="fullscreen"></iframe>
   </section>
-  {% endif %}
 
   <section class="pch-panel" data-panel="quests" hidden><div data-body="quests" class="pch-muted">Loading…</div></section>
   {% if own %}<section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>{% endif %}
@@ -149,7 +148,7 @@ a.pch-title:hover { color:var(--neon); }
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
   const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule']
-                     : ['sheet', 'journey', 'quests', 'world', 'schedule'];
+                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule'];
   const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
@@ -436,7 +435,7 @@ a.pch-title:hover { color:var(--neon); }
     const f = document.getElementById('pch-cockpit-frame');
     if (f && !f.getAttribute('src')) f.setAttribute('src', f.dataset.src);
   }
-  if (OWNER) loaders.cockpit = loadCockpit;
+  loaders.cockpit = loadCockpit;
   const loaded = {};
 
   function sheetNodes() {

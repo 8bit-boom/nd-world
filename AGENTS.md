@@ -127,8 +127,10 @@ tools that require GM access still check `is_gm` at call time.)
   (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
 - **The Player Cockpit lives inside Player Characters**: the hub's owner-only 🎛 Cockpit tab lazily loads
   `/player-cockpit?pc=ID&embed=1` in an iframe, the list has a Cockpit button, and `?pc=` is honoured only for the
-  viewer's OWN character (`cockpit._player_cockpit`; `CK_MY_PCS` / `CK_FOCUS_PC` in cockpit.html, `focusMyCharacter` in
-  cockpit.js). Hub tabs are listed in `_player_hub.html` (`TABS` + `loaders`); a GM looking in gets no cockpit tab.
+  viewer's OWN character — a GM may focus any character of the world and gets that player's view (`cockpit._viewer_pcs`
+  decides whose characters/parties the cockpit is for; `CK_MY_PCS` / `CK_FOCUS_PC` / `CK_VIEW_AS` in cockpit.html,
+  `focusMyCharacter`, `LS_KEY` and `BOARD_URL` in cockpit.js — a GM's view-as layout is stored under its own key so it never
+  overwrites their GM Cockpit). Hub tabs are listed in `_player_hub.html` (`TABS` + `loaders`).
 - **Recap audio**: a session's `recap_audio_json` is a list of `AudioClip` ids (the /audio library owns the files, the
   clip's `visible_to_players` is what players hear, `transcript` holds the lyrics) — `app/routers/session_audio.py`.
   Readers skip dangling ids; use `attached_clips(db, gs, is_gm=...)` rather than parsing the JSON.

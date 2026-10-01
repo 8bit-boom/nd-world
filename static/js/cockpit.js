@@ -60,6 +60,10 @@
   // because the server-side workspace is ONE shared layout per world and a
   // player saving would stomp the GM's arrangement.
   const PLAYER = CK_PLAYER_MODE === true;
+  // A GM looking at the cockpit as a player does keeps that arrangement apart from their own GM cockpit
+  // (same browser storage otherwise), and asks for that character's board.
+  const LS_KEY = 'nd_cockpit_ws_' + CK_WORLD + (CK_VIEW_AS ? '_as_player' : '');
+  const BOARD_URL = '/api/cockpit/player-board' + (CK_VIEW_AS && CK_FOCUS_PC ? '?pc=' + CK_FOCUS_PC : '');
   const PLAYER_TYPES = ['pc', 'map', 'wmap', 'dice', 'party', 'quests', 'entity',
     'ecard', 'notes', 'ai_chat', 'timer', 'calendar', 'gallery', 'audio', 'video'];
   function panelTypes() {
@@ -118,7 +122,7 @@
   }
   function saveNow() {
     const ws = { current: { panels: panels }, presets: presets };
-    try { localStorage.setItem('nd_cockpit_ws_' + CK_WORLD, JSON.stringify(ws)); } catch (e) {}
+    try { localStorage.setItem(LS_KEY, JSON.stringify(ws)); } catch (e) {}
     if (PLAYER) return;  // server workspace is GM-only
     fetch('/api/cockpit/workspace', {
       method: 'POST',
@@ -178,7 +182,7 @@
     if (PLAYER) {
       // Players: localStorage-only persistence (server workspace is GM-only).
       let mirror = null;
-      try { mirror = JSON.parse(localStorage.getItem('nd_cockpit_ws_' + CK_WORLD) || 'null'); } catch (e) {}
+      try { mirror = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) {}
       adopt(mirror);
       clampX();
       return;
@@ -189,7 +193,7 @@
     // GM has already acted in the first moments (local actions win, and
     // their save() pushes them up).
     let mirror = null;
-    try { mirror = JSON.parse(localStorage.getItem('nd_cockpit_ws_' + CK_WORLD) || 'null'); } catch (e) {}
+    try { mirror = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) {}
     const haveMirror = !!(mirror && mirror.current &&
       Array.isArray(mirror.current.panels) && mirror.current.panels.length);
     if (haveMirror) { adopt(mirror); userTouched = false; }
@@ -512,7 +516,7 @@
       } catch (e) { live.innerHTML = '<p class="ck-empty">Party unavailable.</p>'; }
     } else if (PLAYER) {
       try {
-        const r = await fetch('/api/cockpit/player-board');
+        const r = await fetch(BOARD_URL);
         if (!r.ok) throw new Error();
         renderQuests(await r.json(), live);
       } catch (e) { live.innerHTML = '<p class="ck-empty">Quest board unavailable.</p>'; }
@@ -1657,7 +1661,7 @@
     if (!el) return;
     try {
       if (!myPcCache) {
-        const r = await fetch('/api/cockpit/player-board');
+        const r = await fetch(BOARD_URL);
         if (!r.ok) throw new Error();
         myPcCache = await r.json();
       }

@@ -395,6 +395,8 @@ const CK_PLAYER_MODE = {{ 'true' if player_mode else 'false' }};
 // Player mode: the viewer's own characters, and the one the cockpit was opened from (?pc=) if any.
 const CK_MY_PCS = {{ (my_pcs_json or []) | tojson }};
 const CK_FOCUS_PC = {{ (focus_pc_id if focus_pc_id else none) | tojson }};
+// A GM who opened the cockpit from a character's page sees it as that player does.
+const CK_VIEW_AS = {{ 'true' if view_as else 'false' }};
 const CK_TYPES = {
   map:     { icon: '📐', label: 'Schematic',    sub: 'live battle map (SVG canvas)',  w: 780, h: 560, picker: 'map' },
   wmap:    { icon: '🗺', label: 'World map',    sub: 'Leaflet map with markers',      w: 780, h: 560, picker: 'wmap' },

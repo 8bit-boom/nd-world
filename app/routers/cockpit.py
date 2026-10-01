@@ -391,18 +391,33 @@ async def _cockpit_find_task(job_id: int, world_id: int, query: str,
 # cockpit_ws_json is ONE shared blob per world and a player saving would
 # stomp the GM's layout.
 
-def _player_parties(db: Session, world, user) -> list:
+def _viewer_pcs(db: Session, world, user, as_pc: int = 0) -> list:
+    """The characters the player cockpit is FOR: the viewer's own — or, for a GM who opened it from a
+    character's page (?pc=), that character's owner's characters (just that one if it has no owner), so
+    the GM sees the dashboard the way that player does. `as_pc` is ignored for anyone but a GM, and for a
+    character of another world."""
+    if not user:
+        return []
+    owner_id = user.id
+    if as_pc and user.is_gm:
+        target = db.get(PlayerCharacter, as_pc)
+        if target is not None and target.world_id == world.id:
+            if not target.owner_user_id:
+                return [target]
+            owner_id = target.owner_user_id
+    return (db.query(PlayerCharacter)
+            .filter(PlayerCharacter.world_id == world.id, PlayerCharacter.owner_user_id == owner_id)
+            .order_by(PlayerCharacter.name).all())
+
+
+def _player_parties(db: Session, world, user, as_pc: int = 0) -> list:
     """Parties the player's own PCs belong to, with member vitals — the
     same strip the party detail page shows viewers with parties
     visibility. Deliberately NOT gated on the Parties section level: these
     are only parties one of the viewer's OWN characters belongs to (their
     teammates' HP, never hidden companions), which they already know — the
-    section toggle governs browsing every party in the world."""
-    if not user:
-        return []
-    my_pc_ids = [pc.id for pc in db.query(PlayerCharacter)
-                 .filter(PlayerCharacter.world_id == world.id,
-                         PlayerCharacter.owner_user_id == user.id).all()]
+    section toggle governs browsing every party in the world. `as_pc`: see _viewer_pcs (GM only)."""
+    my_pc_ids = [pc.id for pc in _viewer_pcs(db, world, user, as_pc)]
     if not my_pc_ids:
         return []
     out = []
@@ -436,15 +451,10 @@ def _player_quests(db: Session, world) -> list:
              "party": party_names.get(q.assigned_party_id)} for q in quests]
 
 
-def _player_my_pcs(db: Session, world, user) -> list:
+def _player_my_pcs(db: Session, world, user, as_pc: int = 0) -> list:
     """The viewer's own PlayerCharacters in this world, with live vitals —
-    feeds the Player Cockpit's My Character panel."""
-    if not user:
-        return []
-    pcs = (db.query(PlayerCharacter)
-           .filter(PlayerCharacter.world_id == world.id,
-                   PlayerCharacter.owner_user_id == user.id)
-           .order_by(PlayerCharacter.name).all())
+    feeds the Player Cockpit's My Character panel. `as_pc`: see _viewer_pcs (GM only)."""
+    pcs = _viewer_pcs(db, world, user, as_pc)
     # Same per-character vitals as the party strip: an N&D sheet reads its columns,
     # a custom system its vital track (no AC, no level-ups) — plus the XP total.
     out = []
@@ -458,22 +468,29 @@ def _player_cockpit(request: Request, db: Session, world, worlds, focus_pc: int 
     (cockpit.js gates by CK_PLAYER_MODE), the player's parties (with
     vitals) as picker data, localStorage-only persistence. `focus_pc` (the
     character page's Cockpit tab / button passes ?pc=) is honoured only if it
-    is one of the viewer's OWN characters in this world — the My Character
-    panel then leads with that character."""
+    is one of the viewer's OWN characters in this world (or, for a GM, any
+    character of it: the cockpit then shows that player's parties and
+    characters) — the My Character panel leads with that character."""
     maps = (db.query(Schematic)
             .filter(Schematic.world_id == world.id, Schematic.is_html.is_(False))
             .order_by(Schematic.name)
             .all())
     user = getattr(request.state, "user", None)
-    parties = _player_parties(db, world, user)
-    my_pcs = [{"id": m["id"], "name": m["name"]} for m in _player_my_pcs(db, world, user)]
+    parties = _player_parties(db, world, user, focus_pc)
+    my_pcs = [{"id": m["id"], "name": m["name"]} for m in _player_my_pcs(db, world, user, focus_pc)]
+    focus = focus_pc if any(m["id"] == focus_pc for m in my_pcs) else None
+    # A GM opening a character they don't own sees the cockpit through that player's eyes; the page keeps
+    # that layout apart from the GM's own saved cockpit (CK_VIEW_AS).
+    target = db.get(PlayerCharacter, focus) if focus else None
+    view_as = bool(user and user.is_gm and target is not None and target.owner_user_id != user.id)
     return templates.TemplateResponse("cockpit.html", {
         "request": request, "world": world, "worlds": worlds,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
         "world_maps_json": _world_maps(world.id),
         "parties_json": parties,
         "my_pcs_json": my_pcs,
-        "focus_pc_id": focus_pc if any(m["id"] == focus_pc for m in my_pcs) else None,
+        "focus_pc_id": focus,
+        "view_as": view_as,
         "player_mode": True,
     })
 
@@ -493,7 +510,7 @@ def player_cockpit_page(request: Request, pc: str = "", db: Session = Depends(ge
 
 
 @router.get("/api/cockpit/player-board")
-async def cockpit_player_board(request: Request, db: Session = Depends(get_db),
+async def cockpit_player_board(request: Request, pc: str = "", db: Session = Depends(get_db),
                                active_world: str = Cookie(None)):
     """Live data for the player cockpit's party-vitals and quests panels:
     the player's own parties (member vitals included) and the world's
@@ -506,8 +523,9 @@ async def cockpit_player_board(request: Request, db: Session = Depends(get_db),
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    as_pc = int(pc) if pc.isdigit() else 0   # GM only: the board as that character's player sees it
     return {
-        "parties": _player_parties(db, world, user),
+        "parties": _player_parties(db, world, user, as_pc),
         "quests": _player_quests(db, world),
-        "my_pcs": _player_my_pcs(db, world, user),
+        "my_pcs": _player_my_pcs(db, world, user, as_pc),
     }
