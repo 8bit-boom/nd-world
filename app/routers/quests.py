@@ -304,14 +304,20 @@ async def quests_apply_suggestions(request: Request, db: Session = Depends(get_d
     user = getattr(request.state, "user", None)
 
     created = 0
+    world_party_ids = {pid for (pid,) in db.query(Party.id).filter(Party.world_id == world.id).all()}
     for n in (body.get("new_quests") or [])[:12]:
         if not isinstance(n, dict):
             continue
         title = str(n.get("title") or "").strip()
         if not title:
             continue
+        # A party can be attached only if it lives in THIS world; a missing,
+        # non-integer or foreign id is ignored (the quest is still created).
+        party_id = n.get("assigned_party_id")
+        if isinstance(party_id, bool) or not isinstance(party_id, int) or party_id not in world_party_ids:
+            party_id = None
         db.add(Quest(
-            world_id=world.id, title=title[:256],
+            world_id=world.id, title=title[:256], assigned_party_id=party_id,
             status=n.get("status") if n.get("status") in STATUSES else "active",
             category=n.get("category") if n.get("category") in CATEGORIES else "side",
             summary=str(n.get("summary") or "").strip()[:512],

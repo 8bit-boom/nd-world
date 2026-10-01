@@ -1,8 +1,9 @@
+import io
 import json
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import auth
@@ -17,7 +18,9 @@ from ..party_refs import (
 )
 from ..pc_stats import pc_maxima
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
-from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
+from .characters import (  # cross-router imports, per AGENTS.md
+    _derived, _levelup_ready as _pc_levelup_ready, _pc_to_ndc_dict, _safe_export_filename,
+)
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
 
@@ -764,6 +767,90 @@ async def party_rest_undo(party_id: int, request: Request, db: Session = Depends
     db.commit()
     live.touch(party.world_id)
     return {"ok": True, "restored": restored}
+
+
+# ── Roster comparison + bundle export ────────────────────────────────────────
+
+_ROSTER_STATS = (("str", "STR"), ("dex", "DEX"), ("bod", "BOD"), ("per", "PER"),
+                 ("wil", "WIL"), ("int", "INT"), ("cha", "CHA"), ("itu", "ITU"))
+
+
+def _roster_rows(db: Session, member_pcs: list) -> list:
+    """One dict per member character for the side-by-side roster: identity,
+    live resources against the effective maxima, the eight stats, derived
+    CA/Speed, edges, cyberware names, conditions and — for custom-sheet
+    members — the template's resource tracks (via _member_vitals)."""
+    vitals = {v["id"]: v for v in _member_vitals(db, member_pcs)}
+    rows = []
+    for pc in sorted(member_pcs, key=lambda p: p.name or ""):
+        d = _derived(pc)
+        m = pc_maxima(pc)
+        stat_val = {st["id"]: st.get("value") for st in d["stats"] if isinstance(st, dict) and st.get("id")}
+        rows.append({
+            "id": pc.id, "name": pc.name, "player_name": pc.player_name or "", "level": pc.level,
+            "line": " · ".join(x for x in (pc.race, pc.char_class) if x),
+            "native": m["native"],
+            "hp": pc.current_hp or 0, "hp_max": m["hp"], "temp_hp": pc.temp_hp or 0,
+            "shock": pc.shock_current or 0, "shock_max": m["shock"],
+            "pp": pc.pp_current or 0, "pp_max": m["pp"], "mp": pc.mp_current or 0, "mp_max": m["mp"],
+            "stats": [(label, stat_val.get(sid)) for sid, label in _ROSTER_STATS],
+            "ca": d["ca_derived"], "speed": d["speed_derived"],
+            "edges": [e for e in (d["minor_edge"], d["major_edge"]) if e],
+            "cyberware": [str(c.get("name")) for c in d["cyberware"] if isinstance(c, dict) and c.get("name")],
+            "conditions": vitals.get(pc.id, {}).get("conditions", []),
+            "resources": vitals.get(pc.id, {}).get("resources", []),
+        })
+    return rows
+
+
+@router.get("/parties/{party_id}/roster", response_class=HTMLResponse)
+def party_roster(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Members side by side: stats, effective maxima, CA/Speed, edges, cyberware,
+    conditions, custom-sheet resource tracks; prints cleanly. The full tier (GM,
+    or an assistant with Parties:edit in their own active world) always sees it;
+    everyone else needs the world's "players see the party" switch ON as well as
+    read access to Parties. GM companions are shown to the GM only."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world_row_visible(request, db, party.world_id, "parties"):
+        raise HTTPException(404)
+    party_world = world if (world and world.id == party.world_id) else db.get(World, party.world_id)
+    is_gm = _viewer_is_gm(request)
+    full_tier = is_gm or (world is not None and world.id == party.world_id and _can_manage_parties(request, party_world))
+    if not (full_tier or getattr(party_world, "players_see_party", False)):
+        raise HTTPException(404)
+    pc_ids = party_member_ids(party)
+    member_pcs = (db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids),
+                                                   PlayerCharacter.world_id == party.world_id).all() if pc_ids else [])
+    companions = []
+    if is_gm:
+        ent_ids = [i for i in party_member_ids_raw(party.member_entity_ids_json)]
+        companions = db.query(Entity).filter(Entity.id.in_(ent_ids)).all() if ent_ids else []
+    return templates.TemplateResponse("parties/roster.html", {
+        "request": request, "world": world, "worlds": worlds, "party": party,
+        "rows": _roster_rows(db, member_pcs), "companions": companions, "is_gm": is_gm,
+    })
+
+
+@router.get("/parties/{party_id}/export.ndc")
+def party_export_ndc(party_id: int, request: Request, db: Session = Depends(get_db)):
+    """GM-only bundle: every member character in the same .ndc JSON array a
+    single-character export uses, so the whole party imports into the Android
+    app / desktop editor in one go."""
+    if not _viewer_is_gm(request):
+        raise HTTPException(403)
+    party = db.get(Party, party_id)
+    if not party:
+        raise HTTPException(404)
+    pc_ids = party_member_ids(party)
+    pcs = (db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids),
+                                            PlayerCharacter.world_id == party.world_id)
+           .order_by(PlayerCharacter.name).all() if pc_ids else [])
+    payload = json.dumps([_pc_to_ndc_dict(pc) for pc in pcs], ensure_ascii=False, indent=2)
+    return StreamingResponse(
+        io.BytesIO(payload.encode("utf-8")), media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{_safe_export_filename(party.name or "party")}.ndc"'},
+    )
 
 
 # ── Printable summary ────────────────────────────────────────────────────────

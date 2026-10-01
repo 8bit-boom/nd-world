@@ -12,6 +12,7 @@
             title="Suggest bonds, tensions and personal hooks from the roster — writes nothing">✨ AI Party Insights</button>
     <div id="ai-insights-panel" style="display:none;margin-top:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .8rem;font-size:.85rem;max-width:640px"></div>
     <script>
+      const AI_WQ = {{ (('?w=' ~ world.slug) if world else '') | tojson }};
       async function partyAiInsights() {
         const btn = document.getElementById('ai-insights-btn');
         const panel = document.getElementById('ai-insights-panel');
@@ -33,6 +34,30 @@
               line.style.margin = '.2rem 0';
               const text = typeof x === 'string' ? x : (x.who + ': ' + x.hook);
               line.textContent = '• ' + text;
+              if (typeof x !== 'string') {
+                // One click turns a hook into a HIDDEN personal quest attached to this party.
+                const q = document.createElement('button');
+                q.type = 'button'; q.className = 'btn-secondary';
+                q.style.cssText = 'margin-left:.5rem;font-size:.68rem;padding:.05rem .4rem';
+                q.textContent = '+ Quest';
+                q.title = 'Create a hidden personal quest for the GM from this hook';
+                q.onclick = async () => {
+                  q.disabled = true;
+                  try {
+                    const qr = await fetch('/api/quests/apply' + AI_WQ, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ new_quests: [{
+                        title: (x.who + ': ' + x.hook).slice(0, 120), summary: x.hook, body: x.hook,
+                        category: 'personal', status: 'active', visible_to_players: false,
+                        assigned_party_id: {{ party.id }},
+                      }] }),
+                    });
+                    if (!qr.ok) { const qd = await qr.json().catch(() => ({})); throw new Error(qd.detail || ('HTTP ' + qr.status)); }
+                    q.textContent = '✓ Quest added (hidden)';
+                  } catch (e) { q.disabled = false; q.textContent = '⚠ ' + e.message; }
+                };
+                line.appendChild(q);
+              }
               panel.appendChild(line);
             });
           };
@@ -61,6 +86,7 @@
     {% endif %}
     <div style="display:flex;gap:.5rem;align-items:center">
       <a href="{{ ('/parties/' + party.id|string) + '/summary'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none" title="One-page printable party card">🖨 Summary</a>
+      <a href="{{ ('/parties/' + party.id|string + '/roster')|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none" title="Members side by side: stats, maxima, edges, cyberware">📊 Roster</a>
       <button type="button" class="nd-float-btn" title="Float this party — vitals keep updating live while you browse other pages"
               onclick="ndFloat('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">⇱ Float</button>
       <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"

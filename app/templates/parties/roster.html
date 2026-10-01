@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ party.name }} — Roster{% endblock %}
+{% block content %}
+<style>
+.ro-wrap { max-width:1200px; margin:0 auto; padding:1.5rem 1rem; }
+.ro-scroll { overflow-x:auto; border:1px solid var(--border); border-radius:6px; background:var(--bg2); }
+.ro-table { border-collapse:collapse; width:100%; font-size:.85rem; }
+.ro-table th, .ro-table td { padding:.45rem .7rem; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
+.ro-table thead th { position:sticky; top:0; background:var(--bg3); color:var(--neon); font-size:.9rem; white-space:nowrap; }
+.ro-table tbody th { color:var(--text-dim); font-weight:normal; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; white-space:nowrap; background:var(--bg2); position:sticky; left:0; }
+.ro-table tr.ro-group th { color:var(--neon); background:var(--bg3); font-size:.68rem; }
+.ro-sub { color:var(--text-dim); font-size:.75rem; font-weight:normal; display:block; }
+.ro-down { color:var(--neon2); font-weight:bold; }
+.ro-chip { display:inline-block; border:1px solid var(--border); border-radius:10px; padding:0 .45rem; margin:0 .25rem .2rem 0; font-size:.72rem; }
+.ro-muted { color:var(--text-dim); }
+.ro-na { color:var(--text-dim); font-style:italic; }
+@media print {
+  nav, footer, .no-print { display:none !important; }
+  body { background:#fff !important; color:#000 !important; }
+  .ro-scroll { border:1px solid #999 !important; background:#fff !important; overflow:visible !important; }
+  .ro-table thead th, .ro-table tbody th, .ro-table tr.ro-group th { background:#eee !important; color:#000 !important; position:static !important; }
+  .ro-chip { border-color:#999 !important; }
+  a { color:#000 !important; text-decoration:none; }
+}
+</style>
+<div class="ro-wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }} — Roster</h1>
+    <div class="no-print" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <button type="button" class="btn-secondary" onclick="window.print()">🖨 Print</button>
+      {% if is_gm %}<a class="btn-secondary" style="text-decoration:none" href="{{ ('/parties/' + party.id|string + '/export.ndc')|wq }}" title="Every member character in one .ndc file (Android app / desktop editor)">⬇ Export all (.ndc)</a>{% endif %}
+      <a href="{{ ('/parties/' + party.id|string)|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Party</a>
+    </div>
+  </div>
+
+  {% if rows %}
+  <div class="ro-scroll">
+    <table class="ro-table">
+      <thead>
+        <tr>
+          <th scope="col"><span class="ro-sub">Character</span></th>
+          {% for r in rows %}
+          <th scope="col"><a href="{{ ('/characters/' + r.id|string)|wq }}" style="color:inherit;text-decoration:none">{{ r.name }}</a>
+            <span class="ro-sub">Lv {{ r.level }}{% if r.line %} · {{ r.line }}{% endif %}{% if r.player_name %} · {{ r.player_name }}{% endif %}</span></th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Condition</th></tr>
+        <tr><th scope="row">HP</th>
+          {% for r in rows %}<td>{% if r.hp_max %}<span{% if r.hp <= 0 %} class="ro-down"{% endif %}>{{ r.hp }} / {{ r.hp_max }}</span>{% if r.hp <= 0 %} <span class="ro-down">DOWN</span>{% endif %}{% if r.temp_hp %} <span class="ro-muted">+{{ r.temp_hp }} temp</span>{% endif %}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+        <tr><th scope="row">Shock</th>
+          {% for r in rows %}<td>{% if r.native %}{{ r.shock }} / {{ r.shock_max }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+        <tr><th scope="row">PP / MP</th>
+          {% for r in rows %}<td>{% if r.native %}{{ r.pp }}/{{ r.pp_max }} · {{ r.mp }}/{{ r.mp_max }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+        <tr><th scope="row">Conditions</th>
+          {% for r in rows %}<td>{% for c in r.conditions %}<span class="ro-chip">{{ c }}</span>{% else %}<span class="ro-muted">none</span>{% endfor %}</td>{% endfor %}</tr>
+
+        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Attributes</th></tr>
+        {% for label, _x in rows[0].stats %}
+        {% set i = loop.index0 %}
+        <tr><th scope="row">{{ label }}</th>
+          {% for r in rows %}{% set val = r.stats[i][1] %}<td>{% if r.native and val is not none %}{{ val }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+        {% endfor %}
+        <tr><th scope="row">Cyber Adapt.</th>
+          {% for r in rows %}<td>{% if r.native %}{{ r.ca }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+        <tr><th scope="row">Speed</th>
+          {% for r in rows %}<td>{% if r.native %}{{ r.speed }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+
+        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Build</th></tr>
+        <tr><th scope="row">Edges</th>
+          {% for r in rows %}<td>{% for e in r.edges %}<span class="ro-chip">{{ e }}</span>{% else %}<span class="ro-muted">—</span>{% endfor %}</td>{% endfor %}</tr>
+        <tr><th scope="row">Cyberware</th>
+          {% for r in rows %}<td>{% for c in r.cyberware %}<span class="ro-chip">{{ c }}</span>{% else %}<span class="ro-muted">—</span>{% endfor %}</td>{% endfor %}</tr>
+        {% if rows | selectattr('resources') | list %}
+        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Sheet resources</th></tr>
+        <tr><th scope="row">Tracks</th>
+          {% for r in rows %}<td>{% for res in r.resources %}<div>{{ res.label }}: <strong>{{ res.current }}</strong> / {{ res.max }}</div>{% else %}<span class="ro-muted">—</span>{% endfor %}</td>{% endfor %}</tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="ro-muted">No characters in this party yet.</p>
+  {% endif %}
+
+  {% if companions %}
+  <h2 style="color:var(--neon);font-size:.95rem;margin:1.2rem 0 .5rem">🧷 Companions <span class="ro-muted" style="font-size:.72rem">(GM only)</span></h2>
+  {% for e in companions %}<div class="ro-muted" style="font-size:.85rem">{{ e.name }} <span style="font-size:.75rem">({{ e.kind }})</span></div>{% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

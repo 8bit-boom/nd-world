@@ -633,7 +633,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path in ("/calendar", "/calendar/agenda", "/quests", "/parties", "/tables") or re.match(
         r"^/(quests|parties)/\d+$", path
-    ) or re.match(r"^/parties/\d+/summary$", path):
+    ) or re.match(r"^/parties/\d+/(summary|roster)$", path):
         # Read-only browsing for the GM-tool-shaped world sections a GM can
         # opt players into per world — see World.section_access_json and
         # deps.world_can_view_section, the real handler-level gate (off by
