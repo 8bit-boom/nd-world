@@ -853,6 +853,13 @@ class SheetTemplate(Base):
     # type: number | resource | text | textarea | table | list
     # section: freeform label used to group fields on the sheet
     fields_json = Column(Text, default="[]")
+    # The system hooks a custom sheet can declare beyond its fields — status conditions, Rest rules, page
+    # groups, roster comparison fields (see app/sheet_systems.py clean_system_spec) — so a GM's own
+    # template integrates like the built-in systems do. Always stored cleaned.
+    system_json = Column(Text, default="{}")
+    # The system's rules, as the AI should know them (character reviews and AI-drafted characters are
+    # grounded in this instead of the N&D core rules). A digest is fine; capped at 20 000 characters.
+    rules_md    = Column(Text, default="")
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

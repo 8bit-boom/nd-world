@@ -172,6 +172,14 @@ you can also pass `params.sheet_mode: "nd"|"custom"` (default `"nd"` — see
 for `template_kind: "entity"` you can pass `params.entity_kind` to restrict
 the template to one Entity kind.
 
+A **sheet** template document can also carry the system integration, exactly as
+`GET /characters/templates/{id}/export.json` writes it (so an exported system imports back identically):
+`"sheet_mode": "custom"`, `"system": {"conditions": [...], "rest": {"short": [...], "long": [...]}, "pages": [...],
+"roster": [...]}` and `"rules_md": "..."`, plus the `vital` / `xp` / `binds` flags on its fields. The `system`
+block is validated against the fields (references to fields that aren't there are dropped), `rules_md` is capped
+at 20,000 characters. See the "Making a custom system fully integrated" section of
+[`AI_ENTITY_GUIDE.md`](AI_ENTITY_GUIDE.md) for what each part does.
+
 ### `batch` — several different kinds in one request
 
 ```json

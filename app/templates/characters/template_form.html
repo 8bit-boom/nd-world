@@ -71,6 +71,36 @@
       <input type="hidden" name="fields_json" id="fields-json-input"/>
     </div>
 
+    <!-- System integration: what makes a custom sheet behave like a built-in system -->
+    <div id="system-panel" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap;margin-bottom:.4rem">
+        <h2 style="color:var(--neon);font-size:.95rem;margin:0">System integration &amp; rules</h2>
+        <a href="{{ '/characters/templates/ai-new'|wq }}" class="btn-secondary" style="text-decoration:none;font-size:.78rem">✨ Draft from rules with AI</a>
+      </div>
+      <p style="color:var(--text-dim);font-size:.78rem;margin:0 0 .9rem;line-height:1.5">
+        Beyond its fields, a system can tell the app how it plays. Mark the HP, XP and name fields above; set the rest here.
+        Everything is optional — what you leave empty falls back to sensible defaults. The rules text is what the AI reads when it
+        reviews or drafts characters for this system.
+      </p>
+      <label class="sys-l">Status conditions <span class="sys-h">comma-separated chips on the sheet (empty = a neutral set)</span>
+        <input type="text" id="sys-conditions" placeholder="Shaken, Wounded, Poisoned" oninput="syncSystem()"/></label>
+
+      <div class="sys-l">Rest rules <span class="sys-h">what a party Rest does to each character of this system</span></div>
+      <div class="sys-rest" id="rest-short"><div class="sys-rest-t">Short rest <span class="sys-h">(skip if your system has one rest)</span></div><div class="rest-rows"></div>
+        <button type="button" class="subfield-add" onclick="addRest('short')">+ Add rule</button></div>
+      <div class="sys-rest" id="rest-long"><div class="sys-rest-t">Long rest / rest</div><div class="rest-rows"></div>
+        <button type="button" class="subfield-add" onclick="addRest('long')">+ Add rule</button></div>
+
+      <label class="sys-l">Party roster comparison <span class="sys-h">one group per line — <code>Title: Field, Field</code> (number / text / dropdown fields; resources always show)</span>
+        <textarea id="sys-roster" rows="2" placeholder="Core: Luck, Path" oninput="syncSystem()"></textarea></label>
+      <label class="sys-l">Sheet pages <span class="sys-h">one page per line — <code>Label: Section, Section</code>. Empty = a page per section once there are four or more. Sections: <span id="sys-sections"></span></span>
+        <textarea id="sys-pages" rows="3" placeholder="Who: Identity, Story&#10;Stats: Core, Progress" oninput="syncSystem()"></textarea></label>
+      <label class="sys-l">Rules for the AI <span class="sys-h">paste the rules or a digest (key rolls, resources, costs, advancement) — <span id="rules-count">0</span> / 20000 characters</span>
+        <textarea name="rules_md" id="rules-md" rows="10" maxlength="20000" oninput="document.getElementById('rules-count').textContent=this.value.length"
+                  placeholder="Core roll: 2d6 + stat, 10+ success …">{{ tpl.rules_md if tpl else '' }}</textarea></label>
+      <input type="hidden" name="system_json" id="system-json-input"/>
+    </div>
+
     <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
       <a href="{{ '/characters/templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
       {% if tpl and not tpl.is_builtin %}
@@ -115,6 +145,15 @@
   line-height:1;
 }
 .field-entry { display:flex; flex-direction:column; gap:.35rem; }
+.sys-l { display:flex; flex-direction:column; gap:.3rem; font-size:.82rem; color:var(--text); margin-bottom:.9rem; }
+.sys-h { color:var(--text-dim); font-size:.72rem; font-weight:normal; }
+.sys-l input[type=text], .sys-l textarea, .sys-rest select, .sys-rest input {
+  background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .55rem; font-family:var(--font);
+  font-size:.82rem; border-radius:3px; width:100%; box-sizing:border-box; }
+.sys-rest { margin:0 0 .8rem; padding:.55rem .7rem; background:var(--bg3); border:1px solid var(--border); border-radius:4px; }
+.sys-rest-t { font-size:.78rem; margin-bottom:.4rem; }
+.rest-row { display:grid; grid-template-columns:150px 1fr 90px 28px; gap:.35rem; margin-bottom:.35rem; align-items:center; }
+@media (max-width:600px) { .rest-row { grid-template-columns:1fr; } }
 .subfield-editor { margin-left:1rem; padding:.5rem .65rem; border-left:2px solid var(--border); display:flex; flex-direction:column; gap:.35rem; }
 .subfield-row { display:grid; grid-template-columns:1fr 1fr 100px 28px; gap:.35rem; align-items:center; }
 .subfield-row input, .subfield-row select {
@@ -131,6 +170,7 @@
 
 <script>
 const INIT_FIELDS = {{ fields | tojson }};
+const INIT_SYSTEM = {{ (system or {}) | tojson }};
 let _fields = JSON.parse(JSON.stringify(INIT_FIELDS));
 
 function renderFields() {
@@ -323,13 +363,105 @@ function addField() {
 
 function syncHidden() {
   document.getElementById('fields-json-input').value = JSON.stringify(_fields);
+  renderRest();       // the Rest rows offer the current fields
+  syncSections();
+}
+
+// ── System integration panel ────────────────────────────────────────────────
+// Stored as one cleaned JSON object (app/sheet_systems.py clean_system_spec re-validates it on save).
+// Keys the panel doesn't edit (hp / xp / binds, set by the field toggles above, or by an import) ride along.
+let _sys = JSON.parse(JSON.stringify(INIT_SYSTEM || {}));
+_sys.rest = _sys.rest || {};
+const REST_LABELS = { full: 'Refill to full', empty: 'Empty', add: 'Add an amount', set: 'Set field to…' };
+
+function fieldById(id) { return _fields.find(f => f.id === id); }
+function fieldLabel(id) { const f = fieldById(id); return f ? (f.label || f.id) : id; }
+function fieldByName(name) {
+  const n = String(name).trim().toLowerCase();
+  return _fields.find(f => (f.label || '').trim().toLowerCase() === n || f.id.toLowerCase() === n);
+}
+function sectionNames() {
+  const out = [];
+  _fields.forEach(f => { const s = f.section || 'Custom'; if (out.indexOf(s) < 0) out.push(s); });
+  return out;
+}
+function syncSections() {
+  const el = document.getElementById('sys-sections');
+  if (el) el.textContent = sectionNames().join(', ') || '(add fields first)';
+}
+
+function addRest(kind) {
+  (_sys.rest[kind] = _sys.rest[kind] || []).push(['full', '']);
+  renderRest(); syncSystem();
+}
+function removeRest(kind, i) { _sys.rest[kind].splice(i, 1); if (!_sys.rest[kind].length) delete _sys.rest[kind]; renderRest(); syncSystem(); }
+function setRest(kind, i, idx, val) {
+  const op = _sys.rest[kind][i];
+  op[idx] = val;
+  if (idx === 0) { op[1] = ''; op.length = 2; if (val === 'add') op[2] = 1; if (val === 'set') op[2] = ''; renderRest(); }
+  syncSystem();
+}
+function renderRest() {
+  ['short', 'long'].forEach(kind => {
+    const box = document.querySelector('#rest-' + kind + ' .rest-rows');
+    if (!box) return;
+    box.innerHTML = '';
+    (_sys.rest[kind] || []).forEach((op, i) => {
+      const needsRes = op[0] !== 'set';
+      const targets = _fields.filter(f => needsRes ? f.type === 'resource' : ['number', 'text', 'select'].includes(f.type));
+      const row = document.createElement('div');
+      row.className = 'rest-row';
+      row.innerHTML = `
+        <select onchange="setRest('${kind}',${i},0,this.value)">${Object.keys(REST_LABELS).map(k => `<option value="${k}" ${op[0]===k?'selected':''}>${REST_LABELS[k]}</option>`).join('')}</select>
+        <select onchange="setRest('${kind}',${i},1,this.value)"><option value="">— pick a field —</option>${targets.map(f => `<option value="${esc(f.id)}" ${op[1]===f.id?'selected':''}>${esc(f.label || f.id)}</option>`).join('')}</select>
+        ${(op[0]==='add'||op[0]==='set') ? `<input type="text" value="${esc(op[2] ?? '')}" placeholder="${op[0]==='add'?'amount':'value'}" oninput="setRest('${kind}',${i},2,${op[0]==='add' ? 'Number(this.value)||0' : 'this.value'})"/>` : '<span></span>'}
+        <button type="button" class="field-del" onclick="removeRest('${kind}',${i})" title="Remove">✕</button>`;
+      box.appendChild(row);
+    });
+  });
+}
+
+function parseGroups(text, resolve) {   // "Title: a, b" lines -> [[title, [resolved…]]]
+  return text.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const i = l.indexOf(':');
+    if (i < 0) return null;
+    const items = l.slice(i + 1).split(',').map(s => s.trim()).filter(Boolean).map(resolve).filter(Boolean);
+    return items.length ? [l.slice(0, i).trim(), items] : null;
+  }).filter(Boolean);
+}
+function syncSystem() {
+  const spec = Object.assign({}, _sys);
+  delete spec.conditions; delete spec.pages; delete spec.roster;
+  const conds = document.getElementById('sys-conditions').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (conds.length) spec.conditions = conds;
+  const rest = {};
+  ['short', 'long'].forEach(k => { const ops = (_sys.rest[k] || []).filter(op => op[1]); if (ops.length) rest[k] = ops; });
+  if (Object.keys(rest).length) spec.rest = rest; else delete spec.rest;
+  const roster = parseGroups(document.getElementById('sys-roster').value, name => { const f = fieldByName(name); return f ? f.id : null; });
+  if (roster.length) spec.roster = roster;
+  // a page keeps the icon / "conditions go here" flag it already had (matched by label)
+  const pages = parseGroups(document.getElementById('sys-pages').value, name => name).map(g => {
+    const prev = (_sys.pages || []).find(p => p.label === g[0]) || {};
+    return { label: g[0], icon: prev.icon || '', sections: g[1], conditions: !!prev.conditions };
+  });
+  if (pages.length) spec.pages = pages;
+  document.getElementById('system-json-input').value = JSON.stringify(spec);
+}
+function loadSystemPanel() {
+  document.getElementById('sys-conditions').value = (_sys.conditions || []).join(', ');
+  document.getElementById('sys-roster').value = (_sys.roster || []).map(g => g[0] + ': ' + g[1].map(fieldLabel).join(', ')).join('\n');
+  document.getElementById('sys-pages').value = (_sys.pages || []).map(p => (p.label || '') + ': ' + (p.sections || []).join(', ')).join('\n');
+  document.getElementById('rules-count').textContent = document.getElementById('rules-md').value.length;
+  renderRest(); syncSections(); syncSystem();
 }
 
 document.getElementById('tpl-form').addEventListener('submit', function() {
   syncHidden();
+  syncSystem();
 });
 
 renderFields();
 syncHidden();
+loadSystemPanel();
 </script>
 {% endblock %}

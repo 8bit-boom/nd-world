@@ -259,3 +259,138 @@ async def test_a_closed_characters_section_blocks_a_player_token():
     res = await _call(_issue_token(ids["player_id"]), "list_characters", {"world_id": ids["world_a_id"]})
     assert res.isError and "characters" in res.content[0].text
     assert not (await _call(_issue_token(ids["gm_id"]), "list_characters", {"world_id": ids["world_a_id"]})).isError
+
+
+# ── sheet templates (a custom game system, authored over MCP) ────────────────
+
+ASHFALL = {
+    "world_id": None, "name": "Ashfall", "description": "Post-war survival.",
+    "fields": [
+        {"id": "callsign", "label": "Callsign", "type": "text", "section": "Who", "binds": "name"},
+        {"id": "vigor", "label": "Vigor", "type": "resource", "section": "Body", "default_value": "6/6", "vital": "hp"},
+        {"id": "nerve", "label": "Nerve", "type": "resource", "section": "Body", "default_value": "4"},
+        {"id": "xp", "label": "Experience", "type": "number", "section": "Growth", "xp": True},
+    ],
+    "system": {"conditions": ["Wounded", "Shaken"], "rest": {"long": [["full", "vigor"], ["full", "nerve"]]},
+               "roster": [["Core", ["xp"]]]},
+    "rules_md": "# Ashfall\nRoll 2d6 + a stat.",
+}
+
+
+def _ashfall(ids, **over):
+    return {**ASHFALL, "world_id": ids["world_a_id"], **over}
+
+
+async def test_gm_creates_a_template_that_is_integrated_like_a_built_in():
+    ids = _scene()
+    tok = _issue_token(ids["gm_id"])
+    out = _result(await _call(tok, "create_sheet_template", _ashfall(ids)))
+    assert out["name"] == "Ashfall" and out["sheet_mode"] == "custom" and out["fields"] == 4 and out["warnings"] == []
+    assert out["integration"] == {"hp": "vigor", "xp": ["xp"], "binds": {"callsign": "name"}, "conditions": 2,
+                                  "rest": ["long"], "pages": 0, "roster": 1}
+    # a character on it behaves like one on a built-in: the MCP resource/XP/rest tools all work
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=ids["world_a_id"], name="Rook", max_hp=0, sheet_template_id=out["id"],
+                             custom_fields_json=json.dumps({"vigor_current": 1, "vigor_max": 6, "nerve_current": 0,
+                                                            "nerve_max": 4, "xp": 3}))
+        db.add(pc)
+        db.commit()
+        party = db.get(Party, ids["party"])
+        party.member_pc_ids_json = json.dumps(json.loads(party.member_pc_ids_json) + [pc.id])
+        db.commit()
+        pc_id = pc.id
+    finally:
+        db.close()
+    r = _result(await _call(tok, "adjust_character_resource", {"character_id": pc_id, "resource": "Vigor", "delta": 2}))
+    assert r["system"] == "Ashfall" and r["vital"]["current"] == 3 and r["vital"]["max"] == 6
+    _result(await _call(tok, "award_character_xp", {"character_id": pc_id, "amount": 4}))
+    _result(await _call(tok, "rest_party", {"party_id": ids["party"], "kind": "long"}))
+    cf = json.loads(_pc(pc_id).custom_fields_json)
+    assert cf["xp"] == 7 and (cf["vigor_current"], cf["nerve_current"]) == (6, 4), "the template's own Rest rule ran"
+
+
+async def test_a_sloppy_template_is_repaired_and_every_change_is_reported():
+    ids = _scene()
+    tok = _issue_token(ids["gm_id"])
+    sloppy = _ashfall(ids, fields=ASHFALL["fields"] + [
+        {"id": "Hit Points!", "label": "HP", "type": "resource", "vital": "hp"},
+        {"id": "mood", "label": "Mood", "type": "select"},
+    ], system={"rest": {"long": [["full", "ghost"], ["full", "vigor"]]}, "hp": "nowhere"})
+    out = _result(await _call(tok, "create_sheet_template", sloppy))
+    assert out["integration"]["hp"] == "vigor", "a second HP track is not allowed"
+    assert out["warnings"], "renamed id, select without options, unknown rest field…"
+    got = _result(await _call(tok, "get_sheet_template", {"template_id": out["id"]}))
+    by = {f["id"]: f for f in got["field_list"]}
+    assert "hit_points" in by and by["mood"]["type"] == "text" and "vital" not in by["hit_points"]
+    assert got["system"]["rest"]["long"] == [["full", "vigor"]]
+    res = await _call(tok, "create_sheet_template", _ashfall(ids, fields=[{"id": "x"}]))
+    assert res.isError and "No usable fields" in res.content[0].text
+
+
+async def test_template_tools_are_gm_only_and_world_scoped():
+    ids = _scene()
+    ptok = _issue_token(ids["player_id"])
+    for tool, args in (("create_sheet_template", _ashfall(ids)), ("list_sheet_templates", {"world_id": ids["world_a_id"]})):
+        res = await _call(ptok, tool, args)
+        assert res.isError and "GM" in res.content[0].text, tool
+    gm = _issue_token(ids["gm_id"])
+    made = _result(await _call(gm, "create_sheet_template", _ashfall(ids)))
+    for tool, args in (("get_sheet_template", {"template_id": made["id"]}),
+                       ("update_sheet_template", {"template_id": made["id"], "name": "Hijacked"})):
+        res = await _call(ptok, tool, args)
+        assert res.isError and "GM" in res.content[0].text, tool
+    assert _result(await _call(gm, "get_sheet_template", {"template_id": made["id"]}))["name"] == "Ashfall"
+    assert (await _call(gm, "get_sheet_template", {"template_id": 99999})).isError
+
+
+async def test_list_and_get_show_built_ins_with_their_effective_system():
+    ids = _scene()
+    gm = _issue_token(ids["gm_id"])
+    made = _result(await _call(gm, "create_sheet_template", _ashfall(ids)))
+    rows = _result(await _call(gm, "list_sheet_templates", {"world_id": ids["world_a_id"]}))
+    names = [r["name"] for r in rows]
+    assert "Hunt in the Moonlight" in names and "Asterion" in names and "Ashfall" in names
+    assert next(r for r in rows if r["name"] == "Hunt in the Moonlight")["builtin"] is True
+    hitm = _result(await _call(gm, "get_sheet_template", {"template_id": next(r["id"] for r in rows if r["name"] == "Hunt in the Moonlight")}))
+    assert hitm["system"] == {} and hitm["effective_system"]["conditions"], "a built-in's hooks come from the app, not the row"
+    assert hitm["rules"], "and its rules digest is served"
+    mine = _result(await _call(gm, "get_sheet_template", {"template_id": made["id"]}))
+    assert mine["rules_md"].startswith("# Ashfall") and mine["system"]["conditions"] == ["Wounded", "Shaken"]
+
+
+async def test_update_changes_only_what_is_passed_and_never_renames_existing_ids():
+    ids = _scene()
+    gm = _issue_token(ids["gm_id"])
+    made = _result(await _call(gm, "create_sheet_template", _ashfall(ids)))
+    tid = made["id"]
+    # system only: validated against the stored fields (ghost dropped), fields untouched
+    out = _result(await _call(gm, "update_sheet_template", {
+        "template_id": tid, "system": {"conditions": ["Burning"], "rest": {"short": [["full", "nerve"], ["full", "ghost"]]}}}))
+    assert out["warnings"] and out["fields"] == 4 and out["integration"]["rest"] == ["short"]
+    got = _result(await _call(gm, "get_sheet_template", {"template_id": tid}))
+    assert got["system"]["conditions"] == ["Burning"] and got["rules_md"].startswith("# Ashfall")
+    assert [f["id"] for f in got["field_list"]] == ["callsign", "vigor", "nerve", "xp"]
+    # rename + description only
+    out = _result(await _call(gm, "update_sheet_template", {"template_id": tid, "name": "Ashfall 2e", "description": "<b>New</b>"}))
+    assert out["name"] == "Ashfall 2e" and out["description"] == "bNew/b"
+    # fields replaced wholesale; the old system (still valid for the kept ids) follows
+    newf = ASHFALL["fields"][:2] + [{"id": "grit", "label": "Grit", "type": "number", "section": "Body"}]
+    out = _result(await _call(gm, "update_sheet_template", {"template_id": tid, "fields": newf, "system": {"rest": {"long": [["full", "vigor"]]}}}))
+    assert out["fields"] == 3 and out["integration"]["xp"] == []
+    assert (await _call(gm, "update_sheet_template", {"template_id": tid, "fields": [{"id": "x"}]})).isError
+    assert (await _call(gm, "update_sheet_template", {"template_id": tid, "name": "  "})).isError
+
+
+async def test_built_in_templates_cannot_be_changed_over_mcp():
+    ids = _scene()
+    gm = _issue_token(ids["gm_id"])
+    rows = _result(await _call(gm, "list_sheet_templates", {"world_id": ids["world_a_id"]}))
+    asterion = next(r["id"] for r in rows if r["name"] == "Asterion")
+    res = await _call(gm, "update_sheet_template", {"template_id": asterion, "name": "Mine"})
+    assert res.isError and "Built-in" in res.content[0].text
+    db = SessionLocal()
+    try:
+        assert db.get(SheetTemplate, asterion).name == "Asterion"
+    finally:
+        db.close()

@@ -531,7 +531,7 @@ sheet, or (in `custom` mode) an entirely different character sheet system.
 ```json
 {"id":"grit","label":"Grit","type":"resource","section":"Core","default_value":"5"}
 ```
-Types: `number` \| `resource` \| `text` \| `textarea` \| `table` \| `list`.
+Types: `number` \| `resource` \| `text` \| `textarea` \| `select` (with `options`) \| `table` \| `list`.
 `resource`/`table` exist in the schema (per the model's own doc comment) for
 a sheet-specific rendering treatment; `list` works identically to
 `EntityTemplate`'s (`item_fields` sub-schema, same `custom_fields_json`
@@ -544,6 +544,43 @@ gets one page per section (plus an **All** view), so keep related fields under o
 `section` name and don't scatter a topic across many tiny ones. The bundled Hunt in the
 Moonlight and Asterion templates define their own groupings (several sections per
 page); sections you add to those land on a trailing **More** page and are never hidden.
+
+### Making a custom system fully integrated (HP track, XP, Rest, roster, AI)
+
+A `custom` template is treated like a built-in system (Hunt in the Moonlight, Asterion) by the party
+view, the roster comparison, Combat, XP awards, Rest, the exports and every AI prompt — but only for
+what it *declares*. Declare three things:
+
+1. **Flags on fields** (inside `fields_json`):
+   `"vital": "hp"` on ONE `resource` field (the "still standing" track: party HP bars, DOWN badge,
+   Combat), `"xp": true` on `number` fields that hold experience (XP awards add to them),
+   `"binds": "name"` / `"player_name"` on a `text` field that is the character's name / the player's
+   name (so lists and AI prompts show them). A `resource` stores `{id}_current` / `{id}_max`; its
+   `default_value` is `"cur/max"`. A `select` needs `"options": [...]`.
+2. **System hooks** (`system_json` on the form, `system` in the importer/export document, validated
+   against the fields — anything that points at a field that isn't there is dropped):
+
+```json
+{
+  "conditions": ["Wounded", "Shaken"],
+  "rest": {"short": [["full", "nerve"]], "long": [["full", "vigor"], ["full", "nerve"], ["add", "luck", 1], ["set", "stance", "Ready"]]},
+  "pages": [{"label": "Body", "icon": "❤", "sections": ["Body", "Growth"]}, {"label": "Kit", "sections": ["Kit"], "conditions": false}],
+  "roster": [["Core", ["role", "xp"]]]
+}
+```
+   `rest` ops: `["full"|"empty", resource id]`, `["add", resource id, n]`, `["set", number/text/select id,
+   value]`. `pages` group the Sheet tab's sections (≥ 2 pages; unlisted sections land on a trailing
+   "More" page). `roster` lists number/text/select fields to compare across a party (resources are
+   always shown).
+3. **`rules_md`** — a markdown digest of the game's rules. The AI character creator, sheet reviews and
+   party insights follow it instead of "standard N&D". (The app's built-in systems ship their own.)
+
+Three ways to get all of that without hand-writing it: the **✨ Draft with AI** page
+(`/characters/templates/ai-new`, reads a rulebook in pieces and proposes fields + hooks + digest for you
+to review), the MCP tool `create_sheet_template` (an AI client hands over `{name, fields, system,
+rules_md}`; the same validator repairs it and reports what it changed), or the importer / the
+`/characters/templates/{id}/export.json` document: `{"name", "description", "sheet_mode": "custom",
+"fields": [...], "system": {...}, "rules_md": "..."}`.
 
 ### Built-in templates
 
@@ -562,11 +599,13 @@ want a real-world example of a large custom-mode template).
 |---|---|---|---|
 | GET | `/characters/templates` | — | list |
 | GET | `/characters/templates/new` | — | create form |
-| POST | `/characters/templates/new` | form: `name`, `description`, `sheet_mode` (`"nd"` or `"custom"`), `fields_json` | |
+| POST | `/characters/templates/new` | form: `name`, `description`, `sheet_mode` (`"nd"` or `"custom"`), `fields_json`, optional `system_json`, `rules_md` | the last two are cleaned against the fields (see above) |
+| GET | `/characters/templates/{id}/export.json` | — | the template as an importable document (fields + system + rules) |
+| GET | `/characters/templates/ai-new` | — | AI template drafting page (GM); `POST /api/sheet-templates/ai/start` + `GET /api/sheet-templates/ai/{job}` |
 | GET | `/characters/templates/{id}/edit` | — | |
-| POST | `/characters/templates/{id}/edit` | same fields | on a built-in, only `fields_json` applies |
+| POST | `/characters/templates/{id}/edit` | same fields | on a built-in, only `fields_json` / `system_json` / `rules_md` apply |
 | POST | `/characters/templates/{id}/delete` | — | 403 on built-ins |
-| GET | `/api/characters/templates` | — | clean JSON list: `[{id, name, is_builtin, fields}]` — use this to look up ids/fields programmatically instead of scraping HTML |
+| GET | `/api/characters/templates` | — | clean JSON list: `[{id, name, is_builtin, sheet_mode, fields, system, has_rules}]` — use this to look up ids/fields programmatically instead of scraping HTML |
 
 ### Worked example: a lightweight custom sheet
 

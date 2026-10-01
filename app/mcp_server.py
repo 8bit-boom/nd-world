@@ -935,3 +935,158 @@ def rest_party(ctx: Context, party_id: int, kind: str = "long") -> dict:
         return {"party": party.name, "kind": kind, "rested": [a["name"] for a in applied]}
     finally:
         db.close()
+
+
+# ── Character-sheet templates (GM only) ──────────────────────────────────────
+# A custom game system is a sheet template: fields + system hooks (HP track, XP, name/player binds,
+# conditions, Rest, pages, roster comparison) + a rules digest. These tools run an AI client's
+# proposal through app.template_draft (the same validator the in-app "Draft with AI" uses), so what
+# gets stored always loads and works; anything dropped or renamed comes back as `warnings`.
+
+def _template_for(ctx: Context, db, template_id: int):
+    """(user, template) a GM token may read or change; PermissionError otherwise."""
+    from .models import SheetTemplate
+    user = _current_user(ctx)
+    _require_gm(user)
+    tpl = db.get(SheetTemplate, template_id)
+    if not tpl:
+        raise ValueError(f"Sheet template {template_id} not found")
+    if tpl.world_id is not None:
+        _load_world(db, tpl.world_id, user)
+    return user, tpl
+
+
+def _template_summary(tpl) -> dict:
+    from .sheet_systems import system_meta, system_spec, template_fields
+    spec = system_spec(tpl)
+    return {"id": tpl.id, "name": tpl.name, "description": tpl.description or "", "builtin": bool(tpl.is_builtin),
+            "sheet_mode": tpl.sheet_mode, "world_id": tpl.world_id, "fields": len(template_fields(tpl)),
+            "integration": {"hp": system_meta(tpl)["hp"], "xp": system_meta(tpl)["xp"],
+                            "binds": system_meta(tpl)["binds"], "conditions": len(spec.get("conditions") or []),
+                            "rest": sorted((spec.get("rest") or {}).keys()), "pages": len(spec.get("pages") or []),
+                            "roster": len(spec.get("roster") or [])}}
+
+
+@mcp.tool()
+def list_sheet_templates(ctx: Context, world_id: int) -> list[dict]:
+    """The character-sheet templates usable in a world (built-in systems, then the GM's own): id, name,
+    sheet_mode ("custom" = a whole game system, "nd" = extra fields on the Neon & Dragons sheet), field
+    count and which integrations it has (HP track, XP, name/player binds, conditions, Rest, pages, roster).
+    GM token only."""
+    from .routers.characters import _templates_for_world
+    db = SessionLocal()
+    try:
+        user = _current_user(ctx)
+        _require_gm(user)
+        world = _load_world(db, world_id, user)
+        return [_template_summary(t) for t in _templates_for_world(db, world.id)]
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def get_sheet_template(ctx: Context, template_id: int) -> dict:
+    """One sheet template in full: its fields (id, label, type, section, default_value, options /
+    item_fields, and the vital / xp / binds flags), its own system hooks, the effective system hooks
+    (a built-in system's table overlaid with its own), and its rules text. GM token only."""
+    from .sheet_systems import system_rules_markdown, system_spec, system_spec_public, template_fields
+    db = SessionLocal()
+    try:
+        _user, tpl = _template_for(ctx, db, template_id)
+        return {**_template_summary(tpl), "field_list": template_fields(tpl),
+                "system": system_spec_public(tpl), "effective_system": _json.loads(_json.dumps(system_spec(tpl))),
+                "rules_md": tpl.rules_md or "", "rules": system_rules_markdown(tpl)}
+    finally:
+        db.close()
+
+
+def _unique_template_slug(db, name: str) -> str:
+    from .models import SheetTemplate
+    base = (name.lower().replace(" ", "-"))[:50] or "template"
+    slug, n = base, 1
+    while db.query(SheetTemplate).filter(SheetTemplate.slug == slug).first():
+        slug, n = f"{base}-{n}", n + 1
+    return slug
+
+
+@mcp.tool()
+def create_sheet_template(ctx: Context, world_id: int, name: str, fields: list[dict], description: str = "",
+                          system: Optional[dict] = None, rules_md: str = "") -> dict:
+    """Create a whole custom game system as a character-sheet template in a world (GM token only).
+
+    `fields`: [{id, label, type, section, default_value, ...}] — type is text | textarea | number | select
+    (with `options`) | resource (default_value "cur/max") | list (with `item_fields`: [{id,label,type}]).
+    Flags: `vital: "hp"` on ONE resource (the 'still standing' track party HP bars and Combat use),
+    `xp: true` on number fields that hold experience, `binds: "name" | "player_name"` on a text field
+    that is the character's name / the player's name.
+    `system` (all optional): {conditions: [names], rest: {short: [ops], long: [ops]} with ops
+    ["full"|"empty", resource id], ["add", resource id, n], ["set", field id, value]; pages: [{label, icon,
+    sections: [section names]}]; roster: [[title, [field ids to compare across the party]]]}.
+    `rules_md`: a markdown digest of the system's rules — the AI character creator and sheet reviews follow it.
+    Ids are made safe and unique, impossible flags/references are dropped; the result lists every
+    `warnings` change. Returns the template summary."""
+    from .models import SheetTemplate
+    from .template_draft import clean_template_draft
+    db = SessionLocal()
+    try:
+        user = _current_user(ctx)
+        _require_gm(user)
+        world = _load_world(db, world_id, user)
+        draft, warnings = clean_template_draft({"name": name, "description": description, "fields": fields,
+                                                "system": system or {}, "rules_md": rules_md})
+        if draft is None:
+            raise ValueError("No usable fields: " + "; ".join(warnings[:5]))
+        tpl = SheetTemplate(world_id=world.id, name=draft["name"], slug=_unique_template_slug(db, draft["name"]),
+                            description=draft["description"], is_builtin=False, sheet_mode="custom",
+                            fields_json=_json.dumps(draft["fields"]), system_json=_json.dumps(draft["system"]),
+                            rules_md=draft["rules_md"])
+        db.add(tpl)
+        db.commit()
+        db.refresh(tpl)
+        return {**_template_summary(tpl), "warnings": warnings}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def update_sheet_template(ctx: Context, template_id: int, name: Optional[str] = None,
+                          description: Optional[str] = None, fields: Optional[list[dict]] = None,
+                          system: Optional[dict] = None, rules_md: Optional[str] = None) -> dict:
+    """Change one of the GM's own sheet templates (GM token only; built-in systems are read-only here —
+    copy one with create_sheet_template). Pass only what changes; `fields` / `system` / `rules_md` replace
+    the stored value wholesale and have the same format as create_sheet_template. Changing only `system`
+    is checked against the template's existing fields (their ids are never renamed). Returns the summary
+    plus `warnings`."""
+    from .sheet_systems import clean_system_spec, system_spec_public, template_fields
+    from .template_draft import clean_template_draft
+    db = SessionLocal()
+    try:
+        _user, tpl = _template_for(ctx, db, template_id)
+        if tpl.is_builtin:
+            raise PermissionError("Built-in templates can't be changed over MCP — copy it with create_sheet_template")
+        warnings = []
+        new_name = " ".join((name if name is not None else tpl.name).split())
+        new_desc = description if description is not None else (tpl.description or "")
+        new_rules = (rules_md if rules_md is not None else (tpl.rules_md or ""))
+        if fields is not None:
+            draft, warnings = clean_template_draft({
+                "name": new_name, "description": new_desc, "fields": fields,
+                "system": system if system is not None else system_spec_public(tpl), "rules_md": new_rules})
+            if draft is None:
+                raise ValueError("No usable fields: " + "; ".join(warnings[:5]))
+            tpl.fields_json = _json.dumps(draft["fields"])
+            tpl.system_json = _json.dumps(draft["system"])
+            tpl.name, tpl.description, tpl.rules_md = draft["name"], draft["description"], draft["rules_md"]
+        else:
+            if not new_name:
+                raise ValueError("name can't be empty")
+            spec = system if system is not None else system_spec_public(tpl)
+            cleaned, warnings = clean_system_spec(spec, template_fields(tpl))
+            tpl.system_json = _json.dumps(cleaned)
+            tpl.name, tpl.description = new_name[:80], new_desc.replace("<", "").replace(">", "").strip()[:300]
+            tpl.rules_md = new_rules.replace("\x00", "").strip()[:20000]
+        tpl.updated_at = datetime.utcnow()
+        db.commit()
+        return {**_template_summary(tpl), "warnings": warnings}
+    finally:
+        db.close()

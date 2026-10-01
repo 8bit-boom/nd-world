@@ -25,8 +25,8 @@ from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 from ..sheet_systems import (
-    enrich_fields, field_value_text, parse_custom_fields, resource_tracks, sheet_pages, short_label,
-    system_conditions, system_meta, template_fields,
+    clean_system_spec, enrich_fields, field_value_text, parse_custom_fields, resource_tracks, sheet_pages,
+    short_label, system_conditions, system_meta, system_rules_markdown, system_spec_public, template_fields,
 )
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids
@@ -543,6 +543,23 @@ async def character_create(
 
 # ── Sheet Templates (must come before /{pc_id} routes) ───────────────────────
 
+RULES_MD_CAP = 20000
+
+
+def _system_from_form(form, fields_raw: str) -> tuple:
+    """(system_json string, rules_md) from a template form, cleaned against the submitted fields."""
+    try:
+        fields = json.loads(fields_raw or "[]")
+    except ValueError:
+        fields = []
+    try:
+        raw = json.loads(str(form.get("system_json", "") or "{}"))
+    except ValueError:
+        raw = {}
+    spec, _warnings = clean_system_spec(raw, fields if isinstance(fields, list) else [])
+    return json.dumps(spec), str(form.get("rules_md", "") or "").strip()[:RULES_MD_CAP]
+
+
 @router.get("/characters/templates", response_class=HTMLResponse)
 def template_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -557,7 +574,7 @@ def template_new_form(request: Request, db: Session = Depends(get_db), active_wo
     world, worlds = get_world_ctx(request, db, active_world)
     return templates.TemplateResponse("characters/template_form.html", {
         "request": request, "world": world, "worlds": worlds,
-        "tpl": None, "fields": [],
+        "tpl": None, "fields": [], "system": {},
     })
 
 
@@ -582,10 +599,12 @@ async def template_create(
     n = 1
     while db.query(SheetTemplate).filter(SheetTemplate.slug == slug).first():
         slug = f"{base_slug}-{n}"; n += 1
+    system_json, rules_md = _system_from_form(form, raw_fields)
     tpl = SheetTemplate(
         world_id=world.id if world else None,
         name=name, slug=slug, description=desc,
         is_builtin=False, sheet_mode=sheet_mode, fields_json=raw_fields,
+        system_json=system_json, rules_md=rules_md,
     )
     db.add(tpl)
     db.commit()
@@ -602,7 +621,7 @@ def template_edit_form(tpl_id: int, request: Request, db: Session = Depends(get_
     fields = json.loads(tpl.fields_json or "[]")
     return templates.TemplateResponse("characters/template_form.html", {
         "request": request, "world": world, "worlds": worlds,
-        "tpl": tpl, "fields": fields,
+        "tpl": tpl, "fields": fields, "system": system_spec_public(tpl),
     })
 
 
@@ -626,6 +645,7 @@ async def template_update(
     except Exception:
         raw_fields = "[]"
     tpl.fields_json = raw_fields
+    tpl.system_json, tpl.rules_md = _system_from_form(form, raw_fields)
     tpl.updated_at = datetime.utcnow()
     db.commit()
     return RedirectResponse(f"/characters/templates/{tpl_id}/edit?saved=1", status_code=303)
@@ -648,10 +668,27 @@ def api_template_list(request: Request, db: Session = Depends(get_db), active_wo
     world, _ = get_world_ctx(request, db, active_world)
     tpls = _templates_for_world(db, world.id if world else None)
     return [
-        {"id": t.id, "name": t.name, "is_builtin": t.is_builtin,
-         "fields": json.loads(t.fields_json or "[]")}
+        {"id": t.id, "name": t.name, "is_builtin": t.is_builtin, "sheet_mode": t.sheet_mode,
+         "fields": json.loads(t.fields_json or "[]"), "system": system_spec_public(t),
+         "has_rules": bool(system_rules_markdown(t))}
         for t in tpls
     ]
+
+
+@router.get("/characters/templates/{tpl_id}/export.json")
+def template_export(tpl_id: int, db: Session = Depends(get_db)):
+    """The template as one importable JSON document — fields, the system hooks, the rules text — which
+    /api/import/execute (kind=field_template, template_kind=sheet) turns back into an identical template
+    in any world."""
+    tpl = db.query(SheetTemplate).filter(SheetTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    payload = {"name": tpl.name, "description": tpl.description or "", "sheet_mode": tpl.sheet_mode,
+               "fields": json.loads(tpl.fields_json or "[]"), "system": system_spec_public(tpl),
+               "rules_md": (tpl.rules_md or "")}
+    return StreamingResponse(
+        io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")), media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{_safe_export_filename(tpl.name)}.template.json"'})
 
 
 # ── Sheet ─────────────────────────────────────────────────────────────────────

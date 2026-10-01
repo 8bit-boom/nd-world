@@ -88,6 +88,37 @@ BUILTIN_SYSTEMS = {
 BIND_COLUMNS = ("name", "player_name")
 
 
+def _own_spec(tpl) -> dict:
+    """The template's own `system_json` (conditions / rest / pages / roster …) as a dict, {} when
+    absent or unreadable. Stored cleaned (clean_system_spec), but read defensively anyway."""
+    raw = getattr(tpl, "system_json", None)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def system_spec(tpl) -> dict:
+    """The system hooks that apply to this template: the built-in table entry (a built-in template,
+    by slug) overlaid, key by key, with whatever the template declares itself in `system_json`. This
+    is what gives a GM's own template the same integration — conditions, Rest, pages, roster
+    comparison, even vital / XP / binds — that Hunt in the Moonlight and Asterion get."""
+    spec = {}
+    if tpl is not None and getattr(tpl, "is_builtin", False):
+        spec.update(BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) or {})
+    spec.update({k: v for k, v in _own_spec(tpl).items() if v})
+    return spec
+
+
+def system_spec_public(tpl) -> dict:
+    """The template's OWN stored spec (not the built-in table), JSON-safe — what the editor shows and
+    what export/import carry."""
+    return _own_spec(tpl)
+
+
 def template_fields(tpl) -> list:
     """The template's field definitions as a list of dicts (bad JSON -> [])."""
     try:
@@ -113,15 +144,15 @@ def system_meta(tpl) -> dict:
             meta["binds"][f["id"]] = f["binds"]
         if f.get("xp") and f.get("type") == "number":
             meta["xp"].append(f["id"])
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     if builtin:
-        if meta["hp"] is None and builtin["hp"] in ids:
+        if meta["hp"] is None and builtin.get("hp") in ids:
             meta["hp"] = builtin["hp"]
-        for fid, col in builtin["binds"].items():
+        for fid, col in (builtin.get("binds") or {}).items():
             if fid in ids:
                 meta["binds"].setdefault(fid, col)
         if not meta["xp"]:
-            meta["xp"] = [fid for fid in builtin["xp"] if fid in ids]
+            meta["xp"] = [fid for fid in (builtin.get("xp") or []) if fid in ids]
     return meta
 
 
@@ -141,19 +172,20 @@ def sheet_pages(tpl, section_names: list):
     dropped. Any other template with MIN_SECTIONS_FOR_PAGES+ sections gets one page
     per section."""
     names = list(section_names or [])
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     spec = (builtin or {}).get("pages")
     pages, section_page, cond = [], {}, None
     if spec:
-        for page in spec:
-            mine = [n for n in page["sections"] if n in names]
+        for idx, page in enumerate(spec):
+            pid = page.get("id") or f"p{idx}"
+            mine = [n for n in page.get("sections", []) if n in names]
             if not mine:
                 continue
-            pages.append({"id": page["id"], "label": page["label"], "icon": page.get("icon", "")})
+            pages.append({"id": pid, "label": page.get("label") or pid, "icon": page.get("icon", "")})
             for n in mine:
-                section_page[n] = page["id"]
+                section_page[n] = pid
             if page.get("conditions"):
-                cond = page["id"]
+                cond = pid
         rest = [n for n in names if n not in section_page]
         if rest:
             pages.append({"id": "more", "label": "More", "icon": "➕"})
@@ -173,16 +205,23 @@ _SYSTEMS_DIR = Path(__file__).parent / "game_data" / "systems"
 
 
 def system_rules_markdown(tpl) -> str:
-    """The rules digest of a BUILT-IN custom system (app/game_data/systems/<slug>.md), or ""
-    for a native N&D sheet / a GM's own template — those fall back to the world's rules."""
+    """The rules text an AI should ground a character of this system in: a built-in system's digest
+    (app/game_data/systems/<slug>.md) followed by the template's own `rules_md` (a GM's customisation
+    of a built-in, or the whole text for a template they made). "" for a native N&D sheet, which
+    uses the world's rules."""
+    parts = []
     slug = getattr(tpl, "slug", None) if getattr(tpl, "is_builtin", False) else None
-    if not slug or "/" in slug or "\\" in slug or ".." in slug:
-        return ""
-    path = _SYSTEMS_DIR / f"{slug}.md"
-    try:
-        return path.read_text(encoding="utf-8") if path.is_file() else ""
-    except OSError:
-        return ""
+    if slug and "/" not in slug and "\\" not in slug and ".." not in slug:
+        path = _SYSTEMS_DIR / f"{slug}.md"
+        try:
+            if path.is_file():
+                parts.append(path.read_text(encoding="utf-8").strip())
+        except OSError:
+            pass
+    own = (getattr(tpl, "rules_md", None) or "").strip()
+    if own:
+        parts.append(own)
+    return "\n\n".join(parts)
 
 
 def system_label(tpl, native: bool = False) -> str:
@@ -191,6 +230,147 @@ def system_label(tpl, native: bool = False) -> str:
     if native or tpl is None:
         return "Neon & Dragons"
     return getattr(tpl, "name", None) or "a custom system"
+
+
+# ── a template's own system spec (what a GM — or an AI — can declare) ────────
+
+SPEC_CONDITIONS_CAP, SPEC_REST_OPS_CAP, SPEC_PAGES_CAP = 24, 12, 10
+SPEC_ROSTER_GROUPS_CAP, SPEC_ROSTER_IDS_CAP = 6, 12
+REST_OPS = ("full", "empty", "add", "set")
+_SET_TYPES = ("number", "text", "select")
+_ROSTER_TYPES = ("number", "text", "select")
+
+
+def _clean_rest_op(op, by_id: dict, warnings: list):
+    """One Rest op as a list, or None (with a warning) if it can't work on this template's fields."""
+    if not isinstance(op, (list, tuple)) or len(op) < 2 or op[0] not in REST_OPS:
+        warnings.append(f"ignored a Rest rule that is not [full|empty|add|set, field, …]: {op!r}"[:160])
+        return None
+    name, target = op[0], op[1]
+    f = by_id.get(target) if isinstance(target, str) else None
+    if f is None:
+        warnings.append(f"ignored a Rest rule for the unknown field {target!r}")
+        return None
+    if name in ("full", "empty", "add"):
+        if f.get("type") != "resource":
+            warnings.append(f"ignored Rest '{name}' on {target!r}: only resource fields can be refilled")
+            return None
+        if name != "add":
+            return [name, target]
+        n = _num(op[2]) if len(op) > 2 else 1
+        if not isinstance(n, int) or n <= 0 or n > 999:
+            warnings.append(f"ignored Rest 'add' on {target!r}: the amount must be a whole number")
+            return None
+        return [name, target, n]
+    # set
+    if f.get("type") not in _SET_TYPES or len(op) < 3 or isinstance(op[2], (list, dict, bool)) or op[2] is None:
+        warnings.append(f"ignored Rest 'set' on {target!r}")
+        return None
+    value = op[2] if isinstance(op[2], int) else str(op[2]).strip()[:100]
+    if f.get("type") == "select" and str(value) not in [str(o) for o in (f.get("options") or [])]:
+        warnings.append(f"ignored Rest 'set' on {target!r}: {value!r} is not one of its options")
+        return None
+    return ["set", target, value]
+
+
+def clean_system_spec(raw, fields) -> tuple:
+    """(spec, warnings): a template's `system_json` reduced to what works on its `fields`.
+
+    Accepts conditions (≤24 short names), rest {"short"/"long": [[op, field, value?]…]}, pages
+    [{label, icon, sections[], conditions?}], roster [[title, [field ids]]] and — as an alternative
+    to the per-field flags — hp (a resource id), xp ([number ids]) and binds ({text id: name|
+    player_name}). Anything referring to a field/section the template doesn't have is dropped and
+    reported; a junk value yields {}."""
+    warnings = []
+    if not isinstance(raw, dict):
+        return {}, warnings
+    flist = [f for f in (fields or []) if isinstance(f, dict) and isinstance(f.get("id"), str) and f["id"]]
+    by_id = {f["id"]: f for f in flist}
+    sections = []
+    for f in flist:
+        sec = f.get("section") or "Custom"
+        if sec not in sections:
+            sections.append(sec)
+    spec = {}
+
+    conds = raw.get("conditions")
+    if isinstance(conds, list):
+        out, seen = [], set()
+        for c in conds:
+            c = " ".join(c.split())[:30] if isinstance(c, str) else ""
+            if c and c.lower() not in seen:
+                seen.add(c.lower())
+                out.append(c)
+        if len(out) > SPEC_CONDITIONS_CAP:
+            warnings.append(f"kept the first {SPEC_CONDITIONS_CAP} conditions")
+            out = out[:SPEC_CONDITIONS_CAP]
+        if out:
+            spec["conditions"] = out
+
+    rest = raw.get("rest")
+    if isinstance(rest, dict):
+        clean = {}
+        for kind in ("short", "long"):
+            ops = rest.get(kind)
+            if not isinstance(ops, (list, tuple)):
+                continue
+            good = [o for o in (_clean_rest_op(op, by_id, warnings) for op in ops) if o]
+            if good:
+                clean[kind] = good[:SPEC_REST_OPS_CAP]
+        if clean:
+            spec["rest"] = clean
+
+    pages = raw.get("pages")
+    if isinstance(pages, list):
+        used, out = set(), []
+        for page in pages[:SPEC_PAGES_CAP * 2]:
+            if not isinstance(page, dict) or not isinstance(page.get("sections"), list):
+                continue
+            mine = []
+            for sec in page["sections"]:
+                if isinstance(sec, str) and sec in sections and sec not in used:
+                    mine.append(sec)
+                    used.add(sec)
+                elif isinstance(sec, str):
+                    warnings.append(f"page section {sec!r} is unknown or already on another page")
+            if not mine:
+                continue
+            label = " ".join(str(page.get("label") or "").split())[:24] or mine[0][:24]
+            out.append({"id": f"p{len(out)}", "label": label, "icon": str(page.get("icon") or "")[:4], "sections": mine,
+                        "conditions": bool(page.get("conditions")) and not any(p["conditions"] for p in out)})
+        if len(out) >= 2:
+            spec["pages"] = out[:SPEC_PAGES_CAP]
+        elif out:
+            warnings.append("a single page is the same as no pages; ignored")
+
+    roster = raw.get("roster")
+    if isinstance(roster, list):
+        out = []
+        for grp in roster[:SPEC_ROSTER_GROUPS_CAP * 2]:
+            if not isinstance(grp, (list, tuple)) or len(grp) != 2 or not isinstance(grp[1], (list, tuple)):
+                continue
+            ids = [i for i in grp[1] if isinstance(i, str) and i in by_id and by_id[i].get("type") in _ROSTER_TYPES]
+            if len(ids) != len([i for i in grp[1] if isinstance(i, str)]):
+                warnings.append("some roster fields were dropped (unknown, or resources, which are always compared)")
+            if ids:
+                out.append([" ".join(str(grp[0] or "Sheet").split())[:30] or "Sheet", ids[:SPEC_ROSTER_IDS_CAP]])
+        if out:
+            spec["roster"] = out[:SPEC_ROSTER_GROUPS_CAP]
+
+    hp = raw.get("hp")
+    if isinstance(hp, str) and by_id.get(hp, {}).get("type") == "resource":
+        spec["hp"] = hp
+    xp = raw.get("xp")
+    if isinstance(xp, list):
+        ids = [i for i in xp if isinstance(i, str) and by_id.get(i, {}).get("type") == "number"]
+        if ids:
+            spec["xp"] = ids
+    binds = raw.get("binds")
+    if isinstance(binds, dict):
+        ok = {k: v for k, v in binds.items() if by_id.get(k, {}).get("type") == "text" and v in BIND_COLUMNS}
+        if ok:
+            spec["binds"] = ok
+    return spec, warnings
 
 
 # ── AI-drafted sheets ────────────────────────────────────────────────────────
@@ -337,7 +517,7 @@ def roster_field_groups(tpl) -> list:
     any other template gets its first number/select fields under "Sheet", capped."""
     fields = [f for f in template_fields(tpl) if isinstance(f, dict)]
     by_id = {f.get("id"): f for f in fields}
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     out = []
     if builtin and builtin.get("roster"):
         for title, ids in builtin["roster"]:
@@ -523,7 +703,7 @@ def system_conditions(tpl) -> list:
     set for a GM's custom system (they can always add their own)."""
     if tpl is None:
         return list(ND_CONDITIONS)
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     if builtin and builtin.get("conditions"):
         return list(builtin["conditions"])
     if getattr(tpl, "sheet_mode", "nd") != "custom":
@@ -536,7 +716,7 @@ def rest_ops(tpl, kind: str = "long") -> list:
     ("add", resource, n) tops it up, ("empty", resource) zeroes its current value,
     ("set", field, value) writes a plain field. `kind` is "short" or "long"; a
     system with a single Rest lists only "long" and a short one falls back to it."""
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     spec = (builtin or {}).get("rest") or {}
     return list(spec.get(kind) or spec.get("long") or [])
 
@@ -544,7 +724,7 @@ def rest_ops(tpl, kind: str = "long") -> list:
 def rest_touched_keys(tpl) -> set:
     """Every custom-field key a Rest of this system can change (either kind) — what
     Undo is allowed to put back, and nothing more."""
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     keys = set()
     for ops in ((builtin or {}).get("rest") or {}).values():
         for op in ops:
@@ -557,7 +737,7 @@ def rest_touched_keys(tpl) -> set:
 
 def has_short_rest(tpl) -> bool:
     """True when the built-in system defines a Short Rest distinct from its Rest."""
-    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    builtin = system_spec(tpl)
     return bool(((builtin or {}).get("rest") or {}).get("short"))
 
 

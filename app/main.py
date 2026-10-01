@@ -45,6 +45,7 @@ from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
 from .routers.character_ai import router as character_ai_router
+from .routers.template_ai import router as template_ai_router
 from .routers.character_hub import router as character_hub_router
 from .routers.characters import _pc_to_foundry_journal
 from .routers.auth import router as auth_router
@@ -149,6 +150,7 @@ app.include_router(account_router)
 # paths would otherwise be swallowed by characters.py's /characters/{pc_id}
 # (registered first wins, and {pc_id}:int then 422s on "ai-new").
 app.include_router(character_ai_router)
+app.include_router(template_ai_router)
 app.include_router(characters_router)
 app.include_router(character_hub_router)
 app.include_router(auth_router)

@@ -276,11 +276,15 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/characters/templates` | GM | List of Sheet Templates. |
 | GET | `/characters/templates/new` | GM | New-template form. |
-| POST | `/characters/templates/new` | GM | Creates a template — either extends the N&D sheet with extra sections, or fully replaces it with a custom field set. |
+| POST | `/characters/templates/new` | GM | Creates a template — either extends the N&D sheet with extra sections, or fully replaces it with a custom field set. Besides `name`/`description`/`sheet_mode`/`fields_json` it takes `system_json` (the system hooks: `conditions`, `rest` {short,long}, `pages`, `roster`, plus `hp`/`xp`/`binds` as an alternative to the per-field `vital`/`xp`/`binds` flags) and `rules_md` (a rules digest the AI follows). Both are cleaned against the submitted fields before they are stored (unknown references dropped), so a GM-made system gets the same integration as a built-in one. |
 | GET | `/characters/templates/{tpl_id}/edit` | GM | Edit form. |
-| POST | `/characters/templates/{tpl_id}/edit` | GM | Saves template edits. |
+| POST | `/characters/templates/{tpl_id}/edit` | GM | Saves template edits (same `system_json` / `rules_md` handling as create). |
+| GET | `/characters/templates/{tpl_id}/export.json` | GM | The template as one importable document `{name, description, sheet_mode, fields, system, rules_md}`; `/api/import/execute` (kind `field_template`, `template_kind` sheet) recreates it identically in any world. |
+| GET | `/characters/templates/ai-new` | GM | "Draft a character sheet from a rulebook": system name, pasted rules and/or an uploaded rulebook (PDF/MD/TXT/JSON) and/or the world's own rules, optional wishes; the review shows the fields, the integration (HP track, XP, name/player binds, conditions, Rest, pages, roster) and the rules digest, and Create posts to `/characters/templates/new`. |
+| POST | `/api/sheet-templates/ai/start` | GM | Starts a template draft. Form: `rules_text`, `file`, `use_world_rules`, `system_name`, `wishes`, `think`. A long book is read in pieces (≤ 6000 chars each, the ≤ 14 most sheet-relevant parts) into short notes, then ONE drafting call produces `{name, description, fields, system, rules_md}`; the model's JSON goes through `app/template_draft.clean_template_draft` (safe unique ids, known types, selects with options, one HP track, system references remapped/dropped) and every change comes back as a warning. Nothing is saved. Returns `{job_id}`; 400 for no input / no AI backend / unreadable file. |
+| GET | `/api/sheet-templates/ai/{job_id}` | GM | Polls the draft job: `running` (`elapsed`, `progress`), `done` (`draft`, `warnings`, `parts_read`, `parts_total`) or `error`. |
 | POST | `/characters/templates/{tpl_id}/delete` | GM | Deletes a template. |
-| GET | `/api/characters/templates` | Player | JSON list of templates, for the creation wizard's "create with this template" flow. |
+| GET | `/api/characters/templates` | Player | JSON list of templates, for the creation wizard's "create with this template" flow (each with `sheet_mode`, its own `system` hooks and `has_rules`). |
 
 ## Races & Professions
 
@@ -999,6 +1003,10 @@ Every tool resolves the calling user from the bearer token and applies the exact
 | `award_character_xp(character_id, amount)` | GM | XP to a native sheet, or to a custom system's own XP / Glory fields (Hunt in the Moonlight: Current + Lifetime XP; Asterion: Glory). |
 | `list_parties(world_id)` | Player | Parties with member names; a player token sees parties it is in (all when `players_see_party`). Needs the Parties section. |
 | `get_party(party_id)` | Player | A party's members (system + live state each), goals and shared loot. |
+| `list_sheet_templates(world_id)` | GM | The character-sheet templates usable in a world (built-in systems, then the GM's own): `sheet_mode`, field count and which integrations each has (HP track, XP, name/player binds, conditions, Rest, pages, roster). |
+| `get_sheet_template(template_id)` | GM | One template in full: `field_list`, its own `system` hooks, the `effective_system` (a built-in's table overlaid with its own) and its rules text. |
+| `create_sheet_template(world_id, name, fields, description?, system?, rules_md?)` | GM | Creates a whole custom game system. The proposal is run through the same validator as the in-app "Draft with AI" (`app/template_draft.py`): ids made safe and unique, impossible flags/references dropped, every change returned as `warnings`. Always `sheet_mode` custom. |
+| `update_sheet_template(template_id, name?, description?, fields?, system?, rules_md?)` | GM | Changes one of the GM's own templates (built-ins are read-only here). `fields`/`system`/`rules_md` replace the stored value; a `system`-only change is checked against the existing fields, whose ids are never renamed. |
 | `rest_party(party_id, kind?)` | GM | Rest for every member by their own system's rules (`short`/`long`): N&D half PP/MP + all Shock; Hunt in the Moonlight Stamina/Strain; Asterion Spark Shield/Ichor/Flesh. |
 | `list_tables(world_id)` | GM | Random tables available to the world (own + built-ins) with entry counts. |
 | `roll_table(table_id, times?)` | GM | Weighted roll, same mechanics as the UI's Roll button. |

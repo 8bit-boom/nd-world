@@ -794,9 +794,18 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
             n = 1
             while db.query(SheetTemplate).filter(SheetTemplate.slug == slug).first():
                 slug = f"{base_slug}-{n}"; n += 1
+            # A full template document (from the template export, or an AI/MCP-authored one) also
+            # carries its system hooks and rules text; both are cleaned against the fields exactly as
+            # the editor does, so a hostile or sloppy file can't store anything that doesn't apply.
+            own = data if isinstance(data, dict) else {}
+            from ..sheet_systems import clean_system_spec
+            spec, _warn = clean_system_spec(own.get("system"), fields)
+            if not params.get("sheet_mode") and own.get("sheet_mode") in ("nd", "custom"):
+                sheet_mode = own["sheet_mode"]
             t = SheetTemplate(
                 world_id=world.id, name=name, slug=slug, description=description,
                 is_builtin=False, sheet_mode=sheet_mode, fields_json=json.dumps(fields),
+                system_json=json.dumps(spec), rules_md=str(own.get("rules_md") or "").strip()[:20000],
             )
             db.add(t)
             db.commit()

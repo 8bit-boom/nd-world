@@ -1033,6 +1033,10 @@ def _migrate():
             tpl_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sheet_templates)")).fetchall()]
             if "sheet_mode" not in tpl_cols:
                 conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN sheet_mode VARCHAR(16) DEFAULT 'nd'"))
+            if "system_json" not in tpl_cols:
+                conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN system_json TEXT DEFAULT '{}'"))
+            if "rules_md" not in tpl_cols:
+                conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN rules_md TEXT DEFAULT ''"))
         # world_memberships table — the GM-Assistant role column (see
         # WorldMembership.role in app/models.py). world_memberships is not in
         # the _heal_table_from_model list below (it predates that helper),

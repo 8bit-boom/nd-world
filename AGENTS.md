@@ -116,6 +116,15 @@ tools that require GM access still check `is_gm` at call time.)
   name lands on a trailing "More" page (a section is never hidden), other templates
   with 4+ sections get a page per section. Editing a character is a *partial* update
   (`_apply_form(..., partial=True)`): only keys the form sent are written.
+- **A GM's own sheet template is a full system, same as a built-in**: `SheetTemplate.system_json` (conditions,
+  Rest ops, pages, roster groups, optional hp/xp/binds) + `rules_md` are read through `sheet_systems.system_spec(tpl)`
+  — the built-in table overlaid with the template's own — and are always stored through `clean_system_spec`
+  (references to missing fields dropped). `app/template_draft.py` is the validator for anything an AI proposes
+  (`clean_template_draft`: safe unique ids with system references remapped, known types, one HP track…) and the
+  rulebook chunker; it backs the "Draft with AI" page (`app/routers/template_ai.py`) and the MCP tools
+  `create_sheet_template` / `update_sheet_template`, so never store a model-written template without it.
+- **Small image boxes use the thumbnail**: `{{ url|thumb }}` for `src` and `data-full="{{ url }}"` for the original
+  (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
 - **Second screen** (`app/routers/display.py`, `templates/display.html`, `static/js/nd-stage.js`): a GM-only
   `/display` window for a second monitor plus "send to screen" actions (hover any image, the lightbox, any
   text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It
