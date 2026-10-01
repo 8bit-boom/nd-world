@@ -1,0 +1,120 @@
+{% if can_manage %}
+<!-- ── "Analyze with AI": a local-model review of THIS sheet, shown to the
+     owner and the GM (the same people POST /api/characters/{id}/analyze
+     accepts). Read-only advice — nothing on the sheet changes. Included by
+     both sheet renderers, right after the hub tab bar, so on a non-Sheet hub
+     tab it is hidden along with the rest of the sheet. ── -->
+<style>
+#pc-ai { max-width:1100px; margin:0 auto 1rem; }
+#pc-ai details { background:var(--bg2); border:1px solid var(--border); border-radius:6px; }
+#pc-ai summary { cursor:pointer; padding:.6rem .9rem; font-size:.85rem; color:var(--neon); }
+#pc-ai .pcai-body { padding:.2rem .9rem .9rem; }
+#pc-ai .pcai-controls { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom:.6rem; }
+#pc-ai label { font-size:.8rem; color:var(--text-dim); display:inline-flex; align-items:center; gap:.35rem; }
+#pc-ai select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .45rem; border-radius:4px; font-family:var(--font); font-size:16px; }
+#pc-ai button { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.35rem .9rem; border-radius:4px; cursor:pointer; font-family:var(--font); font-size:.82rem; }
+#pc-ai button:disabled { opacity:.5; cursor:default; }
+#pc-ai .pcai-status { font-size:.78rem; color:var(--text-dim); }
+#pc-ai .pcai-err { color:var(--neon2); font-size:.82rem; }
+#pc-ai h4 { margin:.9rem 0 .3rem; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); font-weight:normal; }
+#pc-ai ul { margin:0; padding-left:1.1rem; font-size:.85rem; }
+#pc-ai li { margin:.25rem 0; }
+#pc-ai .pcai-verdict { font-size:.92rem; margin:.4rem 0; }
+#pc-ai .pcai-sev { display:inline-block; font-size:.62rem; padding:.05rem .4rem; border-radius:10px; margin-right:.4rem; border:1px solid var(--border); text-transform:uppercase; }
+#pc-ai .pcai-sev.error { border-color:var(--neon2); color:var(--neon2); }
+#pc-ai .pcai-sev.warn { border-color:#da4; color:#da4; }
+</style>
+<div id="pc-ai" data-pc-id="{{ pc.id }}" data-is-gm="{{ 1 if request.state.user and request.state.user.is_gm else 0 }}">
+  <details>
+    <summary>🧠 Analyze this character with the local AI</summary>
+    <div class="pcai-body">
+      <div class="pcai-controls">
+        <label>Focus
+          <select id="pcai-focus">
+            <option value="overview">Overall review</option>
+            <option value="rules">Rules check</option>
+            <option value="next_steps">Next steps &amp; hooks</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="pcai-think" checked/> Think deeply (slower, better)</label>
+        {% if request.state.user and request.state.user.is_gm %}
+        <label><input type="checkbox" id="pcai-rag" checked/> Use world lore</label>
+        {% endif %}
+        <button type="button" id="pcai-run">Analyze</button>
+        <span class="pcai-status" id="pcai-status"></span>
+      </div>
+      <div id="pcai-result"></div>
+      <p class="pcai-status" style="margin:.6rem 0 0">Advice only — it reads this sheet and your world's rules, and changes nothing. Always sanity-check it against the rulebook.</p>
+    </div>
+  </details>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('pc-ai');
+  if (!root) return;
+  const PC_ID = root.dataset.pcId;
+  const $ = id => document.getElementById(id);
+  const runBtn = $('pcai-run'), status = $('pcai-status'), out = $('pcai-result');
+
+  function h(tag, cls, text) {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;   // text only: model output is never parsed as HTML
+    return el;
+  }
+  function list(title, items, render) {
+    if (!items || !items.length) return null;
+    const wrap = document.createDocumentFragment();
+    wrap.append(h('h4', '', title));
+    const ul = h('ul');
+    items.forEach(i => { const li = h('li'); render(li, i); ul.append(li); });
+    wrap.append(ul);
+    return wrap;
+  }
+  function render(r) {
+    out.replaceChildren();
+    if (r.verdict) out.append(h('p', 'pcai-verdict', r.verdict));
+    [list('Strengths', r.strengths, (li, t) => li.textContent = t),
+     list('Issues', r.issues, (li, i) => { li.append(h('span', 'pcai-sev ' + i.severity, i.severity), document.createTextNode(i.text)); }),
+     list('Suggestions', r.suggestions, (li, t) => li.textContent = t)]
+      .forEach(n => n && out.append(n));
+  }
+  function fail(msg) {
+    out.replaceChildren(h('div', 'pcai-err', msg));
+    status.textContent = '';
+    runBtn.disabled = false;
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  runBtn.addEventListener('click', async () => {
+    runBtn.disabled = true;
+    out.replaceChildren();
+    status.textContent = 'Starting…';
+    try {
+      const fd = new FormData();
+      fd.append('focus', $('pcai-focus').value);
+      fd.append('think', $('pcai-think').checked ? 'true' : 'false');
+      if ($('pcai-rag')) fd.append('use_rag', $('pcai-rag').checked ? 'true' : 'false');
+      const start = await fetch('/api/characters/' + PC_ID + '/analyze', { method: 'POST', body: fd });
+      const sd = await start.json().catch(() => ({}));
+      if (!start.ok) return fail(sd.detail || ('HTTP ' + start.status));
+      // Thinking-mode generations can take minutes: poll rather than hold one
+      // request open past a proxy's idle timeout.
+      for (let i = 0; i < 300; i++) {
+        await sleep(i < 5 ? 1500 : 3000);
+        const r = await fetch('/api/characters/' + PC_ID + '/analyze/' + sd.job_id);
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return fail(d.detail || ('HTTP ' + r.status));
+        if (d.status === 'running') { status.textContent = 'Thinking… ' + (d.elapsed || 0) + 's'; continue; }
+        if (d.status === 'error') return fail(d.error || 'The analysis failed.');
+        status.textContent = '';
+        render(d.result);
+        runBtn.disabled = false;
+        return;
+      }
+      fail('Timed out waiting for the AI — try again, or untick "Think deeply".');
+    } catch (e) { fail(e.message); }
+  });
+})();
+</script>
+{% endif %}

@@ -2,6 +2,7 @@
 {% block title %}{{ pc.name if pc else 'New Character' }} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 {% include 'characters/_player_hub.html' %}
+{% include 'characters/_sheet_ai.html' %}
 <style>
 .cx { max-width:900px; margin:0 auto; }
 .cx-actions { display:flex;gap:.5rem;justify-content:flex-end;margin-bottom:1rem;flex-wrap:wrap; }
