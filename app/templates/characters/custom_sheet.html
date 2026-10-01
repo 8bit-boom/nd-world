@@ -111,8 +111,15 @@
     </div>
   </div>
 
+  {% if sheet_pages %}
+  {% set nav_pages = sheet_pages.pages %}
+  {% set nav_key = ('pc-' ~ pc.id) if pc else ('new-' ~ (chosen_template.slug if chosen_template else 'x')) %}
+  {% include 'characters/_sheet_pages_nav.html' %}
+  {% endif %}
+
   {% for section_name, fields in sections %}
-  <div class="cx-section">
+  {% set _pid = sheet_pages.section_page[section_name] if sheet_pages else None %}
+  <div class="cx-section{% if _pid and _pid == sheet_pages.pages[0].id %} page-on{% endif %}"{% if _pid %} data-sheet-page="{{ _pid }}"{% endif %}>
     <div class="cx-section-title">{{ section_name }}</div>
     <div class="cx-field-grid">
       {% for f in fields %}
@@ -163,7 +170,7 @@
   {% endfor %}
 
   {% if linked_sheets %}
-  <div class="cx-section">
+  <div class="cx-section{% if sheet_pages and sheet_pages.linked == sheet_pages.pages[0].id %} page-on{% endif %}"{% if sheet_pages %} data-sheet-page="{{ sheet_pages.linked }}"{% endif %}>
     <div class="cx-section-title">🧬 Character Sheets</div>
     {% for s in linked_sheets %}
     <div style="display:flex;align-items:center;gap:.6rem;padding:.3rem 0">
@@ -175,7 +182,10 @@
   </div>
   {% endif %}
 
-  {% if pc %}{% include 'characters/_conditions.html' %}{% endif %}
+  {% if pc %}
+  {% if sheet_pages %}<div class="sp-block{% if sheet_pages.conditions == sheet_pages.pages[0].id %} page-on{% endif %}" data-sheet-page="{{ sheet_pages.conditions }}">{% include 'characters/_conditions.html' %}</div>
+  {% else %}{% include 'characters/_conditions.html' %}{% endif %}
+  {% endif %}
 
   {% if can_manage %}
   <input type="hidden" name="custom_fields_json" id="custom_fields_json"/>

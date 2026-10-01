@@ -1937,3 +1937,28 @@ textarea[data-fmt].fmt-drag-over {
   .mp .cf-dynamic-table td[data-check] { flex-direction: row; align-items: center; gap: .5rem; }
   .mp .cf-dynamic-table td[data-check]::before { order: 2; }
 }
+
+/* ── Sheet pages ─────────────────────────────────────────────────────────────
+   The Sheet tab is split into pages (characters/_sheet_pages_nav.html + static/js/
+   sheet-pages.js). Blocks carry data-sheet-page; the first page is server-rendered
+   .page-on. The strip and the hiding only exist once the script has put .sheet-paged
+   on the sheet, so without JS everything simply shows. "All" and printing add
+   .show-all. */
+.sheet-pages { display: none; }
+.sheet-paged .sheet-pages {
+  display: flex; gap: .15rem; overflow-x: auto; margin: 0 0 1rem;
+  border-bottom: 1px solid var(--border); scrollbar-width: thin; -webkit-overflow-scrolling: touch;
+}
+.sheet-pages button {
+  flex: 0 0 auto; background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  color: var(--text-dim); padding: .55rem .95rem; cursor: pointer; font-family: var(--font); font-size: .85rem;
+  white-space: nowrap;
+}
+.sheet-pages button:hover { color: var(--text); }
+.sheet-pages button[aria-selected="true"] { color: var(--neon); border-bottom-color: var(--neon); }
+.sheet-pages button:focus-visible { outline: 2px solid var(--neon); outline-offset: -2px; }
+.sheet-paged:not(.show-all) [data-sheet-page]:not(.page-on) { display: none !important; }
+@media print { .sheet-pages { display: none !important; } }
+@media (max-width: 768px) {
+  .mp .sheet-pages button { min-height: 44px; padding-inline: 1rem; font-size: .88rem; }
+}

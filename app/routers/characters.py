@@ -25,7 +25,8 @@ from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 from ..sheet_systems import (
-    enrich_fields, parse_custom_fields, resource_tracks, system_conditions, system_meta, template_fields,
+    enrich_fields, parse_custom_fields, resource_tracks, sheet_pages, system_conditions, system_meta,
+    template_fields,
 )
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids
@@ -454,7 +455,8 @@ def character_new_form(
             "pc": None, "can_manage": True,
             "chosen_template": chosen_tpl,
             # fields that mirror a character column (Hunter Name = name) aren't asked for twice
-            "sections": _group_by_section([f for f in tpl_fields if not f.get("binds")]),
+            "sections": (new_sections := _group_by_section([f for f in tpl_fields if not f.get("binds")])),
+            "sheet_pages": sheet_pages(chosen_tpl, [name for name, _ in new_sections]),
             "tpl_fields": tpl_fields,
             "custom_fields": {},
         })
@@ -708,7 +710,8 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "conditions": _pc_condition_list(pc),
             "condition_presets": system_conditions(chosen_tpl),
             "chosen_template": chosen_tpl,
-            "sections": _group_by_section([f for f in tpl_fields if not f.get("binds")]),
+            "sections": (shown_sections := _group_by_section([f for f in tpl_fields if not f.get("binds")])),
+            "sheet_pages": sheet_pages(chosen_tpl, [name for name, _ in shown_sections]),
             "tpl_fields": tpl_fields,
             "custom_fields": custom_fields,
             "world_members": world_members,

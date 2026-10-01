@@ -238,6 +238,16 @@
     </div>
   </div>
 
+  {# The Sheet tab is split into pages so nobody scrolls the whole sheet (see _sheet_pages_nav.html). #}
+  {% set has_story = pc.backstory or pc.notes or linked_sheets or tpl_fields %}
+  {% set nav_pages = [{'id': 'overview', 'label': 'Overview', 'icon': '📋'},
+                      {'id': 'gear', 'label': 'Feats & gear', 'icon': '🎒'}]
+                     + ([{'id': 'story', 'label': 'Story', 'icon': '📖'}] if has_story else [])
+                     + [{'id': 'dice', 'label': 'Dice', 'icon': '🎲'}] %}
+  {% set nav_key = 'pc-' ~ pc.id %}
+  {% include 'characters/_sheet_pages_nav.html' %}
+
+  <div class="sp-block page-on" data-sheet-page="overview">
   <!-- Stats: Physical | Mental -->
   <div class="cs-stats-row">
     <div class="cs-stats-panel">
@@ -383,6 +393,9 @@
   <!-- Conditions (persisted) -->
   {% include 'characters/_conditions.html' %}
 
+  </div><!-- /overview page -->
+
+  <div class="sp-block" data-sheet-page="gear">
   <!-- Two-column body: Feats | Equipment -->
   <div class="cs-body">
     <!-- Feats -->
@@ -466,6 +479,9 @@
   </div>
   {% endif %}
 
+  </div><!-- /gear page -->
+
+  <div class="sp-block" data-sheet-page="story">
   <!-- Backstory / Notes -->
   {% if pc.backstory %}
   <div class="cs-prose">
@@ -529,6 +545,9 @@
   </div>
   {% endif %}
 
+  </div><!-- /story page -->
+
+  <div class="sp-block" data-sheet-page="dice">
   <!-- Dice Roller -->
   <div class="cs-dice-section">
     <div class="cs-panel-title">Dice Roller</div>
@@ -553,6 +572,7 @@
       <p style="color:var(--text-dim);font-size:.8rem;text-align:center;">Roll the dice to see results here.</p>
     </div>
   </div>
+  </div><!-- /dice page -->
 </div>
 
 <script>

@@ -37,6 +37,17 @@ BUILTIN_SYSTEMS = {
         "xp": ["xpCurrent", "xpLifetime"],
         "conditions": ["Bleeding", "Burning", "Blinded", "Marked", "Prone", "Restrained", "Stunned", "Weakened", "Vulnerable"],
         "rest": {"long": [("full", "stamina"), ("set", "strain", "0"), ("set", "staminaSpent", 0)]},
+        "pages": [
+            {"id": "hunter", "label": "Hunter", "icon": "🧍", "sections": ["Identity"]},
+            {"id": "oath", "label": "Oath", "icon": "🗡", "sections": ["Hunter's Oath"]},
+            {"id": "status", "label": "Status", "icon": "❤", "conditions": True,
+             "sections": ["Core Tracks", "Wounds", "Marks & Crows", "Experience"]},
+            {"id": "abilities", "label": "Abilities", "icon": "⚔",
+             "sections": ["Abilities", "Moon-Gifts & Occult Rites", "Body Modifications"]},
+            {"id": "loadout", "label": "Loadout", "icon": "🎒",
+             "sections": ["Hunter Tools & Loadout", "Mounts & Companions"]},
+            {"id": "log", "label": "Hunt log", "icon": "🌙", "sections": ["Moon Calendar", "Session Record", "Notes"]},
+        ],
     },
     # Asterion (Game of Gods rules). Short Rest: Spark Shield full + 2 Ichor.
     # Long Rest: all Flesh and all Ichor.
@@ -49,6 +60,14 @@ BUILTIN_SYSTEMS = {
             "short": [("full", "sparkShield"), ("add", "ichor", 2)],
             "long": [("full", "sparkShield"), ("full", "flesh"), ("full", "ichor")],
         },
+        "pages": [
+            {"id": "hero", "label": "Hero", "icon": "🧍", "conditions": True, "sections": ["Identity", "Core Stats"]},
+            {"id": "powers", "label": "Powers", "icon": "⚔", "sections": ["Abilities", "Progression"]},
+            {"id": "inventory", "label": "Inventory", "icon": "🎒", "sections": ["Inventory & Equipment"]},
+            {"id": "domain", "label": "Domain", "icon": "🏛", "sections": ["Domain", "Followers"]},
+            {"id": "journal", "label": "Journal", "icon": "📜",
+             "sections": ["Campaign Log", "Relationships & Allies", "Notes"]},
+        ],
     },
     # Neon & Dragons Player's Guide: the native sheet keeps HP/Shock/PP/MP in columns
     # (party Rest handles those); the template adds the guide's stim limit.
@@ -97,6 +116,50 @@ def system_meta(tpl) -> dict:
         if not meta["xp"]:
             meta["xp"] = [fid for fid in builtin["xp"] if fid in ids]
     return meta
+
+
+# A custom template with at least this many sections gets a page per section when its
+# built-in system doesn't say how to group them; shorter ones stay a single scroll.
+MIN_SECTIONS_FOR_PAGES = 4
+
+
+def sheet_pages(tpl, section_names: list):
+    """How a custom sheet's sections are grouped into the pages of its Sheet tab.
+
+    Returns None (one long page) or {"pages": [{id, label, icon}], "section_page":
+    {section name: page id}, "conditions": page id, "linked": page id}. A built-in
+    system lists its own groups (BUILTIN_SYSTEMS[slug]["pages"]); any section the
+    template has that no group names — the GM added one, or renamed one — goes on a
+    trailing "More" page, so nothing is ever hidden. Groups with no sections left are
+    dropped. Any other template with MIN_SECTIONS_FOR_PAGES+ sections gets one page
+    per section."""
+    names = list(section_names or [])
+    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    spec = (builtin or {}).get("pages")
+    pages, section_page, cond = [], {}, None
+    if spec:
+        for page in spec:
+            mine = [n for n in page["sections"] if n in names]
+            if not mine:
+                continue
+            pages.append({"id": page["id"], "label": page["label"], "icon": page.get("icon", "")})
+            for n in mine:
+                section_page[n] = page["id"]
+            if page.get("conditions"):
+                cond = page["id"]
+        rest = [n for n in names if n not in section_page]
+        if rest:
+            pages.append({"id": "more", "label": "More", "icon": "➕"})
+            for n in rest:
+                section_page[n] = "more"
+    elif len(names) >= MIN_SECTIONS_FOR_PAGES:
+        for i, n in enumerate(names):
+            pages.append({"id": f"s{i}", "label": n, "icon": ""})
+            section_page[n] = f"s{i}"
+    if len(pages) < 2:
+        return None
+    return {"pages": pages, "section_page": section_page,
+            "conditions": cond or pages[0]["id"], "linked": pages[-1]["id"]}
 
 
 def enrich_fields(tpl) -> list:

@@ -98,7 +98,12 @@ tools that require GM access still check `is_gm` at call time.)
   Rest go through it, never through raw `custom_fields_json` guesses). Built-in
   sheet templates are re-synced by `_upgrade_builtin_sheet_fields` in
   `app/database.py`: an untouched old row is replaced, a GM-customised one is kept,
-  and field ids are never removed. Editing a character is a *partial* update
+  and field ids are never removed. The Sheet tab is split into pages (a strip under
+  the header, `static/js/sheet-pages.js`; blocks carry `data-sheet-page`):
+  `sheet_systems.sheet_pages()` groups a custom template's sections — a built-in
+  system lists its own groups in `BUILTIN_SYSTEMS[slug]["pages"]`, anything it doesn't
+  name lands on a trailing "More" page (a section is never hidden), other templates
+  with 4+ sections get a page per section. Editing a character is a *partial* update
   (`_apply_form(..., partial=True)`): only keys the form sent are written.
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before

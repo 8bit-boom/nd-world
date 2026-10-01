@@ -537,6 +537,14 @@ a sheet-specific rendering treatment; `list` works identically to
 `EntityTemplate`'s (`item_fields` sub-schema, same `custom_fields_json`
 shape: `{field_id: [{sub_id: value}, ...]}`).
 
+**`section` and the Sheet tab's pages.** In `custom` mode the character page shows a
+strip of pages under the header so a long sheet isn't one endless scroll. Fields are
+grouped by `section` (first-appearance order); a template with **4 or more sections**
+gets one page per section (plus an **All** view), so keep related fields under one
+`section` name and don't scatter a topic across many tiny ones. The bundled Hunt in the
+Moonlight and Asterion templates define their own groupings (several sections per
+page); sections you add to those land on a trailing **More** page and are never hidden.
+
 ### Built-in templates
 
 **`nd-default`** — `sheet_mode: "nd"`, `fields_json: []` (no extra fields;

@@ -217,3 +217,10 @@ How it works — one scope, no per-page forks:
 New pages under characters/ or parties/ should set `main_attrs` the same way;
 `tests/test_phone_layout.py` pins the wiring (scope class on every page, the folded menu's
 DOM nesting, row labels, the CSS rules themselves).
+
+The Sheet tab's length (14 stacked sections on a Hunt in the Moonlight sheet) is handled by
+**sheet pages** rather than phone-only CSS: a scrollable page strip under the header (44px
+targets under `.mp`), the first page server-rendered visible, last page remembered per
+character, an **All** chip for the long view and everything expanded for print. The strip
+never touches form fields — hidden pages stay in the DOM, so Save still submits them all.
+

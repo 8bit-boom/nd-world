@@ -1,0 +1,11 @@
+{# The Sheet tab's page strip (used by sheet.html and custom_sheet.html). Expects nav_pages
+   [{id, label, icon}] and nav_key (where the last-used page is remembered). Blocks of the
+   sheet carry data-sheet-page="<id>"; the first page's blocks are server-rendered with
+   .page-on so there is no flash of the long sheet. Without JS the strip stays hidden and
+   every block shows (the .sheet-paged class is only ever added by the script below). #}
+<nav class="sheet-pages" id="sheet-pages" data-key="{{ nav_key }}" role="tablist" aria-label="Sheet pages">
+  {% for p in nav_pages %}<button type="button" role="tab" data-sp="{{ p.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{% if p.icon %}{{ p.icon }} {% endif %}{{ p.label }}</button>{% endfor %}
+  <button type="button" role="tab" data-sp="all" aria-selected="false" title="Show every page at once — also what printing uses">All</button>
+</nav>
+<script>document.getElementById('sheet-pages').closest('.cs, .cx').classList.add('sheet-paged');</script>
+<script src="/static/js/sheet-pages.js?v={{ asset_v('js/sheet-pages.js') }}" defer></script>
