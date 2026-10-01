@@ -611,3 +611,8 @@ async def test_mcp_get_entity_blocked_by_kind_section():
     # GM unaffected
     gm_token = _issue_token(ids["gm_id"], "gm")
     assert not (await _call(gm_token, "get_entity", {"entity_id": eid})).isError
+
+
+# Character & party tool cases live in their own file but must run in THIS module (shared event loop).
+from .mcp_character_cases import *  # noqa: E402,F401,F403
+

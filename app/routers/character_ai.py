@@ -32,9 +32,12 @@ from .. import auth
 from .. import retrieval as _retrieval
 from ..database import SessionLocal, get_db
 from ..deps import check_llm_cooldown, get_world_ctx
-from ..models import PlayerCharacter, World
+from ..models import PlayerCharacter, SheetTemplate, World
 from ..rules_render import strip_gm_directives
 from ..templating import templates
+from ..pc_stats import pc_maxima
+from .. import sheet_systems as _sheet_systems
+from ..sheet_systems import system_label, system_rules_markdown
 from .characters import _can_manage_character, _pc_to_markdown
 
 router = APIRouter()
@@ -123,14 +126,45 @@ async def _extract_file_text(data: bytes, ext: str, hint: str) -> str:
                      "an image, or paste the text.")
 
 
+def _custom_sheet_prompt(tpl, rules: str) -> tuple:
+    """(system prompt, response schema) for drafting a character on a CUSTOM sheet: the model
+    fills the template's own fields (by id) instead of N&D attributes."""
+    catalog = _sheet_systems.ai_field_catalog(tpl)
+    system = (
+        f"You are the character-creation assistant for the tabletop RPG system \"{tpl.name}\". "
+        "Create or translate ONE player character strictly by THAT system's rules (below) — never "
+        "Neon & Dragons attributes, HP/Shock or feats. Return STRICT JSON only:\n"
+        '{"name": str, "player_name": str, "backstory": str (2-4 rich paragraphs, in-world), '
+        '"notes": str (hooks, contacts, appearance), "fields": {<field id>: value, ...}}\n'
+        "`fields` is filled from this catalogue ONLY — use each field's exact id; omit a field rather than "
+        "invent one. Value rules: text/textarea -> string; number -> integer; select -> exactly one of its "
+        'options; resource -> {"current": int, "max": int} (a new character starts at its default); '
+        "list -> an array of objects using only the listed column ids. Respect the rules' costs, tiers and "
+        "starting values; start low-level for a new character unless the source says otherwise. No comments, "
+        "no markdown fences.\n\nFIELD CATALOGUE (JSON):\n" + json.dumps(catalog, ensure_ascii=False)
+    )
+    schema = {"type": "object", "properties": {
+        "name": {"type": "string"}, "player_name": {"type": "string"}, "backstory": {"type": "string"},
+        "notes": {"type": "string"}, "fields": {"type": "object"}}, "required": ["name"]}
+    return system, schema
+
+
 async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
-                      source_text: str, think: bool, use_rag: bool):
+                      source_text: str, think: bool, use_rag: bool, template_id: int = 0):
     db = SessionLocal()
     try:
         world = db.get(World, world_id)
+        tpl = db.get(SheetTemplate, template_id) if template_id else None
+        if tpl is not None and (tpl.sheet_mode != "custom" or tpl.world_id not in (None, world_id)):
+            tpl = None  # only a custom system visible in this world drives a custom draft
         rules = ""
         try:
-            rules = (_retrieval.world_rules_markdown(world) or "")[:6000]
+            if tpl is not None:
+                digest = _sheet_systems.system_rules_markdown(tpl)
+                own = (world.rules_md or "").strip()
+                rules = "\n\n".join(p for p in (digest, ("## This world's own rules\n" + own) if own else "") if p)[:7000]
+            else:
+                rules = (_retrieval.world_rules_markdown(world) or "")[:6000]
         except Exception:
             rules = ""
         rag = ""
@@ -160,20 +194,39 @@ async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
             "starting kit the rules give this class/race; every id in stats gets a "
             "value. No comments, no markdown fences."
         )
-        user_text = "=== WORLD RULES ===\n" + (rules or "(no custom rules — standard N&D)")
+        if tpl is not None:
+            system, draft_format = _custom_sheet_prompt(tpl, rules)
+            header = f"=== {tpl.name.upper()} RULES ===\n" + (rules or "(no written rules — use only what the field catalogue implies)")
+        else:
+            draft_format = _DRAFT_FORMAT
+            header = "=== WORLD RULES ===\n" + (rules or "(no custom rules — standard N&D)")
+        user_text = header
         if rag:
             user_text += "\n\n=== WORLD LORE (for names/places grounding) ===\n" + rag
         if source_text:
             user_text += ("\n\n=== SOURCE SHEET (translate this character into this "
-                          "world's rules; keep its identity) ===\n" + source_text[:12000])
+                          "system's rules; keep its identity) ===\n" + source_text[:12000])
         if prompt:
             user_text += "\n\n=== PLAYER'S REQUEST ===\n" + prompt[:4000]
 
         raw = await _ai.generate_chat(
             [{"role": "user", "content": user_text}],
-            system=system, model="", think=think, format=_DRAFT_FORMAT,
+            system=system, model="", think=think, format=draft_format,
         )
         draft = _extract_json(raw)
+        if tpl is not None:
+            name = str(draft.get("name") or "").strip()
+            if not name:
+                raise ValueError("The model's reply contained no character name — try rephrasing.")
+            result = {
+                "name": name[:200], "player_name": str(draft.get("player_name") or "").strip()[:200],
+                "backstory": str(draft.get("backstory") or "")[:12000], "notes": str(draft.get("notes") or "")[:6000],
+                "sheet_template_id": tpl.id, "system": tpl.name,
+                "custom_fields": (cleaned := _sheet_systems.clean_ai_fields(tpl, draft.get("fields"))),
+                "preview": [{"label": l, "value": v} for l, v in _sheet_systems.ai_preview_lines(tpl, cleaned)],
+            }
+            _PC_AI_JOBS[job_id].update(status="done", draft=result)
+            return
         name = str(draft.get("name") or "").strip()
         if not name:
             raise ValueError("The model's reply contained no character name — try rephrasing.")
@@ -198,6 +251,7 @@ async def pc_ai_start(request: Request,
                       prompt: str = Form(""),
                       think: bool = Form(True),
                       use_rag: bool = Form(True),
+                      template_id: int = Form(0),
                       file: UploadFile = File(None),
                       db: Session = Depends(get_db),
                       active_world: str = Cookie(None)):
@@ -220,6 +274,10 @@ async def pc_ai_start(request: Request,
         use_rag = False
 
     prompt = (prompt or "").strip()
+    if template_id:
+        tpl = db.get(SheetTemplate, template_id)
+        if not tpl or tpl.sheet_mode != "custom" or tpl.world_id not in (None, world.id):
+            raise HTTPException(400, "Pick one of the listed systems.")
     source_text = ""
     if file and file.filename:
         data = await file.read()
@@ -247,7 +305,7 @@ async def pc_ai_start(request: Request,
 
     import asyncio
     asyncio.get_running_loop().create_task(
-        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag))
+        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag, template_id))
     return {"job_id": job_id, "status": "running"}
 
 
@@ -268,7 +326,7 @@ async def pc_ai_poll(job_id: int, request: Request):
 
 
 @router.get("/characters/ai-new", response_class=HTMLResponse)
-def pc_ai_page(request: Request, db: Session = Depends(get_db),
+def pc_ai_page(request: Request, template_id: int = 0, db: Session = Depends(get_db),
                active_world: str = Cookie(None)):
     """The player's AI character creator: a short how-to guide, the prompt /
     import form (thinking + world-RAG on by default), and the draft review
@@ -277,8 +335,12 @@ def pc_ai_page(request: Request, db: Session = Depends(get_db),
     if not world:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
+    systems = (db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom")
+               .filter((SheetTemplate.world_id.is_(None)) | (SheetTemplate.world_id == world.id))
+               .order_by(SheetTemplate.name).all())
     return templates.TemplateResponse("characters/ai_new.html", {
-        "request": request, "world": world, "worlds": worlds,
+        "request": request, "world": world, "worlds": worlds, "systems": systems,
+        "selected_template_id": template_id,
         "display_name": (user.display_name if user and user.display_name else "") if user else "",
     })
 
@@ -352,19 +414,38 @@ def _clean_analysis(data: dict) -> dict:
     }
 
 
+def rules_for_character(db, world, pc, viewer_is_gm: bool, limit: int = 7000):
+    """(rules markdown, system label, is_native) a prompt about THIS character should be
+    grounded in. A native N&D sheet: the world's rules (its own, else the bundled core
+    rules). A built-in custom system (Hunt in the Moonlight, Asterion): that system's
+    rules digest, plus the world's own rules only if the GM wrote some — the bundled N&D
+    core rules do not apply to it. Any other custom template: the world's own rules if
+    set, else nothing. GM-only rule blocks are stripped unless the viewer is the GM."""
+    tpl = pc.sheet_template if pc.sheet_template_id else None
+    native = pc_maxima(pc)["native"]
+    label = system_label(tpl, native)
+    world_md = ""
+    if native:
+        world_md = _retrieval.world_rules_markdown(world) or ""
+    elif (getattr(world, "rules_md", None) or "").strip():
+        world_md = world.rules_md
+    if not viewer_is_gm:
+        world_md = strip_gm_directives(world_md)
+    digest = "" if native else system_rules_markdown(tpl)
+    parts = [p for p in (digest, ("## This world's own rules\n" + world_md) if (digest and world_md) else world_md) if p]
+    return "\n\n".join(parts)[:limit], label, native
+
+
 async def _analysis_task(job_id: int, pc_id: int, viewer_is_gm: bool,
                          focus: str, think: bool, use_rag: bool):
     db = SessionLocal()
     try:
         pc = db.get(PlayerCharacter, pc_id)
         world = db.get(World, pc.world_id)
-        rules = _retrieval.world_rules_markdown(world) or ""
-        if not viewer_is_gm:
-            # A player's reply is built from this text, so GM-only rule blocks
-            # must never reach the prompt (the creator above doesn't strip them;
-            # the analysis does).
-            rules = strip_gm_directives(rules)
-        rules = rules[:7000]
+        # A player's reply is built from this text, so GM-only rule blocks must
+        # never reach the prompt (the creator below doesn't strip them; the
+        # analysis does).
+        rules, sys_label, native = rules_for_character(db, world, pc, viewer_is_gm)
         sheet = _pc_to_markdown(pc, db)[:9000]
 
         lore = ""
@@ -389,8 +470,14 @@ async def _analysis_task(job_id: int, pc_id: int, viewer_is_gm: bool,
             '"suggestions": [str]}\n'
             "At most 6 strengths, 8 issues and 6 suggestions, each one or two sentences. "
             "No markdown fences, no comments.\n\nFOCUS: " + _ANALYSIS_FOCUS[focus]
+            + f"\n\nSYSTEM: this character plays {sys_label}."
+            + ("" if native else " Judge it ONLY against that system's rules below — do not apply Neon & Dragons "
+               "rules (attributes, HP/Shock/PP/MP, Cyber Adaptivity, feats, level) to it; its resources and "
+               "progression live in the sheet's own fields.")
         )
-        user_text = "=== WORLD RULES ===\n" + (rules or "(no custom rules — standard N&D)")
+        user_text = ("=== WORLD RULES ===\n" if native else f"=== {sys_label.upper()} RULES ===\n") + (
+            rules or ("(no custom rules — standard N&D)" if native
+                      else "(no written rules for this system — judge only by what the sheet itself states)"))
         if lore:
             user_text += "\n\n=== WORLD LORE (context only) ===\n" + lore
         user_text += "\n\n=== CHARACTER SHEET ===\n" + sheet

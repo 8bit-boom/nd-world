@@ -25,12 +25,16 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from . import ai as _ai_module
 from . import auth
+from . import live as _live
 from . import retrieval as _retrieval
+from . import rendering as _rendering
 from . import rules_render
 from .constants import KINDS
 from .database import SessionLocal
 from .deps import load_custom_kinds, world_can_view_section
-from .models import Entity, EntityRelation, Fact, GameSession, Quest, RandomTable, World, entity_player_access
+from .models import (
+    Entity, EntityRelation, Fact, GameSession, Party, PlayerCharacter, Quest, RandomTable, World, entity_player_access,
+)
 from .routers.chronicler import build_chronicler_system_prompt, visible_facts
 
 mcp = FastMCP(
@@ -44,6 +48,10 @@ mcp = FastMCP(
     "search/read/create/edit/delete entities (NPCs, locations, organizations, items, "
     "notes, ...), read the world rules, list sessions and their recaps, list and roll "
     "random tables, manage quests, and ask the Chronicler about campaign history. "
+    "Player characters and parties are system-aware (Neon & Dragons, Hunt in the Moonlight, "
+    "Asterion, GM-made sheets): list_characters/get_character/get_party report each one's own "
+    "vital, resources and conditions, and adjust_character_resource, set_character_conditions, "
+    "award_character_xp and rest_party change them by that system's rules. "
     "Write tools (and GM-secret reads) require a GM token; a player's token only ever "
     "sees what the player could see in the web UI.",
     stateless_http=True,
@@ -676,5 +684,254 @@ def update_quest(
             q.visible_to_players = visible_to_players
         db.commit()
         return {"id": q.id, "title": q.title, "status": q.status, "updated": True}
+    finally:
+        db.close()
+
+
+# ── Characters & parties (system-aware) ──────────────────────────────────────
+# A player character is a native Neon & Dragons sheet OR a character on a custom
+# system (Hunt in the Moonlight, Asterion, a GM's own template) whose numbers live in
+# template fields. These tools speak both: each character reports its OWN system's vital,
+# resources and conditions, and a sheet is rendered as the same markdown the web exports
+# and the AI reviewer use. Access mirrors the web UI: a GM sees everything; a player token
+# sees its own characters (plus other owned ones when the world lets players see the
+# party), and nothing at all when the Characters / Parties section is closed to players.
+
+def _pc_state(db, pc) -> dict:
+    """{system, native, vital, resources, conditions} for one character, via the same code the
+    party page and roster use."""
+    from .pc_stats import pc_maxima
+    from .routers.parties import _member_vitals
+    from .sheet_systems import system_label
+    v = _member_vitals(db, [pc], resource_limit=None)[0]
+    native = v["native"]
+    resources = [{"label": t["label"], "current": t["current"], "max": t["max"]}
+                 for t in v["resources"] if t["id"] != v["hp_id"]]
+    if native:
+        m = pc_maxima(pc)
+        resources = [{"label": "Shock", "current": pc.shock_current or 0, "max": m["shock"]},
+                     {"label": "PP", "current": pc.pp_current or 0, "max": m["pp"]},
+                     {"label": "MP", "current": pc.mp_current or 0, "max": m["mp"]}]
+    return {
+        "system": system_label(pc.sheet_template if pc.sheet_template_id else None, native),
+        "native": native,
+        "vital": ({"label": v["hp_label"], "current": v["hp"], "max": v["max_hp"], "down": v["down"]}
+                  if v["max_hp"] else None),
+        "resources": resources,
+        "conditions": list(v["conditions"]),
+    }
+
+
+def _character_for(ctx: Context, db, character_id: int, *, manage: bool = False):
+    """(user, pc, world) the token may read (or, with manage=True, change); PermissionError otherwise."""
+    from .routers.characters import _can_manage_character, _can_view_character
+    user = _current_user(ctx)
+    pc = db.get(PlayerCharacter, character_id)
+    if not pc:
+        raise ValueError(f"Character {character_id} not found")
+    world = _load_world(db, pc.world_id, user)
+    _require_view_section(ctx, world, "characters")
+    allowed = _can_manage_character(user, pc) if manage else _can_view_character(db, user, pc, world)
+    if not allowed:
+        raise PermissionError(f"Character {character_id} not found or not accessible to this token")
+    return user, pc, world
+
+
+@mcp.tool()
+def list_characters(ctx: Context, world_id: int) -> list[dict]:
+    """The world's player characters, each with its system and live state (vital such as
+    HP / Health / Flesh, other resources, conditions). A GM token sees all of them; a player
+    token sees its own (and other owned characters when the world lets players see the party)."""
+    db = SessionLocal()
+    try:
+        user = _current_user(ctx)
+        world = _load_world(db, world_id, user)
+        _require_view_section(ctx, world, "characters")
+        q = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id)
+        if not user.is_gm:
+            q = q.filter(PlayerCharacter.owner_user_id.isnot(None) if world.players_see_party
+                         else PlayerCharacter.owner_user_id == user.id)
+        out = []
+        for pc in q.order_by(PlayerCharacter.name).all():
+            out.append({"id": pc.id, "name": pc.name, "player_name": pc.player_name or "",
+                        "mine": pc.owner_user_id == user.id, **_pc_state(db, pc)})
+        return out
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def get_character(ctx: Context, character_id: int) -> dict:
+    """One character in full: its system, live state and the whole sheet as markdown (every
+    section of its own system — resources as saved, conditions, abilities, gear, backstory).
+    `[gmonly]` blocks are removed for a player token."""
+    from .routers.characters import _pc_to_markdown
+    db = SessionLocal()
+    try:
+        user, pc, world = _character_for(ctx, db, character_id)
+        sheet = _pc_to_markdown(pc, db)
+        if not user.is_gm:
+            sheet = _rendering.strip_gm_only(sheet)
+        return {"id": pc.id, "name": pc.name, "world_id": world.id, **_pc_state(db, pc), "sheet": sheet}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def adjust_character_resource(ctx: Context, character_id: int, resource: str,
+                              delta: Optional[int] = None, value: Optional[int] = None) -> dict:
+    """Change one resource of a character (GM or the character's owner): pass `delta` (e.g. -2) or
+    `value`, exactly one. `resource` is hp / shock / pp / mp for a native Neon & Dragons sheet, or a
+    track's name or id for a custom system (Health, Stamina, Hunger, Flesh, Ichor, ...). The result is
+    clamped to 0..max. Returns the character's state afterwards."""
+    from .pc_stats import pc_maxima
+    from .sheet_systems import adjust_track, parse_custom_fields
+    if (delta is None) == (value is None):
+        raise ValueError("Pass exactly one of delta or value")
+    db = SessionLocal()
+    try:
+        user, pc, world = _character_for(ctx, db, character_id, manage=True)
+        m = pc_maxima(pc)
+        if m["native"]:
+            key = (resource or "").strip().lower()
+            cols = {"hp": ("current_hp", m["hp"]), "shock": ("shock_current", m["shock"]),
+                    "pp": ("pp_current", m["pp"]), "mp": ("mp_current", m["mp"])}
+            if key not in cols:
+                raise ValueError("A native sheet's resources are: hp, shock, pp, mp")
+            col, top = cols[key]
+            cur = getattr(pc, col) or 0
+            new = int(value) if value is not None else cur + int(delta)
+            setattr(pc, col, max(0, min(top, new)) if top > 0 else max(0, new))
+        else:
+            if pc.sheet_template is None:
+                raise ValueError("This character has no sheet template to take resources from")
+            cf, _track = adjust_track(pc.sheet_template, parse_custom_fields(pc.custom_fields_json), resource,
+                                      delta=delta, value=value)
+            pc.custom_fields_json = _json.dumps(cf)
+        db.commit()
+        _live.touch(world.id)
+        return {"id": pc.id, "name": pc.name, **_pc_state(db, pc)}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def set_character_conditions(ctx: Context, character_id: int, conditions: list[str]) -> dict:
+    """Replace a character's active conditions (GM or the owner), e.g. ["Stunned", "Burning"]. Pass []
+    to clear. Free text is accepted; the sheet offers each system's own list as quick chips."""
+    from .pc_stats import clean_conditions
+    db = SessionLocal()
+    try:
+        user, pc, world = _character_for(ctx, db, character_id, manage=True)
+        pc.conditions_json = _json.dumps(clean_conditions(conditions))
+        db.commit()
+        _live.touch(world.id)
+        return {"id": pc.id, "name": pc.name, **_pc_state(db, pc)}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def award_character_xp(ctx: Context, character_id: int, amount: int) -> dict:
+    """Award (or, negative, take back) XP to one character — GM only. A native sheet gains XP; a custom
+    system's own XP / Glory fields grow (Hunt in the Moonlight: Current + Lifetime XP; Asterion: Glory)."""
+    from .sheet_systems import apply_xp_award, parse_custom_fields, system_meta
+    db = SessionLocal()
+    try:
+        user, pc, world = _character_for(ctx, db, character_id, manage=True)
+        _require_gm(user)
+        amount = int(amount)
+        if abs(amount) > 100000:
+            raise ValueError("amount out of range")
+        tpl = pc.sheet_template if pc.sheet_template_id else None
+        if tpl is not None and tpl.sheet_mode == "custom":
+            if not system_meta(tpl)["xp"]:
+                raise ValueError(f"{tpl.name} has no XP field to award")
+            pc.custom_fields_json = _json.dumps(apply_xp_award(tpl, parse_custom_fields(pc.custom_fields_json), amount))
+        else:
+            pc.xp = max(0, (pc.xp or 0) + amount)
+        db.commit()
+        _live.touch(world.id)
+        return {"id": pc.id, "name": pc.name, "awarded": amount}
+    finally:
+        db.close()
+
+
+def _party_for(ctx: Context, db, party_id: int, *, gm_only: bool = False):
+    """(user, party, world, members) the token may read (gm_only: a GM token, checked first)."""
+    user = _current_user(ctx)
+    if gm_only:
+        _require_gm(user)
+    party = db.get(Party, party_id)
+    if not party:
+        raise ValueError(f"Party {party_id} not found")
+    world = _load_world(db, party.world_id, user)
+    _require_view_section(ctx, world, "parties")
+    ids = [i for i in _json.loads(party.member_pc_ids_json or "[]") if isinstance(i, int)]
+    members = (db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(ids), PlayerCharacter.world_id == world.id)
+               .order_by(PlayerCharacter.name).all() if ids else [])
+    if not user.is_gm and not world.players_see_party and not any(m.owner_user_id == user.id for m in members):
+        raise PermissionError(f"Party {party_id} not found or not accessible to this token")
+    return user, party, world, members
+
+
+@mcp.tool()
+def list_parties(ctx: Context, world_id: int) -> list[dict]:
+    """The world's parties with member names. A player token sees only parties it is in (unless the
+    world lets players see every party)."""
+    db = SessionLocal()
+    try:
+        user = _current_user(ctx)
+        world = _load_world(db, world_id, user)
+        _require_view_section(ctx, world, "parties")
+        mine = {pc.id for pc in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id,
+                                                                  PlayerCharacter.owner_user_id == user.id).all()}
+        out = []
+        for party in db.query(Party).filter(Party.world_id == world.id).order_by(Party.name).all():
+            ids = [i for i in _json.loads(party.member_pc_ids_json or "[]") if isinstance(i, int)]
+            if not (user.is_gm or world.players_see_party or mine.intersection(ids)):
+                continue
+            names = [n for (n,) in db.query(PlayerCharacter.name).filter(PlayerCharacter.id.in_(ids)).order_by(PlayerCharacter.name).all()] if ids else []
+            out.append({"id": party.id, "name": party.name, "members": names})
+        return out
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def get_party(ctx: Context, party_id: int) -> dict:
+    """One party: each member with its system and live state, plus goals and shared loot."""
+    db = SessionLocal()
+    try:
+        user, party, world, members = _party_for(ctx, db, party_id)
+        from .party_refs import load_loot
+        goals = party.goals or ""
+        if not user.is_gm:
+            goals = _rendering.strip_gm_only(goals)
+        return {
+            "id": party.id, "name": party.name, "goals": goals,
+            "members": [{"id": pc.id, "name": pc.name, **_pc_state(db, pc)} for pc in members],
+            "loot": [{"name": i["name"], "qty": i["qty"], "notes": i["notes"],
+                      "claimed_by": [m.name for m in members if m.id in i["claimed_by"]]} for i in load_loot(party)],
+        }
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def rest_party(ctx: Context, party_id: int, kind: str = "long") -> dict:
+    """Apply a Rest to every party member, each by THEIR system's rules (GM only): N&D restores half
+    PP/MP and all Shock; Hunt in the Moonlight restores Stamina and clears Strain; Asterion's short rest
+    restores the Spark Shield (+2 Ichor), its long rest all Flesh and Ichor. `kind` is "short" or "long"."""
+    if kind not in ("short", "long"):
+        raise ValueError('kind must be "short" or "long"')
+    from .routers.parties import apply_party_rest
+    db = SessionLocal()
+    try:
+        user, party, world, _members = _party_for(ctx, db, party_id, gm_only=True)
+        applied, _snapshot = apply_party_rest(db, party, kind)
+        db.commit()
+        _live.touch(world.id)
+        return {"party": party.name, "kind": kind, "rested": [a["name"] for a in applied]}
     finally:
         db.close()

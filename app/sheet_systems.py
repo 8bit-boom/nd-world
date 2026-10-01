@@ -25,6 +25,7 @@ as long as its field ids are unchanged).
 """
 import json
 import re
+from pathlib import Path
 
 # template field id -> what the built-in system maps it to
 BUILTIN_SYSTEMS = {
@@ -166,6 +167,164 @@ def sheet_pages(tpl, section_names: list):
         return None
     return {"pages": pages, "section_page": section_page,
             "conditions": cond or pages[0]["id"], "linked": pages[-1]["id"]}
+
+
+_SYSTEMS_DIR = Path(__file__).parent / "game_data" / "systems"
+
+
+def system_rules_markdown(tpl) -> str:
+    """The rules digest of a BUILT-IN custom system (app/game_data/systems/<slug>.md), or ""
+    for a native N&D sheet / a GM's own template — those fall back to the world's rules."""
+    slug = getattr(tpl, "slug", None) if getattr(tpl, "is_builtin", False) else None
+    if not slug or "/" in slug or "\\" in slug or ".." in slug:
+        return ""
+    path = _SYSTEMS_DIR / f"{slug}.md"
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else ""
+    except OSError:
+        return ""
+
+
+def system_label(tpl, native: bool = False) -> str:
+    """Human name of the system a character plays: "Neon & Dragons" for a native sheet,
+    otherwise the template's own name."""
+    if native or tpl is None:
+        return "Neon & Dragons"
+    return getattr(tpl, "name", None) or "a custom system"
+
+
+# ── AI-drafted sheets ────────────────────────────────────────────────────────
+
+AI_TEXT_CAP, AI_AREA_CAP, AI_NUM_CAP, AI_LIST_ROWS = 400, 4000, 999, 12
+
+
+def ai_field_catalog(tpl) -> list:
+    """The fields an AI may fill when drafting a character on this template: id, a trimmed
+    label, type, select options, list columns. Fields that merely mirror a character column
+    (name / player) are omitted — those are asked for separately."""
+    meta = system_meta(tpl)
+    out = []
+    for f in template_fields(tpl):
+        if not isinstance(f, dict) or not f.get("id") or f["id"] in meta["binds"]:
+            continue
+        entry = {"id": f["id"], "label": short_label(f.get("label") or f["id"])[:60], "type": f.get("type") or "text"}
+        if f.get("section"):
+            entry["section"] = f["section"]
+        if entry["type"] == "select":
+            entry["options"] = [str(o) for o in (f.get("options") or [])]
+        if entry["type"] == "resource":
+            cur, mx = _default_pair(f.get("default_value"))
+            entry["default"] = {"current": cur, "max": mx}
+        if entry["type"] == "list":
+            entry["columns"] = [{"id": sf.get("id"), "type": sf.get("type") or "text",
+                                 **({"options": [str(o) for o in sf.get("options") or []]} if sf.get("type") == "select" else {})}
+                                for sf in (f.get("item_fields") or []) if isinstance(sf, dict) and sf.get("id")]
+        out.append(entry)
+    return out
+
+
+def _clean_num(v):
+    n = _num(v)
+    return None if n is None else max(0, min(AI_NUM_CAP, int(n)))
+
+
+def _clean_text(v, cap):
+    if isinstance(v, (dict, list, tuple, set)) or v is None:
+        return None
+    return str(v).strip()[:cap]
+
+
+def _clean_choice(v, options):
+    text = _clean_text(v, AI_TEXT_CAP)
+    if text is None:
+        return None
+    for o in options:
+        if str(o).strip().lower() == text.lower():
+            return str(o)
+    return None
+
+
+def clean_ai_fields(tpl, raw) -> dict:
+    """Model output -> `custom_fields_json`-shaped dict for this template, or {} for junk.
+
+    Untrusted input: unknown ids are dropped, selects must match a real option, numbers are
+    clamped to 0..999, text is bounded, a resource is stored as {id}_current / {id}_max,
+    a list keeps only its own columns and at most AI_LIST_ROWS rows."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for f in template_fields(tpl):
+        if not isinstance(f, dict) or f.get("id") not in raw:
+            continue
+        fid, val, kind = f["id"], raw[f["id"]], f.get("type") or "text"
+        if f.get("binds") or fid in system_meta(tpl)["binds"]:
+            continue
+        if kind == "resource":
+            cur = mx = None
+            if isinstance(val, dict):
+                cur, mx = _clean_num(val.get("current")), _clean_num(val.get("max"))
+            elif isinstance(val, str) and "/" in val:
+                a, b = val.split("/", 1)
+                cur, mx = _clean_num(a), _clean_num(b)
+            elif not isinstance(val, (list, tuple)):
+                cur = _clean_num(val)
+            if cur is not None:
+                out[f"{fid}_current"] = cur
+            if mx is not None:
+                out[f"{fid}_max"] = mx
+        elif kind == "number":
+            n = _clean_num(val)
+            if n is not None:
+                out[fid] = n
+        elif kind == "select":
+            choice = _clean_choice(val, f.get("options") or [])
+            if choice is not None:
+                out[fid] = choice
+        elif kind == "list":
+            if not isinstance(val, list):
+                continue
+            cols = {sf["id"]: sf for sf in (f.get("item_fields") or []) if isinstance(sf, dict) and sf.get("id")}
+            rows = []
+            for item in val[:AI_LIST_ROWS]:
+                if not isinstance(item, dict):
+                    continue
+                row = {}
+                for cid, col in cols.items():
+                    if cid not in item:
+                        continue
+                    cell = (_clean_choice(item[cid], col.get("options") or []) if col.get("type") == "select"
+                            else _clean_text(item[cid], AI_AREA_CAP if col.get("type") == "textarea" else AI_TEXT_CAP))
+                    if cell:
+                        row[cid] = cell
+                if row:
+                    rows.append(row)
+            if rows:
+                out[fid] = rows
+        elif kind in ("text", "textarea"):
+            text = _clean_text(val, AI_AREA_CAP if kind == "textarea" else AI_TEXT_CAP)
+            if text:
+                out[fid] = text
+    return out
+
+
+def ai_preview_lines(tpl, cleaned: dict) -> list:
+    """[(label, text)] for the review step of an AI draft, in template order."""
+    out = []
+    for f in template_fields(tpl):
+        if not isinstance(f, dict) or not f.get("id"):
+            continue
+        fid, label = f["id"], short_label(f.get("label") or f["id"])
+        if f.get("type") == "resource":
+            if f"{fid}_current" in cleaned or f"{fid}_max" in cleaned:
+                out.append((label, field_value_text(f, cleaned)))
+        elif f.get("type") == "list":
+            rows = cleaned.get(fid)
+            if rows:
+                names = [str(next(iter(r.values()))) for r in rows if r][:3]
+                out.append((label, f"{len(rows)} × " + ", ".join(names)))
+        elif fid in cleaned:
+            out.append((label, str(cleaned[fid])[:80]))
+    return out
 
 
 ROSTER_GENERIC_CAP = 10
@@ -315,6 +474,40 @@ def apply_xp_award(tpl, custom_fields: dict, delta: int) -> dict:
             base = _num((by_id.get(fid) or {}).get("default_value")) or 0
         cf[fid] = max(0, base + delta)
     return cf
+
+
+def find_track(tracks: list, name: str):
+    """The resource track matching `name` by field id or (trimmed) label, case-insensitive."""
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    for t in tracks:
+        if key in (str(t.get("id", "")).lower(), str(t.get("label", "")).lower(), short_label(t.get("label", "")).lower()):
+            return t
+    return None
+
+
+def adjust_track(tpl, custom_fields: dict, resource: str, delta=None, value=None):
+    """(new custom_fields, track after) with one resource track of a custom sheet changed:
+    `value` sets it, `delta` adds to it; clamped to 0..max (just >= 0 when the max is 0).
+    Raises ValueError naming the available tracks if `resource` matches none."""
+    if (delta is None) == (value is None):
+        raise ValueError("pass exactly one of delta or value")
+    fields = template_fields(tpl)
+    meta = system_meta(tpl)
+    tracks = resource_tracks(fields, custom_fields, meta)
+    track = find_track(tracks, resource)
+    if track is None:
+        raise ValueError("no such resource " + repr(resource) + "; this sheet has: " +
+                         ", ".join(f"{t['label']} (id {t['id']})" for t in tracks))
+    cur = track["current"] if isinstance(track["current"], (int, float)) else 0
+    new = int(value) if value is not None else int(cur) + int(delta)
+    mx = track["max"] if isinstance(track["max"], (int, float)) else 0
+    new = max(0, min(int(mx), new)) if mx > 0 else max(0, new)
+    cf = dict(custom_fields) if isinstance(custom_fields, dict) else {}
+    cf[f"{track['id']}_current"] = new
+    after = next(t for t in resource_tracks(fields, cf, meta) if t["id"] == track["id"])
+    return cf, after
 
 
 # ── Conditions & Rest ────────────────────────────────────────────────────────

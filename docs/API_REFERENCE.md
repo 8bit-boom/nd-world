@@ -987,6 +987,14 @@ Every tool resolves the calling user from the bearer token and applies the exact
 | `get_rules(world_id)` | Player | The world's rules markdown — GM token gets full source, player token gets `:::gm` blocks removed. |
 | `list_sessions(world_id)` | Player | Sessions newest-first; GM rows also flag whether a player recap is published. |
 | `get_session(session_id)` | Player | GM gets the GM summary; a player token gets only the PUBLISHED player summary. |
+| `list_characters(world_id)` | Player | The world's player characters, each with its **system** (Neon & Dragons / Hunt in the Moonlight / Asterion / a GM's template) and live state: vital (HP / Health / Flesh…), other resources, conditions. GM: all; player token: its own (plus other owned ones when `players_see_party`). Needs the Characters section. |
+| `get_character(character_id)` | Player | One character in full — system, live state and the whole sheet as markdown (resources as saved, conditions, abilities…); `[gmonly]` stripped for a player token. Same visibility as the sheet page. |
+| `adjust_character_resource(character_id, resource, delta? \| value?)` | GM / owner | Changes one resource, clamped to 0..max. `resource`: `hp`/`shock`/`pp`/`mp` on a native sheet, a track's name or id on a custom system (Health, Stamina, Flesh, Ichor…); unknown names list the valid ones. |
+| `set_character_conditions(character_id, conditions[])` | GM / owner | Replaces the active conditions (cleaned, de-duplicated). |
+| `award_character_xp(character_id, amount)` | GM | XP to a native sheet, or to a custom system's own XP / Glory fields (Hunt in the Moonlight: Current + Lifetime XP; Asterion: Glory). |
+| `list_parties(world_id)` | Player | Parties with member names; a player token sees parties it is in (all when `players_see_party`). Needs the Parties section. |
+| `get_party(party_id)` | Player | A party's members (system + live state each), goals and shared loot. |
+| `rest_party(party_id, kind?)` | GM | Rest for every member by their own system's rules (`short`/`long`): N&D half PP/MP + all Shock; Hunt in the Moonlight Stamina/Strain; Asterion Spark Shield/Ichor/Flesh. |
 | `list_tables(world_id)` | GM | Random tables available to the world (own + built-ins) with entry counts. |
 | `roll_table(table_id, times?)` | GM | Weighted roll, same mechanics as the UI's Roll button. |
 | `create_quest(world_id, title, ...)` | GM | Creates a quest. |

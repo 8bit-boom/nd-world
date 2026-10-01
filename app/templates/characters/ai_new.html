@@ -23,6 +23,16 @@
     <textarea id="ai-prompt" rows="4" placeholder="Describe the character you want to play…"
               style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.5rem .7rem;font-family:var(--font);font-size:.88rem;resize:vertical"></textarea>
 
+    {% if systems %}
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.6rem 0 0">
+      <label for="ai-system" style="font-size:.8rem;color:var(--text-dim)">Game system</label>
+      <select id="ai-system" style="min-width:220px">
+        <option value="">Neon &amp; Dragons (standard sheet)</option>
+        {% for t in systems %}<option value="{{ t.id }}"{% if selected_template_id == t.id %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
+      </select>
+      <span style="font-size:.75rem;color:var(--text-dim)">The AI fills that system's own sheet and follows its rules.</span>
+    </div>
+    {% endif %}
     <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin:.6rem 0">
       <label style="display:flex;gap:.35rem;align-items:center;font-size:.8rem;color:var(--text-dim);cursor:pointer">
         <input type="checkbox" id="ai-think" checked style="width:auto"> 🧠 Thinking
@@ -48,11 +58,17 @@
     <h2 style="color:var(--neon);font-size:1rem;margin:0 0 .7rem">Review your character</h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.7rem;margin-bottom:.7rem">
       <div class="form-group" style="margin:0"><label>Name</label><input name="name" id="d-name"></div>
-      <div class="form-group" style="margin:0"><label>Race</label><input name="race" id="d-race"></div>
-      <div class="form-group" style="margin:0"><label>Class</label><input name="char_class" id="d-class"></div>
-      <div class="form-group" style="margin:0"><label>Level</label><input name="level" type="number" min="1" max="20" id="d-level"></div>
-      <div class="form-group" style="margin:0"><label>XP</label><input name="xp" type="number" min="0" id="d-xp"></div>
+      <div class="form-group nd-only" style="margin:0"><label>Race</label><input name="race" id="d-race"></div>
+      <div class="form-group nd-only" style="margin:0"><label>Class</label><input name="char_class" id="d-class"></div>
+      <div class="form-group nd-only" style="margin:0"><label>Level</label><input name="level" type="number" min="1" max="20" id="d-level"></div>
+      <div class="form-group nd-only" style="margin:0"><label>XP</label><input name="xp" type="number" min="0" id="d-xp"></div>
     </div>
+    <div id="d-custom" style="display:none;font-size:.8rem;color:var(--text-dim);margin-bottom:.7rem">
+      <div style="margin-bottom:.3rem"><strong style="color:var(--text)" id="d-system"></strong> sheet — the AI filled:</div>
+      <div id="d-preview" style="display:flex;gap:.4rem;flex-wrap:wrap"></div>
+    </div>
+    <input type="hidden" name="sheet_template_id" id="d-tpl" disabled>
+    <input type="hidden" name="custom_fields_json" id="d-cf" disabled>
     <div id="d-stats" style="display:flex;gap:.5rem;flex-wrap:wrap;font-size:.8rem;color:var(--text-dim);margin-bottom:.7rem"></div>
     <input type="hidden" name="stats_json" id="d-stats-json">
     <input type="hidden" name="max_hp" id="d-maxhp">
@@ -87,7 +103,43 @@ const WORLD_SLUG = {{ world.slug | tojson }};
 
   document.getElementById('ai-again').addEventListener('click', () => { form.style.display = 'none'; });
 
+  // A draft for a custom system (Hunt in the Moonlight, Asterion, …) posts the template id and the
+  // field values instead of N&D stats; the N&D-only inputs are disabled so they are not submitted.
+  function setMode(custom) {
+    form.querySelectorAll('.nd-only').forEach(el => { el.style.display = custom ? 'none' : ''; });
+    ['d-race', 'd-class', 'd-level', 'd-xp', 'd-stats-json', 'd-maxhp', 'd-curhp', 'd-shock', 'd-equip'].forEach(id => {
+      document.getElementById(id).disabled = custom;
+    });
+    ['d-tpl', 'd-cf'].forEach(id => { document.getElementById(id).disabled = !custom; });
+    document.getElementById('d-custom').style.display = custom ? '' : 'none';
+    document.getElementById('d-stats').style.display = custom ? 'none' : '';
+  }
+
+  function fillCustomDraft(d) {
+    setMode(true);
+    document.getElementById('d-name').value = d.name || '';
+    document.getElementById('d-tpl').value = d.sheet_template_id;
+    document.getElementById('d-cf').value = JSON.stringify(d.custom_fields || {});
+    document.getElementById('d-system').textContent = d.system || 'Custom';
+    const box = document.getElementById('d-preview');
+    box.textContent = '';
+    (d.preview || []).forEach(p => {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.1rem .4rem';
+      chip.textContent = p.label + ': ' + p.value;
+      box.appendChild(chip);
+    });
+    if (!(d.preview || []).length) box.textContent = 'Nothing beyond the name and backstory — fill the rest on the sheet.';
+    document.getElementById('d-backstory').value = d.backstory || '';
+    document.getElementById('d-backstory-view').textContent = d.backstory || '(none)';
+    document.getElementById('d-notes').value = d.notes || '';
+    form.style.display = '';
+    form.scrollIntoView({ behavior: 'smooth' });
+  }
+
   function fillDraft(d) {
+    if (d.sheet_template_id) return fillCustomDraft(d);
+    setMode(false);
     document.getElementById('d-name').value = d.name || '';
     document.getElementById('d-race').value = d.race || '';
     document.getElementById('d-class').value = d.char_class || '';
@@ -136,6 +188,8 @@ const WORLD_SLUG = {{ world.slug | tojson }};
     fd.set('prompt', prompt);
     fd.set('think', document.getElementById('ai-think').checked);
     fd.set('use_rag', document.getElementById('ai-rag').checked);
+    const sys = document.getElementById('ai-system');
+    if (sys && sys.value) fd.set('template_id', sys.value);
     if (pickedFile) fd.set('file', pickedFile);
     status.textContent = '⏳ Starting…';
     form.style.display = 'none';

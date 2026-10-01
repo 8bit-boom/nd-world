@@ -700,31 +700,9 @@ async def party_member_toggle(party_id: int, request: Request, db: Session = Dep
 # same formulas across the roster and returns a snapshot the client holds
 # for one-click Undo.
 
-@router.post("/api/parties/{party_id}/rest")
-async def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
-                     active_world: str = Cookie(None)):
-    """Apply a Rest to every member, each by THEIR system's rules. An N&D sheet
-    gets the core-rules Rest (core_rules.md §10): +½ max PP and MP (rounded down),
-    all Shock; HP is untouched — that's stims/medical. A character on a built-in
-    system (app/sheet_systems.py BUILTIN_SYSTEMS) gets that rulebook's Rest —
-    Asterion's Short/Long Rest, Hunt in the Moonlight's Stamina/Strain reset, the N&D
-    stim counter. Body {"kind": "short"|"long"} (default long) picks Asterion's
-    variant; systems with a single Rest apply it either way. A custom system with no
-    Rest rules is left alone. Returns the per-PC snapshot for one-click Undo (the
-    client POSTs it back to /rest/undo). Full-edit tier."""
-    world, _ = get_world_ctx(request, db, active_world)
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party or not world or party.world_id != world.id:
-        raise HTTPException(404)
-    if _party_edit_level(request, db, world, party) != "full":
-        raise HTTPException(403)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    kind = body.get("kind", "long") if isinstance(body, dict) else "long"
-    if kind not in ("short", "long"):
-        raise HTTPException(400, "kind must be short or long")
+def apply_party_rest(db: Session, party: Party, kind: str):
+    """Apply a Rest to every member of `party`, each by their own system's rules; returns
+    (applied, snapshot) for the response / one-click Undo. Does NOT commit (callers do)."""
     pc_ids = json.loads(party.member_pc_ids_json or "[]")
     member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
     snapshot, applied = [], []
@@ -754,6 +732,35 @@ async def party_rest(party_id: int, request: Request, db: Session = Depends(get_
             result["tracks"] = resource_tracks(template_fields(tpl), cf, system_meta(tpl))
         snapshot.append(entry)
         applied.append(result)
+    return applied, snapshot
+
+
+@router.post("/api/parties/{party_id}/rest")
+async def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
+                     active_world: str = Cookie(None)):
+    """Apply a Rest to every member, each by THEIR system's rules. An N&D sheet
+    gets the core-rules Rest (core_rules.md §10): +½ max PP and MP (rounded down),
+    all Shock; HP is untouched — that's stims/medical. A character on a built-in
+    system (app/sheet_systems.py BUILTIN_SYSTEMS) gets that rulebook's Rest —
+    Asterion's Short/Long Rest, Hunt in the Moonlight's Stamina/Strain reset, the N&D
+    stim counter. Body {"kind": "short"|"long"} (default long) picks Asterion's
+    variant; systems with a single Rest apply it either way. A custom system with no
+    Rest rules is left alone. Returns the per-PC snapshot for one-click Undo (the
+    client POSTs it back to /rest/undo). Full-edit tier."""
+    world, _ = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world or party.world_id != world.id:
+        raise HTTPException(404)
+    if _party_edit_level(request, db, world, party) != "full":
+        raise HTTPException(403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    kind = body.get("kind", "long") if isinstance(body, dict) else "long"
+    if kind not in ("short", "long"):
+        raise HTTPException(400, "kind must be short or long")
+    applied, snapshot = apply_party_rest(db, party, kind)
     db.commit()
     live.touch(party.world_id)
     return {"applied": applied, "snapshot": snapshot, "kind": kind}
