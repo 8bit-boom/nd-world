@@ -28,15 +28,34 @@ import re
 
 # template field id -> what the built-in system maps it to
 BUILTIN_SYSTEMS = {
+    # Hunt in the Moonlight, Revision 1.11. A 4-hour Rest and an 8-hour Long Rest both
+    # restore all Stamina and clear Strain; Health is never restored by resting
+    # (treatment), and Hunger / Arcane Knowledge fall only through play.
     "hunt-in-the-moonlight": {
         "hp": "health",
         "binds": {"hunter": "name", "player": "player_name"},
         "xp": ["xpCurrent", "xpLifetime"],
+        "conditions": ["Bleeding", "Burning", "Blinded", "Marked", "Prone", "Restrained", "Stunned", "Weakened", "Vulnerable"],
+        "rest": {"long": [("full", "stamina"), ("set", "strain", "0"), ("set", "staminaSpent", 0)]},
     },
+    # Asterion (Game of Gods rules). Short Rest: Spark Shield full + 2 Ichor.
+    # Long Rest: all Flesh and all Ichor.
     "asterion": {
         "hp": "flesh",       # Spark Shield soaks first, Flesh is the body: 0 = Shattered
         "binds": {},
         "xp": ["glory"],
+        "conditions": ["Blinded", "Burning", "Bleeding", "Restrained", "Stunned", "Weakened", "Vulnerable"],
+        "rest": {
+            "short": [("full", "sparkShield"), ("add", "ichor", 2)],
+            "long": [("full", "sparkShield"), ("full", "flesh"), ("full", "ichor")],
+        },
+    },
+    # Neon & Dragons Player's Guide: the native sheet keeps HP/Shock/PP/MP in columns
+    # (party Rest handles those); the template adds the guide's stim limit.
+    "nd-default": {
+        "hp": None, "binds": {}, "xp": [],
+        "conditions": ["Burn", "Freeze", "Toxin", "Bleeding", "Blind", "Yellow", "Charm", "Daze", "Stunned"],
+        "rest": {"long": [("empty", "stims")]},
     },
 }
 
@@ -186,4 +205,76 @@ def apply_xp_award(tpl, custom_fields: dict, delta: int) -> dict:
         if base is None:
             base = _num((by_id.get(fid) or {}).get("default_value")) or 0
         cf[fid] = max(0, base + delta)
+    return cf
+
+
+# ── Conditions & Rest ────────────────────────────────────────────────────────
+
+ND_CONDITIONS = ["Burn", "Freeze", "Toxin", "Bleeding", "Blind", "Yellow", "Charm", "Daze", "Stunned"]
+GENERIC_CONDITIONS = ["Bleeding", "Burning", "Blinded", "Restrained", "Stunned", "Weakened", "Vulnerable"]
+
+
+def system_conditions(tpl) -> list:
+    """The condition chips a sheet offers: the rulebook's own list for a built-in
+    system (a Hunter is Marked or Prone, never Yellow-tainted; an Asterion god is
+    Vulnerable, never Frozen), the N&D list for the standard sheet, and a neutral
+    set for a GM's custom system (they can always add their own)."""
+    if tpl is None:
+        return list(ND_CONDITIONS)
+    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    if builtin and builtin.get("conditions"):
+        return list(builtin["conditions"])
+    if getattr(tpl, "sheet_mode", "nd") != "custom":
+        return list(ND_CONDITIONS)
+    return list(GENERIC_CONDITIONS)
+
+
+def rest_ops(tpl, kind: str = "long") -> list:
+    """The built-in system's Rest rules as ops: ("full", resource) refills a track,
+    ("add", resource, n) tops it up, ("empty", resource) zeroes its current value,
+    ("set", field, value) writes a plain field. `kind` is "short" or "long"; a
+    system with a single Rest lists only "long" and a short one falls back to it."""
+    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    spec = (builtin or {}).get("rest") or {}
+    return list(spec.get(kind) or spec.get("long") or [])
+
+
+def rest_touched_keys(tpl) -> set:
+    """Every custom-field key a Rest of this system can change (either kind) — what
+    Undo is allowed to put back, and nothing more."""
+    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    keys = set()
+    for ops in ((builtin or {}).get("rest") or {}).values():
+        for op in ops:
+            if op[0] in ("full", "add", "empty"):
+                keys |= {f"{op[1]}_current", f"{op[1]}_max"}
+            elif op[0] == "set":
+                keys.add(op[1])
+    return keys
+
+
+def has_short_rest(tpl) -> bool:
+    """True when the built-in system defines a Short Rest distinct from its Rest."""
+    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    return bool(((builtin or {}).get("rest") or {}).get("short"))
+
+
+def apply_rest(tpl, custom_fields: dict, kind: str = "long") -> dict:
+    """`custom_fields` after the system's Rest rules; unknown ops / fields ignored."""
+    cf = dict(custom_fields) if isinstance(custom_fields, dict) else {}
+    tracks = {t["id"]: t for t in resource_tracks(template_fields(tpl), cf)}
+    for op in rest_ops(tpl, kind):
+        name, target = op[0], op[1]
+        if name in ("full", "add", "empty"):
+            t = tracks.get(target)
+            if not t:
+                continue
+            if name == "full":
+                cf[f"{target}_current"], cf[f"{target}_max"] = t["max"], t["max"]
+            elif name == "add":
+                cf[f"{target}_current"], cf[f"{target}_max"] = min(t["max"], t["current"] + op[2]), t["max"]
+            else:
+                cf[f"{target}_current"], cf[f"{target}_max"] = 0, t["max"]
+        elif name == "set":
+            cf[target] = op[2]
     return cf

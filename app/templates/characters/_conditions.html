@@ -2,7 +2,8 @@
    Needs: pc, conditions (list of str), can_manage.
    Every click is saved through POST /api/characters/{id}/conditions, so the
    state survives a reload and shows on the party strip / combat tracker. #}
-{% set _presets = ['Burn', 'Freeze', 'Toxin', 'Bleeding', 'Blind', 'Yellow', 'Charm', 'Daze', 'Stunned'] %}
+{# the rulebook's own list for this character's system; the N&D list for the standard sheet #}
+{% set _presets = condition_presets or ['Burn', 'Freeze', 'Toxin', 'Bleeding', 'Blind', 'Yellow', 'Charm', 'Daze', 'Stunned'] %}
 {% set _presets_lower = _presets | map('lower') | list %}
 {% set _have = (conditions or []) | map('lower') | list %}
 {% set _extra = namespace(items=[]) %}

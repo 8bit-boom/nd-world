@@ -159,12 +159,9 @@ def test_junk_numbers_are_400_not_500(client, seed):
 # ── party rest ───────────────────────────────────────────────────────────────
 
 def test_party_rest_restores_derived_shock_and_skips_custom_sheets(client, seed):
-    db = SessionLocal()
-    try:
-        custom = db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom").first()
-        custom_id = custom.id
-    finally:
-        db.close()
+    # A custom system with no Rest rules (the built-ins DO have them — see test_party_rest_systems).
+    custom_id = _add(SheetTemplate(world_id=seed.world_a.id, name="Plain", slug="plain-no-rest", sheet_mode="custom",
+                                   fields_json=json.dumps([{"id": "grit", "label": "Grit", "type": "number"}])))
     native = _auto_pc(seed, pp_current=0, mp_current=0)
     sheet = _add(PlayerCharacter(world_id=seed.world_a.id, name="Custom", sheet_template_id=custom_id,
                                  pp_current=2, mp_current=2, shock_current=1))

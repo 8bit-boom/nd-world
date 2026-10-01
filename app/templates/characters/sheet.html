@@ -432,8 +432,17 @@
     </table>
     <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">
       Total CA used: <strong style="color:var(--neon3,#a855f7);">{{ ca_used }}</strong>
-      / CA {{ ca_derived }}
+      / CA {{ ca_derived }} · remaining <strong>{{ ca_derived - ca_used }}</strong>
     </div>
+    {% if ca_derived - ca_used <= 0 %}
+    <div id="ca-warning" style="margin-top:.5rem;padding:.45rem .65rem;border:1px solid var(--neon2);border-radius:4px;color:var(--neon2);font-size:.8rem" role="alert">
+      ⚠ Cyberpsychosis — Cyber Adaptivity is at or below 0.
+      {% if phys > ment %}Physical exceeds Mental, so this character becomes a Cyberpsycho.
+      {% elif ment > phys %}Mental exceeds Physical, so the body fails.
+      {% else %}Physical &gt; Mental: Cyberpsycho · Mental &gt; Physical: the body fails.{% endif %}
+      Permanent unless addressed narratively.
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -490,8 +499,9 @@
       <div style="display:flex;flex-wrap:wrap;gap:.5rem">
         {% for f in sec_fields %}
           {% if f.type == 'resource' %}
+          {% set _dv = (f.default_value or '0/0').split('/') %}
           <div class="cs-derived-chip" style="border-color:var(--neon3,#a855f7)">
-            <div class="dc-val" style="color:var(--neon3,#a855f7)">{{ custom_fields.get(f.id~'_current', '0') }} / {{ custom_fields.get(f.id~'_max', '0') }}</div>
+            <div class="dc-val" style="color:var(--neon3,#a855f7)">{{ custom_fields.get(f.id~'_current', _dv[0]) }} / {{ custom_fields.get(f.id~'_max', _dv[1] if _dv|length > 1 else '0') }}</div>
             <div class="dc-lbl">{{ f.label }}</div>
           </div>
           {% elif f.type == 'number' %}
@@ -499,10 +509,10 @@
             <div class="dc-val">{{ custom_fields.get(f.id, f.default_value or '0') }}</div>
             <div class="dc-lbl">{{ f.label }}</div>
           </div>
-          {% elif f.type in ['textarea', 'text'] %}
+          {% elif f.type in ['textarea', 'text', 'select'] %}
           <div style="flex:1;min-width:200px">
             <div style="font-size:.65rem;text-transform:uppercase;color:var(--text-dim);margin-bottom:.2rem">{{ f.label }}</div>
-            <div style="font-size:.85rem;color:var(--text);white-space:pre-wrap">{{ custom_fields.get(f.id, '') }}</div>
+            <div style="font-size:.85rem;color:var(--text);white-space:pre-wrap">{{ custom_fields.get(f.id, f.default_value or '') }}</div>
           </div>
           {% endif %}
         {% endfor %}

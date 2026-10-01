@@ -228,30 +228,39 @@
   {% if edit_level == "full" %}
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem">
     <button type="button" id="launch-combat-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⚔ Launch Combat</button>
-    <button type="button" id="rest-btn" onclick="partyRest()"
+    <button type="button" id="rest-btn" onclick="partyRest('long')"
             style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer"
-            title="N&D Rest: restores half of each member's max PP and MP (rounded down) and ALL Shock. HP is untouched — that's stims/medical.">🛏 Rest</button>
+            title="Each member rests by their own system's rules. N&D: half of max PP and MP (rounded down) and ALL Shock, stims reset. Asterion: all Flesh, Ichor and Spark Shield. Hunt in the Moonlight: all Stamina, Strain cleared. Health is never restored by resting.">🛏 {{ 'Long Rest' if short_rest_available else 'Rest' }}</button>
+    {% if short_rest_available %}
+    <button type="button" id="short-rest-btn" onclick="partyRest('short')"
+            style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer"
+            title="Asterion Short Rest: Spark Shield fully restored and +2 Ichor. Members on other systems rest as normal.">💤 Short Rest</button>
+    {% endif %}
     <button type="button" id="rest-undo-btn" onclick="partyRestUndo()" style="display:none;background:var(--bg3);border:1px solid #da4;color:#da4;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer">↩ Undo Rest</button>
     <span id="rest-status" style="font-size:.78rem;color:var(--text-dim)"></span>
     <script>
       // Rules Rest (core_rules.md §10) across the whole party, with a
       // client-held snapshot for one-click undo.
       let _restSnapshot = null;
-      async function partyRest() {
-        if (!confirm('Apply a Rest to every member PC?\nPer N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is NOT changed (stims/medical only).')) return;
-        const btn = document.getElementById('rest-btn');
+      async function partyRest(kind) {
+        kind = kind === 'short' ? 'short' : 'long';
+        if (!confirm('Apply a ' + (kind === 'short' ? 'Short Rest' : 'Rest') + ' to every member?\nEach rests by their own system: N&D restores half of max PP and MP and ALL Shock; Asterion and Hunt in the Moonlight follow their rulebooks. Health is NOT restored (stims/medical only).')) return;
+        const btns = Array.from(document.querySelectorAll('#rest-btn, #short-rest-btn'));
         const st = document.getElementById('rest-status');
-        btn.disabled = true; st.textContent = 'Resting…';
+        btns.forEach(b => { b.disabled = true; }); st.textContent = 'Resting…';
         try {
-          const res = await fetch('{{ ('/api/parties/' + party.id|string + '/rest')|wq }}', { method: 'POST' });
+          const res = await fetch('{{ ('/api/parties/' + party.id|string + '/rest')|wq }}', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: kind }),
+          });
           const d = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
           _restSnapshot = d.snapshot || [];
-          st.textContent = 'Rest applied — PP/MP topped by half, Shock full.';
+          const n = (d.applied || []).length;
+          st.textContent = (kind === 'short' ? 'Short Rest' : 'Rest') + ' applied to ' + n + ' member' + (n === 1 ? '' : 's') + '.';
           document.getElementById('rest-undo-btn').style.display = '';
         } catch (e) {
           st.textContent = '⚠ ' + e.message;
-        } finally { btn.disabled = false; }
+        } finally { btns.forEach(b => { b.disabled = false; }); }
       }
       async function partyRestUndo() {
         if (!_restSnapshot) return;

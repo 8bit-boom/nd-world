@@ -17,12 +17,12 @@
 .cx-field { margin-bottom:.75rem; }
 .cx-field.wide { grid-column:1 / -1; }
 .cx-field label { display:block;font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.3rem; }
-.cx-field input, .cx-field textarea {
+.cx-field input, .cx-field textarea, .cx-field select {
   width:100%; box-sizing:border-box; background:var(--bg3); border:1px solid var(--border); color:var(--text);
   border-radius:5px; padding:.5rem .65rem; font-family:var(--font); font-size:.88rem;
 }
 .cx-field textarea { resize:vertical; min-height:70px; }
-.cx-field input:disabled, .cx-field textarea:disabled { opacity:.85; cursor:default; }
+.cx-field input:disabled, .cx-field textarea:disabled, .cx-field select:disabled { opacity:.85; cursor:default; }
 .cx-list { display:flex;flex-direction:column;gap:.6rem;margin-top:.4rem; }
 .cx-list-item { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.65rem;position:relative; }
 .cx-list-remove { position:absolute;top:.5rem;right:.5rem;background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.15rem .5rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.7rem; }
@@ -120,6 +120,17 @@
           <label>{{ f.label }}</label>
           <textarea data-cf-id="{{ f.id }}" {% if not can_manage %}disabled{% endif %}>{{ custom_fields.get(f.id, f.default_value or '') }}</textarea>
         </div>
+        {% elif f.type == 'select' %}
+        {% set _cur = custom_fields.get(f.id, f.default_value or '') %}
+        <div class="cx-field">
+          <label>{{ f.label }}</label>
+          <select data-cf-id="{{ f.id }}" {% if not can_manage %}disabled{% endif %}>
+            {# keep a value saved under an older option list (e.g. a retired race name) instead of silently blanking it #}
+            {% if _cur and _cur not in (f.options or []) %}<option value="{{ _cur }}" selected>{{ _cur }}</option>{% endif %}
+            <option value=""{% if not _cur %} selected{% endif %}>—</option>
+            {% for o in f.options or [] %}<option value="{{ o }}"{% if o == _cur %} selected{% endif %}>{{ o }}</option>{% endfor %}
+          </select>
+        </div>
         {% elif f.type == 'resource' %}
         <div class="cx-field">
           <label>{{ f.label }} <span style="color:var(--text-dim);font-size:.72rem">(current / max)</span></label>
@@ -202,7 +213,20 @@ function buildListItem(fieldDef, data) {
     label.textContent = sf.label;
     item.appendChild(label);
     let input;
-    if (sf.type === 'textarea') {
+    if (sf.type === 'select') {
+      input = document.createElement('select');
+      input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.4rem .55rem;font-family:var(--font);font-size:.85rem';
+      const cur = data[sf.id] || '';
+      const opts = (sf.options || []).slice();
+      if (cur && opts.indexOf(cur) < 0) opts.unshift(cur);  // keep a value saved under an older list
+      [''].concat(opts).forEach(function (o) {
+        const op = document.createElement('option');
+        op.value = o;
+        op.textContent = o || '—';
+        if (o === cur) op.selected = true;
+        input.appendChild(op);
+      });
+    } else if (sf.type === 'textarea') {
       input = document.createElement('textarea');
       input.rows = 2;
       input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.4rem .55rem;font-family:var(--font);font-size:.85rem;resize:vertical';

@@ -18,7 +18,10 @@ from ..party_refs import (
     LOOT_NAME_MAX, LOOT_NOTES_MAX, LOOT_QTY_MAX, load_loot, member_ids as party_member_ids_raw,
 )
 from ..pc_stats import pc_maxima
-from ..sheet_systems import hp_track, parse_custom_fields, resource_tracks, system_meta, template_fields
+from ..sheet_systems import (
+    apply_rest, has_short_rest, hp_track, parse_custom_fields, resource_tracks, rest_ops, rest_touched_keys,
+    system_meta, template_fields,
+)
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import (  # cross-router imports, per AGENTS.md
     _derived, _levelup_ready as _pc_levelup_ready, _pc_to_ndc_dict, _safe_export_filename,
@@ -302,6 +305,10 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         "levelup_names": levelup_names,
         "condition_summary": condition_summary,
         "unclaimed_loot": unclaimed_loot,
+        # offer a Short Rest button only if someone's system actually has one (Asterion)
+        "short_rest_available": any(
+            has_short_rest(db.get(SheetTemplate, tid))
+            for tid in {pc.sheet_template_id for pc in member_pcs if pc.sheet_template_id}),
     })
 
 
@@ -693,9 +700,14 @@ async def party_member_toggle(party_id: int, request: Request, db: Session = Dep
 @router.post("/api/parties/{party_id}/rest")
 async def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
                      active_world: str = Cookie(None)):
-    """Apply a rules Rest (core_rules.md §10) to every member PC: +½ max
-    PP and MP (rounded down), all Shock restored. HP is untouched — that's
-    stims/medical. Returns the per-PC snapshot for one-click Undo (the
+    """Apply a Rest to every member, each by THEIR system's rules. An N&D sheet
+    gets the core-rules Rest (core_rules.md §10): +½ max PP and MP (rounded down),
+    all Shock; HP is untouched — that's stims/medical. A character on a built-in
+    system (app/sheet_systems.py BUILTIN_SYSTEMS) gets that rulebook's Rest —
+    Asterion's Short/Long Rest, Hunt in the Moonlight's Stamina/Strain reset, the N&D
+    stim counter. Body {"kind": "short"|"long"} (default long) picks Asterion's
+    variant; systems with a single Rest apply it either way. A custom system with no
+    Rest rules is left alone. Returns the per-PC snapshot for one-click Undo (the
     client POSTs it back to /rest/undo). Full-edit tier."""
     world, _ = get_world_ctx(request, db, active_world)
     party = db.query(Party).filter(Party.id == party_id).first()
@@ -703,36 +715,57 @@ async def party_rest(party_id: int, request: Request, db: Session = Depends(get_
         raise HTTPException(404)
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    kind = body.get("kind", "long") if isinstance(body, dict) else "long"
+    if kind not in ("short", "long"):
+        raise HTTPException(400, "kind must be short or long")
     pc_ids = json.loads(party.member_pc_ids_json or "[]")
     member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
     snapshot, applied = [], []
+    tpl_cache = {}
     for pc in member_pcs:
         m = pc_maxima(pc)
-        if not m["native"]:
-            continue  # custom-sheet characters track their own resources; PP/MP/Shock aren't theirs to rest
-        pp_max, mp_max = m["pp"], m["mp"]
-        snapshot.append({"id": pc.id, "name": pc.name,
-                         "pp_current": pc.pp_current or 0,
-                         "mp_current": pc.mp_current or 0,
-                         "shock_current": pc.shock_current or 0})
-        new_pp = min(pp_max, (pc.pp_current or 0) + pp_max // 2)
-        new_mp = min(mp_max, (pc.mp_current or 0) + mp_max // 2)
-        pc.pp_current, pc.mp_current = new_pp, new_mp
-        pc.shock_current = m["shock"]
-        applied.append({"id": pc.id, "name": pc.name,
-                        "pp_current": new_pp, "pp_max": pp_max,
-                        "mp_current": new_mp, "mp_max": mp_max})
+        if pc.sheet_template_id not in tpl_cache:
+            tpl_cache[pc.sheet_template_id] = db.get(SheetTemplate, pc.sheet_template_id) if pc.sheet_template_id else None
+        tpl = tpl_cache[pc.sheet_template_id]
+        ops = rest_ops(tpl, kind) if tpl is not None else []
+        if not m["native"] and not ops:
+            continue  # a custom system without Rest rules tracks its own resources; nothing to apply
+        entry = {"id": pc.id, "name": pc.name}
+        result = {"id": pc.id, "name": pc.name}
+        if m["native"]:
+            entry.update(pp_current=pc.pp_current or 0, mp_current=pc.mp_current or 0,
+                         shock_current=pc.shock_current or 0)
+            new_pp = min(m["pp"], (pc.pp_current or 0) + m["pp"] // 2)
+            new_mp = min(m["mp"], (pc.mp_current or 0) + m["mp"] // 2)
+            pc.pp_current, pc.mp_current = new_pp, new_mp
+            pc.shock_current = m["shock"]
+            result.update(pp_current=new_pp, pp_max=m["pp"], mp_current=new_mp, mp_max=m["mp"])
+        if ops:
+            entry["custom_fields_json"] = pc.custom_fields_json or "{}"
+            cf = apply_rest(tpl, parse_custom_fields(pc.custom_fields_json), kind)
+            pc.custom_fields_json = json.dumps(cf)
+            result["tracks"] = resource_tracks(template_fields(tpl), cf, system_meta(tpl))
+        snapshot.append(entry)
+        applied.append(result)
     db.commit()
     live.touch(party.world_id)
-    return {"applied": applied, "snapshot": snapshot}
+    return {"applied": applied, "snapshot": snapshot, "kind": kind}
+
+
+_MAX_SNAPSHOT_FIELDS_BYTES = 200_000
 
 
 @router.post("/api/parties/{party_id}/rest/undo")
 async def party_rest_undo(party_id: int, request: Request, db: Session = Depends(get_db),
                           active_world: str = Cookie(None)):
     """Undo a Rest: the client POSTs back the snapshot /rest returned.
-    Only member PCs of THIS party are touched, and only the three fields
-    the rest changed."""
+    Only member PCs of THIS party are touched, and only the fields the rest
+    changed (PP/MP/Shock for an N&D sheet, the sheet's custom fields for a
+    custom system). Malformed entries are skipped, never applied."""
     world, _ = get_world_ctx(request, db, active_world)
     party = db.query(Party).filter(Party.id == party_id).first()
     if not party or not world or party.world_id != world.id:
@@ -743,7 +776,7 @@ async def party_rest_undo(party_id: int, request: Request, db: Session = Depends
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
-    snapshot = body.get("snapshot")
+    snapshot = body.get("snapshot") if isinstance(body, dict) else None
     if not isinstance(snapshot, list):
         raise HTTPException(400, "snapshot must be a list")
     member_ids = set(json.loads(party.member_pc_ids_json or "[]"))
@@ -757,9 +790,29 @@ async def party_rest_undo(party_id: int, request: Request, db: Session = Depends
         pc = db.get(PlayerCharacter, pc_id)
         if not pc:
             continue
-        pc.pp_current = max(0, int(entry.get("pp_current") or 0))
-        pc.mp_current = max(0, int(entry.get("mp_current") or 0))
-        pc.shock_current = max(0, int(entry.get("shock_current") or 0))
+        for col in ("pp_current", "mp_current", "shock_current"):
+            if col in entry:
+                try:
+                    setattr(pc, col, max(0, int(entry.get(col) or 0)))
+                except (TypeError, ValueError):
+                    pass
+        raw = entry.get("custom_fields_json")
+        tpl = db.get(SheetTemplate, pc.sheet_template_id) if pc.sheet_template_id else None
+        if isinstance(raw, str) and len(raw) <= _MAX_SNAPSHOT_FIELDS_BYTES and tpl is not None:
+            try:
+                before = json.loads(raw)
+            except ValueError:
+                before = None
+            if isinstance(before, dict):
+                # Put back ONLY the fields a Rest of this system can change; a crafted
+                # snapshot can't rewrite anything else on a sheet the caller may not edit.
+                cf = parse_custom_fields(pc.custom_fields_json)
+                for key in rest_touched_keys(tpl):
+                    if key not in before:
+                        cf.pop(key, None)  # it wasn't saved before the Rest: unsave it again
+                    elif isinstance(before[key], (int, float)) or (isinstance(before[key], str) and len(before[key]) <= 100):
+                        cf[key] = before[key]
+                pc.custom_fields_json = json.dumps(cf)
         restored += 1
     db.commit()
     live.touch(party.world_id)

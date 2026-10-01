@@ -88,7 +88,15 @@ tools that require GM access still check `is_gm` at call time.)
   a ceiling) and `app/party_refs.py` (party membership parsing,
   `parties_for_pc`, `detach_pc` — call it wherever a character is deleted so
   no party roster, loot claim or calendar event dangles — and `load_loot`, the
-  stable-`lid` loot normaliser). Editing a character is a *partial* update
+  stable-`lid` loot normaliser), and `app/sheet_systems.py` (read-time system
+  metadata for custom-sheet templates: which field is the HP-like `vital`, which
+  fields `binds` to name/player, XP fields, status-condition presets and per-system
+  Rest ops — all derived per field attribute or from `BUILTIN_SYSTEMS` by slug, so
+  existing databases need no migration; party vitals/roster, combat, XP awards and
+  Rest go through it, never through raw `custom_fields_json` guesses). Built-in
+  sheet templates are re-synced by `_upgrade_builtin_sheet_fields` in
+  `app/database.py`: an untouched old row is replaced, a GM-customised one is kept,
+  and field ids are never removed. Editing a character is a *partial* update
   (`_apply_form(..., partial=True)`): only keys the form sent are written.
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before

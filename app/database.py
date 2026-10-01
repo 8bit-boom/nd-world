@@ -282,36 +282,57 @@ _STAT_BLOCK_FIELDS = [
     ]),
 ]
 
+def _item_select(id, label, options):
+    return {"id": id, "label": label, "type": "select", "options": options}
+
+
 _ASTERION_FIELDS = [
+    # Identity — the Character Sentence: "I am a [Origin / Lineage] who wields the
+    # Spark of [Divine Spark], known for my [Epic Deed / Mythic Curse]."
+    _select_f("kind", "Kind (Gods and Mythborn roll 2d10 · Mortals 1d10)", "Identity",
+              ["God (Origin)", "Mythborn (Lineage)", "Mortal"], "God (Origin)"),
     _f("origin", "Origin (Gods) / Lineage (Mythborn)", "text", "Identity"),
     _f("spark", "Divine Spark / Domain", "text", "Identity"),
+    _f("deed", "Epic Deed / Mythic Curse", "text", "Identity"),
     _f("sentence", "Character Sentence", "text", "Identity"),
     _f("appearance", "Appearance & Personality", "textarea", "Identity"),
 
-    # Resource trackers (current/max) — damage hits Spark Shield first,
-    # then Flesh; Ichor fuels abilities and dice. The Party page's Member
-    # Vitals strip reads these for at-a-glance status.
-    _f("sparkShield", "Spark Shield (regenerates each combat)", "resource", "Core Stats", "3/3"),
-    _f("flesh", "Flesh (0 = Shattered)", "resource", "Core Stats", "5/5"),
-    _f("ichor", "Ichor (fuels abilities, +1d10 each)", "resource", "Core Stats", "5/5"),
-    _f("armor", "Armor", "number", "Core Stats", "0"),
-    _f("attackPool", "Attacker Pool", "text", "Core Stats"),
-    _f("defensePool", "Defender Pool", "text", "Core Stats"),
+    # Resource trackers (current/max). All damage hits Spark Shield first, then
+    # spills into Flesh (0 = Shattered); Ichor fuels abilities and dice (+1d10
+    # each). The Party page's Member Vitals strip reads these; Flesh is the
+    # character's "HP" (see app/sheet_systems.py).
+    _f("sparkShield", "Spark Shield (base 3 · soaks damage first · refills each combat)", "resource", "Core Stats", "3/3"),
+    _f("flesh", "Flesh (base 5 · 0 = Shattered)", "resource", "Core Stats", "5/5"),
+    _f("ichor", "Ichor (base 5 · pays for abilities, +1d10 each)", "resource", "Core Stats", "5/5"),
+    _f("armor", "Armor (subtracted from physical damage)", "number", "Core Stats", "0"),
+    _f("resistances", "Resistances (each removes 1 attacker success · Greater removes 2 · same type never stacks)", "text", "Core Stats"),
+    _f("senses", "Senses (superhuman · advanced · mythic)", "text", "Core Stats"),
+    _f("attackPool", "Attacker Pool (2d10 · 3d10 for your Domain)", "text", "Core Stats", "2d10 (3d10 Domain)"),
+    _f("defensePool", "Defender Pool", "text", "Core Stats", "2d10"),
     _f("movement", "Movement", "text", "Core Stats", "30 ft / 6 hexes"),
 
+    # Three starting abilities: two Tier 1 and one Tier 2 (or the Optional Exception
+    # with a permanent Trade-Off). An Active Deed is usable once per session.
     _f("abOriginName", "Origin/Lineage Ability — Name", "text", "Abilities"),
-    _f("abOriginTier", "Origin/Lineage Ability — Tier/Type", "text", "Abilities"),
+    _f("abOriginTier", "Origin/Lineage Ability — Tier · Active/Passive · Ichor", "text", "Abilities"),
     _f("abOriginText", "Origin/Lineage Ability — Effect", "textarea", "Abilities"),
+    _f("abOriginTradeoff", "Origin/Lineage Ability — Trade-Off", "text", "Abilities"),
     _f("abSparkName", "Spark Ability — Name", "text", "Abilities"),
-    _f("abSparkTier", "Spark Ability — Tier/Type", "text", "Abilities"),
+    _f("abSparkTier", "Spark Ability — Tier · Active/Passive · Ichor", "text", "Abilities"),
     _f("abSparkText", "Spark Ability — Effect", "textarea", "Abilities"),
+    _f("abSparkTradeoff", "Spark Ability — Trade-Off", "text", "Abilities"),
     _f("abDeedName", "Deed/Curse Ability — Name", "text", "Abilities"),
-    _f("abDeedTier", "Deed/Curse Ability — Tier/Type", "text", "Abilities"),
+    _f("abDeedTier", "Deed/Curse Ability — Tier · Active (once per session) / Passive (one Burden)", "text", "Abilities"),
     _f("abDeedText", "Deed/Curse Ability — Effect", "textarea", "Abilities"),
-    _list_f("extraAbilities", "Additional Abilities", "Abilities", [
+    _f("abDeedTradeoff", "Deed/Curse Ability — Trade-Off / Burden", "text", "Abilities"),
+    _select_f("deedUsed", "Active Deed this session", "Abilities", ["Ready", "Used this session"], "Ready"),
+    _list_f("extraAbilities", "Additional Abilities (bought with Glory: 4 / 7 / 10 for Tier 1 / 2 / 3)", "Abilities", [
         {"id": "name", "label": "Name", "type": "text"},
-        {"id": "tier", "label": "Tier / Type", "type": "text"},
+        {"id": "tier", "label": "Tier", "type": "text"},
+        _item_select("kind", "Active / Passive", ["Active", "Passive"]),
+        {"id": "cost", "label": "Ichor cost (T1 0 · T2 1 · T3 3)", "type": "text"},
         {"id": "text", "label": "Effect", "type": "textarea"},
+        {"id": "tradeoff", "label": "Trade-Off", "type": "text"},
     ]),
 
     _f("drachma", "Drachma (Currency)", "number", "Inventory & Equipment", "0"),
@@ -320,13 +341,41 @@ _ASTERION_FIELDS = [
     _list_f("consumables", "Consumables (max 3)", "Inventory & Equipment", [
         {"id": "name", "label": "Item", "type": "text"},
     ]),
-    _f("artifacts", "Artifacts / Notable Items", "textarea", "Inventory & Equipment"),
+    _f("artifacts", "Artifacts / Notable Items (with uses left)", "textarea", "Inventory & Equipment"),
 
-    _f("glory", "Glory (XP)", "number", "Progression", "0"),
-    _f("domainRank", "Domain Rank", "text", "Progression"),
-    _f("reputation", "Reputation / Titles", "text", "Progression"),
+    # Progression: Glory is the only advancement currency (+1 survive, +1 miracle,
+    # +2 Apex Bout, plus up to 4 roleplay awards per session).
+    _f("glory", "Glory (unspent)", "number", "Progression", "0"),
+    _f("ambition", "Divine Ambition (one active, concrete — the GM can tell when it succeeds or fails)", "textarea", "Progression"),
+    _list_f("ambitionLog", "Ambition History (achieved 8 Glory · at great cost +2 · failed dramatically 3)", "Progression", [
+        {"id": "ambition", "label": "Ambition", "type": "text"},
+        _item_select("result", "Result", ["Achieved", "Achieved at Great Cost", "Failed Dramatically"]),
+        {"id": "glory", "label": "Glory", "type": "text"},
+    ]),
+    _f("repScore", "Reputation score (−9 Cursed Name · −6 Infamous · −3 Notorious · −1 Distrusted · 0 Unknown · 3 Recognized · 6 Renowned · 9+ Legendary)", "number", "Progression", "0"),
+    _f("reputation", "Titles / Reputation notes", "text", "Progression"),
     _list_f("milestones", "Milestones Achieved", "Progression", [
         {"id": "name", "label": "Milestone", "type": "text"},
+    ]),
+
+    # Domain Reclamation — a campaign-length arc; Ranks cost 20 / 30 / 40 Glory.
+    _select_f("domainRank", "Domain Rank (1: +1 die at home · 2: 5+ difficulty · 3: +2 dice)", "Domain",
+              ["0 · The Ruin", "1 · Sanctuary", "2 · Realm", "3 · Cosmos"], "0 · The Ruin"),
+    _f("domainConcept", "Domain — Original Concept (what it was before it fell)", "textarea", "Domain"),
+    _f("domainDecay", "Domain — Current Decay (what is wrong with it now)", "textarea", "Domain"),
+    _list_f("domainFeatures", "Domain Features (Tier 1 / 2 / 3 cost 6 / 12 / 18 Glory · two needed at the target Rank)", "Domain", [
+        {"id": "name", "label": "Feature", "type": "text"},
+        _item_select("tier", "Tier", ["Tier 1", "Tier 2", "Tier 3"]),
+        _item_select("category", "Category", ["Yield / Resources", "Defenses / Wards", "Travel / Portals", "Metaphysical / Law"]),
+        {"id": "effect", "label": "Effect / Trade-Off", "type": "textarea"},
+    ]),
+    _f("greatWonder", "Great Wonder (unlocked at Rank 3 · Glory + a GM quest)", "textarea", "Domain"),
+
+    _list_f("followers", "Followers (active at once = Domain Rank + 1)", "Followers", [
+        {"id": "name", "label": "Name", "type": "text"},
+        _item_select("tier", "Tier", ["Tier 1 · Devotee", "Tier 2 · Disciple", "Tier 3 · Champion"]),
+        {"id": "ability", "label": "Ability", "type": "text"},
+        {"id": "notes", "label": "Notes / Loyalty", "type": "textarea"},
     ]),
 
     _f("sessionNum", "Current Session #", "text", "Campaign Log"),
@@ -343,14 +392,18 @@ _ASTERION_FIELDS = [
     _f("freeNotes", "GM / Free Notes", "textarea", "Notes"),
 ]
 
-# "Hunt in the Moonlight" — a moon-corruption hunter game. Ported from a
-# standalone reference character sheet (uploaded HTML) that used clickable
-# pip-trackers, <select> dropdowns, and colored chips for Race/Strain/Moon
-# Phase/Moon Color — none of which custom_sheet.html's renderer supports
-# (only text/textarea/number/list exist there, confirmed by reading its
-# Jinja: no select, no checkbox, no tracker widget). Trackers become
-# Current/Max number pairs; fixed-option pickers become text fields whose
-# label lists the intended options, e.g. "Race (Human / Elf / ...)".
+_HITM_RACES = ["Human", "Rootbound", "Fleshwarped", "Stoneblooded", "Baroqueborn", "Gravekin", "Lamrossa Wrought",
+               "Amalgama", "All-Mother's Kin", "Third-Eyed", "Moonborn", "Yellowbound", "The Unwritten"]
+_HITM_MOON_PHASES = ["New Moon", "Waxing Crescent", "Waxing Half", "Waxing Gibbous", "Full Moon",
+                     "Waning Gibbous", "Waning Half", "Waning Crescent"]
+_HITM_MOON_COLORS = ["Grey", "Red", "Violet", "Green", "Blue", "White", "Black", "Pink", "Teal", "Amber", "Yellow"]
+
+# "Hunt in the Moonlight" — a moon-corruption hunter game, kept in line with the
+# Revision 1.11 rulebook: Health/Stamina/Hunger/Arcane Knowledge/Signature Point
+# tracks, Strain, permanent Wounds (+ Press On), Hunter Marks and Crows, the v1.9
+# race names, the Moonfall phases/colours. Originally ported from a standalone
+# reference sheet (clickable pip-trackers, dropdowns, coloured chips); trackers
+# are Current/Max resource pairs and fixed-option pickers are dropdowns.
 _HITM_FIELDS = [
     _f("player", "Player", "text", "Identity"),
     _f("hunter", "Hunter Name", "text", "Identity"),
@@ -359,48 +412,69 @@ _HITM_FIELDS = [
     _f("campaign", "Campaign", "text", "Identity"),
     _f("hunt", "Current Hunt", "text", "Identity"),
     _f("location", "Location", "text", "Identity"),
-    _f("race", "Race (Human / Elf / Drow / Dwarf / Deviltouched / Orc / Lamrossa Automaton)", "text", "Identity"),
+    _select_f("race", "Race (replaces Who Is My Prey — grants a Heritage Ability)", "Identity", _HITM_RACES, "Human"),
+    _f("heritage", "Heritage Ability (passive + active), Trade-Offs & Moon Weakness colour", "textarea", "Identity"),
     _f("appearance", "Appearance, fashion, visible modifications, signature item", "textarea", "Identity"),
 
-    _f("use", "What I Use for the Hunt", "textarea", "Hunter's Oath"),
-    _f("reason", "Reason to Hunt", "textarea", "Hunter's Oath"),
-    _f("prey", "Who Is My Prey", "textarea", "Hunter's Oath"),
-    _f("signature", "Signature Move", "textarea", "Hunter's Oath"),
-    _f("desire", "Selfish Desire", "textarea", "Hunter's Oath"),
+    # "I use [Use] because of [Reason], and I prey upon [Prey]; when all else fails,
+    # I perform [Signature Move]." + the private Selfish Desire.
+    _f("use", "What I Use for the Hunt (Tier 1 ability)", "textarea", "Hunter's Oath"),
+    _f("reason", "Reason to Hunt (Tier 1 ability)", "textarea", "Hunter's Oath"),
+    _f("prey", "Who Is My Prey (Tier 2 ability — or your Race's Heritage Ability)", "textarea", "Hunter's Oath"),
+    _f("signature", "Signature Move (Tier 3 · spends 1 Signature Point · once per session)", "textarea", "Hunter's Oath"),
+    _select_f("signatureUsed", "Signature Move this session", "Hunter's Oath", ["Ready", "Used this session"], "Ready"),
+    _f("desire", "Selfish Desire (private — fuels Temptations)", "textarea", "Hunter's Oath"),
     _f("protect", "Person or place I protect", "textarea", "Hunter's Oath"),
     _f("fear", "Truth I fear / line I will not cross", "textarea", "Hunter's Oath"),
     _f("refuse", "Why I refuse the Moon", "textarea", "Hunter's Oath"),
 
-    # Resource trackers (current/max) — the system's defining vitals. The
-    # Party page's Member Vitals strip reads these for at-a-glance status.
-    _f("health", "Health (0 = Broken — Wound + Press On)", "resource", "Core Tracks", "5/5"),
-    _f("stamina", "Stamina (dice + Tier 2/3 costs)", "resource", "Core Tracks", "5/5"),
-    _f("hunger", "Hunger (10 = Lost to Hunger)", "resource", "Core Tracks", "0/10"),
-    _f("arcane", "Arcane Knowledge (10 = Insane)", "resource", "Core Tracks", "0/10"),
-    _f("signaturePoints", "Signature Point (1 = Move ready)", "resource", "Core Tracks", "1/1"),
-    _f("alteration", "Alteration", "number", "Core Tracks", "0"),
+    # Resource trackers (current/max) — the system's defining vitals. The Party
+    # page's Member Vitals strip reads these; Health is the character's "HP".
+    _f("health", "Health (base 5 · 0 = Broken + permanent Wound, or Press On)", "resource", "Core Tracks", "5/5"),
+    _f("stamina", "Stamina (Tier 2 costs 1 · Tier 3 costs 2 · restored after a scene)", "resource", "Core Tracks", "5/5"),
+    _f("hunger", "Hunger (6 tell · 8 Temptation · 10 Lost to Hunger)", "resource", "Core Tracks", "0/10"),
+    _f("arcane", "Arcane Knowledge (6 sign · 8 Insight · 10 Insane)", "resource", "Core Tracks", "0/10"),
+    _f("signaturePoints", "Signature Point (max 1 · earned by major deeds)", "resource", "Core Tracks", "1/1"),
+    _f("alteration", "Alteration (3 obvious · 6 inhuman tell · 8 compulsion · 10 Unmade)", "number", "Core Tracks", "0"),
     _f("overcharge", "Overcharge", "number", "Core Tracks", "0"),
-    _f("staminaSpent", "Stamina Spent since Rest", "number", "Core Tracks", "0"),
-    _f("armor", "Armor", "number", "Core Tracks", "0"),
-    _f("movement", "Movement", "number", "Core Tracks", "6"),
-    _f("strain", "Strain (0 / 1 / 2 — Max Stamina -1 / 3 — Overextended)", "text", "Core Tracks", "0"),
+    _f("staminaSpent", "Stamina Spent since last Rest (every 3 = 1 Strain)", "number", "Core Tracks", "0"),
+    _select_f("strain", "Strain (2: max Stamina −1 · 3 = Overextended: −2 and no auto-recovery)", "Core Tracks",
+              ["0", "1", "2", "3"], "0"),
+    _f("armor", "Armor (highest single source, +1 situational; never above 3, 4 vs legendary foes)", "number", "Core Tracks", "0"),
+    _f("movement", "Movement (map spaces · 6 = 30 ft / 9 m)", "number", "Core Tracks", "6"),
+    _select_f("pressOn", "Press On (once per session · a Major Wound for half max Health)", "Core Tracks",
+              ["Available", "Used this session"], "Available"),
     _f("hungerTell", "Hunger tell", "textarea", "Core Tracks"),
     _f("arcaneTell", "Arcane sign", "textarea", "Core Tracks"),
     _f("alterTell", "Alteration tell", "textarea", "Core Tracks"),
     _f("maintenance", "Maintenance / feeding", "textarea", "Core Tracks"),
 
-    _f("xpCurrent", "Current XP", "number", "Experience", "0"),
+    # Each fall to 0 Health leaves a permanent Wound; the first two Minor Wounds
+    # are cosmetic, from the third every Minor Wound applies its penalty.
+    _list_f("wounds", "Wounds of the Hunt (permanent · first two Minor are cosmetic)", "Wounds", [
+        {"id": "name", "label": "Wound", "type": "text"},
+        _item_select("kind", "Kind", ["Minor", "Major"]),
+        {"id": "mark", "label": "The Mark / Price", "type": "textarea"},
+        {"id": "effect", "label": "Penalty / Lesson", "type": "textarea"},
+    ]),
+
+    # Hunter Marks buy Guild goods (never advancement); Crows are the only coin.
+    _f("crows", "Crows (starting purse 100)", "number", "Marks & Crows", "100"),
+    _f("marks", "Hunter Marks (1 per session, +1 at GM discretion)", "number", "Marks & Crows", "0"),
+
+    # Advancement XP: 1 for taking part, +1 per milestone, up to 4 per session.
+    _f("xpCurrent", "Current XP (unspent)", "number", "Experience", "0"),
     _f("xpLifetime", "Lifetime XP Earned", "number", "Experience", "0"),
     _f("xpSpent", "Total XP Spent", "number", "Experience", "0"),
-    _list_f("xpLog", "XP Log", "Experience", [
+    _list_f("xpLog", "XP Log (1: +1 max Stamina · 3: +1 property · 4/7/10: new Tier 1/2/3 ability)", "Experience", [
         {"id": "purchase", "label": "Purchase", "type": "text"},
         {"id": "cost", "label": "XP Cost", "type": "text"},
         {"id": "note", "label": "Session / Note", "type": "text"},
     ]),
 
-    _f("moonPhase", "Moon Phase (New Moon / Crescent / Half Moon / Gibbous / Full Moon)", "text", "Moon Calendar"),
-    _f("moonColor", "Moon Color (Red / Violet / Green / Blue / White / Black / Pink / Teal / Amber / Bleeding Moon)", "text", "Moon Calendar"),
-    _f("moonNotes", "Current session's Moon notes (Bleeding Moon, story hooks, active Temptations)", "textarea", "Moon Calendar"),
+    _select_f("moonPhase", "Moon Phase (25-day cycle)", "Moon Calendar", _HITM_MOON_PHASES, ""),
+    _select_f("moonColor", "Moon Color (a colour manifests from Waxing Half · Yellow is GM-gated)", "Moon Calendar", _HITM_MOON_COLORS, "Grey"),
+    _f("moonNotes", "Current session's Moon notes (story hooks, active Temptations)", "textarea", "Moon Calendar"),
 
     _list_f("abilities", "Abilities", "Abilities", [
         {"id": "source", "label": "Source / Ability", "type": "text"},
@@ -419,11 +493,13 @@ _HITM_FIELDS = [
         {"id": "effect", "label": "Effect / Price", "type": "textarea"},
     ]),
 
-    _list_f("tools", "Hunter Tools & Loadout", "Hunter Tools & Loadout", [
+    _list_f("tools", "Hunter Tools & Loadout (a true Tool has three forms — Hunt, Pursuit, Execution — and four properties at creation)", "Hunter Tools & Loadout", [
         {"id": "toolForm", "label": "Tool / Form", "type": "text"},
         {"id": "name", "label": "Name", "type": "text"},
         {"id": "rangeDamage", "label": "Range / Damage", "type": "text"},
         {"id": "advantage", "label": "Advantage", "type": "text"},
+        {"id": "properties", "label": "Properties & Traits", "type": "textarea"},
+        {"id": "tradeoff", "label": "Trade-Off", "type": "text"},
         {"id": "look", "label": "Look / Operation", "type": "textarea"},
     ]),
 
@@ -435,6 +511,13 @@ _HITM_FIELDS = [
         {"id": "maintenance", "label": "Maintenance / Instinct / Failure", "type": "textarea"},
     ]),
 
+    _list_f("companions", "Mounts & Companions (Common 3 / Uncommon 5 / Relic 8 Marks)", "Mounts & Companions", [
+        {"id": "name", "label": "Name", "type": "text"},
+        _item_select("kind", "Kind", ["Mount", "Companion", "Hireling"]),
+        _item_select("tier", "Tier", ["Common", "Uncommon", "Relic"]),
+        {"id": "notes", "label": "Specialty / Care / Notes", "type": "textarea"},
+    ]),
+
     _list_f("sessions", "Session Record", "Session Record", [
         {"id": "session", "label": "Session", "type": "text"},
         {"id": "huntLocation", "label": "Hunt / Location", "type": "text"},
@@ -443,12 +526,49 @@ _HITM_FIELDS = [
         {"id": "truth", "label": "Truth, Scar, or Change", "type": "textarea"},
     ]),
 
-    _f("heritage", "Heritage ability / Moon Weakness", "textarea", "Notes"),
     _f("patron", "Patron, Standing, Debt, and obligation", "textarea", "Notes"),
     _f("relations", "Relationships, rival, companion", "textarea", "Notes"),
     _f("investigation", "Current Moon, prey, clues, evidence", "textarea", "Notes"),
     _f("notes", "Freeform notes: history, inventory, NPCs, plans, rules reminders", "textarea", "Notes"),
 ]
+
+# Neon & Dragons Player's Guide: the standard sheet is native (stats, HP/Shock/
+# PP/MP, edges, cyberware, conditions); these are the guide's extra trackers.
+_ND_DEFAULT_FIELDS = [
+    _f("stims", "Stims used this Rest (no more than 3)", "resource", "Trackers", "0/3"),
+    _f("netAwareness", "Net Awareness (each failed hack +1 · high awareness draws corporate countermeasures)", "number", "Trackers", "0"),
+]
+
+# fields_json hashes of every PREVIOUS shipped definition: a built-in row whose text
+# still matches one is an untouched old version and is upgraded in place; a row a GM
+# edited matches nothing and is left exactly as they made it.
+_PREVIOUS_BUILTIN_SHA = {
+    "asterion": {"f3c6ac2101b1d5831aecb12075a1412be0e7d133460eada5f3909ea8c6d9028c"},
+    "hunt-in-the-moonlight": {"91842335534832e6fbdb9102be0e8c85052fab34e65a1bfd471707c871c1edb8"},
+    "nd-default": {"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},
+}
+
+
+def _upgrade_builtin_sheet_fields(db):
+    """Bring untouched built-in system templates up to the current rulebook-aligned
+    definitions (idempotent). Recognised as untouched: the very first shipped
+    versions (no `resource` field at all) and the hash of any previously shipped
+    definition. Caller commits."""
+    import hashlib
+    current = {"asterion": _ASTERION_FIELDS, "hunt-in-the-moonlight": _HITM_FIELDS, "nd-default": _ND_DEFAULT_FIELDS}
+    for slug, fields in current.items():
+        row = db.query(SheetTemplate).filter(
+            SheetTemplate.slug == slug, SheetTemplate.is_builtin == True,  # noqa: E712
+            SheetTemplate.world_id.is_(None)).first()
+        if not row:
+            continue
+        text = row.fields_json or ""
+        if text == json.dumps(fields):
+            continue
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        first_version = slug in ("asterion", "hunt-in-the-moonlight") and '"resource"' not in text
+        if first_version or digest in _PREVIOUS_BUILTIN_SHA.get(slug, ()):
+            row.fields_json = json.dumps(fields)
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
@@ -1198,7 +1318,7 @@ def _seed():
                 description="Standard N&D character sheet: 8 stats, HP/Shock/PP/MP, edges, cyberware, conditions, feats.",
                 is_builtin=True,
                 sheet_mode="nd",
-                fields_json="[]",
+                fields_json=json.dumps(_ND_DEFAULT_FIELDS),
             ))
         # Seed built-in Asterion sheet template (fully custom — no N&D stats/mechanics)
         if not db.query(SheetTemplate).filter(SheetTemplate.slug == "asterion").first():
@@ -1212,20 +1332,6 @@ def _seed():
                 sheet_mode="custom",
                 fields_json=json.dumps(_ASTERION_FIELDS),
             ))
-        # Upgrade v1 built-in system templates in place: the original
-        # Asterion/HITM field sets predate the "resource" field type, so
-        # their defining vitals (Spark Shield/Flesh/Ichor, Health/Stamina/
-        # Hunger/AK) were plain numbers with no current/max tracking. Replace
-        # the fields of UNTOUCHED built-in rows (no resource field present)
-        # with the current definitions; a GM-customized version keeps theirs.
-        for _sys_slug, _sys_fields in (("asterion", _ASTERION_FIELDS),
-                                       ("hunt-in-the-moonlight", _HITM_FIELDS)):
-            _row = db.query(SheetTemplate).filter(
-                SheetTemplate.slug == _sys_slug, SheetTemplate.is_builtin == True,  # noqa: E712
-                SheetTemplate.world_id.is_(None)).first()
-            if _row and '"resource"' not in (_row.fields_json or ""):
-                _row.fields_json = json.dumps(_sys_fields)
-
         # Seed built-in "Hunt in the Moonlight" sheet template (fully custom
         # — moon-corruption hunter game, see _HITM_FIELDS)
         if not db.query(SheetTemplate).filter(SheetTemplate.slug == "hunt-in-the-moonlight").first():
@@ -1239,6 +1345,9 @@ def _seed():
                 sheet_mode="custom",
                 fields_json=json.dumps(_HITM_FIELDS),
             ))
+        db.flush()
+        # Untouched older built-in definitions are brought up to the current rulebooks.
+        _upgrade_builtin_sheet_fields(db)
         # Seed built-in entity field templates
         if not db.query(EntityTemplate).filter(EntityTemplate.slug == "npc-details").first():
             db.add(EntityTemplate(

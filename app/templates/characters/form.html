@@ -629,6 +629,14 @@ function renderCustomFields() {
             <input type="number" data-cf="${f.id}_max" value="${escVal(maxVal)}" min="0" placeholder="Max"
                    style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem;width:70px">
           </div>`;
+      } else if (f.type === 'select') {
+        const opts = (f.options || []).slice();
+        if (val && opts.indexOf(val) < 0) opts.unshift(val);  // keep a value saved under an older list
+        wrap.innerHTML = `
+          <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>
+          <select data-cf="${f.id}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;border-radius:4px;font-family:var(--font);font-size:.9rem">
+            <option value="">—</option>${opts.map(o => `<option value="${escVal(o)}"${o === val ? ' selected' : ''}>${escVal(o)}</option>`).join('')}
+          </select>`;
       } else if (f.type === 'textarea') {
         wrap.innerHTML = `
           <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>

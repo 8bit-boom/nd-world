@@ -24,7 +24,9 @@ from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
-from ..sheet_systems import enrich_fields, parse_custom_fields, resource_tracks, system_meta, template_fields
+from ..sheet_systems import (
+    enrich_fields, parse_custom_fields, resource_tracks, system_conditions, system_meta, template_fields,
+)
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids
 from .character_hub import delete_character_journal, journey_context
@@ -693,6 +695,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "request": request, "world": world, "worlds": worlds,
             "pc": pc, "can_manage": can_manage,
             "conditions": _pc_condition_list(pc),
+            "condition_presets": system_conditions(chosen_tpl),
             "chosen_template": chosen_tpl,
             "sections": _group_by_section([f for f in tpl_fields if not f.get("binds")]),
             "tpl_fields": tpl_fields,
@@ -714,6 +717,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "chosen_template": chosen_tpl,
         "tpl_fields": tpl_fields,
         "custom_fields": custom_fields,
+        "condition_presets": system_conditions(chosen_tpl),
         "can_manage": can_manage,
         "world_members": world_members,
         "equipment_catalog": catalog["equipment"],
