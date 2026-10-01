@@ -144,6 +144,7 @@
       if (p.type === 'party') return CK_PARTIES.some(function (x) { return String(x.id) === String(p.ref); });
       return true;
     });
+    if (PLAYER) focusMyCharacter();
     recomputeSeq();
     // Re-mint ids on every load: guarantees uniqueness even if an older
     // build saved a workspace with duplicate ids (its counter-reset bug).
@@ -151,6 +152,26 @@
     renderPresetSelect();
     render();
     clampX();
+  }
+
+  // Opened from a character's page (?pc=): that character's My Character panel leads. A saved layout keeps
+  // everything else — the first My Character panel is pointed at the character, or one is added if the
+  // layout has none. (A plain /player-cockpit visit never re-adds a panel the player closed.)
+  function focusMyCharacter() {
+    if (!CK_FOCUS_PC) return;
+    const me = CK_MY_PCS.find(function (m) { return m.id === CK_FOCUS_PC; });
+    if (!me) return;
+    const title = '\u{1F9D9} ' + me.name;
+    const existing = panels.find(function (p) { return p.type === 'pc'; });
+    if (existing) {
+      existing.ref = String(me.id); existing.title = title;
+      panels.splice(panels.indexOf(existing), 1);   // first in the list = first tab on a phone
+      panels.unshift(existing);
+      return;
+    }
+    const vw = viewport.clientWidth || 1200;
+    panels.unshift({ id: 'p0', type: 'pc', ref: String(me.id), title: title, x: Math.max(8, vw - 368), y: 8, w: 360, h: 220,
+      z: panels.reduce(function (m, p) { return Math.max(m, p.z || 0); }, 10) + 1, collapsed: false, data: {} });
   }
 
   async function load() {
@@ -211,6 +232,11 @@
     const rx = hasMap ? Math.min(836, vw * 0.58) + 16 : 8;
     const rw = Math.max(300, vw - rx - 8);
     let ry = 8;
+    if (PLAYER && CK_MY_PCS.length) {
+      // the player's character leads (and is the first tab in the phone shell)
+      const me = CK_MY_PCS.find(function (m) { return m.id === CK_FOCUS_PC; }) || CK_MY_PCS[0];
+      add('pc', String(me.id), '🧙 ' + me.name, rx, ry, rw, 200); ry += 210;
+    }
     if (CK_PARTIES.length) { add('party', String(CK_PARTIES[0].id), '❤ ' + CK_PARTIES[0].name, rx, ry, rw, 230); ry += 240; }
     add('quests', '', '📜 Quests', rx, ry, rw, 220); ry += 230;
     add('dice', '', '🎲 Dice', rx, ry, rw, Math.max(220, vh - ry - 8));

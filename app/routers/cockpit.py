@@ -453,26 +453,33 @@ def _player_my_pcs(db: Session, world, user) -> list:
     return out
 
 
-def _player_cockpit(request: Request, db: Session, world, worlds):
+def _player_cockpit(request: Request, db: Session, world, worlds, focus_pc: int = 0):
     """Render the cockpit shell in player mode: player-safe panel types
     (cockpit.js gates by CK_PLAYER_MODE), the player's parties (with
-    vitals) as picker data, localStorage-only persistence."""
+    vitals) as picker data, localStorage-only persistence. `focus_pc` (the
+    character page's Cockpit tab / button passes ?pc=) is honoured only if it
+    is one of the viewer's OWN characters in this world — the My Character
+    panel then leads with that character."""
     maps = (db.query(Schematic)
             .filter(Schematic.world_id == world.id, Schematic.is_html.is_(False))
             .order_by(Schematic.name)
             .all())
-    parties = _player_parties(db, world, getattr(request.state, "user", None))
+    user = getattr(request.state, "user", None)
+    parties = _player_parties(db, world, user)
+    my_pcs = [{"id": m["id"], "name": m["name"]} for m in _player_my_pcs(db, world, user)]
     return templates.TemplateResponse("cockpit.html", {
         "request": request, "world": world, "worlds": worlds,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
         "world_maps_json": _world_maps(world.id),
         "parties_json": parties,
+        "my_pcs_json": my_pcs,
+        "focus_pc_id": focus_pc if any(m["id"] == focus_pc for m in my_pcs) else None,
         "player_mode": True,
     })
 
 
 @router.get("/player-cockpit", response_class=HTMLResponse)
-def player_cockpit_page(request: Request, db: Session = Depends(get_db),
+def player_cockpit_page(request: Request, pc: str = "", db: Session = Depends(get_db),
                         active_world: str = Cookie(None)):
     """The Player Cockpit — a SEPARATE page from the GM cockpit, tailored to
     what the logged-in viewer can access (their parties' vitals, visible
@@ -482,7 +489,7 @@ def player_cockpit_page(request: Request, db: Session = Depends(get_db),
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    return _player_cockpit(request, db, world, worlds)
+    return _player_cockpit(request, db, world, worlds, int(pc) if pc.isdigit() else 0)
 
 
 @router.get("/api/cockpit/player-board")

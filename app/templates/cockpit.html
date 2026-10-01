@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}GM Cockpit — {{ world.name }}{% endblock %}
+{% block title %}{{ 'Player Cockpit' if player_mode else 'GM Cockpit' }} — {{ world.name }}{% endblock %}
 {% block content %}
 <div id="ck-wrap">
   <header id="ck-head">
-    <span id="ck-title">🎛 GM Cockpit</span>
+    <span id="ck-title">🎛 {{ 'Player Cockpit' if player_mode else 'GM Cockpit' }}</span>
     <span id="ck-world">{{ world.name }}</span>
     <div id="ck-head-actions">
       <select id="ck-preset-select" title="Saved layouts" style="display:none"></select>
@@ -15,7 +15,7 @@
       <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
       <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺ Reset</button>
       <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
-      <a class="ck-btn" href="{{ '/'|wq }}" title="Exit the cockpit">✕</a>
+      <a class="ck-btn" id="ck-exit" href="{{ '/'|wq }}" title="Exit the cockpit">✕</a>
     </div>
   </header>
 
@@ -85,6 +85,8 @@ body:has(#ck-wrap) > footer { display: none; }
   border-bottom: 1px solid var(--border);
 }
 #ck-title { color: var(--neon); font-weight: bold; font-size: 1rem; }
+/* Inside a character's Cockpit tab (an ?embed=1 iframe) there is nowhere to "exit" to. */
+body.nd-embed #ck-exit { display: none !important; }
 #ck-world { color: var(--text-dim); font-size: .82rem; }
 #ck-head-actions { margin-left: auto; display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
 #ck-preset-select {
@@ -390,6 +392,9 @@ const CK_WORLD_MAPS = {{ world_maps_json | tojson }};
 const CK_PARTIES = {{ parties_json | tojson }};
 const CK_WORLD = {{ world.slug | tojson }};
 const CK_PLAYER_MODE = {{ 'true' if player_mode else 'false' }};
+// Player mode: the viewer's own characters, and the one the cockpit was opened from (?pc=) if any.
+const CK_MY_PCS = {{ (my_pcs_json or []) | tojson }};
+const CK_FOCUS_PC = {{ (focus_pc_id if focus_pc_id else none) | tojson }};
 const CK_TYPES = {
   map:     { icon: '📐', label: 'Schematic',    sub: 'live battle map (SVG canvas)',  w: 780, h: 560, picker: 'map' },
   wmap:    { icon: '🗺', label: 'World map',    sub: 'Leaflet map with markers',      w: 780, h: 560, picker: 'wmap' },

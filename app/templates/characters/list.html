@@ -5,6 +5,11 @@
 <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem;">
   <h1 style="color:var(--neon);font-size:1.4rem;letter-spacing:.05em;">🎲 Player Characters</h1>
   <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+    {% if user and user.is_gm %}
+    <a href="{{ '/cockpit'|wq }}" class="btn-secondary" style="text-decoration:none" title="The GM Cockpit — your live windows workspace">🎛 GM Cockpit</a>
+    {% else %}
+    <a href="{{ (('/player-cockpit?pc=' ~ my_character.id) if my_character else '/player-cockpit')|wq }}" class="btn-secondary" style="text-decoration:none" title="Your live table dashboard — party vitals, quests, dice, maps{% if my_character %}, opened on {{ my_character.name }}{% endif %}">🎛 Cockpit</a>
+    {% endif %}
     <a href="{{ '/characters/templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">🗒 Systems &amp; Templates</a>
     <a href="{{ '/characters/ai-new'|wq }}" class="btn-secondary" style="text-decoration:none">✨ Create with AI</a>
     <a href="{{ '/characters/new'|wq }}" class="btn-primary">+ New Character</a>
