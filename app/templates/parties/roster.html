@@ -34,50 +34,27 @@
     </div>
   </div>
 
-  {% if rows %}
+  {% macro cell(c) %}{% if c.kind == 'na' %}<span class="ro-na">—</span>{% elif c.kind == 'chips' %}{% for x in c.chips %}<span class="ro-chip">{{ x }}</span>{% else %}<span class="ro-muted">none</span>{% endfor %}{% else %}{% if c.prefix %}<span class="ro-muted">{{ c.prefix }}</span> {% endif %}<span{% if c.down %} class="ro-down"{% endif %}>{{ c.text }}</span>{% if c.down %} <span class="ro-down">DOWN</span>{% endif %}{% endif %}{% endmacro %}
+  {% if table.columns %}
   <div class="ro-scroll">
     <table class="ro-table">
       <thead>
         <tr>
           <th scope="col"><span class="ro-sub">Character</span></th>
-          {% for r in rows %}
-          <th scope="col"><a href="{{ ('/characters/' + r.id|string)|wq }}" style="color:inherit;text-decoration:none">{{ r.name }}</a>
-            <span class="ro-sub">Lv {{ r.level }}{% if r.line %} · {{ r.line }}{% endif %}{% if r.player_name %} · {{ r.player_name }}{% endif %}</span></th>
+          {% for col in table.columns %}
+          <th scope="col"><a href="{{ ('/characters/' + col.id|string)|wq }}" style="color:inherit;text-decoration:none">{{ col.name }}</a>
+            <span class="ro-sub">{{ col.sub }}</span></th>
           {% endfor %}
         </tr>
       </thead>
       <tbody>
-        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Condition</th></tr>
-        <tr><th scope="row">HP</th>
-          {% for r in rows %}<td>{% if r.hp_max %}{% if r.hp_label != 'HP' %}<span class="ro-muted">{{ r.hp_label }}</span> {% endif %}<span{% if r.hp <= 0 %} class="ro-down"{% endif %}>{{ r.hp }} / {{ r.hp_max }}</span>{% if r.hp <= 0 %} <span class="ro-down">DOWN</span>{% endif %}{% if r.temp_hp %} <span class="ro-muted">+{{ r.temp_hp }} temp</span>{% endif %}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
-        <tr><th scope="row">Shock</th>
-          {% for r in rows %}<td>{% if r.native %}{{ r.shock }} / {{ r.shock_max }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
-        <tr><th scope="row">PP / MP</th>
-          {% for r in rows %}<td>{% if r.native %}{{ r.pp }}/{{ r.pp_max }} · {{ r.mp }}/{{ r.mp_max }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
-        <tr><th scope="row">Conditions</th>
-          {% for r in rows %}<td>{% for c in r.conditions %}<span class="ro-chip">{{ c }}</span>{% else %}<span class="ro-muted">none</span>{% endfor %}</td>{% endfor %}</tr>
-
-        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Attributes</th></tr>
-        {% for label, _x in rows[0].stats %}
-        {% set i = loop.index0 %}
-        <tr><th scope="row">{{ label }}</th>
-          {% for r in rows %}{% set val = r.stats[i][1] %}<td>{% if r.native and val is not none %}{{ val }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+        {# Built from each member's own system (see parties._roster_table): no N&D row ever appears for a Hunt in the Moonlight or Asterion character. #}
+        {% for g in table.groups %}
+        <tr class="ro-group"><th colspan="{{ table.columns|length + 1 }}" scope="rowgroup">{{ g.title }}</th></tr>
+        {% for row in g.rows %}
+        <tr><th scope="row">{{ row.label }}</th>{% for c in row.cells %}<td>{{ cell(c) }}</td>{% endfor %}</tr>
         {% endfor %}
-        <tr><th scope="row">Cyber Adapt.</th>
-          {% for r in rows %}<td>{% if r.native %}{{ r.ca }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
-        <tr><th scope="row">Speed</th>
-          {% for r in rows %}<td>{% if r.native %}{{ r.speed }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
-
-        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Build</th></tr>
-        <tr><th scope="row">Edges</th>
-          {% for r in rows %}<td>{% for e in r.edges %}<span class="ro-chip">{{ e }}</span>{% else %}<span class="ro-muted">—</span>{% endfor %}</td>{% endfor %}</tr>
-        <tr><th scope="row">Cyberware</th>
-          {% for r in rows %}<td>{% for c in r.cyberware %}<span class="ro-chip">{{ c }}</span>{% else %}<span class="ro-muted">—</span>{% endfor %}</td>{% endfor %}</tr>
-        {% if rows | selectattr('resources') | list %}
-        <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Sheet resources</th></tr>
-        <tr><th scope="row">Tracks</th>
-          {% for r in rows %}<td>{% for res in r.resources %}<div>{{ res.label }}: <strong>{{ res.current }}</strong> / {{ res.max }}</div>{% else %}<span class="ro-muted">—</span>{% endfor %}</td>{% endfor %}</tr>
-        {% endif %}
+        {% endfor %}
       </tbody>
     </table>
   </div>

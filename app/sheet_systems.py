@@ -37,6 +37,10 @@ BUILTIN_SYSTEMS = {
         "xp": ["xpCurrent", "xpLifetime"],
         "conditions": ["Bleeding", "Burning", "Blinded", "Marked", "Prone", "Restrained", "Stunned", "Weakened", "Vulnerable"],
         "rest": {"long": [("full", "stamina"), ("set", "strain", "0"), ("set", "staminaSpent", 0)]},
+        # what a side-by-side comparison of hunters should show beyond the resource tracks
+        "roster": [("Identity", ["race"]),
+                   ("Core", ["armor", "movement", "alteration", "overcharge", "strain"]),
+                   ("Progress", ["xpCurrent", "xpLifetime", "crows", "marks"])],
         "pages": [
             {"id": "hunter", "label": "Hunter", "icon": "🧍", "sections": ["Identity"]},
             {"id": "oath", "label": "Oath", "icon": "🗡", "sections": ["Hunter's Oath"]},
@@ -60,6 +64,8 @@ BUILTIN_SYSTEMS = {
             "short": [("full", "sparkShield"), ("add", "ichor", 2)],
             "long": [("full", "sparkShield"), ("full", "flesh"), ("full", "ichor")],
         },
+        "roster": [("Identity", ["kind"]), ("Core", ["armor"]),
+                   ("Progress", ["glory", "repScore", "domainRank", "drachma"])],
         "pages": [
             {"id": "hero", "label": "Hero", "icon": "🧍", "conditions": True, "sections": ["Identity", "Core Stats"]},
             {"id": "powers", "label": "Powers", "icon": "⚔", "sections": ["Abilities", "Progression"]},
@@ -160,6 +166,46 @@ def sheet_pages(tpl, section_names: list):
         return None
     return {"pages": pages, "section_page": section_page,
             "conditions": cond or pages[0]["id"], "linked": pages[-1]["id"]}
+
+
+ROSTER_GENERIC_CAP = 10
+
+
+def roster_field_groups(tpl) -> list:
+    """[(group title, [field dicts])] — the non-resource fields worth comparing across a
+    party for a custom-sheet template (resource tracks are listed separately). A built-in
+    system names its own ("roster" in BUILTIN_SYSTEMS, ids the template really has);
+    any other template gets its first number/select fields under "Sheet", capped."""
+    fields = [f for f in template_fields(tpl) if isinstance(f, dict)]
+    by_id = {f.get("id"): f for f in fields}
+    builtin = BUILTIN_SYSTEMS.get(getattr(tpl, "slug", None)) if getattr(tpl, "is_builtin", False) else None
+    out = []
+    if builtin and builtin.get("roster"):
+        for title, ids in builtin["roster"]:
+            picked = [by_id[i] for i in ids if i in by_id]
+            if picked:
+                out.append((title, picked))
+        return out
+    binds = system_meta(tpl)["binds"]
+    picked = [f for f in fields if f.get("type") in ("number", "select") and f.get("id") not in binds
+              and not f.get("xp")]
+    return [("Sheet", picked[:ROSTER_GENERIC_CAP])] if picked else []
+
+
+def field_value_text(field: dict, custom_fields: dict) -> str:
+    """A field's stored value as one short display string ("" when empty/unsaved):
+    resources read "cur / max" (template default when nothing is saved), everything else
+    its value. Lists are not summarised here."""
+    fid = field.get("id")
+    if field.get("type") == "resource":
+        cur, mx = _default_pair(field.get("default_value"))
+        cur = custom_fields.get(f"{fid}_current", cur)
+        mx = custom_fields.get(f"{fid}_max", mx)
+        return f"{cur} / {mx}" if str(cur).strip() != "" or str(mx).strip() != "" else ""
+    if field.get("type") == "list":
+        return ""
+    v = custom_fields.get(fid, field.get("default_value") or "")
+    return "" if v is None else str(v).strip()
 
 
 def enrich_fields(tpl) -> list:

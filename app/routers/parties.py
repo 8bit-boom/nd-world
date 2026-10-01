@@ -19,8 +19,8 @@ from ..party_refs import (
 )
 from ..pc_stats import pc_maxima
 from ..sheet_systems import (
-    apply_rest, has_short_rest, hp_track, parse_custom_fields, resource_tracks, rest_ops, rest_touched_keys,
-    system_meta, template_fields,
+    apply_rest, field_value_text, has_short_rest, hp_track, parse_custom_fields, resource_tracks, rest_ops,
+    rest_touched_keys, roster_field_groups, short_label, system_meta, template_fields,
 )
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import (  # cross-router imports, per AGENTS.md
@@ -179,7 +179,9 @@ def _member_vitals(db: Session, member_pcs: list, resource_limit: Optional[int] 
             "id": pc.id, "name": pc.name, "native": m["native"],
             "hp": hp, "max_hp": hp_max, "hp_label": hp_label, "hp_id": hp_id,
             "temp_hp": pc.temp_hp if m["native"] else 0,
-            "ac": ac, "level": pc.level,
+            # level is an N&D concept; a custom system shows its own name instead
+            "ac": ac, "level": pc.level if m["native"] else None,
+            "system": "" if m["native"] or tpl is None else tpl.name,
             "down": hp_max > 0 and (hp or 0) <= 0,
             "levelup": _pc_levelup_ready(pc),
             "conditions": [c for c in conds if isinstance(c, str)][:4],
@@ -826,33 +828,107 @@ _ROSTER_STATS = (("str", "STR"), ("dex", "DEX"), ("bod", "BOD"), ("per", "PER"),
                  ("wil", "WIL"), ("int", "INT"), ("cha", "CHA"), ("itu", "ITU"))
 
 
-def _roster_rows(db: Session, member_pcs: list) -> list:
-    """One dict per member character for the side-by-side roster: identity,
-    live resources against the effective maxima, the eight stats, derived
-    CA/Speed, edges, cyberware names, conditions and — for custom-sheet
-    members — the template's resource tracks (via _member_vitals)."""
-    vitals = {v["id"]: v for v in _member_vitals(db, member_pcs, resource_limit=None)}
-    rows = []
-    for pc in sorted(member_pcs, key=lambda p: p.name or ""):
-        d = _derived(pc)
-        m = pc_maxima(pc)
-        stat_val = {st["id"]: st.get("value") for st in d["stats"] if isinstance(st, dict) and st.get("id")}
-        rows.append({
-            "id": pc.id, "name": pc.name, "player_name": pc.player_name or "", "level": pc.level,
-            "line": " · ".join(x for x in (pc.race, pc.char_class) if x),
-            "native": m["native"],
-            "hp": vitals[pc.id]["hp"], "hp_max": vitals[pc.id]["max_hp"], "hp_label": vitals[pc.id]["hp_label"],
-            "temp_hp": vitals[pc.id]["temp_hp"] or 0,
-            "shock": pc.shock_current or 0, "shock_max": m["shock"],
-            "pp": pc.pp_current or 0, "pp_max": m["pp"], "mp": pc.mp_current or 0, "mp_max": m["mp"],
-            "stats": [(label, stat_val.get(sid)) for sid, label in _ROSTER_STATS],
-            "ca": d["ca_derived"], "speed": d["speed_derived"],
-            "edges": [e for e in (d["minor_edge"], d["major_edge"]) if e],
-            "cyberware": [str(c.get("name")) for c in d["cyberware"] if isinstance(c, dict) and c.get("name")],
-            "conditions": vitals.get(pc.id, {}).get("conditions", []),
-            "resources": vitals.get(pc.id, {}).get("resources", []),
-        })
-    return rows
+def _cell(text="", *, down=False, prefix="", chips=None, na=False):
+    """One roster cell: plain text (optionally flagged down / prefixed), a chip list, or n/a."""
+    if na:
+        return {"kind": "na"}
+    if chips is not None:
+        return {"kind": "chips", "chips": chips}
+    return {"kind": "text", "text": text, "down": down, "prefix": prefix}
+
+
+def _roster_table(db: Session, member_pcs: list) -> dict:
+    """The side-by-side roster as data the template renders blindly:
+    {"columns": [{id, name, sub}], "groups": [{"title", "rows": [{"label", "cells": [...]}]}]}.
+
+    Every row is built from what each member's OWN system has: the vital (HP / Health /
+    Flesh) and conditions for everyone; Shock, PP/MP, attributes, CA/Speed, edges and
+    cyberware only when some member is a native N&D sheet; and for custom-sheet members
+    their template's resource tracks plus the fields the system says are worth
+    comparing (BUILTIN_SYSTEMS[slug]["roster"], or the first number/select fields).
+    A member whose system lacks a row shows a dash, never another system's value."""
+    pcs = sorted(member_pcs, key=lambda p: p.name or "")
+    vitals = {v["id"]: v for v in _member_vitals(db, pcs, resource_limit=None)}
+    tpls = {}
+
+    def tpl_of(pc):
+        tid = getattr(pc, "sheet_template_id", None)
+        if tid not in tpls:
+            tpls[tid] = db.get(SheetTemplate, tid) if tid else None
+        return tpls[tid]
+
+    columns, info = [], []
+    for pc in pcs:
+        v, m, tpl = vitals[pc.id], pc_maxima(pc), tpl_of(pc)
+        if m["native"]:
+            sub = " · ".join(x for x in (f"Lv {pc.level}", pc.race, pc.char_class, pc.player_name) if x)
+        else:
+            sub = " · ".join(x for x in ((tpl.name if tpl else ""), pc.player_name) if x)
+        columns.append({"id": pc.id, "name": pc.name, "sub": sub})
+        info.append({"pc": pc, "v": v, "m": m, "tpl": tpl, "native": m["native"],
+                     "cf": parse_custom_fields(pc.custom_fields_json)})
+
+    groups = []
+
+    def add(title, label, cells):
+        grp = next((g for g in groups if g["title"] == title), None)
+        if grp is None:
+            grp = {"title": title, "rows": []}
+            groups.append(grp)
+        grp["rows"].append({"label": label, "cells": cells})
+
+    any_native = any(i["native"] for i in info)
+    labels = {i["v"]["hp_label"] for i in info if i["v"]["max_hp"]}
+    mixed = len(labels) > 1
+    add("Condition", "HP / vital" if mixed else (next(iter(labels)) if labels else "HP"), [
+        _cell(f"{i['v']['hp']} / {i['v']['max_hp']}" + (f" (+{i['v']['temp_hp']} temp)" if i["v"]["temp_hp"] else ""),
+              down=i["v"]["down"], prefix=i["v"]["hp_label"] if mixed else "")
+        if i["v"]["max_hp"] else _cell(na=True) for i in info])
+    if any_native:
+        add("Condition", "Shock", [_cell(f"{i['pc'].shock_current or 0} / {i['m']['shock']}") if i["native"] else _cell(na=True) for i in info])
+        add("Condition", "PP / MP", [
+            _cell(f"{i['pc'].pp_current or 0}/{i['m']['pp']} · {i['pc'].mp_current or 0}/{i['m']['mp']}")
+            if i["native"] else _cell(na=True) for i in info])
+    add("Condition", "Conditions", [_cell(chips=list(i["v"]["conditions"])) for i in info])
+
+    if any_native:
+        derived = {i["pc"].id: _derived(i["pc"]) for i in info if i["native"]}
+        stat_val = {pid: {st["id"]: st.get("value") for st in d["stats"] if isinstance(st, dict) and st.get("id")}
+                    for pid, d in derived.items()}
+        for sid, label in _ROSTER_STATS:
+            add("Attributes", label, [
+                _cell(str(stat_val[i["pc"].id][sid])) if i["native"] and stat_val[i["pc"].id].get(sid) is not None
+                else _cell(na=True) for i in info])
+        add("Attributes", "Cyber Adapt.", [_cell(str(derived[i["pc"].id]["ca_derived"])) if i["native"] else _cell(na=True) for i in info])
+        add("Attributes", "Speed", [_cell(str(derived[i["pc"].id]["speed_derived"])) if i["native"] else _cell(na=True) for i in info])
+        add("Build", "Edges", [_cell(chips=[e for e in (derived[i["pc"].id]["minor_edge"], derived[i["pc"].id]["major_edge"]) if e])
+                               if i["native"] else _cell(na=True) for i in info])
+        add("Build", "Cyberware", [
+            _cell(chips=[str(c.get("name")) for c in derived[i["pc"].id]["cyberware"] if isinstance(c, dict) and c.get("name")])
+            if i["native"] else _cell(na=True) for i in info])
+
+    # custom-sheet members: resource tracks (minus the vital shown above), then the system's own comparison fields
+    track_rows, field_rows = {}, {}
+    for idx, i in enumerate(info):
+        if i["native"]:
+            continue
+        for t in i["v"]["resources"]:
+            if t["id"] == i["v"]["hp_id"]:
+                continue
+            track_rows.setdefault(t["label"], {})[idx] = _cell(f"{t['current']} / {t['max']}")
+        if i["tpl"] is not None:
+            for title, fields in roster_field_groups(i["tpl"]):
+                for f in fields:
+                    if f.get("type") == "resource":
+                        continue  # already a track row
+                    txt = field_value_text(f, i["cf"])
+                    field_rows.setdefault((title, short_label(f.get("label") or f.get("id"))), {})[idx] = (
+                        _cell(txt) if txt else _cell(na=True))
+    for label, cells in track_rows.items():
+        add("Resources", label, [cells.get(n, _cell(na=True)) for n in range(len(info))])
+    for (title, label), cells in field_rows.items():
+        add(title, label, [cells.get(n, _cell(na=True)) for n in range(len(info))])
+    return {"columns": columns, "groups": groups}
 
 
 @router.get("/parties/{party_id}/roster", response_class=HTMLResponse)
@@ -880,7 +956,7 @@ def party_roster(party_id: int, request: Request, db: Session = Depends(get_db),
         companions = db.query(Entity).filter(Entity.id.in_(ent_ids)).all() if ent_ids else []
     return templates.TemplateResponse("parties/roster.html", {
         "request": request, "world": world, "worlds": worlds, "party": party,
-        "rows": _roster_rows(db, member_pcs), "companions": companions, "is_gm": is_gm,
+        "table": _roster_table(db, member_pcs), "companions": companions, "is_gm": is_gm,
     })
 
 
@@ -898,11 +974,14 @@ def party_export_ndc(party_id: int, request: Request, db: Session = Depends(get_
     pcs = (db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids),
                                             PlayerCharacter.world_id == party.world_id)
            .order_by(PlayerCharacter.name).all() if pc_ids else [])
-    payload = json.dumps([_pc_to_ndc_dict(pc) for pc in pcs], ensure_ascii=False, indent=2)
-    return StreamingResponse(
-        io.BytesIO(payload.encode("utf-8")), media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{_safe_export_filename(party.name or "party")}.ndc"'},
-    )
+    # .ndc is the N&D app's format: members on a custom sheet can't be expressed in it
+    native_pcs = [pc for pc in pcs if pc_maxima(pc)["native"]]
+    skipped = [pc.name for pc in pcs if not pc_maxima(pc)["native"]]
+    payload = json.dumps([_pc_to_ndc_dict(pc) for pc in native_pcs], ensure_ascii=False, indent=2)
+    headers = {"Content-Disposition": f'attachment; filename="{_safe_export_filename(party.name or "party")}.ndc"'}
+    if skipped:
+        headers["X-Skipped-Custom-Sheets"] = ", ".join(skipped).encode("ascii", "ignore").decode() or "custom sheets"
+    return StreamingResponse(io.BytesIO(payload.encode("utf-8")), media_type="application/json", headers=headers)
 
 
 # ── Printable summary ────────────────────────────────────────────────────────

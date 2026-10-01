@@ -821,6 +821,9 @@ class PlayerCharacter(Base):
     cyberware_json  = Column(Text, default='[]')  # [{name, ca_cost, notes}]
     conditions_json = Column(Text, default='[]')  # list of active condition strings
     sheet_template_id  = Column(Integer, ForeignKey("sheet_templates.id"), nullable=True)
+    # Read-only convenience so pure helpers (pc_stats.pc_maxima) can ask "is this a custom-mode
+    # sheet?" without every caller threading the template through.
+    sheet_template     = relationship("SheetTemplate", viewonly=True, lazy="select")
     custom_fields_json = Column(Text, default="{}")   # {field_id: value or [ {...}, ... ] for list fields}
     app_extra_json = Column(Text, default="{}")  # passthrough for mobile-app-only fields not modeled here (see character-sync API)
 

@@ -25,8 +25,8 @@ from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 from ..sheet_systems import (
-    enrich_fields, parse_custom_fields, resource_tracks, sheet_pages, system_conditions, system_meta,
-    template_fields,
+    enrich_fields, field_value_text, parse_custom_fields, resource_tracks, sheet_pages, short_label,
+    system_conditions, system_meta, template_fields,
 )
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids
@@ -940,7 +940,7 @@ def _pc_to_npc_markdown(pc: PlayerCharacter) -> str:
     personality/backstory. Mechanical minutiae (equipment, exact HP, feats)
     is deliberately left behind — that's sheet detail, not lore."""
     parts = []
-    class_line = " · ".join(x for x in [pc.char_class, pc.race, f"Level {pc.level}" if pc.level else ""] if x)
+    class_line = " · ".join(x for x in [pc.char_class, pc.race, f"Level {pc.level}" if pc.level and pc_maxima(pc)["native"] else ""] if x)
     if class_line:
         parts.append(f"*{class_line}*")
     tagline = " · ".join(x for x in [pc.background, pc.alignment] if x)
@@ -1127,6 +1127,10 @@ def character_export_ndc(pc_id: int, request: Request, db: Session = Depends(get
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
+    if pc_maxima(pc)["native"] is False:
+        raise HTTPException(400, "The .ndc format is the Neon & Dragons app's — a character on a custom sheet "
+                                 "(Hunt in the Moonlight, Asterion, …) can't be exported to it. "
+                                 "Use the JSON, Markdown, PDF or Foundry export instead.")
     payload = json.dumps([_pc_to_ndc_dict(pc)], ensure_ascii=False, indent=2)
     fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (pc.name or "character")) or "character"
     return StreamingResponse(
@@ -1136,13 +1140,30 @@ def character_export_ndc(pc_id: int, request: Request, db: Session = Depends(get
     )
 
 
-def _pc_to_foundry_journal(pc: PlayerCharacter) -> dict:
+def _pc_to_foundry_journal(pc: PlayerCharacter, db: Session = None) -> dict:
     """A single Foundry VTT JournalEntry document (v10+ page-based schema).
     Journal Entries are system-agnostic in Foundry, so this imports cleanly
     into any world regardless of which game system it runs — there's no
-    "Neon & Dragons" Foundry system to map a real Actor into."""
-    d = _derived(pc)
+    "Neon & Dragons" Foundry system to map a real Actor into. A character on a
+    custom sheet (Hunt in the Moonlight, Asterion, …) gets its own sections
+    instead of N&D's HP/stat table."""
     e = html.escape
+    if db is not None and pc.sheet_template_id and pc.sheet_template and pc.sheet_template.sheet_mode == "custom":
+        body = [f"<h1>{e(pc.name or 'Character')}</h1>"]
+        for section_name, pairs in _pc_export_sections(pc, db):
+            body.append(f"<h2>{e(section_name)}</h2><ul>" + "".join(
+                f"<li><strong>{e(str(label))}:</strong> {e(str(value))}</li>" for label, value in pairs) + "</ul>")
+        if pc.backstory:
+            body.append(f"<h2>Background</h2><p>{e(pc.backstory)}</p>")
+        if pc.notes:
+            body.append(f"<h2>Notes</h2><p>{e(pc.notes)}</p>")
+        return {
+            "name": pc.name or "Character",
+            "folder": None,
+            "pages": [{"name": "Character Sheet", "type": "text", "text": {"format": 1, "content": "".join(body)}, "sort": 0}],
+            "flags": {"nd-world": {"source": "nd-world", "character_id": pc.id, "system": pc.sheet_template.slug}},
+        }
+    d = _derived(pc)
 
     sheet_rows = "".join(
         f"<tr><td>{e(s.get('label') or s.get('id',''))}</td><td>{e(str(s.get('value','')))}</td></tr>"
@@ -1200,7 +1221,7 @@ def character_export_foundry(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    payload = json.dumps([_pc_to_foundry_journal(pc)], ensure_ascii=False, indent=2)
+    payload = json.dumps([_pc_to_foundry_journal(pc, db)], ensure_ascii=False, indent=2)
     fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (pc.name or "character")) or "character"
     return StreamingResponse(
         io.BytesIO(payload.encode("utf-8")),
@@ -1289,6 +1310,10 @@ def _pc_field_value_lines(field: dict, custom_fields: dict) -> list:
             ]
             out.append((f"{label} #{i}", "; ".join(parts)))
         return out
+    if field.get("type") == "resource":
+        # resources live under {id}_current / {id}_max (never under the bare id)
+        text = field_value_text(field, custom_fields)
+        return [(short_label(label) or label, text)] if text else []
     value = custom_fields.get(fid, field.get("default_value", ""))
     if value in (None, ""):
         return []
@@ -1306,16 +1331,22 @@ def _pc_export_sections(pc: PlayerCharacter, db: Session) -> list:
     custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     sections = []
 
+    is_custom = bool(chosen_tpl and chosen_tpl.sheet_mode == "custom")
     basics = [
         (l, v) for l, v in (
+            ("System", chosen_tpl.name if chosen_tpl else ""),
             ("Player", pc.player_name), ("Race", pc.race), ("Class", pc.char_class),
-            ("Level", str(pc.level) if pc.level else ""), ("XP", str(pc.xp) if pc.xp else ""),
+            # Level / XP columns are the N&D sheet's; a custom system keeps its own in its fields
+            ("Level", str(pc.level) if pc.level and not is_custom else ""),
+            ("XP", str(pc.xp) if pc.xp and not is_custom else ""),
         ) if v
     ]
     if basics:
         sections.append(("Basics", basics))
+    conds = _pc_condition_list(pc)
+    if conds:
+        sections.append(("Conditions", [("Active", ", ".join(conds))]))
 
-    is_custom = bool(chosen_tpl and chosen_tpl.sheet_mode == "custom")
     if not is_custom:
         d = _derived(pc)
         resources = [("HP", f"{pc.current_hp}/{d['hp_max']}")]
@@ -1385,7 +1416,7 @@ def _pc_export_sections(pc: PlayerCharacter, db: Session) -> list:
 def _pc_to_markdown(pc: PlayerCharacter, db: Session) -> str:
     lines = [f"# {pc.name or 'Character'}"]
     subtitle = " ".join(b for b in (pc.race, pc.char_class) if b)
-    if pc.level:
+    if pc.level and pc_maxima(pc)["native"]:  # Level is the N&D sheet's; custom systems keep progress in their fields
         subtitle = (subtitle + f" — Level {pc.level}").strip(" —")
     if subtitle:
         lines.append(f"*{subtitle}*")
@@ -1426,7 +1457,7 @@ def _pc_to_pdf_bytes(pc: PlayerCharacter, db: Session) -> bytes:
     story = [Paragraph(html.escape(pc.name or "Character"), styles["Title"])]
 
     subtitle = " ".join(b for b in (pc.race, pc.char_class) if b)
-    if pc.level:
+    if pc.level and pc_maxima(pc)["native"]:  # Level is the N&D sheet's; custom systems keep progress in their fields
         subtitle = (subtitle + f" — Level {pc.level}").strip(" —")
     if subtitle:
         story.append(Paragraph(html.escape(subtitle), styles["Italic"]))

@@ -537,7 +537,7 @@ def detect_kind(data, kinds=None) -> dict:
 
 # ── Execution ────────────────────────────────────────────────────────────────
 
-def _normalize_pc_data(row: dict) -> dict:
+def _normalize_pc_data(row: dict, nd_defaults: bool = True) -> dict:
     """_apply_form is shared with the real character create/edit forms, so it
     expects every *_json field pre-encoded as a JSON string (HTML forms only
     ever send strings) under its exact snake_case name. Import JSON is
@@ -547,7 +547,9 @@ def _normalize_pc_data(row: dict) -> dict:
     same thing) — so first fold every key back to its canonical name via the
     same fuzzy match _looks_like_pc uses, then coerce JSON fields to strings.
     Missing stats/currency default to the standard N&D starting spread so an
-    import that only sets identity fields still renders a usable sheet."""
+    import that only sets identity fields still renders a usable sheet — except
+    for a character on a custom sheet (nd_defaults=False), whose fields ARE the
+    character: stamping N&D stats on it would make it look like a native sheet."""
     out = {}
     for k, v in row.items():
         canon = _PC_KEY_LOOKUP.get(_normkey(k))
@@ -558,10 +560,11 @@ def _normalize_pc_data(row: dict) -> dict:
     for field in set(_PC_JSON_ALIASES.values()):
         if field in out and not isinstance(out[field], str):
             out[field] = json.dumps(out[field])
-    if "stats_json" not in out:
-        out["stats_json"] = json.dumps(ND_DEFAULT_STATS)
-    if "currency_json" not in out:
-        out["currency_json"] = json.dumps(ND_DEFAULT_CURRENCY)
+    if nd_defaults:
+        if "stats_json" not in out:
+            out["stats_json"] = json.dumps(ND_DEFAULT_STATS)
+        if "currency_json" not in out:
+            out["currency_json"] = json.dumps(ND_DEFAULT_CURRENCY)
     return out
 
 
@@ -578,10 +581,14 @@ def _upsert_player_character(db: Session, world_id: int, row: dict) -> PlayerCha
     if not pc:
         pc = PlayerCharacter(world_id=world_id, owner_user_id=None)
         db.add(pc)
-    normalized = _normalize_pc_data(row)
+    normalized = _normalize_pc_data(row, nd_defaults=False)
     resolved_tpl = _resolve_sheet_template(db, world_id, normalized.get("sheet_template_id"))
     if resolved_tpl:
         normalized["sheet_template_id"] = resolved_tpl
+    tpl = db.get(SheetTemplate, int(resolved_tpl)) if resolved_tpl and str(resolved_tpl).isdigit() else None
+    if not (tpl is not None and tpl.sheet_mode == "custom"):
+        normalized = _normalize_pc_data(row, nd_defaults=True) | {k: v for k, v in normalized.items()
+                                                                  if k == "sheet_template_id"}
     _apply_form(pc, normalized)
     if row.get("portrait_url"):
         pc.portrait_url = str(row["portrait_url"]).strip()

@@ -33,6 +33,18 @@ def stat_values(pc) -> dict:
     return out
 
 
+def _is_custom_sheet(pc) -> bool:
+    """True when the character's SheetTemplate is a `custom`-mode system (Hunt in the
+    Moonlight, Asterion, a GM's own). Tolerates plain objects and detached instances
+    (no template info -> False, i.e. the legacy stats-based rule decides)."""
+    if not getattr(pc, "sheet_template_id", None):
+        return False
+    try:
+        return getattr(getattr(pc, "sheet_template", None), "sheet_mode", None) == "custom"
+    except Exception:  # DetachedInstanceError & friends
+        return False
+
+
 def pc_maxima(pc) -> dict:
     """{"hp", "shock", "pp", "mp", "phys", "ment", "native"} ceilings.
 
@@ -42,6 +54,8 @@ def pc_maxima(pc) -> dict:
     `10`, and only an explicitly stored max_hp / shock_max counts."""
     stat_val = stat_values(pc)
     native = bool(stat_val) or not getattr(pc, "sheet_template_id", None)
+    if native and _is_custom_sheet(pc):
+        native = False  # the template's fields ARE the character; stray N&D stats don't make it native
     phys = (stat_val.get("str", 0) + stat_val.get("dex", 0)
             + stat_val.get("bod", 0) + stat_val.get("per", 0)) if native else 0
     ment = (stat_val.get("wil", 0) + stat_val.get("int", 0)

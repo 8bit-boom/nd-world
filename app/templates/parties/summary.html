@@ -24,7 +24,7 @@
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">❤ Vitals</h2>
     {% for v in member_vitals %}
     <div style="display:flex;justify-content:space-between;gap:.8rem;padding:.3rem 0;border-bottom:1px solid var(--border);font-size:.85rem;flex-wrap:wrap">
-      <span><strong>{{ v.name }}</strong> <span style="color:var(--text-dim);font-size:.75rem">Lvl {{ v.level }}</span></span>
+      <span><strong>{{ v.name }}</strong> <span style="color:var(--text-dim);font-size:.75rem">{% if v.level is not none %}Lvl {{ v.level }}{% else %}{{ v.system }}{% endif %}</span></span>
       <span style="color:var(--text-dim)">
         {% if v.max_hp %}{{ v.hp_label }} {{ v.hp }}/{{ v.max_hp }} · {% endif %}{% if v.native and v.ac %}AC {{ v.ac }} · {% endif %}
         {% if v.down %}<span style="color:#e07">DOWN</span> · {% endif %}
