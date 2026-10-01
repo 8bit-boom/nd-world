@@ -2628,8 +2628,10 @@ def test_session_log_page_ships_recap_model_think_and_rag_pickers(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     html = client.get(f"/session-log/{session_id}").text
-    assert 'id="recap-model"' in html
-    assert "(default model)" in html
+    # The model picker is GM-only: under Unsloth Studio a named model is
+    # loaded on demand, so a player choosing one could evict the table's model
+    # (the route ignores a player's `model` too — tests/test_unsloth_audit_fixes.py).
+    assert 'id="recap-model"' not in html
     assert 'id="recap-think" checked' in html  # Thinking starts checked
     # Player view: no RAG controls at all (leak prevention), and the JS
     # degrades to use_rag: false without them.
@@ -2645,6 +2647,7 @@ def test_session_log_page_ships_recap_model_think_and_rag_pickers(client, seed):
 
     _login_gm_in(client, seed, seed.world_a)
     gm_html = client.get(f"/session-log/{session_id}").text
+    assert 'id="recap-model"' in gm_html and "(default model)" in gm_html
     assert 'id="recap-rag-checkbox"' in gm_html
     assert 'id="recap-rag-entity-limit"' in gm_html
     assert 'id="recap-rag-notes-limit"' in gm_html

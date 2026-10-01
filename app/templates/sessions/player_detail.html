@@ -43,9 +43,15 @@
          with a different model/think/RAG is a different artifact — the
          server won't serve a previously generated one for these settings. -->
     <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.7rem;padding-top:.7rem;border-top:1px solid var(--border)">
+      {% if request.state.user and request.state.user.is_gm %}
+      <!-- The model picker is GM-only: under Unsloth Studio the named model is
+           LOADED on demand, so a player choosing one could evict the table's
+           model or pull an arbitrary hub model into VRAM. The route ignores a
+           player's `model` too. -->
       <select id="recap-model" title="Which AI model generates this recap — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
         <option value="">(default model)</option>
       </select>
+      {% endif %}
       <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
              title="Generates the recap with the model's 'thinking'/reasoning mode — usually better narrative quality, but slower, and it can leave a small model with no room left to actually write the recap.">
         <input type="checkbox" id="recap-think" {% if recap_defaults.think %}checked{% endif %} style="width:auto"> 🧠 Thinking
@@ -193,6 +199,7 @@ function recapRequestOptions() {
 const RECAP_DEFAULT_MODEL = {{ recap_defaults.model|tojson }};
 async function loadRecapModelOptions() {
   const sel = document.getElementById('recap-model');
+  if (!sel) return;   // players have no model picker
   try {
     const res = await fetch('/api/ai/models');
     if (!res.ok) return;

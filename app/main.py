@@ -4301,6 +4301,15 @@ _UPLOAD_LIMIT_FIELDS = (
 )
 
 
+def _key_hint(key: str | None) -> str:
+    """'…ab78' for a secret — its last 4 characters and nothing else (empty
+    for no key; a very short value shows no characters at all)."""
+    key = (key or "").strip()
+    if not key:
+        return ""
+    return "…" + key[-4:] if len(key) >= 12 else "…"
+
+
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
@@ -4339,7 +4348,11 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_ollama_url": _ai_module.OLLAMA_URL,
         "env_unsloth_url": _ai_module.UNSLOTH_URL,
         "env_unsloth_model": _ai_module.UNSLOTH_MODEL,
-        "env_unsloth_api_key": _ai_module.UNSLOTH_API_KEY,
+        # Never the keys themselves: an API key printed into the page lands in
+        # browser autofill, screenshots, page-source copies and proxy logs.
+        # The template shows only the last characters, enough to recognise it.
+        "llm_key_hint": _key_hint(settings.llm_api_key),
+        "env_unsloth_key_hint": _key_hint(_ai_module.UNSLOTH_API_KEY),
         # When Unsloth is configured, the legacy Ollama/SwarmUI sections are
         # hidden from the Settings UI entirely (the deployment doesn't use
         # them; the form routes still accept the fields for API compat).
@@ -4467,6 +4480,7 @@ def settings_system_save(
     llm_url: str = Form(""),
     llm_model: str = Form(""),
     llm_api_key: str = Form(""),
+    llm_api_key_clear: str = Form(""),
     llm_context_tokens: str = Form(""),
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
@@ -4643,7 +4657,13 @@ def settings_system_save(
     settings.ollama_url = ollama_url
     settings.llm_url = llm_url
     settings.llm_model = llm_model
-    settings.llm_api_key = llm_api_key
+    # The key field is never pre-filled (see _settings_context), so a blank
+    # submit means "leave it", not "erase it" — erasing is the explicit
+    # checkbox. A typed key replaces the saved one.
+    if llm_api_key_clear:
+        settings.llm_api_key = ""
+    elif llm_api_key:
+        settings.llm_api_key = llm_api_key
     settings.swarmui_external_url = swarmui_external_url
     settings.android_emulator_url = android_emulator_url
     settings.editor_external_url = editor_external_url

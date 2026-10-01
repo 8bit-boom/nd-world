@@ -29,6 +29,12 @@ _ACTION_TIMEOUT = _httpx.Timeout(60.0, connect=8.0)
 # TTS synthesizes (seconds-to-minutes for a paragraph); STT runs a full
 # transcription pass over the uploaded audio.
 _AUDIO_TIMEOUT = _httpx.Timeout(600.0, connect=10.0)
+# Image generation on a CPU-only box takes tens of minutes (a 1024 px diffusion pass is ~22 s on a
+# GPU and 50-100x that on CPU), so it gets its own, longer, env-tunable budget — the fixed 10 minutes
+# above killed STT jobs the same way before it was made tunable.
+_IMAGE_TIMEOUT = _httpx.Timeout(
+    float(__import__("os").environ.get("UNSLOTH_IMAGE_TIMEOUT_SECONDS", "1800")),
+    connect=10.0)
 # STT's own read budget: transcription of a long piece on a CPU-only box
 # (the GM's TrueNAS has no GPU yet) can far exceed TTS's 10 minutes —
 # observed live: a Qwen3-ASR job died at exactly the old 600 s read
@@ -51,6 +57,12 @@ class StudioError(Exception):
         self.status_code = status_code
         self.headers = headers or {}
 
+    @property
+    def unreachable(self) -> bool:
+        """True for a transport failure (nothing answered) as opposed to
+        Studio answering with an error — the status card's 'reachable'."""
+        return str(self).startswith("Unsloth Studio unreachable")
+
 
 class StudioEndpointMissing(StudioError):
     """404 from Studio — this Studio build doesn't have that endpoint.
@@ -66,6 +78,56 @@ def _base_key() -> tuple[str, str]:
     if not key:
         raise StudioMissing("No Unsloth backend configured — set UNSLOTH_API_KEY (Settings → System)")
     return url, key
+
+
+def _error_message(resp) -> str:
+    """Studio's own error text from a failed response, whatever shape it took: the OpenAI dialect
+    ({"error": {"message"}}), a bare string ({"error": "..."}), FastAPI ({"detail": "..." | [...]}),
+    a JSON list/string, or a non-JSON body. Never raises — a hostile or odd body must not turn a clean
+    StudioError into an AttributeError (and an HTTP 500)."""
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    msg = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "")
+        elif isinstance(err, str):
+            msg = err
+        elif isinstance(err, list) and err:
+            msg = "; ".join(str(e) for e in err)
+        if not msg:
+            detail = body.get("detail")
+            if isinstance(detail, str):
+                msg = detail
+            elif isinstance(detail, list) and detail:
+                msg = "; ".join(str(d.get("msg") if isinstance(d, dict) else d) for d in detail)
+            elif isinstance(detail, dict):
+                msg = str(detail.get("message") or detail)
+        if not msg and body:
+            msg = str(body)
+    elif isinstance(body, (list, str)) and body:
+        msg = str(body)
+    if not msg:
+        msg = (resp.text or "").strip()
+    return (msg[:300]) if msg else f"HTTP {resp.status_code}"
+
+
+def _is_route_missing(resp) -> bool:
+    """True when a 404 means "this Studio build has no such endpoint" (an empty body, an HTML page, or
+    FastAPI's bare "Not Found" / "API endpoint not found") rather than "the endpoint exists and the thing
+    you asked about doesn't" (e.g. {"detail": "Repository 'x/y' not found"}) — the latter must keep its
+    message instead of telling the GM to update Studio."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return True
+    if not isinstance(body, dict) or not body:
+        return True
+    msg = _error_message(resp).strip().lower().rstrip(".")
+    return msg in ("not found", "api endpoint not found", "endpoint not found") or "endpoint not found" in msg
 
 
 # ── API-key death detection ──────────────────────────────────────────────────
@@ -119,7 +181,7 @@ def _headers(key: str) -> dict:
 
 async def _request(method: str, path: str, *, json_body=None, params=None,
                    timeout=_PROBE_TIMEOUT, content=None, files=None,
-                   headers_extra: dict | None = None) -> dict:
+                   headers_extra: dict | None = None, expect_json: bool = False) -> dict:
     url, key = _base_key()
     headers = _headers(key)
     if headers_extra:
@@ -138,29 +200,28 @@ async def _request(method: str, path: str, *, json_body=None, params=None,
     _auth_relevant = path.startswith("/v1/") or path.startswith("/api/inference/")
     if resp.status_code == 401 and _auth_relevant:
         _note_auth_failure()
-    if resp.status_code == 404:
+    if resp.status_code == 404 and _is_route_missing(resp):
         raise StudioEndpointMissing(path)
     if resp.status_code >= 400:
         # OpenAI-dialect {"error":{"message"}} (the /v1 surface) and
-        # FastAPI {"detail"} (the /api surface) both occur — take whichever.
-        try:
-            body = resp.json()
-        except ValueError:
-            body = {}
-        message = (
-            ((body.get("error") or {}).get("message"))
-            or (body.get("detail") if isinstance(body.get("detail"), str) else None)
-            or str(body)[:300]
-        ) or f"HTTP {resp.status_code}"
-        raise StudioError(message, resp.status_code, headers=dict(resp.headers))
+        # FastAPI {"detail"} (the /api surface) both occur — _error_message takes whichever.
+        raise StudioError(_error_message(resp), resp.status_code, headers=dict(resp.headers))
     if resp.status_code < 300 and _auth_relevant:
         _note_auth_ok()
     if not resp.content:
+        if expect_json:
+            raise StudioError(f"Studio answered {path} with nothing — is this URL really a Studio API?", 502)
         return {}
     try:
-        return resp.json()
+        data = resp.json()
     except ValueError:
+        if expect_json:
+            raise StudioError(
+                f"Studio answered {path} with a page, not JSON — is this URL really a Studio API?", 502)
         return {}
+    if expect_json and not isinstance(data, dict):
+        raise StudioError(f"Studio answered {path} with an unexpected shape", 502)
+    return data
 
 
 # ── Studio diagnostic probe ──────────────────────────────────────────────────
@@ -186,7 +247,18 @@ async def _probe_one(client: "_httpx.AsyncClient", url: str, key: str, path: str
     except _httpx.HTTPError as exc:
         return {"path": path, "status": None, "note": f"unreachable: {type(exc).__name__}"}
     snippet = resp.text[:120].replace("\n", " ").strip()
-    return {"path": path, "status": resp.status_code, "snippet": snippet}
+    out = {"path": path, "status": resp.status_code, "snippet": snippet}
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            for k in ("version", "build", "app_version", "studio_version"):
+                if data.get(k):
+                    out["version"] = str(data[k])
+                    break
+    return out
 
 
 async def studio_probe() -> dict:
@@ -194,26 +266,12 @@ async def studio_probe() -> dict:
     and return {results: [...], version: str|None}. 404s are DATA here, not
     errors — they're the "build doesn't have it" answer. Any 200 JSON body
     with a version-ish field is extracted best-effort."""
-    import json as _json
     url, key = _base_key()
     async with _httpx.AsyncClient(timeout=_httpx.Timeout(6.0, connect=4.0),
                                   follow_redirects=True) as c:
         import asyncio as _asyncio
         raw = await _asyncio.gather(*[_probe_one(c, url, key, p) for p in _PROBE_PATHS])
-    version = None
-    for r in raw:
-        if r.get("status") == 200 and r.get("snippet"):
-            try:
-                body = _json.loads(r["snippet"] + ("}" if r["snippet"].count("{") > r["snippet"].count("}") else ""))
-            except ValueError:
-                continue
-            if isinstance(body, dict):
-                for k in ("version", "build", "app_version", "studio_version"):
-                    if body.get(k):
-                        version = str(body[k])
-                        break
-        if version:
-            break
+    version = next((r["version"] for r in raw if r.get("version")), None)
     return {"results": raw, "version": version}
 
 
@@ -227,12 +285,16 @@ async def hub_cached() -> list[dict]:
     return data.get("cached") or []
 
 
-async def hub_download_start(repo_id: str) -> dict:
+async def hub_download_start(repo_id: str, gguf_variant: str = "") -> dict:
     """Start downloading a hub model — returns immediately; poll
     hub_download_progress(). Shape verified Phase 0.5:
-    {job_key, state:"running", accepted:true, transport}."""
-    return await _request("POST", "/api/hub/download", json_body={"repo_id": repo_id},
-                          timeout=_ACTION_TIMEOUT)
+    {job_key, state:"running", accepted:true, transport}. `gguf_variant` (the quant, for repos that
+    need one) is sent only when given — the field name is the one Studio's image-load flow uses; the
+    download side of it was not live-verified, so a Studio that rejects it answers with its own message."""
+    body = {"repo_id": repo_id}
+    if gguf_variant:
+        body["gguf_variant"] = gguf_variant
+    return await _request("POST", "/api/hub/download", json_body=body, timeout=_ACTION_TIMEOUT)
 
 
 async def hub_download_progress(repo_id: str) -> dict:
@@ -275,7 +337,7 @@ async def image_generate_native(body: dict) -> list[dict]:
     them into its own gallery and serves the bytes at each record's url.
     Raises StudioEndpointMissing on Studio builds without it."""
     data = await _request("POST", "/api/inference/images/generate", json_body=body,
-                          timeout=_AUDIO_TIMEOUT)
+                          timeout=_IMAGE_TIMEOUT)
     return data.get("images") or []
 
 
@@ -302,6 +364,7 @@ async def image_gallery_file(image_or_url: dict | str) -> bytes:
         _note_auth_failure()
     if resp.status_code >= 400:
         raise StudioError(f"Fetching generated image failed: HTTP {resp.status_code}", resp.status_code)
+    _note_auth_ok()
     return resp.content
 
 
@@ -397,12 +460,7 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = "mp
     if resp.status_code == 401:
         _note_auth_failure()
     if resp.status_code >= 400:
-        try:
-            body_err = resp.json()
-        except ValueError:
-            body_err = {}
-        message = ((body_err.get("error") or {}).get("message")) or f"HTTP {resp.status_code}"
-        raise StudioError(message, resp.status_code)
+        raise StudioError(_error_message(resp), resp.status_code)
     _note_auth_ok()
     audio = resp.content
     if not audio:
@@ -539,7 +597,7 @@ async def studio_version() -> str:
         except StudioEndpointMissing:
             continue
         for k in ("version", "build", "app_version", "studio_version"):
-            if data.get(k):
+            if isinstance(data, dict) and data.get(k):
                 return str(data[k])
         # /api/about is a page-ish endpoint — if it 200s with HTML, don't
         # keep scanning forever for a field that isn't coming.
@@ -548,30 +606,23 @@ async def studio_version() -> str:
 
 
 async def studio_update() -> dict:
-    """Ask Studio to update itself — feature-detected via /api/update. A
-    live Studio 405s POST and 404s GET, so the real method is discovered
-    from the 405 response's standard Allow header (falling back to GET
-    when the header is absent). Builds without any /api/update raise
-    StudioEndpointMissing and the route tells the GM the manual path;
-    nd-world never shells out to Docker."""
-    # Try the known update paths/methods in order. A 404 = this build
-    # doesn't have that path — move on. A 405 = the path exists but wrong
-    # method: retry once with the method the standard Allow header names
-    # (the only truthful discovery mechanism), then move on.
-    for path, method in (("/api/update", "POST"), ("/api/update", "GET"),
-                         ("/update", "POST"), ("/update", "GET")):
+    """Ask Studio to update itself — feature-detected via /api/update. This is a MUTATING action, so
+    only POST (or PUT, when a 405's standard Allow header names it) is ever tried — never GET, which
+    could be a harmless page on a Studio that serves its UI at /update — and the answer must be a JSON
+    object: a 200 HTML page is not "an update was requested". Builds without any of these raise
+    StudioEndpointMissing and the route tells the GM the manual path; nd-world never shells out to
+    Docker."""
+    for path in ("/api/update", "/update"):
         try:
-            return await _request(method, path, timeout=_ACTION_TIMEOUT)
+            return await _request("POST", path, timeout=_ACTION_TIMEOUT, expect_json=True)
         except StudioEndpointMissing:
             continue
         except StudioError as exc:
             if exc.status_code != 405:
                 raise
-            allow = str((exc.headers or {}).get("allow") or "")
-            alt = next((m2.strip().upper() for m2 in allow.split(",")
-                        if m2.strip().upper() not in ("HEAD", "OPTIONS", method)), "")
-            if alt:
-                return await _request(alt, path, timeout=_ACTION_TIMEOUT)
+            allow = str((exc.headers or {}).get("allow") or "").upper()
+            if "PUT" in [m.strip() for m in allow.split(",")]:
+                return await _request("PUT", path, timeout=_ACTION_TIMEOUT, expect_json=True)
             continue
     raise StudioEndpointMissing("/api/update (or /update)")
 
@@ -596,19 +647,14 @@ async def stt(audio: bytes, filename: str, model: str = "small") -> str:
     if resp.status_code == 401:
         _note_auth_failure()
     if resp.status_code >= 400:
-        try:
-            body_err = resp.json()
-        except ValueError:
-            body_err = {}
-        message = ((body_err.get("error") or {}).get("message")) or \
-                  (body_err.get("detail") if isinstance(body_err.get("detail"), str) else None) or \
-                  f"HTTP {resp.status_code}"
-        raise StudioError(message, resp.status_code)
+        raise StudioError(_error_message(resp), resp.status_code)
     _note_auth_ok()
     try:
         data = resp.json()
     except ValueError:
         raise StudioError("Studio returned a non-JSON transcription response", 502)
+    if not isinstance(data, dict):
+        raise StudioError("Studio returned an unexpected transcription response", 502)
     return data.get("text") or ""
 
 
@@ -624,6 +670,48 @@ async def auto_switch_overrides_get() -> dict:
     without the subpath (the route degrades to 'not available')."""
     return await _request("GET", "/api/settings/openai-auto-switch/overrides",
                           timeout=_ACTION_TIMEOUT)
+
+
+_CTX_KEYS = ("max_seq_length", "context_length", "n_ctx", "ctx_size")
+
+
+def _ctx_of(entry) -> int | None:
+    if isinstance(entry, dict):
+        for k in _CTX_KEYS:
+            try:
+                n = int(entry.get(k))
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                return n
+    return None
+
+
+def context_length_for(data, model_id: str) -> int | None:
+    """The context length Studio will load `model_id` with, read out of whatever shape the per-model
+    overrides answer has ({"overrides": {id: {...}}}, {"overrides": [{model_id, ...}]}, a bare list or
+    a bare {id: {...}}) — only the PUT side of that endpoint was live-verified, so this is tolerant and
+    returns None for anything it can't place (no warning is better than a wrong one)."""
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return None
+
+    def same(x) -> bool:
+        return isinstance(x, str) and x.strip().lower() == mid
+
+    node = data
+    if isinstance(node, dict) and isinstance(node.get("overrides"), (dict, list)):
+        node = node["overrides"]
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if same(k):
+                return _ctx_of(v)
+        return None
+    if isinstance(node, list):
+        for e in node:
+            if isinstance(e, dict) and any(same(e.get(k)) for k in ("model_id", "model", "repo_id")):
+                return _ctx_of(e)
+    return None
 
 
 async def auto_switch_overrides_set(body: dict) -> dict:
@@ -669,12 +757,7 @@ async def video_content(video_id: str) -> tuple[bytes, str]:
     if resp.status_code == 401:
         _note_auth_failure()
     if resp.status_code >= 400:
-        try:
-            body_err = resp.json()
-        except ValueError:
-            body_err = {}
-        message = ((body_err.get("error") or {}).get("message")) or f"HTTP {resp.status_code}"
-        raise StudioError(message, resp.status_code)
+        raise StudioError(_error_message(resp), resp.status_code)
     if not resp.content:
         raise StudioError("Studio returned an empty video file", 502)
     _note_auth_ok()

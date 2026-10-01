@@ -95,9 +95,11 @@
               <option value="lullaby">Lullaby</option>
               <option value="hymn">Hymn</option>
             </select>
+            {% if request.state.user and request.state.user.is_gm %}{# the route is GM-only: it spends Studio's GPU on TTS #}
             <button type="button" class="ai-recap-btn" id="tale-perform-btn" onclick="aiPerformTale()"
                     title="Has the text-to-speech voice (Unsloth Studio) perform these lyrics and attaches the recording to this session's recap audio below">🎤 Perform it</button>
             <span id="tale-perform-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+            {% endif %}
           </div>
           {% endif %}
         </div>
@@ -148,7 +150,7 @@
           </div>
           <div style="font-size:.74rem;color:var(--text-dim);margin-top:.45rem;line-height:1.45">
             Made a song somewhere else (Suno, Udio, a recording at the table)? Upload it. Or write lyrics with
-            “🎵 Turn into folk tale/song” above and press “🎤 Perform it” to have the voice model sing them.
+            “🎵 Turn into folk tale/song” above and — if you are the GM — press “🎤 Perform it” to have the voice model sing them.
           </div>
         </div>
         {% endif %}

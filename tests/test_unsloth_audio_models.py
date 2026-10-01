@@ -206,26 +206,25 @@ def test_update_route_falls_back_to_allow_method(client, seed, monkeypatch):
     assert calls == ["POST", "PUT"]  # POST first, then the Allow-named method
 
 
-def test_update_route_get_fallback_when_allow_says_get(client, seed, monkeypatch):
-    """Allow: GET, HEAD → the fallback picks GET."""
+def test_update_route_never_falls_back_to_get(client, seed, monkeypatch):
+    """Allow: GET, HEAD → a GET could be a harmless page (or a no-op) on a
+    Studio that serves its UI at /update, and 'update' is a mutating action —
+    so the chain moves on / reports 'not available' instead of calling GET."""
     from app.unsloth_extras import StudioError
 
     calls = []
 
     async def fake_request(method, path, **kw):
         calls.append(method)
-        if method == "POST":
-            raise StudioError("Method Not Allowed", 405,
-                              headers={"allow": "GET, HEAD"})
-        return {"status": "updating"}
+        raise StudioError("Method Not Allowed", 405, headers={"allow": "GET, HEAD"})
 
     monkeypatch.setattr("app.unsloth_extras._request", fake_request)
     _patch_key(monkeypatch)
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post("/api/ai/unsloth/update")
-    assert r.status_code == 200
-    assert calls == ["POST", "GET"]
+    assert r.status_code == 400 and "Docker" in r.json()["detail"]
+    assert calls == ["POST", "POST"]  # /api/update then /update — never GET
 
 
 def test_update_route_surfaces_persistent_405(client, seed, monkeypatch):
@@ -522,8 +521,8 @@ def test_studio_version_falls_back_to_slash_version(client, seed, monkeypatch):
 
 
 def test_update_route_tries_slash_update_after_api_update_fails(client, seed, monkeypatch):
-    """The GM's live build: /api/update 405s POST and 404s GET — the chain
-    must continue to /update (POST) instead of giving up."""
+    """The GM's live build: /api/update 404s — the chain must continue to
+    /update (POST) instead of giving up, and must never try GET."""
     import httpx
     from app import unsloth_extras as ux
 
@@ -561,7 +560,7 @@ def test_update_route_tries_slash_update_after_api_update_fails(client, seed, mo
     result = asyncio.run(run())
     assert result == {"status": "updating"}
     # the chain stops at the first success — POST /update answered
-    assert calls == ["POST /api/update", "GET /api/update", "POST /update"]
+    assert calls == ["POST /api/update", "POST /update"]
 
 
 

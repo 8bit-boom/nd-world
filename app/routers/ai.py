@@ -3487,13 +3487,9 @@ async def unsloth_hub_download(body: dict):
     repo_id = str(body.get("repo_id") or "").strip()
     if not repo_id:
         raise HTTPException(400, "repo_id is required")
-    payload = {"repo_id": repo_id}
     variant = str(body.get("gguf_variant") or "").strip()
-    if variant:
-        payload["gguf_variant"] = variant
     try:
-        return await _unsloth_extras._request(
-            "POST", "/api/hub/download", json_body=payload, timeout=_unsloth_extras._ACTION_TIMEOUT)
+        return await _unsloth_extras.hub_download_start(repo_id, variant)
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, str(exc))
 
@@ -3613,14 +3609,36 @@ async def unsloth_status():
     'unreachable' rather than blank. GM-only."""
     _unsloth_or_400()
     out: dict = {"reachable": True, "auth": _unsloth_extras.auth_status()}
+    silent = 0   # probes that got no answer at all (vs. an error answer)
     try:
         out["loaded_models"] = await _unsloth_extras.loaded_models()
     except _unsloth_extras.StudioError as exc:
         out["loaded_models_error"] = f"{exc.status_code}: {exc}"
+        silent += bool(exc.unreachable)
     try:
         out["auto_switch"] = await _unsloth_extras.auto_switch_get()
     except _unsloth_extras.StudioError as exc:
         out["auto_switch_error"] = f"{exc.status_code}: {exc}"
+        silent += bool(exc.unreachable)
+    if silent >= 2:
+        # Nothing answered either probe — say so instead of a green card
+        # that merely lists two errors.
+        out["reachable"] = False
+        return out
+    # Studio loads a model with ITS context length; nd-world sizes its
+    # prompts from LLM_CONTEXT_TOKENS. When they differ, long prompts either
+    # overflow (Studio smaller) or waste the window (Studio larger).
+    # Best effort: older builds lack the overrides endpoint, and its answer
+    # shape is not fully verified — any doubt means no warning.
+    try:
+        model_id = _ai.effective_llm_model()
+        studio_ctx = _unsloth_extras.context_length_for(
+            await _unsloth_extras.auto_switch_overrides_get(), model_id)
+        mine = _ai.llm_context_tokens()
+        if studio_ctx and studio_ctx != mine:
+            out["context_mismatch"] = {"studio": studio_ctx, "nd_world": mine, "model": model_id}
+    except Exception:
+        pass
     return out
 
 
@@ -3947,7 +3965,12 @@ async def unsloth_prefs_set(body: dict):
     if "stt_model" in body:
         _ai.set_stt_model(str(body.get("stt_model") or "").strip())
     if "studio_console_url" in body:
-        _ai.set_studio_console_url(str(body.get("studio_console_url") or "").strip())
+        url = str(body.get("studio_console_url") or "").strip()
+        # Rendered into an <a href>: anything but http(s) (javascript:, data:,
+        # protocol-relative) would be script injection from a stored setting.
+        if url and not re.match(r"^https?://[^\s/]", url, re.I):
+            raise HTTPException(400, "Studio console URL must start with http:// or https://")
+        _ai.set_studio_console_url(url)
     return {"ok": True}
 
 

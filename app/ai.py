@@ -23,13 +23,11 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 
 # Unsloth Studio — the single AI backend for chat (and, per Phase 3, image
 # generation) once the migration cuts over; see docs/UNSLOTH_PHASE0_FINDINGS.md
-# for the verified /v1 API surface and docs/nd-world-unsloth-migration-plan.md
-# for the plan. When UNSLOTH_API_KEY is set, every LLM call goes through
+# for the verified /v1 API surface. When UNSLOTH_API_KEY is set, every LLM call goes through
 # app.llm_client's OpenAI-dialect shim; when unset, nd-world keeps talking to
-# the legacy Ollama backend below (kept until the Phase 7 cutover — the
-# rollback story in the migration plan §11 is "flip COMPOSE_PROFILES back AND
-# run the old app code", so this dual-mode bridge exists only for the
-# transition window, not as a permanent two-backend design).
+# the legacy Ollama backend below (kept until the Phase 7 cutover, so this
+# dual-mode bridge exists only for the transition window, not as a permanent
+# two-backend design).
 UNSLOTH_URL = os.getenv("UNSLOTH_URL", "").rstrip("/")
 UNSLOTH_API_KEY = os.getenv("UNSLOTH_API_KEY", "")
 UNSLOTH_MODEL = os.getenv("UNSLOTH_MODEL", "")
@@ -98,10 +96,15 @@ _whisper_url_override: str = ""
 
 def set_llm_override(url: str = "", model: str = "", api_key: str = "", context_tokens: int = 0) -> None:
     global _llm_url_override, _llm_model_override, _llm_api_key_override, _llm_context_tokens_override
+    global _status_cache, _status_inflight
     _llm_url_override = (url or "").rstrip("/")
     _llm_model_override = model or ""
     _llm_api_key_override = api_key or ""
     _llm_context_tokens_override = max(0, int(context_tokens or 0))
+    # The cached /api/ai/status answer describes the OLD backend; leaving it
+    # for up to a poll window made a freshly saved Studio key look "offline".
+    _status_cache = None
+    _status_inflight = None
 
 
 def effective_llm_api_key() -> str:
@@ -115,8 +118,12 @@ def effective_llm_api_key() -> str:
 def effective_llm_url() -> str:
     if _llm_url_override:
         return _llm_url_override
-    if effective_llm_api_key() and UNSLOTH_URL:
-        return UNSLOTH_URL
+    if effective_llm_api_key():
+        # A Studio key must NEVER be sent to the Ollama address (it would be
+        # a Bearer header to the wrong service, and Ollama's address is not
+        # where Studio lives). With no URL configured, use the compose
+        # service name the shipped docker-compose.yml gives Studio.
+        return UNSLOTH_URL or "http://unsloth:8000"
     return OLLAMA_URL
 
 
@@ -758,7 +765,8 @@ def set_embed_model(model_id: str) -> None:
 
 
 async def embed_text(text: str, model: str = "") -> list[float]:
-    """Embeds `text` via Ollama's /api/embed, for app.retrieval.
+    """Embeds `text` via the active backend (Studio /v1/embeddings, or
+    Ollama's /api/embed on the legacy path), for app.retrieval.
     vector_search and app.vault_sync's ingestion (both call this the same
     way — a query and a vault chunk need the same embedding space to be
     comparable at all). Raises _ollama.ResponseError untouched (e.g. the
@@ -770,6 +778,8 @@ async def embed_text(text: str, model: str = "") -> list[float]:
     m = model or get_embed_model()
     resp = await _client().embed(model=m, input=text)
     return list(resp.embeddings[0])
+
+
 # ── Studio extras preferences (TTS / STT / console) ─────────────────────────
 # Stored in ai_models.json like embed_model — deployment facts, not campaign
 # content, so no per-world rows and no AppSettings migration.
@@ -3915,22 +3925,42 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
 # second. A short cache collapses that into one real call per window.
 _STATUS_CACHE_TTL = 15.0
 _status_cache: tuple[float, dict] | None = None
+# Studio's GET /v1/models takes ~10 s on a cold start; without a bound a
+# wedged backend stalls every page's status poll, and without sharing, each
+# tab's poll fired its own probe. One bounded probe is shared by all callers.
+_STATUS_TIMEOUT_SECONDS = 15.0
+_status_inflight: "asyncio.Task | None" = None
+
+
+async def _status_probe() -> dict:
+    try:
+        resp = await asyncio.wait_for(_client().list(), timeout=_STATUS_TIMEOUT_SECONDS)
+        models = [m.model for m in resp.models]
+        return {"status": "ok", "model": effective_ollama_model(), "loaded_models": models,
+                "backend": llm_backend_name()}
+    except Exception:
+        return {"status": "unavailable", "model": effective_ollama_model(),
+                "backend": llm_backend_name()}
 
 
 async def status() -> dict:
-    global _status_cache
+    global _status_cache, _status_inflight
     now = time.monotonic()
     if _status_cache and now - _status_cache[0] < _STATUS_CACHE_TTL:
         return _status_cache[1]
+    task = _status_inflight
+    loop = asyncio.get_running_loop()
+    if task is None or task.done() or task.get_loop() is not loop:
+        task = loop.create_task(_status_probe())
+        _status_inflight = task
     try:
-        resp = await _client().list()
-        models = [m.model for m in resp.models]
-        result = {"status": "ok", "model": effective_ollama_model(), "loaded_models": models,
-                  "backend": llm_backend_name()}
-    except Exception:
-        result = {"status": "unavailable", "model": effective_ollama_model(),
-                  "backend": llm_backend_name()}
-    _status_cache = (now, result)
+        # shield: one waiter being cancelled must not kill the probe the
+        # other waiters are sharing.
+        result = await asyncio.shield(task)
+    finally:
+        if task.done() and _status_inflight is task:
+            _status_inflight = None
+    _status_cache = (time.monotonic(), result)
     return result
 
 
@@ -3961,6 +3991,14 @@ async def debug_info() -> dict:
 # ── Image generation ──────────────────────────────────────────────────────────
 
 _IMAGEGEN_TYPE = os.environ.get("IMAGEGEN_TYPE", "").lower()   # "swarmui" or "comfyui"
+# Read timeout for one generation request. Studio generates synchronously and
+# loads the image model on first use (minutes on a Volta card), so the old
+# fixed 10 minutes cut off slow-but-working generations.
+_IMAGEGEN_HTTP_TIMEOUT = _httpx.Timeout(
+    float(os.environ.get("IMAGEGEN_TIMEOUT_SECONDS")
+          or os.environ.get("UNSLOTH_IMAGE_TIMEOUT_SECONDS") or 1800),
+    connect=10.0,
+)
 _IMAGEGEN_URL  = os.environ.get("IMAGEGEN_URL", "").rstrip("/")
 
 
@@ -4637,8 +4675,12 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
     parts = [path]
     cleanup_dirs = []
     try:
-        if path.stat().st_size > _UNSLOTH_STT_MAX_BYTES:
-            duration = await _probe_audio_duration(path)
+        size = path.stat().st_size
+        # A file can be under the byte limit and still be hours long (a
+        # low-bitrate recording): one request carrying that much audio
+        # outruns the read timeout, so duration decides as well as size.
+        duration = await _probe_audio_duration(path)
+        if size > _UNSLOTH_STT_MAX_BYTES or (duration and duration > _UNSLOTH_STT_CHUNK_SECONDS):
             if not duration or duration <= 0:
                 raise WhisperError(
                     f"{path.name} is {(path.stat().st_size + 1048575) // 1048576} MiB — over Unsloth "
@@ -5799,7 +5841,7 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
     backend_label = {"swarmui": "SwarmUI", "comfyui": "ComfyUI"}.get(t, "Unsloth")
 
     try:
-        async with _httpx.AsyncClient(timeout=600) as c:
+        async with _httpx.AsyncClient(timeout=_IMAGEGEN_HTTP_TIMEOUT) as c:
             if t == "unsloth":
                 # Preferred: the native /api/inference/images/generate —
                 # unlocks negative prompt, steps/guidance, and img2img
@@ -5906,12 +5948,10 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                     finally:
                         _reset_imagegen_progress()
                     if gr.status_code >= 400:
-                        detail = gr.text[:300]
-                        try:
-                            err = gr.json().get("error") or {}
-                            detail = str(err.get("message") or detail)
-                        except ValueError:
-                            pass
+                        # `error` may be an object, a bare string or a list
+                        # depending on the Studio build — the shared parser
+                        # copes with all of them (a string used to crash here).
+                        detail = _unsloth_extras._error_message(gr)
                         hint = ""
                         if gr.status_code == 503 and "No image model loaded" in detail:
                             hint = " — enable Studio's media auto-switch (Settings → API) or load the image model once"

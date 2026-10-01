@@ -239,7 +239,12 @@ def song_instructions(style: str) -> str:
 async def recap_song(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Have Studio's TTS perform lyrics as a song, save it as a library clip (GM-only until reviewed,
     lyrics kept as its transcript) and attach it to the recap. JSON: {lyrics, name?, style?, voice?,
-    visible_to_players?}. Synchronous — a song is short."""
+    visible_to_players?}. Synchronous — a song is short. GM-only (not merely session-editors): it
+    spends Studio's GPU on TTS and may load the TTS model, exactly what the /api/ai/tts route
+    already reserves for the GM."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     try:
         body = await request.json()

@@ -176,7 +176,13 @@
       {% endif %}
       <div class="form-group">
         <label for="llm-api-key">Unsloth Studio API key (AI backend — blank = legacy Ollama/SwarmUI)</label>
-        <input id="llm-api-key" name="llm_api_key" value="{{ settings.llm_api_key or '' }}" placeholder="{{ env_unsloth_api_key or 'not set' }}" autocomplete="off">
+        <input id="llm-api-key" name="llm_api_key" type="password" autocomplete="new-password"
+               placeholder="{% if llm_key_hint %}saved key {{ llm_key_hint }} — type a new one to replace it{% elif env_unsloth_key_hint %}from the environment ({{ env_unsloth_key_hint }}){% else %}not set{% endif %}">
+        {% if llm_key_hint %}
+        <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.78rem;color:var(--text-dim);margin-top:.3rem;cursor:pointer">
+          <input type="checkbox" name="llm_api_key_clear" value="1" style="width:auto"> remove the saved key (fall back to the environment's, or the legacy backend)
+        </label>
+        {% endif %}
         <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">
           Setting this switches AI chat, embeddings and image generation to Unsloth Studio
           (see the <code>unsloth</code> service in docker-compose.yml). Create the key in

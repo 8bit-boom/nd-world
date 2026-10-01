@@ -56,14 +56,19 @@ backend for both AI chat and image generation. After `docker compose up -d`:
 3. **Save it in nd-world** — ⚙️ Settings → **Unsloth (AI backend)** →
    *API key*. The moment a key is saved, AI chat **and** image generation
    (including media generated inline in chat) switch to Unsloth
-   automatically — no restart. Clearing the key falls back to the legacy
-   Ollama/SwarmUI backends (kept for rollback until the migration
-   cutover).
+   automatically — no restart. The field is write-only: the page never
+   shows the saved key (only its last 4 characters); leave it blank to keep
+   the saved key, tick *remove the saved key* to clear it, which falls back
+   to the legacy Ollama/SwarmUI backends (kept for rollback until the
+   migration cutover).
 4. **Download models** — in Studio's Model Hub, fetch the chat model
    (`unsloth/gemma-4-26B-A4B-it-GGUF` by default, override with
    `UNSLOTH_MODEL`) and the image model (`unsloth/z-image-turbo-GGUF`,
    override with `UNSLOTH_IMAGE_MODEL`). Consider enabling Studio's idle
-   unload (~300 s) so VRAM is released between sessions.
+   unload (~300 s) so VRAM is released between sessions. Set the chat
+   model's **context length** in Studio to the same number as
+   `LLM_CONTEXT_TOKENS` (default 16384) — nd-world sizes its prompts from
+   that value, and the AI page's status card warns when the two differ.
 5. **On a Tesla V100** — load models with fp16 + non-flash attention and
    pin the Studio image tag (see [GPU_SETUP.md](GPU_SETUP.md) §4; the
    sm_70 kernel risk is finding I-7 in
@@ -71,6 +76,13 @@ backend for both AI chat and image generation. After `docker compose up -d`:
 
 Remember: Studio API keys do not survive container recreation — after a
 Studio rebuild, create a fresh key and update Settings.
+
+`docker-compose.yml` takes the Studio image from `UNSLOTH_IMAGE` (default
+`unsloth/unsloth:latest`, a moving tag — pin one that works for you once you
+have it) and publishes Studio's port on `UNSLOTH_BIND` (default `127.0.0.1`;
+set `0.0.0.0` to open the Studio console to other machines). nd-world itself
+reaches Studio over the compose network and doesn't use that mapping. A single
+image generation may run up to `UNSLOTH_IMAGE_TIMEOUT_SECONDS` (default 1800).
 
 The other AI profiles: `whisper` (audio transcription, unchanged),
 `android` and `editor` (see below), and the legacy `ollama`/`swarmui`

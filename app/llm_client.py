@@ -59,6 +59,8 @@ _CHAT_TIMEOUT = _httpx.Timeout(
 # make the server pull it first (findings Phase 0.5: the hub download of
 # bge-small is real), so don't fail fast on a cold embed call either.
 _EMBED_TIMEOUT = _httpx.Timeout(300.0, connect=10.0)
+# GET /v1/models is a status probe (cold Studio takes ~10 s): bounded, unlike chat.
+_LIST_TIMEOUT = _httpx.Timeout(30.0, connect=10.0)
 
 # Ollama option keys the OpenAI dialect has a direct name for.
 _OPTION_RENAMES = {
@@ -170,6 +172,20 @@ def _error_from_response(resp: _httpx.Response) -> UnslothResponseError:
     return UnslothResponseError(message or f"HTTP {resp.status_code}", resp.status_code)
 
 
+def _error_from_event(err) -> UnslothResponseError:
+    """An ``{"error": ...}`` SSE event → the same exception an HTTP error
+    gets. ``error`` may be an OpenAI-style object or a bare string."""
+    status = 500
+    if isinstance(err, dict):
+        message = str(err.get("message") or err.get("detail") or err)[:500]
+        code = err.get("code")
+        if isinstance(code, int) and 400 <= code <= 599:
+            status = code
+    else:
+        message = str(err)[:500]
+    return UnslothResponseError(message or "stream error", status)
+
+
 class UnslothClient:
     """Drop-in for the slice of ``ollama.AsyncClient`` app/ai.py uses."""
 
@@ -277,6 +293,14 @@ class UnslothClient:
                             data = _json.loads(payload)
                         except ValueError:
                             continue
+                        if not isinstance(data, dict):
+                            continue
+                        if data.get("error"):
+                            # Studio reports a failure that happens AFTER the
+                            # 200 header (context overflow, model crash) as an
+                            # `{"error": ...}` event. Skipping it would hand
+                            # the caller a silently truncated answer.
+                            raise _error_from_event(data["error"])
                         for choice in data.get("choices") or []:
                             delta = choice.get("delta") or {}
                             yield SimpleNamespace(
@@ -298,7 +322,10 @@ class UnslothClient:
         detail fields don't exist here; the recommendation panel's
         name-based fallback handles their absence (plan §6.2)."""
         async with self._http() as c:
-            resp = await c.get(f"{self._base}/v1/models", headers=self._headers())
+            # A probe, not a chat: the client default is the one-hour chat
+            # timeout, which would let a wedged Studio hang every status poll.
+            resp = await c.get(f"{self._base}/v1/models", headers=self._headers(),
+                               timeout=_LIST_TIMEOUT)
         if resp.status_code >= 400:
             raise _error_from_response(resp)
         data = resp.json()

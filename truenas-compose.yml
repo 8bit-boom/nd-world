@@ -243,6 +243,11 @@ services:
   #   3. Settings → API → enable "Model auto-switch" (and media auto-switch)
   #      so requesting a downloaded model by name loads it on demand; set
   #      idle auto-unload (e.g. 300 s) on a single-GPU box.
+  #      Also set the chat model's context length in Studio to the SAME number
+  #      as LLM_CONTEXT_TOKENS (default 16384): llama.cpp fixes context at model
+  #      load, and nd-world sizes its prompts from LLM_CONTEXT_TOKENS — if they
+  #      differ, long prompts overflow or waste the window (the AI page's status
+  #      card flags a mismatch).
   #   4. Download models in the Model Hub — the chat GGUF (default below:
   #      gemma-4-26B UD-IQ4_NL) and an image model (Krea 2 Turbo or
   #      Z-Image-Turbo). V100: set Precision fp16, non-flash attention,
@@ -251,7 +256,11 @@ services:
   #      an older unsloth image tag here.
   unsloth:
     profiles: ["unsloth"]
-    image: unsloth/unsloth:latest        # sm_75+ (Turing T4/T10 and newer): :latest is safe; V100 owners see docs/GPU_SETUP.md §2
+    # :latest is a MOVING tag — every pull can change Studio's API (this app's
+    # /api/* calls track Studio's own, not a stable contract) and the image
+    # can lose kernels (sm_70/V100: see docs/GPU_SETUP.md §2). Once a version
+    # works for you, pin it: UNSLOTH_IMAGE=unsloth/unsloth:<tag> in .env.
+    image: ${UNSLOTH_IMAGE:-unsloth/unsloth:latest}   # sm_75+ (Turing T4/T10 and newer): :latest is fine; V100 owners pin an older tag
     container_name: nd-world-unsloth
     restart: unless-stopped
     stop_grace_period: 60s               # model unload can be slow

@@ -817,15 +817,28 @@ async function mpStudioStatus() {
     textEl.innerHTML = '<span style="color:#e07070">unreachable</span>';
     return;
   }
+  if (d.reachable === false) {
+    textEl.innerHTML = '<span style="color:#e07070">unreachable</span> '
+      + '<span style="color:var(--text-dim)">— Studio did not answer; check its address and that the container is running</span>';
+    return;
+  }
   if (d.auth && d.auth.key_failed) {
     textEl.innerHTML = '<span style="color:#e07070">API key rejected — see Settings → System</span>';
     return;
   }
   const parts = [];
   const asw = d.auto_switch || {};
-  parts.push(asw.enabled
-    ? '<span style="color:#6ecf6e">auto-switch on</span>'
-    : '<span style="color:var(--text-dim)">auto-switch off</span>');
+  if (d.auto_switch_error) {
+    parts.push('<span style="color:var(--text-dim)">auto-switch unknown</span>');
+  } else if (asw.enabled) {
+    parts.push('<span style="color:#6ecf6e">auto-switch on</span>');
+  } else {
+    // Off is a real problem, not a neutral state: with it off Studio will not
+    // load a model by name, so a request naming a model that is not already
+    // resident fails instead of loading it.
+    parts.push('<span style="color:#e0b050" title="Studio will not load a model by name while this is off">'
+      + 'auto-switch off — model-by-name loading disabled</span>');
+  }
   const idle = asw.auto_unload_idle_seconds;
   parts.push(idle
     ? 'idle-unload ' + (idle >= 60 ? Math.round(idle / 60) + ' min' : idle + ' s')
@@ -836,6 +849,11 @@ async function mpStudioStatus() {
     parts.push('<span style="color:#6ecf6e">resident:</span> ' + names);
   } else if (Array.isArray(loaded)) {
     parts.push('<span style="color:var(--text-dim)">nothing resident — first request loads a model (~20-40 s)</span>');
+  }
+  const cm = d.context_mismatch;
+  if (cm) {
+    parts.push('<span style="color:#e0b050" title="Set Studio\'s context length for this model, or LLM_CONTEXT_TOKENS in Settings → System, so they agree">'
+      + 'context mismatch: Studio ' + Number(cm.studio) + ' vs nd-world ' + Number(cm.nd_world) + ' tokens</span>');
   }
   textEl.innerHTML = parts.join('<span style="color:var(--border)"> | </span>');
 }

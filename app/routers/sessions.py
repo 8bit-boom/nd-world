@@ -1840,7 +1840,10 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     # sending an otherwise-pointless empty JSON body.
     raw = await request.body()
     body = json.loads(raw) if raw else {}
-    model = str(body.get("model", "")).strip()
+    # Only the GM picks the model: under Unsloth Studio a named model is
+    # loaded on demand, so a player-supplied name could evict the table's
+    # model or pull an arbitrary hub model into VRAM. Players get the default.
+    model = str(body.get("model", "")).strip() if is_gm else ""
     think = _think_from_body(body)
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
     # Same Condense-style customization (a one-off note plus soft/firm

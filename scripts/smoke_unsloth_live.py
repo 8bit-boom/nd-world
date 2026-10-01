@@ -7,9 +7,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-os.environ["UNSLOTH_URL"] = "http://127.0.0.1:8000"
-os.environ["UNSLOTH_API_KEY"] = "sk-unsloth-d3ef7c6c2f4f7345a78ff86149137d1f"
-os.environ["UNSLOTH_MODEL"] = "unsloth/gemma-4-26B-A4B-it-GGUF"
+# The key comes from the environment — never commit one here. Create it in
+# Studio → Settings → API, then:  UNSLOTH_API_KEY=... python3 scripts/smoke_unsloth_live.py
+# (UNSLOTH_URL and UNSLOTH_MODEL are optional and default to the Phase 0 spike container.)
+if not os.environ.get("UNSLOTH_API_KEY"):
+    sys.exit("Set UNSLOTH_API_KEY (Studio → Settings → API) before running this smoke test.")
+os.environ.setdefault("UNSLOTH_URL", "http://127.0.0.1:8000")
+os.environ.setdefault("UNSLOTH_MODEL", "unsloth/gemma-4-26B-A4B-it-GGUF")
 os.environ["OLLAMA_URL"] = ""  # ensure no legacy fallback
 
 import app.ai as ai
