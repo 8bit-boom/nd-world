@@ -61,6 +61,7 @@ from .routers.professions import router as professions_router
 from .routers.lore_extras import router as lore_extras_router
 from .routers.boards_generate import router as boards_generate_router
 from .routers.handouts import router as handouts_router
+from .routers.display import router as display_router
 from .routers.home_content import router as home_content_router
 from .routers.export import router as export_router, _entity_to_export_dict
 from .routers.importer import _resolve_entity_template
@@ -163,6 +164,7 @@ app.include_router(professions_router)
 app.include_router(lore_extras_router)
 app.include_router(boards_generate_router)
 app.include_router(handouts_router)
+app.include_router(display_router)
 app.include_router(home_content_router)
 app.include_router(export_router)
 app.include_router(kinds_admin_router)

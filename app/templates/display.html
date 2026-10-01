@@ -1,0 +1,147 @@
+<!doctype html>
+{# Second screen — the window GMs keep on a second monitor (see app/routers/display.py). A bare
+   document on purpose: no site chrome, no theme, nothing but what was sent. #}
+<html lang="en" data-world="{{ world.slug }}">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="robots" content="noindex"/>
+<title>{{ world.name }} — Screen</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; color:#ece8dd; overflow:hidden;
+               font-family:Georgia, "Times New Roman", serif; }
+  body.hide-cursor, body.hide-cursor * { cursor:none !important; }
+  .layer { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+           opacity:0; transition:opacity .5s ease; pointer-events:none; }
+  .layer.on { opacity:1; pointer-events:auto; }
+  #pic-layer { overflow:hidden; touch-action:none; }
+  #pic { max-width:100%; max-height:100%; object-fit:contain; user-select:none; -webkit-user-drag:none;
+         transform-origin:center center; will-change:transform; }
+  #caption { position:fixed; left:0; right:0; bottom:0; padding:2.2rem 3rem 1.5rem; text-align:center;
+             background:linear-gradient(transparent, rgba(0,0,0,.82)); opacity:0; transition:opacity .5s ease;
+             pointer-events:none; }
+  #caption.on { opacity:1; }
+  #caption .t { font-size:clamp(1.3rem, 2.6vw, 2.8rem); letter-spacing:.05em; }
+  #caption .c { font-size:clamp(.95rem, 1.6vw, 1.6rem); opacity:.78; margin-top:.35rem; }
+  #card { box-sizing:border-box; max-width:min(1150px, 88vw); max-height:90vh; overflow:auto; padding:3rem 3.6rem;
+          background:radial-gradient(ellipse at top, #1d1a14, #0e0d0a); border:1px solid #3b3426; border-radius:10px;
+          box-shadow:0 0 90px rgba(0,0,0,.9); }
+  #card .title { margin:0 0 1.2rem; font-size:clamp(1.8rem, 3.6vw, 3.6rem); letter-spacing:.06em; color:#e6cf9b; font-weight:normal; }
+  #card .body { font-size:clamp(1.15rem, 2.25vw, 2.2rem); line-height:1.6; }
+  #card .body p { margin:0 0 1em; } #card .body img { max-width:100%; }
+  #idle { color:#2c2a25; font-size:clamp(1.2rem, 3vw, 3rem); letter-spacing:.3em; text-transform:uppercase; text-align:center; }
+  #hint { position:fixed; top:1rem; right:1rem; max-width:22rem; padding:.55rem .85rem; border-radius:6px;
+          background:rgba(20,20,20,.82); color:#cfcabb; font:13px/1.4 system-ui, sans-serif; opacity:.95; transition:opacity .8s; }
+  #hint.gone { opacity:0; pointer-events:none; }
+  #offline { position:fixed; left:1rem; bottom:1rem; font:12px system-ui, sans-serif; color:#a55; display:none; }
+</style>
+</head>
+<body>
+<div id="idle-layer" class="layer on"><div id="idle">{{ world.name }}</div></div>
+<div id="pic-layer" class="layer"><img id="pic" alt=""/></div>
+<div id="card-layer" class="layer"><article id="card"><h1 class="title"></h1><div class="body"></div></article></div>
+<div id="caption"><div class="t"></div><div class="c"></div></div>
+<div id="hint">Click for fullscreen · <b>F</b> toggles it · scroll to zoom, drag to pan, <b>0</b> resets</div>
+<div id="offline">reconnecting…</div>
+
+<script>
+(function () {
+  var SLUG = {{ world.slug | tojson }};
+  var W = '?w=' + encodeURIComponent(SLUG);
+  var lastSeq = -1;
+  var pic = document.getElementById('pic');
+  var layers = { idle: document.getElementById('idle-layer'), pic: document.getElementById('pic-layer'),
+                 card: document.getElementById('card-layer') };
+  var caption = document.getElementById('caption');
+  var hint = document.getElementById('hint');
+
+  function show(which) { Object.keys(layers).forEach(function (k) { layers[k].classList.toggle('on', k === which); }); }
+  function setCaption(title, text) {
+    caption.querySelector('.t').textContent = title || '';
+    caption.querySelector('.c').textContent = text || '';
+    caption.classList.toggle('on', !!(title || text));
+  }
+
+  // ── zoom / pan on the image (local to this window) ────────────────────────
+  var scale = 1, tx = 0, ty = 0, drag = null;
+  function applyView() { pic.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')'; }
+  function resetView() { scale = 1; tx = ty = 0; applyView(); }
+  layers.pic.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    scale = Math.min(8, Math.max(1, scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    if (scale === 1) { tx = ty = 0; }
+    applyView();
+  }, { passive: false });
+  layers.pic.addEventListener('pointerdown', function (e) { if (scale > 1) { drag = { x: e.clientX - tx, y: e.clientY - ty }; layers.pic.setPointerCapture(e.pointerId); } });
+  layers.pic.addEventListener('pointermove', function (e) { if (drag) { tx = e.clientX - drag.x; ty = e.clientY - drag.y; applyView(); } });
+  layers.pic.addEventListener('pointerup', function () { drag = null; });
+
+  // ── rendering the stage state ─────────────────────────────────────────────
+  function render(state) {
+    if (!state || state.seq === lastSeq) return;
+    lastSeq = state.seq;
+    var cur = state.current;
+    if (!cur) { show('idle'); setCaption('', ''); return; }
+    if (cur.kind === 'image') {
+      var probe = new Image();
+      probe.onload = function () { pic.src = cur.url; pic.alt = cur.title || ''; resetView(); show('pic'); setCaption(cur.title, cur.caption); };
+      probe.onerror = function () { document.querySelector('#card .title').textContent = 'Image unavailable';
+                                    document.querySelector('#card .body').textContent = cur.url; show('card'); setCaption('', ''); };
+      probe.src = cur.url;
+    } else {
+      document.querySelector('#card .title').textContent = cur.title || '';
+      document.querySelector('#card .body').innerHTML = cur.html || '';   // server-rendered, HTML-escaped markdown
+      show('card'); setCaption('', '');
+    }
+  }
+
+  function poll() {
+    fetch('/api/display/state' + W, { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (s) { document.getElementById('offline').style.display = 'none'; render(s); })
+      .catch(function () { document.getElementById('offline').style.display = 'block'; });
+  }
+
+  // live: the SSE stream carries the full state; a BroadcastChannel nudge from the sending window
+  // makes same-browser updates instant; a slow poll is the safety net if either is blocked.
+  try {
+    var es = new EventSource('/api/display/stream' + W);
+    es.addEventListener('state', function (e) { document.getElementById('offline').style.display = 'none'; render(JSON.parse(e.data)); });
+    es.onerror = function () { document.getElementById('offline').style.display = 'block'; };
+  } catch (e) { /* the poll below covers it */ }
+  try {
+    var bc = new BroadcastChannel('nd-stage-' + SLUG);
+    bc.onmessage = poll;
+  } catch (e) { /* older browser */ }
+  setInterval(poll, 10000);
+  poll();
+
+  // ── fullscreen, cursor, wake lock ─────────────────────────────────────────
+  function toggleFullscreen() {
+    if (document.fullscreenElement) { document.exitFullscreen(); }
+    else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen().catch(function () {}); }
+  }
+  document.addEventListener('click', function () { if (!document.fullscreenElement) toggleFullscreen(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    else if (e.key === '0') resetView();
+    else if (e.key === '+' || e.key === '=') { scale = Math.min(8, scale * 1.2); applyView(); }
+    else if (e.key === '-') { scale = Math.max(1, scale / 1.2); if (scale === 1) { tx = ty = 0; } applyView(); }
+  });
+  document.addEventListener('fullscreenchange', function () { if (document.fullscreenElement) hint.classList.add('gone'); });
+  setTimeout(function () { hint.classList.add('gone'); }, 12000);
+
+  var cursorTimer = null;
+  document.addEventListener('mousemove', function () {
+    document.body.classList.remove('hide-cursor');
+    clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(function () { document.body.classList.add('hide-cursor'); }, 2500);
+  });
+
+  function keepAwake() { try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(function () {}); } catch (e) {} }
+  keepAwake();
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) keepAwake(); });
+})();
+</script>
+</body>
+</html>

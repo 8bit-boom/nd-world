@@ -558,6 +558,11 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/handout/{entity_id}` | GM | Single printable handout for one entity. |
 | GET | `/handouts` | GM | Gallery of handout-eligible entities. |
+| GET | `/display` | GM | **Second screen** — the bare, black window to put on a second monitor (`app/routers/display.py`, `templates/display.html`). Shows whatever the GM last sent: an image (contained, with title/caption, scroll-zoom + drag-pan) or a text card; follows the stage live over SSE with a `BroadcastChannel` nudge and a slow poll fallback; click / `F` = fullscreen; keeps the monitor awake. Pinned to a world with `?w=`. |
+| GET | `/api/display/state` | GM | The world's stage: `{seq, current, recent[]}` (history newest-first, 12 max, no duplicates). |
+| GET | `/api/display/stream` | GM | SSE of that state (`event: state`, a full snapshot on connect and on every change, keep-alive comments). |
+| POST | `/api/display/show` | GM | Puts something on the screen. JSON `{"kind":"image","url","title"?,"caption"?}` (url: a site-local `/path` or `http(s)://`, never `javascript:`/`data:`/`//host`), `{"kind":"text","text","title"?}` (rendered with the safe markdown pipeline), or `{"kind":"entity","entity_id","mode"?:"image"\|"text"}` — an entity shows its image (else its text), and its text is stripped of `[gmonly]` / `:::gm` parts because the screen is what the table sees. Another world's entity is 404. Bumps the live counter. |
+| POST | `/api/display/clear` | GM | Blanks the screen (history is kept). |
 | POST | `/handouts/print` | GM | Generates a combined multi-entity printable page. |
 
 ## Audio Library

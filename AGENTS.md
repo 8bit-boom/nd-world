@@ -116,6 +116,11 @@ tools that require GM access still check `is_gm` at call time.)
   name lands on a trailing "More" page (a section is never hidden), other templates
   with 4+ sections get a page per section. Editing a character is a *partial* update
   (`_apply_form(..., partial=True)`): only keys the form sent are written.
+- **Second screen** (`app/routers/display.py`, `templates/display.html`, `static/js/nd-stage.js`): a GM-only
+  `/display` window for a second monitor plus "send to screen" actions (hover any image, the lightbox, any
+  text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It
+  shows what the TABLE sees, so text from an entity must go through `strip_gm_only` + `strip_gm_directives`
+  and image URLs through `safe_image_url`; the pop-up must be opened *before* any `await` (user activation).
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before
   assuming an endpoint doesn't exist, and add a row there for any new route.

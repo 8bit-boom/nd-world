@@ -20,6 +20,10 @@
      console/fetch/XHR/click hooks writing duplicate entries into the ONE
      shared localStorage log. Debug a panel by opening its page directly. #}
   <script src="/static/js/nd-logger.js?v={{ asset_v('js/nd-logger.js') }}"></script>
+  {# Second screen (GM only): send images / text to the /display window on another monitor — see
+     app/routers/display.py. Same embed rule as the logger: one control per browser window, not per
+     floated panel. #}
+  <script src="/static/js/nd-stage.js?v={{ asset_v('js/nd-stage.js') }}" defer></script>
   {% endif %}
   <script src="/static/js/nd-poll.js?v={{ asset_v('js/nd-poll.js') }}"></script>
   <script src="/static/js/nd-float.js?v={{ asset_v('js/nd-float.js') }}" defer></script>

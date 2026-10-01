@@ -40,6 +40,11 @@
       <div class="detail-date">Updated: {{ entity.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
     </div>
     <div class="detail-actions">
+      {% if request.state.user and request.state.user.is_gm %}
+      {# Second screen: show this on the other monitor (its image if it has one, else its text). #}
+      <button type="button" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)" onclick="ndStage.showEntity({{ entity.id }})" title="Show this on the second monitor">📺 Show</button>
+      {% if entity.image_url and (entity.body or entity.summary) %}<button type="button" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)" onclick="ndStage.showEntity({{ entity.id }}, 'text')" title="Show the text of this entity on the second monitor (GM-only parts are left out)">📺 Text</button>{% endif %}
+      {% endif %}
       {% if (request.state.user and request.state.user.is_gm) or world.players_can_download_entities %}
       <a href="/entity/{{ entity.id }}/download.md" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)">⬇ Download .md</a>
       {% endif %}
