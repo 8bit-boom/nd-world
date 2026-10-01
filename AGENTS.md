@@ -81,6 +81,15 @@ tools that require GM access still check `is_gm` at call time.)
   beneath them, so a new route there is player-reachable by default and must
   enforce its own access (see `_owned_pc` in `app/routers/character_hub.py`,
   which 404s anyone but the character's owner).
+- Character/party rules that several routers share live in leaf modules with
+  no router imports, so any router can use them without an import cycle:
+  `app/pc_stats.py` (`pc_maxima` — THE rule for HP/Shock/PP/MP ceilings, where a
+  stored max of 0 means "stat-derived"; never read `max_hp`/`shock_max` raw for
+  a ceiling) and `app/party_refs.py` (party membership parsing,
+  `parties_for_pc`, `detach_pc` — call it wherever a character is deleted so
+  no party roster, loot claim or calendar event dangles — and `load_loot`, the
+  stable-`lid` loot normaliser). Editing a character is a *partial* update
+  (`_apply_form(..., partial=True)`): only keys the form sent are written.
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before
   assuming an endpoint doesn't exist, and add a row there for any new route.

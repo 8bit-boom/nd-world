@@ -828,10 +828,21 @@ def test_player_hub_on_own_sheet(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     html = client.get(f"/characters/{pc_id}").text
     assert "Your party" in html and "Vanguard" in html
-    assert "Yours:" in html and "Rope" in html          # own claim
-    assert "1 unclaimed item" in html and "Gem" in html # unclaimed loot
+    # loot: their own claim shows as "Unclaim", unclaimed loot offers "Claim"
+    assert 'data-claim="unclaim"' in html and "Rope" in html
+    assert 'data-claim="claim"' in html and "Gem" in html
     assert "+50 XP" in html                             # ledger
-    assert "The Tavern" in html                         # recent session
+    # Sessions is closed to players by default, so the tab must NOT list session titles...
+    assert "The Tavern" not in html
+    # ...until the world opens that section to them
+    from app.models import World
+    db = SessionLocal()
+    try:
+        db.get(World, seed.world_a.id).section_access_json = json.dumps({"sessions": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    assert "The Tavern" in client.get(f"/characters/{pc_id}").text  # recent session
 
     # a GM viewing the same sheet gets NO hub (it's the player's surface)
     login(client, seed.gm.email, GM_PASSWORD)
