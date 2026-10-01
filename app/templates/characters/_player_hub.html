@@ -42,22 +42,32 @@ a.pch-title:hover { color:var(--neon); }
 .pch-search { width:100%; box-sizing:border-box; margin-bottom:.6rem; }
 </style>
 
-<div id="pc-hub" data-pc-id="{{ pc.id }}">
+{% set own = (hub_mode == 'owner') %}
+<div id="pc-hub" data-pc-id="{{ pc.id }}" data-mode="{{ hub_mode }}">
   <div class="pch-tabs" role="tablist" aria-label="Character hub">
     <button type="button" class="pch-tab" role="tab" data-tab="sheet">📄 Sheet</button>
     <button type="button" class="pch-tab" role="tab" data-tab="journey">🧑‍🤝‍🧑 Journey</button>
     <button type="button" class="pch-tab" role="tab" data-tab="quests">📜 Quests &amp; goals</button>
-    <button type="button" class="pch-tab" role="tab" data-tab="notes">📓 Notes &amp; journal</button>
+    {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="notes">📓 Notes &amp; journal</button>{% endif %}
     <button type="button" class="pch-tab" role="tab" data-tab="world">🌍 Known world</button>
     <button type="button" class="pch-tab" role="tab" data-tab="schedule">🗓 Schedule</button>
   </div>
 
+  {% if not own %}
+  {# A GM looking in: same shared tabs, the player's point of view, read-only. The
+     owner's Notes & journal tab (their diary + the GM's private notes to them) is theirs alone. #}
+  <p class="pch-muted" id="pch-gm-note" hidden>
+    👁 GM view — {% if hub_owner_name %}this is what {{ hub_owner_name }} sees on their character hub{% else %}this character has no owning player yet, so this is what a player would see{% endif %}.
+    Read-only; their notes and journal stay private.
+  </p>
+  {% endif %}
+
   <section class="pch-panel" data-panel="journey" hidden>
     {% if hub_party %}
-    <h2 class="pch-h">🧑‍🤝‍🧑 Your party — <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">{{ hub_party.name }}</a></h2>
+    <h2 class="pch-h">🧑‍🤝‍🧑 {{ 'Your party' if own else 'Party' }} — <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">{{ hub_party.name }}</a></h2>
 
     {% if hub_roster %}
-    <div class="pch-sub">🧑‍🤝‍🧑 Your companions</div>
+    <div class="pch-sub">🧑‍🤝‍🧑 {{ 'Your companions' if own else 'Companions' }}</div>
     {% for m in hub_roster %}
     <div class="pch-row" data-roster="{{ m.id }}">
       <strong style="font-size:.9rem">{{ m.name }}</strong>
@@ -75,12 +85,13 @@ a.pch-title:hover { color:var(--neon); }
       <div class="pch-row pch-loot-row" data-lid="{{ it.lid }}">
         <span>{{ it.name }}{% if it.qty > 1 %} ×{{ it.qty }}{% endif %}</span>{% if it.notes %}<span class="pch-muted"> — {{ it.notes }}</span>{% endif %}
         {% for n in it.claimers %}<span class="pch-chip{% if it.mine and n == pc.name %} mine{% endif %}">{{ n }}</span>{% endfor %}
-        <button type="button" class="pch-btn" data-claim="{{ 'unclaim' if it.mine else 'claim' }}">{{ 'Unclaim' if it.mine else 'Claim for ' ~ pc.name }}</button>
+        {% if own %}<button type="button" class="pch-btn" data-claim="{{ 'unclaim' if it.mine else 'claim' }}">{{ 'Unclaim' if it.mine else 'Claim for ' ~ pc.name }}</button>{% endif %}
       </div>
       {% endfor %}
     </div>
     <div class="pch-err" id="pch-loot-err" role="alert"></div>
-    <p class="pch-muted">Claiming marks what you want — your GM or party hands items out.</p>
+    {% if own %}<p class="pch-muted">Claiming marks what you want — your GM or party hands items out.</p>
+    {% else %}<p class="pch-muted">Claims are the player's to make — hand items out from <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">the party page</a>.</p>{% endif %}
     {% endif %}
 
     {% if hub_xp_ledger %}
@@ -103,12 +114,12 @@ a.pch-title:hover { color:var(--neon); }
     {% endif %}
     {% else %}
     <h2 class="pch-h">🧑‍🤝‍🧑 Journey</h2>
-    <p class="pch-muted">{{ pc.name }} isn't in a party yet. Once your GM adds them to one, the party's loot, XP history and recent sessions show up here.</p>
+    <p class="pch-muted">{{ pc.name }} isn't in a party yet.{% if own %} Once your GM adds them to one, the party's loot, XP history and recent sessions show up here.{% endif %}</p>
     {% endif %}
   </section>
 
   <section class="pch-panel" data-panel="quests" hidden><div data-body="quests" class="pch-muted">Loading…</div></section>
-  <section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>
+  {% if own %}<section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>{% endif %}
   <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
 </div>
@@ -120,7 +131,10 @@ a.pch-title:hover { color:var(--neon); }
   const PC_ID = hub.dataset.pcId;
   const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
-  const TABS = ['sheet', 'journey', 'quests', 'notes', 'world', 'schedule'];
+  const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
+  const TABS = OWNER ? ['sheet', 'journey', 'quests', 'notes', 'world', 'schedule']
+                     : ['sheet', 'journey', 'quests', 'world', 'schedule'];
+  const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
   // createTextNode, never innerHTML, so user-written text can't inject markup.
@@ -172,23 +186,24 @@ a.pch-title:hover { color:var(--neon); }
   function renderQuests(el, d) {
     const parts = [h('div', { class: 'pch-sub', text: '📜 Quests' })];
     if (d.section === 'none') {
-      parts.push(h('p', { class: 'pch-muted', text: "Your GM hasn't opened the quest log to players in this world." }));
+      parts.push(h('p', { class: 'pch-muted', text: OWNER ? "Your GM hasn't opened the quest log to players in this world."
+                                                       : 'The quest log is closed to players in this world, so this character sees none.' }));
     } else if (!d.quests.length) {
       parts.push(h('p', { class: 'pch-muted', text: 'No quests to show yet.' }));
     } else {
       d.quests.forEach(q => parts.push(h('div', { class: 'pch-row' },
         h('a', { class: 'pch-title', href: q.href, text: q.title }),
         h('span', { class: 'pch-chip', text: q.status }),
-        q.mine ? h('span', { class: 'pch-chip mine', text: 'your party' }) : (q.party ? h('span', { class: 'pch-chip', text: q.party }) : null),
+        q.mine ? h('span', { class: 'pch-chip mine', text: OWNER ? 'your party' : 'their party' }) : (q.party ? h('span', { class: 'pch-chip', text: q.party }) : null),
         q.subs_total ? h('span', { class: 'pch-chip', text: q.subs_done + '/' + q.subs_total + ' steps' }) : null,
         q.summary ? h('div', { class: 'pch-muted', text: q.summary }) : null)));
       if (d.quests_href) parts.push(h('a', { class: 'pch-muted', href: d.quests_href, text: 'Open the full quest log →' }));
     }
 
-    parts.push(h('div', { class: 'pch-sub', text: '🎯 My goals' }));
-    parts.push(goalForm(d.goal_statuses));
-    if (!d.goals.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing yet — what does your character want?' }));
-    d.goals.forEach(g => parts.push(goalRow(g, d.goal_statuses)));
+    parts.push(h('div', { class: 'pch-sub', text: OWNER ? '🎯 My goals' : '🎯 Goals' }));
+    if (OWNER) parts.push(goalForm(d.goal_statuses));
+    if (!d.goals.length) parts.push(h('p', { class: 'pch-muted', text: OWNER ? 'Nothing yet — what does your character want?' : 'No goals set yet.' }));
+    d.goals.forEach(g => parts.push(OWNER ? goalRow(g, d.goal_statuses) : goalReadOnlyRow(g)));
     el.replaceChildren(...parts);
   }
 
@@ -203,6 +218,13 @@ a.pch-title:hover { color:var(--neon); }
       catch (e) { err.textContent = e.message; add.disabled = false; }
     });
     return h('div', { class: 'pch-form' }, title, text, h('div', { class: 'pch-btns' }, add), err);
+  }
+
+  function goalReadOnlyRow(g) {
+    return h('div', { class: 'pch-row' },
+      h('span', { class: 'pch-title', text: g.title || '(untitled goal)' }),
+      h('span', { class: 'pch-chip', text: STATUS_LABEL[g.status] || g.status }),
+      g.body ? h('div', { class: 'pch-text', text: g.body }) : null);
   }
 
   function goalRow(g, statuses) {
@@ -306,7 +328,7 @@ a.pch-title:hover { color:var(--neon); }
   }
 
   function renderWorld(el, d, q) {
-    const search = h('input', { type: 'search', class: 'pch-search', placeholder: 'Search what you know…', value: q, 'aria-label': 'Search the world' });
+    const search = h('input', { type: 'search', class: 'pch-search', placeholder: OWNER ? 'Search what you know…' : 'Search what this player can see…', value: q, 'aria-label': 'Search the world' });
     search.addEventListener('input', () => {
       clearTimeout(worldTimer);
       worldTimer = setTimeout(async () => {
@@ -321,7 +343,7 @@ a.pch-title:hover { color:var(--neon); }
       d.results.forEach(e => parts.push(entityRow(e)));
     } else {
       if (d.revealed.length) {
-        parts.push(h('div', { class: 'pch-sub', text: '🔓 Revealed to you' }));
+        parts.push(h('div', { class: 'pch-sub', text: OWNER ? '🔓 Revealed to you' : '🔓 Revealed to this player' }));
         d.revealed.forEach(e => parts.push(entityRow(e)));
       }
       parts.push(h('div', { class: 'pch-sub', text: '🆕 Recently updated' }));
@@ -340,16 +362,17 @@ a.pch-title:hover { color:var(--neon); }
   function renderSchedule(el, d) {
     const parts = [];
     parts.push(h('div', { class: 'pch-sub', text: '🎲 Next sessions' }));
-    if (!d.sessions.length) parts.push(h('p', { class: 'pch-muted', text: 'No upcoming session dates set for your party.' }));
+    if (!d.sessions.length) parts.push(h('p', { class: 'pch-muted', text: OWNER ? 'No upcoming session dates set for your party.' : 'No upcoming session dates set for their party.' }));
     d.sessions.forEach(s => parts.push(h('div', { class: 'pch-row' },
       h('a', { class: 'pch-title', href: s.href, text: '#' + s.num + ' — ' + s.title }),
       h('span', { class: 'pch-chip', text: s.date }))));
 
     parts.push(h('div', { class: 'pch-sub', text: '🗓 Upcoming in the world' + (d.today ? ' (today: ' + d.today + ')' : '') }));
     if (d.calendar_section === 'none') {
-      parts.push(h('p', { class: 'pch-muted', text: "Your GM hasn't opened the calendar to players in this world." }));
+      parts.push(h('p', { class: 'pch-muted', text: OWNER ? "Your GM hasn't opened the calendar to players in this world."
+                                                       : 'The calendar is closed to players in this world, so this character sees none.' }));
     } else if (!d.events.length) {
-      parts.push(h('p', { class: 'pch-muted', text: 'Nothing pinned to your character or party yet.' }));
+      parts.push(h('p', { class: 'pch-muted', text: OWNER ? 'Nothing pinned to your character or party yet.' : 'Nothing pinned to this character or their party yet.' }));
     } else {
       d.events.forEach(e => parts.push(h('div', { class: 'pch-row' },
         h('span', { class: 'pch-title', text: e.title }),
@@ -390,7 +413,8 @@ a.pch-title:hover { color:var(--neon); }
   }
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
-  const loaders = { quests: loadQuests, notes: loadNotes, world: () => loadWorld(''), schedule: loadSchedule };
+  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule };
+  if (OWNER) loaders.notes = loadNotes;
   const loaded = {};
 
   function sheetNodes() {
@@ -406,6 +430,7 @@ a.pch-title:hover { color:var(--neon); }
     hub.querySelectorAll('.pch-tab').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
     hub.querySelectorAll('.pch-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
     sheetNodes().forEach(n => n.classList.toggle('away-from-sheet', tab !== 'sheet'));
+    if (gmNote) gmNote.hidden = tab === 'sheet';
     if (loaders[tab] && !loaded[tab]) { loaded[tab] = true; loaders[tab](); }
     try { history.replaceState(null, '', tab === 'sheet' ? location.pathname + location.search : '#hub-' + tab); } catch (e) { /* ignore */ }
   }

@@ -679,11 +679,22 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     # their own claims), the party's XP ledger, and recent sessions the
     # party played. This is the character's HOME (management/editing);
     # the Player Cockpit is the separate live session dashboard.
-    # hub_enabled: the viewer OWNS this character (not merely manages it — a
-    # GM looking at a player's sheet gets the plain sheet). Drives the hub
-    # tabs (Journey/Quests/Notes/World/Schedule — see
-    # app/routers/character_hub.py, whose API is owner-only for the same reason).
-    hub_enabled = bool(user and pc.owner_user_id == user.id)
+    # hub_mode drives the hub tabs (Journey/Quests/Notes/World/Schedule — see
+    # app/routers/character_hub.py): "owner" = the viewer OWNS this character
+    # (full hub, incl. the private Notes & journal tab); "gm" = a global GM
+    # looking in (read-only shared tabs from the player's point of view, no Notes
+    # tab, no claiming); None = everyone else gets the plain sheet.
+    if user and pc.owner_user_id == user.id:
+        hub_mode = "owner"
+    elif user and user.is_gm:
+        hub_mode = "gm"
+    else:
+        hub_mode = None
+    hub_enabled = hub_mode is not None
+    hub_owner_name = None
+    if hub_mode == "gm" and pc.owner_user_id:
+        owner_user = db.get(User, pc.owner_user_id)
+        hub_owner_name = (owner_user.display_name or owner_user.email) if owner_user else None
     hub_ctx = (journey_context(db, request, pc, db.get(World, pc.world_id))
                if hub_enabled else {"hub_party": None, "hub_loot": [], "hub_roster": [],
                                     "hub_xp_ledger": [], "hub_sessions": []})
@@ -704,6 +715,8 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "linked_sheets": linked_sheets,
             "levelup_ready": levelup_ready,
             "hub_enabled": hub_enabled,
+            "hub_mode": hub_mode,
+            "hub_owner_name": hub_owner_name,
             **hub_ctx,
         })
 
@@ -725,6 +738,8 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "linked_sheets": linked_sheets,
         "levelup_ready": levelup_ready,
         "hub_enabled": hub_enabled,
+        "hub_mode": hub_mode,
+        "hub_owner_name": hub_owner_name,
         **hub_ctx,
     })
 

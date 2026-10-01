@@ -79,8 +79,10 @@ tools that require GM access still check `is_gm` at call time.)
   Watch out for the blanket prefixes in `_is_player_safe`: `/characters` and
   `/api/characters/` admit every logged-in player for *any* method and path
   beneath them, so a new route there is player-reachable by default and must
-  enforce its own access (see `_owned_pc` in `app/routers/character_hub.py`,
-  which 404s anyone but the character's owner).
+  enforce its own access (see `app/routers/character_hub.py`: `_owned_pc` 404s
+  anyone but the character's owner — Notes and every write — while `_hub_pc`
+  additionally lets a global GM read the shared Quests/World/Schedule tabs,
+  evaluated from the owning player's point of view, never the GM's).
 - Character/party rules that several routers share live in leaf modules with
   no router imports, so any router can use them without an import cycle:
   `app/pc_stats.py` (`pc_maxima` — THE rule for HP/Shock/PP/MP ceilings, where a

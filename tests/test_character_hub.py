@@ -87,8 +87,9 @@ def test_owner_can_read_every_tab(client, seed):
 
 
 def test_everyone_else_gets_404_on_every_tab(client, seed):
-    """Another player in the SAME world, a player from a DIFFERENT world, and
-    the GM (who does not own the character) are all refused identically."""
+    """Another player in the SAME world and a player from a DIFFERENT world are
+    refused identically. (A global GM may read the shared tabs and is refused
+    Notes — pinned in tests/test_character_hub_gm.py.)"""
     pc = _pc(seed.player_a, seed.world_a)
     db = SessionLocal()
     try:
@@ -108,7 +109,6 @@ def test_everyone_else_gets_404_on_every_tab(client, seed):
     for email, pw in (
         (mate_email, PLAYER_PASSWORD),
         (seed.player_b.email, PLAYER_PASSWORD),
-        (seed.gm.email, GM_PASSWORD),
     ):
         login(client, email, pw)
         for tab in READ_TABS:
@@ -530,13 +530,13 @@ def test_party_members_journey_panel_shows_the_party(client, seed):
     assert "The Night Crew" in html and "isn't in a party yet" not in html
 
 
-def test_gm_and_fellow_players_get_the_plain_sheet(client, seed):
-    """Viewing someone else's sheet (GM, or a party-mate when
-    players_see_party is on) must not render the hub at all."""
+def test_fellow_players_get_the_plain_sheet_and_the_gm_a_read_only_hub(client, seed):
+    """A party-mate (when players_see_party is on) must not get the hub at all;
+    a GM gets the read-only, Notes-less one (see tests/test_character_hub_gm.py)."""
     pc = _pc(seed.player_a, seed.world_a)
     login(client, seed.gm.email, GM_PASSWORD)
     gm_html = client.get(f"/characters/{pc}").text
-    assert 'id="pc-hub"' not in gm_html
+    assert 'id="pc-hub"' in gm_html and 'data-mode="gm"' in gm_html and 'data-tab="notes"' not in gm_html
 
     db = SessionLocal()
     try:

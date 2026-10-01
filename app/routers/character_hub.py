@@ -2,12 +2,18 @@
 page (Journey / Quests / Notes / World / Schedule) so the page is a player's
 home base, not just a sheet.
 
-Every route here is OWNER-ONLY: the caller must be the account that owns the
-PlayerCharacter (PlayerCharacter.owner_user_id == caller), full stop. A GM who
-does not own the character gets the same 404 as any other player — the hub is
-the player's own view (and its journal is private to them). /api/characters/
-is a blanket player-safe prefix in app/main.py's _is_player_safe, so this
-module is the ONLY enforcement; _owned_pc() runs first in every handler.
+Access has two levels, both enforced in this module because /api/characters/
+is a blanket player-safe prefix in app/main.py's _is_player_safe:
+
+* Notes and every write (journal/goal entries, loot claims) are OWNER-ONLY:
+  the caller must be the account that owns the PlayerCharacter
+  (PlayerCharacter.owner_user_id == caller), full stop — _owned_pc(). A GM who
+  does not own the character gets the same 404 as any other player; the
+  diary and the GM's private notes to that player are theirs alone.
+* The shared READ tabs (Quests & goals, Known world, Schedule) also open to a
+  global GM — _hub_pc() — who sees them from the PLAYER's point of view (the
+  character's owner's section levels and reveals, never the GM's unfiltered
+  world), read-only. Assistants are not GMs here: they see what players see.
 
 The hub shows a player what they could already reach elsewhere, gathered in
 one place — it never widens visibility. Quests honor the same
@@ -63,6 +69,22 @@ def _owned_pc(request: Request, db: Session, pc_id: int):
     if not world or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
     return user, pc, world
+
+
+def _hub_pc(request: Request, db: Session, pc_id: int):
+    """(user, pc, world, is_owner) for the shared READ tabs: the owning player, or
+    a global GM looking in. Anyone else gets the same 404 as "no such character"."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(401)
+    pc = db.get(PlayerCharacter, pc_id)
+    is_owner = bool(pc and pc.owner_user_id == user.id)
+    if not pc or not (is_owner or user.is_gm):
+        raise HTTPException(404)
+    world = db.get(World, pc.world_id)
+    if not world or not auth.user_can_access_world(db, user, world):
+        raise HTTPException(404)
+    return user, pc, world, is_owner
 
 
 def _player_level(world, section_id: str) -> str:
@@ -237,7 +259,7 @@ def hub_quests(pc_id: int, request: Request, db: Session = Depends(get_db)):
     section matrix as /quests — a world that closes Quests to players shows
     none here), with the character's own party's quests flagged, plus this
     character's personal goals."""
-    user, pc, world = _owned_pc(request, db, pc_id)
+    user, pc, world, _ = _hub_pc(request, db, pc_id)
     level = _player_level(world, "quests")
     party_ids = _party_ids(db, pc)
     quests = []
@@ -314,11 +336,23 @@ def hub_notes(pc_id: int, request: Request, db: Session = Depends(get_db)):
 def hub_world(pc_id: int, request: Request, q: str = "", db: Session = Depends(get_db)):
     """Known-world tab: entities the GM revealed to this player specifically
     (hidden from everyone else), recently updated player-visible ones, and a
-    search — all through deps.filter_visible_entities, scoped to the
+    search — through deps.filter_visible_entities for the owner and the same
+    rule keyed on the owning player for a GM looking in, scoped to the
     character's world."""
-    user, pc, world = _owned_pc(request, db, pc_id)
-    base = filter_visible_entities(db.query(Entity).filter(Entity.world_id == world.id), request)
-    shared = db.query(entity_player_access.c.entity_id).filter(entity_player_access.c.user_id == user.id)
+    user, pc, world, is_owner = _hub_pc(request, db, pc_id)
+    # Whose eyes: the owner's own, or — for a GM looking in — the owning player's
+    # (a GM's unfiltered view would show the very secrets this tab exists to omit).
+    viewer_id = pc.owner_user_id
+    base = db.query(Entity).filter(Entity.world_id == world.id)
+    if is_owner:
+        base = filter_visible_entities(base, request)
+    elif viewer_id is not None:
+        shared_any = db.query(entity_player_access.c.entity_id).filter(entity_player_access.c.user_id == viewer_id)
+        base = base.filter(or_(Entity.visible_to_players.isnot(False), Entity.id.in_(shared_any)))
+    else:
+        base = base.filter(Entity.visible_to_players.isnot(False))
+    shared = db.query(entity_player_access.c.entity_id).filter(
+        entity_player_access.c.user_id == (viewer_id if viewer_id is not None else -1))
     revealed = (
         base.filter(Entity.visible_to_players.is_(False), Entity.id.in_(shared))
         .order_by(Entity.updated_at.desc()).limit(_LIST_CAP).all()
@@ -351,7 +385,7 @@ def hub_schedule(pc_id: int, request: Request, db: Session = Depends(get_db)):
     """Schedule tab: upcoming calendar events pinned to this character or to a
     party it belongs to (honoring the calendar section level), and the next
     sessions its parties have a date for."""
-    user, pc, world = _owned_pc(request, db, pc_id)
+    user, pc, world, _ = _hub_pc(request, db, pc_id)
     party_ids = _party_ids(db, pc)
     level = _player_level(world, "calendar")
     events, today_label = [], None
