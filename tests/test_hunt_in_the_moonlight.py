@@ -38,21 +38,25 @@ def test_hitm_fields_json_is_well_formed(client, seed):
         "Identity", "Hunter's Oath", "Core Tracks", "Experience", "Moon Calendar",
         "Abilities", "Moon-Gifts & Occult Rites", "Hunter Tools & Loadout",
         "Body Modifications", "Session Record", "Notes",
+        # added when the sheet was aligned with the rulebook (wounds, marks, mounts)
+        "Wounds", "Marks & Crows", "Mounts & Companions",
     }
     assert expected_sections == {f["section"] for f in fields}
 
     ids = [f["id"] for f in fields]
     assert len(ids) == len(set(ids)), "duplicate top-level field ids"
-    assert {f["type"] for f in fields} <= {"text", "textarea", "number", "list", "resource"}
+    assert {f["type"] for f in fields} <= {"text", "textarea", "number", "list", "resource", "select"}
 
     list_fields = {f["id"]: f for f in fields if f["type"] == "list"}
-    assert {"xpLog", "abilities", "rites", "tools", "mods", "sessions"} == set(list_fields)
+    assert {"xpLog", "abilities", "rites", "tools", "mods", "sessions", "wounds", "companions"} == set(list_fields)
     for lf in list_fields.values():
         assert lf["item_fields"], f"{lf['id']} has no item_fields"
         for sf in lf["item_fields"]:
-            # custom_sheet.html's renderer only understands text/textarea for
-            # list sub-columns (no number/select sub-field support exists).
-            assert sf["type"] in ("text", "textarea"), (lf["id"], sf)
+            # custom_sheet.html / form.html render text, textarea and select
+            # list sub-columns (a select needs its options; no number sub-field exists).
+            assert sf["type"] in ("text", "textarea", "select"), (lf["id"], sf)
+            if sf["type"] == "select":
+                assert sf.get("options"), (lf["id"], sf)
 
 
 def test_hitm_template_available_to_any_world(client, seed):
