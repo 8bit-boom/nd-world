@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai
 from .. import retrieval as _retrieval
 from ..database import get_db, SessionLocal
-from ..deps import get_world_ctx, world_can_view_section
+from ..deps import get_world_ctx
 from ..models import Entity, Party, PlayerCharacter, Quest, Schematic
 from ..party_refs import member_ids
 from .parties import _member_vitals, _pc_levelup_ready
@@ -390,14 +390,14 @@ async def _cockpit_find_task(job_id: int, world_id: int, query: str,
 # cockpit_ws_json is ONE shared blob per world and a player saving would
 # stomp the GM's layout.
 
-def _player_parties(db: Session, world, user, request: Optional[Request] = None) -> list:
+def _player_parties(db: Session, world, user) -> list:
     """Parties the player's own PCs belong to, with member vitals — the
     same strip the party detail page shows viewers with parties
-    visibility. With `request`, honours the world's Parties section level for
-    the viewer's role — a closed section yields nothing."""
+    visibility. Deliberately NOT gated on the Parties section level: these
+    are only parties one of the viewer's OWN characters belongs to (their
+    teammates' HP, never hidden companions), which they already know — the
+    section toggle governs browsing every party in the world."""
     if not user:
-        return []
-    if request is not None and not world_can_view_section(request, world, "parties"):
         return []
     my_pc_ids = [pc.id for pc in db.query(PlayerCharacter)
                  .filter(PlayerCharacter.world_id == world.id,
@@ -416,13 +416,13 @@ def _player_parties(db: Session, world, user, request: Optional[Request] = None)
     return out
 
 
-def _player_quests(db: Session, world, request: Optional[Request] = None) -> list:
+def _player_quests(db: Session, world) -> list:
     """Active top-level quests the world shows players (visible_to_players),
     party names attached — the player-mode counterpart of quests.py's GM
-    board. With `request`, a world that has closed the Quests section to this
-    role gets an empty list, same as the /quests page."""
-    if request is not None and not world_can_view_section(request, world, "quests"):
-        return []
+    board. Deliberately NOT gated on the Quests section level: the cockpit is
+    its own player surface, and a GM who flags a quest visible_to_players has
+    chosen to show it there even while the /quests browser stays closed (the
+    default for players)."""
     quests = (db.query(Quest)
               .filter(Quest.world_id == world.id, Quest.status == "active",
                       Quest.parent_id.is_(None), Quest.visible_to_players.is_(True))
@@ -463,7 +463,7 @@ def _player_cockpit(request: Request, db: Session, world, worlds):
             .filter(Schematic.world_id == world.id, Schematic.is_html.is_(False))
             .order_by(Schematic.name)
             .all())
-    parties = _player_parties(db, world, getattr(request.state, "user", None), request)
+    parties = _player_parties(db, world, getattr(request.state, "user", None))
     return templates.TemplateResponse("cockpit.html", {
         "request": request, "world": world, "worlds": worlds,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
@@ -502,7 +502,7 @@ async def cockpit_player_board(request: Request, db: Session = Depends(get_db),
     if not world:
         raise HTTPException(404)
     return {
-        "parties": _player_parties(db, world, user, request),
-        "quests": _player_quests(db, world, request),
+        "parties": _player_parties(db, world, user),
+        "quests": _player_quests(db, world),
         "my_pcs": _player_my_pcs(db, world, user),
     }

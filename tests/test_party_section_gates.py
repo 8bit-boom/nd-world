@@ -1,12 +1,12 @@
-"""Party and cockpit views must honour the world's per-section access matrix.
+"""Party views must honour the world's per-section access matrix.
 
 The party page's History block lists session titles, combat names and calendar
 events tied to the party; those rows carry no per-row visibility flag, so the
 ONLY thing keeping a title out of a player's hands is the Sessions / Combat /
-Calendar section level. The player cockpit's quest and party boards likewise
-ignored the Quests / Parties levels. Also: the AI Insights button is GM-only
-(its endpoint 403s everyone else) and a character's backstory strips
-[gmonly] blocks for non-GMs like every other prose field.
+Calendar section level. (The player cockpit is deliberately its own surface and
+is pinned separately below.) Also: the AI Insights button is GM-only (its
+endpoint 403s everyone else) and a character's backstory strips [gmonly]
+blocks for non-GMs like every other prose field.
 """
 import json
 
@@ -100,19 +100,19 @@ def test_gm_always_sees_history(client, seed):
     assert "The Secret Heist" in html and "Ambush At Dawn" in html and "Coronation Plot" in html
 
 
-def test_player_cockpit_board_respects_quest_and_party_levels(client, seed):
+def test_player_cockpit_board_shows_only_own_party_and_flagged_quests(client, seed):
+    """The cockpit is its own player surface: it lists quests the GM flagged
+    visible_to_players (even with the /quests browser closed, the default) and
+    only parties one of the player's own characters is in."""
     _scene(seed)
-    _open_all(seed.world_a)
+    _add(Quest(world_id=seed.world_a.id, title="GM Eyes Only", status="active", visible_to_players=False))
+    _add(Party(world_id=seed.world_a.id, name="Strangers"))
+    _levels(seed.world_a, parties={"player": "none"}, quests={"player": "none"})
     _player(client, seed)
     board = client.get("/api/cockpit/player-board").json()
     assert [q["title"] for q in board["quests"]] == ["Find The Heir"]
-    assert [p["name"] for p in board["parties"]] == ["Crew"]
-
-    _levels(seed.world_a, parties={"player": "none"}, quests={"player": "none"})
-    board = client.get("/api/cockpit/player-board").json()
-    assert board["quests"] == [], "quest titles leaked past a closed Quests section"
-    assert board["parties"] == [], "party roster leaked past a closed Parties section"
-    assert [m["name"] for m in board["my_pcs"]] == ["Hero"], "a player's own character is never hidden from them"
+    assert [p["name"] for p in board["parties"]] == ["Crew"], "only the player's own party belongs on their cockpit"
+    assert [m["name"] for m in board["my_pcs"]] == ["Hero"]
 
 
 def test_ai_insights_button_is_gm_only(client, seed):
