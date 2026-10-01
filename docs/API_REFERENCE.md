@@ -439,7 +439,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/parties/{party_id}/members/toggle` | GM / Assistant | Toggles one membership (body `{kind: "pc"\|"entity", id?\|name?}` — the vitals strip's quick-add resolves names world-scoped). Structural change, full-edit tier. |
 | POST | `/api/parties/{party_id}/rest` | GM / Assistant | Applies a rules Rest (core_rules.md §10) to every member PC: +½ max PP and MP (rounded down), ALL Shock; HP untouched (stims/medical). Returns the per-PC snapshot for `/rest/undo`. |
 | POST | `/api/parties/{party_id}/rest/undo` | GM / Assistant | Restores the exact pre-Rest values from the client-held snapshot; only member PCs of this party are touched. |
-| GET | `/parties/{party_id}/summary` | Player* | One-page printable party card (vitals, conditions, goals, loot with holders, quests, notes) with print CSS — same visibility as the party detail page. || POST | `/parties/{party_id}/edit` | GM | Saves party edits (membership, name). |
+| GET | `/parties/{party_id}/summary` | Player* | One-page printable party card (vitals, conditions, goals, loot with holders, quests, notes) with print CSS — same visibility as the party detail page.
+| POST | `/parties/{party_id}/edit` | GM / Assistant / Member | Saves party edits (membership, name; a member-level player may only change notes/goals). |
 | POST | `/parties/{party_id}/delete` | GM | Deletes a party. |
 | POST | `/api/parties/{party_id}/loot` | GM | Updates shared party loot/currency. |
 | POST | `/api/parties/{party_id}/location` | GM | Sets the party's current in-world location. |

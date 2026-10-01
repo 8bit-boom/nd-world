@@ -5,7 +5,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
+from ..deps import (
+    filter_visible_entities, get_world_ctx, paginate, world_can_edit_section,
+    world_can_view_section, world_row_visible,
+)
 from .. import live
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
@@ -53,6 +56,51 @@ def _party_edit_level(request: Request, db: Session, world, party: Party) -> str
         .filter(PlayerCharacter.id.in_(pc_ids)).all()
     }
     return "member" if user.id in owner_ids else "none"
+
+
+def _viewer_is_gm(request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    return bool(user and user.is_gm)
+
+
+def _visible_entity_ids(db: Session, request: Request, ids: list, world_id: int) -> set:
+    """Of `ids`, the Entity ids in `world_id` this viewer may know exist: a
+    GM sees every (existing) one, everyone else — players AND assistants,
+    who see what players see — only visible_to_players entities plus any
+    hidden one shared with them specifically (deps.filter_visible_entities,
+    the one filter every player-facing entity list goes through). Party
+    companions are GM-curated and often secret NPCs, so every party view
+    resolves them through this rather than a bare Entity query."""
+    ids = [i for i in ids if isinstance(i, int)]
+    if not ids:
+        return set()
+    q = filter_visible_entities(
+        db.query(Entity.id).filter(Entity.id.in_(ids), Entity.world_id == world_id), request)
+    return {row[0] for row in q.all()}
+
+
+def visible_member_count(db: Session, request: Request, party: Party) -> int:
+    """Member count as THIS viewer may know it — hidden companions don't
+    count for non-GMs (a count that includes a secret NPC is itself a
+    spoiler on the party list and map pins)."""
+    n_pcs = len(json.loads(party.member_pc_ids_json or "[]"))
+    ent_ids = json.loads(party.member_entity_ids_json or "[]")
+    if _viewer_is_gm(request):
+        return n_pcs + len(ent_ids)
+    return n_pcs + len(_visible_entity_ids(db, request, ent_ids, party.world_id))
+
+
+def _party_quests(db: Session, request: Request, party: Party, world) -> list:
+    """Quests assigned to this party, as this viewer may see them: a GM sees
+    all; everyone else only visible_to_players quests, and none at all if
+    the world has closed the Quests section to their role (the same two
+    rules the /quests page applies)."""
+    q = db.query(Quest).filter(Quest.assigned_party_id == party.id)
+    if _viewer_is_gm(request):
+        return q.all()
+    if not world_can_view_section(request, world, "quests"):
+        return []
+    return q.filter(Quest.visible_to_players.isnot(False)).all()
 
 
 def _member_vitals(db: Session, member_pcs: list) -> list:
@@ -119,10 +167,7 @@ def parties_list(request: Request, page: int = 1, db: Session = Depends(get_db),
         raise HTTPException(403)
     base_q = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name)
     parties, page, total_pages = paginate(base_q, page)
-    member_counts = {
-        p.id: len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
-        for p in parties
-    }
+    member_counts = {p.id: visible_member_count(db, request, p) for p in parties}
     return templates.TemplateResponse("parties/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "parties": parties, "member_counts": member_counts,
@@ -159,12 +204,18 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         [pc.id for pc in member_pcs if user and not user.is_gm and pc.owner_user_id == user.id]
         if user else []
     )
-    member_entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []
+    # Companions resolve through the viewer's visibility (see
+    # _visible_entity_ids): a hidden NPC the GM added is never named to a
+    # player/assistant — not in the member list, the editor's pick list, the
+    # quick-add datalist, nor (below) the ids handed to the page.
+    visible_ids = _visible_entity_ids(db, request, entity_ids, party.world_id)
+    entity_ids = [i for i in entity_ids if i in visible_ids] if not _viewer_is_gm(request) else entity_ids
+    member_entities = db.query(Entity).filter(Entity.id.in_(visible_ids)).all() if visible_ids else []
     all_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == party.world_id).order_by(PlayerCharacter.name).all()
-    all_entities = db.query(Entity).filter(
+    all_entities = filter_visible_entities(db.query(Entity).filter(
         Entity.world_id == party.world_id, Entity.kind.in_(_COMBATANT_KINDS)
-    ).order_by(Entity.name).all()
-    assigned_quests = db.query(Quest).filter(Quest.assigned_party_id == party.id).all()
+    ), request).order_by(Entity.name).all()
+    assigned_quests = _party_quests(db, request, party, party_world)
     loot = json.loads(party.loot_json or "[]")
 
     # Live member vitals — the GM's at-a-glance strip (see _member_vitals;
@@ -256,8 +307,22 @@ async def party_edit(party_id: int, request: Request, db: Session = Depends(get_
         # assistant may change them; a member-level player may only touch
         # notes (see _party_edit_level's own docstring).
         party.name = str(form.get("name", party.name)).strip() or party.name
-        pc_ids = [int(v) for v in form.getlist("member_pc_ids")]
-        entity_ids = [int(v) for v in form.getlist("member_entity_ids")]
+        try:
+            pc_ids = [int(v) for v in form.getlist("member_pc_ids")]
+            entity_ids = [int(v) for v in form.getlist("member_entity_ids")]
+        except ValueError:
+            raise HTTPException(400, "Member ids must be numbers")
+        if not _viewer_is_gm(request):
+            # An assistant's editor only ever LISTED the companions they may
+            # see, so what they submit is just the visible subset. Take only
+            # visible, same-world ids from the form, and carry over the
+            # hidden companions the GM added untouched — otherwise saving
+            # the form would silently drop every secret NPC from the party.
+            old_ids = json.loads(party.member_entity_ids_json or "[]")
+            seen_old = _visible_entity_ids(db, request, old_ids, party.world_id)
+            kept_hidden = [i for i in old_ids if i not in seen_old]
+            allowed = _visible_entity_ids(db, request, entity_ids, party.world_id)
+            entity_ids = [i for i in entity_ids if i in allowed] + kept_hidden
         party.member_pc_ids_json = json.dumps(pc_ids)
         party.member_entity_ids_json = json.dumps(entity_ids)
     db.commit()
@@ -496,6 +561,11 @@ async def party_member_toggle(party_id: int, request: Request, db: Session = Dep
         exists = db.get(Entity, member_id) if member_id else             db.query(Entity).filter(
                 Entity.world_id == party.world_id,
                 Entity.name == name).first() if name else None
+        # A non-GM can't add (or probe the existence of, by name) an entity
+        # they aren't allowed to see — same answer as "doesn't exist".
+        if exists and not _viewer_is_gm(request) and exists.id not in _visible_entity_ids(
+                db, request, [exists.id], party.world_id):
+            exists = None
     if not exists or exists.world_id != party.world_id:
         raise HTTPException(404, "No such member in this world")
     member_id = exists.id
@@ -624,8 +694,10 @@ def party_summary(party_id: int, request: Request, db: Session = Depends(get_db)
     pc_ids = json.loads(party.member_pc_ids_json or "[]")
     entity_ids = json.loads(party.member_entity_ids_json or "[]")
     member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
-    member_entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []
-    assigned_quests = db.query(Quest).filter(Quest.assigned_party_id == party.id).all()
+    visible_ids = _visible_entity_ids(db, request, entity_ids, party.world_id)
+    member_entities = db.query(Entity).filter(Entity.id.in_(visible_ids)).all() if visible_ids else []
+    party_world = world if (world and world.id == party.world_id) else db.get(World, party.world_id)
+    assigned_quests = _party_quests(db, request, party, party_world)
     return templates.TemplateResponse("parties/summary.html", {
         "request": request, "world": world, "party": party,
         "member_pcs": member_pcs, "member_entities": member_entities,

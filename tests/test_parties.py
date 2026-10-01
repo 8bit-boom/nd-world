@@ -566,7 +566,15 @@ def test_member_editor_is_searchable_and_members_first(client, seed):
     assert 'id="pc-search"' in page
     assert 'id="ent-search"' in page
     assert 'oninput="filterMembers(' in page
-    assert 'filterMembers(\'pc\', \'\')' in page
+    # Initial run for both lists, and the filter hides rows via the `hidden`
+    # attribute — NOT `style.display`, whose reset (`= ''`) used to wipe each
+    # row's inline `display:flex` and collapse the whole picker into stacked
+    # blocks. Row layout therefore lives in the .member-option class.
+    assert "filterMembers(list, '')" in page
+    fn = page.split("function filterMembers(", 1)[1].split("\n      }\n", 1)[0]
+    assert "l.hidden = !hit" in fn and "style.display" not in fn
+    assert ".member-option { display:flex" in page
+    assert 'class="member-option"' in page and 'class="member-option" style=' not in page
     # Current members pinned first: the checked label appears before the
     # unchecked one within each list (data-member marks them).
     pc_section = page.split('id="pc-list"', 1)[1].split("</div>", 1)[0]

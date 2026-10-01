@@ -51,7 +51,7 @@ from .routers.auth import router as auth_router
 from .routers.tables import router as tables_router
 from .routers.combat import router as combat_router
 from .routers.combat import _candidates as _combat_candidates
-from .routers.parties import router as parties_router
+from .routers.parties import router as parties_router, visible_member_count as _party_visible_member_count
 from .routers.quests import router as quests_router
 from .routers.sessions import router as sessions_router, _live_audio_root as _session_live_audio_root
 from .routers.calendar import router as calendar_router, _delete_icon_file as _delete_calendar_icon_file
@@ -633,7 +633,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path in ("/calendar", "/calendar/agenda", "/quests", "/parties", "/tables") or re.match(
         r"^/(quests|parties)/\d+$", path
-    ):
+    ) or re.match(r"^/parties/\d+/summary$", path):
         # Read-only browsing for the GM-tool-shaped world sections a GM can
         # opt players into per world — see World.section_access_json and
         # deps.world_can_view_section, the real handler-level gate (off by
@@ -755,7 +755,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         return True
     if method == "POST" and re.match(r"^/parties/\d+/(edit|delete)$", path):
         return True
-    if method == "POST" and re.match(r"^/api/parties/\d+/(loot|location|launch-combat)$", path):
+    if method == "POST" and re.match(r"^/api/parties/\d+/(loot|location|launch-combat|members/toggle|rest|rest/undo)$", path):
         return True
     # Facts — the discrete session log IS content (the whole feature is
     # "log what happened in play", the same tier as a session's Summary
@@ -2585,27 +2585,28 @@ async def map_upload_image(slug: str, request: Request, file: UploadFile = File(
     copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     return RedirectResponse("/maps", status_code=303)
 
-def _world_parties_payload(db: Session, world_id: int):
+def _world_parties_payload(db: Session, world_id: int, request: Request):
     """[{id, name, member_count}] for the world's parties, for the "place party
-    here" pickers on maps and schematics."""
+    here" pickers on maps and schematics. member_count is as the VIEWER may
+    know it (hidden companions don't count for non-GMs)."""
     return [
         {
             "id": p.id, "name": p.name,
-            "member_count": len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]")),
+            "member_count": _party_visible_member_count(db, request, p),
         }
         for p in db.query(Party).filter(Party.world_id == world_id).order_by(Party.name).all()
     ]
 
 
-def _party_pins_for(db: Session, world_id: int, kind: str, slug: str):
+def _party_pins_for(db: Session, world_id: int, kind: str, slug: str, request: Request):
     """Parties currently located on this specific map/schematic, with member
-    counts, for rendering as pins/markers."""
+    counts (as the viewer may know them), for rendering as pins/markers."""
     pins = []
     for p in db.query(Party).filter(Party.world_id == world_id).all():
         loc = json.loads(p.location_json or "{}")
         if loc.get("kind") != kind or loc.get("slug") != slug:
             continue
-        member_count = len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
+        member_count = _party_visible_member_count(db, request, p)
         pin = {"id": p.id, "name": p.name, "member_count": member_count}
         if kind == "map":
             pin["lat"] = loc.get("lat"); pin["lng"] = loc.get("lng")
@@ -2656,8 +2657,8 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
         "map_data": map_data, "image_url": image_url or "", "slug": slug,
         "overlay": overlay, "ename_map": json.dumps(ename_map), "is_gm": is_gm,
         "schematics_json": json.dumps([{"slug": s.slug, "name": s.name} for s in schematics]),
-        "world_parties_json": json.dumps(_world_parties_payload(db, world.id)),
-        "party_pins_json": json.dumps(_party_pins_for(db, world.id, "map", slug)),
+        "world_parties_json": json.dumps(_world_parties_payload(db, world.id, request)),
+        "party_pins_json": json.dumps(_party_pins_for(db, world.id, "map", slug, request)),
     })
 
 _MAX_OVERLAY_ITEMS = 500  # per list — a GM-authored battle map, not a data dump
@@ -3184,8 +3185,8 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(elements),
         "canvas_bg_color": canvas_bg_color,
-        "world_parties_json": json.dumps(_world_parties_payload(db, s.world_id)),
-        "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug)),
+        "world_parties_json": json.dumps(_world_parties_payload(db, s.world_id, request)),
+        "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug, request)),
         "grid_type": s.grid_type or "none",
         "grid_config_json": s.grid_config_json or "{}",
         "pc_payload_json": json.dumps(pc_payload),
@@ -3378,7 +3379,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(visible),
         "canvas_bg_color": _BG.get(s.canvas_bg or "dark", "#111111"),
-        "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug)),
+        "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug, request)),
         "grid_type": s.grid_type or "none",
         "grid_config_json": s.grid_config_json or "{}",
         "own_pc_id": own_pc_id,
@@ -3401,7 +3402,7 @@ def schematic_player_view_json(slug: str, request: Request, db: Session = Depend
     return {
         "elements": visible,
         "image_url": s.image_url,
-        "party_pins": _party_pins_for(db, s.world_id, "schematic", slug),
+        "party_pins": _party_pins_for(db, s.world_id, "schematic", slug, request),
         "own_pc_id": own_pc_id,
         "own_pc_currency": own_pc_currency,
         "combat_active_combatant_id": active_combatant_id,

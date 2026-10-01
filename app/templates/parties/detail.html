@@ -259,27 +259,42 @@ Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is 
     </div>
 
     <!-- Members — compact, searchable pickers. Both lists sort current
-         members first, filter as you type (name/kind), and show a live
-         count — a world with dozens of NPCs used to be an unsorted
-         checkbox wall. -->
+         members first, filter as you type (name/kind), and show live
+         selected/shown counts — a world with dozens of NPCs used to be an
+         unsorted checkbox wall. Row layout lives in CSS classes (not inline
+         style) on purpose: the filter toggles the `hidden` attribute, and an
+         inline `display:flex` would have been wiped by the old
+         `style.display = ''` reset, collapsing every row to a block. -->
+    <style>
+      .pm-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,15rem),1fr)); gap:.2rem .5rem; }
+      #ent-list { max-height:17rem; overflow-y:auto; padding-right:.25rem; }
+      .member-option { display:flex; align-items:center; gap:.45rem; min-width:0; padding:.3rem .45rem; font-size:.84rem; border-radius:3px; cursor:pointer; }
+      .member-option:hover, .member-option[data-member="1"] { background:var(--bg3); }
+      .member-option[hidden] { display:none; }
+      .member-option input { flex:0 0 auto; width:auto; margin:0; }
+      .member-option .mo-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .member-option .mo-meta { flex:0 0 auto; color:var(--text-dim); font-size:.72rem; }
+      .pm-head { display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.4rem; }
+      .pm-head .pm-title { font-size:.78rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; }
+      .pm-head .pm-count { text-transform:none; letter-spacing:0; }
+      .pm-search { flex:0 1 200px; min-width:0; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .55rem; font-family:var(--font); font-size:16px; border-radius:3px; }
+    </style>
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Members</h2>
 
       <div style="margin-bottom:1rem">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.4rem">
-          <div style="font-size:.78rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em">Player Characters <span id="pc-count" style="text-transform:none;letter-spacing:0"></span></div>
-          <input id="pc-search" placeholder="Filter…" oninput="filterMembers('pc', this.value)"
-                 style="max-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .55rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
+        <div class="pm-head">
+          <div class="pm-title">Player Characters <span id="pc-count" class="pm-count"></span></div>
+          <input id="pc-search" class="pm-search" type="search" placeholder="Filter…" aria-label="Filter player characters" oninput="filterMembers('pc', this.value)"/>
         </div>
-        <div id="pc-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:.15rem .6rem">
+        <div id="pc-list" class="pm-list">
           {% set checked_pcs = all_pcs | selectattr("id", "in", pc_ids) | sort(attribute="name") | list %}
           {% set other_pcs = all_pcs | rejectattr("id", "in", pc_ids) | sort(attribute="name") | list %}
           {% for pc in checked_pcs + other_pcs %}
-          <label class="member-option" data-search="{{ pc.name | lower }}" data-member="{{ 1 if pc.id in pc_ids else 0 }}"
-                 style="display:flex;align-items:center;gap:.4rem;padding:.22rem .3rem;font-size:.84rem;border-radius:3px;{% if pc.id in pc_ids %}background:var(--bg3);{% endif %}">
-            <input type="checkbox" name="member_pc_ids" value="{{ pc.id }}" {% if pc.id in pc_ids %}checked{% endif %} style="width:auto"/>
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ pc.name }}</span>
-            {% if pc.id in pc_ids %}<span style="color:var(--text-dim);font-size:.72rem;flex-shrink:0">HP {{ pc.current_hp }}/{{ pc.max_hp }}</span>{% endif %}
+          <label class="member-option" title="{{ pc.name }}" data-search="{{ pc.name | lower }}" data-member="{{ 1 if pc.id in pc_ids else 0 }}">
+            <input type="checkbox" name="member_pc_ids" value="{{ pc.id }}" {% if pc.id in pc_ids %}checked{% endif %}/>
+            <span class="mo-name">{{ pc.name }}</span>
+            {% if pc.id in pc_ids and pc.max_hp %}<span class="mo-meta">HP {{ pc.current_hp }}/{{ pc.max_hp }}</span>{% endif %}
           </label>
           {% else %}
           <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No player characters in this world yet.</p>
@@ -288,20 +303,18 @@ Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is 
       </div>
 
       <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.4rem">
-          <div style="font-size:.78rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em">Companions / Hirelings <span style="text-transform:none;letter-spacing:0">(NPCs &amp; Creatures)</span> <span id="ent-count" style="text-transform:none;letter-spacing:0"></span></div>
-          <input id="ent-search" placeholder="Filter by name or kind…" oninput="filterMembers('ent', this.value)"
-                 style="max-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .55rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
+        <div class="pm-head">
+          <div class="pm-title">Companions / Hirelings <span style="text-transform:none;letter-spacing:0">(NPCs &amp; Creatures)</span> <span id="ent-count" class="pm-count"></span></div>
+          <input id="ent-search" class="pm-search" type="search" placeholder="Filter by name or kind…" aria-label="Filter companions" oninput="filterMembers('ent', this.value)"/>
         </div>
-        <div id="ent-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:.15rem .6rem;max-height:17rem;overflow-y:auto">
+        <div id="ent-list" class="pm-list">
           {% set checked_ents = all_entities | selectattr("id", "in", entity_ids) | sort(attribute="name") | list %}
           {% set other_ents = all_entities | rejectattr("id", "in", entity_ids) | sort(attribute="name") | list %}
           {% for e in checked_ents + other_ents %}
-          <label class="member-option" data-search="{{ (e.name ~ ' ' ~ e.kind) | lower }}" data-member="{{ 1 if e.id in entity_ids else 0 }}"
-                 style="display:flex;align-items:center;gap:.4rem;padding:.22rem .3rem;font-size:.84rem;border-radius:3px;{% if e.id in entity_ids %}background:var(--bg3);{% endif %}">
-            <input type="checkbox" name="member_entity_ids" value="{{ e.id }}" {% if e.id in entity_ids %}checked{% endif %} style="width:auto"/>
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ e.name }}</span>
-            <span style="color:var(--text-dim);font-size:.72rem;flex-shrink:0">{{ e.kind }}</span>
+          <label class="member-option" title="{{ e.name }} ({{ e.kind }})" data-search="{{ (e.name ~ ' ' ~ e.kind) | lower }}" data-member="{{ 1 if e.id in entity_ids else 0 }}">
+            <input type="checkbox" name="member_entity_ids" value="{{ e.id }}" {% if e.id in entity_ids %}checked{% endif %}/>
+            <span class="mo-name">{{ e.name }}</span>
+            <span class="mo-meta">{{ e.kind }}</span>
           </label>
           {% else %}
           <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No NPCs/creatures in this world yet.</p>
@@ -310,26 +323,35 @@ Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is 
       </div>
     </div>
     <script>
-      // Client-side member filtering + live counts. Members float to the
-      // top server-side; the filter matches name (and kind, for companions)
-      // case-insensitively and dims nothing — it simply hides non-matches.
+      // Client-side member filtering + live counts. Members float to the top
+      // server-side; the filter matches name (and kind, for companions)
+      // case-insensitively and simply hides non-matches via the `hidden`
+      // attribute. The count reads "N selected · M shown of T".
       function filterMembers(list, q) {
         q = (q || '').trim().toLowerCase();
         const wrap = document.getElementById(list + '-list');
         const countEl = document.getElementById(list + '-count');
         if (!wrap) return;
-        const opts = wrap.querySelectorAll('.member-option');
         let shown = 0, total = 0;
-        opts.forEach(l => {
+        wrap.querySelectorAll('.member-option').forEach(l => {
           total++;
           const hit = !q || (l.dataset.search || '').includes(q);
-          l.style.display = hit ? '' : 'none';
+          l.hidden = !hit;
           if (hit) shown++;
         });
-        if (countEl) countEl.textContent = total ? `(${shown}/${total})` : '';
+        const selected = wrap.querySelectorAll('input[type="checkbox"]:checked').length;
+        if (countEl) countEl.textContent = total ? `(${selected} selected · ${q ? shown + ' of ' + total + ' shown' : total + ' total'})` : '';
       }
-      filterMembers('pc', '');
-      filterMembers('ent', '');
+      ['pc', 'ent'].forEach(list => {
+        const wrap = document.getElementById(list + '-list');
+        if (!wrap) return;
+        wrap.addEventListener('change', e => {
+          const label = e.target.closest('.member-option');
+          if (label) label.dataset.member = e.target.checked ? '1' : '0';
+          filterMembers(list, document.getElementById(list + '-search').value);
+        });
+        filterMembers(list, '');
+      });
     </script>
     {% else %}
     {# A "member"-level player (in this party via their own PC) may only
