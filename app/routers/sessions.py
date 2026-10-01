@@ -547,7 +547,9 @@ def _session_prep_context(db: Session, gs: GameSession) -> str:
         pc_ids = json.loads(party.member_pc_ids_json or "[]") if party else []
         pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
         if pcs:
-            parts.append("Party: " + ", ".join(pc.name for pc in pcs))
+            from ..pc_digest import pc_digest_line
+            parts.append("Party:\n" + "\n".join(
+                "- " + pc_digest_line(pc, pc.sheet_template if pc.sheet_template_id else None) for pc in pcs))
 
     return "\n\n".join(parts)
 

@@ -98,7 +98,18 @@ tools that require GM access still check `is_gm` at call time.)
   Rest go through it, never through raw `custom_fields_json` guesses). Built-in
   sheet templates are re-synced by `_upgrade_builtin_sheet_fields` in
   `app/database.py`: an untouched old row is replaced, a GM-customised one is kept,
-  and field ids are never removed. The Sheet tab is split into pages (a strip under
+  and field ids are never removed. **A character is native N&D only if its template
+  is not a `custom`-mode system** (`pc_maxima(pc)["native"]` — leftover N&D stats on a
+  Hunt in the Moonlight sheet never make it native), so any new surface that lists,
+  compares, exports or prompts about characters must branch on that, not on whether
+  `stats_json` is filled. The shared pieces: `app/pc_digest.py` (one system-aware line
+  per character for AI prompts — chat RAG `retrieval.characters_context`, party insights,
+  session prep, audio hints all use it), `sheet_systems.system_rules_markdown` (a rules
+  digest per built-in system in `app/game_data/systems/<slug>.md`, which AI reviews and the
+  AI character creator ground in instead of "standard N&D"), `parties._roster_table`, and
+  the MCP character/party tools in `app/mcp_server.py` (every test that drives the MCP
+  client must live in `tests/test_mcp.py`'s module — it imports `tests/mcp_character_cases.py`
+  — because the MCP session manager is bound to one event loop). The Sheet tab is split into pages (a strip under
   the header, `static/js/sheet-pages.js`; blocks carry `data-sheet-page`):
   `sheet_systems.sheet_pages()` groups a custom template's sections — a built-in
   system lists its own groups in `BUILTIN_SYSTEMS[slug]["pages"]`, anything it doesn't

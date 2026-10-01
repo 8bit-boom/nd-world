@@ -22,6 +22,7 @@ from ..sheet_systems import (
     apply_rest, field_value_text, has_short_rest, hp_track, parse_custom_fields, resource_tracks, rest_ops,
     rest_touched_keys, roster_field_groups, short_label, system_meta, template_fields,
 )
+from ..pc_digest import pc_digest_line
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import (  # cross-router imports, per AGENTS.md
     _derived, _levelup_ready as _pc_levelup_ready, _pc_to_ndc_dict, _safe_export_filename,
@@ -597,8 +598,8 @@ async def party_ai_insights(party_id: int, request: Request,
     ent_ids = json.loads(party.member_entity_ids_json or "[]")
     roster = []
     for pc in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids or [])).all():
-        roster.append(f"- {pc.name} ({pc.race or '?'} {pc.char_class or '?'}{f' {pc.subclass}' if pc.subclass else ''}, level {pc.level})"
-                      + (f", played by {pc.player_name}" if pc.player_name else ""))
+        # each character by its OWN system (Hunt in the Moonlight / Asterion / N&D), with its backstory
+        roster.append("- " + pc_digest_line(pc, pc.sheet_template if pc.sheet_template_id else None, detail=True))
     for e in db.query(Entity).filter(Entity.id.in_(ent_ids or [])).all():
         roster.append(f"- {e.name} (NPC ally, {e.kind})")
     if len(roster) < 2:

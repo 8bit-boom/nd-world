@@ -21,7 +21,8 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session, defer
 
 from . import ai as _ai
-from .models import Entity, EntityNote, EntityRelation, VaultChunk, World, entity_player_access
+from .models import Entity, EntityNote, EntityRelation, PlayerCharacter, VaultChunk, World, entity_player_access
+from .pc_digest import pc_digest_line as _pc_digest_line
 from .rendering import html_to_markdown as _html_to_markdown, strip_gm_only as _strip_gm_only
 from .rules_render import strip_gm_directives as _strip_gm_directives
 
@@ -1114,6 +1115,58 @@ def priority_entities_context(
     return "\n".join(lines)
 
 
+_PARTY_WORDS = frozenset({
+    "party", "characters", "character", "pcs", "pc", "players", "heroes", "hunters", "adventurers",
+    "everyone", "crew", "group", "team", "companions",
+})
+CHARACTERS_CONTEXT_LIMIT = 10
+
+
+def characters_context(db: Session, world_id: int, query: str, user=None) -> str:
+    """Live, system-aware lines for the player characters a question is about — "" when it is about
+    none. A question that NAMES a character (or its player) gets that character in detail (system,
+    vital, resources, conditions, key fields, backstory excerpt); one that asks about the party /
+    the characters gets every visible character as a compact line. Without this the chat, the
+    cockpit AI and NPC talk knew nothing about the player characters. `user=None` is the
+    unfiltered GM posture; a real non-GM user sees only characters they own (plus other owned ones
+    when the world lets players see the party) and never [gmonly] backstory text."""
+    q = (query or "").lower()
+    if not q.strip():
+        return ""
+    tokens = {t for t in re.findall(r"[\w'’-]+", q) if t not in _STOPWORDS}
+    pcs_q = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id)
+    strip_secrets = bool(user) and not user.is_gm
+    if strip_secrets:
+        world = db.get(World, world_id)
+        if world is not None and world.players_see_party:
+            pcs_q = pcs_q.filter(PlayerCharacter.owner_user_id.isnot(None))
+        else:
+            pcs_q = pcs_q.filter(PlayerCharacter.owner_user_id == user.id)
+    pcs = pcs_q.order_by(PlayerCharacter.name).all()
+    if not pcs:
+        return ""
+
+    def named(pc) -> bool:
+        for label in (pc.name or "", getattr(pc, "player_name", "") or ""):
+            label = label.strip().lower()
+            if len(label) >= 3 and label in q:
+                return True
+            if any(len(part) >= 3 and part in tokens for part in re.findall(r"[\w'’-]+", label)):
+                return True
+        return False
+
+    asked_party = bool(tokens & _PARTY_WORDS)
+    chosen = pcs if asked_party else [pc for pc in pcs if named(pc)]
+    if not chosen:
+        return ""
+    lines = [
+        "- " + _pc_digest_line(pc, pc.sheet_template if pc.sheet_template_id else None,
+                               detail=named(pc), viewer_is_gm=not strip_secrets)
+        for pc in chosen[:CHARACTERS_CONTEXT_LIMIT]
+    ]
+    return "Player characters (live state):\n" + "\n".join(lines)
+
+
 def smart_world_context(
     db: Session, world_id: int, query: str,
     entity_limit: int = 25, notes_limit: int = 5, user=None, rules_limit: int = RULES_SECTION_LIMIT,
@@ -1282,7 +1335,8 @@ def smart_world_context(
     # blocks follow them but still lead the ordinary entity context —
     # they're closer in kind to "more retrieved lore" than to "authoritative
     # rules", but still worth surfacing before the generic entity dump.
-    extra = "\n\n".join(part for part in (rules, priority, vector_block, graph_block) if part)
+    chars_block = characters_context(db, world_id, query, user=user)
+    extra = "\n\n".join(part for part in (rules, priority, chars_block, vector_block, graph_block) if part)
     if extra:
         context = f"{extra}\n\n{context}" if context else extra
     return context, non_notes, notes

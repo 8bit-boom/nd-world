@@ -239,3 +239,9 @@ list, and "Create Selected" wraps only the checked ones as an
 batch and sends it to `POST /api/import/execute` (`kind=batch`) — the same
 best-effort, per-item-result batch path documented above, so one bad item
 never blocks the rest.
+
+> **Custom sheets and default stats.** A `player_character` whose `sheet_template_id` (an id, slug such as
+> `"hunt-in-the-moonlight"`, or name) resolves to a **custom-mode** template does *not* get the standard N&D
+> stat spread and currency stamped on it when `stats` / `currency` are omitted — its `custom_fields` are the
+> character. Native characters (no template, or an `nd`-mode one) still default to the standard spread.
+

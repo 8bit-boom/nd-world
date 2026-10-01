@@ -948,7 +948,11 @@ def _format_pc_line(pc: PlayerCharacter) -> str:
     app.retrieval.format_context_from_entities uses for an Entity, but
     PlayerCharacter isn't an Entity (its own id sequence, its own table),
     so it can't just be handed to that function."""
-    detail = " ".join(x for x in (pc.char_class, pc.race) if x)
+    from .pc_digest import pc_digest
+    d = pc_digest(pc, pc.sheet_template if pc.sheet_template_id else None)
+    # N&D: "class race"; a custom system: its name (+ the identity field, e.g. race)
+    detail = (" ".join(x for x in (pc.char_class, pc.race) if x) if d["native"]
+              else ", ".join(x for x in (d["system"], d["identity"]) if x))
     line = f"- [player character] {pc.name}"
     if detail:
         line += f" ({detail})"
