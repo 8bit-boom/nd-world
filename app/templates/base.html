@@ -830,7 +830,7 @@ async function ndNowPlayingStop() {
     popupEl.style.width = cfg.widthPx + 'px';
     popupEl.style.maxHeight = cfg.maxHeightPx + 'px';
     popupEl.innerHTML =
-      (data.image_url ? '<img src="' + esc(data.image_url) + '" alt=""/>' : '') +
+      ((data.thumb_url || data.image_url) ? '<img src="' + esc(data.thumb_url || data.image_url) + '" alt="" decoding="async"/>' : '') +
       '<span class="entity-kind">' + esc(data.kind_icon) + ' ' + esc(data.kind) + '</span>' +
       (data.subtype ? '<span class="entity-sub">' + esc(data.subtype) + '</span>' : '') +
       '<h3>' + esc(data.name) + '</h3>' +

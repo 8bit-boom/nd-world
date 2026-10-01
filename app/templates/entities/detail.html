@@ -26,8 +26,9 @@
 <article class="detail kind-{{ entity.kind }}">
   <header class="detail-header">
     {% if entity.image_url %}
-    <img class="detail-img" src="{{ entity.image_url }}" alt="{{ entity.name }}"
-         onclick="openLightbox(this.src, this.alt)"/>
+    {# The box is 160px: show the small thumbnail (when one exists) and load the original only on click. #}
+    <img class="detail-img" src="{{ entity.image_url|thumb }}" data-full="{{ entity.image_url }}" alt="{{ entity.name }}"
+         decoding="async" fetchpriority="high" onclick="openLightbox(this.dataset.full || this.src, this.alt)"/>
     {% endif %}
     <div class="detail-meta">
       <span class="entity-kind">{{ kind_icons[entity.kind] }} {{ entity.kind }}</span>

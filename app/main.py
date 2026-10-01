@@ -38,7 +38,7 @@ from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants, strip_gm_only
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
-from .templating import templates
+from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry
 from .routers.ai import router as ai_router
@@ -5725,6 +5725,7 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
         "subtype": entity.subtype,
         "summary": entity.summary if (user and user.is_gm) else strip_gm_only(entity.summary or ""),
         "image_url": entity.image_url,
+        "thumb_url": thumb_url(entity.image_url) if entity.image_url else entity.image_url,
         "tags": [t.strip() for t in (entity.tags or "").split(",") if t.strip()],
         "body_html": render_md(body) if body else "",
         "body": body or "",
