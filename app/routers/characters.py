@@ -24,6 +24,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from ..party_refs import detach_pc, member_ids as _member_ids, parties_for_pc
 from .character_hub import delete_character_journal
 from pydantic import BaseModel
 
@@ -145,40 +146,59 @@ _PC_LIVE_LIST_FIELDS = (
 _PC_LIVE_DICT_FIELDS = ("custom_fields_json", "app_extra_json")
 
 
-def _apply_form(pc: PlayerCharacter, data: dict):
+def _apply_form(pc: PlayerCharacter, data: dict, partial: bool = False):
+    """Copy a submitted form / import payload onto `pc`.
+
+    partial=False (create, importer): every field is written, an absent key
+    getting its default — the row is brand new or being fully replaced.
+    partial=True (the edit route): only keys actually PRESENT in `data` are
+    written. The custom-sheet form posts five fields and the native form never
+    posts conditions_json / app_extra_json, so default-filling on edit reset
+    level to 1, zeroed XP and HP and wiped everything the form didn't carry.
+    A key that IS sent but empty still clears the field."""
+    def has(k):      return (not partial) or (k in data)
     def gi(k, d=0):  return int(data.get(k) or d)
     def gs(k, d=""): return str(data.get(k) or d).strip()
 
     for field in _PC_LIVE_SCALAR_FIELDS:
-        setattr(pc, field, gs(field))
+        if has(field) and field not in ("level", "xp"):
+            setattr(pc, field, gs(field))
     pc.name = pc.name or "Unnamed"
     pc.race_id        = gs("race_id", pc.race_id or "")
     pc.profession_id  = gs("profession_id", pc.profession_id or "")
-    pc.level = max(1, min(20, gi("level", 1)))
-    pc.xp    = max(0, gi("xp"))
+    if has("level"):
+        pc.level = max(1, min(20, gi("level", 1)))
+    if has("xp"):
+        pc.xp = max(0, gi("xp"))
 
     # HP — max_hp=0 means "use auto-derived value"; store 0 so sheet uses derived
-    pc.max_hp     = max(0, gi("max_hp", 0))
-    pc.current_hp = gi("current_hp", pc.max_hp)
+    if has("max_hp"):
+        pc.max_hp = max(0, gi("max_hp", 0))
+    if has("current_hp"):
+        pc.current_hp = gi("current_hp", pc.max_hp or 0)
 
     # N&D resources
-    pc.shock_max     = max(0, gi("shock_max"))
-    pc.shock_current = max(0, gi("shock_current"))
-    pc.pp_current    = max(0, gi("pp_current"))
-    pc.mp_current    = max(0, gi("mp_current"))
+    for field in ("shock_max", "shock_current", "pp_current", "mp_current"):
+        if has(field):
+            setattr(pc, field, max(0, gi(field)))
 
     # Edges
-    pc.minor_edge = gs("minor_edge")
-    pc.major_edge = gs("major_edge")
+    for field in ("minor_edge", "major_edge"):
+        if has(field):
+            setattr(pc, field, gs(field))
     pc.minor_edge_count = max(0, gi("minor_edge_count", pc.minor_edge_count or 0))
     pc.major_edge_count = max(0, gi("major_edge_count", pc.major_edge_count or 0))
 
-    # Sheet template
-    tpl_id = data.get("sheet_template_id")
-    pc.sheet_template_id = int(tpl_id) if tpl_id and str(tpl_id).isdigit() else None
+    # Sheet template. Sent-but-empty means "no template"; absent (partial) means
+    # "leave it" — the custom-sheet form re-posts its own id, the GM quick-edit doesn't.
+    if has("sheet_template_id"):
+        tpl_id = data.get("sheet_template_id")
+        pc.sheet_template_id = int(tpl_id) if tpl_id and str(tpl_id).isdigit() else None
 
     # JSON object fields (free-form)
     for field in _PC_LIVE_DICT_FIELDS:
+        if not has(field):
+            continue
         raw = data.get(field, "{}") or "{}"
         try:
             json.loads(raw)
@@ -188,6 +208,8 @@ def _apply_form(pc: PlayerCharacter, data: dict):
 
     # JSON array fields
     for field in _PC_LIVE_LIST_FIELDS:
+        if not has(field):
+            continue
         raw = data.get(field, "[]") or "[]"
         try:
             json.loads(raw)
@@ -343,13 +365,10 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
     my_party = None
     if world:
         for party in db.query(Party).filter(Party.world_id == world.id).all():
-            try:
-                member_ids = json.loads(party.member_pc_ids_json or "[]")
-            except ValueError:
-                member_ids = []
-            for pcid in member_ids:
+            ids = _member_ids(party.member_pc_ids_json)
+            for pcid in ids:
                 pc_party.setdefault(pcid, party)
-            if my_character is not None and my_character.id in member_ids:
+            if my_character is not None and my_character.id in ids:
                 my_party = party
 
     # Owner display names — GM view only (players see their own cards).
@@ -637,36 +656,31 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     hub_xp_ledger = []
     hub_sessions = []
     if hub_enabled:
-        from ..models import GameSession as _GS, Party as _Party
-        for party in db.query(_Party).filter(_Party.world_id == pc.world_id).order_by(_Party.name).all():
+        from ..models import GameSession as _GS
+        mine = parties_for_pc(db, pc.world_id, pc.id)
+        if mine:
+            hub_party = party = mine[0]
             try:
-                member_ids = json.loads(party.member_pc_ids_json or "[]")
+                loot = json.loads(party.loot_json or "[]")
             except ValueError:
-                member_ids = []
-            if pc.id in member_ids:
-                hub_party = party
-                try:
-                    loot = json.loads(party.loot_json or "[]")
-                except ValueError:
-                    loot = []
-                for item in loot:
-                    if not isinstance(item, dict):
-                        continue
-                    claimed = item.get("claimed_by") or []
-                    if pc.id in claimed:
-                        hub_loot_mine.append(item.get("name", "item"))
-                    elif not claimed:
-                        hub_loot_unclaimed.append(item)
-                try:
-                    ledger = json.loads(party.xp_json or "[]")
-                except ValueError:
-                    ledger = []
-                hub_xp_ledger = list(reversed(ledger))[:5]
-                hub_sessions = (
-                    db.query(_GS).filter(_GS.party_id == party.id)
-                    .order_by(_GS.session_num.desc()).limit(5).all()
-                )
-                break
+                loot = []
+            for item in loot:
+                if not isinstance(item, dict):
+                    continue
+                claimed = item.get("claimed_by") or []
+                if pc.id in claimed:
+                    hub_loot_mine.append(item.get("name", "item"))
+                elif not claimed:
+                    hub_loot_unclaimed.append(item)
+            try:
+                ledger = json.loads(party.xp_json or "[]")
+            except ValueError:
+                ledger = []
+            hub_xp_ledger = list(reversed(ledger))[:5]
+            hub_sessions = (
+                db.query(_GS).filter(_GS.party_id == party.id)
+                .order_by(_GS.session_num.desc()).limit(5).all()
+            )
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
         tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
@@ -824,12 +838,13 @@ async def character_update(
         raise HTTPException(403)
     form = await request.form()
     data = dict(form)
-    _apply_form(pc, data)
+    _apply_form(pc, data, partial=True)
     if portrait and portrait.filename:
         url = _upload_portrait(portrait, db=db)
         if url:
             pc.portrait_url = url
     db.commit()
+    live.touch(pc.world_id)
     return RedirectResponse(f"/characters/{pc_id}", status_code=303)
 
 
@@ -889,8 +904,11 @@ def character_delete(pc_id: int, request: Request, db: Session = Depends(get_db)
         {"player_character_id": None}, synchronize_session=False,
     )
     delete_character_journal(db, pc.id)
+    world_id = pc.world_id
+    detach_pc(db, world_id, pc.id)
     db.delete(pc)
     db.commit()
+    live.touch(world_id)
     return RedirectResponse("/characters", status_code=303)
 
 
@@ -959,9 +977,12 @@ def character_retire_to_npc(pc_id: int, request: Request, db: Session = Depends(
         {"player_character_id": None}, synchronize_session=False,
     )
     delete_character_journal(db, pc.id)
+    world_id = pc.world_id
+    detach_pc(db, world_id, pc.id)
     db.delete(pc)
     db.commit()
     db.refresh(entity)
+    live.touch(world_id)
     return RedirectResponse(f"/entity/{entity.id}", status_code=303)
 
 

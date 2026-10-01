@@ -31,8 +31,9 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai
 from .. import retrieval as _retrieval
 from ..database import get_db, SessionLocal
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..models import Entity, Party, PlayerCharacter, Quest, Schematic
+from ..party_refs import member_ids
 from .parties import _member_vitals, _pc_levelup_ready
 from ..templating import templates
 
@@ -389,11 +390,14 @@ async def _cockpit_find_task(job_id: int, world_id: int, query: str,
 # cockpit_ws_json is ONE shared blob per world and a player saving would
 # stomp the GM's layout.
 
-def _player_parties(db: Session, world, user) -> list:
+def _player_parties(db: Session, world, user, request: Optional[Request] = None) -> list:
     """Parties the player's own PCs belong to, with member vitals — the
     same strip the party detail page shows viewers with parties
-    visibility."""
+    visibility. With `request`, honours the world's Parties section level for
+    the viewer's role — a closed section yields nothing."""
     if not user:
+        return []
+    if request is not None and not world_can_view_section(request, world, "parties"):
         return []
     my_pc_ids = [pc.id for pc in db.query(PlayerCharacter)
                  .filter(PlayerCharacter.world_id == world.id,
@@ -402,23 +406,23 @@ def _player_parties(db: Session, world, user) -> list:
         return []
     out = []
     for p in db.query(Party).filter(Party.world_id == world.id).order_by(Party.name).all():
-        try:
-            member_ids = json.loads(p.member_pc_ids_json or "[]")
-        except ValueError:
-            continue
-        if not [i for i in my_pc_ids if i in member_ids]:
+        ids = member_ids(p.member_pc_ids_json)
+        if not [i for i in my_pc_ids if i in ids]:
             continue
         members = (db.query(PlayerCharacter)
-                   .filter(PlayerCharacter.id.in_(member_ids)).all())
+                   .filter(PlayerCharacter.id.in_(ids)).all())
         out.append({"id": p.id, "name": p.name,
                     "members": _member_vitals(db, members)})
     return out
 
 
-def _player_quests(db: Session, world) -> list:
+def _player_quests(db: Session, world, request: Optional[Request] = None) -> list:
     """Active top-level quests the world shows players (visible_to_players),
     party names attached — the player-mode counterpart of quests.py's GM
-    board."""
+    board. With `request`, a world that has closed the Quests section to this
+    role gets an empty list, same as the /quests page."""
+    if request is not None and not world_can_view_section(request, world, "quests"):
+        return []
     quests = (db.query(Quest)
               .filter(Quest.world_id == world.id, Quest.status == "active",
                       Quest.parent_id.is_(None), Quest.visible_to_players.is_(True))
@@ -459,7 +463,7 @@ def _player_cockpit(request: Request, db: Session, world, worlds):
             .filter(Schematic.world_id == world.id, Schematic.is_html.is_(False))
             .order_by(Schematic.name)
             .all())
-    parties = _player_parties(db, world, getattr(request.state, "user", None))
+    parties = _player_parties(db, world, getattr(request.state, "user", None), request)
     return templates.TemplateResponse("cockpit.html", {
         "request": request, "world": world, "worlds": worlds,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
@@ -498,7 +502,7 @@ async def cockpit_player_board(request: Request, db: Session = Depends(get_db),
     if not world:
         raise HTTPException(404)
     return {
-        "parties": _player_parties(db, world, user),
-        "quests": _player_quests(db, world),
+        "parties": _player_parties(db, world, user, request),
+        "quests": _player_quests(db, world, request),
         "my_pcs": _player_my_pcs(db, world, user),
     }

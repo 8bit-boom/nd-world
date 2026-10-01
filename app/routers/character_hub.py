@@ -34,6 +34,7 @@ from ..models import (
     CalendarEvent, CharacterJournalEntry, Entity, GameSession, Party, PlayerCharacter,
     PrivateNote, Quest, World, WorldCalendar, entity_player_access,
 )
+from ..party_refs import parties_for_pc
 from ..rendering import strip_gm_only, strip_md
 from .calendar import _default_config, _months_of, _resolve_date
 
@@ -72,15 +73,7 @@ def _player_level(world, section_id: str) -> str:
 
 def _party_ids(db: Session, pc: PlayerCharacter) -> list:
     """Ids of the parties in this character's world that include it."""
-    ids = []
-    for p in db.query(Party).filter(Party.world_id == pc.world_id).all():
-        try:
-            members = json.loads(p.member_pc_ids_json or "[]")
-        except ValueError:
-            continue
-        if pc.id in members:
-            ids.append(p.id)
-    return ids
+    return [p.id for p in parties_for_pc(db, pc.world_id, pc.id)]
 
 
 def _party_sessions(db: Session, pc: PlayerCharacter, party_ids: list) -> list:

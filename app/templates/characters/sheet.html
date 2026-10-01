@@ -461,7 +461,7 @@
   {% if pc.backstory %}
   <div class="cs-prose">
     <div class="cs-prose-title">Backstory</div>
-    <div class="rendered-md">{{ pc.backstory | md | safe }}</div>
+    <div class="rendered-md">{{ pc.backstory | md_for(request) | safe }}</div>
   </div>
   {% endif %}
   {% if pc.notes %}

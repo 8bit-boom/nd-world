@@ -4,6 +4,7 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from .. import auth
 from ..database import get_db
 from ..deps import (
     filter_visible_entities, get_world_ctx, paginate, world_can_edit_section,
@@ -56,6 +57,26 @@ def _party_edit_level(request: Request, db: Session, world, party: Party) -> str
         .filter(PlayerCharacter.id.in_(pc_ids)).all()
     }
     return "member" if user.id in owner_ids else "none"
+
+
+def _party_for_write(request: Request, db: Session, party_id: int, active_world) -> tuple:
+    """(party, its world) for a WRITE route, else 404. A GM may act on a party
+    in any world; everyone else only on a party in the world they are
+    currently ACTIVE in and belong to. _party_edit_level reads the caller's
+    role from request.state (computed for the ACTIVE world), so without this
+    an assistant of world A held "full" edit over any party id in world B
+    whose matrix allowed assistant edits."""
+    party = db.get(Party, party_id)
+    if not party:
+        raise HTTPException(404)
+    world = db.get(World, party.world_id)
+    if not _viewer_is_gm(request):
+        user = getattr(request.state, "user", None)
+        current, _ = get_world_ctx(request, db, active_world)
+        if not (world and current and current.id == world.id
+                and auth.user_can_access_world(db, user, world)):
+            raise HTTPException(404)
+    return party, world
 
 
 def _viewer_is_gm(request: Request) -> bool:
@@ -240,19 +261,23 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
     unclaimed_loot = sum(1 for item in loot if not (item.get("claimed_by") or []))
 
     # Party history: every session, combat, and calendar event tied to this
-    # party, newest first — the "where have we been" view.
+    # party, newest first — the "where have we been" view. Each list is gated
+    # by the viewer's access to THAT section: a world that closes Sessions /
+    # Combat / Calendar to players must not have their titles leak through
+    # the party page (the rows themselves carry no per-row visibility flag).
+    can_sessions = world_can_view_section(request, party_world, "sessions")
     history_sessions = (
         db.query(GameSession).filter(GameSession.party_id == party.id)
         .order_by(GameSession.session_num.desc()).all()
-    )
+    ) if can_sessions else []
     history_combats = (
         db.query(CombatSession).filter(CombatSession.party_id == party.id)
         .order_by(CombatSession.created_at.desc()).all()
-    )
+    ) if world_can_view_section(request, party_world, "combat") else []
     history_events = (
         db.query(CalendarEvent).filter(CalendarEvent.party_id == party.id)
         .order_by(CalendarEvent.day.desc()).all()
-    )
+    ) if world_can_view_section(request, party_world, "calendar") else []
     return templates.TemplateResponse("parties/detail.html", {
         "request": request, "world": world, "worlds": worlds, "party": party,
         "member_pcs": member_pcs, "member_entities": member_entities,
@@ -267,6 +292,7 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         "history_sessions": history_sessions,
         "history_combats": history_combats,
         "history_events": history_events,
+        "can_view_sessions": can_sessions,
         "levelup_names": levelup_names,
         "condition_summary": condition_summary,
         "unclaimed_loot": unclaimed_loot,
@@ -291,11 +317,8 @@ def party_vitals(party_id: int, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/parties/{party_id}/edit")
-async def party_edit(party_id: int, request: Request, db: Session = Depends(get_db)):
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party:
-        raise HTTPException(404)
-    world = db.get(World, party.world_id)
+async def party_edit(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    party, world = _party_for_write(request, db, party_id, active_world)
     level = _party_edit_level(request, db, world, party)
     if level == "none":
         raise HTTPException(403)
@@ -312,17 +335,23 @@ async def party_edit(party_id: int, request: Request, db: Session = Depends(get_
             entity_ids = [int(v) for v in form.getlist("member_entity_ids")]
         except ValueError:
             raise HTTPException(400, "Member ids must be numbers")
+        # Members must live in this party's world — a forged id from another
+        # world is dropped (GM included; the editor can't produce one).
+        if pc_ids:
+            own_pcs = {r[0] for r in db.query(PlayerCharacter.id).filter(
+                PlayerCharacter.id.in_(pc_ids), PlayerCharacter.world_id == party.world_id)}
+            pc_ids = [i for i in pc_ids if i in own_pcs]
+        allowed = _visible_entity_ids(db, request, entity_ids, party.world_id)
+        entity_ids = [i for i in entity_ids if i in allowed]
         if not _viewer_is_gm(request):
             # An assistant's editor only ever LISTED the companions they may
-            # see, so what they submit is just the visible subset. Take only
-            # visible, same-world ids from the form, and carry over the
-            # hidden companions the GM added untouched — otherwise saving
-            # the form would silently drop every secret NPC from the party.
+            # see, so what they submit is just the visible subset (kept
+            # above). Carry over the hidden companions the GM added
+            # untouched — otherwise saving the form would silently drop
+            # every secret NPC from the party.
             old_ids = json.loads(party.member_entity_ids_json or "[]")
             seen_old = _visible_entity_ids(db, request, old_ids, party.world_id)
-            kept_hidden = [i for i in old_ids if i not in seen_old]
-            allowed = _visible_entity_ids(db, request, entity_ids, party.world_id)
-            entity_ids = [i for i in entity_ids if i in allowed] + kept_hidden
+            entity_ids += [i for i in old_ids if i not in seen_old]
         party.member_pc_ids_json = json.dumps(pc_ids)
         party.member_entity_ids_json = json.dumps(entity_ids)
     db.commit()
@@ -331,11 +360,8 @@ async def party_edit(party_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/parties/{party_id}/delete")
-def party_delete(party_id: int, request: Request, db: Session = Depends(get_db)):
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party:
-        raise HTTPException(404)
-    world = db.get(World, party.world_id)
+def party_delete(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    party, world = _party_for_write(request, db, party_id, active_world)
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
     db.query(Quest).filter(Quest.assigned_party_id == party_id).update({"assigned_party_id": None})
@@ -346,11 +372,8 @@ def party_delete(party_id: int, request: Request, db: Session = Depends(get_db))
 
 
 @router.post("/api/parties/{party_id}/loot")
-async def party_loot(party_id: int, request: Request, db: Session = Depends(get_db)):
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party:
-        raise HTTPException(404)
-    world = db.get(World, party.world_id)
+async def party_loot(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    party, world = _party_for_write(request, db, party_id, active_world)
     if _party_edit_level(request, db, world, party) == "none":
         raise HTTPException(403)
     body = await request.json()
@@ -404,11 +427,8 @@ async def party_loot(party_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/api/parties/{party_id}/location")
-async def party_set_location(party_id: int, request: Request, db: Session = Depends(get_db)):
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party:
-        raise HTTPException(404)
-    world = db.get(World, party.world_id)
+async def party_set_location(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    party, world = _party_for_write(request, db, party_id, active_world)
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
     body = await request.json()
@@ -438,11 +458,8 @@ async def party_set_location(party_id: int, request: Request, db: Session = Depe
 
 
 @router.post("/api/parties/{party_id}/launch-combat")
-def party_launch_combat(party_id: int, request: Request, db: Session = Depends(get_db)):
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party:
-        raise HTTPException(404)
-    world = db.get(World, party.world_id)
+def party_launch_combat(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    party, world = _party_for_write(request, db, party_id, active_world)
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
     pc_ids = json.loads(party.member_pc_ids_json or "[]")

@@ -5,6 +5,8 @@
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }}</h1>
+    {# GM-only: the endpoint 403s everyone else, so a player/assistant button would just error #}
+    {% if request.state.user and request.state.user.is_gm %}
     <button type="button" id="ai-insights-btn" onclick="partyAiInsights()"
             style="background:rgba(239,68,68,.12);border:1px solid #ef4444;color:#f87171;padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer;margin-left:.6rem"
             title="Suggest bonds, tensions and personal hooks from the roster — writes nothing">✨ AI Party Insights</button>
@@ -43,10 +45,8 @@
             const field = document.getElementById('party-goals-field');
             if (!field) return;
             const lines = [...(d.bonds || []), ...(d.tensions || [])];
-            field.value = (field.value ? field.value.replace(/\s+$/, '') + '
-' : '')
-              + lines.join('
-');
+            field.value = (field.value ? field.value.replace(/\s+$/, '') + '\n' : '')
+              + lines.join('\n');
             copy.textContent = '✓ Appended to Goals — review and Save';
             copy.disabled = true;
           };
@@ -58,6 +58,7 @@
         }
       }
     </script>
+    {% endif %}
     <div style="display:flex;gap:.5rem;align-items:center">
       <a href="{{ ('/parties/' + party.id|string) + '/summary'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none" title="One-page printable party card">🖨 Summary</a>
       <button type="button" class="nd-float-btn" title="Float this party — vitals keep updating live while you browse other pages"
@@ -139,7 +140,7 @@
         if (!opt) { st.textContent = 'No NPC/creature with that name — create it first.'; return; }
         st.textContent = 'Adding…';
         try {
-          const res = await fetch('{{ ('/api/parties/' + party.id|string)|wq }}/members/toggle', {
+          const res = await fetch('{{ ('/api/parties/' + party.id|string + '/members/toggle')|wq }}', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kind: 'entity', name: name }),
           });
@@ -164,7 +165,7 @@
       {% for e in xp_ledger %}
       <div style="font-size:.83rem;color:var(--text)">
         <span style="color:var(--neon)">+{{ e.amount }} XP</span>
-        {% if e.session_id %}<a href="{{ ('/sessions/' + e.session_id|string)|wq }}" style="color:var(--text-dim);font-size:.78rem">from session</a>{% endif %}
+        {% if e.session_id and can_view_sessions %}<a href="{{ ('/sessions/' + e.session_id|string)|wq }}" style="color:var(--text-dim);font-size:.78rem">from session</a>{% endif %}
         <span style="color:var(--text-dim);font-size:.75rem">{{ e.ts[:10] }} — {{ e.awarded | join(', ') if e.awarded is mapping else e.awarded }}</span>
       </div>
       {% endfor %}
@@ -211,13 +212,12 @@
       // client-held snapshot for one-click undo.
       let _restSnapshot = null;
       async function partyRest() {
-        if (!confirm('Apply a Rest to every member PC?
-Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is NOT changed (stims/medical only).')) return;
+        if (!confirm('Apply a Rest to every member PC?\nPer N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is NOT changed (stims/medical only).')) return;
         const btn = document.getElementById('rest-btn');
         const st = document.getElementById('rest-status');
         btn.disabled = true; st.textContent = 'Resting…';
         try {
-          const res = await fetch('{{ ('/api/parties/' + party.id|string)|wq }}/rest', { method: 'POST' });
+          const res = await fetch('{{ ('/api/parties/' + party.id|string + '/rest')|wq }}', { method: 'POST' });
           const d = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
           _restSnapshot = d.snapshot || [];
@@ -231,7 +231,7 @@ Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is 
         if (!_restSnapshot) return;
         const st = document.getElementById('rest-status');
         try {
-          const res = await fetch('{{ ('/api/parties/' + party.id|string)|wq }}/rest/undo', {
+          const res = await fetch('{{ ('/api/parties/' + party.id|string + '/rest/undo')|wq }}', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ snapshot: _restSnapshot }),
           });
@@ -245,12 +245,12 @@ Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is 
       }
     </script>
     <button type="button" id="delete-party-btn" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer;margin-left:auto">🗑 Delete Party</button>
-    <form id="del-form" method="post" action="/parties/{{ party.id }}/delete" style="display:none"></form>
+    <form id="del-form" method="post" action="{{ ('/parties/' ~ party.id ~ '/delete')|wq }}" style="display:none"></form>
   </div>
   {% endif %}
 
   {% if edit_level in ("full", "member") %}
-  <form method="post" action="/parties/{{ party.id }}/edit">
+  <form method="post" action="{{ ('/parties/' ~ party.id ~ '/edit')|wq }}">
     {% if edit_level == "full" %}
     <!-- Name -->
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
@@ -454,6 +454,8 @@ Per N&D rules: +half of max PP and MP (rounded down), ALL Shock restored. HP is 
 {% if edit_level in ("full", "member") %}
 <script>
 const PARTY_ID = {{ party.id }};
+// Keeps every write pinned to this party's world (see parties._party_for_write).
+const WQ = {{ (('?w=' ~ world.slug) if world else '') | tojson }};
 let loot = {{ loot | tojson }};
 const MEMBER_NAMES = {{ member_names | tojson }};
 const MY_PC_IDS = {{ my_pc_ids | tojson }};
@@ -493,7 +495,7 @@ async function toggleClaim(i, pid) {
   const item = loot[i];
   const claimed = item.claimed_by || [];
   const action = claimed.includes(pid) ? 'unclaim' : 'claim';
-  const res = await fetch('/api/parties/' + PARTY_ID + '/loot', {
+  const res = await fetch('/api/parties/' + PARTY_ID + '/loot' + WQ, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, index: i, pc_id: pid }),
   });
@@ -504,7 +506,7 @@ async function toggleClaim(i, pid) {
 }
 
 async function removeLoot(i) {
-  const res = await fetch('/api/parties/' + PARTY_ID + '/loot', {
+  const res = await fetch('/api/parties/' + PARTY_ID + '/loot' + WQ, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ action: 'remove', index: i }),
   });
@@ -518,7 +520,7 @@ document.getElementById('loot-add-btn').addEventListener('click', async () => {
   if (!name) return;
   const qty = parseInt(document.getElementById('loot-qty').value, 10) || 1;
   const notes = document.getElementById('loot-notes').value.trim();
-  const res = await fetch('/api/parties/' + PARTY_ID + '/loot', {
+  const res = await fetch('/api/parties/' + PARTY_ID + '/loot' + WQ, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ action: 'add', name, qty, notes }),
   });
@@ -535,7 +537,7 @@ document.getElementById('loot-add-btn').addEventListener('click', async () => {
 // player (editing notes/loot on a party they belong to) never sees them.
 const launchCombatBtn = document.getElementById('launch-combat-btn');
 if (launchCombatBtn) launchCombatBtn.addEventListener('click', async () => {
-  const res = await fetch('/api/parties/' + PARTY_ID + '/launch-combat', { method: 'POST' });
+  const res = await fetch('/api/parties/' + PARTY_ID + '/launch-combat' + WQ, { method: 'POST' });
   const data = await res.json();
   if (data.redirect) window.location.href = data.redirect;
 });

@@ -442,11 +442,10 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/parties/{party_id}/rest` | GM / Assistant | Applies a rules Rest (core_rules.md §10) to every member PC: +½ max PP and MP (rounded down), ALL Shock; HP untouched (stims/medical). Returns the per-PC snapshot for `/rest/undo`. |
 | POST | `/api/parties/{party_id}/rest/undo` | GM / Assistant | Restores the exact pre-Rest values from the client-held snapshot; only member PCs of this party are touched. |
 | GET | `/parties/{party_id}/summary` | Player* | One-page printable party card (vitals, conditions, goals, loot with holders, quests, notes) with print CSS — same visibility as the party detail page.
-| POST | `/parties/{party_id}/edit` | GM / Assistant / Member | Saves party edits (membership, name; a member-level player may only change notes/goals). |
-| POST | `/parties/{party_id}/delete` | GM | Deletes a party. |
-| POST | `/api/parties/{party_id}/loot` | GM | Updates shared party loot/currency. |
-| POST | `/api/parties/{party_id}/location` | GM | Sets the party's current in-world location. |
-| POST | `/api/parties/{party_id}/launch-combat` | GM | Creates a `CombatSession` pre-populated with this party's characters. |
+| POST | `/parties/{party_id}/delete` | GM / Assistant* | Deletes a party. *Assistants only with Parties:edit, and only for a party in the world they are currently active in. |
+| POST | `/api/parties/{party_id}/loot` | GM / Assistant / Member | Updates shared party loot/currency (a member-level player — one of whose characters is in the party — may edit loot when Parties is open to editing). World-scoped like the other writes. |
+| POST | `/api/parties/{party_id}/location` | GM / Assistant* | Sets the party's current in-world location. *Parties:edit, own active world only. |
+| POST | `/api/parties/{party_id}/launch-combat` | GM / Assistant* | Creates a `CombatSession` pre-populated with this party's characters. *Parties:edit, own active world only. |
 | GET | `/api/parties/{party_id}/vitals` | GM / Player* | Member-vitals as JSON (HP/temp/AC/level/resources per member) — what live-sync refetches consume. *Same section-access rule as the party detail page. |
 
 ## Calendar
