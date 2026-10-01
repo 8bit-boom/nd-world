@@ -1,4 +1,6 @@
+import hashlib
 import json
+import uuid
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -11,6 +13,7 @@ from ..deps import (
     world_can_view_section, world_row_visible,
 )
 from .. import live
+from ..party_refs import member_ids as party_member_ids_raw
 from ..pc_stats import pc_maxima
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
@@ -239,7 +242,7 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         Entity.world_id == party.world_id, Entity.kind.in_(_COMBATANT_KINDS)
     ), request).order_by(Entity.name).all()
     assigned_quests = _party_quests(db, request, party, party_world)
-    loot = json.loads(party.loot_json or "[]")
+    loot = _load_loot(party)
 
     # Live member vitals — the GM's at-a-glance strip (see _member_vitals;
     # shared with the JSON refetch route and the GM Cockpit).
@@ -373,55 +376,165 @@ def party_delete(party_id: int, request: Request, db: Session = Depends(get_db),
     return RedirectResponse("/parties", status_code=303)
 
 
+def party_member_ids(party: Party) -> list:
+    return party_member_ids_raw(party.member_pc_ids_json)
+
+
+_LOOT_NAME_MAX = 120
+_LOOT_NOTES_MAX = 500
+_LOOT_QTY_MAX = 9999
+
+
+def _load_loot(party: Party) -> list:
+    """The party's loot as a clean list of dicts: bad JSON/entries dropped,
+    every item with a stable `lid` (8 hex chars; legacy items get one the first
+    time the stash is rewritten), int `qty` >= 1 and an int `claimed_by` list.
+    Items are addressed by lid so two people acting on stale lists can't hit
+    the wrong row; list index is still accepted for old clients."""
+    try:
+        raw = json.loads(party.loot_json or "[]")
+    except ValueError:
+        raw = []
+    out, seen = [], set()
+    for pos, item in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(item, dict):
+            continue
+        lid = item.get("lid")
+        if not isinstance(lid, str) or not lid or lid in seen:
+            # Derived, not random: a legacy item's lid must be the same on every
+            # read until the stash is rewritten (which persists it), or the id the
+            # page booted with would never match what the server computes later.
+            lid = hashlib.sha1(f"{pos}|{item.get('name')}".encode()).hexdigest()[:8]
+            while lid in seen:
+                lid = hashlib.sha1(lid.encode()).hexdigest()[:8]
+        seen.add(lid)
+        try:
+            qty = max(1, int(item.get("qty") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        claimed = [i for i in (item.get("claimed_by") or []) if isinstance(i, int)]
+        out.append({**item, "lid": lid, "name": str(item.get("name") or "Item")[:_LOOT_NAME_MAX],
+                    "qty": qty, "notes": str(item.get("notes") or "")[:_LOOT_NOTES_MAX], "claimed_by": claimed})
+    return out
+
+
+def _loot_int(body: dict, key: str, default=None, lo: int = None, hi: int = None) -> int:
+    raw = body.get(key, default)
+    if isinstance(raw, bool) or raw is None:
+        raise HTTPException(400, f"{key} must be a whole number")
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{key} must be a whole number")
+    if (lo is not None and val < lo) or (hi is not None and val > hi):
+        raise HTTPException(400, f"{key} is out of range")
+    return val
+
+
+def _loot_index(loot: list, body: dict) -> int:
+    """Index of the item a request names: `lid` wins (409 if it has since
+    disappeared — someone else removed/gave it), else the legacy `index`."""
+    lid = body.get("lid")
+    if lid is not None:
+        for i, item in enumerate(loot):
+            if item["lid"] == lid:
+                return i
+        raise HTTPException(409, "That loot item no longer exists — it was removed or given away. Refresh the page.")
+    idx = _loot_int(body, "index", -1)
+    if not (0 <= idx < len(loot)):
+        raise HTTPException(400, "Invalid loot item")
+    return idx
+
+
 @router.post("/api/parties/{party_id}/loot")
 async def party_loot(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Edit the shared stash. Actions: add {name, qty?, notes?}, remove, claim /
+    unclaim {pc_id}, give {pc_id, qty?} (moves the item — or `qty` of it — into
+    that member's equipment). Items are addressed by `lid` (or legacy `index`)."""
     party, world = _party_for_write(request, db, party_id, active_world)
-    if _party_edit_level(request, db, world, party) == "none":
+    level = _party_edit_level(request, db, world, party)
+    if level == "none":
         raise HTTPException(403)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON body must be an object")
     action = body.get("action")
-    loot = json.loads(party.loot_json or "[]")
-    # Normalize pre-claim items so index-based actions never hit a missing key.
-    for item in loot:
-        item.setdefault("claimed_by", [])
+    loot = _load_loot(party)
+    user = getattr(request.state, "user", None)
+    member_ids = party_member_ids(party)
 
-    def _member_pc_ids_of(user) -> set:
-        if not user:
-            return set()
-        member_ids = json.loads(party.member_pc_ids_json or "[]")
-        if not member_ids:
+    def _own_member_ids() -> set:
+        if not user or not member_ids:
             return set()
         return {row[0] for row in db.query(PlayerCharacter.id).filter(
-            PlayerCharacter.id.in_(member_ids),
-            PlayerCharacter.owner_user_id == user.id).all()}
+            PlayerCharacter.id.in_(member_ids), PlayerCharacter.owner_user_id == user.id).all()}
 
-    user = getattr(request.state, "user", None)
-    level = _party_edit_level(request, db, world, party)
+    def _member_target() -> int:
+        """pc_id from the body: must be a party member, and a member-level
+        player may only act for their OWN character (full-level may for any)."""
+        pc_id = _loot_int(body, "pc_id")
+        if pc_id not in member_ids:
+            raise HTTPException(400, "That character is not in this party")
+        if level != "full" and pc_id not in _own_member_ids():
+            raise HTTPException(403, "You can only do that for your own character.")
+        return pc_id
 
+    touched_pc_world = None
     if action == "add":
-        loot.append({"name": body.get("name", "Item"), "qty": int(body.get("qty", 1) or 1),
-                     "notes": body.get("notes", ""), "claimed_by": []})
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(400, "Item name is required")
+        notes = body.get("notes", "")
+        if not isinstance(notes, str):
+            raise HTTPException(400, "notes must be text")
+        loot.append({"lid": uuid.uuid4().hex[:8], "name": name.strip()[:_LOOT_NAME_MAX],
+                     "qty": _loot_int(body, "qty", 1, 1, _LOOT_QTY_MAX), "notes": notes.strip()[:_LOOT_NOTES_MAX],
+                     "claimed_by": []})
     elif action == "remove":
-        idx = int(body.get("index", -1))
-        if 0 <= idx < len(loot):
-            loot.pop(idx)
+        loot.pop(_loot_index(loot, body))
     elif action in ("claim", "unclaim"):
-        # A member-level player claims/unclaims FOR THEIR OWN PC only; a
-        # full-level editor (GM/assistant) may claim for any member.
-        idx = int(body.get("index", -1))
-        pc_id = int(body.get("pc_id", 0))
-        member_ids = json.loads(party.member_pc_ids_json or "[]")
-        if not (0 <= idx < len(loot)) or pc_id not in member_ids:
-            raise HTTPException(400, "Invalid loot index or PC")
-        if level != "full":
-            own = _member_pc_ids_of(user)
-            if pc_id not in own:
-                raise HTTPException(403, "You can only claim loot for your own character.")
-        claimed = loot[idx].setdefault("claimed_by", [])
+        idx = _loot_index(loot, body)
+        pc_id = _member_target()
+        claimed = loot[idx]["claimed_by"]
         if action == "claim" and pc_id not in claimed:
             claimed.append(pc_id)
         elif action == "unclaim" and pc_id in claimed:
             claimed.remove(pc_id)
+    elif action == "give":
+        idx = _loot_index(loot, body)
+        pc_id = _member_target()
+        item = loot[idx]
+        n = _loot_int(body, "qty", item["qty"], 1, _LOOT_QTY_MAX)
+        if n > item["qty"]:
+            raise HTTPException(400, f"Only {item['qty']} available")
+        pc = db.get(PlayerCharacter, pc_id)
+        if not pc or not pc_maxima(pc)["native"]:
+            raise HTTPException(400, "Custom-sheet characters keep their inventory in the sheet's own fields — "
+                                     "add it there instead.")
+        try:
+            gear = json.loads(pc.equipment_json or "[]")
+        except ValueError:
+            gear = []
+        gear = gear if isinstance(gear, list) else []
+        match = next((g for g in gear if isinstance(g, dict)
+                      and str(g.get("name", "")).strip().lower() == item["name"].lower()), None)
+        if match is not None:
+            try:
+                match["qty"] = int(match.get("qty") or 0) + n
+            except (TypeError, ValueError):
+                match["qty"] = n
+        else:
+            gear.append({"name": item["name"], "qty": n, "weight": 0, "equipped": False, "notes": item["notes"]})
+        pc.equipment_json = json.dumps(gear)
+        if n == item["qty"]:
+            loot.pop(idx)
+        else:
+            item["qty"] -= n
+    else:
+        raise HTTPException(400, "action must be add, remove, claim, unclaim or give")
     party.loot_json = json.dumps(loot)
     db.commit()
     live.touch(party.world_id)
