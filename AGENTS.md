@@ -125,6 +125,13 @@ tools that require GM access still check `is_gm` at call time.)
   `create_sheet_template` / `update_sheet_template`, so never store a model-written template without it.
 - **Small image boxes use the thumbnail**: `{{ url|thumb }}` for `src` and `data-full="{{ url }}"` for the original
   (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
+- **The Player Cockpit lives inside Player Characters**: the hub's owner-only 🎛 Cockpit tab lazily loads
+  `/player-cockpit?pc=ID&embed=1` in an iframe, the list has a Cockpit button, and `?pc=` is honoured only for the
+  viewer's OWN character (`cockpit._player_cockpit`; `CK_MY_PCS` / `CK_FOCUS_PC` in cockpit.html, `focusMyCharacter` in
+  cockpit.js). Hub tabs are listed in `_player_hub.html` (`TABS` + `loaders`); a GM looking in gets no cockpit tab.
+- **Recap audio**: a session's `recap_audio_json` is a list of `AudioClip` ids (the /audio library owns the files, the
+  clip's `visible_to_players` is what players hear, `transcript` holds the lyrics) — `app/routers/session_audio.py`.
+  Readers skip dangling ids; use `attached_clips(db, gs, is_gm=...)` rather than parsing the JSON.
 - **Second screen** (`app/routers/display.py`, `templates/display.html`, `static/js/nd-stage.js`): a GM-only
   `/display` window for a second monitor plus "send to screen" actions (hover any image, the lightbox, any
   text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It

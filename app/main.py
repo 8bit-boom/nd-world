@@ -46,6 +46,7 @@ from .routers.account import router as account_router
 from .routers.characters import router as characters_router
 from .routers.character_ai import router as character_ai_router
 from .routers.template_ai import router as template_ai_router
+from .routers.session_audio import router as session_audio_router
 from .routers.character_hub import router as character_hub_router
 from .routers.characters import _pc_to_foundry_journal
 from .routers.auth import router as auth_router
@@ -159,6 +160,7 @@ app.include_router(combat_router)
 app.include_router(parties_router)
 app.include_router(quests_router)
 app.include_router(sessions_router)
+app.include_router(session_audio_router)
 app.include_router(calendar_router)
 app.include_router(importer_router)
 app.include_router(races_router)

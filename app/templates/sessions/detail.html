@@ -84,6 +84,22 @@
             <button type="button" class="ai-recap-btn" id="tale-save-btn" onclick="aiSaveTale()">💾 Save as world lore</button>
             <span id="tale-save-status" style="font-size:.78rem;color:var(--text-dim)"></span>
           </div>
+          {% if gsession %}
+          <div style="display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap;align-items:center">
+            <select id="tale-style" title="How the voice model should deliver the lyrics" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <option value="folk song">Folk song</option>
+              <option value="sea shanty">Sea shanty</option>
+              <option value="ballad">Ballad</option>
+              <option value="lament">Lament</option>
+              <option value="drinking song">Drinking song</option>
+              <option value="lullaby">Lullaby</option>
+              <option value="hymn">Hymn</option>
+            </select>
+            <button type="button" class="ai-recap-btn" id="tale-perform-btn" onclick="aiPerformTale()"
+                    title="Has the text-to-speech voice (Unsloth Studio) perform these lyrics and attaches the recording to this session's recap audio below">🎤 Perform it</button>
+            <span id="tale-perform-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+          </div>
+          {% endif %}
         </div>
 
         {% if gsession %}
@@ -108,6 +124,31 @@
             <button type="button" class="ai-recap-btn" onclick="playerRecapPublish(false)">Unpublish</button>
             {% endif %}
             <span id="player-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+          </div>
+        </div>
+        {% endif %}
+
+        {% if gsession %}
+        <!-- ── Recap audio: a folk song about the session, a read-aloud of the recap. The files live in the
+             /audio library (app/routers/session_audio.py); players hear the clips marked "players can hear"
+             on the Session Log page. -->
+        <div id="recap-audio-panel" style="margin-top:.9rem;padding:.8rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px">
+          <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.4rem">🎵 <strong style="color:var(--text)">Recap audio</strong>
+            — a folk song about the session, a read-aloud of the recap. Players hear the clips you tick “players can hear” on the Session Log.</div>
+          <div id="ra-list"></div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.5rem">
+            <select id="ra-library" aria-label="Attach a clip from the audio library" style="max-width:260px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <option value="">Attach from the audio library…</option>
+            </select>
+            <button type="button" class="ai-recap-btn" onclick="raAttach()">Attach</button>
+            <label class="ai-recap-btn" style="cursor:pointer;margin:0">⬆ Upload a song / audio file
+              <input type="file" id="ra-file" accept="audio/*,.mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac" style="display:none" onchange="raUpload(this)">
+            </label>
+            <span id="ra-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+          </div>
+          <div style="font-size:.74rem;color:var(--text-dim);margin-top:.45rem;line-height:1.45">
+            Made a song somewhere else (Suno, Udio, a recording at the table)? Upload it. Or write lyrics with
+            “🎵 Turn into folk tale/song” above and press “🎤 Perform it” to have the voice model sing them.
           </div>
         </div>
         {% endif %}
@@ -762,6 +803,131 @@ async function aiSaveTale() {
 }
 
 {% if gsession %}
+// ── Recap audio (app/routers/session_audio.py) ──────────────────────────────
+const RA_BASE = '/api/sessions/{{ gsession.id }}/recap-audio';
+
+function raStatus(msg) { document.getElementById('ra-status').textContent = msg || ''; }
+
+async function raCall(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw await ndApiErrorFrom(res);
+  return res.json();
+}
+
+function raRender(d) {
+  const list = document.getElementById('ra-list');
+  list.textContent = '';
+  (d.clips || []).forEach(c => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:.45rem 0;border-bottom:1px solid var(--border)';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.3rem;font-size:.85rem';
+    const name = document.createElement('strong');
+    name.textContent = c.name;
+    const vis = document.createElement('label');
+    vis.style.cssText = 'display:inline-flex;gap:.3rem;align-items:center;font-size:.76rem;color:var(--text-dim);cursor:pointer';
+    const box = document.createElement('input');
+    box.type = 'checkbox'; box.checked = !!c.visible_to_players; box.style.width = 'auto';
+    box.addEventListener('change', async () => {
+      raStatus('Saving…');
+      try {
+        raRender(await raCall(RA_BASE + '/' + c.id + '/visibility', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ visible_to_players: box.checked }) }));
+        raStatus(box.checked ? 'Players can now hear it.' : 'Hidden from players.');
+      } catch (e) { box.checked = !box.checked; raStatus('Failed: ' + e.message); }
+    });
+    vis.append(box, document.createTextNode('players can hear this (also in the Audio library)'));
+    const rm = document.createElement('button');
+    rm.type = 'button'; rm.className = 'ai-recap-btn'; rm.textContent = '✕ Remove';
+    rm.title = 'Detach it from this recap — the clip stays in the Audio library';
+    rm.addEventListener('click', async () => {
+      try { raRender(await raCall(RA_BASE + '/' + c.id + '/remove', { method: 'POST' })); raStatus(''); }
+      catch (e) { raStatus('Failed: ' + e.message); }
+    });
+    head.append(name, vis, rm);
+    const audio = document.createElement('audio');
+    audio.controls = true; audio.preload = 'none'; audio.src = c.file_url; audio.style.width = '100%';
+    row.append(head, audio);
+    if (c.transcript) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = 'Lyrics / text'; sum.style.cssText = 'cursor:pointer;font-size:.76rem;color:var(--text-dim)';
+      const pre = document.createElement('pre');
+      pre.textContent = c.transcript; pre.style.cssText = 'white-space:pre-wrap;font-family:var(--font);font-size:.82rem;margin:.3rem 0 0';
+      det.append(sum, pre);
+      row.appendChild(det);
+    }
+    list.appendChild(row);
+  });
+  if (!(d.clips || []).length) {
+    const none = document.createElement('div');
+    none.style.cssText = 'font-size:.8rem;color:var(--text-dim)';
+    none.textContent = 'No audio attached yet.';
+    list.appendChild(none);
+  }
+  const sel = document.getElementById('ra-library');
+  sel.length = 1;
+  (d.library || []).forEach(c => {
+    const o = document.createElement('option');
+    o.value = c.id; o.textContent = c.name + (c.visible_to_players ? '' : ' (GM only)');
+    sel.appendChild(o);
+  });
+}
+
+async function raLoad() {
+  try { raRender(await raCall(RA_BASE)); } catch (e) { raStatus('Could not load: ' + e.message); }
+}
+
+async function raAttach() {
+  const id = document.getElementById('ra-library').value;
+  if (!id) { raStatus('Pick a clip from the library first.'); return; }
+  raStatus('Attaching…');
+  try {
+    raRender(await raCall(RA_BASE, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                     body: JSON.stringify({ clip_id: Number(id) }) }));
+    raStatus('Attached. Tick “players can hear this” to share it.');
+  } catch (e) { raStatus('Failed: ' + e.message); }
+}
+
+async function raUpload(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.set('file', f);
+  fd.set('name', f.name.replace(/\.[^.]+$/, ''));
+  raStatus('Uploading…');
+  try {
+    raRender(await raCall(RA_BASE + '/upload', { method: 'POST', body: fd }));
+    raStatus('Uploaded and attached. Tick “players can hear this” to share it.');
+  } catch (e) { raStatus('Failed: ' + e.message); }
+  input.value = '';
+}
+
+async function aiPerformTale() {
+  const lyrics = document.getElementById('tale-result-text').textContent.trim();
+  if (!lyrics) return;
+  const btn = document.getElementById('tale-perform-btn');
+  const status = document.getElementById('tale-perform-status');
+  btn.disabled = true;
+  status.textContent = 'The voice is singing… (this can take a minute)';
+  try {
+    const d = await raCall('/api/sessions/{{ gsession.id }}/recap-song', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lyrics: lyrics, name: document.getElementById('tale-name-field').value.trim(),
+                             style: document.getElementById('tale-style').value }) });
+    raRender(d);
+    status.textContent = '✓ Attached to the recap audio below — listen, then tick “players can hear this”.';
+    document.getElementById('recap-audio-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', raLoad);
+
 // "Summarize from Facts" runs through the session-log recap JOB pipeline
 // (POST /api/session-log/{id}/recap — audience resolves to "gm" for this
 // page's caller) instead of the old blocking summarize-from-facts request:

@@ -543,7 +543,9 @@ def get_session(ctx: Context, session_id: int) -> dict:
     """Read one session. A GM token gets the GM summary/recap; a player
     token gets only the PUBLISHED player summary (or a note that none is
     published yet) — the same publish-model boundary as the Session Log
-    page."""
+    page. `recap_audio` lists the audio attached to the recap (a folk song,
+    a read-aloud: name, file_url, lyrics in `transcript`) — all of it for a
+    GM token, only the clips marked visible to players for a player token."""
     db = SessionLocal()
     try:
         user = _current_user(ctx)
@@ -553,15 +555,18 @@ def get_session(ctx: Context, session_id: int) -> dict:
         world = _load_world(db, gs.world_id, user)
         _require_view_section(ctx, world, "sessions")
         base = {"id": gs.id, "session_num": gs.session_num, "title": gs.title, "session_date": gs.session_date}
+        from .routers.session_audio import attached_clips
         if user.is_gm:
             base["summary"] = gs.summary or ""
             base["player_summary_published"] = bool(gs.player_summary_published)
             if gs.player_summary_published:
                 base["player_summary"] = gs.player_summary or ""
+            base["recap_audio"] = attached_clips(db, gs, is_gm=True)   # every attached clip, with its lyrics
             return base
         published = bool(gs.player_summary_published and (gs.player_summary or "").strip())
         base["player_summary"] = gs.player_summary if published else ""
         base["note"] = "" if published else "No recap has been published for this session yet."
+        base["recap_audio"] = attached_clips(db, gs, is_gm=False)      # only clips players may hear
         return base
     finally:
         db.close()

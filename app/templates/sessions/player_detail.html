@@ -6,6 +6,27 @@
   <h1 style="color:var(--neon);font-size:1.3rem;margin:.5rem 0">#{{ gsession.session_num }} {{ gsession.title }}</h1>
   {% if gsession.session_date %}<p style="color:var(--text-dim);font-size:.85rem;margin:0 0 1rem">{{ gsession.session_date }}</p>{% endif %}
 
+  {% if recap_audio %}
+  {# A song / read-aloud the GM attached to this recap (app/routers/session_audio.py). Players only get the
+     clips marked visible to them; a GM also sees the hidden ones, flagged. #}
+  <section id="recap-audio" aria-label="Recap audio" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.9rem 1.1rem;margin:0 0 1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .6rem">🎵 Recap audio</h2>
+    {% for c in recap_audio %}
+    <div style="padding:.5rem 0;{% if not loop.last %}border-bottom:1px solid var(--border){% endif %}">
+      <div style="font-size:.88rem;margin-bottom:.3rem">{{ c.name }}
+        {% if not c.visible_to_players %}<span style="font-size:.68rem;border:1px solid var(--neon2);color:var(--neon2);border-radius:10px;padding:.05rem .45rem;margin-left:.3rem">GM only — players can't hear this yet</span>{% endif %}
+      </div>
+      <audio controls preload="none" src="{{ c.file_url }}" style="width:100%"></audio>
+      {% if c.transcript %}
+      <details style="margin-top:.4rem"><summary style="cursor:pointer;color:var(--text-dim);font-size:.78rem">Lyrics / text</summary>
+        <pre style="white-space:pre-wrap;font-family:var(--font);font-size:.85rem;margin:.4rem 0 0">{{ c.transcript }}</pre>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if player_recap_published %}
   <!-- A GM-published recap is the canonical content: rendered verbatim
        server-side, no AI call, no polling. -->

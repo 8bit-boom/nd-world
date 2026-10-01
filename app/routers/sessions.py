@@ -26,6 +26,7 @@ from ..pc_stats import pc_maxima
 from ..sheet_systems import apply_xp_award, parse_custom_fields
 from ..rendering import render_md, strip_gm_only
 from ..templating import templates
+from .session_audio import attached_clips, recap_clip_ids, sessions_with_audio_for_players
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
@@ -1712,9 +1713,14 @@ def session_log_list(request: Request, db: Session = Depends(get_db), active_wor
             markers[s.id] = "auto"
         else:
             markers[s.id] = None
+    # sessions with a song / read-aloud the viewer can hear (a 🎵 in the list)
+    viewer = getattr(request.state, "user", None)
+    audio_ids = ({s.id for s in sessions if recap_clip_ids(s)} if (viewer and viewer.is_gm)
+                 else sessions_with_audio_for_players(db, sessions))
     return templates.TemplateResponse("sessions/player_list.html", {
         "request": request, "world": world, "worlds": worlds, "sessions": sessions,
         "recap_markers": markers,
+        "audio_session_ids": audio_ids,
     })
 
 
@@ -1771,6 +1777,7 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
         "player_recap_published": published, "player_summary_html": player_summary_html,
         "recap_defaults": recap_defaults,
+        "recap_audio": attached_clips(db, gs, is_gm=bool(user and user.is_gm)),
     })
 
 

@@ -19,6 +19,9 @@
       {% elif marker == 'auto' %}
       <div style="font-size:.75rem;color:var(--text-dim);margin-top:.2rem">♻ Recap from facts available</div>
       {% endif %}
+      {% if audio_session_ids and s.id in audio_session_ids %}
+      <div style="font-size:.75rem;color:var(--neon);margin-top:.2rem">🎵 Song / audio to listen to</div>
+      {% endif %}
     </a>
     {% endfor %}
   </div>

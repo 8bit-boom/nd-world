@@ -394,3 +394,32 @@ async def test_built_in_templates_cannot_be_changed_over_mcp():
         assert db.get(SheetTemplate, asterion).name == "Asterion"
     finally:
         db.close()
+
+
+# ── recap audio on get_session ───────────────────────────────────────────────
+
+async def test_get_session_lists_the_recap_audio_by_role():
+    from app.models import AudioClip, GameSession
+    ids = _scene()
+    db = SessionLocal()
+    try:
+        shown = AudioClip(world_id=ids["world_a_id"], name="Public ballad", file_url="/uploads/audio/p.mp3",
+                          visible_to_players=True, transcript="Verse one")
+        hidden = AudioClip(world_id=ids["world_a_id"], name="Secret dirge", file_url="/uploads/audio/s.mp3", visible_to_players=False)
+        db.add_all([shown, hidden])
+        db.commit()
+        gs = GameSession(world_id=ids["world_a_id"], title="Night Market", session_num=4, summary="GM notes",
+                         player_summary="Public recap", player_summary_published=True,
+                         recap_audio_json=json.dumps([shown.id, hidden.id, 999999]))
+        db.add(gs)
+        db.commit()
+        sid = gs.id
+    finally:
+        db.close()
+    gm = _result(await _call(_issue_token(ids["gm_id"]), "get_session", {"session_id": sid}))
+    assert [c["name"] for c in gm["recap_audio"]] == ["Public ballad", "Secret dirge"], "dangling ids are skipped"
+    assert gm["recap_audio"][0]["transcript"] == "Verse one"
+    _world(ids, section_access_json=json.dumps({"sessions": {"player": "read"}}))
+    pl = _result(await _call(_issue_token(ids["player_id"]), "get_session", {"session_id": sid}))
+    assert [c["name"] for c in pl["recap_audio"]] == ["Public ballad"], "a player token never sees the hidden clip"
+    assert "summary" not in pl

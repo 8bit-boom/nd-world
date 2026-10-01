@@ -1289,6 +1289,12 @@ class GameSession(Base):
     # automatically on next boot.
     player_summary = Column(Text, default="")
     player_summary_published = Column(Boolean, default=False)
+    # Audio that goes with the recap — a folk song about the session, a read-aloud of the recap:
+    # a JSON list of AudioClip ids (the /audio library owns the files, so albums, the players-can-hear
+    # switch and the lyrics in AudioClip.transcript all keep working). Dangling ids (a clip deleted
+    # from the library) are simply skipped by readers — see app/routers/session_audio.py.
+    # game_sessions is in database._migrate's heal list, so existing installs get the column on boot.
+    recap_audio_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
