@@ -111,7 +111,7 @@
         <div style="font-size:.75rem;color:var(--text-dim);margin-top:.3rem">{% if v.ac %}AC {{ v.ac }}{% endif %}{% if v.ac and v.resources %} · {% endif %}{% if not v.resources %}no HP tracked{% endif %}</div>
         {% endif %}
         {% if v.conditions %}
-        <div style="font-size:.7rem;color:var(--text-dim);margin-top:.25rem">{{ v.conditions | join(', ') }}</div>
+        <div class="pv-conds">{% for c in v.conditions %}<span class="pv-cond">{{ c }}</span>{% endfor %}</div>
         {% endif %}
       </a>
       {% endfor %}
@@ -266,7 +266,9 @@
          inline `display:flex` would have been wiped by the old
          `style.display = ''` reset, collapsing every row to a block. -->
     <style>
-      .pm-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,15rem),1fr)); gap:.2rem .5rem; }
+      .pv-conds { display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.3rem; }
+.pv-cond { background:rgba(224,160,48,.15);border:1px solid #e0a030;color:#e0a030;border-radius:10px;padding:0 .45rem;font-size:.68rem;line-height:1.5; }
+.pm-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,15rem),1fr)); gap:.2rem .5rem; }
       #ent-list { max-height:17rem; overflow-y:auto; padding-right:.25rem; }
       .member-option { display:flex; align-items:center; gap:.45rem; min-width:0; padding:.3rem .45rem; font-size:.84rem; border-radius:3px; cursor:pointer; }
       .member-option:hover, .member-option[data-member="1"] { background:var(--bg3); }

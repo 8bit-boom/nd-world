@@ -155,6 +155,8 @@
   </div>
   {% endif %}
 
+  {% if pc %}{% include 'characters/_conditions.html' %}{% endif %}
+
   {% if can_manage %}
   <input type="hidden" name="custom_fields_json" id="custom_fields_json"/>
   <input type="hidden" name="sheet_template_id" value="{{ chosen_template.id if chosen_template else '' }}"/>

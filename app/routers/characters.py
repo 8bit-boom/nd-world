@@ -24,6 +24,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids, parties_for_pc
 from .character_hub import delete_character_journal
 from pydantic import BaseModel
@@ -50,6 +51,13 @@ def _num(v, default=0.0):
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def _pc_condition_list(pc: PlayerCharacter) -> list:
+    try:
+        return clean_conditions(json.loads(pc.conditions_json or "[]"))
+    except ValueError:
+        return []
 
 
 def _derived(pc: PlayerCharacter) -> dict:
@@ -174,7 +182,7 @@ def _apply_form(pc: PlayerCharacter, data: dict, partial: bool = False):
     # HP — max_hp=0 means "use auto-derived value"; store 0 so sheet uses derived
     if has("max_hp"):
         pc.max_hp = max(0, gi("max_hp", 0))
-    if has("current_hp"):
+    if has("current_hp") and str(data.get("current_hp") or "").strip() != "":
         pc.current_hp = gi("current_hp", pc.max_hp or 0)
 
     # N&D resources
@@ -216,6 +224,11 @@ def _apply_form(pc: PlayerCharacter, data: dict, partial: bool = False):
         except Exception:
             raw = "[]"
         setattr(pc, field, raw)
+
+    # A brand-new character left on auto-HP (max 0) or with the HP box blank
+    # starts at full health, not at 0/22.
+    if not partial and str(data.get("current_hp") or "").strip() == "":
+        pc.current_hp = pc_maxima(pc)["hp"]
 
     pc.updated_at = datetime.utcnow()
 
@@ -343,16 +356,16 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
             ))
         if sort == "level":
             qbase = qbase.order_by(PlayerCharacter.level.desc(), PlayerCharacter.name)
-        elif sort == "hp":
-            # Wounded first: lowest HP fraction leads. SQLite can't divide by
-            # zero — max(max_hp, 1) keeps 0-max custom sheets at the bottom.
-            qbase = qbase.order_by(
-                (PlayerCharacter.current_hp * 1.0 / func.max(PlayerCharacter.max_hp, 1)).asc(),
-                PlayerCharacter.name,
-            )
         else:
+            # "hp" (wounded first) sorts in Python below: the effective max
+            # is stat-derived when max_hp is 0, which SQL can't see.
             qbase = qbase.order_by(PlayerCharacter.name)
         pcs = qbase.all()
+        if sort == "hp":
+            def _hp_fraction(pc):
+                top = pc_maxima(pc)["hp"]
+                return (pc.current_hp or 0) / top if top else float("inf")  # no known max -> bottom
+            pcs.sort(key=lambda pc: (_hp_fraction(pc), pc.name or ""))
     derived = {pc.id: _derived(pc) for pc in pcs}
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
     custom_tpl_ids = {t.id for t in sheet_templates_list if t.sheet_mode == "custom"}
@@ -688,6 +701,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         return templates.TemplateResponse("characters/custom_sheet.html", {
             "request": request, "world": world, "worlds": worlds,
             "pc": pc, "can_manage": can_manage,
+            "conditions": _pc_condition_list(pc),
             "chosen_template": chosen_tpl,
             "sections": _group_by_section(tpl_fields),
             "tpl_fields": tpl_fields,
@@ -1479,39 +1493,55 @@ def character_export_pdf(pc_id: int, request: Request, db: Session = Depends(get
     )
 
 
+async def _json_dict(request: Request) -> dict:
+    """The JSON body of a quick-edit route, or 400 — never a 500 on a missing,
+    malformed or non-object body."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON body must be an object")
+    return body
+
+
+def _body_int(body: dict, key: str, default: int = 0) -> int:
+    try:
+        return int_field(body, key, default)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 # ── AJAX: HP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/hp-async")
 async def character_hp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
+    body = await _json_dict(request)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
     action = body.get("action", "set")
-    val = int(body.get("value", 0))
-    # Resolve effective HP max (0 stored = auto-derived from physical stats)
-    stats = json.loads(pc.stats_json or "[]")
-    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
-    phys = (stat_val.get("str", 0) + stat_val.get("dex", 0)
-            + stat_val.get("bod", 0) + stat_val.get("per", 0))
-    eff_max_hp = pc.max_hp if pc.max_hp > 0 else phys + 10
+    val = _body_int(body, "value")
+    # Effective HP max (0 stored = auto-derived from physical stats)
+    eff_max_hp = pc_maxima(pc)["hp"]
     temp_hp = getattr(pc, "temp_hp", 0) or 0
     if action == "delta":
-        pc.current_hp = max(0, min(eff_max_hp + temp_hp, pc.current_hp + val))
+        pc.current_hp = max(0, min(eff_max_hp + temp_hp, (pc.current_hp or 0) + val))
     elif action == "temp":
         pc.temp_hp = max(0, val)
     elif action == "max":
         pc.max_hp = max(0, val)
-        pc.current_hp = min(pc.current_hp, pc.max_hp if pc.max_hp > 0 else eff_max_hp)
+        new_max = pc_maxima(pc)["hp"]
+        pc.current_hp = min(pc.current_hp or 0, new_max) if new_max else (pc.current_hp or 0)
     else:
         pc.current_hp = max(0, min(eff_max_hp + temp_hp, val))
     db.commit()
     live.touch(pc.world_id)
     return {
         "current_hp": pc.current_hp,
-        "max_hp": pc.max_hp if pc.max_hp > 0 else eff_max_hp,
+        "max_hp": pc_maxima(pc)["hp"],
         "temp_hp": getattr(pc, "temp_hp", 0) or 0,
         "death_success": getattr(pc, "death_saves_success", 0) or 0,
         "death_failure": getattr(pc, "death_saves_failure", 0) or 0,
@@ -1523,15 +1553,15 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
 
 @router.post("/api/characters/{pc_id}/shock")
 async def character_shock_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
+    body = await _json_dict(request)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
     action = body.get("action", "set")
-    val = int(body.get("value", 0))
-    shock_max = getattr(pc, "shock_max", 0) or 0
+    val = _body_int(body, "value")
+    shock_max = pc_maxima(pc)["shock"]
     shock_current = getattr(pc, "shock_current", 0) or 0
     if action == "delta":
         shock_current = max(0, min(shock_max, shock_current + val))
@@ -1540,26 +1570,22 @@ async def character_shock_async(pc_id: int, request: Request, db: Session = Depe
     pc.shock_current = shock_current
     db.commit()
     live.touch(pc.world_id)
-    return {"shock_current": pc.shock_current, "shock_max": pc.shock_max}
+    return {"shock_current": pc.shock_current, "shock_max": shock_max}
 
 
 # ── AJAX: PP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/pp")
 async def character_pp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
+    body = await _json_dict(request)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
     action = body.get("action", "set")
-    val = int(body.get("value", 0))
-    # PP max = sum of physical stats
-    stats = json.loads(pc.stats_json or "[]")
-    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
-    pp_max = (stat_val.get("str", 0) + stat_val.get("dex", 0)
-              + stat_val.get("bod", 0) + stat_val.get("per", 0))
+    val = _body_int(body, "value")
+    pp_max = pc_maxima(pc)["pp"]  # PP max = sum of physical stats
     pp_current = getattr(pc, "pp_current", 0) or 0
     if action == "delta":
         pp_current = max(0, min(pp_max, pp_current + val))
@@ -1577,19 +1603,15 @@ async def character_pp_async(pc_id: int, request: Request, db: Session = Depends
 
 @router.post("/api/characters/{pc_id}/mp")
 async def character_mp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
+    body = await _json_dict(request)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
     action = body.get("action", "set")
-    val = int(body.get("value", 0))
-    # MP max = sum of mental stats
-    stats = json.loads(pc.stats_json or "[]")
-    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
-    mp_max = (stat_val.get("wil", 0) + stat_val.get("int", 0)
-              + stat_val.get("cha", 0) + stat_val.get("itu", 0))
+    val = _body_int(body, "value")
+    mp_max = pc_maxima(pc)["mp"]  # MP max = sum of mental stats
     mp_current = getattr(pc, "mp_current", 0) or 0
     if action == "delta":
         mp_current = max(0, min(mp_max, mp_current + val))
@@ -1603,18 +1625,90 @@ async def character_mp_async(pc_id: int, request: Request, db: Session = Depends
     return {"mp_current": pc.mp_current, "mp_max": mp_max}
 
 
-# ── AJAX: XP ──────────────────────────────────────────────────────────────────
+# ── AJAX: Conditions ──────────────────────────────────────────────────────────
 
-@router.post("/api/characters/{pc_id}/xp")
-async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
+@router.post("/api/characters/{pc_id}/conditions")
+async def character_conditions_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Persist a character's conditions (Burn, Stunned, …). Body:
+    {action: "add"|"remove"|"toggle", name} or {action: "set", conditions:[…]}.
+    Labels are cleaned (printable, ≤40 chars), de-duplicated case-insensitively
+    and capped at 12 — conditions are free text the party strip and combat
+    tracker echo, so they are kept short and plain. Owner-or-GM like every
+    other quick-edit route (this prefix is player-reachable, so it self-gates)."""
+    body = await _json_dict(request)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    delta = int(body.get("delta", 0))
-    pc.xp = max(0, pc.xp + delta)
+    action = body.get("action", "toggle")
+    try:
+        current = clean_conditions(json.loads(pc.conditions_json or "[]"))
+    except ValueError:
+        current = []
+    if action == "set":
+        if not isinstance(body.get("conditions"), list):
+            raise HTTPException(400, "conditions must be a list")
+        new = clean_conditions(body["conditions"])
+    elif action in ("add", "remove", "toggle"):
+        name = clean_condition(body.get("name"))
+        if not name:
+            raise HTTPException(400, "name is required")
+        has = any(c.lower() == name.lower() for c in current)
+        if action == "remove" or (action == "toggle" and has):
+            new = [c for c in current if c.lower() != name.lower()]
+        elif has:
+            new = current
+        elif len(current) >= MAX_CONDITIONS:
+            raise HTTPException(400, f"A character can have at most {MAX_CONDITIONS} conditions")
+        else:
+            new = current + [name]
+    else:
+        raise HTTPException(400, "action must be add, remove, toggle or set")
+    pc.conditions_json = json.dumps(new)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"conditions": new}
+
+
+# ── Live vitals (sheet live-sync source) ──────────────────────────────────────
+
+@router.get("/api/characters/{pc_id}/vitals")
+def character_vitals(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Current HP / Shock / PP / MP / XP / conditions with the SAME effective
+    maxima the sheet renders — what an open sheet re-fetches when the live-sync
+    bus says something in the world changed (a GM's combat sync, a Rest, the
+    party XP award). Viewable by exactly the people who may view the sheet."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    world = db.query(World).filter(World.id == pc.world_id).first()
+    if not _can_view_character(db, _current_user(request), pc, world):
+        raise HTTPException(403)
+    m = pc_maxima(pc)
+    d = _derived(pc)
+    return {
+        "level": pc.level, "xp": pc.xp or 0, "xp_hi": d["xp_hi"], "xp_pct": d["xp_pct"],
+        "hp": pc.current_hp or 0, "max_hp": m["hp"], "temp_hp": getattr(pc, "temp_hp", 0) or 0,
+        "shock": pc.shock_current or 0, "shock_max": m["shock"],
+        "pp": pc.pp_current or 0, "pp_max": m["pp"],
+        "mp": pc.mp_current or 0, "mp_max": m["mp"],
+        "conditions": _pc_condition_list(pc),
+    }
+
+
+# ── AJAX: XP ──────────────────────────────────────────────────────────────────
+
+@router.post("/api/characters/{pc_id}/xp")
+async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    delta = _body_int(body, "delta")
+    pc.xp = max(0, (pc.xp or 0) + delta)
     db.commit()
     live.touch(pc.world_id)
     lvl = min(pc.level, 20)

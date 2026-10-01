@@ -1,0 +1,113 @@
+{# Persisted condition chips, shared by the native and custom sheets.
+   Needs: pc, conditions (list of str), can_manage.
+   Every click is saved through POST /api/characters/{id}/conditions, so the
+   state survives a reload and shows on the party strip / combat tracker. #}
+{% set _presets = ['Burn', 'Freeze', 'Toxin', 'Bleeding', 'Blind', 'Yellow', 'Charm', 'Daze', 'Stunned'] %}
+{% set _presets_lower = _presets | map('lower') | list %}
+{% set _have = (conditions or []) | map('lower') | list %}
+{% set _extra = namespace(items=[]) %}
+{% for c in (conditions or []) %}{% if c | lower not in _presets_lower %}{% set _extra.items = _extra.items + [c] %}{% endif %}{% endfor %}
+<style>
+.cond-box { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem; }
+.cond-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.5rem; }
+.cond-row { display:flex;gap:.4rem;flex-wrap:wrap; }
+.cond-chip { background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .65rem;border-radius:20px;cursor:pointer;font-family:var(--font);font-size:.78rem;transition:all .15s; }
+.cond-chip.active { background:var(--neon2);border-color:var(--neon2);color:#000;font-weight:bold; }
+.cond-chip:hover:not(.active):not(:disabled) { border-color:var(--neon2);color:var(--neon2); }
+.cond-chip:disabled { cursor:default;opacity:.7; }
+.cond-add { display:flex;gap:.4rem;margin-top:.55rem;max-width:340px; }
+.cond-add input { flex:1;min-width:0;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .6rem;border-radius:4px;font-family:var(--font);font-size:.8rem; }
+.cond-add button { background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .7rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem; }
+.cond-add button:hover { border-color:var(--neon);color:var(--neon); }
+.cond-note { font-size:.72rem;color:#e07070;min-height:1em;margin-top:.3rem; }
+</style>
+<section class="cond-box" aria-label="Conditions">
+  <div class="cond-title">Conditions</div>
+  <div class="cond-row" id="conditions-row">
+    {% for cond in _presets + _extra.items %}
+    {% set _on = cond | lower in _have %}
+    <button type="button" class="cond-chip{% if _on %} active{% endif %}" data-cond="{{ cond }}"{% if cond in _presets %} data-preset="1"{% endif %} aria-pressed="{{ 'true' if _on else 'false' }}"{% if can_manage %} onclick="toggleCondition(this)"{% else %} disabled{% endif %}>{{ cond }}</button>
+    {% endfor %}
+  </div>
+  {% if can_manage %}
+  <div class="cond-add">
+    <input type="text" id="cond-new" maxlength="40" placeholder="Custom condition…" aria-label="Add a custom condition"
+           onkeydown="if (event.key === 'Enter') { event.preventDefault(); addCondition(); }"/>
+    <button type="button" onclick="addCondition()">+ Add</button>
+  </div>
+  {% endif %}
+  <div class="cond-note" id="cond-msg" role="status" aria-live="polite"></div>
+</section>
+<script>
+(function () {
+  const URL_ = '/api/characters/{{ pc.id }}/conditions';
+  const row = document.getElementById('conditions-row');
+  const msg = document.getElementById('cond-msg');
+  function say(t) { msg.textContent = t || ''; }
+  function chip(name, active) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cond-chip' + (active ? ' active' : '');
+    b.dataset.cond = name;
+    b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    b.textContent = name;
+    b.addEventListener('click', function () { window.toggleCondition(b); });
+    return b;
+  }
+  // Re-draw the chips from the server's authoritative list.
+  function render(list) {
+    const have = new Set(list.map(function (x) { return x.toLowerCase(); }));
+    Array.prototype.slice.call(row.children).forEach(function (b) {
+      const on = have.has(b.dataset.cond.toLowerCase());
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      if (!on && !b.dataset.preset) b.remove();
+    });
+    list.forEach(function (n) {
+      const seen = Array.prototype.some.call(row.children, function (b) { return b.dataset.cond.toLowerCase() === n.toLowerCase(); });
+      if (!seen) row.appendChild(chip(n, true));
+    });
+  }
+  async function send(body) {
+    const r = await fetch(URL_, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    return d.conditions;
+  }
+  window.toggleCondition = async function (btn) {
+    const on = !btn.classList.contains('active');
+    say('');
+    btn.classList.toggle('active', on);
+    try { render(await send({ action: on ? 'add' : 'remove', name: btn.dataset.cond })); }
+    catch (e) { btn.classList.toggle('active', !on); say('Could not save: ' + e.message); }
+  };
+  window.addCondition = async function () {
+    const input = document.getElementById('cond-new');
+    const name = input.value.trim();
+    if (!name) return;
+    say('');
+    try { render(await send({ action: 'add', name: name })); input.value = ''; }
+    catch (e) { say('Could not save: ' + e.message); }
+  };
+  // Live sync: when the world changes elsewhere (combat sync, party Rest, an XP
+  // award), re-read this character's vitals, redraw the chips and tell the sheet
+  // (sheet.html listens for "pc-vitals" to refresh its numbers).
+  let liveTimer = null, pulling = false;
+  async function pull() {
+    if (pulling) return;
+    pulling = true;
+    try {
+      const r = await fetch('/api/characters/{{ pc.id }}/vitals');
+      if (!r.ok) return;
+      const d = await r.json();
+      render(d.conditions || []);
+      window.dispatchEvent(new CustomEvent('pc-vitals', { detail: d }));
+    } catch (e) { /* offline or signed out: keep what's on screen */ }
+    finally { pulling = false; }
+  }
+  window.addEventListener('nd-live', function () {
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(pull, 500);
+  });
+})();
+</script>

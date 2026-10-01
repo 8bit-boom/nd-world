@@ -9,6 +9,7 @@ from .. import live
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
 from ..models import CombatSession, Entity, GameSession, PlayerCharacter, World
+from ..pc_stats import pc_maxima
 from ..templating import templates
 
 router = APIRouter()
@@ -16,7 +17,16 @@ router = APIRouter()
 _COMBATANT_KINDS = ("character", "creature")
 
 
+def _pc_conditions(pc: PlayerCharacter) -> list:
+    try:
+        conds = json.loads(pc.conditions_json or "[]")
+    except ValueError:
+        return []
+    return [c for c in conds if isinstance(c, str)] if isinstance(conds, list) else []
+
+
 def pc_to_combatant(pc: PlayerCharacter) -> dict:
+    m = pc_maxima(pc)
     return {
         "id": str(uuid.uuid4()),
         "name": pc.name,
@@ -24,12 +34,12 @@ def pc_to_combatant(pc: PlayerCharacter) -> dict:
         "pc_id": pc.id,
         "entity_id": None,
         "initiative": 0,
-        "max_hp": pc.max_hp or 0,
+        "max_hp": m["hp"],
         "hp": pc.current_hp or 0,
-        "max_shock": pc.shock_max or 0,
+        "max_shock": m["shock"],
         "shock": pc.shock_current or 0,
         "armor": 0,
-        "conditions": json.loads(pc.conditions_json or "[]"),
+        "conditions": _pc_conditions(pc),
         "notes": "",
     }
 
@@ -69,18 +79,28 @@ def manual_combatant(name: str) -> dict:
     }
 
 
+def _as_int(v, default: int = 0) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _candidates(db: Session, world_id: int):
     pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id).order_by(PlayerCharacter.name).all()
     entities = db.query(Entity).filter(
         Entity.world_id == world_id, Entity.kind.in_(_COMBATANT_KINDS)
     ).order_by(Entity.name).all()
-    pc_payload = [{
-        "id": pc.id, "name": pc.name,
-        "max_hp": pc.max_hp or 0, "hp": pc.current_hp or 0,
-        "max_shock": pc.shock_max or 0, "shock": pc.shock_current or 0,
-        "conditions": json.loads(pc.conditions_json or "[]"),
-        "portrait_url": pc.portrait_url or "",
-    } for pc in pcs]
+    pc_payload = []
+    for pc in pcs:
+        m = pc_maxima(pc)
+        pc_payload.append({
+            "id": pc.id, "name": pc.name,
+            "max_hp": m["hp"], "hp": pc.current_hp or 0,
+            "max_shock": m["shock"], "shock": pc.shock_current or 0,
+            "conditions": _pc_conditions(pc),
+            "portrait_url": pc.portrait_url or "",
+        })
     entity_payload = []
     for e in entities:
         prefill = entity_to_combatant(e)
@@ -232,11 +252,12 @@ def combat_sync_characters(combat_id: int, db: Session = Depends(get_db)):
         if not pc:
             skipped.append(c.get("name"))
             continue
-        max_hp = pc.max_hp if pc.max_hp > 0 else c.get("max_hp", 0)
-        pc.current_hp = max(0, min(max_hp, int(c.get("hp", pc.current_hp))))
-        shock_max = pc.shock_max or 0
-        pc.shock_current = max(0, min(shock_max, int(c.get("shock", pc.shock_current))))
-        pc.conditions_json = json.dumps(c.get("conditions", []))
+        m = pc_maxima(pc)
+        max_hp = m["hp"] or _as_int(c.get("max_hp"), 0)
+        pc.current_hp = max(0, min(max_hp, _as_int(c.get("hp"), pc.current_hp or 0)))
+        pc.shock_current = max(0, min(m["shock"], _as_int(c.get("shock"), pc.shock_current or 0)))
+        conds = c.get("conditions", [])
+        pc.conditions_json = json.dumps([x for x in conds if isinstance(x, str)] if isinstance(conds, list) else [])
         synced.append(pc.name)
     db.commit()
     live.touch(cs.world_id)

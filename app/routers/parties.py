@@ -11,6 +11,7 @@ from ..deps import (
     world_can_view_section, world_row_visible,
 )
 from .. import live
+from ..pc_stats import pc_maxima
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
 from ..templating import templates
@@ -167,11 +168,12 @@ def _member_vitals(db: Session, member_pcs: list) -> list:
                     "current": cur if cur is not None else 0,
                     "max": mx if mx is not None else 0,
                 })
+        hp_max = pc_maxima(pc)["hp"]  # 0 stored = auto-derived, same rule as the sheet
         member_vitals.append({
             "id": pc.id, "name": pc.name,
-            "hp": pc.current_hp, "max_hp": pc.max_hp, "temp_hp": pc.temp_hp,
+            "hp": pc.current_hp, "max_hp": hp_max, "temp_hp": pc.temp_hp,
             "ac": pc.armor_class, "level": pc.level,
-            "down": (pc.max_hp or 0) > 0 and (pc.current_hp or 0) <= 0,
+            "down": hp_max > 0 and (pc.current_hp or 0) <= 0,
             "levelup": _pc_levelup_ready(pc),
             "conditions": [c for c in conds if isinstance(c, str)][:4],
             "resources": resources,
@@ -608,21 +610,6 @@ async def party_member_toggle(party_id: int, request: Request, db: Session = Dep
 # same formulas across the roster and returns a snapshot the client holds
 # for one-click Undo.
 
-def _pp_mp_max(pc) -> tuple:
-    """(pp_max, mp_max) — mirrors characters.py's own derivations exactly
-    (PP = STR+DEX+BOD+PER, MP = WIL+INT+CHA+ITU from stats_json)."""
-    try:
-        stats = json.loads(pc.stats_json or "[]")
-        stat_val = {s["id"]: int(s.get("value", 0)) for s in stats if isinstance(s, dict)}
-    except ValueError:
-        stat_val = {}
-    pp_max = (stat_val.get("str", 0) + stat_val.get("dex", 0)
-              + stat_val.get("bod", 0) + stat_val.get("per", 0))
-    mp_max = (stat_val.get("wil", 0) + stat_val.get("int", 0)
-              + stat_val.get("cha", 0) + stat_val.get("itu", 0))
-    return pp_max, mp_max
-
-
 @router.post("/api/parties/{party_id}/rest")
 async def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
                      active_world: str = Cookie(None)):
@@ -640,7 +627,10 @@ async def party_rest(party_id: int, request: Request, db: Session = Depends(get_
     member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
     snapshot, applied = [], []
     for pc in member_pcs:
-        pp_max, mp_max = _pp_mp_max(pc)
+        m = pc_maxima(pc)
+        if not m["native"]:
+            continue  # custom-sheet characters track their own resources; PP/MP/Shock aren't theirs to rest
+        pp_max, mp_max = m["pp"], m["mp"]
         snapshot.append({"id": pc.id, "name": pc.name,
                          "pp_current": pc.pp_current or 0,
                          "mp_current": pc.mp_current or 0,
@@ -648,7 +638,7 @@ async def party_rest(party_id: int, request: Request, db: Session = Depends(get_
         new_pp = min(pp_max, (pc.pp_current or 0) + pp_max // 2)
         new_mp = min(mp_max, (pc.mp_current or 0) + mp_max // 2)
         pc.pp_current, pc.mp_current = new_pp, new_mp
-        pc.shock_current = getattr(pc, "shock_max", 0) or 0
+        pc.shock_current = m["shock"]
         applied.append({"id": pc.id, "name": pc.name,
                         "pp_current": new_pp, "pp_max": pp_max,
                         "mp_current": new_mp, "mp_max": mp_max})

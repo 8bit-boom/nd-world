@@ -34,6 +34,7 @@ from ..database import get_db, SessionLocal
 from ..deps import get_world_ctx
 from ..models import Entity, Party, PlayerCharacter, Quest, Schematic
 from ..party_refs import member_ids
+from ..pc_stats import pc_maxima
 from .parties import _member_vitals, _pc_levelup_ready
 from ..templating import templates
 
@@ -448,7 +449,7 @@ def _player_my_pcs(db: Session, world, user) -> list:
     for pc in pcs:
         out.append({
             "id": pc.id, "name": pc.name, "level": pc.level,
-            "hp": pc.current_hp, "max_hp": pc.max_hp, "temp_hp": pc.temp_hp,
+            "hp": pc.current_hp, "max_hp": pc_maxima(pc)["hp"], "temp_hp": pc.temp_hp,
             "ac": pc.armor_class,
             "xp": pc.xp, "levelup": _pc_levelup_ready(pc),
         })

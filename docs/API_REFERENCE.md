@@ -243,11 +243,13 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/characters/{pc_id}/export.json` | Player | Downloads a plain JSON dump in the canonical import shape — re-importable via `POST /api/import/execute`, `kind=player_character` (see `docs/IMPORT_JSON_GUIDE.md`). |
 | GET | `/characters/{pc_id}/export.md` | Player | Downloads a human-readable Markdown character sheet. |
 | GET | `/characters/{pc_id}/export.pdf` | Player | Downloads a printable PDF character sheet. |
-| POST | `/api/characters/{pc_id}/hp-async` | Player | Live HP update (character sheet's +/- controls, no page reload). |
+| POST | `/api/characters/{pc_id}/hp-async` | Player | Live HP update (character sheet's +/- controls, no page reload). The quick-edit routes (hp-async, shock, pp, mp, xp, conditions) answer 400 — never 500 — to a malformed body or non-numeric value. |
 | POST | `/api/characters/{pc_id}/shock` | Player | Live Shock update. |
 | POST | `/api/characters/{pc_id}/pp` | Player | Live Power Points update. |
 | POST | `/api/characters/{pc_id}/mp` | Player | Live Mana Points update. |
 | POST | `/api/characters/{pc_id}/xp` | Player | Adjusts XP (and any level-derived stats). |
+| POST | `/api/characters/{pc_id}/conditions` | Player | Persists conditions: body `{action: "add"\|"remove"\|"toggle", name}` or `{action: "set", conditions: [...]}`. Labels are cleaned (printable, ≤40 chars), de-duplicated case-insensitively, max 12; 400 on bad input. Owner or GM only. |
+| GET | `/api/characters/{pc_id}/vitals` | Player | Live HP / Shock / PP / MP / XP / conditions JSON with the sheet's effective maxima (a stored max of 0 = stat-derived) — what an open sheet re-fetches on a live-sync event. Same view access as the sheet itself. |
 | POST | `/api/characters/{pc_id}/level-up` | GM / Owner | One-click level application when the PC's XP has crossed the next-level threshold (the "⬆ Level-up" prompt on the sheet, list, and party vitals). Refuses with 400 when the XP doesn't justify a level yet, so a stale banner can't double-level a character. |
 | POST | `/api/characters/{pc_id}/equipment` | Player | Updates the equipment list. |
 | POST | `/api/characters/{pc_id}/feats` | Player | Updates the selected feats list. |

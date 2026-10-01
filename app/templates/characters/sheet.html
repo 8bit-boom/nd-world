@@ -92,12 +92,6 @@
 .cs-edge-text  { font-size:.9rem;color:var(--text);line-height:1.5; }
 
 /* ── Conditions ── */
-.cs-conditions { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem; }
-.cs-conditions-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.5rem; }
-.cs-cond-row { display:flex;gap:.4rem;flex-wrap:wrap; }
-.cs-cond-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .65rem;border-radius:20px;cursor:pointer;font-family:var(--font);font-size:.78rem;transition:all .15s; }
-.cs-cond-btn.active { background:var(--neon2);border-color:var(--neon2);color:#000;font-weight:bold; }
-.cs-cond-btn:hover:not(.active) { border-color:var(--neon2);color:var(--neon2); }
 
 /* ── Body panels ── */
 .cs-body { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
@@ -232,7 +226,7 @@
         <span class="cs-xp-label" id="xp-label">
           {{ pc.xp }} XP{% if xp_hi %} / {{ xp_hi }}{% endif %}
         </span>
-        <button class="cs-hp-inline-btn" onclick="xpDialog()">+ XP</button>
+        {% if can_manage %}<button type="button" class="cs-hp-inline-btn" onclick="xpDialog()">+ XP</button>{% endif %}
       </div>
     </div>
   </div>
@@ -309,47 +303,55 @@
     </div>
   </div>
 
-  <!-- Resource trackers -->
+  <!-- Resource trackers (the +/- controls only render for someone who can manage this sheet) -->
   <div class="cs-resources">
     <!-- HP (green neon) -->
     <div class="cs-resource-bar hp">
       <span class="cs-res-label">HP</span>
-      <button class="cs-res-btn" onclick="hpDelta(-1)" title="-1 HP">−</button>
-      <div class="cs-res-current" id="hp-current" onclick="hpSetDialog()">{{ pc.current_hp }}</div>
+      {% if can_manage %}<button type="button" class="cs-res-btn" onclick="hpDelta(-1)" title="-1 HP" aria-label="Decrease HP">−</button>{% endif %}
+      <div class="cs-res-current" id="hp-current"{% if can_manage %} onclick="hpSetDialog()"{% endif %}>{{ pc.current_hp }}</div>
       <div class="cs-res-max">/ <span id="hp-max">{{ hp_max }}</span></div>
-      <button class="cs-res-btn" onclick="hpDelta(1)" title="+1 HP">+</button>
-      <input type="number" class="cs-res-delta-input" id="hp-delta-input" placeholder="Amt">
-      <button class="cs-res-inline-btn" onclick="hpApplyDamage()">Damage</button>
-      <button class="cs-res-inline-btn" onclick="hpApplyHeal()">Heal</button>
+      {% if can_manage %}
+      <button type="button" class="cs-res-btn" onclick="hpDelta(1)" title="+1 HP" aria-label="Increase HP">+</button>
+      <input type="number" class="cs-res-delta-input" id="hp-delta-input" placeholder="Amt" aria-label="HP amount">
+      <button type="button" class="cs-res-inline-btn" onclick="hpApplyDamage()">Damage</button>
+      <button type="button" class="cs-res-inline-btn" onclick="hpApplyHeal()">Heal</button>
+      {% endif %}
     </div>
     <!-- Shock (purple) -->
     <div class="cs-resource-bar shock">
       <span class="cs-res-label">Shock</span>
-      <button class="cs-res-btn" onclick="shockDelta(-1)">−</button>
-      <div class="cs-res-current" id="shock-current" onclick="shockSetDialog()">{{ shock_current }}</div>
+      {% if can_manage %}<button type="button" class="cs-res-btn" onclick="shockDelta(-1)" aria-label="Decrease Shock">−</button>{% endif %}
+      <div class="cs-res-current" id="shock-current"{% if can_manage %} onclick="shockSetDialog()"{% endif %}>{{ shock_current }}</div>
       <div class="cs-res-max">/ <span id="shock-max">{{ shock_max }}</span></div>
-      <button class="cs-res-btn" onclick="shockDelta(1)">+</button>
-      <input type="number" class="cs-res-delta-input" id="shock-delta-input" placeholder="Amt">
-      <button class="cs-res-inline-btn" onclick="shockApply(-1)">Take</button>
-      <button class="cs-res-inline-btn" onclick="shockApply(1)">Clear</button>
+      {% if can_manage %}
+      <button type="button" class="cs-res-btn" onclick="shockDelta(1)" aria-label="Increase Shock">+</button>
+      <input type="number" class="cs-res-delta-input" id="shock-delta-input" placeholder="Amt" aria-label="Shock amount">
+      <button type="button" class="cs-res-inline-btn" onclick="shockApply(-1)">Take</button>
+      <button type="button" class="cs-res-inline-btn" onclick="shockApply(1)">Clear</button>
+      {% endif %}
     </div>
     <!-- PP (yellow) -->
     <div class="cs-resource-bar pp">
       <span class="cs-res-label">PP</span>
-      <button class="cs-res-btn" onclick="ppDelta(-1)">−</button>
-      <div class="cs-res-current" id="pp-current" onclick="ppSetDialog()">{{ pp_current }}</div>
+      {% if can_manage %}<button type="button" class="cs-res-btn" onclick="ppDelta(-1)" aria-label="Decrease PP">−</button>{% endif %}
+      <div class="cs-res-current" id="pp-current"{% if can_manage %} onclick="ppSetDialog()"{% endif %}>{{ pp_current }}</div>
       <div class="cs-res-max">/ <span id="pp-max">{{ phys }}</span></div>
-      <button class="cs-res-btn" onclick="ppDelta(1)">+</button>
-      <button class="cs-res-inline-btn" onclick="ppRest()">Rest (½)</button>
+      {% if can_manage %}
+      <button type="button" class="cs-res-btn" onclick="ppDelta(1)" aria-label="Increase PP">+</button>
+      <button type="button" class="cs-res-inline-btn" onclick="ppRest()">Rest (½)</button>
+      {% endif %}
     </div>
     <!-- MP (cyan) -->
     <div class="cs-resource-bar mp">
       <span class="cs-res-label">MP</span>
-      <button class="cs-res-btn" onclick="mpDelta(-1)">−</button>
-      <div class="cs-res-current" id="mp-current" onclick="mpSetDialog()">{{ mp_current }}</div>
+      {% if can_manage %}<button type="button" class="cs-res-btn" onclick="mpDelta(-1)" aria-label="Decrease MP">−</button>{% endif %}
+      <div class="cs-res-current" id="mp-current"{% if can_manage %} onclick="mpSetDialog()"{% endif %}>{{ mp_current }}</div>
       <div class="cs-res-max">/ <span id="mp-max">{{ ment }}</span></div>
-      <button class="cs-res-btn" onclick="mpDelta(1)">+</button>
-      <button class="cs-res-inline-btn" onclick="mpRest()">Rest (½)</button>
+      {% if can_manage %}
+      <button type="button" class="cs-res-btn" onclick="mpDelta(1)" aria-label="Increase MP">+</button>
+      <button type="button" class="cs-res-inline-btn" onclick="mpRest()">Rest (½)</button>
+      {% endif %}
     </div>
   </div>
 
@@ -371,16 +373,8 @@
   </div>
   {% endif %}
 
-  <!-- Conditions (visual toggles) -->
-  <div class="cs-conditions">
-    <div class="cs-conditions-title">Conditions</div>
-    <div class="cs-cond-row" id="conditions-row">
-      {% for cond in ['Burn','Freeze','Toxin','Bleeding','Blind','Yellow','Charm','Daze','Stunned'] %}
-      <button type="button" class="cs-cond-btn{% if cond in conditions %} active{% endif %}"
-              onclick="toggleCondition(this)">{{ cond }}</button>
-      {% endfor %}
-    </div>
-  </div>
+  <!-- Conditions (persisted) -->
+  {% include 'characters/_conditions.html' %}
 
   <!-- Two-column body: Feats | Equipment -->
   <div class="cs-body">
@@ -660,13 +654,37 @@ async function removeEquipmentQuick(index) {
   document.getElementById('equipment-total-weight').textContent = Math.trunc(d.total_weight);
 }
 
+// POST a quick-edit and return the parsed JSON, or null (after telling the user)
+// on any failure — a 403/400 used to paint "undefined" into the HP box.
+async function quickPost(path, body) {
+  let r, d = {};
+  try {
+    r = await fetch(path, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { alert('Could not save: network error'); return null; }
+  if (!r.ok) { alert(d.detail || ('Could not save (HTTP ' + r.status + ')')); return null; }
+  return d;
+}
+
+// Live sync: _conditions.html re-fetches /vitals when the world changes
+// elsewhere (a GM combat sync, a party Rest, an XP award) and announces it here.
+window.addEventListener('pc-vitals', (ev) => {
+  const d = ev.detail || {};
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.textContent = v; };
+  set('hp-current', d.hp); set('hp-max', d.max_hp);
+  set('shock-current', d.shock); set('shock-max', d.shock_max);
+  set('pp-current', d.pp); set('pp-max', d.pp_max);
+  set('mp-current', d.mp); set('mp-max', d.mp_max);
+  const xl = document.getElementById('xp-label');
+  if (xl && d.xp !== undefined) xl.textContent = d.xp + ' XP' + (d.xp_hi ? ' / ' + d.xp_hi : '');
+  const xb = document.getElementById('xp-bar');
+  if (xb && d.xp_pct !== undefined) xb.style.width = d.xp_pct + '%';
+});
+
 // ── HP ────────────────────────────────────────────────────────────────────────
 async function hpAjax(body) {
-  const r = await fetch(`/api/characters/${PC_ID}/hp-async`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-  const d = await r.json();
+  const d = await quickPost(`/api/characters/${PC_ID}/hp-async`, body);
+  if (!d) return;
   document.getElementById('hp-current').textContent = d.current_hp;
   document.getElementById('hp-max').textContent     = d.max_hp;
 }
@@ -681,11 +699,8 @@ function hpSetDialog() {
 
 // ── Shock ─────────────────────────────────────────────────────────────────────
 async function shockAjax(body) {
-  const r = await fetch(`/api/characters/${PC_ID}/shock`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-  const d = await r.json();
+  const d = await quickPost(`/api/characters/${PC_ID}/shock`, body);
+  if (!d) return;
   document.getElementById('shock-current').textContent = d.shock_current;
   document.getElementById('shock-max').textContent     = d.shock_max;
 }
@@ -702,11 +717,8 @@ function shockSetDialog() {
 
 // ── PP ────────────────────────────────────────────────────────────────────────
 async function ppAjax(body) {
-  const r = await fetch(`/api/characters/${PC_ID}/pp`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-  const d = await r.json();
+  const d = await quickPost(`/api/characters/${PC_ID}/pp`, body);
+  if (!d) return;
   document.getElementById('pp-current').textContent = d.pp_current;
   document.getElementById('pp-max').textContent     = d.pp_max;
 }
@@ -720,11 +732,8 @@ function ppSetDialog() {
 
 // ── MP ────────────────────────────────────────────────────────────────────────
 async function mpAjax(body) {
-  const r = await fetch(`/api/characters/${PC_ID}/mp`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  });
-  const d = await r.json();
+  const d = await quickPost(`/api/characters/${PC_ID}/mp`, body);
+  if (!d) return;
   document.getElementById('mp-current').textContent = d.mp_current;
   document.getElementById('mp-max').textContent     = d.mp_max;
 }
@@ -740,18 +749,10 @@ function mpSetDialog() {
 async function xpDialog() {
   const v = prompt('Add or subtract XP (e.g. 250 or -100):');
   if (v === null || isNaN(parseInt(v))) return;
-  const r = await fetch(`/api/characters/${PC_ID}/xp`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({delta: parseInt(v)})
-  });
-  const d = await r.json();
+  const d = await quickPost(`/api/characters/${PC_ID}/xp`, {delta: parseInt(v)});
+  if (!d) return;
   document.getElementById('xp-label').textContent = d.xp + ' XP' + (d.xp_hi ? ' / ' + d.xp_hi : '');
   document.getElementById('xp-bar').style.width = d.xp_pct + '%';
-}
-
-// ── Conditions (visual toggle only) ──────────────────────────────────────────
-function toggleCondition(btn) {
-  btn.classList.toggle('active');
 }
 
 // ── Dice ──────────────────────────────────────────────────────────────────────
