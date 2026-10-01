@@ -26,6 +26,7 @@
 a.pch-title:hover { color:var(--neon); }
 .pch-chip { display:inline-block; font-size:.65rem; padding:.1rem .4rem; border-radius:10px; background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); margin-left:.4rem; vertical-align:middle; }
 .pch-chip.mine { border-color:var(--neon); color:var(--neon); }
+.pch-chip.down { border-color:var(--neon2); color:var(--neon2); }
 .pch-text { font-size:.85rem; color:var(--text); white-space:pre-wrap; margin:.3rem 0 0; }
 .pch-form { display:flex; flex-direction:column; gap:.4rem; margin:.4rem 0 .8rem; }
 .pch-panel select, .pch-form input, .pch-form textarea, .pch-form select, .pch-search { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .5rem; border-radius:4px; font-family:var(--font); font-size:16px; max-width:100%; }
@@ -53,19 +54,31 @@ a.pch-title:hover { color:var(--neon); }
     {% if hub_party %}
     <h2 class="pch-h">🧑‍🤝‍🧑 Your party — <a href="{{ ('/parties/' + hub_party.id|string)|wq }}" style="color:inherit">{{ hub_party.name }}</a></h2>
 
-    {% if hub_loot_unclaimed or hub_loot_mine %}
+    {% if hub_roster %}
+    <div class="pch-sub">🧑‍🤝‍🧑 Your companions</div>
+    {% for m in hub_roster %}
+    <div class="pch-row" data-roster="{{ m.id }}">
+      <strong style="font-size:.9rem">{{ m.name }}</strong>
+      <span class="pch-muted">Lv {{ m.level }}{% if m.line %} · {{ m.line }}{% endif %}</span>
+      {% if m.max_hp %}<span class="pch-chip{% if m.down %} down{% endif %}">HP {{ m.hp }}/{{ m.max_hp }}{% if m.down %} · down{% endif %}</span>{% endif %}
+      {% for c in m.conditions %}<span class="pch-chip">{{ c }}</span>{% endfor %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if hub_loot %}
     <div class="pch-sub">🎒 Party loot</div>
-    {% if hub_loot_mine %}
-    <div style="font-size:.8rem;margin-bottom:.3rem">Yours: <strong style="color:var(--neon)">{{ hub_loot_mine|join(', ') }}</strong></div>
-    {% endif %}
-    {% if hub_loot_unclaimed %}
-    <details>
-      <summary class="pch-muted" style="cursor:pointer">{{ hub_loot_unclaimed|length }} unclaimed item{{ 's' if hub_loot_unclaimed|length != 1 }} — claim from the party page</summary>
-      <div class="pch-muted" style="padding:.3rem 0 0 .8rem">
-        {% for item in hub_loot_unclaimed %}• {{ item.get('name', 'item') }}{% if item.get('qty', 1) > 1 %} ×{{ item.qty }}{% endif %}<br/>{% endfor %}
+    <div id="pch-loot">
+      {% for it in hub_loot %}
+      <div class="pch-row pch-loot-row" data-lid="{{ it.lid }}">
+        <span>{{ it.name }}{% if it.qty > 1 %} ×{{ it.qty }}{% endif %}</span>{% if it.notes %}<span class="pch-muted"> — {{ it.notes }}</span>{% endif %}
+        {% for n in it.claimers %}<span class="pch-chip{% if it.mine and n == pc.name %} mine{% endif %}">{{ n }}</span>{% endfor %}
+        <button type="button" class="pch-btn" data-claim="{{ 'unclaim' if it.mine else 'claim' }}">{{ 'Unclaim' if it.mine else 'Claim for ' ~ pc.name }}</button>
       </div>
-    </details>
-    {% endif %}
+      {% endfor %}
+    </div>
+    <div class="pch-err" id="pch-loot-err" role="alert"></div>
+    <p class="pch-muted">Claiming marks what you want — your GM or party hands items out.</p>
     {% endif %}
 
     {% if hub_xp_ledger %}
@@ -103,6 +116,7 @@ a.pch-title:hover { color:var(--neon); }
   const hub = document.getElementById('pc-hub');
   if (!hub) return;
   const PC_ID = hub.dataset.pcId;
+  const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const TABS = ['sheet', 'journey', 'quests', 'notes', 'world', 'schedule'];
 
@@ -342,6 +356,35 @@ a.pch-title:hover { color:var(--neon); }
     }
     if (d.calendar_href) parts.push(h('a', { class: 'pch-muted', href: d.calendar_href, text: 'Open the full calendar →' }));
     el.replaceChildren(...parts);
+  }
+
+
+  // ── Journey: claim / unclaim party loot in place ───────────────────────────
+  const lootBox = document.getElementById('pch-loot');
+  const lootErr = document.getElementById('pch-loot-err');
+  function renderLoot(items) {
+    lootBox.replaceChildren(...items.map(it => h('div', { class: 'pch-row pch-loot-row', 'data-lid': it.lid },
+      h('span', { text: it.name + (it.qty > 1 ? ' ×' + it.qty : '') }),
+      it.notes ? h('span', { class: 'pch-muted', text: ' — ' + it.notes }) : null,
+      it.claimers.map(n => h('span', { class: 'pch-chip' + (it.mine && n === PC_NAME ? ' mine' : ''), text: n })),
+      h('button', { type: 'button', class: 'pch-btn', 'data-claim': it.mine ? 'unclaim' : 'claim',
+                    text: it.mine ? 'Unclaim' : 'Claim for ' + PC_NAME }))));
+  }
+  if (lootBox) {
+    lootBox.addEventListener('click', async ev => {
+      const btn = ev.target.closest('[data-claim]');
+      if (!btn) return;
+      const row = btn.closest('[data-lid]');
+      lootErr.textContent = '';
+      btn.disabled = true;
+      try {
+        const d = await send('loot', { action: btn.dataset.claim, lid: row.dataset.lid });
+        renderLoot(d.loot);
+      } catch (e) {
+        lootErr.textContent = e.message;
+        btn.disabled = false;
+      }
+    });
   }
 
   // ── Tabs ───────────────────────────────────────────────────────────────────

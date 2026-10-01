@@ -25,8 +25,8 @@ from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
-from ..party_refs import detach_pc, member_ids as _member_ids, parties_for_pc
-from .character_hub import delete_character_journal
+from ..party_refs import detach_pc, member_ids as _member_ids
+from .character_hub import delete_character_journal, journey_context
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -663,37 +663,9 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     # tabs (Journey/Quests/Notes/World/Schedule — see
     # app/routers/character_hub.py, whose API is owner-only for the same reason).
     hub_enabled = bool(user and pc.owner_user_id == user.id)
-    hub_party = None
-    hub_loot_unclaimed = []
-    hub_loot_mine = []
-    hub_xp_ledger = []
-    hub_sessions = []
-    if hub_enabled:
-        from ..models import GameSession as _GS
-        mine = parties_for_pc(db, pc.world_id, pc.id)
-        if mine:
-            hub_party = party = mine[0]
-            try:
-                loot = json.loads(party.loot_json or "[]")
-            except ValueError:
-                loot = []
-            for item in loot:
-                if not isinstance(item, dict):
-                    continue
-                claimed = item.get("claimed_by") or []
-                if pc.id in claimed:
-                    hub_loot_mine.append(item.get("name", "item"))
-                elif not claimed:
-                    hub_loot_unclaimed.append(item)
-            try:
-                ledger = json.loads(party.xp_json or "[]")
-            except ValueError:
-                ledger = []
-            hub_xp_ledger = list(reversed(ledger))[:5]
-            hub_sessions = (
-                db.query(_GS).filter(_GS.party_id == party.id)
-                .order_by(_GS.session_num.desc()).limit(5).all()
-            )
+    hub_ctx = (journey_context(db, request, pc, db.get(World, pc.world_id))
+               if hub_enabled else {"hub_party": None, "hub_loot": [], "hub_roster": [],
+                                    "hub_xp_ledger": [], "hub_sessions": []})
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
         tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
@@ -710,11 +682,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "linked_sheets": linked_sheets,
             "levelup_ready": levelup_ready,
             "hub_enabled": hub_enabled,
-            "hub_party": hub_party,
-            "hub_loot_unclaimed": hub_loot_unclaimed,
-            "hub_loot_mine": hub_loot_mine,
-            "hub_xp_ledger": hub_xp_ledger,
-            "hub_sessions": hub_sessions,
+            **hub_ctx,
         })
 
     d = _derived(pc)
@@ -734,11 +702,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "linked_sheets": linked_sheets,
         "levelup_ready": levelup_ready,
         "hub_enabled": hub_enabled,
-        "hub_party": hub_party,
-        "hub_loot_unclaimed": hub_loot_unclaimed,
-        "hub_loot_mine": hub_loot_mine,
-        "hub_xp_ledger": hub_xp_ledger,
-        "hub_sessions": hub_sessions,
+        **hub_ctx,
     })
 
 

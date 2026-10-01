@@ -27,14 +27,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import auth
+from .. import auth, live
 from ..database import get_db
-from ..deps import filter_visible_entities, with_world, world_section_access
+from ..deps import filter_visible_entities, with_world, world_can_view_section, world_section_access
 from ..models import (
     CalendarEvent, CharacterJournalEntry, Entity, GameSession, Party, PlayerCharacter,
     PrivateNote, Quest, World, WorldCalendar, entity_player_access,
 )
-from ..party_refs import parties_for_pc
+from ..party_refs import load_loot, parties_for_pc
+from ..pc_stats import pc_maxima
 from ..rendering import strip_gm_only, strip_md
 from .calendar import _default_config, _months_of, _resolve_date
 
@@ -103,6 +104,100 @@ def delete_character_journal(db: Session, pc_id: int) -> None:
     db.query(CharacterJournalEntry).filter(
         CharacterJournalEntry.character_id == pc_id
     ).delete(synchronize_session=False)
+
+
+# ── Journey tab (server-rendered) + in-place loot claiming ───────────────────
+
+def _loot_view(loot: list, pc_id: int, names: dict) -> list:
+    """The stash as the hub shows it: each item with whether it's claimed, by
+    whom (names of party members), and whether this character holds a claim."""
+    return [{
+        "lid": i["lid"], "name": i["name"], "qty": i["qty"], "notes": i["notes"],
+        "claimed": bool(i["claimed_by"]), "mine": pc_id in i["claimed_by"],
+        "claimers": [names[c] for c in i["claimed_by"] if c in names],
+    } for i in loot]
+
+
+def journey_context(db: Session, request: Request, pc: PlayerCharacter, world) -> dict:
+    """Everything the Journey tab renders for the OWNER of `pc`: their party, its
+    stash (with this character's claims), teammate roster, recent XP awards and —
+    only if the viewer may see the Sessions section — recent sessions. Teammates
+    are PlayerCharacters only; GM companions never appear here."""
+    ctx = {"hub_party": None, "hub_loot": [], "hub_roster": [], "hub_xp_ledger": [], "hub_sessions": []}
+    mine = parties_for_pc(db, pc.world_id, pc.id)
+    if not mine:
+        return ctx
+    party = ctx["hub_party"] = mine[0]
+    try:
+        member_ids = [i for i in json.loads(party.member_pc_ids_json or "[]") if isinstance(i, int)]
+    except ValueError:
+        member_ids = []
+    members = (db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(member_ids),
+                                                PlayerCharacter.world_id == pc.world_id).all()
+               if member_ids else [])
+    ctx["hub_loot"] = _loot_view(load_loot(party), pc.id, {m.id: m.name for m in members})
+    for m in sorted(members, key=lambda m: m.name or ""):
+        if m.id == pc.id:
+            continue
+        hp_max = pc_maxima(m)["hp"]
+        try:
+            conds = [c for c in json.loads(m.conditions_json or "[]") if isinstance(c, str)][:4]
+        except ValueError:
+            conds = []
+        ctx["hub_roster"].append({
+            "id": m.id, "name": m.name, "level": m.level,
+            "line": " · ".join(x for x in (m.race, m.char_class) if x),
+            "hp": m.current_hp or 0, "max_hp": hp_max,
+            "down": hp_max > 0 and (m.current_hp or 0) <= 0, "conditions": conds,
+        })
+    try:
+        ledger = json.loads(party.xp_json or "[]")
+    except ValueError:
+        ledger = []
+    ctx["hub_xp_ledger"] = list(reversed(ledger))[:5]
+    if world_can_view_section(request, world, "sessions"):
+        ctx["hub_sessions"] = (
+            db.query(GameSession).filter(GameSession.party_id == party.id)
+            .order_by(GameSession.session_num.desc()).limit(5).all()
+        )
+    return ctx
+
+
+@router.post("/api/characters/{pc_id}/hub/loot")
+async def hub_loot_claim(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Claim / unclaim a party-stash item for the caller's OWN character from the
+    Journey tab. Owner-only (a body `pc_id` is ignored — a claim is always for
+    the character in the URL). Deliberately not tied to the Parties section
+    level: that gate is for browsing/editing parties, while the Journey tab
+    already shows a player their own party's stash. A claim is only a marker;
+    handing the item over (give) stays on the party page."""
+    user, pc, world = _owned_pc(request, db, pc_id)
+    body = await _json_body(request)
+    action, lid = body.get("action"), body.get("lid")
+    if action not in ("claim", "unclaim"):
+        raise HTTPException(400, "action must be claim or unclaim")
+    if not isinstance(lid, str) or not lid:
+        raise HTTPException(400, "lid is required")
+    parties = parties_for_pc(db, pc.world_id, pc.id)
+    if not parties:
+        raise HTTPException(404, "This character is not in a party")
+    for party in parties:
+        loot = load_loot(party)
+        item = next((i for i in loot if i["lid"] == lid), None)
+        if item is not None:
+            break
+    else:
+        raise HTTPException(409, "That loot item no longer exists — refresh the page.")
+    if action == "claim" and pc.id not in item["claimed_by"]:
+        item["claimed_by"].append(pc.id)
+    elif action == "unclaim" and pc.id in item["claimed_by"]:
+        item["claimed_by"].remove(pc.id)
+    party.loot_json = json.dumps(loot)
+    db.commit()
+    live.touch(party.world_id)
+    names = {m.id: m.name for m in db.query(PlayerCharacter).filter(
+        PlayerCharacter.id.in_([c for i in loot for c in i["claimed_by"]] or [0])).all()}
+    return {"loot": _loot_view(loot, pc.id, names)}
 
 
 # ── Serializers ──────────────────────────────────────────────────────────────

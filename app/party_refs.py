@@ -10,7 +10,9 @@ member, counted in the roster, still handed out XP/rest), loot kept it in
 Leaf module (models only) so characters.py can use it without the
 characters <-> parties import cycle.
 """
+import hashlib
 import json
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -61,3 +63,41 @@ def detach_pc(db: Session, world_id: int, pc_id: int) -> int:
     db.query(CalendarEvent).filter(CalendarEvent.character_id == pc_id).update(
         {"character_id": None}, synchronize_session=False)
     return touched
+
+
+LOOT_NAME_MAX = 120
+LOOT_NOTES_MAX = 500
+LOOT_QTY_MAX = 9999
+
+
+def load_loot(party: Party) -> list:
+    """The party's loot as a clean list of dicts: bad JSON/entries dropped,
+    every item with a stable `lid` (8 hex chars; legacy items get one the first
+    time the stash is rewritten), int `qty` >= 1 and an int `claimed_by` list.
+    Items are addressed by lid so two people acting on stale lists can't hit
+    the wrong row; list index is still accepted for old clients."""
+    try:
+        raw = json.loads(party.loot_json or "[]")
+    except ValueError:
+        raw = []
+    out, seen = [], set()
+    for pos, item in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(item, dict):
+            continue
+        lid = item.get("lid")
+        if not isinstance(lid, str) or not lid or lid in seen:
+            # Derived, not random: a legacy item's lid must be the same on every
+            # read until the stash is rewritten (which persists it), or the id the
+            # page booted with would never match what the server computes later.
+            lid = hashlib.sha1(f"{pos}|{item.get('name')}".encode()).hexdigest()[:8]
+            while lid in seen:
+                lid = hashlib.sha1(lid.encode()).hexdigest()[:8]
+        seen.add(lid)
+        try:
+            qty = max(1, int(item.get("qty") or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        claimed = [i for i in (item.get("claimed_by") or []) if isinstance(i, int)]
+        out.append({**item, "lid": lid, "name": str(item.get("name") or "Item")[:LOOT_NAME_MAX],
+                    "qty": qty, "notes": str(item.get("notes") or "")[:LOOT_NOTES_MAX], "claimed_by": claimed})
+    return out
