@@ -307,3 +307,30 @@ def test_default_template_claims_every_static_item(client, seed):
     for gated in ("ai_chat_player", "image_gen_player", "npc_talk_player",
                   "dreamlands", "king-in-yellow"):
         assert any(gated in m["item_ids"] for m in DEFAULT_NAV_MENUS), gated
+
+
+def test_the_player_cockpit_is_not_a_nav_section():
+    """It lives inside Player Characters (the hub's Cockpit tab and the list's Cockpit button); a world whose
+    saved menus still name the old item just drops it."""
+    from app.nav_menus import DEFAULT_NAV_MENUS, STATIC_CATALOG
+    assert "player_cockpit" not in {i["id"] for i in STATIC_CATALOG}
+    assert all("player_cockpit" not in m["item_ids"] for m in DEFAULT_NAV_MENUS)
+    assert all(i.get("href") != "/player-cockpit" for i in STATIC_CATALOG)
+
+
+def test_a_saved_menu_naming_the_old_player_cockpit_item_still_resolves(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.nav_menus_json = json.dumps([{"id": "menu_tools", "label": "Tools", "icon": "🎯",
+                                        "item_ids": ["cockpit", "player_cockpit", "boards"]}])
+        db.commit()
+        world = db.get(World, seed.world_a.id)
+        menus, ungrouped = resolve_nav_menus(world, dreamlands_enabled=False, king_in_yellow_enabled=False,
+                                             request=fake_request(is_gm=True))
+    finally:
+        db.close()
+    tools = next(m for m in menus if m["id"] == "menu_tools")
+    ids = [i["id"] for i in tools["links"]]
+    assert ids == ["cockpit", "boards"], "the retired id is dropped, the rest stays in order"
+    assert "player_cockpit" not in [i["id"] for i in ungrouped]

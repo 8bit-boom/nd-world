@@ -125,7 +125,7 @@ tools that require GM access still check `is_gm` at call time.)
   `create_sheet_template` / `update_sheet_template`, so never store a model-written template without it.
 - **Small image boxes use the thumbnail**: `{{ url|thumb }}` for `src` and `data-full="{{ url }}"` for the original
   (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
-- **The Player Cockpit lives inside Player Characters**: the hub's owner-only 🎛 Cockpit tab lazily loads
+- **The Player Cockpit lives inside Player Characters** (no nav item of its own — `nav_menus.py` has none; saved menus that still name `player_cockpit` just drop it): the hub's owner-only 🎛 Cockpit tab lazily loads
   `/player-cockpit?pc=ID&embed=1` in an iframe, the list has a Cockpit button, and `?pc=` is honoured only for the
   viewer's OWN character — a GM may focus any character of the world and gets that player's view (`cockpit._viewer_pcs`
   decides whose characters/parties the cockpit is for; `CK_MY_PCS` / `CK_FOCUS_PC` / `CK_VIEW_AS` in cockpit.html,

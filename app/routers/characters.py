@@ -717,7 +717,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     # player manages from this page — their party (with claimable loot and
     # their own claims), the party's XP ledger, and recent sessions the
     # party played. This is the character's HOME (management/editing);
-    # the Player Cockpit is the separate live session dashboard.
+    # the Player Cockpit (its live table dashboard) is the hub's 🎛 Cockpit tab.
     # hub_mode drives the hub tabs (Journey/Quests/Notes/World/Schedule — see
     # app/routers/character_hub.py): "owner" = the viewer OWNS this character
     # (full hub, incl. the private Notes & journal tab); "gm" = a global GM

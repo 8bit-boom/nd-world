@@ -377,8 +377,8 @@ def test_cockpit_nav_entry_present_for_gm(client, seed):
     html = client.get("/").text
     assert "/cockpit" in html
     assert "GM Cockpit" in html
-    assert "/player-cockpit" in html      # GM can open the player cockpit too
-    assert "Player Cockpit" in html
+    # the Player Cockpit is not a separate nav section: it lives inside Player Characters
+    assert "/player-cockpit" not in html and "Player Cockpit" not in html
 
 
 def test_cockpit_nav_entry_hidden_for_player(client, seed):
@@ -386,7 +386,9 @@ def test_cockpit_nav_entry_hidden_for_player(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     html = client.get("/dice").text
     assert "GM Cockpit" not in html
-    assert "/player-cockpit" in html and "Player Cockpit" in html
+    assert "/player-cockpit" not in html and "Player Cockpit" not in html, "no separate nav entry"
+    # ...it is reached from Player Characters instead
+    assert "/player-cockpit" in client.get("/characters").text
 
 
 def test_cockpit_empty_world_renders_shell(client, seed):
