@@ -151,6 +151,18 @@ def _md_for(text, request):
 templates.env.filters["md_for"] = _md_for
 
 
+def _tpl_fields_json(tpl) -> str:
+    """A sheet template's fields as JSON with the system metadata resolved onto
+    them (binds / vital / xp — see app/sheet_systems.py), for pages that render
+    the fields client-side."""
+    import json as _json
+    from .sheet_systems import enrich_fields
+    return _json.dumps(enrich_fields(tpl))
+
+
+templates.env.filters["tpl_fields_json"] = _tpl_fields_json
+
+
 @jinja2.pass_context
 def _wq(ctx, path):
     """Append the current template's ?w=<world slug> to an internal link,

@@ -25,9 +25,9 @@
     <div style="display:flex;justify-content:space-between;gap:.8rem;padding:.3rem 0;border-bottom:1px solid var(--border);font-size:.85rem;flex-wrap:wrap">
       <span><strong>{{ v.name }}</strong> <span style="color:var(--text-dim);font-size:.75rem">Lvl {{ v.level }}</span></span>
       <span style="color:var(--text-dim)">
-        {% if v.max_hp %}HP {{ v.hp }}/{{ v.max_hp }} · {% endif %}{% if v.ac %}AC {{ v.ac }} · {% endif %}
+        {% if v.max_hp %}{{ v.hp_label }} {{ v.hp }}/{{ v.max_hp }} · {% endif %}{% if v.native and v.ac %}AC {{ v.ac }} · {% endif %}
         {% if v.down %}<span style="color:#e07">DOWN</span> · {% endif %}
-        {{ v.conditions | join(', ') if v.conditions else '—' }}
+        {% for r in v.resources if r.id != v.hp_id %}{{ r.label }} {{ r.current }}/{{ r.max }} · {% endfor %}{{ v.conditions | join(', ') if v.conditions else '—' }}
       </span>
     </div>
     {% endfor %}

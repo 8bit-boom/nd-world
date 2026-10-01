@@ -149,7 +149,9 @@ def test_party_vitals_show_system_resources(client, seed):
     r = client.get(f"/parties/{pid}")
     assert r.status_code == 200
     assert "Member Vitals" in r.text
-    assert "2/5 Health" in r.text
+    # Health is the system's vital track: it leads the member card as the HP line
+    # (and DOWN flag) instead of repeating as a chip; the other tracks stay chips.
+    assert "Health 2/5" in r.text
     assert "6/10 Hunger" in r.text
     # Player with view grant sees the same strip
     from .conftest import PLAYER_PASSWORD
@@ -166,4 +168,4 @@ def test_party_vitals_show_system_resources(client, seed):
         db.close()
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     r = client.get(f"/parties/{pid}")
-    assert "2/5 Health" in r.text
+    assert "Health 2/5" in r.text

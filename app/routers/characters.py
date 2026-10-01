@@ -24,6 +24,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from ..sheet_systems import enrich_fields, parse_custom_fields, resource_tracks, system_meta, template_fields
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids
 from .character_hub import delete_character_journal, journey_context
@@ -117,6 +118,10 @@ def _derived(pc: PlayerCharacter) -> dict:
         "equipment": equipment, "feats": feats, "attacks": attacks,
         "total_weight": total_weight,
         "cyberware": cyberware,
+        # Total CA used, tolerant of entries with a missing / non-numeric ca_cost
+        # (imports and AI-built characters produce them) — the template's
+        # sum(attribute=...) raised and 500'd the whole sheet.
+        "ca_used": int(sum(_num(c.get("ca_cost"), 0) for c in cyberware if isinstance(c, dict))),
         "conditions": conditions,
         "phys": phys, "ment": ment,
         "hp_max_derived": hp_max_derived,
@@ -308,6 +313,8 @@ def _levelup_ready(pc: PlayerCharacter) -> bool:
     _derived's own threshold math (lvl capped at 20; a level-20 PC is done)."""
     if pc.level >= 20:
         return False
+    if not pc_maxima(pc)["native"]:
+        return False  # levels/XP thresholds are N&D rules; a custom system tracks its own progression
     return (pc.xp or 0) >= XP_THRESHOLDS[min(pc.level, 19)]
 
 
@@ -384,6 +391,17 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
             if my_character is not None and my_character.id in ids:
                 my_party = party
 
+    # Custom-system cards show their vital tracks (Health 3/5 ...) instead of
+    # N&D chrome: the template's defaults apply to anything not yet saved, the
+    # same as the sheet and the party strip.
+    tpl_by_id = {t.id: t for t in sheet_templates_list}
+    custom_tracks = {}
+    for pc in pcs:
+        tpl = tpl_by_id.get(pc.sheet_template_id)
+        if tpl is not None and tpl.id in custom_tpl_ids:
+            custom_tracks[pc.id] = resource_tracks(
+                template_fields(tpl), parse_custom_fields(pc.custom_fields_json), system_meta(tpl))[:4]
+
     # Owner display names — GM view only (players see their own cards).
     owner_names = {}
     if world and user and user.is_gm:
@@ -396,7 +414,7 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
         "request": request, "world": world, "worlds": worlds,
         "pcs": pcs, "derived": derived,
         "sheet_templates": sheet_templates_list,
-        "custom_tpl_ids": custom_tpl_ids,
+        "custom_tpl_ids": custom_tpl_ids, "custom_tracks": custom_tracks,
         "user": user, "my_character": my_character,
         "q": term, "sort": sort,
         "pc_party": pc_party, "owner_names": owner_names, "my_party": my_party,
@@ -428,12 +446,13 @@ def character_new_form(
         # Default to N&D template
         chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.slug == "nd-default").first()
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
-        tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
+        tpl_fields = enrich_fields(chosen_tpl)
         return templates.TemplateResponse("characters/custom_sheet.html", {
             "request": request, "world": world, "worlds": worlds,
             "pc": None, "can_manage": True,
             "chosen_template": chosen_tpl,
-            "sections": _group_by_section(tpl_fields),
+            # fields that mirror a character column (Hunter Name = name) aren't asked for twice
+            "sections": _group_by_section([f for f in tpl_fields if not f.get("binds")]),
             "tpl_fields": tpl_fields,
             "custom_fields": {},
         })
@@ -668,14 +687,14 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
                                     "hub_xp_ledger": [], "hub_sessions": []})
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
-        tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
+        tpl_fields = enrich_fields(chosen_tpl)
         custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
         return templates.TemplateResponse("characters/custom_sheet.html", {
             "request": request, "world": world, "worlds": worlds,
             "pc": pc, "can_manage": can_manage,
             "conditions": _pc_condition_list(pc),
             "chosen_template": chosen_tpl,
-            "sections": _group_by_section(tpl_fields),
+            "sections": _group_by_section([f for f in tpl_fields if not f.get("binds")]),
             "tpl_fields": tpl_fields,
             "custom_fields": custom_fields,
             "world_members": world_members,
@@ -686,7 +705,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         })
 
     d = _derived(pc)
-    tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
+    tpl_fields = enrich_fields(chosen_tpl) if chosen_tpl else []
     custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     catalog = game_catalog.catalog_payload()
     return templates.TemplateResponse("characters/sheet.html", {
@@ -782,7 +801,7 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
         # Custom-mode sheets are always-editable in place — no separate edit page.
         return RedirectResponse(f"/characters/{pc_id}", status_code=303)
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
-    tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
+    tpl_fields = enrich_fields(chosen_tpl) if chosen_tpl else []
     custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     return templates.TemplateResponse("characters/form.html", {
         "request": request, "world": world, "worlds": worlds,

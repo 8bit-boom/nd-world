@@ -136,19 +136,15 @@ def journey_context(db: Session, request: Request, pc: PlayerCharacter, world) -
                                                 PlayerCharacter.world_id == pc.world_id).all()
                if member_ids else [])
     ctx["hub_loot"] = _loot_view(load_loot(party), pc.id, {m.id: m.name for m in members})
-    for m in sorted(members, key=lambda m: m.name or ""):
-        if m.id == pc.id:
-            continue
-        hp_max = pc_maxima(m)["hp"]
-        try:
-            conds = [c for c in json.loads(m.conditions_json or "[]") if isinstance(c, str)][:4]
-        except ValueError:
-            conds = []
+    from .parties import _member_vitals  # lazy: parties imports characters, which imports this module
+    for v in _member_vitals(db, [m for m in members if m.id != pc.id]):
+        by_id = next(m for m in members if m.id == v["id"])
         ctx["hub_roster"].append({
-            "id": m.id, "name": m.name, "level": m.level,
-            "line": " · ".join(x for x in (m.race, m.char_class) if x),
-            "hp": m.current_hp or 0, "max_hp": hp_max,
-            "down": hp_max > 0 and (m.current_hp or 0) <= 0, "conditions": conds,
+            "id": v["id"], "name": v["name"], "native": v["native"],
+            "level": v["level"] if v["native"] else None,
+            "line": " · ".join(x for x in (by_id.race, by_id.char_class) if x),
+            "hp": v["hp"] or 0, "max_hp": v["max_hp"], "hp_label": v["hp_label"],
+            "down": v["down"], "conditions": v["conditions"],
         })
     try:
         ledger = json.loads(party.xp_json or "[]")

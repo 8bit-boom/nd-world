@@ -87,7 +87,7 @@
         <select id="template-sel" onchange="switchTemplate(this.value)"
                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:4px;flex:1;min-width:180px;max-width:340px">
           {% for tpl in sheet_templates %}
-          <option value="{{ tpl.id }}" data-fields="{{ tpl.fields_json | e }}"
+          <option value="{{ tpl.id }}" data-fields="{{ tpl | tpl_fields_json | e }}"
                   {% if chosen_template and chosen_template.id == tpl.id %}selected{% endif %}>
             {{ tpl.name }}{% if tpl.is_builtin %} ★{% endif %}
           </option>
@@ -599,6 +599,7 @@ function renderCustomFields() {
   // Group fields by section
   const sections = {};
   _currentTplFields.forEach(f => {
+    if (f.binds) return;  // mirrors the character's own name / player fields above — don't ask twice
     const sec = f.section || 'custom';
     if (!sections[sec]) sections[sec] = [];
     sections[sec].push(f);
@@ -614,8 +615,11 @@ function renderCustomFields() {
       const wrap = document.createElement('div');
       wrap.style.cssText = 'display:flex;flex-direction:column;gap:.25rem';
       if (f.type === 'resource') {
-        const maxVal = _customFieldValues[f.id + '_max'] ?? (f.default_value || '0');
-        const curVal = _customFieldValues[f.id + '_current'] ?? maxVal;
+        // default_value is "current/max" (e.g. "5/5"), exactly as the sheet reads it
+        const dv = String(f.default_value || '0/0').split('/');
+        const defCur = dv[0] || '0', defMax = dv.length > 1 ? (dv[1] || '0') : '0';
+        const maxVal = _customFieldValues[f.id + '_max'] ?? defMax;
+        const curVal = _customFieldValues[f.id + '_current'] ?? defCur;
         wrap.innerHTML = `
           <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>
           <div style="display:flex;gap:.4rem;align-items:center">

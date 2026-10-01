@@ -45,7 +45,9 @@
   {% for pc in pcs %}
   {% set d = derived[pc.id] %}
   {% set ppt = pc_party.get(pc.id) %}
-  <a href="{{ ('/characters/' + pc.id|string)|wq }}" class="pc-card"
+  {# The card is a <div> with ONE stretched link (.pc-card-main::after covers it). Links inside
+     a link (the party badge) are invalid HTML and browsers tear the card apart. #}
+  <div class="pc-card"
      {% if my_character and pc.id == my_character.id %}style="outline:2px solid var(--neon);outline-offset:-2px"{% endif %}>
     <div class="pc-card-portrait">
       {# The initial is ALWAYS the backdrop and the image overlays it when
@@ -59,14 +61,19 @@
     </div>
     <div class="pc-card-body">
       <div class="pc-card-name">
-        {{ pc.name }}
+        <a class="pc-card-main" href="{{ ('/characters/' + pc.id|string)|wq }}">{{ pc.name }}</a>
         {% if my_character and pc.id == my_character.id %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">YOURS</span>{% endif %}
         {% if pc.id in levelup_ready %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle" title="XP crossed the threshold — open the sheet to apply">⬆ Level-up</span>{% endif %}
         {% if user and user.is_gm and pc.owner_user_id and owner_names.get(pc.owner_user_id) %}<span style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">👤 {{ owner_names[pc.owner_user_id] }}</span>{% endif %}
-        {% if ppt %}<a href="{{ ('/parties/' + ppt.id|string)|wq }}" onclick="event.stopPropagation()" style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle;text-decoration:none">🛡 {{ ppt.name }}</a>{% endif %}
+        {% if ppt %}<a href="{{ ('/parties/' + ppt.id|string)|wq }}" style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle;text-decoration:none">🛡 {{ ppt.name }}</a>{% endif %}
       </div>
       {% if pc.sheet_template_id in custom_tpl_ids %}
       <div class="pc-card-meta">{{ pc.sheet_template.name if pc.sheet_template else 'Custom system' }}</div>
+      {% if custom_tracks.get(pc.id) %}
+      <div class="pc-card-tracks">
+        {% for t in custom_tracks[pc.id] %}<span class="pc-card-track{% if t.max and t.current <= 0 %} low{% endif %}" title="{{ t.label }}">{{ t.label }} {{ t.current }}/{{ t.max }}</span>{% endfor %}
+      </div>
+      {% endif %}
       {% else %}
       <div class="pc-card-meta">
         Lvl {{ pc.level }}
@@ -97,7 +104,7 @@
     {% if pc.player_name %}
     <div class="pc-card-player">{{ pc.player_name }}</div>
     {% endif %}
-  </a>
+  </div>
   {% endfor %}
 </div>
 {% endif %}

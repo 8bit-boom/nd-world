@@ -445,14 +445,11 @@ def _player_my_pcs(db: Session, world, user) -> list:
            .filter(PlayerCharacter.world_id == world.id,
                    PlayerCharacter.owner_user_id == user.id)
            .order_by(PlayerCharacter.name).all())
+    # Same per-character vitals as the party strip: an N&D sheet reads its columns,
+    # a custom system its vital track (no AC, no level-ups) — plus the XP total.
     out = []
-    for pc in pcs:
-        out.append({
-            "id": pc.id, "name": pc.name, "level": pc.level,
-            "hp": pc.current_hp, "max_hp": pc_maxima(pc)["hp"], "temp_hp": pc.temp_hp,
-            "ac": pc.armor_class,
-            "xp": pc.xp, "levelup": _pc_levelup_ready(pc),
-        })
+    for pc, v in zip(sorted(pcs, key=lambda p: p.name or ""), _member_vitals(db, pcs, resource_limit=None)):
+        out.append({**v, "xp": pc.xp})
     return out
 
 

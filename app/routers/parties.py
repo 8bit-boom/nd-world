@@ -1,6 +1,7 @@
 import io
 import json
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -17,6 +18,7 @@ from ..party_refs import (
     LOOT_NAME_MAX, LOOT_NOTES_MAX, LOOT_QTY_MAX, load_loot, member_ids as party_member_ids_raw,
 )
 from ..pc_stats import pc_maxima
+from ..sheet_systems import hp_track, parse_custom_fields, resource_tracks, system_meta, template_fields
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import (  # cross-router imports, per AGENTS.md
     _derived, _levelup_ready as _pc_levelup_ready, _pc_to_ndc_dict, _safe_export_filename,
@@ -132,58 +134,53 @@ def _party_quests(db: Session, request: Request, party: Party, world) -> list:
     return q.filter(Quest.visible_to_players.isnot(False)).all()
 
 
-def _member_vitals(db: Session, member_pcs: list) -> list:
+def _member_vitals(db: Session, member_pcs: list, resource_limit: Optional[int] = 4) -> list:
     """The live member-vitals strip, shared by the party detail page, the
-    /api/parties/{id}/vitals JSON (live-sync refetches) and the GM Cockpit.
-    HP/temp/AC read straight off the PC rows, so they're current the moment
-    anyone's sheet changes. Conditions stay on the sheet (freeform JSON).
-    System-aware: for members on a custom sheet (Asterion, HITM, ...),
-    surface the template's resource tracks (current/max) from the PC's own
-    custom fields — Health/Stamina/Hunger for Hunters, Spark Shield/Flesh/
-    Ichor for gods, whatever the system defines. Pure-N&D members keep the
-    HP/AC strip."""
+    /api/parties/{id}/vitals JSON (live-sync refetches), the GM Cockpit, the
+    roster and the hub. Conditions stay on the sheet (freeform JSON).
+
+    System-aware (see app/sheet_systems.py): an N&D character reads HP/AC off
+    its columns against the effective maxima; a character on a custom system
+    (Asterion, Hunt in the Moonlight, a GM's own template) has no AC, takes its
+    HP from the template's vital track (Health / Flesh, DOWN at 0) and lists its
+    other resource tracks, with the template's defaults applied to anything not
+    yet saved — exactly what the sheet itself shows. `resource_limit` caps the
+    chips on the compact strip (None = all of them)."""
     member_vitals = []
-    _tpl_resource_cache = {}
+    tpl_cache = {}
+
+    def tpl_info(tpl_id):
+        if tpl_id not in tpl_cache:
+            tpl = db.get(SheetTemplate, tpl_id) if tpl_id else None
+            tpl_cache[tpl_id] = (tpl, template_fields(tpl) if tpl else [], system_meta(tpl) if tpl else None)
+        return tpl_cache[tpl_id]
+
     for pc in sorted(member_pcs, key=lambda p: p.name or ""):
         try:
             conds = json.loads(pc.conditions_json or "[]")
         except ValueError:
             conds = []
-        resources = []
-        tpl_id = getattr(pc, "sheet_template_id", None)
-        if tpl_id:
-            if tpl_id not in _tpl_resource_cache:
-                tpl = db.get(SheetTemplate, tpl_id)
-                try:
-                    fields = json.loads(tpl.fields_json or "[]") if tpl else []
-                except ValueError:
-                    fields = []
-                _tpl_resource_cache[tpl_id] = [
-                    f for f in fields if f.get("type") == "resource"
-                ]
-            try:
-                cf = json.loads(pc.custom_fields_json or "{}")
-            except ValueError:
-                cf = {}
-            for f in _tpl_resource_cache[tpl_id][:4]:
-                cur = cf.get(f"{f['id']}_current")
-                mx = cf.get(f"{f['id']}_max")
-                if cur is None and mx is None:
-                    continue
-                resources.append({
-                    "label": f.get("label", f["id"]),
-                    "current": cur if cur is not None else 0,
-                    "max": mx if mx is not None else 0,
-                })
-        hp_max = pc_maxima(pc)["hp"]  # 0 stored = auto-derived, same rule as the sheet
+        m = pc_maxima(pc)
+        tpl, fields, meta = tpl_info(getattr(pc, "sheet_template_id", None))
+        cf = parse_custom_fields(pc.custom_fields_json)
+        tracks = resource_tracks(fields, cf, meta) if tpl else []
+        hp_id, hp_label = None, "HP"
+        if m["native"]:
+            hp, hp_max, ac = pc.current_hp, m["hp"], pc.armor_class
+        else:
+            vital = hp_track(fields, cf, meta) if tpl else None
+            hp, hp_max, ac = None, 0, None  # AC is an N&D stat; no column HP on a custom system
+            if vital:
+                hp, hp_max, hp_id, hp_label = vital["current"], vital["max"], vital["id"], vital["label"]
         member_vitals.append({
-            "id": pc.id, "name": pc.name,
-            "hp": pc.current_hp, "max_hp": hp_max, "temp_hp": pc.temp_hp,
-            "ac": pc.armor_class, "level": pc.level,
-            "down": hp_max > 0 and (pc.current_hp or 0) <= 0,
+            "id": pc.id, "name": pc.name, "native": m["native"],
+            "hp": hp, "max_hp": hp_max, "hp_label": hp_label, "hp_id": hp_id,
+            "temp_hp": pc.temp_hp if m["native"] else 0,
+            "ac": ac, "level": pc.level,
+            "down": hp_max > 0 and (hp or 0) <= 0,
             "levelup": _pc_levelup_ready(pc),
             "conditions": [c for c in conds if isinstance(c, str)][:4],
-            "resources": resources,
+            "resources": tracks if resource_limit is None else tracks[:resource_limit],
         })
     return member_vitals
 
@@ -551,7 +548,7 @@ def party_launch_combat(party_id: int, request: Request, db: Session = Depends(g
     entity_ids = json.loads(party.member_entity_ids_json or "[]")
     combatants = []
     for pc in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []:
-        combatants.append(pc_to_combatant(pc))
+        combatants.append(pc_to_combatant(pc, db))
     for ent in db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []:
         combatants.append(entity_to_combatant(ent))
     cs = CombatSession(world_id=party.world_id, name=f"{party.name} Encounter",
@@ -780,7 +777,7 @@ def _roster_rows(db: Session, member_pcs: list) -> list:
     live resources against the effective maxima, the eight stats, derived
     CA/Speed, edges, cyberware names, conditions and — for custom-sheet
     members — the template's resource tracks (via _member_vitals)."""
-    vitals = {v["id"]: v for v in _member_vitals(db, member_pcs)}
+    vitals = {v["id"]: v for v in _member_vitals(db, member_pcs, resource_limit=None)}
     rows = []
     for pc in sorted(member_pcs, key=lambda p: p.name or ""):
         d = _derived(pc)
@@ -790,7 +787,8 @@ def _roster_rows(db: Session, member_pcs: list) -> list:
             "id": pc.id, "name": pc.name, "player_name": pc.player_name or "", "level": pc.level,
             "line": " · ".join(x for x in (pc.race, pc.char_class) if x),
             "native": m["native"],
-            "hp": pc.current_hp or 0, "hp_max": m["hp"], "temp_hp": pc.temp_hp or 0,
+            "hp": vitals[pc.id]["hp"], "hp_max": vitals[pc.id]["max_hp"], "hp_label": vitals[pc.id]["hp_label"],
+            "temp_hp": vitals[pc.id]["temp_hp"] or 0,
             "shock": pc.shock_current or 0, "shock_max": m["shock"],
             "pp": pc.pp_current or 0, "pp_max": m["pp"], "mp": pc.mp_current or 0, "mp_max": m["mp"],
             "stats": [(label, stat_val.get(sid)) for sid, label in _ROSTER_STATS],

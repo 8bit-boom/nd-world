@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 from .. import live
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
-from ..models import CombatSession, Entity, GameSession, PlayerCharacter, World
+from ..models import CombatSession, Entity, GameSession, PlayerCharacter, SheetTemplate, World
 from ..pc_stats import pc_maxima
+from ..sheet_systems import hp_track, parse_custom_fields, system_meta, template_fields
 from ..templating import templates
 
 router = APIRouter()
@@ -25,8 +26,28 @@ def _pc_conditions(pc: PlayerCharacter) -> list:
     return [c for c in conds if isinstance(c, str)] if isinstance(conds, list) else []
 
 
-def pc_to_combatant(pc: PlayerCharacter) -> dict:
+def _vital_track(db, pc: PlayerCharacter):
+    """(custom_fields dict, vital track) for a character on a custom system whose
+    template declares an HP resource (Health / Flesh ...), else None — the
+    combatant's HP comes from that track since such a character has no real HP
+    column (see app/sheet_systems.py)."""
+    if db is None or pc_maxima(pc)["native"] or not pc.sheet_template_id:
+        return None
+    tpl = db.get(SheetTemplate, pc.sheet_template_id)
+    if not tpl:
+        return None
+    cf = parse_custom_fields(pc.custom_fields_json)
+    track = hp_track(template_fields(tpl), cf, system_meta(tpl))
+    return (cf, track) if track else None
+
+
+def pc_to_combatant(pc: PlayerCharacter, db=None) -> dict:
     m = pc_maxima(pc)
+    vital = _vital_track(db, pc)
+    if vital:
+        hp, max_hp = vital[1]["current"], vital[1]["max"]
+    else:
+        hp, max_hp = pc.current_hp or 0, m["hp"]
     return {
         "id": str(uuid.uuid4()),
         "name": pc.name,
@@ -34,8 +55,8 @@ def pc_to_combatant(pc: PlayerCharacter) -> dict:
         "pc_id": pc.id,
         "entity_id": None,
         "initiative": 0,
-        "max_hp": m["hp"],
-        "hp": pc.current_hp or 0,
+        "max_hp": max_hp,
+        "hp": hp,
         "max_shock": m["shock"],
         "shock": pc.shock_current or 0,
         "armor": 0,
@@ -94,9 +115,11 @@ def _candidates(db: Session, world_id: int):
     pc_payload = []
     for pc in pcs:
         m = pc_maxima(pc)
+        vital = _vital_track(db, pc)
         pc_payload.append({
             "id": pc.id, "name": pc.name,
-            "max_hp": m["hp"], "hp": pc.current_hp or 0,
+            "max_hp": vital[1]["max"] if vital else m["hp"],
+            "hp": vital[1]["current"] if vital else (pc.current_hp or 0),
             "max_shock": m["shock"], "shock": pc.shock_current or 0,
             "conditions": _pc_conditions(pc),
             "portrait_url": pc.portrait_url or "",
@@ -253,8 +276,16 @@ def combat_sync_characters(combat_id: int, db: Session = Depends(get_db)):
             skipped.append(c.get("name"))
             continue
         m = pc_maxima(pc)
-        max_hp = m["hp"] or _as_int(c.get("max_hp"), 0)
-        pc.current_hp = max(0, min(max_hp, _as_int(c.get("hp"), pc.current_hp or 0)))
+        vital = _vital_track(db, pc)
+        if vital:
+            # Custom system: HP lives in the template's vital track, not a column.
+            cf, track = vital
+            hp = max(0, min(track["max"], _as_int(c.get("hp"), track["current"])))
+            cf[f"{track['id']}_current"] = hp
+            pc.custom_fields_json = json.dumps(cf)
+        else:
+            max_hp = m["hp"] or _as_int(c.get("max_hp"), 0)
+            pc.current_hp = max(0, min(max_hp, _as_int(c.get("hp"), pc.current_hp or 0)))
         pc.shock_current = max(0, min(m["shock"], _as_int(c.get("shock"), pc.shock_current or 0)))
         conds = c.get("conditions", [])
         pc.conditions_json = json.dumps([x for x in conds if isinstance(x, str)] if isinstance(conds, list) else [])

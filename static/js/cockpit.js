@@ -511,6 +511,7 @@
     live.innerHTML = '<h4>' + esc(d.name) + ' · live</h4>' + d.members.map(function (m) {
       let chips = '';
       (m.resources || []).forEach(function (r) {
+        if (m.hp_id && r.id === m.hp_id) return;  // the system's vital track is the HP bar below
         chips += '<i>' + esc(r.current) + '/' + esc(r.max) + ' ' + esc(r.label) + '</i>';
       });
       let hp = '';
@@ -518,10 +519,10 @@
         const pct = Math.max(0, Math.min(100, Math.round((m.hp || 0) * 100 / m.max_hp)));
         const cls = pct <= 25 ? 'ck-hp-low' : (pct <= 55 ? 'ck-hp-mid' : 'ck-hp-ok');
         hp = '<span class="ck-hpbar"><span class="ck-hpfill ' + cls + '" style="width:' + pct + '%"></span></span>' +
-          '<span class="ck-mem-hp">HP ' + esc(m.hp) + '/' + esc(m.max_hp) + (m.temp_hp ? ' (+' + esc(m.temp_hp) + ')' : '') +
-          ' · AC ' + esc(m.ac || '—') + (m.down ? ' · <strong style="color:#e07">DOWN</strong>' : '') + '</span>';
+          '<span class="ck-mem-hp">' + esc(m.hp_label || 'HP') + ' ' + esc(m.hp) + '/' + esc(m.max_hp) + (m.temp_hp ? ' (+' + esc(m.temp_hp) + ')' : '') +
+          (m.native === false ? '' : ' · AC ' + esc(m.ac || '—')) + (m.down ? ' · <strong style="color:#e07">DOWN</strong>' : '') + '</span>';
       }
-      const lvl = 'Lvl ' + esc(m.level) + (m.levelup ? ' ⬆' : '');
+      const lvl = m.native === false ? '' : 'Lvl ' + esc(m.level) + (m.levelup ? ' ⬆' : '');
       return '<a class="ck-mem' + (m.down ? ' down' : '') + '" href="/characters/' + encodeURIComponent(m.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank">' +
         '<span class="ck-mem-row"><span>' + esc(m.name) + '</span><span class="ck-mem-lvl">' + lvl + '</span></span>' +
         (chips ? '<span class="ck-reschips">' + chips + '</span>' : '') + hp +
@@ -1649,11 +1650,15 @@
         (pc.max_hp
           ? '<span class="ck-hpbar" style="display:block;background:var(--bg2);border-radius:3px;height:8px;overflow:hidden;margin:.4rem 0">' +
             '<span class="ck-hpfill ' + cls + '" style="display:block;height:100%;width:' + pct + '%"></span></span>' +
-            '<p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .4rem">HP ' + esc(pc.hp) + '/' + esc(pc.max_hp) +
-            (pc.temp_hp ? ' (+' + esc(pc.temp_hp) + ')' : '') + ' · AC ' + esc(pc.ac || '—') + '</p>'
+            '<p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .4rem">' + esc(pc.hp_label || 'HP') + ' ' + esc(pc.hp) + '/' + esc(pc.max_hp) +
+            (pc.temp_hp ? ' (+' + esc(pc.temp_hp) + ')' : '') + (pc.native === false ? '' : ' · AC ' + esc(pc.ac || '—')) + '</p>'
           : '') +
-        '<p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .4rem">Lvl ' + esc(pc.level) + ' · XP ' + esc(pc.xp) +
-        (pc.levelup ? ' · <strong style="color:var(--neon)">⬆ level-up ready</strong>' : '') + '</p>' +
+        (pc.native === false
+          ? (pc.resources || []).filter(function (r) { return r.id !== pc.hp_id; }).map(function (r) {
+              return '<span style="display:inline-block;font-size:.72rem;border:1px solid var(--border);border-radius:10px;padding:.05rem .5rem;margin:0 .25rem .3rem 0">' + esc(r.label) + ' ' + esc(r.current) + '/' + esc(r.max) + '</span>';
+            }).join('')
+          : '<p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .4rem">Lvl ' + esc(pc.level) + ' · XP ' + esc(pc.xp) +
+            (pc.levelup ? ' · <strong style="color:var(--neon)">⬆ level-up ready</strong>' : '') + '</p>') +
         '<a href="/characters/' + encodeURIComponent(pc.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank" style="color:var(--neon);font-size:.8rem;text-decoration:none">Open my full sheet →</a>' +
         (mine.length > 1
           ? '<div style="margin-top:.5rem;font-size:.75rem;color:var(--text-dim)">Other characters: ' +

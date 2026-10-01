@@ -61,8 +61,8 @@ a.pch-title:hover { color:var(--neon); }
     {% for m in hub_roster %}
     <div class="pch-row" data-roster="{{ m.id }}">
       <strong style="font-size:.9rem">{{ m.name }}</strong>
-      <span class="pch-muted">Lv {{ m.level }}{% if m.line %} · {{ m.line }}{% endif %}</span>
-      {% if m.max_hp %}<span class="pch-chip{% if m.down %} down{% endif %}">HP {{ m.hp }}/{{ m.max_hp }}{% if m.down %} · down{% endif %}</span>{% endif %}
+      <span class="pch-muted">{% if m.level %}Lv {{ m.level }}{% if m.line %} · {% endif %}{% endif %}{{ m.line }}</span>
+      {% if m.max_hp %}<span class="pch-chip{% if m.down %} down{% endif %}">{{ m.hp_label }} {{ m.hp }}/{{ m.max_hp }}{% if m.down %} · down{% endif %}</span>{% endif %}
       {% for c in m.conditions %}<span class="pch-chip">{{ c }}</span>{% endfor %}
     </div>
     {% endfor %}

@@ -21,7 +21,9 @@ from .. import live
 from .. import audio_jobs as _audio_jobs
 from ..database import SessionLocal, get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
-from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
+from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
+from ..pc_stats import pc_maxima
+from ..sheet_systems import apply_xp_award, parse_custom_fields
 from ..rendering import render_md, strip_gm_only
 from ..templating import templates
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
@@ -595,8 +597,18 @@ async def session_xp(session_id: int, request: Request, db: Session = Depends(ge
     pc_ids = pc_ids or []
     updated = []
     awarded = {}
+    tpl_cache = {}
     for pc in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all():
-        pc.xp = max(0, pc.xp + delta)
+        pc.xp = max(0, pc.xp + delta)  # the running total (party ledger, N&D level-ups)
+        if pc.sheet_template_id and not pc_maxima(pc)["native"]:
+            # A custom system keeps its XP / Glory in its own fields; the column is
+            # invisible on its sheet, so the award would otherwise vanish.
+            if pc.sheet_template_id not in tpl_cache:
+                tpl_cache[pc.sheet_template_id] = db.get(SheetTemplate, pc.sheet_template_id)
+            tpl = tpl_cache[pc.sheet_template_id]
+            if tpl is not None:
+                pc.custom_fields_json = json.dumps(
+                    apply_xp_award(tpl, parse_custom_fields(pc.custom_fields_json), delta))
         updated.append(pc.name)
         awarded[pc.name] = delta
     gs.xp_awarded = (gs.xp_awarded or 0) + delta

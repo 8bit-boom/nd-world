@@ -48,7 +48,7 @@
       <tbody>
         <tr class="ro-group"><th colspan="{{ rows|length + 1 }}" scope="rowgroup">Condition</th></tr>
         <tr><th scope="row">HP</th>
-          {% for r in rows %}<td>{% if r.hp_max %}<span{% if r.hp <= 0 %} class="ro-down"{% endif %}>{{ r.hp }} / {{ r.hp_max }}</span>{% if r.hp <= 0 %} <span class="ro-down">DOWN</span>{% endif %}{% if r.temp_hp %} <span class="ro-muted">+{{ r.temp_hp }} temp</span>{% endif %}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
+          {% for r in rows %}<td>{% if r.hp_max %}{% if r.hp_label != 'HP' %}<span class="ro-muted">{{ r.hp_label }}</span> {% endif %}<span{% if r.hp <= 0 %} class="ro-down"{% endif %}>{{ r.hp }} / {{ r.hp_max }}</span>{% if r.hp <= 0 %} <span class="ro-down">DOWN</span>{% endif %}{% if r.temp_hp %} <span class="ro-muted">+{{ r.temp_hp }} temp</span>{% endif %}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
         <tr><th scope="row">Shock</th>
           {% for r in rows %}<td>{% if r.native %}{{ r.shock }} / {{ r.shock_max }}{% else %}<span class="ro-na">—</span>{% endif %}</td>{% endfor %}</tr>
         <tr><th scope="row">PP / MP</th>

@@ -155,7 +155,8 @@ def test_custom_sheet_members_show_their_resource_tracks(client, seed):
     party = _add(Party(world_id=seed.world_a.id, name="Pack", member_pc_ids_json=json.dumps([pc])))
     _gm(client, seed)
     html = client.get(f"/parties/{party}/roster").text
-    assert "Hunter" in html and field.get("label", field["id"]) in html and "4" in html and "7" in html
+    from app.sheet_systems import short_label
+    assert "Hunter" in html and short_label(field.get("label", field["id"])) in html and "4" in html and "7" in html
 
 
 def test_roster_link_is_on_the_party_page(client, seed):

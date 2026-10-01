@@ -424,15 +424,14 @@
         {% for cw in cyberware %}
         <tr>
           <td>{{ cw.name }}</td>
-          <td class="cs-cyber-ca">{{ cw.ca_cost }}</td>
+          <td class="cs-cyber-ca">{{ cw.ca_cost or 0 }}</td>
           <td style="color:var(--text-dim)">{{ cw.notes or '' }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% set total_ca = cyberware | sum(attribute='ca_cost') %}
     <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">
-      Total CA used: <strong style="color:var(--neon3,#a855f7);">{{ total_ca }}</strong>
+      Total CA used: <strong style="color:var(--neon3,#a855f7);">{{ ca_used }}</strong>
       / CA {{ ca_derived }}
     </div>
   </div>
