@@ -242,8 +242,15 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
 #ck-stat-live.on { color: #4f4; }
 #ck-fs-btn { color: var(--text-dim); font-size: .85rem; }
 
-/* toasts */
-#ck-toasts { position: fixed; right: 14px; bottom: 38px; z-index: 100002;
+/* The GM's floating 📺 second-screen and 🐞 activity-log buttons (nd-stage.js / nd-logger.js) sit 14px from the
+   bottom of every page — right on this status bar. Lift them clear of it (rem: the bar grows with the UI scale), and
+   don't show them at all in the phone/tablet shell, where they would cover the corner of the panel and the tab bar. */
+body:has(#ck-wrap) { --nd-fab-bottom: 2.6rem; }
+body.ck-mobile #nd-stage-fab, body.ck-mobile #nd-logger-toggle,
+body.ck-mobile #nd-stage-panel, body.ck-mobile #nd-logger-panel { display: none !important; }
+
+/* toasts — above the 🐞 button, not under it */
+#ck-toasts { position: fixed; right: 14px; bottom: 92px; z-index: 100002;
   display: flex; flex-direction: column; gap: .4rem; }
 .ck-toast { display: flex; align-items: center; gap: .6rem; background: var(--bg2);
   border: 1px solid var(--border); border-left: 3px solid var(--neon);

@@ -195,14 +195,14 @@
     btn.id = "nd-logger-toggle";
     btn.textContent = "🐞";
     btn.title = "Activity log (debugging)";
-    btn.style.cssText = "position:fixed;bottom:14px;right:14px;z-index:9998;width:38px;height:38px;" +
+    btn.style.cssText = "position:fixed;bottom:var(--nd-fab-bottom,14px);right:14px;z-index:9998;width:38px;height:38px;" +
       "border-radius:50%;background:var(--bg2);border:1px solid var(--border);color:var(--text-dim);" +
       "font-size:1.1rem;cursor:pointer;line-height:1";
     document.body.appendChild(btn);
 
     var panel = document.createElement("div");
     panel.id = "nd-logger-panel";
-    panel.style.cssText = "position:fixed;bottom:60px;right:14px;z-index:9999;width:min(420px,92vw);" +
+    panel.style.cssText = "position:fixed;bottom:calc(var(--nd-fab-bottom,14px) + 46px);right:14px;z-index:9999;width:min(420px,92vw);" +
       "max-height:60vh;display:none;flex-direction:column;background:var(--bg2);border:1px solid var(--neon);" +
       "border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.4)";
     panel.innerHTML =

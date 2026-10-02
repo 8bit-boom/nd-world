@@ -1895,7 +1895,11 @@
     const tb = document.querySelector('.topbar');
     const wrap = document.getElementById('ck-wrap');
     if (!tb || !wrap) return;
-    wrap.style.height = (window.innerHeight - tb.offsetHeight) + 'px';
+    const h = (window.innerHeight - tb.offsetHeight) + 'px';
+    wrap.style.height = h;
+    // The phone/tablet shell too: sized to a whole viewport BELOW the top bar, its tab bar sat off-screen.
+    const mwrap = document.getElementById('ck-mwrap');
+    if (mwrap) mwrap.style.height = h;
     clampX();
   }
   // Pull back any window the last layout left RIGHT of the viewport —
