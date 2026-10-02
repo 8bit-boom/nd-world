@@ -139,7 +139,7 @@ def cockpit(request: Request, db: Session = Depends(get_db), active_world: str =
     parties = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name).all()
 
     return templates.TemplateResponse("cockpit.html", {
-        "request": request, "world": world, "worlds": worlds,
+        "request": request, "world": world, "worlds": worlds, "max_panels": MAX_PANELS,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
         "world_maps_json": _world_maps(world.id),
         "parties_json": [{"id": p.id, "name": p.name} for p in parties],
@@ -484,7 +484,7 @@ def _player_cockpit(request: Request, db: Session, world, worlds, focus_pc: int 
     target = db.get(PlayerCharacter, focus) if focus else None
     view_as = bool(user and user.is_gm and target is not None and target.owner_user_id != user.id)
     return templates.TemplateResponse("cockpit.html", {
-        "request": request, "world": world, "worlds": worlds,
+        "request": request, "world": world, "worlds": worlds, "max_panels": MAX_PANELS,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
         "world_maps_json": _world_maps(world.id),
         "parties_json": parties,

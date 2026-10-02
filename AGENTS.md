@@ -131,6 +131,12 @@ tools that require GM access still check `is_gm` at call time.)
   decides whose characters/parties the cockpit is for; `CK_MY_PCS` / `CK_FOCUS_PC` / `CK_VIEW_AS` in cockpit.html,
   `focusMyCharacter`, `LS_KEY` and `BOARD_URL` in cockpit.js — a GM's view-as layout is stored under its own key so it never
   overwrites their GM Cockpit). Hub tabs are listed in `_player_hub.html` (`TABS` + `loaders`).
+  **Every cockpit window is a whole page in an iframe** (~15-35 MB and ~15 requests each, measured), so frames go through
+  `static/js/cockpit-frames.js` (`ndCreateFrameLoader`): loaded only once showing, 4 at a time (2 on a phone), and given back
+  (`about:blank`) after a minute hidden by the layout (collapsed window, inactive phone tab, the hub's hidden Cockpit tab) -
+  never set an iframe's `src` directly or use `frame.src = frame.src`, use `frames.mount` / `frames.reload`, and `frames.forget`
+  when a window is removed. `CK_MAX_PANELS` mirrors `cockpit.MAX_PANELS` (the server rejects a bigger layout whole), and
+  `saveNow` reports a rejected save. `tests/test_cockpit_scaling.py` runs the loader under Node.
 - **Recap audio**: a session's `recap_audio_json` is a list of `AudioClip` ids (the /audio library owns the files, the
   clip's `visible_to_players` is what players hear, `transcript` holds the lyrics) — `app/routers/session_audio.py`.
   Readers skip dangling ids; use `attached_clips(db, gs, is_gm=...)` rather than parsing the JSON.

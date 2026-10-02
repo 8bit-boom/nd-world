@@ -139,6 +139,7 @@ a.pch-title:hover { color:var(--neon); }
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
 </div>
 
+<script src="/static/js/cockpit-frames.js?v={{ asset_v('js/cockpit-frames.js') }}"></script>
 <script>
 (function () {
   const hub = document.getElementById('pc-hub');
@@ -430,10 +431,13 @@ a.pch-title:hover { color:var(--neon); }
   // ── Tabs ───────────────────────────────────────────────────────────────────
   const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule };
   if (OWNER) loaders.notes = loadNotes;
-  // The embedded Player Cockpit only starts loading once its tab is opened.
+  // The embedded Player Cockpit only starts loading once its tab is opened. The loader (cockpit-frames.js) also gives
+  // its page back - the cockpit AND its windows - after a minute on another tab, and loads it again when you return:
+  // a phone keeping a whole dashboard alive behind the sheet is how a browser tab gets killed.
+  const cockpitFrames = ndCreateFrameLoader({ concurrency: 1 });
   function loadCockpit() {
     const f = document.getElementById('pch-cockpit-frame');
-    if (f && !f.getAttribute('src')) f.setAttribute('src', f.dataset.src);
+    if (f && !f.dataset.mounted) { f.dataset.mounted = '1'; cockpitFrames.mount(f, f.dataset.src); }
   }
   loaders.cockpit = loadCockpit;
   const loaded = {};

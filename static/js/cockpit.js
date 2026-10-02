@@ -42,6 +42,11 @@
   const KIND_ICONS = { character: '👤', creature: '🐉', location: '📍', organization: '🏛',
     item: '🗡', note: '📝', event: '⚡', race: '🧬', profession: '🎭', feat: '✨' };
   const COMPACT = window.matchMedia('(max-width: 900px)');
+  // Every iframe window is a whole page. static/js/cockpit-frames.js loads them a few at a time, only once they
+  // are showing, and gives back the page of a window hidden by the layout for a minute (collapsed window,
+  // inactive phone tab) - see its header for the numbers behind this.
+  const frames = ndCreateFrameLoader({ concurrency: COMPACT.matches ? 2 : 4 });
+  const LOW_MEM = COMPACT.matches || !!(navigator.deviceMemory && navigator.deviceMemory <= 4);
   // ── mobile / tablet mode ─────────────────────────────────────────────
   // The SAME cockpit (GM /cockpit and Player /player-cockpit) renders an
   // app-style shell at ≤900px: one panel at a time, bottom tab bar, no
@@ -84,6 +89,7 @@
   const panelCleanups = new Map(); // panel id -> fn (e.g. stop a timer)
   const undoStack = [];           // last closed panels (Undo toast / Ctrl+Shift+T)
   let lastSavedAt = 0;
+  let saveError = '';   // why the last server save failed ('' = it did not)
 
   function embed(path) {
     const glue = path.indexOf('?') > -1 ? '&' : '?';
@@ -128,7 +134,15 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ws),
-    }).then(function () { lastSavedAt = Date.now(); }).catch(function () {});
+    }).then(function (r) {
+      if (r.ok) { lastSavedAt = Date.now(); saveError = ''; refreshSavedLabel(); return; }
+      // The server refused the layout (too many windows, too much text): say so instead of showing "saved".
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        saveError = d.detail || ('HTTP ' + r.status);
+        refreshSavedLabel();
+        toast('Layout not saved on the server: ' + saveError + ' (it is still kept in this browser).');
+      });
+    }).catch(function () { saveError = 'offline'; refreshSavedLabel(); });
   }
 
   function adopt(ws) {
@@ -148,6 +162,10 @@
       if (p.type === 'party') return CK_PARTIES.some(function (x) { return String(x.id) === String(p.ref); });
       return true;
     });
+    if (panels.length > CK_MAX_PANELS) {
+      panels = panels.slice(0, CK_MAX_PANELS);
+      toast('This layout had more than ' + CK_MAX_PANELS + ' windows; the first ' + CK_MAX_PANELS + ' are shown.');
+    }
     if (PLAYER) focusMyCharacter();
     recomputeSeq();
     // Re-mint ids on every load: guarantees uniqueness even if an older
@@ -250,6 +268,7 @@
   // ── rendering ──────────────────────────────────────────────────────────
   function render() {
     if (MOBILE()) { renderMobile(); return; }
+    frames.forgetAll();   // every window is rebuilt: release the old frames' slots and observers
     viewport.querySelectorAll('.ck-win').forEach(function (el) { el.remove(); });
     liveLoaders.clear();
     // Re-renders re-mint ids (preset switch) or drop panels — chat state
@@ -314,7 +333,7 @@
     });
     const reloadBtn = mkBtn('⟳', 'Reload this panel', function () {
       const frame = win.querySelector('.ck-body iframe');
-      if (frame) { frame.src = frame.src; return; }
+      if (frame) { frames.reload(frame); return; }
       const fn = liveLoaders.get(p.id);
       if (fn) fn();
     });
@@ -499,9 +518,8 @@
 
   function mkIframe(path) {
     const f = document.createElement('iframe');
-    f.src = embed(path);
-    f.loading = 'lazy';
     f.title = 'panel';
+    frames.mount(f, embed(path));   // src is set by the loader when the window is showing and a slot is free
     return f;
   }
 
@@ -609,8 +627,7 @@
       conn.textContent = '🔗 Find connections';
       conn.title = 'Find entities & notes connected to this — AI, thinking + RAG';
       conn.addEventListener('click', function () {
-        const fp = addPanel('find', String(d.id), '🔗 ' + (d.name || 'entity'));
-        findAutoRan.add(fp.id);
+        addPanel('find', String(d.id), '🔗 ' + (d.name || 'entity'), { autoRun: true });
       });
       live.appendChild(conn);
     } catch (e) {
@@ -923,6 +940,7 @@
     const idx = panels.indexOf(p);
     if (idx !== -1) panels.splice(idx, 1);
     if (win) {
+      win.querySelectorAll('iframe').forEach(function (f) { frames.forget(f); });
       win.classList.add('closing');
       setTimeout(function () { win.remove(); }, 130);
     }
@@ -978,7 +996,7 @@
     const items = [
       ['⟳ Reload', function () {
         const f = win.querySelector('.ck-body iframe');
-        if (f) { f.src = f.src; return; }
+        if (f) { frames.reload(f); return; }
         const fn = liveLoaders.get(p.id);
         if (fn) fn();
       }],
@@ -1029,13 +1047,15 @@
     const m = document.getElementById('ck-stat-mid');
     if (m) m.textContent = presetSelect.value ? '\u{1F4CB} ' + presetSelect.value : '';
   }
-  setInterval(function () {
+  function refreshSavedLabel() {
     const el = document.getElementById('ck-stat-saved');
     if (!el) return;
+    if (saveError) { el.textContent = '\u26A0 not saved: ' + saveError; return; }
     if (!lastSavedAt) { el.textContent = '\u2014'; return; }
     const s = Math.round((Date.now() - lastSavedAt) / 1000);
     el.textContent = 'saved ' + (s < 60 ? s + 's' : (s < 3600 ? Math.round(s / 60) + 'm' : Math.round(s / 3600) + 'h')) + ' ago';
-  }, 3000);
+  }
+  setInterval(refreshSavedLabel, 3000);
 
   // ── fullscreen (table mode) ─────────────────────────────────────────────
   const fsBtn = document.getElementById('ck-fs-btn');
@@ -1538,8 +1558,13 @@
     });
   }
 
-  function addPanel(type, ref, title) {
+  function addPanel(type, ref, title, opts) {
     const t = CK_TYPES[type];
+    // The server saves at most CK_MAX_PANELS windows per layout and rejects a bigger one whole, so the page stops
+    // there too; and it warns once when the pages held in memory start to get heavy.
+    const pol = ndCockpitWindowPolicy({ count: panels.length, liveFrames: frames.stats().live, max: CK_MAX_PANELS, lowMemory: LOW_MEM });
+    if (!pol.allow) { toast(pol.message); return null; }
+    if (pol.warn) toast(pol.message);
     const n = panels.length;
     const casc = (n % 6) * 28;
     const p = {
@@ -1549,6 +1574,7 @@
       w: t.w, h: t.h, z: ++zTop, collapsed: false, data: {},
     };
     panels.push(p);
+    if (opts && opts.autoRun) findAutoRan.add(p.id);   // must be known before buildWin: buildFind checks it
     if (welcome) welcome.style.display = 'none';
     if (MOBILE()) {
       renderMobile();
@@ -1558,6 +1584,7 @@
     const fn = liveLoaders.get(p.id);
     if (fn) fn();
     save();
+    return p;
   }
 
   // ── presets ────────────────────────────────────────────────────────────
@@ -1724,7 +1751,7 @@
     title.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
     const reload = mkBtn('⟳', 'Reload this panel', function () {
       const f = sec.querySelector('.ck-mpanel-body iframe');
-      if (f) { f.src = f.src; return; }
+      if (f) { frames.reload(f); return; }
       const fn = liveLoaders.get(p.id);
       if (fn) fn();
     });
@@ -1741,6 +1768,7 @@
     document.body.classList.add('ck-mobile');
     document.getElementById('ck-m-world').textContent = CK_WORLD;
     if (mqlMobile.addEventListener) mqlMobile.addEventListener('change', onModeChange);
+    frames.forgetAll();
     mContent.innerHTML = '';
     mTabs.innerHTML = '';
     liveLoaders.clear();

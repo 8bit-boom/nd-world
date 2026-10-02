@@ -394,6 +394,7 @@ const CK_WORLD_MAPS = {{ world_maps_json | tojson }};
 const CK_PARTIES = {{ parties_json | tojson }};
 const CK_WORLD = {{ world.slug | tojson }};
 const CK_PLAYER_MODE = {{ 'true' if player_mode else 'false' }};
+const CK_MAX_PANELS = {{ max_panels }};   // the server saves at most this many windows per layout
 // Player mode: the viewer's own characters, and the one the cockpit was opened from (?pc=) if any.
 const CK_MY_PCS = {{ (my_pcs_json or []) | tojson }};
 const CK_FOCUS_PC = {{ (focus_pc_id if focus_pc_id else none) | tojson }};
@@ -422,5 +423,6 @@ const CK_TYPES = {
   calendar:{ icon: '🗓', label: 'Calendar',     sub: 'in-world calendar',             w: 520, h: 480, picker: null },
 };
 </script>
+<script src="/static/js/cockpit-frames.js?v={{ asset_v('js/cockpit-frames.js') }}"></script>
 <script src="/static/js/cockpit.js?v={{ asset_v('js/cockpit.js') }}"></script>
 {% endblock %}
