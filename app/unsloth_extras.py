@@ -436,7 +436,15 @@ TTS_RESPONSE_FORMAT = "wav"
 
 async def tts(text: str, model: str, voice: str = "", response_format: str = TTS_RESPONSE_FORMAT,
               speed: float = 1.0, instructions: str = "", language: str = "") -> tuple[bytes, str]:
-    """POST /v1/audio/speech → (audio_bytes, content_type). The TTS model
+    """Speech for `text` as (audio_bytes, content_type): Studio's answer (see _tts_request), converted to
+    Ogg Opus when configured and possible (see _finish_tts_audio)."""
+    audio, content_type = await _tts_request(text, model, voice, response_format, speed, instructions, language)
+    return await _finish_tts_audio(audio, content_type)
+
+
+async def _tts_request(text: str, model: str, voice: str = "", response_format: str = TTS_RESPONSE_FORMAT,
+                       speed: float = 1.0, instructions: str = "", language: str = "") -> tuple[bytes, str]:
+    """POST /v1/audio/speech → (audio_bytes, content_type) exactly as Studio sent it. The TTS model
     must be loaded in Studio (or media auto-switch on) — a missing model
     surfaces as StudioError with Studio's own message. `voice` is free
     text (OpenAI-style voice names; Studio's Voice settings page manages
@@ -473,15 +481,62 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = TTS
     if not audio:
         raise StudioError("Studio returned no audio for this TTS request", 502)
     content_type = resp.headers.get("content-type", "")
-    if audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
+    if _is_wav(audio):
         # Callers choose the file extension from this; the bytes are the truth, not a generic header.
         content_type = "audio/wav"
-        if _tts_output_format() == "opus":
-            opus = await _wav_to_opus(audio)
-            if opus:
-                return opus, OPUS_CONTENT_TYPE
-            # No ffmpeg / it failed: the WAV is still good speech - keep it rather than lose the clip.
     return audio, content_type or "audio/wav"
+
+
+def _is_wav(audio: bytes) -> bool:
+    return audio[:4] == b"RIFF" and audio[8:12] == b"WAVE"
+
+
+async def _finish_tts_audio(audio: bytes, content_type: str) -> tuple[bytes, str]:
+    """What gets stored: Studio's WAV converted to Ogg Opus (TTS_OUTPUT_FORMAT=opus, the default), or the
+    audio untouched when it is not a WAV, the setting says wav, or ffmpeg cannot do it - a good clip is
+    never lost to the conversion."""
+    if _is_wav(audio) and _tts_output_format() == "opus":
+        opus = await _wav_to_opus(audio)
+        if opus:
+            return opus, OPUS_CONTENT_TYPE
+    return audio, content_type
+
+
+def channel_label(channels: int) -> str:
+    return {1: "mono", 2: "stereo"}.get(channels, f"{channels} channels")
+
+
+def wav_info(audio: bytes) -> dict | None:
+    """Channels, sample rate, bit depth and length of a WAV, read from its header (no ffmpeg). None when the
+    bytes are not a WAV this can read. Tolerates a streaming header (RIFF/data sizes of 0xFFFFFFFF, written
+    by a server that does not know the length up front): the length is then what is actually there."""
+    if not _is_wav(audio) or len(audio) < 12:
+        return None
+    fmt = None
+    pos = 12
+    while pos + 8 <= len(audio):
+        chunk_id = audio[pos:pos + 4]
+        size = int.from_bytes(audio[pos + 4:pos + 8], "little")
+        body = pos + 8
+        if chunk_id == b"fmt ":
+            if size < 16 or body + 16 > len(audio):
+                return None
+            channels = int.from_bytes(audio[body + 2:body + 4], "little")
+            rate = int.from_bytes(audio[body + 4:body + 8], "little")
+            bits = int.from_bytes(audio[body + 14:body + 16], "little")
+            if channels < 1 or rate < 1 or bits < 1:
+                return None
+            fmt = (channels, rate, bits)
+        elif chunk_id == b"data":
+            if fmt is None:
+                return None
+            channels, rate, bits = fmt
+            length = min(size, len(audio) - body)          # a streaming header's 0xFFFFFFFF, or a short read
+            frame_bytes = channels * max(1, bits // 8)
+            return {"channels": channels, "sample_rate": rate, "bits": bits,
+                    "seconds": round(length / (rate * frame_bytes), 3)}
+        pos = body + size + (size & 1)                      # chunks are word-aligned
+    return None
 
 
 # ── WAV → Ogg Opus ───────────────────────────────────────────────────────────
@@ -689,13 +744,35 @@ async def tts_health(model: str, voice: str = "", instructions: str = "", langua
     import asyncio as _asyncio
     try:
         async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
-            audio, ct = await tts("Ready.", model=model or "", voice=voice,
-                                  instructions=instructions, language=language)
-        message = f"Studio synthesized {len(audio)} bytes — model is ready."
-        if ct == "audio/wav" and _tts_output_format() == "opus":
-            message += (" ffmpeg could not convert it to Opus, so clips will be saved as WAV "
-                        "(larger files) - is ffmpeg installed in the nd-world container?")
-        return {"ok": True, "message": message}
+            sent, sent_ct = await _tts_request("Ready.", model=model or "", voice=voice,
+                                               instructions=instructions, language=language)
+            saved, saved_ct = await _finish_tts_audio(sent, sent_ct)
+        message = f"Studio synthesized {len(sent)} bytes — model is ready."
+        result: dict = {"ok": True}
+        info = wav_info(sent)
+        if info:
+            label = channel_label(info["channels"])
+            message += (f" Studio's audio: WAV, {label}, {info['sample_rate']} Hz, {info['bits']}-bit, "
+                        f"{info['seconds']:g} s.")
+            result["audio"] = {"format": "wav", "channels": info["channels"], "channel_label": label,
+                               "sample_rate": info["sample_rate"], "bits": info["bits"],
+                               "seconds": info["seconds"], "bytes": len(sent)}
+        else:
+            message += f" Studio's audio: {sent_ct or 'unknown format'} (format details are read from WAV only)."
+        if saved_ct == OPUS_CONTENT_TYPE:
+            result["saved_as"] = {"format": "opus", "bytes": len(saved), "bitrate": _opus_bitrate()}
+            message += f" Saved as: Ogg Opus at {_opus_bitrate()}, {len(saved)} bytes."
+        else:
+            result["saved_as"] = {"format": "wav" if _is_wav(saved) else (saved_ct or "unknown"), "bytes": len(saved)}
+            if not _is_wav(saved):
+                message += " Saved as: unchanged (not a WAV, so nothing to convert)."
+            elif _tts_output_format() == "wav":
+                message += f" Saved as: WAV, {len(saved)} bytes, as Studio sent it (TTS_OUTPUT_FORMAT=wav)."
+            else:
+                message += (f" Saved as: WAV, {len(saved)} bytes - ffmpeg could not convert it to Opus, so clips will be "
+                            "saved as WAV (larger files). Is ffmpeg installed in the nd-world container?")
+        result["message"] = message
+        return result
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:

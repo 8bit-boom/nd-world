@@ -458,6 +458,8 @@ stored - NPC voice lines, read-aloud passages, recap songs, spoken NPC replies -
 - `TTS_OUTPUT_FORMAT=wav` - skip the conversion and keep Studio's WAV. Use this if someone at the table has a
   browser or phone that cannot play Opus (older iOS/Safari).
 
+Settings → *Test TTS* shows what Studio actually sent (channels, sample rate, bit depth, length) and what the clip is saved as, e.g. "WAV, mono, 24000 Hz, 16-bit, 1.5 s. Saved as: Ogg Opus at 48k".
+
 Set either one under `environment:` of the `world` service (TrueNAS custom app: add the line to the YAML and save).
 
 **Coming from the whisper.cpp sidecar?** It has been removed, along with its

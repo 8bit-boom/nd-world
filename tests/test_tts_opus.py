@@ -160,3 +160,85 @@ def test_the_tts_route_stores_and_serves_an_opus_clip(client, seed, monkeypatch)
     served = client.get(url)
     assert served.status_code == 200 and served.content == OPUS
     assert served.headers["content-type"].startswith("audio/ogg"), "browsers need an audio type for <audio>"
+
+
+# ── Test TTS reports what Studio actually sent ───────────────────────────────
+
+def _make_wav(channels=1, rate=24000, seconds=1.0, bits=16, header="normal") -> bytes:
+    import io
+    import struct
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(bits // 8)
+        w.setframerate(rate)
+        w.writeframes(b"\x00" * int(rate * seconds) * channels * (bits // 8))
+    data = bytearray(buf.getvalue())
+    if header == "streaming":                       # a server that does not know the length up front
+        data[4:8] = struct.pack("<I", 0xFFFFFFFF)
+        i = data.find(b"data")
+        data[i + 4:i + 8] = struct.pack("<I", 0xFFFFFFFF)
+    return bytes(data)
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    (dict(channels=1, rate=24000, seconds=1.0), (1, 24000, 16, 1.0)),
+    (dict(channels=2, rate=44100, seconds=0.5), (2, 44100, 16, 0.5)),
+    (dict(channels=1, rate=24000, seconds=2.0, header="streaming"), (1, 24000, 16, 2.0)),
+])
+def test_wav_info_reads_channels_rate_bits_and_length(kwargs, expected):
+    info = ux.wav_info(_make_wav(**kwargs))
+    assert (info["channels"], info["sample_rate"], info["bits"], round(info["seconds"], 2)) == expected
+
+
+@pytest.mark.parametrize("junk", [b"", b"RIFF", b"ID3 not a wav", _WAV, _make_wav()[:30], b"RIFF\x00\x00\x00\x00WAVEjunk"])
+def test_wav_info_gives_none_for_anything_that_is_not_a_readable_wav(junk):
+    assert ux.wav_info(junk) is None
+
+
+@pytest.mark.parametrize("n, label", [(1, "mono"), (2, "stereo"), (6, "6 channels")])
+def test_channel_labels(n, label):
+    assert ux.channel_label(n) == label
+
+
+@pytest.mark.asyncio
+async def test_test_tts_shows_channels_and_sample_rate(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    wav = _make_wav(channels=1, rate=24000, seconds=1.0)
+
+    def handler(request):
+        return httpx.Response(200, content=wav, headers={"content-type": "audio/wav"})
+
+    async def convert(w):
+        return OPUS
+    _patch_transport(monkeypatch, handler)
+    monkeypatch.setattr(ux, "_wav_to_opus", convert)
+    monkeypatch.delenv("TTS_OUTPUT_FORMAT", raising=False)
+    out = await ux.tts_health("unsloth/orpheus-3b", voice="tara")
+    assert out["ok"] is True
+    assert "mono" in out["message"] and "24000 Hz" in out["message"] and "16-bit" in out["message"], out["message"]
+    assert "Opus" in out["message"] and "bytes" in out["message"]
+    assert out["audio"] == {"format": "wav", "channels": 1, "channel_label": "mono", "sample_rate": 24000,
+                            "bits": 16, "seconds": 1.0, "bytes": len(wav)}
+    assert out["saved_as"]["format"] == "opus" and out["saved_as"]["bytes"] == len(OPUS)
+
+
+@pytest.mark.asyncio
+async def test_test_tts_says_stereo_when_studio_sends_stereo(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    wav = _make_wav(channels=2, rate=44100, seconds=0.5)
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, content=wav, headers={"content-type": "audio/wav"}))
+    monkeypatch.setenv("TTS_OUTPUT_FORMAT", "wav")
+    out = await ux.tts_health("m")
+    assert "stereo" in out["message"] and "44100 Hz" in out["message"], out["message"]
+    assert out["saved_as"]["format"] == "wav" and out["audio"]["channels"] == 2
+
+
+@pytest.mark.asyncio
+async def test_test_tts_still_reports_when_studio_audio_is_not_a_wav(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, content=b"ID3 whatever", headers={"content-type": "audio/mpeg"}))
+    out = await ux.tts_health("m")
+    assert out["ok"] is True and "audio/mpeg" in out["message"] and "bytes" in out["message"]
+    assert "audio" not in out or out["audio"].get("channels") is None
