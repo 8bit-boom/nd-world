@@ -4243,26 +4243,32 @@ def studio_console(request: Request, db: Session = Depends(get_db), active_world
     """The full Unsloth Studio UI, embedded — projects, fine-tuning/recipe
     workflows, agent skills, voice settings, the model hub, video generation:
     everything Studio offers that nd-world doesn't reimplement natively.
-    GM-only by default (not in any allowlist). URL resolution: an explicit
+    GM-only by default (not in any allowlist). URL resolution (app.ai.studio_browser_url): an explicit
     Studio Console URL override (ai_models.json, Settings → System) wins —
     it covers Desktop installs where Studio binds another host/port — then
-    falls back to the UNSLOTH_URL the AI backend already uses."""
+    the UNSLOTH_URL the AI backend uses, with a Docker-internal host (the
+    Compose service name) swapped for the host this page was reached on,
+    because it is the BROWSER that opens it."""
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm):
         raise HTTPException(403)
-    override = ""
+    studio_url = _ai_module.studio_browser_url(request.url.hostname or "")
+    explicit = False
     try:
-        override = (_ai_module.get_studio_console_url() or "").strip()
+        explicit = bool((_ai_module.get_studio_console_url() or "").strip())
     except Exception:
-        override = ""
-    studio_url = (override or _ai_module.effective_llm_url() or "").rstrip("/") if _ai_module.effective_llm_api_key() else override
+        pass
+    server_url = (_ai_module.effective_llm_url() or "").rstrip("/") if _ai_module.effective_llm_api_key() else ""
+    # Say what was done when the address the browser gets differs from the one nd-world uses.
+    derived_from = server_url if (studio_url and not explicit and server_url and studio_url != server_url) else ""
     return templates.TemplateResponse("studio_console.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
         "studio_url": studio_url or "",
+        "studio_derived_from": derived_from,
     })
 
 @app.get("/androidapp", response_class=HTMLResponse)

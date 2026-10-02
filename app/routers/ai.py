@@ -3809,7 +3809,7 @@ async def unsloth_prefs_set(body: dict):
     if "stt_model" in body:
         _ai.set_stt_model(str(body.get("stt_model") or "").strip())
     if "studio_console_url" in body:
-        url = str(body.get("studio_console_url") or "").strip()
+        url = _ai.normalize_console_url(str(body.get("studio_console_url") or ""))
         # Rendered into an <a href>: anything but http(s) (javascript:, data:,
         # protocol-relative) would be script injection from a stored setting.
         if url and not re.match(r"^https?://[^\s/]", url, re.I):

@@ -11,6 +11,13 @@
     If the frame stays blank, <a rel="noopener noreferrer" href="{{ studio_url }}" target="_blank">open Studio directly</a>
     and sign in there once.
   </p>
+  {% if studio_derived_from %}
+  <p style="font-size:.78rem;color:var(--text-dim);margin:-.4rem 0 .8rem">
+    nd-world itself reaches Studio at <code>{{ studio_derived_from }}</code>, an address that only exists inside Docker, so
+    your browser is sent to the same host you opened this page on instead. If that isn't where Studio is published,
+    set <strong>Studio Console URL</strong> in Settings → System.
+  </p>
+  {% endif %}
   <div id="studio-mixed-content-warning" style="display:none;background:var(--bg2);border:1px solid var(--neon2);border-radius:6px;padding:1rem;margin-bottom:.8rem">
     <strong style="color:var(--neon2);font-size:.9rem">⚠ Mixed-content embed impossible</strong>
     <p style="font-size:.82rem;color:var(--text-dim);margin:.5rem 0 0">

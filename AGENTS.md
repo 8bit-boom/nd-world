@@ -155,8 +155,13 @@ tools that require GM access still check `is_gm` at call time.)
   over 1000 tests — so a full run takes a while; scope to the relevant
   `tests/test_*.py` file(s) while iterating and run the full suite before
   considering a change done. Never run more than one `pytest` invocation at
-  once against the same DB_PATH. `.github/workflows/docker-publish.yml`
-  only builds/pushes the Docker image — it does not run this suite.
+  once against the same DB_PATH. `.github/workflows/docker-publish.yml` runs
+  this suite first (its `test` job) and only builds/pushes the Docker image when
+  it passes — so a test that is green on a dev machine but red on a GitHub
+  runner (no ffmpeg, a non-root user, an unwritable `/data`) silently stops
+  `:latest` from being published. Keep tests independent of those: patch
+  `shutil.which`/the ffmpeg helpers or skip, and rely on `OLLAMA_CONFIG_DIR`
+  pointing at the scratch dir that `tests/conftest.py` sets.
 
 ## License — code vs. content are different
 

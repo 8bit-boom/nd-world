@@ -25,6 +25,11 @@ os.environ["MAX_NOTE_IMPORT_BYTES"] = "1048576"  # same reason, for /entity/{id}
 # Zero here means shutdown cancels immediately, which also stops those
 # tasks from leaking across tests.
 os.environ["ND_JOB_STOP_GRACE_SECONDS"] = "0"
+# Saving Settings > System writes Ollama's server env file into OLLAMA_CONFIG_DIR (default
+# /data/ollama-config); where that path isn't writable (a CI runner, any non-root user) the route
+# answers 200 with a warning instead of the 303 redirect. Point it at the scratch dir so the tests
+# do not depend on who runs them. Tests that exercise the unwritable case patch it themselves.
+os.environ["OLLAMA_CONFIG_DIR"] = str(_TEST_DATA_DIR / "ollama-config")
 os.environ.pop("GM_EMAIL", None)
 os.environ.pop("GM_PASSWORD", None)
 

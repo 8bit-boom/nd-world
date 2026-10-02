@@ -795,7 +795,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/unsloth/context-overrides` | GM | Studio's per-model load overrides (`max_seq_length`, …), passthrough; `available:false` on builds without the endpoint. |
 | POST | `/api/ai/unsloth/context-overrides` | GM | Writes one per-model override entry through to Studio (body is Studio's own shape, passed verbatim). |
 | POST | `/api/ai/tts` | GM | Generates speech from `text` via Studio's /v1/audio/speech and saves it as an AudioClip in the active world (GM-only visible until shared) — NPC voice lines and read-aloud passages. Uses the Settings → System TTS defaults (model, voice, delivery-style `instructions`, language) unless overridden per call. |
-| GET | `/studio` | GM | The full Unsloth Studio web UI embedded (projects, fine-tuning/recipe workflows, agent skills, voice settings, model hub, video generation). Embeds the Studio server URL — an explicit Studio Console override or UNSLOTH_URL. |
+| GET | `/studio` | GM | The full Unsloth Studio web UI embedded (projects, fine-tuning/recipe workflows, agent skills, voice settings, model hub, video generation). Embeds the address a *browser* can open: an explicit Studio Console URL, else UNSLOTH_URL with a Docker-internal host (the Compose service name, e.g. `unsloth`) swapped for the host the page was reached on, keeping Studio's port. |
 | POST | `/api/ai/unload` | GM | Unloads a model from memory. |
 | GET | `/api/ai/defaults` | GM | Per-surface (`chat`/`ask_ai`/`image`) default model ids. |
 | POST | `/api/ai/defaults` | GM | Sets a surface's default model. |

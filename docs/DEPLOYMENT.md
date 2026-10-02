@@ -218,6 +218,17 @@ default) instead of by Cloudflare. Any other large non-audio upload (a map
 image, a portrait) has no such split and is still subject to Cloudflare's
 raw cap.
 
+### The 🧠 Studio Console page and `http://unsloth:8000`
+
+`UNSLOTH_URL=http://unsloth:8000` is the address nd-world's *server* uses; `unsloth` is a
+Compose service name that only resolves inside the Docker network, so a browser pointed at it
+shows "Server Not Found". The Studio Console page therefore opens Studio at the host you
+reached nd-world on plus Studio's port (nd-world at `http://192.168.1.216:8087` → Studio at
+`http://192.168.1.216:8000`) and says so on the page. If Studio is published somewhere
+else — another port, a hostname, a tunnel — set **Studio Console URL** in Settings → System;
+that always wins (typed without a scheme, `192.168.1.216:8000` is saved as
+`http://192.168.1.216:8000`).
+
 ### Studio Console over Cloudflare Tunnel (optional)
 
 The 🧠 **Studio Console** page (`/studio`) embeds the Unsloth Studio web UI —

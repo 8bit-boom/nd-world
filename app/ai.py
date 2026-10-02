@@ -852,6 +852,53 @@ def set_studio_console_url(url: str) -> None:
     _save_data(data)
 
 
+def _is_internal_host(host: str) -> bool:
+    """A hostname only the Docker network can resolve: a bare Compose service name ("unsloth") or
+    Docker's host.docker.internal. A real DNS name, an IP and localhost are all fine to hand a browser."""
+    host = (host or "").lower()
+    if not host or host == "localhost" or ":" in host:        # ":" -> an IPv6 literal
+        return False
+    if host.replace(".", "").isdigit():                          # IPv4 literal
+        return False
+    return "." not in host or host.endswith(".internal")
+
+
+_BARE_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?(?:/\S*)?$")
+
+
+def normalize_console_url(url: str) -> str:
+    """A Studio Console URL typed without a scheme ("192.168.1.216:8000", "studio.lan") gets "http://" -
+    a browser would otherwise treat it as a path on nd-world's own page. Anything that is not a plain
+    host[:port][/path] (javascript:, data:, //host, ftp://) is returned unchanged for the caller to refuse."""
+    url = (url or "").strip()
+    host = url.split("/", 1)[0]
+    if url and "://" not in url and _BARE_HOST_RE.match(url) and ("." in host or ":" in host):
+        return "http://" + url
+    return url
+
+
+def studio_browser_url(page_host: str = "") -> str:
+    """Where a person's BROWSER can open Unsloth Studio (the /studio console iframe and its "open Studio
+    directly" link) - not where nd-world's server talks to it. UNSLOTH_URL is normally the Compose
+    service name (http://unsloth:8000), which resolves only inside the Docker network, so for a browser
+    the host is swapped for the one the page itself was reached on (`page_host`, keeping Studio's
+    scheme/port - Compose publishes them side by side). An explicit "Studio Console URL" (Settings ->
+    System) always wins; "" = Studio isn't configured."""
+    from urllib.parse import urlsplit, urlunsplit
+    explicit = normalize_console_url(get_studio_console_url()).rstrip("/")
+    if explicit:
+        return explicit
+    if not effective_llm_api_key():
+        return ""
+    url = (effective_llm_url() or "").rstrip("/")
+    parts = urlsplit(url)
+    if page_host and _is_internal_host(parts.hostname or ""):
+        host = f"[{page_host}]" if ":" in page_host and not page_host.startswith("[") else page_host
+        netloc = host + (f":{parts.port}" if parts.port else "")
+        return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
+    return url
+
+
 
 def pack_embedding(vec: list) -> str:
     """Packs an embedding vector into a compact, DB-storable string

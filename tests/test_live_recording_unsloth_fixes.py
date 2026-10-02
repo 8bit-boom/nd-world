@@ -12,6 +12,7 @@ What these pin, in the order the audit reported it:
 """
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -264,12 +265,43 @@ def test_the_check_route_reports_a_ready_studio_with_the_real_chunk_format(clien
 
     monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
     monkeypatch.setattr(_ai, "_llm_url_override", "http://studio")
+    async def fake_webm(seconds=2.0):          # ffmpeg is not on every machine that runs the suite
+        return b"\x1a\x45\xdf\xa3 fake webm"
+
     monkeypatch.setattr(ux, "stt", fake_stt)
+    monkeypatch.setattr(ux, "_tone_webm_bytes", fake_webm)
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
     d = client.get(f"/api/sessions/{sid}/live-transcript/check").json()
     assert d["ok"] is True and d["backend"] == "unsloth" and d["model"]
     assert seen and seen[0].endswith(".webm"), "live chunks are webm/opus — the check must send that, not a WAV"
+
+
+def test_the_check_route_falls_back_to_a_wav_when_ffmpeg_cannot_make_the_webm(client, seed, monkeypatch):
+    seen = []
+
+    async def fake_stt(audio, name, model="small"):
+        seen.append(name)
+        return ""
+
+    async def no_webm(seconds=2.0):
+        return None
+
+    monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
+    monkeypatch.setattr(_ai, "_llm_url_override", "http://studio")
+    monkeypatch.setattr(ux, "stt", fake_stt)
+    monkeypatch.setattr(ux, "_tone_webm_bytes", no_webm)
+    sid = _session(seed.world_a)
+    _login(client, seed.gm, seed.world_a, GM_PASSWORD)
+    d = client.get(f"/api/sessions/{sid}/live-transcript/check").json()
+    assert d["ok"] is True and seen == ["nd-health-check.wav"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_the_webm_tone_is_a_real_webm_when_ffmpeg_is_there():
+    import asyncio
+    data = asyncio.run(ux._tone_webm_bytes(1.0))
+    assert data and data[:4] == b"\x1a\x45\xdf\xa3", "EBML header — what MediaRecorder's WebM starts with"
 
 
 def test_the_check_route_says_what_is_wrong(client, seed, monkeypatch):
