@@ -164,3 +164,58 @@ def test_the_settings_page_polls_a_pending_check():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "app/templates/settings.html").read_text()
     assert "/api/ai/unsloth/check/" in src and "d.pending" in src
+
+
+# ── a timeout says what Studio was doing ─────────────────────────────────────
+
+async def _hang_forever(*a, **k):
+    await asyncio.sleep(30)
+
+
+@pytest.mark.asyncio
+async def test_a_tts_timeout_reports_that_studio_itself_still_answers_and_what_is_loaded(monkeypatch):
+    async def loaded():
+        return [{"model": "unsloth/gemma-4-26B-A4B-it-GGUF"}, {"id": "other/model"}]
+
+    monkeypatch.setattr(ux, "_tts_request", _hang_forever)
+    monkeypatch.setattr(ux, "loaded_models", loaded)
+    out = await ux.tts_health("unsloth/orpheus-3b-0.1-ft-GGUF", timeout=0.1)
+    assert out["ok"] is False
+    m = out["message"]
+    assert "Studio itself is responding" in m and "gemma-4-26B-A4B-it-GGUF" in m and "other/model" in m, m
+    assert "never finished" in m or "did not finish" in m, "so the speech model is what is stuck, not Studio"
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_with_nothing_loaded_says_so(monkeypatch):
+    async def loaded():
+        return []
+
+    monkeypatch.setattr(ux, "_tts_request", _hang_forever)
+    monkeypatch.setattr(ux, "loaded_models", loaded)
+    out = await ux.tts_health("m", timeout=0.1)
+    assert "nothing" in out["message"].lower() and "Studio itself is responding" in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_when_studio_cannot_even_answer_a_status_request_says_it_looks_wedged(monkeypatch):
+    async def dead():
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(ux, "_tts_request", _hang_forever)
+    monkeypatch.setattr(ux, "loaded_models", dead)
+    monkeypatch.setattr(ux, "_SNAPSHOT_TIMEOUT_SECONDS", 0.1)
+    out = await ux.tts_health("m", timeout=0.1)
+    assert "wedged" in out["message"].lower() or "not answer" in out["message"].lower(), out["message"]
+    assert "Studio itself is responding" not in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_the_stt_timeout_gets_the_same_snapshot(monkeypatch):
+    async def loaded():
+        return [{"name": "chat-model"}]
+
+    monkeypatch.setattr(ux, "stt", _hang_forever)
+    monkeypatch.setattr(ux, "loaded_models", loaded)
+    out = await ux.stt_health("large-v3-turbo", timeout=0.1)
+    assert out["ok"] is False and "chat-model" in out["message"]

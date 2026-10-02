@@ -733,6 +733,27 @@ async def poll_check(token: str) -> dict | None:
     return await _wait_check(entry) if entry else None
 
 
+_SNAPSHOT_TIMEOUT_SECONDS = 8.0
+
+
+async def _studio_snapshot() -> str:
+    """After a health check timed out: one plain status question to Studio, so the message can say whether Studio
+    is alive and what it has loaded - the difference between "the speech model never finished" and "Studio is
+    wedged". Never raises."""
+    import asyncio as _asyncio
+    t0 = time.monotonic()
+    try:
+        async with _asyncio.timeout(_SNAPSHOT_TIMEOUT_SECONDS):
+            rows = await loaded_models()
+    except Exception as exc:
+        return ("Studio did not answer a plain status request either "
+                f"({type(exc).__name__}), so it looks wedged or still starting - restart the unsloth container.")
+    names = [str(r.get("model") or r.get("id") or r.get("name") or "?") for r in (rows or []) if isinstance(r, dict)]
+    have = ("has loaded: " + ", ".join(names)) if names else "has nothing loaded"
+    return (f"Studio itself is responding ({time.monotonic() - t0:.1f} s) and {have} - so it never finished loading "
+            "or running the speech model.")
+
+
 def _budget_env(timeout: float | None) -> str:
     return "UNSLOTH_SLOW_CHECK_TIMEOUT_SECONDS" if timeout else "UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS"
 
@@ -785,7 +806,7 @@ async def stt_health(model: str, fmt: str = "wav", timeout: float | None = None)
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:
-        return {"ok": False, "message": _timeout_message(budget, _budget_env(timeout))}
+        return {"ok": False, "message": _timeout_message(budget, _budget_env(timeout)) + " " + await _studio_snapshot()}
     except StudioError as exc:
         message = str(exc)
         if exc.status_code == 409 and "not downloaded" in message.lower():
@@ -870,7 +891,7 @@ async def tts_health(model: str, voice: str = "", instructions: str = "", langua
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:
-        return {"ok": False, "message": _timeout_message(budget, _budget_env(timeout))}
+        return {"ok": False, "message": _timeout_message(budget, _budget_env(timeout)) + " " + await _studio_snapshot()}
     except StudioError as exc:
         return {"ok": False, "status": exc.status_code, "message": str(exc)}
 
