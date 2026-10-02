@@ -6,6 +6,7 @@ main.py, so a router importing from main.py would be circular. That circular
 import was the root cause of every router building its own copy-pasted
 Jinja2Templates instance instead of sharing one (see app/templating.py).
 """
+import html as _html
 import re
 from collections import OrderedDict
 
@@ -161,6 +162,43 @@ def _apply_inline_styles(html: str) -> str:
     return html
 
 
+# A code fence is also where authors put a paragraph they want to copy whole — an image-generator prompt, read-aloud
+# text. Those want to wrap; an ASCII map, a table or code wants its columns kept (and to scroll sideways instead).
+# markdown2 drops the fence's language, so tell them apart by the text itself: prose is long lines of ordinary
+# words, and alignment shows up as runs of spaces *inside* a line (leading indentation does not count).
+_PROSE_LINE_MIN_CHARS = 80
+_PROSE_LINE_MIN_WORDS = 8
+_ALIGNED_RUN_RE = re.compile(r"\S {3,}\S")
+_PRE_BLOCK_RE = re.compile(r"<pre([^>]*)>(.*?)</pre>", re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def wraps_as_prose(code: str) -> bool:
+    """True when a code block's text is a paragraph (see above) rather than aligned text."""
+    prose = False
+    for line in (code or "").splitlines():
+        line = line.strip()
+        if _ALIGNED_RUN_RE.search(line):
+            return False
+        if len(line) >= _PROSE_LINE_MIN_CHARS and len(line.split()) >= _PROSE_LINE_MIN_WORDS:
+            prose = True
+    return prose
+
+
+def _mark_prose_code_blocks(html: str) -> str:
+    def mark(m):
+        attrs, body = m.group(1), m.group(2)
+        if not wraps_as_prose(_html.unescape(_TAG_RE.sub("", body))):
+            return m.group(0)
+        if 'class="' in attrs:
+            attrs = attrs.replace('class="', 'class="md-wrap ', 1)
+        else:
+            attrs += ' class="md-wrap"'
+        return f"<pre{attrs}>{body}</pre>"
+
+    return _PRE_BLOCK_RE.sub(mark, html)
+
+
 def render_md(text):
     if not text:
         return ""
@@ -171,6 +209,7 @@ def render_md(text):
     # (links, emphasis, tables, ...) is unaffected.
     html = markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape")
     html = _transform_media_tags(html)
+    html = _mark_prose_code_blocks(html)
     return _apply_inline_styles(html)
 
 

@@ -764,8 +764,18 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   font-size: .88em;
   color: var(--neon3);
 }
-.prose pre { background: var(--bg3); padding: 1rem; border-radius: 4px; overflow-x: auto; margin: .8em 0; }
-.prose pre code { background: transparent; padding: 0; }
+/* Code blocks in rendered markdown — notes (.rendered-md), rules/prose pages, AI answers. A block is never wider than
+   what holds it (it scrolls sideways instead of running off the page), and one that is a paragraph of prose rather
+   than aligned text wraps (render_md marks it .md-wrap, see wraps_as_prose in app/rendering.py). */
+pre { max-width: 100%; overflow-x: auto; }
+.rendered-md pre, .prose pre, .ai-bubble pre {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  padding: .7rem .9rem; margin: .8em 0; line-height: 1.45; tab-size: 4;
+}
+.rendered-md pre code, .prose pre code, .ai-bubble pre code {
+  background: transparent; padding: 0; border-radius: 0; font-size: .88em;
+}
+pre.md-wrap, pre.md-wrap code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .prose table { border-collapse: collapse; width: 100%; margin: .8em 0; }
 .prose th { background: var(--bg3); color: var(--neon); }
 .prose th, .prose td { border: 1px solid var(--border); padding: .4rem .8rem; text-align: left; }
