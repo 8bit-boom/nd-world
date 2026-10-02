@@ -409,3 +409,56 @@ def test_member_section_level_follows_the_membership_in_that_world(seed):
         assert member_section_level(db, player_a, world_a, "sessions") == "none", "the player column, not the assistant one"
     finally:
         db.close()
+
+
+# ── raw audio, end to end with real browser-format segments ──────────────────
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="needs ffmpeg")
+def test_raw_audio_from_real_webm_segments_is_archived_transcribed_and_downloadable(client, seed, monkeypatch, tmp_path):
+    """Three Opus-in-WebM segments exactly as MediaRecorder hands them over, through the REAL transcription
+    pipeline (only Studio's HTTP call is stubbed): each is archived byte for byte, sent to Studio as it is
+    (a segment this short is never re-encoded), its text appended in order, and the download is one playable
+    recording as long as the three together."""
+    import subprocess
+    from app import unsloth_extras as ux
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "w.db"))
+    monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
+    segs = []
+    for i, secs in enumerate((2, 3, 2)):
+        p = tmp_path / f"in{i}.webm"
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=f={300 + 100 * i}:d={secs}",
+                            "-ac", "1", "-c:a", "libopus", "-b:a", "24k", str(p)])
+        if r.returncode != 0:
+            pytest.skip("this ffmpeg has no libopus")
+        segs.append(p.read_bytes())
+
+    sent = []
+
+    async def fake_stt(audio, name, model="small"):
+        sent.append((name, audio))
+        return f"words {len(sent)}"
+
+    monkeypatch.setattr(ux, "stt", fake_stt)
+    sid = _session(seed.world_a)
+    _login(client, seed.gm, seed.world_a, GM_PASSWORD)
+    for i, body in enumerate(segs):
+        r = _append(client, sid, idx=i, save=True, body=body)
+        assert r.status_code == 200, r.text
+
+    assert _text(sid) == "words 1 words 2 words 3"
+    assert [a for _, a in sent] == segs, "Studio got each segment untouched - no re-encode for a short chunk"
+    listing = client.get(f"/api/sessions/{sid}/live-audio").json()
+    assert listing["count"] == 3
+    stored = sorted((tmp_path / "uploads" / "live" / str(sid) / ("a" * 32)).iterdir())
+    assert [p.read_bytes() for p in stored] == segs, "the archive is the browser's own bytes, in order"
+
+    r = client.get(f"/api/sessions/{sid}/live-audio/download")
+    assert r.status_code == 200
+    out = tmp_path / "all.webm"
+    out.write_bytes(r.content)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_name", "-of", "default=nw=1",
+                            str(out)], capture_output=True, text=True).stdout
+    assert "codec_name=opus" in probe
+    duration = float(next(l for l in probe.split() if l.startswith("duration=")).split("=")[1])
+    assert 6.5 < duration < 7.6, f"2+3+2 s of audio, one file: {duration}"
