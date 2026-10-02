@@ -14,6 +14,7 @@ handling stays uniform.
 import logging
 import os
 import re
+import secrets
 import time
 
 import httpx as _httpx
@@ -669,6 +670,79 @@ def _tone_wav_bytes(seconds: float = 1.0) -> bytes:
 _HEALTHCHECK_TIMEOUT_SECONDS = float(
     __import__("os").environ.get("UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS", "75"))
 
+# The Settings "Test TTS / Test STT" buttons run in the BACKGROUND with this much longer budget: the first request
+# after Studio starts loads the speech model (possibly unloading the chat model first), which on a slow or
+# CPU-only box takes minutes - and no single request can wait that long (a Cloudflare Tunnel closes at ~100 s).
+# The page gets "still working" answers and polls; the synchronous 75 s above still guards the live-recording
+# pre-flight, which has to answer when a recording starts.
+_SLOW_CHECK_TIMEOUT_SECONDS = float(os.environ.get("UNSLOTH_SLOW_CHECK_TIMEOUT_SECONDS", "300"))
+_DEFAULT_CHECK_WAIT_SECONDS = 25.0   # how long ONE http request waits before answering "pending" (well under 100 s)
+_CHECK_WAIT_SECONDS = _DEFAULT_CHECK_WAIT_SECONDS
+_CHECK_KEEP_SECONDS = 600.0     # a finished check can be polled for this long
+_CHECKS: dict = {}              # token -> {"token", "kind", "key", "started", "finished", "task"}
+
+
+def _prune_checks(now: float) -> None:
+    for token, e in list(_CHECKS.items()):
+        if e["task"].done():
+            if e["finished"] is None:
+                e["finished"] = now
+            if now - e["finished"] > _CHECK_KEEP_SECONDS:
+                del _CHECKS[token]
+
+
+async def _wait_check(entry: dict) -> dict:
+    """Wait up to _CHECK_WAIT_SECONDS for the check: its own result dict once finished, otherwise a "pending"
+    answer the page polls again. The check keeps running either way (asyncio.wait never cancels it)."""
+    import asyncio as _asyncio
+    done, _ = await _asyncio.wait({entry["task"]}, timeout=_CHECK_WAIT_SECONDS)
+    if entry["task"] in done:
+        if entry["finished"] is None:
+            entry["finished"] = time.monotonic()
+        try:
+            return entry["task"].result()
+        except Exception as exc:                               # a bug in a check must not become a 500
+            _log.warning("health check %s crashed: %s: %s", entry["kind"], type(exc).__name__, exc)
+            return {"ok": False, "message": f"The check failed unexpectedly: {type(exc).__name__}: {exc}"}
+    return {"ok": None, "pending": True, "token": entry["token"],
+            "elapsed": int(time.monotonic() - entry["started"]),
+            "message": "Studio is still working - the first request after it starts is loading the speech model, "
+                       "which can take a few minutes. Waiting for it..."}
+
+
+async def run_check(kind: str, key: str, factory) -> dict:
+    """Start the `kind` health check (or join the one already running for the same `key`: model, voice, ...) and
+    wait briefly for it. `factory()` is the coroutine doing the real work."""
+    import asyncio as _asyncio
+    now = time.monotonic()
+    _prune_checks(now)
+    entry = next((e for e in _CHECKS.values() if e["key"] == key and not e["task"].done()), None)
+    if entry is None:
+        token = secrets.token_urlsafe(12)
+        entry = {"token": token, "kind": kind, "key": key, "started": now, "finished": None,
+                 "task": _asyncio.ensure_future(factory())}
+        _CHECKS[token] = entry
+    return await _wait_check(entry)
+
+
+async def poll_check(token: str) -> dict | None:
+    """The state of a check started by run_check, or None if there is no such check (unknown, expired, or nd-world
+    restarted since)."""
+    _prune_checks(time.monotonic())
+    entry = _CHECKS.get(token)
+    return await _wait_check(entry) if entry else None
+
+
+def _budget_env(timeout: float | None) -> str:
+    return "UNSLOTH_SLOW_CHECK_TIMEOUT_SECONDS" if timeout else "UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS"
+
+
+def _timeout_message(budget: float, env_name: str) -> str:
+    return (f"Studio did not answer within {budget:g} s. The first request after Studio starts has to load the speech "
+            "model (it may unload the chat model first), which can take minutes on a slow or CPU-only box - try again "
+            "in a minute, or watch it load with `docker logs -f nd-world-unsloth`. If it keeps timing out the "
+            f"backend may be wedged. (The wait is {env_name}.)")
+
 
 async def _tone_webm_bytes(seconds: float = 2.0) -> bytes | None:
     """The same tone as Opus in a WebM container — what a browser's
@@ -687,13 +761,14 @@ async def _tone_webm_bytes(seconds: float = 2.0) -> bytes | None:
     return out if proc.returncode == 0 and out else None
 
 
-async def stt_health(model: str, fmt: str = "wav") -> dict:
+async def stt_health(model: str, fmt: str = "wav", timeout: float | None = None) -> dict:
     """One-shot 'does this STT model actually work' probe — the exact call
     nd-world's transcription pipeline makes, over a synthesized tone, so a
     'not downloaded' 409 or bad model name surfaces at setup time in
     Settings instead of as a failed background job hours later. Never
     raises: every failure mode comes back as {ok: False, message}."""
     import asyncio as _asyncio
+    budget = timeout or _HEALTHCHECK_TIMEOUT_SECONDS
     try:
         # The tone is ~1 s of audio; the budget covers the slowest real
         # first-use load of the model, not a full transcription pass.
@@ -704,15 +779,13 @@ async def stt_health(model: str, fmt: str = "wav") -> dict:
             name = "nd-health-check.webm"
         if audio is None:
             audio, name = _tone_wav_bytes(), "nd-health-check.wav"
-        async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
+        async with _asyncio.timeout(budget):
             await stt(audio, name, model=model or "small")
         return {"ok": True, "message": "Studio accepted the audio — model is ready.", "format": name.rsplit(".", 1)[-1]}
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:
-        return {"ok": False, "message": "Studio did not answer within the health-check budget "
-                                        "(UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS) — the backend may be "
-                                        "cold, very slow, or wedged."}
+        return {"ok": False, "message": _timeout_message(budget, _budget_env(timeout))}
     except StudioError as exc:
         message = str(exc)
         if exc.status_code == 409 and "not downloaded" in message.lower():
@@ -752,12 +825,14 @@ async def _stt_not_downloaded_hint(model: str) -> str:
             f"Pick a Whisper model instead — on your device: {use} — and test again.")
 
 
-async def tts_health(model: str, voice: str = "", instructions: str = "", language: str = "") -> dict:
+async def tts_health(model: str, voice: str = "", instructions: str = "", language: str = "",
+                     timeout: float | None = None) -> dict:
     """Same idea for TTS: synthesize a two-word clip through the configured
     model/voice/style. Audio is discarded — ok + message is the result."""
     import asyncio as _asyncio
+    budget = timeout or _HEALTHCHECK_TIMEOUT_SECONDS
     try:
-        async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
+        async with _asyncio.timeout(budget):
             sent, sent_ct = await _tts_request("Ready.", model=model or "", voice=voice,
                                                instructions=instructions, language=language)
             saved, saved_ct = await _finish_tts_audio(sent, sent_ct)
@@ -795,9 +870,7 @@ async def tts_health(model: str, voice: str = "", instructions: str = "", langua
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:
-        return {"ok": False, "message": "Studio did not answer within the health-check budget "
-                                        "(UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS) — the backend may be "
-                                        "cold, very slow, or wedged."}
+        return {"ok": False, "message": _timeout_message(budget, _budget_env(timeout))}
     except StudioError as exc:
         return {"ok": False, "status": exc.status_code, "message": str(exc)}
 

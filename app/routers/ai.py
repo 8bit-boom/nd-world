@@ -3497,23 +3497,43 @@ async def unsloth_stt_check(body: dict):
     """Run the exact /v1/audio/transcriptions call the transcription
     pipeline makes, over a synthesized tone, so a broken/undownloaded STT
     model surfaces at setup time instead of as a failed background job.
-    Never 5xxs — {ok, message} is the whole contract. GM-only."""
+    Never 5xxs - {ok, message} is the whole contract. A cold Studio can take
+    minutes to load the model, so the check runs in the background: this
+    answers with the finished result or {pending, token, elapsed}, and
+    GET /unsloth/check/{token} is polled for the rest. GM-only."""
     _unsloth_or_400()
     model = str(body.get("model") or "").strip() or _ai.get_stt_model()
-    return await _unsloth_extras.stt_health(model)
+    return await _unsloth_extras.run_check(
+        "stt", f"stt|{model}",
+        lambda: _unsloth_extras.stt_health(model, timeout=_unsloth_extras._SLOW_CHECK_TIMEOUT_SECONDS))
 
 
 @router.post("/unsloth/tts-check")
 async def unsloth_tts_check(body: dict):
-    """Same health-check for TTS — synthesize a two-word clip through the
-    given model/voice/style and discard the audio. GM-only."""
+    """Same health-check for TTS - synthesize a two-word clip through the
+    given model/voice/style and discard the audio; same pending/poll
+    contract as stt-check. GM-only."""
     _unsloth_or_400()
-    return await _unsloth_extras.tts_health(
-        str(body.get("model") or "").strip() or _ai.get_tts_model(),
-        voice=str(body.get("voice") or "").strip(),
-        instructions=str(body.get("instructions") or "").strip() or _ai.get_tts_instructions(),
-        language=str(body.get("language") or "").strip() or _ai.get_tts_language(),
-    )
+    model = str(body.get("model") or "").strip() or _ai.get_tts_model()
+    voice = str(body.get("voice") or "").strip()
+    instructions = str(body.get("instructions") or "").strip() or _ai.get_tts_instructions()
+    language = str(body.get("language") or "").strip() or _ai.get_tts_language()
+    return await _unsloth_extras.run_check(
+        "tts", f"tts|{model}|{voice}|{instructions}|{language}",
+        lambda: _unsloth_extras.tts_health(
+            model, voice=voice, instructions=instructions, language=language,
+            timeout=_unsloth_extras._SLOW_CHECK_TIMEOUT_SECONDS))
+
+
+@router.get("/unsloth/check/{token}")
+async def unsloth_check_poll(token: str):
+    """The state of a stt-check / tts-check that answered {pending, token}: the finished result, or pending again
+    (this waits up to ~25 s, so the page can poll without hammering). 404 once it is gone - unknown, finished
+    more than ten minutes ago, or nd-world restarted. GM-only."""
+    result = await _unsloth_extras.poll_check(token)
+    if result is None:
+        raise HTTPException(404, "That check is gone (nd-world restarted, or it finished a while ago) - press the test button again.")
+    return result
 
 
 @router.get("/unsloth/context-overrides")

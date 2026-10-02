@@ -488,6 +488,13 @@ stored - NPC voice lines, read-aloud passages, recap songs, spoken NPC replies -
 - `TTS_OUTPUT_FORMAT=wav` - skip the conversion and keep Studio's WAV. Use this if someone at the table has a
   browser or phone that cannot play Opus (older iOS/Safari).
 
+The *Test STT* / *Test TTS* buttons run in the background, because the first request after Studio starts has to load the
+speech model (after unloading the chat model) - minutes on a slow or CPU-only box, longer than one request may wait (a
+Cloudflare Tunnel closes at about 100 s). The page shows "Studio is still working…" with a counter and finishes by itself.
+`UNSLOTH_SLOW_CHECK_TIMEOUT_SECONDS` (default 300) is how long it waits for Studio in all; after that the message says so and
+points at `docker logs -f nd-world-unsloth`, which shows the model loading. The live-recording pre-flight keeps the shorter
+`UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS` (75), since it has to answer when a recording starts.
+
 Settings → *Test TTS* shows what Studio actually sent (channels, sample rate, bit depth, length) and what the clip is saved as, e.g. "WAV, mono, 24000 Hz, 16-bit, 1.5 s. Saved as: Ogg Opus at 48k".
 
 Set either one under `environment:` of the `world` service (TrueNAS custom app: add the line to the YAML and save).

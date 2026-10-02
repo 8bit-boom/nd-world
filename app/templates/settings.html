@@ -1199,7 +1199,24 @@ function ndCopyRestartCmd() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const d = await r.json();
+      let d = await r.json();
+      // A cold Studio can spend minutes loading the speech model, longer than one request may wait (a Cloudflare
+      // Tunnel closes at ~100 s), so the server answers {pending, token} and this polls until the check is done.
+      const t0 = Date.now();
+      while (d && d.pending) {
+        const secs = (d.elapsed != null) ? d.elapsed : Math.round((Date.now() - t0) / 1000);
+        st.textContent = '⏳ ' + (d.message || 'Studio is still working…') + ' (' + secs + ' s)';
+        if (Date.now() - t0 > 12 * 60 * 1000) {
+          d = { ok: false, message: 'Gave up waiting after 12 minutes. Studio is still busy or wedged — see docker logs nd-world-unsloth.' };
+          break;
+        }
+        const pr = await fetch('/api/ai/unsloth/check/' + encodeURIComponent(d.token));
+        if (pr.status === 404) {
+          d = { ok: false, message: ((await pr.json()).detail) || 'The check was lost — press the test button again.' };
+          break;
+        }
+        d = await pr.json();
+      }
       st.textContent = (d.ok ? '✓ ' : '✗ ') + (d.message || ('HTTP ' + r.status));
       st.style.color = d.ok ? '#6ecf6e' : '#e07070';
     } catch (e) {

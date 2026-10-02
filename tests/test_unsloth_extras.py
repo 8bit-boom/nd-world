@@ -390,7 +390,7 @@ def test_check_and_auth_routes_are_gm_only(client, seed):
 
 
 def test_stt_check_route_never_5xx(client, seed, monkeypatch):
-    async def _fail(model):
+    async def _fail(model, timeout=None):
         return {"ok": False, "status": 409, "message": "not downloaded"}
     monkeypatch.setattr("app.routers.ai._unsloth_or_400", lambda: None)
     monkeypatch.setattr("app.routers.ai._unsloth_extras.stt_health", _fail)
