@@ -838,7 +838,16 @@ def get_stt_backend() -> str:
     """'whisper' (the whisper.cpp sidecar, default) or 'unsloth' (Studio's
     /v1/audio/transcriptions — STT models are managed in Studio's own
     Settings -> Voice page)."""
-    return _load_data().get("stt_backend") or "whisper"
+    stored = _load_data().get("stt_backend")
+    if stored:
+        return stored
+    # Nothing chosen yet: a Studio-only install (key set, no whisper.cpp
+    # sidecar) has nothing else to transcribe with, so default to Studio
+    # instead of failing every chunk with "Whisper isn't configured". An
+    # install that has a sidecar keeps it; an explicit choice always wins.
+    if effective_llm_api_key() and not effective_whisper_url():
+        return "unsloth"
+    return "whisper"
 
 
 def set_stt_backend(backend: str) -> None:
@@ -4301,6 +4310,17 @@ async def whisper_status() -> dict:
         return {"ok": False, "reason": str(e), "url": url}
 
 
+def _status_is_transient(status: int | None) -> bool:
+    """HTTP statuses where the same request may succeed later: the server is
+    overloaded, restarting or timed out (408/425/429/5xx). 401/404/409/422 and
+    other 4xx are setup problems."""
+    try:
+        status = int(status or 0)
+    except (TypeError, ValueError):
+        return False
+    return status in (408, 425, 429) or status >= 500
+
+
 class WhisperError(Exception):
     """Raised by transcribe_audio when the request to Whisper itself failed
     (not configured, unreachable, timed out, or returned a non-200/
@@ -4321,9 +4341,15 @@ class WhisperError(Exception):
     resummarize from the salvaged partial instead of re-uploading and
     re-transcribing the whole recording from scratch."""
 
-    def __init__(self, message: str, partial_transcript: str = ""):
+    def __init__(self, message: str, partial_transcript: str = "", *, retryable: bool = False):
         super().__init__(message)
         self.partial_transcript = partial_transcript
+        # True when trying the SAME audio again later can succeed (the backend is
+        # unreachable, timed out, overloaded or restarting) as opposed to a
+        # setup problem only the GM can fix (no key, model not downloaded, bad
+        # audio). The live-recording route turns it into 503 vs 400 so the
+        # browser knows whether to wait or to stop and show the reason.
+        self.retryable = retryable
 
 
 def _collapse_repeated_transcript_lines(text: str, min_repeat: int = 4) -> str:
@@ -4584,13 +4610,13 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise
             # (with an often-empty message, since httpx timeouts commonly
             # stringify to "") instead of naming the actual timeout.
             _log.warning("whisper transcription timed out: %s", exc)
-            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
+            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.", retryable=True) from exc
         except Exception as exc:
             _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
-            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}") from exc
+            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}", retryable=True) from exc
         if r.status_code != 200:
             _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
-            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}")
+            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}", retryable=_status_is_transient(r.status_code))
         try:
             return (r.json().get("text") or "").strip()
         except Exception as exc:
@@ -4721,7 +4747,8 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
             try:
                 text = await _unsloth_extras.stt(part.read_bytes(), part.name, model=get_stt_model())
             except _unsloth_extras.StudioError as exc:
-                raise WhisperError(f"Unsloth Studio STT: {exc}") from exc
+                raise WhisperError(f"Unsloth Studio STT: {exc}",
+                                   retryable=exc.unreachable or _status_is_transient(exc.status_code)) from exc
             texts.append((text or "").strip())
         return chr(10).join(t for t in texts if t)
     finally:
@@ -4858,6 +4885,7 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
                         "were transcribed and have been saved — you can re-summarize from the partial "
                         "transcript, or re-upload to redo the whole recording.",
                         partial_transcript=partial,
+                        retryable=exc.retryable,
                     ) from exc
                 raise
             if on_checkpoint:
@@ -4972,13 +5000,13 @@ async def _transcribe_one_file_verbose(path: Path, glossary: str, language: str,
                     )
         except (_httpx.TimeoutException, TimeoutError) as exc:
             _log.warning("whisper transcription timed out: %s", exc)
-            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
+            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.", retryable=True) from exc
         except Exception as exc:
             _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
-            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}") from exc
+            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}", retryable=True) from exc
         if r.status_code != 200:
             _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
-            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}")
+            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}", retryable=_status_is_transient(r.status_code))
         try:
             body = r.json()
             text = (body.get("text") or "").strip()

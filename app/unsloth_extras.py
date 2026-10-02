@@ -498,7 +498,24 @@ _HEALTHCHECK_TIMEOUT_SECONDS = float(
     __import__("os").environ.get("UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS", "75"))
 
 
-async def stt_health(model: str) -> dict:
+async def _tone_webm_bytes(seconds: float = 2.0) -> bytes | None:
+    """The same tone as Opus in a WebM container — what a browser's
+    MediaRecorder hands the live-recording panel, so a health check can prove
+    Studio accepts THAT format and not just a WAV. None when ffmpeg is missing
+    or fails (the caller falls back to the WAV)."""
+    import asyncio as _asyncio
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            "ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=220:duration={seconds}",
+            "-ar", "16000", "-ac", "1", "-c:a", "libopus", "-b:a", "24k", "-f", "webm", "pipe:1",
+            stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.DEVNULL)
+        out, _ = await _asyncio.wait_for(proc.communicate(), timeout=15)
+    except Exception:
+        return None
+    return out if proc.returncode == 0 and out else None
+
+
+async def stt_health(model: str, fmt: str = "wav") -> dict:
     """One-shot 'does this STT model actually work' probe — the exact call
     nd-world's transcription pipeline makes, over a synthesized tone, so a
     'not downloaded' 409 or bad model name surfaces at setup time in
@@ -508,9 +525,16 @@ async def stt_health(model: str) -> dict:
     try:
         # The tone is ~1 s of audio; the budget covers the slowest real
         # first-use load of the model, not a full transcription pass.
+        audio, name = None, "nd-health-check.wav"
+        if fmt == "webm":
+            # The live-recording panel's own chunk format; WAV if ffmpeg can't make it.
+            audio = await _tone_webm_bytes()
+            name = "nd-health-check.webm"
+        if audio is None:
+            audio, name = _tone_wav_bytes(), "nd-health-check.wav"
         async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
-            await stt(_tone_wav_bytes(), "nd-health-check.wav", model=model or "small")
-        return {"ok": True, "message": "Studio accepted the audio — model is ready."}
+            await stt(audio, name, model=model or "small")
+        return {"ok": True, "message": "Studio accepted the audio — model is ready.", "format": name.rsplit(".", 1)[-1]}
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:

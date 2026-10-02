@@ -1358,6 +1358,13 @@ def serve_upload(filepath: str):
         raise HTTPException(404)
     if not path.is_relative_to(root) or not path.is_file():
         raise HTTPException(404)
+    # The live-recording archive (uploads/live/<session>/<recording>/NNNNNN.webm)
+    # is a table's raw audio, reachable only through its authorized, world-
+    # scoped download route — never as a static file: this route lets any
+    # logged-in account fetch anything under /uploads/, so anyone who learned
+    # a path (it is listed to editors) could pull a recording from any world.
+    if path.relative_to(root).parts[:1] == ("live",):
+        raise HTTPException(404)
     headers = {"X-Content-Type-Options": "nosniff"}
     # SVG can carry <script>, and it's served from this app's own origin. New SVG
     # uploads are rejected outright (see ALLOWED_EXTS), but files uploaded before

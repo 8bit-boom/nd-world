@@ -64,12 +64,12 @@ def test_status_settles_to_a_final_message_once_idle(client, seed):
     # Called at the end of the upload loop, not just under `if (_liveRecording)`.
     # liveProcessQueue grew with the patient in-flight 409 polling
     # (docs/STT_LIVE_AUDIT_2026-09.md finding 1) — same assertion, wider window.
-    assert "liveRefreshStatus();" in page.split("async function liveProcessQueue", 1)[1][:6500]
+    assert "liveRefreshStatus();" in page.split("async function liveProcessQueue", 1)[1][:10000]
 
 
 def test_backlog_is_shown_while_still_recording(client, seed):
     page = _get_page(client, seed)
-    assert "chunk(s) waiting for Whisper" in page
+    assert "chunk(s) waiting for transcription" in page
 
 
 def test_summarize_in_background_button_is_wired(client, seed):

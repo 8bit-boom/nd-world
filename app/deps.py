@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from . import auth
 from .constants import KINDS, KIND_ICONS, SUBTYPES
-from .models import Entity, World, entity_player_access
+from .models import Entity, World, WorldMembership, entity_player_access
 
 
 def resolve_world_slug(request: Request, cookie_value: Optional[str]) -> Optional[str]:
@@ -301,6 +301,25 @@ def world_section_level(request: Request, world, section_id: str) -> str:
     role = _role_for_request(request)
     if role is None:
         return "none"
+    return world_section_access(world).get(section_id, _default_section_levels(section_id))[role]
+
+
+def member_section_level(db, user, world, section_id: str) -> str:
+    """"none"/"read"/"edit" for `user` in THIS `world`, from their membership
+    row in it. world_section_level answers for the request's ACTIVE world
+    (the role the middleware resolved from the cookie), which is the wrong
+    question for a route that takes a record id: an assistant of world B with
+    world B active would be judged by world A's matrix and passed as an
+    "assistant". Non-members get "none"; a GM always "edit"."""
+    if not user or not world:
+        return "none"
+    if user.is_gm:
+        return "edit"
+    m = db.query(WorldMembership).filter(WorldMembership.world_id == world.id,
+                                         WorldMembership.user_id == user.id).first()
+    if m is None:
+        return "none"
+    role = "assistant" if m.role in ("assistant", "owner") else "player"
     return world_section_access(world).get(section_id, _default_section_levels(section_id))[role]
 
 

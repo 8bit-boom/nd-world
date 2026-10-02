@@ -159,4 +159,8 @@ with the app's own stored key and model names — not from documentation.
 **nd-world features grounded in this appendix:** the Settings ▷ Test
 STT/TTS health-check buttons (the probe itself, productized), the 401
 key-death banner (I-8 confirmed in the compose deployment context), and
-the large-v3-turbo STT default that shipped from it.
+the STT backend/model handling around it. (Correction: the model nd-world
+defaults to is `small` (`DEFAULT_STT_MODEL`), not `large-v3-turbo` — the latter is
+simply what answered 200 on the probed build, while `small` answered 409 "not
+downloaded" there. Set the STT model to one you have downloaded in Studio (nd-world Settings → System → "Unsloth Studio server");
+the live-recording panel's pre-flight reports whether the chosen one works.)

@@ -318,6 +318,7 @@
       <a id="live-transcript-download-link" class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/transcript.md')|wq }}" style="display:none;text-decoration:none">⬇ Download .md</a>
       <span id="live-record-status" style="font-size:.78rem;color:var(--text-dim)"></span>
     </div>
+    <div id="live-stt-warning" style="display:none;font-size:.78rem;color:#e0b050;margin-bottom:.6rem;line-height:1.45"></div>
     <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ gsession.live_transcript or '(nothing recorded yet)' }}</div>
   </div>
 
@@ -1469,6 +1470,56 @@ let _liveQueueBusy = false;
 // them out of chronological order relative to whatever was recorded after
 // the failure — better a late paragraph than permanent silence.
 let _liveFailedChunks = [];
+// Why the most recent chunk failed (the server's own message — "STT model
+// 'small' is not downloaded…", "Studio API key rejected…") so the status line
+// can say what to fix instead of only "failed to upload".
+let _liveLastFailure = '';
+let _liveSlowStreak = 0;
+
+// One amber line under the controls for things the GM should know before
+// they cost transcript: the STT backend isn't ready, or it is falling
+// behind. `kind` lets a later success clear only its own kind of warning.
+function liveSetWarning(text, kind) {
+  const el = document.getElementById('live-stt-warning');
+  if (!el) return;
+  el.textContent = text ? '⚠ ' + text : '';
+  el.dataset.kind = text ? (kind || '') : '';
+  el.style.display = text ? '' : 'none';
+}
+
+// Pre-flight, run when a recording starts: asks the server to push a tiny
+// WebM/Opus clip (the exact format this panel records) through the
+// configured speech-to-text backend. Best effort and non-blocking — recording
+// is never held up by it, and the chunks themselves still report real failures.
+async function liveCheckBackend() {
+  try {
+    const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/check`);
+    if (!res.ok) return;
+    const d = await res.json();
+    if (d.ok) { const el = document.getElementById('live-stt-warning'); if (el && el.dataset.kind === 'backend') liveSetWarning(''); return; }
+    let msg = `Transcription isn't ready — ${d.message || 'the speech-to-text backend did not accept a test clip'}`;
+    msg += (saveChk && saveChk.checked)
+      ? ' Recording continues and the audio is being kept on the server; use Retry on the failed chunks once this is fixed.'
+      : ' "Save raw audio" is off, so chunks only exist in this tab until this works — turn it on to keep them safe on the server.';
+    liveSetWarning(msg, 'backend');
+  } catch (e) { /* best effort */ }
+}
+
+// Called after every chunk that transcribed. Any success proves the backend
+// works (clears a pre-flight warning); two chunks in a row that took longer
+// to transcribe than they lasted mean the transcript is falling behind.
+function liveNoteTranscriptionSpeed(file, tookSeconds) {
+  const el = document.getElementById('live-stt-warning');
+  if (el && el.dataset.kind === 'backend') liveSetWarning('');
+  const audioSeconds = file && file.ndSeconds;
+  if (!audioSeconds) return;
+  _liveSlowStreak = tookSeconds > audioSeconds ? _liveSlowStreak + 1 : 0;
+  if (_liveSlowStreak >= 2) {
+    liveSetWarning(`Transcription is running slower than the recording (${Math.round(tookSeconds)} s for a ${audioSeconds} s chunk), so the transcript will keep falling behind. Pick a shorter chunk length, or a faster speech model.`, 'slow');
+  } else if (_liveSlowStreak === 0 && el && el.dataset.kind === 'slow') {
+    liveSetWarning('');
+  }
+}
 
 function liveSetTranscriptDisplay(text) {
   const el = document.getElementById('live-transcript-text');
@@ -1490,6 +1541,7 @@ function liveRefreshStatus() {
   if (_liveFailedChunks.length) {
     status.textContent = '';
     status.append(`⚠ ${_liveFailedChunks.length} chunk(s) failed to upload — `);
+    if (_liveLastFailure) status.append(`${_liveLastFailure.slice(0, 300)} `);
     const retryBtn = document.createElement('button');
     retryBtn.type = 'button';
     retryBtn.className = 'bg-job-btn';
@@ -1511,6 +1563,7 @@ function liveRefreshStatus() {
 function liveRetryFailedChunks() {
   const chunks = _liveFailedChunks;
   _liveFailedChunks = [];
+  _liveLastFailure = '';
   _liveQueue.push(...chunks);
   liveProcessQueue().catch(e => console.error('live upload queue', e));
 }
@@ -1530,17 +1583,24 @@ async function liveProcessQueue() {
   // still parks the chunk for manual Retry instead of polling forever.
   const INFLIGHT_WAIT_MS = 15000;
   const MAX_INFLIGHT_WAITS = 40;  // ~10 minutes per chunk, then park it
+  // A 503 means the transcription backend is down, restarting or overloaded
+  // (the server marks exactly those retryable) — the same audio can succeed
+  // later, so wait with a growing pause (5 s → 60 s, ~9 minutes in all)
+  // instead of burning the 3-attempt ladder in a few seconds.
+  const MAX_TRANSIENT_WAITS = 12;
   try {
     while (_liveQueue.length) {
       if (_liveRecording && _liveQueue.length > 1) {
         // A slower-than-realtime Whisper backend was previously invisible
         // here until chunks started timing out — surface the backlog.
-        status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for Whisper)`;
+        status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for transcription)`;
       }
       const file = _liveQueue[0];
       let uploaded = false;
       let transcriptText = null;
       let inflightWaits = 0;
+      let transientWaits = 0;
+      const uploadStartedAt = Date.now();
       for (let attempt = 1; attempt <= 3 && !uploaded; ) {
         try {
           const fd = new FormData();
@@ -1565,12 +1625,27 @@ async function liveProcessQueue() {
             await new Promise(r => setTimeout(r, INFLIGHT_WAIT_MS));
             continue;  // attempt NOT incremented: this isn't a failure
           }
-          if (!res.ok) throw await ndApiErrorFrom(res);
+          if (!res.ok) {
+            const err = await ndApiErrorFrom(res);
+            err.httpStatus = res.status;   // lets the catch below tell "wait" from "fix the setup"
+            throw err;
+          }
           const data = await res.json();
           transcriptText = data.transcript;
           uploaded = true;
         } catch (e) {
-          attempt++;  // a real failure — consumes one of the 3 ladder slots
+          _liveLastFailure = (e && e.message) ? e.message : String(e);
+          if (e && e.httpStatus === 503 && transientWaits++ < MAX_TRANSIENT_WAITS) {
+            const pause = Math.min(60000, 5000 * 2 ** Math.min(transientWaits - 1, 4));
+            status.textContent = `⚠ Transcription backend unavailable (${_liveLastFailure.slice(0, 160)}) — retrying in ${Math.round(pause / 1000)} s…`;
+            await new Promise(r => setTimeout(r, pause));
+            continue;  // attempt NOT incremented: waiting for the backend isn't a failed upload
+          }
+          if (e && e.httpStatus >= 400 && e.httpStatus < 500) {
+            attempt = 4;  // a setup problem (no key, model not downloaded, login expired…) — repeating cannot fix it; park the chunk with its reason showing
+          } else {
+            attempt++;  // a real failure — consumes one of the 3 ladder slots
+          }
           if (attempt > 3) {
             _liveFailedChunks.push(file);
           } else {
@@ -1585,6 +1660,7 @@ async function liveProcessQueue() {
       // items 3 and 4).
       if (uploaded) {
         try { liveSetTranscriptDisplay(transcriptText); } catch (e) { /* display-only — the chunk itself is already saved */ }
+        try { liveNoteTranscriptionSpeed(file, (Date.now() - uploadStartedAt) / 1000); } catch (e) { /* hint only */ }
       }
       _liveQueue.shift();
     }
@@ -1630,6 +1706,7 @@ function liveStartSegment() {
       const segFile = new File([blob], ndMicFilename(mimeType), { type: mimeType });
       segFile.ndRecordingId = _liveRecordingId;
       segFile.ndSegmentIndex = _liveSegmentIndex++;
+      segFile.ndSeconds = liveChunkSeconds();   // for the "transcription is slower than the recording" hint
       _liveQueue.push(segFile);
       liveProcessQueue().catch(e => console.error('live upload queue', e));
       if (_liveMicStream !== segStream) return;  // a superseded generation — recovery owns the chain now
@@ -1825,6 +1902,9 @@ async function toggleLiveRecording() {
   liveAcquireWakeLock();
   liveWatchMicTracks();
   liveStartSegment();
+  liveSetWarning('');
+  _liveSlowStreak = 0;
+  liveCheckBackend();   // non-blocking — recording is already running
 }
 
 // Populates the panel's raw-audio line (segment count, total size, download
