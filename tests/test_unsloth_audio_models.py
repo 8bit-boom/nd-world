@@ -417,6 +417,7 @@ def test_transcribe_unsloth_transcodes_then_splits(client, seed, monkeypatch, tm
         return "part text"
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setenv("STT_UPLOAD_FORMAT", "mp3")   # these tests describe the MP3 re-encode mechanics
     monkeypatch.setattr(ai_module, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
     monkeypatch.setattr("app.unsloth_extras.stt", fake_stt)
@@ -448,6 +449,7 @@ def test_transcribe_unsloth_transcode_failure_clear_error(client, seed, monkeypa
             "Convert it to MP3/OGG manually, or switch the STT backend to whisper.cpp.")
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setenv("STT_UPLOAD_FORMAT", "mp3")   # these tests describe the MP3 re-encode mechanics
     monkeypatch.setattr(ai_module, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
 

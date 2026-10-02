@@ -555,13 +555,26 @@ def _tts_output_format() -> str:
     return "wav" if (os.environ.get("TTS_OUTPUT_FORMAT") or "").strip().lower() == "wav" else "opus"
 
 
-def _opus_bitrate() -> str:
-    """TTS_OPUS_BITRATE as ffmpeg wants it ("48k"); anything but 6k-256k falls back to the default, so a
-    typo (or a hostile value) can never reach the command line."""
-    m = re.fullmatch(r"(\d{1,3})k", (os.environ.get("TTS_OPUS_BITRATE") or "").strip().lower())
-    if m and 6 <= int(m.group(1)) <= 256:
-        return f"{int(m.group(1))}k"
-    return _DEFAULT_OPUS_BITRATE
+_OPUS_MAX_REQUEST_KBPS = 512        # Opus' ceiling for a stereo stream
+_OPUS_MAX_KBPS_PER_CHANNEL = 256    # what ffmpeg's libopus accepts per channel (asking for more is an error)
+
+
+def _requested_opus_kbps() -> int:
+    """TTS_OPUS_BITRATE as kbit/s: "48k" ... "512k", or "max" (= 512k). Anything unparseable, or under 6k,
+    is the default; above 512k is clamped to 512k. Nothing but digits ever reaches the command line."""
+    raw = (os.environ.get("TTS_OPUS_BITRATE") or "").strip().lower()
+    if raw == "max":
+        return _OPUS_MAX_REQUEST_KBPS
+    m = re.fullmatch(r"(\d{1,4})k", raw)
+    if not m or int(m.group(1)) < 6:
+        return int(_DEFAULT_OPUS_BITRATE[:-1])
+    return min(int(m.group(1)), _OPUS_MAX_REQUEST_KBPS)
+
+
+def _opus_bitrate(channels: int = 1) -> str:
+    """The bitrate ffmpeg is actually given: the request, capped at 256k per channel. 512k is therefore
+    the stereo maximum - a mono clip (what TTS models produce) is capped at 256k, not failed."""
+    return f"{min(_requested_opus_kbps(), _OPUS_MAX_KBPS_PER_CHANNEL * max(1, channels))}k"
 
 
 async def _wav_to_opus(wav: bytes) -> bytes | None:
@@ -569,10 +582,11 @@ async def _wav_to_opus(wav: bytes) -> bytes | None:
     is missing, fails, times out or produces something that is not an Ogg stream - the caller keeps the WAV."""
     import asyncio as _asyncio
     proc = None
+    info = wav_info(wav)
     try:
         proc = await _asyncio.create_subprocess_exec(
             "ffmpeg", "-v", "error", "-f", "wav", "-i", "pipe:0",
-            "-vn", "-c:a", "libopus", "-b:a", _opus_bitrate(), "-f", "ogg", "pipe:1",
+            "-vn", "-c:a", "libopus", "-b:a", _opus_bitrate(info["channels"] if info else 1), "-f", "ogg", "pipe:1",
             stdin=_asyncio.subprocess.PIPE, stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.DEVNULL)
         out, _ = await _asyncio.wait_for(proc.communicate(wav), timeout=_OPUS_TIMEOUT_SECONDS)
     except Exception as exc:
@@ -760,8 +774,13 @@ async def tts_health(model: str, voice: str = "", instructions: str = "", langua
         else:
             message += f" Studio's audio: {sent_ct or 'unknown format'} (format details are read from WAV only)."
         if saved_ct == OPUS_CONTENT_TYPE:
-            result["saved_as"] = {"format": "opus", "bytes": len(saved), "bitrate": _opus_bitrate()}
-            message += f" Saved as: Ogg Opus at {_opus_bitrate()}, {len(saved)} bytes."
+            channels = info["channels"] if info else 1
+            used, wanted = _opus_bitrate(channels), f"{_requested_opus_kbps()}k"
+            result["saved_as"] = {"format": "opus", "bytes": len(saved), "bitrate": used, "requested": wanted}
+            message += f" Saved as: Ogg Opus at {used}, {len(saved)} bytes."
+            if used != wanted:
+                message += (f" (TTS_OPUS_BITRATE asks for {wanted}; Opus allows at most 256k per channel, "
+                            f"so a {channel_label(channels)} clip is capped at {used}.)")
         else:
             result["saved_as"] = {"format": "wav" if _is_wav(saved) else (saved_ct or "unknown"), "bytes": len(saved)}
             if not _is_wav(saved):

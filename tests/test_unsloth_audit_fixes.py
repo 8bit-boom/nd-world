@@ -448,6 +448,7 @@ def test_a_long_but_small_audio_file_is_split_before_transcription(tmp_path, mon
 
     monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
     monkeypatch.setattr(_ai, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setenv("STT_UPLOAD_FORMAT", "mp3")   # these tests describe the MP3 re-encode mechanics
     monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(ux, "stt", fake_stt)
     out = asyncio.run(_ai._transcribe_one_file(f))
@@ -498,7 +499,9 @@ def test_a_chunk_the_pipeline_cut_at_ten_minutes_is_one_request(tmp_path, monkey
 
     monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
     monkeypatch.setattr(_ai, "_split_audio_into_chunks", boom)
+    monkeypatch.setenv("STT_UPLOAD_FORMAT", "mp3")   # these tests describe the MP3 re-encode mechanics
     monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", boom)
+    monkeypatch.setattr(_ai, "_transcode_audio_to_opus", boom)
     monkeypatch.setattr(ux, "stt", fake_stt)
     assert asyncio.run(_ai._transcribe_one_file(f)) == "hi" and sent == ["chunk_0000.webm"]
 
@@ -529,6 +532,7 @@ def test_a_big_file_just_over_ten_minutes_is_not_split_into_a_sliver(tmp_path, m
         return "hi"
 
     monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
+    monkeypatch.setenv("STT_UPLOAD_FORMAT", "mp3")   # these tests describe the MP3 re-encode mechanics
     monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(_ai, "_split_audio_into_chunks", boom)
     monkeypatch.setattr(ux, "stt", fake_stt)

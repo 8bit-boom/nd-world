@@ -242,3 +242,48 @@ async def test_test_tts_still_reports_when_studio_audio_is_not_a_wav(monkeypatch
     out = await ux.tts_health("m")
     assert out["ok"] is True and "audio/mpeg" in out["message"] and "bytes" in out["message"]
     assert "audio" not in out or out["audio"].get("channels") is None
+
+
+# ── bitrate up to the Opus maximum ───────────────────────────────────────────
+# ffmpeg's libopus takes 500..256000 bps PER CHANNEL: 512k is the stereo ceiling, a mono clip tops out at 256k
+# (asking ffmpeg for more is an error, which would silently turn into "keep the WAV").
+
+@pytest.mark.parametrize("raw, channels, expected", [
+    ("512k", 1, "256k"), ("512k", 2, "512k"), ("max", 1, "256k"), ("MAX", 2, "512k"),
+    ("600k", 2, "512k"), ("1000k", 2, "512k"),                    # above the ceiling: clamped, not ignored
+    ("256k", 1, "256k"), ("200k", 1, "200k"), ("200k", 2, "200k"), ("128k", 1, "128k"),
+    ("64K", 1, "64k"), ("6k", 1, "6k"),
+    ("5k", 1, "48k"), ("0", 1, "48k"), ("", 1, "48k"), ("fast", 1, "48k"), ("-5k", 1, "48k"),
+    ("999999k", 1, "48k"), ("48k; rm -rf /", 1, "48k"),            # unparseable or too small: the default
+])
+def test_the_opus_bitrate_is_clamped_to_what_the_channels_allow(monkeypatch, raw, channels, expected):
+    monkeypatch.setenv("TTS_OPUS_BITRATE", raw)
+    assert ux._opus_bitrate(channels) == expected
+
+
+@needs_opus
+def test_the_maximum_bitrate_works_for_mono_and_stereo_with_real_ffmpeg(monkeypatch):
+    monkeypatch.setenv("TTS_OPUS_BITRATE", "512k")
+    mono = asyncio.run(ux._wav_to_opus(_make_wav(channels=1, rate=24000, seconds=2.0)))
+    stereo = asyncio.run(ux._wav_to_opus(_make_wav(channels=2, rate=44100, seconds=2.0)))
+    assert mono and mono[:4] == b"OggS", "512k asked of a mono clip must be capped, not fail into 'keep the WAV'"
+    assert stereo and stereo[:4] == b"OggS"
+
+
+@pytest.mark.asyncio
+async def test_test_tts_says_when_the_bitrate_was_capped(monkeypatch):
+    _reset_auth_state(monkeypatch)
+    wav = _make_wav(channels=1, rate=24000, seconds=1.0)
+    _patch_transport(monkeypatch, lambda r: httpx.Response(200, content=wav, headers={"content-type": "audio/wav"}))
+
+    async def convert(w):
+        return OPUS
+    monkeypatch.setattr(ux, "_wav_to_opus", convert)
+    monkeypatch.delenv("TTS_OUTPUT_FORMAT", raising=False)
+    monkeypatch.setenv("TTS_OPUS_BITRATE", "max")
+    out = await ux.tts_health("m")
+    assert "256k" in out["message"] and "mono" in out["message"] and "512k" in out["message"], out["message"]
+    assert out["saved_as"]["bitrate"] == "256k" and out["saved_as"]["requested"] == "512k"
+    monkeypatch.setenv("TTS_OPUS_BITRATE", "96k")
+    out = await ux.tts_health("m")
+    assert "96k" in out["message"] and "capped" not in out["message"], out["message"]

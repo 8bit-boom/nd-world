@@ -4495,9 +4495,10 @@ def _plan_unsloth_chunks(file_size: int, duration: float | None) -> float | None
 
 async def _transcode_audio_to_mp3(path: Path, tmpdir: Path) -> Path:
     """Re-encode to 16 kHz mono MP3 at 64 kbps — transcription-grade audio
-    at ~8 KB/second, which shrinks a music-grade FLAC roughly 10x. Raises
-    SttError with the actionable reason if ffmpeg is missing or lacks
-    the MP3 encoder."""
+    at ~8 KB/second, which shrinks a music-grade FLAC roughly 10x. The
+    fallback for _transcode_audio_to_opus (STT_UPLOAD_FORMAT=mp3, or Studio
+    refused Opus). Raises SttError with the actionable reason if ffmpeg is
+    missing or lacks the MP3 encoder."""
     import asyncio
     out = tmpdir / (path.stem + "-nd-stt.mp3")
     try:
@@ -4520,6 +4521,109 @@ async def _transcode_audio_to_mp3(path: Path, tmpdir: Path) -> Path:
     return out
 
 
+# What oversized or long audio is re-encoded to before it is sent to Studio. Opus is the best lossy format for
+# speech: measured against MP3, AAC, Vorbis and Speex on the same speech, Opus at 24 kbps is ~2.9x smaller than
+# the old 64 kbps MP3 with higher intelligibility (STOI .995 vs 1.000 on clean speech, i.e. indistinguishable,
+# and a lower spectral distortion), 16 kbps is ~4x smaller and still ~.99. Studio has not been verified to
+# decode Ogg Opus uploads, so a refusal falls back to the MP3 path (see _OpusUnusable) and is remembered.
+# STT_UPLOAD_FORMAT=mp3 skips Opus; STT_OPUS_BITRATE (8k-128k, default 24k) is the size/fidelity trade.
+_DEFAULT_STT_OPUS_KBPS = 24
+# Studio statuses that can mean "I could not read that file" - tried again as MP3. Setup problems (401, 409
+# model not downloaded), overload (429) and unreachable (503) are NOT format problems and are never retried.
+_UPLOAD_REJECTION_STATUSES = (400, 415, 422, 500)
+_stt_opus_rejected = False   # set once MP3 got through where Opus did not; until restart, go straight to MP3
+
+
+class _OpusUnusable(Exception):
+    """The Opus re-encode could not be made or Studio refused it - the same audio is retried as MP3."""
+
+
+def _stt_upload_format() -> str:
+    if _stt_opus_rejected:
+        return "mp3"
+    return "mp3" if (os.getenv("STT_UPLOAD_FORMAT") or "").strip().lower() == "mp3" else "opus"
+
+
+def _stt_opus_kbps() -> int:
+    m = re.fullmatch(r"(\d{1,3})k", (os.getenv("STT_OPUS_BITRATE") or "").strip().lower())
+    if not m or int(m.group(1)) < 8:
+        return _DEFAULT_STT_OPUS_KBPS
+    return min(int(m.group(1)), 128)
+
+
+async def _transcode_audio_to_opus(path: Path, tmpdir: Path) -> Path:
+    """Re-encode to 16 kHz mono Opus in an Ogg container (.ogg - the extension a decoder is most likely to
+    recognise; browsers' own Firefox recordings arrive the same way), ~3 KB/s at the default 24k. Audio only
+    (-vn), so a video container works. Raises _OpusUnusable when ffmpeg or its libopus encoder is missing -
+    the caller then uses MP3, whose own failure is the one reported."""
+    import asyncio
+    out = tmpdir / (path.stem + "-nd-stt.ogg")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-v", "error", "-i", str(path), "-vn",
+            "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", f"{_stt_opus_kbps()}k",
+            "-application", "voip", "-f", "ogg", str(out),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        _, _ = await proc.communicate()
+    except FileNotFoundError as exc:
+        raise _OpusUnusable("ffmpeg is not installed") from exc
+    if proc.returncode != 0 or not out.is_file():
+        raise _OpusUnusable("ffmpeg could not encode Opus (is it built with libopus?)")
+    return out
+
+
+async def _transcode_audio_for_stt(path: Path, tmpdir: Path, fmt: str) -> Path:
+    return await (_transcode_audio_to_opus if fmt == "opus" else _transcode_audio_to_mp3)(path, tmpdir)
+
+
+async def _stt_send_parts(parts: list, opus: bool) -> str:
+    """Each piece to Studio in order, newline-joined. For an Opus upload, a status that can mean "could not
+    read that file" raises _OpusUnusable (caller retries as MP3); every other failure is the SttError it
+    always was."""
+    from . import unsloth_extras as _unsloth_extras
+    texts = []
+    for part in parts:
+        try:
+            text = await _unsloth_extras.stt(part.read_bytes(), part.name, model=get_stt_model())
+        except _unsloth_extras.StudioError as exc:
+            if opus and exc.status_code in _UPLOAD_REJECTION_STATUSES:
+                raise _OpusUnusable(f"Studio answered {exc.status_code}: {exc}") from exc
+            raise SttError(f"Unsloth Studio STT: {exc}",
+                           retryable=exc.unreachable or _status_is_transient(exc.status_code)) from exc
+        texts.append((text or "").strip())
+    return chr(10).join(t for t in texts if t)
+
+
+async def _transcribe_reencoded(path: Path, duration: float, fmt: str) -> str:
+    """Re-encode `path` to `fmt` ("opus" | "mp3"), split what is still too big or too long, send the pieces."""
+    import shutil
+    import tempfile
+    tmpdir = Path(tempfile.mkdtemp(prefix="nd-stt-"))
+    cleanup_dirs = [tmpdir]
+    try:
+        small = await _transcode_audio_for_stt(path, tmpdir, fmt)
+        # Piece length is capped by DURATION as well as size: a single
+        # request carrying an hour of audio can outrun even a long read
+        # timeout on a CPU-only box (observed live: a Qwen3-ASR job
+        # died at the old 600 s read timeout). ~10 min per request
+        # keeps each call comfortably inside the budget and makes
+        # retries cheap (the audio-jobs pipeline re-runs pieces).
+        if small.stat().st_size <= _UNSLOTH_STT_MAX_BYTES and duration <= _UNSLOTH_STT_SPLIT_ABOVE_SECONDS:
+            parts = [small]
+        else:
+            size_plan = _plan_unsloth_chunks(small.stat().st_size, duration)
+            chunk_seconds = min(size_plan or _UNSLOTH_STT_CHUNK_SECONDS, _UNSLOTH_STT_CHUNK_SECONDS)
+            pieces, split_dir = await _split_audio_into_chunks(small, chunk_seconds)
+            if split_dir:
+                cleanup_dirs.append(split_dir)
+            parts = pieces
+        return await _stt_send_parts(parts, opus=(fmt == "opus"))
+    finally:
+        for d in cleanup_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 async def _transcribe_one_file(path: Path) -> str:
     """One audio file through Studio's /v1/audio/transcriptions (OpenAI
     multipart dialect — file + model, verified Phase 0.5). The `model`
@@ -4531,66 +4635,43 @@ async def _transcribe_one_file(path: Path) -> str:
 
     Studio rejects request bodies over 25 MiB, so oversized files (the
     typical case: a long session recorded as high-bitrate FLAC) are first
-    re-encoded to compact mono MP3 — lossless FLAC at music-grade bitrate
-    shrinks ~10x for speech — and then, if the MP3 is still over the
-    limit, split proportionally with the existing ffmpeg segment
-    machinery. All pieces are transcribed in order and joined with
-    newlines, so a multi-hour recording transcribes as one transcript."""
-    from . import unsloth_extras as _unsloth_extras
+    re-encoded to compact mono Opus (MP3 as the fallback, see
+    _transcode_audio_to_opus) — lossless FLAC at music-grade bitrate
+    shrinks ~30x for speech — and then, if that is still over the
+    limit or longer than ~15 minutes, split into ~10 minute pieces with the
+    existing ffmpeg segment machinery. All pieces are transcribed in order
+    and joined with newlines, so a multi-hour recording transcribes as one
+    transcript. A file that fits is sent exactly as it is."""
+    global _stt_opus_rejected
     if not effective_llm_api_key():
         raise SttError("STT backend is set to Unsloth but no UNSLOTH_API_KEY is configured (Settings → System).")
     if not path.is_file():
         raise SttError(f"Audio file not found: {path.name}")
 
-    parts = [path]
-    cleanup_dirs = []
-    try:
-        size = path.stat().st_size
-        # A file can be under the byte limit and still be hours long (a
-        # low-bitrate recording): one request carrying that much audio
-        # outruns the read timeout, so duration decides as well as size.
-        duration = await _probe_audio_duration(path)
-        if size > _UNSLOTH_STT_MAX_BYTES or (duration and duration > _UNSLOTH_STT_SPLIT_ABOVE_SECONDS):
-            if not duration or duration <= 0:
-                raise SttError(
-                    f"{path.name} is {(path.stat().st_size + 1048575) // 1048576} MiB — over Unsloth "
-                    "Studio's 25 MiB transcription request limit — and its duration "
-                    "couldn't be read to split it (ffmpeg/ffprobe missing?). Convert it "
-                    "to MP3/OGG first.")
-            import tempfile
-            tmpdir = Path(tempfile.mkdtemp(prefix="nd-stt-"))
-            cleanup_dirs.append(tmpdir)
-            mp3 = await _transcode_audio_to_mp3(path, tmpdir)
-            # Piece length is capped by DURATION as well as size: a single
-            # request carrying an hour of audio can outrun even a long read
-            # timeout on a CPU-only box (observed live: a Qwen3-ASR job
-            # died at the old 600 s read timeout). ~10 min per request
-            # keeps each call comfortably inside the budget and makes
-            # retries cheap (the audio-jobs pipeline re-runs pieces).
-            if (mp3.stat().st_size <= _UNSLOTH_STT_MAX_BYTES
-                    and duration <= _UNSLOTH_STT_SPLIT_ABOVE_SECONDS):
-                parts = [mp3]
-            else:
-                size_plan = _plan_unsloth_chunks(mp3.stat().st_size, duration)
-                chunk_seconds = min(size_plan or _UNSLOTH_STT_CHUNK_SECONDS,
-                                     _UNSLOTH_STT_CHUNK_SECONDS)
-                mp3_parts, split_dir = await _split_audio_into_chunks(mp3, chunk_seconds)
-                if split_dir:
-                    cleanup_dirs.append(split_dir)
-                parts = mp3_parts
-        texts = []
-        for part in parts:
-            try:
-                text = await _unsloth_extras.stt(part.read_bytes(), part.name, model=get_stt_model())
-            except _unsloth_extras.StudioError as exc:
-                raise SttError(f"Unsloth Studio STT: {exc}",
-                                   retryable=exc.unreachable or _status_is_transient(exc.status_code)) from exc
-            texts.append((text or "").strip())
-        return chr(10).join(t for t in texts if t)
-    finally:
-        import shutil
-        for d in cleanup_dirs:
-            shutil.rmtree(d, ignore_errors=True)
+    size = path.stat().st_size
+    # A file can be under the byte limit and still be hours long (a
+    # low-bitrate recording): one request carrying that much audio
+    # outruns the read timeout, so duration decides as well as size.
+    duration = await _probe_audio_duration(path)
+    if not (size > _UNSLOTH_STT_MAX_BYTES or (duration and duration > _UNSLOTH_STT_SPLIT_ABOVE_SECONDS)):
+        return await _stt_send_parts([path], opus=False)
+    if not duration or duration <= 0:
+        raise SttError(
+            f"{path.name} is {(size + 1048575) // 1048576} MiB — over Unsloth "
+            "Studio's 25 MiB transcription request limit — and its duration "
+            "couldn't be read to split it (ffmpeg/ffprobe missing?). Convert it "
+            "to MP3/OGG first.")
+    fmt = _stt_upload_format()
+    if fmt == "opus":
+        try:
+            return await _transcribe_reencoded(path, duration, "opus")
+        except _OpusUnusable as exc:
+            _log.warning("Opus upload for %s not usable (%s) - retrying as MP3", path.name, exc)
+        text = await _transcribe_reencoded(path, duration, "mp3")
+        _stt_opus_rejected = True      # MP3 got through where Opus did not: stop trying Opus until restart
+        _log.warning("Studio took the MP3 but not the Opus re-encode: using MP3 for oversized audio from now on")
+        return text
+    return await _transcribe_reencoded(path, duration, "mp3")
 
 
 async def transcribe_audio(path: Path, on_progress=None, on_checkpoint=None, should_stop=None,

@@ -443,9 +443,37 @@ browser records) every time a recording starts.
 - `STT_JOB_CONCURRENCY` (default 1) — how many background jobs may talk to the
   speech model at once. (`WHISPER_CHUNK_SECONDS` / `WHISPER_JOB_CONCURRENCY` are
   still read as the old names.)
-- Studio rejects a request body over 25 MiB: larger files are re-encoded to a
-  compact mono MP3 and split automatically (needs `ffmpeg`, which the image
-  includes).
+- Studio rejects a request body over 25 MiB: larger files (and anything over about
+  15 minutes) are re-encoded to compact mono **Opus** (16 kHz, about 3 KB per second)
+  and split into ~10 minute pieces automatically (needs `ffmpeg`, which the image
+  includes). A file that fits is sent exactly as it is.
+- `STT_OPUS_BITRATE` (default `24k`, range `8k`-`128k`) - size versus fidelity of that
+  re-encode. `STT_UPLOAD_FORMAT=mp3` uses the old 64 kbps MP3 instead.
+- Studio has not been verified to decode Ogg Opus uploads. If it refuses one
+  (HTTP 400/415/422/500) the same audio is retried as MP3, and from then on, until the
+  container restarts, oversized audio goes straight to MP3 (a log line says so). A
+  `409` (model not downloaded), a `401` or an unreachable Studio is never treated as
+  a format problem.
+
+Why Opus: on the same speech, 16 kHz mono, measured with the STOI intelligibility
+score (1.0 = identical) and log-spectral distance (lower is better):
+
+| format | bytes/s | vs. old MP3 | STOI | spectral dist. |
+|---|---|---|---|---|
+| MP3 64k (old) | 8038 | 1.0x | 1.000 | 7.8 dB |
+| MP3 24k | 3018 | 2.7x smaller | 0.992 | 20.5 dB |
+| AAC 24k | 3698 | 2.2x | 0.959 | 8.3 dB |
+| Vorbis 24k | 2926 | 2.7x | 0.989 | 13.3 dB |
+| Speex 24k | 3086 | 2.6x | 0.978 | 8.9 dB |
+| **Opus 24k (new)** | **2736** | **2.9x** | **0.995** | **5.9 dB** |
+| Opus 16k | 1932 | 4.2x | 0.989 | 7.1 dB |
+| Opus 12k | 1507 | 5.3x | 0.977 | 8.1 dB |
+| Opus 8k | 1030 | 7.8x | 0.947 | 21.2 dB |
+
+(Synthetic speech, two voices, clean and with room noise - the noisy run ranks the codecs
+the same way. This measures how much each codec changes the audio, not Whisper's word
+error rate; below 16k the loss starts to show.) Pieces are capped at ten minutes either way,
+so the gain is smaller files to move and store, not fewer requests.
 
 ### Text-to-speech output (Opus)
 
@@ -454,7 +482,9 @@ stored - NPC voice lines, read-aloud passages, recap songs, spoken NPC replies -
 `ffmpeg` to **Ogg Opus** (`.opus`): roughly 7x smaller than the WAV and cleaner than MP3 at any size. If
 `ffmpeg` is missing or fails, the WAV is kept (nothing is lost), and Settings → *Test TTS* says so.
 
-- `TTS_OPUS_BITRATE` (default `48k`, accepted range `6k`-`256k`) - size versus fidelity.
+- `TTS_OPUS_BITRATE` (default `48k`; `6k` to `512k`, or `max`) - size versus fidelity. Opus
+  allows 256k **per channel**, so `512k` is the stereo ceiling: a mono clip (what TTS models
+  produce) is capped at 256k, and Settings → *Test TTS* says when that happened.
 - `TTS_OUTPUT_FORMAT=wav` - skip the conversion and keep Studio's WAV. Use this if someone at the table has a
   browser or phone that cannot play Opus (older iOS/Safari).
 

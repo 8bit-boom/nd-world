@@ -76,6 +76,13 @@ _GM_PASSWORD_HASH = auth.hash_password(GM_PASSWORD)
 _PLAYER_PASSWORD_HASH = auth.hash_password(PLAYER_PASSWORD)
 
 
+@pytest.fixture(autouse=True)
+def _reset_stt_upload_state(monkeypatch):
+    """app.ai remembers (until restart) that Studio refused an Opus re-encode. That is process-wide state; a test
+    that triggers it must not decide what the tests after it do."""
+    monkeypatch.setattr(ai_module, "_stt_opus_rejected", False)
+
+
 @pytest.fixture()
 def client():
     """A TestClient against a freshly emptied database and uploads dir — every
