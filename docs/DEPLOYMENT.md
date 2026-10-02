@@ -75,6 +75,14 @@ backend for both AI chat and image generation. After `docker compose up -d`:
 
 Remember: Studio API keys do not survive container recreation — after a
 Studio rebuild, create a fresh key and update Settings.
+The key box has its own **Save & verify key** button — it is not part of the big
+Settings Save or of *Save Studio settings*. Studio is asked about a pasted key
+first: a key it rejects (*Invalid or expired API key*) is **not** saved, so a
+mistyped paste can't replace a working key, and the status line under the box says
+which Studio URL was asked and which key is in use. A key saved in Settings
+**overrides** `UNSLOTH_API_KEY` from `.env` — if you put a fresh key in `.env` after
+recreating Studio, press **Remove saved key** (or paste it into the box) or the old,
+dead one stays in force.
 
 `docker-compose.yml` takes the Studio image from `UNSLOTH_IMAGE` (default
 `unsloth/unsloth:latest`, a moving tag — pin one that works for you once you

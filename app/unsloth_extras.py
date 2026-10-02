@@ -468,6 +468,33 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = "mp
     return audio, resp.headers.get("content-type", "audio/mpeg")
 
 
+async def verify_key(key: str | None = None) -> dict:
+    """Ask Studio one authenticated question and say what it answered: {ok, status, message, url} (+
+    `unreachable` when nothing answered). With no argument it checks the key currently in effect and
+    feeds the 'Studio rejected the key' banner; with `key` it checks a CANDIDATE without touching any
+    state, so a pasted key can be tried before it replaces a working one. Never raises."""
+    url = effective_llm_url()
+    using_effective = key is None
+    key = effective_llm_api_key() if using_effective else key
+    if not key:
+        return {"ok": False, "status": 0, "url": url, "message": "No Studio API key is set."}
+    try:
+        async with _httpx.AsyncClient(timeout=_PROBE_TIMEOUT, follow_redirects=True) as c:
+            resp = await c.get(f"{url}/api/hub/cached-gguf", headers=_headers(key))
+    except _httpx.HTTPError as exc:
+        return {"ok": False, "status": 503, "url": url, "unreachable": True,
+                "message": f"Unsloth Studio unreachable at {url}: {type(exc).__name__}: {exc}"}
+    if resp.status_code == 401:
+        if using_effective:
+            _note_auth_failure()
+        return {"ok": False, "status": 401, "url": url, "message": _error_message(resp)}
+    if resp.status_code >= 400:
+        return {"ok": False, "status": resp.status_code, "url": url, "message": _error_message(resp)}
+    if using_effective:
+        _note_auth_ok()
+    return {"ok": True, "status": 200, "url": url, "message": "Studio accepted the key."}
+
+
 def _tone_wav_bytes(seconds: float = 1.0) -> bytes:
     """A tiny in-memory WAV (16 kHz mono, soft sine tone) for health checks
     — no fixture file to ship, transcribes on Studio in ~a second even on
@@ -542,7 +569,42 @@ async def stt_health(model: str, fmt: str = "wav") -> dict:
                                         "(UNSLOTH_HEALTHCHECK_TIMEOUT_SECONDS) — the backend may be "
                                         "cold, very slow, or wedged."}
     except StudioError as exc:
-        return {"ok": False, "status": exc.status_code, "message": str(exc)}
+        message = str(exc)
+        if exc.status_code == 409 and "not downloaded" in message.lower():
+            message = f"{message} {await _stt_not_downloaded_hint(model)}".strip()
+        return {"ok": False, "status": exc.status_code, "message": message}
+
+
+# The names Studio's /v1/audio/transcriptions accepts for its Whisper models.
+_STT_API_NAMES = ("large-v3-turbo", "large-v3", "turbo", "medium", "small", "base", "tiny", "large")
+
+
+async def _stt_not_downloaded_hint(model: str) -> str:
+    """Studio answers 409 "not downloaded" both when a model really is missing and when it is on disk
+    but not loadable through the OpenAI-style API (seen with Qwen3-ASR: listed "On Device" in Studio's
+    own UI, refused here — docs/UNSLOTH_PHASE0_FINDINGS.md). Tell the two apart by listing what Studio
+    has, and name the Whisper models that do work. Best effort: any failure just returns the plain advice."""
+    try:
+        rows = (await audio_models()).get("stt") or []
+    except Exception:
+        return "Download it in Studio (Settings → Voice) and try again."
+    repo_ids = [str(r.get("repo_id") or "") for r in rows]
+    wanted = (model or "").strip().lower()
+    listed = any(r.lower() == wanted or r.lower().rsplit("/", 1)[-1] == wanted.rsplit("/", 1)[-1] for r in repo_ids)
+    if not listed:
+        return "Download it in Studio first (Settings → Voice), then test again."
+    # "unsloth/whisper-large-v3-turbo" is spelled "large-v3-turbo" in the API
+    on_device = []
+    for r in repo_ids:
+        base = r.rsplit("/", 1)[-1].lower()
+        if "whisper" in base:
+            name = base.replace("whisper-", "", 1)
+            if name in _STT_API_NAMES and name not in on_device:
+                on_device.append(name)
+    use = ", ".join(on_device) if on_device else "large-v3-turbo"
+    qwen = (" This is how Qwen3-ASR behaves on the Studio builds tested so far." if "qwen" in wanted else "")
+    return (f"Studio lists this model as on device, but its OpenAI-compatible API refused it.{qwen} "
+            f"Pick a Whisper model instead — on your device: {use} — and test again.")
 
 
 async def tts_health(model: str, voice: str = "", instructions: str = "", language: str = "") -> dict:

@@ -176,18 +176,22 @@
       {% endif %}
       <div class="form-group">
         <label for="llm-api-key">Unsloth Studio API key (AI backend — blank = legacy Ollama/SwarmUI)</label>
-        <input id="llm-api-key" name="llm_api_key" type="password" autocomplete="new-password"
-               placeholder="{% if llm_key_hint %}saved key {{ llm_key_hint }} — type a new one to replace it{% elif env_unsloth_key_hint %}from the environment ({{ env_unsloth_key_hint }}){% else %}not set{% endif %}">
-        {% if llm_key_hint %}
-        <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.78rem;color:var(--text-dim);margin-top:.3rem;cursor:pointer">
-          <input type="checkbox" name="llm_api_key_clear" value="1" style="width:auto"> remove the saved key (fall back to the environment's, or the legacy backend)
-        </label>
-        {% endif %}
+        {# No name= on purpose: this box is saved ONLY by its own button below, never by the big Save (or
+           filled in by a password manager). The saved key is never printed back - only its last 4 characters. #}
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <input id="llm-api-key" type="password" autocomplete="off" spellcheck="false"
+                 data-lpignore="true" data-1p-ignore="true" data-bwignore="true" style="flex:1 1 18rem;min-width:14rem"
+                 placeholder="{% if llm_key_hint %}saved key {{ llm_key_hint }} — paste a new one to replace it{% elif env_unsloth_key_hint %}from the environment ({{ env_unsloth_key_hint }}){% else %}paste the key from Studio → Settings → API{% endif %}">
+          <button type="button" class="btn-primary" id="llm-key-save">Save &amp; verify key</button>
+          {% if llm_key_hint %}<button type="button" class="btn-secondary" id="llm-key-clear" title="Forget the key saved here (UNSLOTH_API_KEY from the environment, if any, takes over)">Remove saved key</button>{% else %}<button type="button" class="btn-secondary" id="llm-key-clear" style="display:none">Remove saved key</button>{% endif %}
+        </div>
+        <div id="llm-key-status" role="status" style="font-size:.8rem;margin-top:.35rem;color:var(--text-dim)"></div>
         <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">
-          Setting this switches AI chat, embeddings and image generation to Unsloth Studio
+          Setting this switches AI chat, embeddings, image generation and speech-to-text to Unsloth Studio
           (see the <code>unsloth</code> service in docker-compose.yml). Create the key in
           Studio → Settings → API. The key does not survive container recreation — after a
-          redeploy, re-create it here.
+          redeploy, create a new one and use <strong>Save &amp; verify key</strong>: Studio is asked
+          first, and a key it rejects does not replace the one that is saved.
         </small>
       </div>
       <div class="form-group">
@@ -1135,6 +1139,7 @@ function ndCopyRestartCmd() {
   }
 
   function loadPrefs() {
+    checkKeyNow();
     // Studio-side auto-switch state (404/400 when no backend — degrade)
     fetch('/api/ai/unsloth/auto-switch').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(d => {
       el('studio-autoswitch').checked = !!d.enabled;
@@ -1272,7 +1277,62 @@ function ndCopyRestartCmd() {
     }
   }
 
+  // ── Studio API key: save & verify ─────────────────────────────────────────
+  // The key box is NOT part of the big form and not part of "Save Studio settings" - this is the only
+  // way it is saved, and Studio is asked first (a key it rejects does not replace the saved one).
+  let savedKeyHint = {{ (llm_key_hint or '')|tojson }};
+  const keyBox = el('llm-api-key');
+  const keyStatus = el('llm-key-status');
+  const showKeyInfo = (d) => {
+    keyStatus.style.color = d.ok ? '#6ecf6e' : '#e07070';
+    let text = (d.ok ? '✓ ' : '✗ ') + (d.message || '');
+    if (d.explain && !(d.message || '').includes(d.explain)) text += '  ' + d.explain;
+    if (d.url) text += '  (Studio at ' + d.url + ')';
+    keyStatus.textContent = text;
+  };
+  const setSavedHint = (hint) => {
+    savedKeyHint = hint || '';
+    keyBox.placeholder = savedKeyHint ? ('saved key ' + savedKeyHint + ' — paste a new one to replace it') : 'paste the key from Studio → Settings → API';
+    el('llm-key-clear').style.display = savedKeyHint ? '' : 'none';
+  };
+  async function checkKeyNow() {
+    try {
+      const r = await fetch('/api/ai/unsloth/key-check');
+      if (r.ok) showKeyInfo(await r.json());
+    } catch (e) { /* unreachable settings API: leave the line empty */ }
+  }
+  async function postKey(body) {
+    keyStatus.style.color = '';
+    keyStatus.textContent = 'Asking Studio…';
+    try {
+      const r = await fetch('/settings/system/studio-key', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { keyStatus.style.color = '#e07070'; keyStatus.textContent = '✗ ' + (d.detail || ('HTTP ' + r.status)); return; }
+      if (d.saved) keyBox.value = '';
+      if (d.saved || body.clear) setSavedHint(d.saved_hint);
+      showKeyInfo(d);
+    } catch (e) {
+      keyStatus.style.color = '#e07070';
+      keyStatus.textContent = '✗ ' + e.message;
+    }
+  }
+  el('llm-key-save').addEventListener('click', () => postKey({ api_key: keyBox.value }));
+  el('llm-key-clear').addEventListener('click', () => {
+    if (confirm('Remove the key saved in Settings? (UNSLOTH_API_KEY from the environment, if there is one, takes over.)')) postKey({ clear: true });
+  });
+  // Enter in the box must not submit the big form (which does not carry this key) - it saves the key.
+  keyBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el('llm-key-save').click(); } });
+
   saveBtn.addEventListener('click', async () => {
+    // A key typed above but not yet saved is the usual reason "Invalid or expired API key" comes back from
+    // this button: it talks to Studio with the SAVED key, never the box. Stop before sending anything.
+    if (keyBox.value.trim()) {
+      status('⚠ You pasted an API key above that has not been saved yet — press “Save & verify key” first. Nothing was sent to Studio.', false);
+      keyBox.focus();
+      return;
+    }
     saveBtn.disabled = true;
     status('Saving…', true);
     try {
@@ -1285,6 +1345,10 @@ function ndCopyRestartCmd() {
           auto_unload_idle_seconds: parseInt(el('studio-idle-unload').value || '0', 10) || 0,
         }),
       });
+      if (r1.status === 401) {
+        throw new Error('Studio rejected the saved API key' + (savedKeyHint ? ' (' + savedKeyHint + ')' : '') +
+          ' — paste a fresh one in the API key box above and press “Save & verify key”.');
+      }
       if (!r1.ok) {
         const t = await r1.text();
         throw new Error('Studio: ' + t.slice(0, 200));

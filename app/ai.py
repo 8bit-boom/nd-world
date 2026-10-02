@@ -97,6 +97,26 @@ def effective_llm_api_key() -> str:
     return _llm_api_key_override or UNSLOTH_API_KEY
 
 
+def key_hint(key: str | None) -> str:
+    """'…ab78' for a secret — its last 4 characters and nothing else (empty for no
+    key; a very short value shows no characters at all). Enough to recognise a key
+    against Studio's key list, never enough to use it."""
+    key = (key or "").strip()
+    if not key:
+        return ""
+    return "…" + key[-4:] if len(key) >= 12 else "…"
+
+
+def llm_key_sources() -> dict:
+    """Which Studio API key is in effect and where it came from. A key saved in
+    Settings wins over UNSLOTH_API_KEY from the environment (see
+    effective_llm_api_key), so a fresh key put in .env is ignored while an old one
+    is still saved in Settings — worth showing, not guessing at."""
+    saved, env = _llm_api_key_override or "", UNSLOTH_API_KEY or ""
+    in_use = "settings" if saved else ("env" if env else "none")
+    return {"in_use": in_use, "saved_hint": key_hint(saved), "env_hint": key_hint(env)}
+
+
 def effective_llm_url() -> str:
     if _llm_url_override:
         return _llm_url_override

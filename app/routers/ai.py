@@ -3424,6 +3424,25 @@ async def unsloth_prefs_get():
     }
 
 
+@router.get("/unsloth/key-check")
+async def unsloth_key_check():
+    """Which Studio API key is in effect (saved in Settings vs UNSLOTH_API_KEY from the environment -
+    the saved one wins), which Studio URL it is sent to, and what Studio answers to it right now.
+    Never prints a key: only its last 4 characters. GM-only."""
+    from .. import unsloth_extras as _ux
+    res = await _ux.verify_key()
+    info = {**res, **_ai.llm_key_sources()}
+    if info["in_use"] == "settings":
+        info["explain"] = f"Using the key saved in Settings ({info['saved_hint']})." + (
+            f" It overrides UNSLOTH_API_KEY from the environment ({info['env_hint']}) - remove the saved key to use the environment's."
+            if info["env_hint"] else "")
+    elif info["in_use"] == "env":
+        info["explain"] = f"Using UNSLOTH_API_KEY from the environment ({info['env_hint']}); no key is saved in Settings."
+    else:
+        info["explain"] = "No Studio API key is set."
+    return info
+
+
 @router.get("/unsloth/auth-status")
 async def unsloth_auth_status():
     """Whether Studio has rejected the API key (401) with no successful

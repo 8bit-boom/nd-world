@@ -4307,15 +4307,6 @@ _UPLOAD_LIMIT_FIELDS = (
 )
 
 
-def _key_hint(key: str | None) -> str:
-    """'…ab78' for a secret — its last 4 characters and nothing else (empty
-    for no key; a very short value shows no characters at all)."""
-    key = (key or "").strip()
-    if not key:
-        return ""
-    return "…" + key[-4:] if len(key) >= 12 else "…"
-
-
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
@@ -4357,8 +4348,8 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         # Never the keys themselves: an API key printed into the page lands in
         # browser autofill, screenshots, page-source copies and proxy logs.
         # The template shows only the last characters, enough to recognise it.
-        "llm_key_hint": _key_hint(settings.llm_api_key),
-        "env_unsloth_key_hint": _key_hint(_ai_module.UNSLOTH_API_KEY),
+        "llm_key_hint": _ai_module.key_hint(settings.llm_api_key),
+        "env_unsloth_key_hint": _ai_module.key_hint(_ai_module.UNSLOTH_API_KEY),
         # When Unsloth is configured, the legacy Ollama/SwarmUI sections are
         # hidden from the Settings UI entirely (the deployment doesn't use
         # them; the form routes still accept the fields for API compat).
@@ -4475,6 +4466,84 @@ def _parse_optional_number(label: str, raw: str, kind=float, lo=None, hi=None):
     if hi is not None and val > hi:
         return None, f"{label} must be at most {hi}"
     return val, None
+
+
+def _clean_pasted_key(raw: str) -> str:
+    """What a person pastes is rarely just the key: surrounding whitespace/newlines, a copied
+    'Bearer ' prefix, or quotes around it. Strip those; a key never contains whitespace, so anything
+    left with some is two things pasted together (HTTPException 400 says so)."""
+    key = (raw or "").strip()
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'`":
+        key = key[1:-1].strip()
+    if not key:
+        raise HTTPException(400, "Paste the API key first (Studio → Settings → API → create a key).")
+    if any(ch.isspace() for ch in key):
+        raise HTTPException(400, "A Studio API key has no spaces or line breaks - check that only the key was pasted.")
+    return key
+
+
+@app.post("/settings/system/studio-key")
+async def settings_studio_key(request: Request, db: Session = Depends(get_db)):
+    """Save (or remove) the Unsloth Studio API key and say at once whether Studio accepts it.
+
+    The key box is deliberately NOT part of the big Settings form: it is write-only (the saved key is
+    never printed back), and a box inside a form that other buttons can submit - or that a password
+    manager can fill - is how a working key gets replaced by something else. A pasted key is checked
+    with Studio BEFORE it replaces the saved one: a key Studio rejects (401) is not saved, and the
+    message says the saved key was left unchanged. If Studio can't be asked at all (down, restarting)
+    the key is saved - nothing says it is wrong, and losing a pasted key helps nobody."""
+    from . import unsloth_extras as _ux
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    settings = get_app_settings(db)
+    saved = False
+    if body.get("clear"):
+        settings.llm_api_key = ""
+        db.commit()
+        _clear_app_settings_flags_cache()
+        _refresh_settings_overrides(db)
+        res = {"ok": False, "message": "The saved key was removed."}
+        if _ai_module.effective_llm_api_key():
+            res = await _ux.verify_key()
+            res["message"] = "The saved key was removed; " + ("the environment's key is in use now: " + res["message"])
+        saved = False
+    else:
+        candidate = _clean_pasted_key(str(body.get("api_key") or ""))
+        res = await _ux.verify_key(candidate)
+        if res.get("status") == 401:
+            kept = ("the saved key is unchanged" if _ai_module.llm_key_sources()["saved_hint"]
+                    else "nothing was saved")
+            res["message"] = (f"{res['message']} - the key you pasted was not saved ({kept}). "
+                              f"Check it was copied whole from the Studio at {res['url']} (Settings → API), "
+                              "and that this nd-world's Studio URL is that same Studio.")
+        else:
+            settings.llm_api_key = candidate
+            db.commit()
+            _clear_app_settings_flags_cache()
+            _refresh_settings_overrides(db)
+            saved = True
+            if not res.get("ok"):
+                res["message"] = f"Saved, but couldn't confirm it: {res['message']}"
+    out = {**res, "saved": saved, **_ai_module.llm_key_sources()}
+    out["explain"] = _key_explanation(out)
+    return out
+
+
+def _key_explanation(info: dict) -> str:
+    """One sentence on which key is in play - the part that's invisible otherwise."""
+    if info.get("in_use") == "settings":
+        if info.get("env_hint"):
+            return (f"Using the key saved in Settings ({info['saved_hint']}). It overrides UNSLOTH_API_KEY from the "
+                    f"environment ({info['env_hint']}) - remove the saved key to use the environment's.")
+        return f"Using the key saved in Settings ({info['saved_hint']})."
+    if info.get("in_use") == "env":
+        return f"Using UNSLOTH_API_KEY from the environment ({info['env_hint']}); no key is saved in Settings."
+    return "No Studio API key is set."
 
 
 @app.post("/settings/system")
