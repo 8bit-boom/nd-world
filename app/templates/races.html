@@ -22,6 +22,7 @@
 .tier-badge.standard    { background:#1a2a1a; color:#6f6; border:1px solid #3a5a3a; }
 .tier-badge.advanced    { background:#1a1a2e; color:#88f; border:1px solid #2a2a5e; }
 .tier-badge.exceptional { background:#2a1a0a; color:#fc8; border:1px solid #6a3a0a; }
+.tier-badge.unsorted    { background:#2a1414; color:#f99; border:1px solid #6a3a3a; }
 
 /* Grid */
 .races-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:.85rem; padding:1.1rem 1.5rem; }
@@ -131,10 +132,16 @@
   <button class="tier-tab" id="tab-exceptional" onclick="showTier('exceptional')">
     Exceptional <span class="tier-badge exceptional">{{ world_by_tier.exceptional|length }}</span>
   </button>
+  {% if world_by_tier.unsorted %}
+  <button class="tier-tab" id="tab-unsorted" onclick="showTier('unsorted')"
+          title="These races have no Standard / Advanced / Exceptional tier set — open ✎ Edit and pick one">
+    Unsorted <span class="tier-badge unsorted">{{ world_by_tier.unsorted|length }}</span>
+  </button>
+  {% endif %}
 </div>
 
 <!-- World races grids -->
-{% for tier in ['standard', 'advanced', 'exceptional'] %}
+{% for tier in ['standard', 'advanced', 'exceptional'] + (['unsorted'] if world_by_tier.unsorted else []) %}
 <div id="tier-{{ tier }}" class="races-grid" style="{{ 'display:none' if not loop.first else '' }}">
   {% for e in world_by_tier[tier] %}
   <div class="race-card" onclick="openEntityRace({{ e.id }})">
@@ -144,7 +151,7 @@
     <div class="race-card-placeholder">🧬</div>
     {% endif %}
     <div class="race-card-body">
-      <div class="race-card-name">{{ e.name }}</div>
+      <div class="race-card-name">{{ e.name }}{% if tier == 'unsorted' %} <span class="tier-badge unsorted" title="Stored tier: {{ e.subtype or 'none' }} — edit it to one of standard / advanced / exceptional">{{ (e.subtype or 'no tier')|trim }}</span>{% endif %}</div>
       {% if e.summary %}
       <div class="race-card-summary">{{ e.summary }}</div>
       {% endif %}
@@ -208,7 +215,7 @@ const ENTITY_RACES = {
   {% for e in world_races %}
   {{ e.id }}: {
     name: {{ e.name | tojson }},
-    tier: {{ (e.subtype or 'standard') | tojson }},
+    tier: {{ ((e.subtype or '') | trim | lower) | tojson }},
     image_url: {{ (e.image_url or '') | tojson }},
     body_html: {{ (e.body | md if e.body else '') | tojson }},
   },
@@ -237,9 +244,10 @@ const ENTITY_RACES = {
 
 <script>
 function showTier(tier) {
-  ['standard','advanced','exceptional'].forEach(t => {
-    document.getElementById('tier-' + t).style.display = t === tier ? 'grid' : 'none';
-    document.getElementById('tab-' + t).classList.toggle('active', t === tier);
+  ['standard','advanced','exceptional','unsorted'].forEach(t => {
+    const grid = document.getElementById('tier-' + t), tab = document.getElementById('tab-' + t);
+    if (grid) grid.style.display = t === tier ? 'grid' : 'none';
+    if (tab) tab.classList.toggle('active', t === tier);
   });
 }
 
@@ -256,7 +264,9 @@ function openEntityRace(id) {
   }
   document.getElementById('race-modal-title').textContent = r.name;
   document.getElementById('race-modal-tier').innerHTML =
-    `<span class="tier-badge ${r.tier}">${r.tier}</span>`;
+    (['standard','advanced','exceptional'].includes(r.tier)
+      ? `<span class="tier-badge ${r.tier}">${r.tier}</span>`
+      : `<span class="tier-badge unsorted" title="No Standard / Advanced / Exceptional tier is set — edit it to pick one">${esc(r.tier || 'no tier')}</span>`);
   document.getElementById('race-modal-body').innerHTML = r.body_html || '<p style="color:var(--text-dim)">No description.</p>';
   const editLink = document.getElementById('race-modal-edit');
   editLink.href = `/entity/${id}/edit?w=${encodeURIComponent(WORLD_SLUG)}`;

@@ -196,3 +196,28 @@ def test_player_never_sees_gm_only_profession_controls(client, seed):
     assert f'/professions/{prof_id}/delete' in r.text
     assert "Add built-in professions" in r.text
     assert "/professions/add-all-builtin" in r.text
+
+
+# Same rule as the races catalog (see test_races.py): a profession whose tier is blank or not exactly one of the three
+# used to be in the entity list but in no tab of the catalog.
+import re as _re
+
+
+def test_professions_with_a_blank_odd_or_miscased_tier_still_show_up(client, seed):
+    _add_profession(seed.world_a.id, name="Plain Standard Job", subtype="standard")
+    _add_profession(seed.world_a.id, name="Capital Advanced Job", subtype="Advanced")
+    _add_profession(seed.world_a.id, name="Blank Job", subtype="")
+    _add_profession(seed.world_a.id, name="Odd Job", subtype="legendary")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get("/professions").text
+    grids = {}
+    for p in _re.split(r'(?=<div id="tier-)', html):
+        m = _re.match(r'<div id="tier-(\w+)" class="professions-grid"', p)
+        if m:
+            grids[m.group(1)] = p.split("<!-- Available built-in")[0]
+    assert html.count('class="profession-card"') == 4
+    assert "Plain Standard Job" in grids["standard"]
+    assert "Capital Advanced Job" in grids["advanced"]
+    assert "Blank Job" in grids["unsorted"] and "Odd Job" in grids["unsorted"] and "legendary" in grids["unsorted"]
+    assert _re.search(r'id="tab-unsorted"[^>]*>\s*Unsorted\s*<span class="tier-badge unsorted">2</span>', html)

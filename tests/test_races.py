@@ -248,3 +248,66 @@ def test_player_never_sees_gm_only_race_controls(client, seed):
     assert f'/entity/{race_id}/edit' in r.text
     assert "Add built-in races" in r.text
     assert "/races/add-all-builtin" in r.text
+
+
+# ── a race must never fall out of the catalog because of its tier ───────────────────────────────
+# The /races tabs filtered on `subtype == "standard" | "advanced" | "exceptional"` exactly, so a race whose subtype was
+# blank (the generic New entry form has "— none —"), capitalised, padded, or free text (a typo, an import) was in the
+# entity list and the folder counts but in NO tab of the catalog: gone, with nothing saying why.
+import re as _re
+
+
+def _tier_sections(html):
+    """{grid id: html of that grid} for the world-race grids of the /races page."""
+    parts = _re.split(r'(?=<div id="tier-)', html)
+    out = {}
+    for p in parts:
+        m = _re.match(r'<div id="tier-(\w+)" class="races-grid"', p)
+        if m:
+            out[m.group(1)] = p.split("<!-- Available built-in races -->")[0]
+    return out
+
+
+def test_races_with_a_blank_odd_or_miscased_tier_still_show_up(client, seed):
+    ids = {
+        "Plain Standard": _add_race(seed.world_a.id, name="Plain Standard", subtype="standard"),
+        "Capital Exceptional": _add_race(seed.world_a.id, name="Capital Exceptional", subtype="Exceptional"),
+        "Padded Advanced": _add_race(seed.world_a.id, name="Padded Advanced", subtype=" advanced "),
+        "Blank Tier": _add_race(seed.world_a.id, name="Blank Tier", subtype=""),
+        "Free Text Tier": _add_race(seed.world_a.id, name="Free Text Tier", subtype="unnatural"),
+        "Typo Tier": _add_race(seed.world_a.id, name="Typo Tier", subtype="Exeptional"),
+    }
+    db = SessionLocal()
+    try:
+        none_tier = Entity(world_id=seed.world_a.id, kind="race", name="Null Tier", subtype=None, body="")
+        db.add(none_tier)
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get("/races").text
+    grids = _tier_sections(html)
+    # every race is on a card in exactly one grid
+    assert html.count('class="race-card"') == 7
+    # a tier that differs only by case / padding is that tier
+    assert "Plain Standard" in grids["standard"]
+    assert "Capital Exceptional" in grids["exceptional"]
+    assert "Padded Advanced" in grids["advanced"]
+    # anything else lands in an Unsorted tab, with a count, instead of vanishing
+    for name in ("Blank Tier", "Free Text Tier", "Typo Tier", "Null Tier"):
+        assert name in grids["unsorted"], name
+        assert all(name not in grids[t] for t in ("standard", "advanced", "exceptional")), name
+    assert _re.search(r'id="tab-unsorted"[^>]*>\s*Unsorted\s*<span class="tier-badge unsorted">4</span>', html)
+    # and the card says what the stored value is, so the GM can see why it is here
+    assert "unnatural" in grids["unsorted"] and "Exeptional" in grids["unsorted"]
+
+
+def test_no_unsorted_tab_when_every_race_has_a_tier(client, seed):
+    _add_race(seed.world_a.id, name="Tidy One", subtype="standard")
+    _add_race(seed.world_a.id, name="Tidy Two", subtype="Advanced")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get("/races").text
+    assert 'id="tab-unsorted"' not in html and 'id="tier-unsorted"' not in html

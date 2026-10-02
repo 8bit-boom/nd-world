@@ -25,6 +25,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..models import Entity, EntityRelation
 from ..rendering import render_md
 from ..templating import templates
+from ..tiers import group_by_tier
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 
 router = APIRouter()
@@ -153,7 +154,7 @@ def professions_page(request: Request, db: Session = Depends(get_db), active_wor
 
     available_builtin = [p for p in builtin if p["name"] not in names_in_world]
     available_by_tier = {t: [p for p in available_builtin if p["tier"] == t] for t in _PROFESSION_TIERS}
-    world_by_tier = {t: [e for e in world_professions if e.subtype == t] for t in _PROFESSION_TIERS}
+    world_by_tier = group_by_tier(world_professions, _PROFESSION_TIERS)
 
     return templates.TemplateResponse("professions.html", {
         "request": request, "world": world, "worlds": worlds,
