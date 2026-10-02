@@ -451,9 +451,14 @@ browser records) every time a recording starts.
 settings: the `whisper` Compose profile and service, `WHISPER_URL` and the
 Settings field, the model download/activate buttons, the world-level *spoken
 language*, *name glossary* and *speech enhancement* (DeepFilterNet) options, and
-the `latest-denoise` image. Those options were whisper.cpp features that Studio
+the denoise image variant. Those options were whisper.cpp features that Studio
 ignores. You can delete `<AI_MODELS_DIR>/whisper/` and any `WHISPER_*` lines from
 `.env`. Old databases keep the now-unused `whisper_*` columns; they are harmless.
+
+An app still pinned to `ghcr.io/8bit-boom/nd-world:latest-denoise` keeps updating: that tag is now
+published as an alias of `:latest` (before this, it froze at its last whisper-era build and Watchtower
+kept "updating" to the same image). Point the app at `:latest` and delete the `whisper` service when
+convenient - nothing reads them any more.
 
 ---
 

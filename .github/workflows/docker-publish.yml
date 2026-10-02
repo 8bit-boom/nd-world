@@ -54,6 +54,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # :latest-denoise was the whisper.cpp "speech enhancement" variant. That variant is gone, but
+      # deployments (TrueNAS apps, Watchtower) that were pinned to it would otherwise stay on the last image
+      # built under that name forever, so the tag now follows :latest. Safe to drop once nobody uses it.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -62,6 +65,7 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
             ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest-denoise
           build-args: |
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha

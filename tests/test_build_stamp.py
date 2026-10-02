@@ -38,3 +38,8 @@ def test_the_publish_workflow_bakes_the_commit_into_the_image():
     assert "GIT_SHA=${{ github.sha }}" in workflow and "build-args:" in workflow
     # after the dependency layers, so a new commit does not rebuild them
     assert dockerfile.index("ARG GIT_SHA") > dockerfile.index("pip install")
+
+
+def test_the_retired_denoise_tag_follows_latest_so_pinned_deployments_keep_updating():
+    workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
+    assert ":latest-denoise" in workflow and ":latest\n" in workflow
