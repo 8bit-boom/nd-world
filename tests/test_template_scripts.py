@@ -19,7 +19,7 @@ import subprocess
 import pytest
 
 from app.database import SessionLocal
-from app.models import Entity, Party, PlayerCharacter, Quest, SheetTemplate
+from app.models import Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -82,12 +82,15 @@ def test_rendered_pages_have_parseable_inline_scripts(client, seed):
     party = _add(Party(world_id=seed.world_a.id, name="Crew", member_pc_ids_json=json.dumps([pc]),
                        member_entity_ids_json=json.dumps([npc])))
     _add(Quest(world_id=seed.world_a.id, title="Errand", assigned_party_id=party))
+    # the quest page's AI-sync panel (and its script) only exists once a session does
+    _add(GameSession(world_id=seed.world_a.id, title="Session one"))
 
     pages = {
         "gm": ["/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
                f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/combat",
-               "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings"],
-        "player": [f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit"],
+               "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings", "/npc-talk",
+               "/new", f"/entity/{npc}/edit"],
+        "player": [f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk"],
     }
     scripts, checked = [], []
     for who, paths in pages.items():

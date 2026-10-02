@@ -168,7 +168,7 @@
     }).then(d => {
       if (d.status === 'running') {
         const el = d.elapsed || 0, m = Math.floor(el / 60), s = el % 60;
-        statusEl.textContent = `⏳ The AI is reading the session against the quest board… (${m > 0 ? m + 'm ' : ''}${s}s elapsed) ` + ' — thinking ' + (document.getElementById('ai-think').checked ? 'on' : 'off') + ', this can take a couple of minutes`;
+        statusEl.textContent = `⏳ The AI is reading the session against the quest board… (${m > 0 ? m + 'm ' : ''}${s}s elapsed) ` + ' — thinking ' + (document.getElementById('ai-think').checked ? 'on' : 'off') + ', this can take a couple of minutes';
         setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
       } else if (d.status === 'error') {
         fail(d.error || 'The AI sync failed.');

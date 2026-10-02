@@ -145,6 +145,10 @@ tools that require GM access still check `is_gm` at call time.)
   text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It
   shows what the TABLE sees, so text from an entity must go through `strip_gm_only` + `strip_gm_directives`
   and image URLs through `safe_image_url`; the pop-up must be opened *before* any `await` (user activation).
+- **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
+  backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
+  Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;
+  add any new page with an inline script there (and seed the data that makes its conditional blocks render).
 - **Floating GM buttons** (📺 `nd-stage.js`, 🐞 `nd-logger.js`): both pin to the bottom corners through
   `--nd-fab-bottom` (default 14px). A page with its own bottom bar sets that variable above the bar (the cockpit does,
   and hides them in its phone shell) — never give them a fixed `bottom:` again.

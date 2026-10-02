@@ -133,7 +133,7 @@
     const btn = document.createElement('button');
     btn.type = 'button'; btn.className = 'btn-secondary';
     btn.style.cssText = 'margin-top:.3rem;font-size:.68rem;padding:.1rem .4rem';
-    btn.title = 'Re-derive the character\\'s voice from their sheet and re-synthesize';
+    btn.title = "Re-derive the character's voice from their sheet and re-synthesize";
     btn.textContent = '🔊↻ re-voice';
     btn.onclick = () => speakReply(index, btn, true);
     bubble.appendChild(btn);
@@ -141,7 +141,7 @@
   async function speakReply(index, btn, regenerate) {
     btn.disabled = true;
     const old = btn.textContent;
-    btn.textContent = '🔊 synthesizing… (the character\\'s voice is derived once, then cached)';
+    btn.textContent = "🔊 synthesizing… (the character's voice is derived once, then cached)";
     try {
       const res = await fetch(`/api/npc-talk/${npcId}/speak`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
