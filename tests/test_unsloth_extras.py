@@ -431,3 +431,50 @@ def test_prefs_roundtrip_tts_instructions_and_language(client, seed):
     d = client.get("/api/ai/unsloth/prefs").json()
     assert d["tts_instructions"] == "gruff dockworker"
     assert d["tts_language"] == "en"
+
+
+# ── TTS output format: Studio's /v1/audio/speech only does WAV ───────────────
+
+_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 24
+
+
+def _strict_speech_studio(seen):
+    """Studio as observed live: anything but wav is a 400 with this exact message."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        seen.append(body.get("response_format"))
+        fmt = body.get("response_format")
+        if fmt != "wav":
+            return httpx.Response(400, json={"detail": f"Unsupported response_format '{fmt}'. Only 'wav' is supported."})
+        return httpx.Response(200, content=_WAV, headers={"content-type": "audio/wav"})
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_tts_asks_studio_for_wav_the_only_format_it_supports(monkeypatch):
+    seen = []
+    _patch_transport(monkeypatch, _strict_speech_studio(seen))
+    audio, ct = await ux.tts("hello there", model="unsloth/orpheus-3b", voice="tara")
+    assert seen == ["wav"] and audio == _WAV and ct == "audio/wav"
+
+
+@pytest.mark.asyncio
+async def test_tts_health_passes_against_a_wav_only_studio(monkeypatch):
+    """The Settings 'Test TTS' button: it showed "Unsupported response_format 'mp3'" for a working model."""
+    _reset_auth_state(monkeypatch)
+    seen = []
+    _patch_transport(monkeypatch, _strict_speech_studio(seen))
+    out = await ux.tts_health("unsloth/orpheus-3b", voice="tara")
+    assert out["ok"] is True, out
+    assert seen == ["wav"]
+
+
+@pytest.mark.asyncio
+async def test_tts_trusts_the_wav_bytes_over_a_generic_content_type(monkeypatch):
+    """Callers pick the file extension from the content type; an octet-stream header must not turn WAV into .mp3."""
+    _patch_transport(monkeypatch, _recorder({}, httpx.Response(200, content=_WAV, headers={"content-type": "application/octet-stream"})))
+    _audio, ct = await ux.tts("hi", model="m")
+    assert "wav" in ct
+    _patch_transport(monkeypatch, _recorder({}, httpx.Response(200, content=_WAV)))     # no header at all
+    _audio, ct = await ux.tts("hi", model="m")
+    assert "wav" in ct

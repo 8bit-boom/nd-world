@@ -427,7 +427,12 @@ async def auto_switch_update(enabled: bool | None = None, media_auto_switch_mode
 
 # ── TTS / STT ────────────────────────────────────────────────────────────────
 
-async def tts(text: str, model: str, voice: str = "", response_format: str = "mp3",
+# Studio's /v1/audio/speech rejects every other format with 400 "Unsupported response_format 'mp3'.
+# Only 'wav' is supported." (seen live with unsloth/orpheus-3b), so WAV is what nd-world asks for.
+TTS_RESPONSE_FORMAT = "wav"
+
+
+async def tts(text: str, model: str, voice: str = "", response_format: str = TTS_RESPONSE_FORMAT,
               speed: float = 1.0, instructions: str = "", language: str = "") -> tuple[bytes, str]:
     """POST /v1/audio/speech → (audio_bytes, content_type). The TTS model
     must be loaded in Studio (or media auto-switch on) — a missing model
@@ -465,7 +470,11 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = "mp
     audio = resp.content
     if not audio:
         raise StudioError("Studio returned no audio for this TTS request", 502)
-    return audio, resp.headers.get("content-type", "audio/mpeg")
+    content_type = resp.headers.get("content-type", "")
+    if audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
+        # Callers choose the file extension from this; the bytes are the truth, not a generic header.
+        content_type = "audio/wav"
+    return audio, content_type or "audio/wav"
 
 
 async def verify_key(key: str | None = None) -> dict:

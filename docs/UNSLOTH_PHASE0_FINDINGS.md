@@ -62,7 +62,7 @@ Every answer below was produced by live calls against the running server, not do
 
 ## I-9 — Extras
 
-- **TTS** `POST /v1/audio/speech`: OpenAI shape (`input, model, voice, response_format, speed, instructions, language, seed`). Schema-verified; no live TTS model tested (non-blocking).
+- **TTS** `POST /v1/audio/speech`: OpenAI shape (`input, model, voice, response_format, speed, instructions, language, seed`). Schema-verified; first live run (unsloth/orpheus-3b): `response_format` other than `wav` is a 400 `Unsupported response_format 'mp3'. Only 'wav' is supported.` - nd-world requests `wav` and stores the clip as `.wav`.
 - **STT** `POST /v1/audio/transcriptions`: exists (OpenAI shape; multipart). Unsloth's own STT could one day replace the whisper.cpp sidecar — see plan §14.3.
 - **Video** `GET/POST /v1/videos`, `/v1/videos/{id}/content`: exist. (§14.2.)
 - **Projects:** `/api/chat/projects` exists — Projects have an API surface (plan expected UI-only). No nd-world v1 dependency; recorded for §14.5.
