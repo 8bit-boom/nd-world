@@ -226,7 +226,6 @@ def _refresh_settings_overrides(db: Session = None):
             api_key=settings.llm_api_key or "",
             context_tokens=settings.llm_context_tokens or 0,
         )
-        _ai_module.set_whisper_override(settings.whisper_url or "")
         gen_options = {
             k: v for k, v in {
                 "temperature": settings.ollama_temperature,
@@ -328,7 +327,7 @@ async def _shutdown_tasks():
     """Give in-flight background jobs a bounded chance to stop at a
     checkpoint boundary before the container dies. See app/job_shutdown.py
     for the three phases and why waiting for a job to actually FINISH is
-    not the mechanism (one Whisper chunk can take minutes; no Docker stop
+    not the mechanism (one speech-to-text chunk can take minutes; no Docker stop
     grace period covers that)."""
     _job_shutdown.request_stop()
     tasks = (_audio_jobs.live_tasks() + _image_jobs.live_tasks()
@@ -698,7 +697,7 @@ def _is_player_safe(method: str, path: str) -> bool:
 # World ADMINISTRATION stays GM-only for a plain assistant: Settings, world
 # create/edit/delete and everything under /worlds/*, memberships/invites,
 # backups, export, AI model management and system info (/settings/system,
-# /api/ai model/preset/whisper routes), imagegen backends, MCP (which keeps
+# /api/ai model/preset routes), imagegen backends, MCP (which keeps
 # its own is_gm checks). A role="owner" membership gets the /worlds/{id}/*
 # administration surface too, but ONLY for their own world — see
 # _is_owner_safe just below _is_assistant_safe. Like _is_player_safe above,
@@ -869,7 +868,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     # AI content-generation endpoints only — the entity editor's smart-draft
     # button and the world-context RAG lookups it (and the note saver) rely
     # on, plus the standalone entity/npc/location/quest drafters. Everything
-    # else under /api/ai — the /ai chat page surface, model/preset/whisper
+    # else under /api/ai — the /ai chat page surface, model/preset
     # management, imagegen, chat history — stays GM-only.
     if method == "POST" and path in (
         "/api/ai/generate/entity-smart",
@@ -4369,7 +4368,6 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "env_editor_external_url": EDITOR_EXTERNAL_URL,
-        "env_whisper_url": _ai_module.WHISPER_URL,
         # Settings > System's "Upload limits" — per field: the saved value
         # (None when unset, matching this page's existing "leave a field
         # blank to fall back to its env default" convention — so merely
@@ -4492,7 +4490,6 @@ def settings_system_save(
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
-    whisper_url: str = Form(""),
     max_upload_mb: str = Form(""),
     max_gallery_upload_mb: str = Form(""),
     max_video_mb: str = Form(""),
@@ -4552,7 +4549,6 @@ def settings_system_save(
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
     android_emulator_url = android_emulator_url.strip().rstrip("/")
     editor_external_url = editor_external_url.strip().rstrip("/")
-    whisper_url = whisper_url.strip().rstrip("/")
     ollama_keep_alive = ollama_keep_alive.strip()[:32]
     for label, val in (
         ("Ollama URL", ollama_url),
@@ -4560,7 +4556,6 @@ def settings_system_save(
         ("SwarmUI external URL", swarmui_external_url),
         ("Android emulator URL", android_emulator_url),
         ("Content editor URL", editor_external_url),
-        ("Whisper URL", whisper_url),
     ):
         if val and not (val.startswith("http://") or val.startswith("https://")):
             return templates.TemplateResponse(
@@ -4674,7 +4669,6 @@ def settings_system_save(
     settings.swarmui_external_url = swarmui_external_url
     settings.android_emulator_url = android_emulator_url
     settings.editor_external_url = editor_external_url
-    settings.whisper_url = whisper_url
     settings.dreamlands_enabled = dreamlands_enabled is not None
     settings.king_in_yellow_enabled = king_in_yellow_enabled is not None
     for field, val in parsed.items():

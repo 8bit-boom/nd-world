@@ -23,7 +23,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
-from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section, filter_visible_entities
@@ -523,16 +522,16 @@ async def audio_edit(
 async def audio_transcribe(
     clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    """Generate an AI transcript + WebVTT subtitle track for one clip via
-    Whisper (see app.ai.transcribe_audio_with_subtitles) — honors the same
-    world-level glossary/language/denoise settings as every other Whisper
-    call in the app (Settings > AI page's Whisper tab). Synchronous, not a
+    """Generate an AI transcript for one clip through Unsloth Studio's
+    speech-to-text (see app.ai.transcribe_audio_with_subtitles). Studio returns
+    plain text without timestamps, so no subtitle track is produced and an
+    existing one is left untouched. Synchronous, not a
     background job: a soundboard/ambiance clip is bounded by
     _effective_audio_bytes and typically much shorter than a session
     recording, the class of upload the background-job system exists for
     (see app/audio_jobs.py) — one blocking request here is an acceptable
     trade for not needing a second job-polling UI just for this. Re-running
-    overwrites whatever transcript/subtitles the clip already had."""
+    overwrites the clip's transcript."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
@@ -542,19 +541,15 @@ async def audio_transcribe(
     path = _clip_abs_path(clip)
     if not path:
         raise HTTPException(404, "Clip file not found")
-    glossary = _audio_jobs._glossary_for_world(world.id)
-    language = _audio_jobs._whisper_language_for_world(world.id)
-    denoise = _audio_jobs._denoise_for_world(world.id)
     try:
-        transcript, vtt = await _ai_module.transcribe_audio_with_subtitles(
-            path, glossary=glossary, language=language, denoise=denoise,
-        )
-    except _ai_module.WhisperError as exc:
+        transcript, vtt = await _ai_module.transcribe_audio_with_subtitles(path)
+    except _ai_module.SttError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not transcript:
-        raise HTTPException(400, "Whisper transcribed this clip successfully but found no speech in it.")
+        raise HTTPException(400, "Speech-to-text finished this clip but found no speech in it.")
     clip.transcript = transcript
-    clip.subtitles_vtt = vtt
+    if vtt:
+        clip.subtitles_vtt = vtt
     db.commit()
     return JSONResponse({"ok": True})
 

@@ -278,50 +278,6 @@ def test_heals_pre_ollama_server_env_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def test_heals_pre_whisper_url_schema(tmp_path, monkeypatch):
-    """Same class of bug as the android_emulator_url/lore-extras heal tests
-    above, for the whisper_url column added alongside the optional Whisper
-    audio-transcription integration — an existing app_settings row predating
-    it must heal onto a blank default, not crash get_app_settings()."""
-    from app.database import get_app_settings
-
-    db_path = tmp_path / "pre_whisper_url.db"
-    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
-            "animated_format VARCHAR(16), ollama_model VARCHAR(256), ollama_url VARCHAR(512), "
-            "swarmui_external_url VARCHAR(512), android_emulator_url VARCHAR(512), "
-            "editor_external_url VARCHAR(512), hover_preview_enabled BOOLEAN, "
-            "hover_preview_delay_ms INTEGER, hover_preview_hide_delay_ms INTEGER, "
-            "hover_preview_width_px INTEGER, hover_preview_max_height_px INTEGER, "
-            "dreamlands_enabled BOOLEAN, king_in_yellow_enabled BOOLEAN, updated_at DATETIME)"
-        ))
-        conn.execute(text(
-            "INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"
-        ))
-
-    monkeypatch.setattr(database_module, "engine", engine)
-    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
-
-    database_module.init_db()
-
-    with engine.begin() as conn:
-        settings_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()}
-    assert "whisper_url" in settings_cols
-
-    db = SessionLocal()
-    try:
-        s = get_app_settings(db)
-        assert s.whisper_url == ""
-    finally:
-        db.close()
-
-    engine.dispose()
-
-
 def test_heals_pre_home_customization_worlds_schema(tmp_path, monkeypatch):
     """A worlds table predating home_title/home_subtitle/home_background_url/
     home_pinned_tiles_json (added for hero-text/background-image/pinned-
@@ -447,11 +403,13 @@ def test_heals_pre_cockpit_workspace_worlds_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def test_heals_pre_whisper_denoise_worlds_schema(tmp_path, monkeypatch):
-    """A worlds table predating whisper_denoise (the per-World speech-
-    enhancement opt-in toggle) must heal onto False, not break loading an
-    existing world."""
-    db_path = tmp_path / "pre_whisper_denoise.db"
+def test_an_old_database_that_still_has_the_whisper_columns_keeps_working(tmp_path, monkeypatch):
+    """whisper.cpp support was removed: nothing reads or writes worlds.whisper_glossary / whisper_language /
+    whisper_denoise or app_settings.whisper_url any more, and a fresh database no longer creates them. An
+    existing database still carries them (SQLite can't cheaply drop a column, and the data is the GM's), so the
+    world and settings rows must still load, save and migrate normally with those columns present."""
+    from app.database import get_app_settings
+    db_path = tmp_path / "legacy_whisper_columns.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -461,28 +419,41 @@ def test_heals_pre_whisper_denoise_worlds_schema(tmp_path, monkeypatch):
             "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
             "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
             "home_sections_json TEXT, custom_kinds_json TEXT, whisper_glossary TEXT, "
-            "whisper_language VARCHAR(16), created_at DATETIME)"
+            "whisper_language VARCHAR(16), whisper_denoise BOOLEAN DEFAULT 0, created_at DATETIME)"
         ))
         conn.execute(text(
-            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
-            "VALUES (1, 'Pre-existing World', 'pre-existing-world', '[]', '[]')"
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json, whisper_glossary, whisper_denoise) "
+            "VALUES (1, 'Pre-existing World', 'pre-existing-world', '[]', '[]', 'Elyndra', 1)"
         ))
+        conn.execute(text(
+            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
+            "animated_format VARCHAR(16), whisper_url VARCHAR(512) DEFAULT 'http://whisper:8080', updated_at DATETIME)"
+        ))
+        conn.execute(text("INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"))
 
     monkeypatch.setattr(database_module, "engine", engine)
     monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
 
     database_module.init_db()
 
-    with engine.begin() as conn:
-        world_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()}
-    assert "whisper_denoise" in world_cols
-
     db = SessionLocal()
     try:
         w = db.get(World, 1)
-        assert not w.whisper_denoise
+        assert w.name == "Pre-existing World"
+        assert not hasattr(w, "whisper_glossary") and not hasattr(w, "whisper_denoise")
+        w.description = "edited"
+        s = get_app_settings(db)
+        assert not hasattr(s, "whisper_url")
+        s.static_format = "webp"
+        db.commit()
+        # a brand-new world can still be inserted although the legacy columns exist
+        db.add(World(name="Second", slug="second"))
+        db.commit()
     finally:
         db.close()
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()}
+    assert "whisper_glossary" in cols, "the GM's old data is left in place"
 
     engine.dispose()
 

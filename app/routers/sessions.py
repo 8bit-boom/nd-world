@@ -20,7 +20,7 @@ from .. import ai as _ai_module
 from .. import live
 from .. import audio_jobs as _audio_jobs
 from ..database import SessionLocal, get_db
-from ..deps import check_llm_cooldown, get_world_ctx, member_section_level, paginate, world_can_edit_section, world_can_view_section, world_row_visible
+from ..deps import check_llm_cooldown, get_world_ctx, member_section_level, paginate, world_can_view_section, world_row_visible
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from ..pc_stats import pc_maxima
 from ..sheet_systems import apply_xp_award, parse_custom_fields
@@ -119,9 +119,9 @@ def _session_audio_jobs_dir() -> Path:
     return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
 
 
-async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES, glossary: str = "", language: str = "", denoise: bool = False) -> str:
+async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES) -> str:
     """Save an uploaded audio file to a temp path just long enough to run it
-    through Whisper, then delete it — shared by the one-shot
+    through speech-to-text, then delete it — shared by the one-shot
     summarize-from-audio route and the live-transcript chunk-append route
     below, neither of which needs the audio itself kept afterward."""
     ext = Path(file.filename or "").suffix.lower()
@@ -136,28 +136,9 @@ async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BY
     # any per-file size limit.
     copy_upload_bounded(file, tmp_path, max_bytes=max_bytes)
     try:
-        return await _ai_module.transcribe_audio(tmp_path, glossary=glossary, language=language, denoise=denoise)
+        return await _ai_module.transcribe_audio(tmp_path)
     finally:
         tmp_path.unlink(missing_ok=True)
-
-
-def _glossary_for_world(world, game_session_id: int | None = None) -> str:
-    """Delegates to audio_jobs' own _glossary_for_world (world_id, not the
-    World object this takes) rather than keeping a second copy of the
-    entity-name merge logic — see its own docstring for what "glossary"
-    actually includes beyond whatever the GM typed into World.
-    whisper_glossary, and for what game_session_id does (feeds that
-    session's "Entities Featured" picks to the front of the entity-name
-    list)."""
-    return _audio_jobs._glossary_for_world(world.id, game_session_id) if world else ""
-
-
-def _language_for_world(world) -> str:
-    return (world.whisper_language or "").strip() if world else ""
-
-
-def _denoise_for_world(world) -> bool:
-    return bool(world and world.whisper_denoise)
 
 
 def _recap_instructions_for_world(world) -> str:
@@ -875,7 +856,7 @@ async def api_summarize_from_audio(
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Transcribe an uploaded (file-picked, dropped, or mic-recorded) session
-    recording via Whisper, then summarize the transcript into a narrative
+    recording through speech-to-text, then summarize the transcript into a narrative
     recap — same one-shot "AI draft, GM reviews/applies" flow as the notes/
     facts recap buttons on this page. Session-independent, like expand-notes/
     condense-recap above (works on the New Session form too, before anything
@@ -888,13 +869,13 @@ async def api_summarize_from_audio(
     world, _ = get_world_ctx(request, db, active_world)
     _require_edit_section(request, world)
     try:
-        transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES, glossary=_glossary_for_world(world), language=_language_for_world(world), denoise=_denoise_for_world(world))
-    except _ai_module.WhisperError as exc:
+        transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    except _ai_module.SttError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not transcript:
         raise HTTPException(
             400,
-            "Whisper transcribed this clip successfully but found no speech in it — "
+            "Speech-to-text finished this clip but found no speech in it — "
             "check the recording actually captured audio.",
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
@@ -943,15 +924,15 @@ async def api_summarize_from_audio_complete(
     try:
         reassemble_upload_chunks(_session_audio_chunks_root(), upload_id, total_chunks, tmp_path, max_bytes=MAX_SESSION_AUDIO_BYTES)
         try:
-            transcript = await _ai_module.transcribe_audio(tmp_path, glossary=_glossary_for_world(world), language=_language_for_world(world), denoise=_denoise_for_world(world))
-        except _ai_module.WhisperError as exc:
+            transcript = await _ai_module.transcribe_audio(tmp_path)
+        except _ai_module.SttError as exc:
             raise HTTPException(400, str(exc)) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
     if not transcript:
         raise HTTPException(
             400,
-            "Whisper transcribed this clip successfully but found no speech in it — "
+            "Speech-to-text finished this clip but found no speech in it — "
             "check the recording actually captured audio.",
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
@@ -967,7 +948,7 @@ async def api_summarize_transcript_only(
     — the retry path for when .../summarize-from-audio(/complete) transcribed
     fine but the summarize call itself failed (see is_failure_sentinel).
     Without this, the only way to retry was re-uploading and re-transcribing
-    the whole recording from scratch, redoing potentially hours of Whisper
+    the whole recording from scratch, redoing potentially hours of transcription
     compute to redo a step that already succeeded. Session-independent, same
     as summarize-from-audio itself (world comes from the active_world
     cookie, not a session id) — nothing here needs a GameSession row to
@@ -996,7 +977,7 @@ async def api_summarize_transcript_only(
 
 # ── Durable background transcription jobs — an opt-in alternative to the
 # blocking routes above for a recording long enough that waiting on one
-# HTTP request (up to WHISPER_TIMEOUT_SECONDS) isn't practical: the actual
+# HTTP request (up to UNSLOTH_STT_TIMEOUT_SECONDS) isn't practical: the actual
 # work runs in the server process via app/audio_jobs.py, independent of any
 # one connection, so closing the tab that started it doesn't stop it. Same
 # upload/reassembly plumbing as the direct routes above, just handed off to
@@ -1379,9 +1360,9 @@ async def api_live_transcript_append(
     segment_index: int = Form(-1),
 ):
     # Deliberately NOT `db: Session = Depends(get_db)` — that would check a
-    # pooled connection out for the whole request, including the Whisper
+    # pooled connection out for the whole request, including the speech-to-text
     # call below, which runs on every chunk of every live-recorded session
-    # and can legitimately take a while (or hang, if Whisper itself is stuck
+    # and can legitimately take a while (or hang, if Studio itself is stuck
     # or unreachable). See _set_sqlite_pragma's docstring in database.py:
     # "a single slow write (saving an entity, appending a live-transcript
     # chunk, ...) can back up enough concurrent readers to exhaust the
@@ -1389,7 +1370,7 @@ async def api_live_transcript_append(
     # (worst case, hours) is exactly that slow write, and once the pool is
     # exhausted every OTHER request site-wide (including the 4s spotlight
     # poll every open tab makes) queues behind it and the whole site looks
-    # hung. Nothing here actually needs the DB open while awaiting Whisper,
+    # hung. Nothing here actually needs the DB open while awaiting speech-to-text,
     # so short-lived sessions bracket the call instead of one held across it.
     db = SessionLocal()
     try:
@@ -1399,7 +1380,7 @@ async def api_live_transcript_append(
         world = db.get(World, gs.world_id)
     finally:
         db.close()
-    # Before any work is spent: this route costs Studio/Whisper GPU time and
+    # Before any work is spent: this route costs Studio GPU time and
     # writes into the session, so the caller must be able to EDIT sessions in
     # the session's own world (not merely be an assistant somewhere).
     _require_edit_section(request, world)
@@ -1419,7 +1400,7 @@ async def api_live_transcript_append(
         # server already transcribed and committed) would duplicate that
         # chunk's text.
         #
-        # This only skips Whisper + the transcript append below, NOT the
+        # This only skips the transcription + the transcript append below, NOT the
         # raw-audio save — that save is independently idempotent (same-path
         # overwrite) and a retry must still perform it even when the text
         # side is already settled.
@@ -1428,9 +1409,6 @@ async def api_live_transcript_append(
         if CHUNK_ID_RE.match(recording_id or "") and segment_index >= 0:
             seg_key = _live_transcript_segment_key(recording_id, segment_index)
             already_appended = seg_key in _live_transcript_segment_keys(gs)
-        glossary = _glossary_for_world(world, gs.id)
-        language = _language_for_world(world)
-        denoise = _denoise_for_world(world)
     finally:
         db.close()
 
@@ -1448,7 +1426,6 @@ async def api_live_transcript_append(
             raise HTTPException(400, "Invalid segment index")
 
     chunk_text = ""
-    saved_rel = ""
     inflight_key = ""
     if not already_appended:
         # In-flight dedup (docs/STT_LIVE_AUDIT_2026-09.md finding 1): the
@@ -1457,7 +1434,7 @@ async def api_live_transcript_append(
         # transcribing (the exact shape a reverse proxy creates — it gives
         # up on the response at ~100 s while the server keeps working, and
         # the browser's retry ladder re-POSTs) would start a SECOND
-        # concurrent transcription of the same audio, tripling Studio/Whisper
+        # concurrent transcription of the same audio, tripling Studio
         # work per chunk and stacking duplicate jobs in the backend's queue.
         # The marker is keyed per session+segment, popped in a finally, and
         # expires after _LIVE_STT_INFLIGHT_TTL_SECONDS so a request that
@@ -1478,17 +1455,17 @@ async def api_live_transcript_append(
         # The raw audio is kept FIRST (see _archive_live_segment): whatever the
         # STT backend does next, this segment is not lost.
         if save_audio:
-            saved_rel = _archive_live_segment(session_id, file, recording_id, segment_index)
+            _archive_live_segment(session_id, file, recording_id, segment_index)
         if not already_appended:
             # Same serialization the background-job transcriptions already
-            # hold (app.ai.whisper_job_semaphore, concurrency 1 by default):
+            # hold (app.ai.stt_job_semaphore, concurrency 1 by default):
             # the STT backend serves one piece of audio at a time anyway, so
             # letting a live chunk cut in line alongside a running session
             # job just stacks both in the backend's queue with no benefit.
-            async with _ai_module.whisper_job_semaphore:
+            async with _ai_module.stt_job_semaphore:
                 try:
-                    chunk_text = (await _transcribe_chunk(file, glossary=glossary, language=language, denoise=denoise)).strip()
-                except _ai_module.WhisperError as exc:
+                    chunk_text = (await _transcribe_chunk(file)).strip()
+                except _ai_module.SttError as exc:
                     # 503 = the backend is down/overloaded: the same audio can
                     # succeed later, so the browser waits and retries. 400 = a
                     # setup problem (no key, model not downloaded, bad audio)
@@ -1506,7 +1483,7 @@ async def api_live_transcript_append(
         # A transcribed-but-SILENT segment (chunk_text "") with save_audio
         # off must still commit when it carries a segment key: without that,
         # the key never lands in live_transcript_segments_json and a retried
-        # upload of the same silent segment re-burns a full Whisper pass for
+        # upload of the same silent segment re-burns a full transcription pass for
         # text that was always going to be empty (docs/STT_LIVE_AUDIT_2026-09.md
         # finding 4).
         #
@@ -1553,28 +1530,14 @@ async def api_live_transcript_check(session_id: int, request: Request):
     finally:
         db.close()
     _require_edit_section(request, world)
-    backend = _ai_module.get_stt_backend()
-    if backend == "unsloth":
-        model = _ai_module.get_stt_model()
-        if not _ai_module.effective_llm_api_key():
-            return {"ok": False, "backend": backend, "model": model,
-                    "message": "The speech-to-text backend is Unsloth Studio, but no Studio API key is set (Settings → System)."}
-        from .. import unsloth_extras as _ux
-        # The browser records Opus-in-WebM, so test that, not just a WAV.
-        res = await _ux.stt_health(model, fmt="webm")
-        return {"ok": bool(res.get("ok")), "backend": backend, "model": model, "message": res.get("message", "")}
-    if not _ai_module.effective_whisper_url():
-        return {"ok": False, "backend": backend, "model": "",
-                "message": "Whisper isn't configured (no Whisper URL set) — add one on the AI page's Whisper tab, "
-                           "or switch the speech-to-text backend to Unsloth Studio in Settings."}
-    try:
-        st = await _ai_module.whisper_status()
-    except Exception as exc:                                    # never let a probe fail the panel
-        return {"ok": False, "backend": backend, "model": "", "message": f"Couldn't check Whisper: {exc}"}
-    ok = bool(isinstance(st, dict) and st.get("ok"))
-    detail = "" if ok or not isinstance(st, dict) else f" ({st.get('reason') or 'no reason given'})"
-    return {"ok": ok, "backend": backend, "model": "",
-            "message": "Whisper is reachable." if ok else f"Whisper is configured but did not answer{detail}."}
+    model = _ai_module.get_stt_model()
+    if not _ai_module.effective_llm_api_key():
+        return {"ok": False, "backend": "unsloth", "model": model,
+                "message": "Speech-to-text runs on Unsloth Studio, but no Studio API key is set (Settings → System)."}
+    from .. import unsloth_extras as _ux
+    # The browser records Opus-in-WebM, so test that, not just a WAV.
+    res = await _ux.stt_health(model, fmt="webm")
+    return {"ok": bool(res.get("ok")), "backend": "unsloth", "model": model, "message": res.get("message", "")}
 
 
 @router.get("/api/sessions/{session_id}/live-audio")

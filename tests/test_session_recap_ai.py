@@ -462,7 +462,7 @@ def test_summarize_from_audio_real_failure_surfaces_specific_detail(client, seed
     silent clip) must surface its actual reason, not the generic message
     used for a genuinely empty transcript."""
     async def failing_transcribe(path, glossary="", **kwargs):
-        raise ai_module.WhisperError("Could not reach Whisper: ConnectError: refused")
+        raise ai_module.SttError("Could not reach Whisper: ConnectError: refused")
     monkeypatch.setattr(ai_module, "transcribe_audio", failing_transcribe)
 
     _login_gm_in(client, seed, seed.world_a)
@@ -630,43 +630,6 @@ def test_live_transcript_append_accumulates_across_chunks(client, seed, monkeypa
         db.close()
 
 
-def test_live_transcript_append_prioritizes_this_sessions_featured_entities_in_the_glossary(client, seed, monkeypatch):
-    """docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 2.7: this
-    route is the one place a game_session_id is naturally on hand for
-    _glossary_for_world's new prioritization — confirm it's actually
-    threaded through, not just added to the function signature and never
-    wired up."""
-    import json
-    from app.models import Entity
-
-    session_id = _make_session(seed.world_a)
-    db = SessionLocal()
-    try:
-        aaric = Entity(world_id=seed.world_a.id, kind="character", name="Aaric Alderman")
-        zora = Entity(world_id=seed.world_a.id, kind="character", name="Zora Zeal")
-        db.add_all([aaric, zora])
-        db.commit()
-        db.refresh(zora)
-        gs = db.get(GameSession, session_id)
-        gs.npcs_json = json.dumps([{"entity_id": zora.id, "name": "Zora Zeal", "kind": "entity"}])
-        db.commit()
-    finally:
-        db.close()
-
-    captured = {}
-
-    async def fake_transcribe(path, glossary="", **kwargs):
-        captured["glossary"] = glossary
-        return "some transcript"
-    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
-
-    _login_gm_in(client, seed, seed.world_a)
-    r = _append_chunk(client, session_id)
-    assert r.status_code == 200
-    glossary = captured["glossary"]
-    assert glossary.index("Zora Zeal") < glossary.index("Aaric Alderman")
-
-
 def test_live_transcript_append_silent_chunk_appends_nothing(client, seed, monkeypatch):
     session_id = _make_session(seed.world_a)
     async def fake_transcribe(path, glossary="", **kwargs):
@@ -686,7 +649,7 @@ def test_live_transcript_append_real_failure_is_not_swallowed_as_silence(client,
     anything was wrong. A real failure must now surface as an error."""
     session_id = _make_session(seed.world_a)
     async def failing_transcribe(path, glossary="", **kwargs):
-        raise ai_module.WhisperError("Could not reach Whisper: ConnectError: refused")
+        raise ai_module.SttError("Could not reach Whisper: ConnectError: refused")
     monkeypatch.setattr(ai_module, "transcribe_audio", failing_transcribe)
 
     _login_gm_in(client, seed, seed.world_a)

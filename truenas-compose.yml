@@ -13,7 +13,6 @@ services:
     volumes:
       - /mnt/DeadPool/apps/nd-world:/data
       - /mnt/DeadPool/apps/swarmui/data/Autocompletions:/data/swarmui-ac  # shared with swarmui for native tag autocompletions
-      - /mnt/DeadPool/apps/whisper:/data/whisper-models  # shared with whisper — lets nd-world download a model file into the same place the "whisper" service loads from
       - /mnt/DeadPool/apps/swarmui/models:/data/swarmui-models  # shared with swarmui's own /SwarmUI/Models mount below — lets nd-world download a checkpoint/VAE/text-encoder into the same place SwarmUI loads from
       - /mnt/DeadPool/apps/nd-world-ollama-config:/data/ollama-config  # shared with ollama — lets Settings > System > "Ollama server tuning" write ollama.env for the "ollama" service's entrypoint to pick up on its next restart, without editing this file
     environment:
@@ -36,9 +35,6 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       OLLAMA_CONFIG_DIR: /data/ollama-config   # shared bind mount → the "ollama" service's own config dir below
-      WHISPER_URL: http://whisper:8080
-      WHISPER_MODELS_DIR: /data/whisper-models
-      WHISPER_MODEL_FILE: ggml-large-v3-turbo.bin   # must match the "whisper" service's own -m filename below
       # Unsloth Studio — the single AI backend (chat + embeddings + image gen)
       # for the "unsloth" profile below, replacing ollama+swarmui. Chat works
       # the moment the key is set; without it nd-world shows AI features as
@@ -231,7 +227,7 @@ services:
   # and image generation (see docs/UNSLOTH_PHASE0_FINDINGS.md for the
   # verified API surface this app talks to). Replaces the "ollama" and
   # "swarmui" services once cut over. Only starts if the "unsloth" profile
-  # is active — set COMPOSE_PROFILES=unsloth (or unsloth,whisper) in .env.
+  # is active — set COMPOSE_PROFILES=unsloth (or unsloth,android) in .env.
   #
   # One-time provisioning after first start (see docs/DEPLOYMENT.md):
   #   1. Open Studio at http://<nas>:8000 and sign in (password from
@@ -287,96 +283,6 @@ services:
       net.ix-portals.unsloth.port: "8000"
       net.ix-portals.unsloth.path: "/"
       net.ix-portals.unsloth.host: ""
-
-  # Optional: transcribe an audio file attached to an AI chat message into
-  # text (see /ai and an entity's "Ask AI" panel), using a self-hosted
-  # whisper.cpp server — works with any chat model, not just an audio-native
-  # one, since the model only ever sees the transcript as plain text. Only
-  # starts if the "whisper" profile is active — set COMPOSE_PROFILES=whisper
-  # (or add it to your existing list), or run
-  # `docker compose -f truenas-compose.yml --profile whisper up -d`.
-  #
-  # Get a model file the easy way: start this profile once, log in as the
-  # GM, and use the "⬇ Download Whisper Model" button on the AI page's
-  # Models tab — nd-world downloads whisper-large-v3-turbo (a good default:
-  # most of large-v3's accuracy, several times faster, small enough to run
-  # acceptably on CPU) straight into /mnt/DeadPool/apps/whisper/. Or
-  # download one yourself (a ggml-*.bin file from ggerganov/whisper.cpp —
-  # see below; the GGUF format used elsewhere in the ggml ecosystem isn't
-  # supported by this image's whisper-server yet)
-  # into that same folder and set WHISPER_MODEL_FILE in .env to its exact
-  # filename if you'd rather pick a different one. Either way, restart this
-  # "whisper" service once afterward to load it.
-  whisper:
-    profiles: ["whisper"]
-    image: ghcr.io/ggml-org/whisper.cpp:main
-    # If this crash-loops with "Illegal instruction" in the container's logs
-    # (exit code 132) right after the model finishes loading, your CPU
-    # doesn't support AVX-512 — the prebuilt image above is compiled
-    # assuming whatever instruction set its GitHub Actions build runner
-    # happened to have, which silently includes AVX-512 on many runners even
-    # though it's not required for good CPU performance. Comment out the
-    # `image:` line above and uncomment this `build:` instead — it compiles
-    # whisper-server from source with AVX-512 excluded, which fixes it on
-    # any x86_64 CPU from roughly the last decade. See
-    # docker/whisper/Dockerfile (in the nd-world repo) for the full
-    # explanation and https://github.com/ggml-org/whisper.cpp/issues/2928
-    # for the upstream bug.
-    # build: https://github.com/8bit-boom/nd-world.git#main:docker/whisper
-    restart: unless-stopped
-    ports:
-      - "8090:8080"
-    volumes:
-      - /mnt/DeadPool/apps/whisper:/models
-    # --convert transcodes whatever format was uploaded (mp3, ogg, m4a, ...)
-    # via the ffmpeg already bundled in this image, so nd-world doesn't need
-    # to send WAV specifically. --host must be 0.0.0.0, not the image
-    # example's default 127.0.0.1, so nd-world's own container can reach it
-    # over the Compose network.
-    #
-    # entrypoint/command together run this as `sh -c "<script>"` so a shell
-    # can pick which model to load: prefer the active-model.txt marker file
-    # nd-world writes into this same volume (see app.ai.
-    # set_active_whisper_model — the GM clicks "★ Make active" on the AI
-    # page's Whisper tab), falling back to WHISPER_MODEL_FILE for a fresh
-    # deployment where no marker has been written yet. `exec` at the front
-    # so whisper-server (not the shell) is PID 1 and gets signals directly —
-    # otherwise restarting would wait out the shell's term-signal grace
-    # period instead of killing whisper-server right away. The whole script
-    # is ONE `command:` list item, not a bare scalar string, specifically to
-    # avoid Compose word-splitting it into separate argv entries — combined
-    # with a plain `sh -c` entrypoint, which only treats its very first
-    # argument as the script to run, a word-split command would silently
-    # turn every flag after "exec whisper-server" into an unused $1/$2/...
-    # instead of actually reaching the binary. (See docker-compose.yml's
-    # identical comment/docs/DEPLOYMENT.md for the full explanation.)
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >-
-        exec whisper-server --host 0.0.0.0 --port 8080 --convert
-        -m "/models/$(cat /models/active-model.txt 2>/dev/null || echo '${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}')"
-    labels:
-      net.ix-portals.whisper.scheme: "http"
-      net.ix-portals.whisper.port: "8080"
-      net.ix-portals.whisper.path: "/"
-      net.ix-portals.whisper.host: ""
-    # For NVIDIA GPU: Turing or newer, use ghcr.io/ggml-org/whisper.cpp:
-    # main-cuda above instead. For Volta (V100, sm_70) specifically, that
-    # prebuilt image does NOT work — its own build targets
-    # CMAKE_CUDA_ARCHITECTURES='75;80;86;90', which starts at Turing and
-    # skips Volta entirely, so whisper-server never finds a usable GPU
-    # kernel on a V100 — build the Volta-targeted image from the repo
-    # instead (same git-context build pattern as the CPU fix above):
-    # build: https://github.com/8bit-boom/nd-world.git#main:docker/whisper-cuda
-    # See docker/whisper-cuda/Dockerfile and docs/GPU_SETUP.md §6.
-    # Either way, uncomment the deploy block below:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
 
   # Optional: embed the real NeonDragonsApp Android UI inside nd-world (see
   # /androidapp) via a self-hosted emulator + noVNC web viewer. Only starts

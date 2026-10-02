@@ -1,6 +1,6 @@
 """Unified view over every durable background audio job (AudioJob, see
 app/audio_jobs.py) regardless of which surface started it — the Session
-recap flow and the AI attachment/Whisper Test flow each have their own
+recap flow and the AI attachment/Speech test flow each have their own
 purpose-scoped create/chunk/complete/list routes (app/routers/sessions.py,
 app/routers/ai.py) since the upload mechanics and per-purpose result shape
 differ, but status/cancel is identical for every job once it exists, so

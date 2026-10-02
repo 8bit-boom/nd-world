@@ -32,10 +32,9 @@ stack. This doc explains what that does and covers Part B in detail.
 `GM_PASSWORD`, then run `docker compose up -d --build`.
 
 **A note on the optional AI service ports**: `docker-compose.yml`/
-`truenas-compose.yml` publish Ollama (`11434`), whisper.cpp (`8090`), and
-SwarmUI (`7801`) on every network interface (`0.0.0.0`), not just
-`localhost` — anyone on your LAN can reach them directly, and none of the
-three have their own authentication. nd-world itself only ever needs them
+`truenas-compose.yml` publish Ollama (`11434`) and SwarmUI (`7801`) on every
+network interface (`0.0.0.0`), not just `localhost` — anyone on your LAN can
+reach them directly, and neither has its own authentication. nd-world itself only ever needs them
 over the internal Compose network (`http://ollama:11434` etc.), never the
 published host port — that's only there so you can open SwarmUI's own UI
 in a browser, or (on TrueNAS SCALE) so the Apps page's own portal links
@@ -84,9 +83,11 @@ set `0.0.0.0` to open the Studio console to other machines). nd-world itself
 reaches Studio over the compose network and doesn't use that mapping. A single
 image generation may run up to `UNSLOTH_IMAGE_TIMEOUT_SECONDS` (default 1800).
 
-The other AI profiles: `whisper` (audio transcription, unchanged),
-`android` and `editor` (see below), and the legacy `ollama`/`swarmui`
-pair (don't combine with `unsloth`).
+The other profiles: `android` and `editor` (see below), and the legacy
+`ollama`/`swarmui` pair (don't combine with `unsloth`). Speech-to-text — audio
+attachments, session recordings, library-clip transcripts — runs on Unsloth
+Studio too; there is no separate transcription service (see "Speech-to-text"
+below).
 
 ---
 
@@ -197,7 +198,7 @@ through (see `MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`,
 so raise the relevant one if
 you need bigger files end to end. Every audio upload path is the exception:
 the Audio Library (`/audio`), a voice-memo attachment on the AI Chat compose
-bar / an entity's Ask AI panel / the Whisper Test tab, and a Session's audio
+bar / an entity's Ask AI panel / the AI page's Speech tab, and a Session's audio
 recap upload/mic recording all automatically split a file over 100 MB into
 smaller parts in the browser before upload and reassemble it on the server,
 so a long session recording or ambiance track gets through Cloudflare's
@@ -380,183 +381,60 @@ world and needs no git at all.
 
 ---
 
-## Optional: audio transcription (Whisper)
+## Speech-to-text (Unsloth Studio)
 
-Attaching an audio file to an AI Chat message or an entity's "Ask AI" panel
-(see the 📎 button/drag-and-drop) only reaches the chat model as text unless
-it's transcribed first — otherwise the model just sees the filename, or (for
-a `.wav` file specifically, and only for a genuinely audio-native chat
-model) the raw audio bytes on a best-effort basis. A self-hosted
-[whisper.cpp](https://github.com/ggml-org/whisper.cpp) server closes that
-gap for good: it transcribes **any** uploaded audio format (mp3, ogg, m4a,
-...) into text, which then works with **any** chat model, not just an
-audio-native one. This is opt-in, like the Android/Editor add-ons above.
+Audio is transcribed by **Unsloth Studio** — the same service that runs chat
+and image generation — through its OpenAI-compatible
+`/v1/audio/transcriptions`. There is nothing extra to deploy: once the Studio
+API key is saved (⚙️ Settings → System) the following all work.
 
-**1. Enable the profile** — add `whisper` to `COMPOSE_PROFILES` in `.env`
-(comma-separated with any other profiles you're already running), then:
-```bash
-docker compose up -d
-```
-This starts a whisper.cpp server on port `8090` and gives nd-world's own
-`world` container access to the same model-storage volume. With no model
-downloaded yet, the container will actually crash-loop (whisper.cpp exits
-if the `-m` path it's given doesn't resolve) until the next step gives it
-one — check `docker compose logs whisper` if that's confusing at this
-stage, it clears up as soon as a model exists.
+- **Audio attachments** on an AI Chat message or an entity's Ask AI panel (the
+  📎 button / drag-and-drop) and the 🎤 mic buttons are transcribed at upload
+  time, so the transcript reaches **any** chat model as plain text.
+- **Session recordings** — background jobs, a one-shot upload, and the live
+  recording panel — are transcribed chunk by chunk, with a resumable
+  checkpoint after each chunk.
+- **Audio / video library clips** get a transcript from their *Transcribe*
+  button (Studio returns plain text without timestamps, so no subtitle track
+  is generated and an existing one is left alone).
 
-**2. Download a model** — log in as the GM, open the **AI** page's
-**🤖 Models** tab, and click **⬇ Download Whisper Model** in the
-"🎙 Whisper" panel near the bottom. nd-world streams
-`whisper-large-v3-turbo` (a good default — trades a little of `large-v3`'s
-accuracy for several times the transcription speed, light enough to run
-acceptably on CPU) straight into the shared volume, with a live progress
-bar. Download as many different models as you like this way — they coexist
-as separate files.
+**1. Download a speech model in Studio** — open Studio → Settings → Voice (or
+the model picker) and download a Whisper model. `large-v3-turbo` is a good
+default: most of `large-v3`'s accuracy at several times the speed. Studio's
+API only accepts the standard Whisper model names (`tiny`, `base`, `small`,
+`medium`, `turbo`, `large-v3-turbo`, `large-v3`, `large`) and, on the builds
+tested so far, **not** `unslothai/Qwen3-ASR-1.7B-GGUF`: it shows as
+"On Device" in Studio's own UI but the API answers *"STT model … is not
+downloaded"*.
 
-**3. Make it active** — click **★ Make active** next to the model you just
-downloaded. This does two things: writes an `active-model.txt` marker into
-the shared volume (so the "whisper" service knows what to load on its next
-start/restart, permanently, regardless of anything below), and — if
-Whisper is currently reachable — also asks the running server to hot-swap
-to it immediately via its own `/load` endpoint, so **no restart is needed**
-in the common case. If the hot-swap can't happen (Whisper isn't reachable
-right now, or the file doesn't look like a valid model), the button tells
-you a restart is still required:
-```bash
-docker compose restart whisper
-```
-`docker compose logs -f whisper` should show it load the model and start
-listening within a few seconds to a minute or so, depending on model size
-and CPU speed.
+**2. Pick it in nd-world** — ⚙️ Settings → System → *Unsloth Studio server* →
+*Speech-to-text model*, then press **▷ Test STT**. The test pushes a short clip
+through the exact request the pipeline makes, so a missing or unusable model
+shows up there instead of as a failed job hours later. The Sessions page's live
+recording panel runs the same check (with a WebM/Opus clip, the format the
+browser records) every time a recording starts.
 
-Prefer a model not in the curated list, or already have a file? Paste its
-direct download URL into the same panel, or place a file yourself into
-`<AI_MODELS_DIR>/whisper/` (default `./ai-models/whisper/`) — then use
-**★ Make active** the same way once it's there. `WHISPER_MODEL_FILE` in
-`.env` is now only the *fallback* for a fresh deployment before anything's
-been made active, or for a "whisper" service still running an older,
-pre-`active-model.txt`-aware entrypoint (a one-time `git pull` +
-`docker compose up -d whisper` picks up the new one).
+**Tuning**
 
-**Is `/load` actually safe to call automatically?** Mostly, with one sharp
-edge worth knowing about. whisper.cpp's server validates the file exists
-*before* touching the currently-loaded model, so a missing/bad path just
-400s harmlessly — the old model keeps serving. The scarier case is a file
-that exists but fails to *parse*: that still calls `exit(1)` (killing the
-whole server process), same as always. Two things make this a non-issue in
-practice: the "whisper" service runs with `restart: unless-stopped`, so a
-crash there is a few seconds of downtime and a clean restart, not a stuck
-server — and nd-world checks a downloaded file's format before ever
-offering it for a hot-swap, refusing the ones most likely to trip that
-crash (most plausibly reached via the free-text custom-URL field, since
-every named download always comes from the correct official host). One
-residual gap: a *rejected* load (the 400 case) leaves the server's own
-`/health` endpoint permanently reporting "loading model" — transcription
-itself keeps working on the previous model, but nd-world will show Whisper
-as "unavailable" until the container is restarted by hand. The Whisper tab
-tells you when this has happened.
+- `UNSLOTH_STT_TIMEOUT_SECONDS` (default 1800) — the longest one transcription
+  request may run. On a Studio that transcribes slower than realtime (CPU-only),
+  keep chunks short or raise this.
+- `STT_CHUNK_SECONDS` (default 600) — a recording longer than 15 minutes is
+  split into pieces of about this length, each transcribed as its own request.
+- `STT_JOB_CONCURRENCY` (default 1) — how many background jobs may talk to the
+  speech model at once. (`WHISPER_CHUNK_SECONDS` / `WHISPER_JOB_CONCURRENCY` are
+  still read as the old names.)
+- Studio rejects a request body over 25 MiB: larger files are re-encoded to a
+  compact mono MP3 and split automatically (needs `ffmpeg`, which the image
+  includes).
 
-**That's it** — nd-world's `world` service already points at
-`http://whisper:8080` internally (see `WHISPER_URL` in `docker-compose.yml`)
-with no further configuration needed. From then on, any audio attachment
-gets transcribed automatically at upload time; if the Whisper server isn't
-reachable for any reason, the attachment just falls back to text-only
-context (filename mentioned, no transcript) instead of blocking the upload.
-Settings → System also has a **Whisper URL** field if you'd rather point at
-an externally-hosted whisper.cpp instance instead of the bundled service.
-
-**Container crash-loops with "Illegal instruction" (exit code 132)**: the
-prebuilt image is compiled with whatever CPU instruction set its GitHub
-Actions build runner happened to support, which silently includes AVX-512
-on many runners — any host CPU without AVX-512 (common even on otherwise
-modern hardware) then crashes the instant the model finishes loading.
-Comment out the `image:` line on the `whisper` service and uncomment the
-`build:` line below it instead — it compiles `whisper-server` from source
-with AVX-512 excluded, using `docker/whisper/Dockerfile` in this repo. See
-that file's comments, or
-[ggml-org/whisper.cpp#2928](https://github.com/ggml-org/whisper.cpp/issues/2928),
-for the full explanation.
-
-**GPU acceleration**: change the image to
-`ghcr.io/ggml-org/whisper.cpp:main-cuda` and uncomment the `deploy` block in
-the Whisper service (same shape as Ollama's). **Volta (V100, sm_70)
-owners:** that prebuilt image does NOT work on this card — its build only
-targets `CMAKE_CUDA_ARCHITECTURES='75;80;86;90'` (Turing and newer), so
-whisper-server never finds a usable GPU kernel on a V100. Build the
-Volta-targeted image from this repo instead: `docker/whisper-cuda` (see
-[docs/GPU_SETUP.md](GPU_SETUP.md) §6).
-
-**Known limitation**: real transcription accuracy and speed depend heavily
-on which model file you picked and your host's CPU/GPU — a long or noisy
-recording on a small model may transcribe slowly or imperfectly. This is
-the same "check your hardware first" tradeoff as the Android/Editor add-ons
-above, just for audio instead of a GUI session.
-
----
-
-## Optional: server-side speech enhancement (DeepFilterNet)
-
-A browser's own microphone noise suppression (always on for every recording
-in nd-world — mic input requests `noiseSuppression`/`echoCancellation`/
-`autoGainControl` from the OS/browser) is heuristic: an echo canceller and a
-noise gate, not a model. It works well for typewriter clicks and steady hiss,
-but does little against sustained background audio like music playing from a
-speaker or another app — there's no reference signal for the browser to
-cancel it against. [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)
-is a real, small neural speech-enhancement model that can meaningfully
-separate voice from that kind of background audio before the recording ever
-reaches Whisper. This is opt-in and, unlike the Whisper server above, runs
-**inside the `world` container itself** rather than as a separate service —
-there's no extra container to add to `docker-compose.yml`.
-
-**Why this isn't on by default**: DeepFilterNet needs `torch`/`torchaudio`,
-which add several hundred MB to the image and are otherwise completely
-unused by nd-world (everything else here is a thin client to external AI
-services). They're isolated into a separate `requirements-denoise.txt`
-layer, installed only if you ask for it at build time.
-
-**1. Build the image with the extra layer**:
-```bash
-docker compose build --build-arg INSTALL_DENOISE=true world
-docker compose up -d world
-```
-(Or, without Compose: `docker build --build-arg INSTALL_DENOISE=true -t nd-world .`)
-This layer installs a temporary Rust toolchain to compile deepfilternet's
-DSP core (no prebuilt wheel exists for every platform), then removes it —
-expect the first build with this flag to take noticeably longer than a
-normal build, on top of the torch/torchaudio download itself.
-
-The model itself (~50MB) downloads automatically on first use, into the same
-`/data` volume everything else persists to — so it survives container
-recreation and only downloads once.
-
-**2. Enable it per World** — log in as the GM, open the **AI** page's
-**🎙 Whisper** tab, and check **Enable speech enhancement** under the new
-"Speech enhancement" panel. This is a per-World toggle, same as the
-language/glossary settings above it — off by default even on an image built
-with `INSTALL_DENOISE=true`, so nothing changes until you turn it on. If the
-image *wasn't* built with the extra layer, the checkbox is disabled with an
-explanation instead of silently doing nothing.
-
-Once enabled, it applies everywhere a session recording is transcribed
-(background jobs, one-shot upload, and live recording) — the same scope as
-the language/glossary settings, and separate from one-off chat attachments,
-which don't use it.
-
-**Known limitation**: this is real noise *suppression*, not perfect source
-*separation* — it meaningfully reduces sustained background music/hum
-relative to speech, but won't cleanly remove loud music mixed at similar
-volume to the speaker's voice. It also adds real CPU time per recording
-(a small neural net forward pass) on top of transcription itself. If
-enhancement fails for any reason (corrupt audio, out of memory, ...) on a
-given file, nd-world logs a warning and transcribes the raw audio instead —
-this can never be the reason a transcription fails outright.
-
-**TrueNAS / prebuilt-image deployments**: `truenas-compose.yml` pulls the
-published `ghcr.io/8bit-boom/nd-world:latest` image, which is built *without*
-this layer (the project doesn't currently publish a second `:denoise` image
-tag). Enabling this on a TrueNAS deployment means building and hosting your
-own image with the build-arg above instead of using the prebuilt one.
+**Coming from the whisper.cpp sidecar?** It has been removed, along with its
+settings: the `whisper` Compose profile and service, `WHISPER_URL` and the
+Settings field, the model download/activate buttons, the world-level *spoken
+language*, *name glossary* and *speech enhancement* (DeepFilterNet) options, and
+the `latest-denoise` image. Those options were whisper.cpp features that Studio
+ignores. You can delete `<AI_MODELS_DIR>/whisper/` and any `WHISPER_*` lines from
+`.env`. Old databases keep the now-unused `whisper_*` columns; they are harmless.
 
 ---
 
@@ -623,13 +501,13 @@ way to continue. It doesn't anymore.
 stops accepting new work, gives any job that's about to finish a few seconds
 to reach its next checkpoint, then cancels whatever's still running and
 records exactly how far it got. This is deliberately NOT "wait for every job
-to finish" — a single Whisper chunk can take minutes on CPU, far longer than
+to finish" — a single speech-to-text chunk can take minutes on CPU, far longer than
 any sane shutdown window — the checkpoint from the last completed step is
 what actually survives, not the wait itself.
 
 **What "resumed automatically" means, per job type**:
 
-- **Audio transcription/summarization** (Session Recap, the Whisper Test
+- **Audio transcription/summarization** (Session Recap, the AI page's Speech
   tab, an AI Chat voice-memo attachment) is a **true resume**: it picks back
   up from the exact chunk it left off on, not from the beginning. A session
   recording interrupted 80% of the way through transcribing doesn't
@@ -652,7 +530,7 @@ across every future restart. Whatever transcript was already salvaged is
 kept either way.
 
 **Manual resume**: an audio job that hit the cap, or was interrupted while
-the Whisper backend happened to be down, can still be continued by hand —
+Studio happened to be down, can still be continued by hand —
 open **🎧 Audio → Background Jobs**, find the job (shown as "⏸
 Interrupted"), and click **▶ Resume**. This also resets the 3-attempt
 counter, since a manual click is a deliberate decision, not another

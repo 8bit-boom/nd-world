@@ -146,7 +146,7 @@ def _require_can_edit(request: Request) -> None:
     """Content-drafting endpoints a GM-Assistant (WorldMembership.role ==
     "assistant") may call too — same tier the auth_gate's _is_assistant_safe
     already enforced on the way in. Only the drafters use this; every other
-    gate in this router (chat history, presets, models, Whisper, imagegen)
+    gate in this router (chat history, presets, models, speech-to-text, imagegen)
     stays _require_gm, because model/system management is administration."""
     if not can_edit_content(request):
         raise HTTPException(403)
@@ -317,7 +317,7 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
     same attachment:
 
     1. A transcript (any audio format — see app.ai.transcribe_audio, which
-       runs at upload time via an optional self-hosted whisper.cpp server)
+       runs at upload time through Unsloth Studio's speech-to-text)
        gets folded into `content` as plain text, exactly like a document.
        This is the reliable path: it works regardless of which chat model
        is configured, since the model never needs to understand audio at
@@ -344,7 +344,7 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
        would just fail WAV detection — regardless of whether it has a
        transcript from path 1.
 
-    If neither path produced anything (no Whisper configured/reachable, and
+    If neither path produced anything (speech-to-text not configured/reachable, and
     not a .wav file), the attachment still gets a plain text note so every
     model has *some* context about it rather than the upload silently doing
     nothing."""
@@ -1077,39 +1077,34 @@ def api_prompt_presets_delete(preset_id: int, request: Request, db=Depends(get_d
     return {"ok": True}
 
 
-async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_filename: str, world=None) -> dict:
+async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_filename: str) -> dict:
     """Shared tail of both /attachments/upload and .../upload/complete: given
     a saved file, extract/transcribe as appropriate and build the response
     the client's attachment picker expects."""
     if kind == "document":
         text = _extract_document_text(dest, ext)
     elif kind == "audio":
-        # Whisper transcodes via ffmpeg server-side, so this works for any
+        # Studio decodes whatever container this is, so this works for any
         # of _ATTACH_AUDIO_EXTS, not just .wav — see app.ai.transcribe_audio.
-        # A WhisperError (not configured, or the request failed) just means
+        # An SttError (no key, or the request failed) just means
         # this attachment falls back to _build_ollama_messages' non-transcript
         # handling instead of blocking the upload — the real reason is still
-        # logged server-side by transcribe_audio itself. glossary/language
-        # come from the world the same way the background-job version of
-        # this same attachment flow (audio_jobs.py's _run_job) already
-        # applies them — this direct/blocking path was missing both.
-        glossary = (world.whisper_glossary or "").strip() if world else ""
-        language = (world.whisper_language or "").strip() if world else ""
+        # logged server-side by transcribe_audio itself.
         # Bounded by _AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS, comfortably under
         # a reverse proxy's response ceiling (Cloudflare tunnels give up at
         # ~100 s): a voice memo on a slow CPU-only STT backend can outlast
         # that, and an unbounded wait turns into a 524 the browser reads as
         # a failed upload — losing the attachment it already sent and
         # re-uploading (plus re-transcribing) on retry. A timeout here just
-        # degrades to the same non-transcript handling as a WhisperError:
+        # degrades to the same non-transcript handling as a SttError:
         # the attachment itself is already safely on disk (docs/
         # STT_LIVE_AUDIT_2026-09.md finding 2).
         try:
             text = await _asyncio.wait_for(
-                _ai.transcribe_audio(dest, glossary=glossary, language=language),
+                _ai.transcribe_audio(dest),
                 timeout=_AI_ATTACH_TRANSCRIBE_TIMEOUT_SECONDS,
             )
-        except _ai.WhisperError:
+        except _ai.SttError:
             text = ""
         except _asyncio.TimeoutError:
             _log.warning(
@@ -1156,8 +1151,7 @@ async def ai_attachment_upload(
     dest = target_dir / unique_upload_filename(file.filename, ext)
     max_bytes = _effective_ai_attachment_bytes(db, kind)
     copy_upload_bounded(file, dest, max_bytes=max_bytes)
-    world, _ = get_world_ctx(request, db, active_world)
-    return await _finish_attachment_upload(dest, ext, kind, file.filename, world=world)
+    return await _finish_attachment_upload(dest, ext, kind, file.filename)
 
 
 @router.post("/attachments/upload/chunk")
@@ -1204,13 +1198,12 @@ async def ai_attachment_upload_complete(
     dest = target_dir / unique_upload_filename(filename, ext)
     max_bytes = _effective_ai_attachment_bytes(db, kind)
     reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=max_bytes)
-    world, _ = get_world_ctx(request, db, active_world)
-    return await _finish_attachment_upload(dest, ext, kind, filename, world=world)
+    return await _finish_attachment_upload(dest, ext, kind, filename)
 
 
 # ── Durable background transcription jobs — an opt-in alternative to the
 # blocking routes above for a recording long enough that waiting on one
-# request isn't practical (Whisper Test tab, or an AI Chat/Ask AI voice-memo
+# request isn't practical (the AI page's Speech tab, or an AI Chat/Ask AI voice-memo
 # attachment — mechanically identical here, only what the client does with a
 # finished job differs). The actual work runs in the server process via
 # app/audio_jobs.py, independent of any one connection, so closing the tab
@@ -2037,104 +2030,6 @@ async def api_ollama_upload_status(import_id: str):
     return {k: v for k, v in progress.items() if k != "_ts"}
 
 
-@router.get("/whisper/model-status")
-async def api_whisper_model_status():
-    return _ai.whisper_model_status()
-
-
-@router.get("/whisper/glossary")
-def api_whisper_glossary_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
-    _require_gm(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    # entity_terms_count: how many World entity names get merged in on top
-    # of the saved text below at actual transcribe time (see audio_jobs.
-    # _glossary_for_world) — surfaced so the GM isn't left guessing why
-    # Whisper seems to know names they never typed here themselves.
-    # entity_terms_included/entity_terms_dropped: merge_glossary also caps
-    # entity terms by total character length (see its own docstring) — a
-    # GM whose roster is large enough to hit that cap should be able to see
-    # some names are being silently left out, not just how many exist.
-    gm_glossary = world.whisper_glossary or ""
-    entity_terms = _audio_jobs.entity_glossary_terms(world.id)
-    _, included, dropped = _audio_jobs.merge_glossary(gm_glossary, entity_terms)
-    return {
-        "glossary": gm_glossary,
-        "entity_terms_count": len(entity_terms),
-        "entity_terms_included": included,
-        "entity_terms_dropped": dropped,
-    }
-
-
-class WhisperGlossaryBody(BaseModel):
-    glossary: str = ""
-
-
-@router.post("/whisper/glossary")
-def api_whisper_glossary_save(body: WhisperGlossaryBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
-    _require_gm(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    world.whisper_glossary = body.glossary.strip()
-    db.commit()
-    return {"ok": True, "glossary": world.whisper_glossary}
-
-
-@router.get("/whisper/language")
-def api_whisper_language_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
-    _require_gm(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    return {"language": world.whisper_language or ""}
-
-
-class WhisperLanguageBody(BaseModel):
-    language: str = ""
-
-
-@router.post("/whisper/language")
-def api_whisper_language_save(body: WhisperLanguageBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
-    _require_gm(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    world.whisper_language = body.language.strip()
-    db.commit()
-    return {"ok": True, "language": world.whisper_language}
-
-
-@router.get("/whisper/denoise")
-def api_whisper_denoise_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
-    _require_gm(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    return {"enabled": bool(world.whisper_denoise), "available": _ai.speech_enhancement_available()}
-
-
-class WhisperDenoiseBody(BaseModel):
-    enabled: bool = False
-
-
-@router.post("/whisper/denoise")
-def api_whisper_denoise_save(body: WhisperDenoiseBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
-    _require_gm(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    if body.enabled and not _ai.speech_enhancement_available():
-        # Keeps World.whisper_denoise a reliable signal (see its own
-        # comment in models.py) instead of a flag that's silently
-        # ineffective on a deployment built without requirements-denoise.txt.
-        raise HTTPException(400, "Speech enhancement isn't installed on this server — see docs/DEPLOYMENT.md.")
-    world.whisper_denoise = body.enabled
-    db.commit()
-    return {"ok": True, "enabled": world.whisper_denoise}
-
-
 @router.get("/recap-instructions")
 def api_recap_instructions_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
     _require_gm(request)
@@ -2167,69 +2062,6 @@ def api_recap_instructions_save(body: RecapInstructionsBody, request: Request, d
     world.recap_content_touch = datetime.utcnow()
     db.commit()
     return {"ok": True, "instructions": world.recap_instructions}
-
-
-class WhisperPullBody(BaseModel):
-    url: str = ""
-    # One of app.ai.WHISPER_KNOWN_MODELS' filenames — downloads that known
-    # model to a file of its own instead of overwriting the active slot.
-    # download_whisper_model validates this against the known list itself
-    # (rejecting anything else) since it becomes a filesystem path.
-    filename: str = ""
-
-
-@router.post("/whisper/pull")
-async def api_whisper_pull(body: WhisperPullBody):
-    _log.info("whisper model pull url=%r filename=%r", body.url or "(default)", body.filename or "(active)")
-
-    async def _gen():
-        async for progress in _ai.download_whisper_model(body.url, body.filename):
-            yield f"data: {_json.dumps(progress)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return _SR(
-        _gen(),
-        media_type="text/event-stream",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
-    )
-
-
-class WhisperActivateBody(BaseModel):
-    filename: str
-    # True: also try a live /load on the running whisper.cpp server, so the
-    # switch takes effect immediately. False: just write the marker file —
-    # takes effect on the whisper Compose service's next restart. Either
-    # way the marker write happens first and always, so a hot-swap attempt
-    # failing (backend unreachable, or the load itself rejected) doesn't
-    # lose the GM's choice — it just means a restart is still needed.
-    hot_swap: bool = True
-
-
-@router.post("/whisper/activate")
-async def api_whisper_activate(body: WhisperActivateBody):
-    try:
-        _ai.set_active_whisper_model(body.filename)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    if not body.hot_swap:
-        return {"ok": True, "filename": body.filename, "hot_swapped": False, "restart_required": True,
-                "detail": "Saved. Restart the whisper service to load it."}
-
-    path = _ai.WHISPER_MODELS_DIR / body.filename
-    if not _ai._looks_like_ggml(path):
-        return {"ok": True, "filename": body.filename, "hot_swapped": False, "restart_required": True,
-                "detail": (
-                    "Saved, but this file doesn't look like a valid whisper.cpp model, so it wasn't "
-                    "sent to Whisper directly — loading a bad file crashes the whisper server. "
-                    "Re-download it, then restart the whisper service once it's active."
-                )}
-
-    result = await _ai.load_whisper_model(body.filename)
-    return {
-        "ok": True, "filename": body.filename, "hot_swapped": result["ok"],
-        "restart_required": not result["ok"], "detail": result["detail"],
-    }
 
 
 class EntityBody(BaseModel):
@@ -2391,7 +2223,7 @@ class SwarmuiModelDownloadBody(BaseModel):
 async def api_imagegen_model_download(body: SwarmuiModelDownloadBody):
     """Streams a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's
     own Models folder (see SWARMUI_MODELS_DIR's docstring in app/ai.py for
-    the shared-volume mechanics) — same SSE progress shape as /whisper/pull."""
+    the shared-volume mechanics) — same SSE progress shape as the other model downloads."""
     _log.info("swarmui model download url=%r subfolder=%r filename=%r", body.url, body.subfolder, body.filename or "(from url)")
 
     async def _gen():
@@ -3587,7 +3419,6 @@ async def unsloth_prefs_get():
         "tts_voice": _ai.get_tts_voice(),
         "tts_instructions": _ai.get_tts_instructions(),
         "tts_language": _ai.get_tts_language(),
-        "stt_backend": _ai.get_stt_backend(),
         "stt_model": _ai.get_stt_model(),
         "studio_console_url": _ai.get_studio_console_url(),
     }
@@ -3722,7 +3553,6 @@ async def unsloth_audio_models():
         "tts_model": _ai.get_tts_model(),
         "tts_voice": _ai.get_tts_voice(),
         "stt_model": _ai.get_stt_model(),
-        "stt_backend": _ai.get_stt_backend(),
     }
     return data
 
@@ -3957,11 +3787,6 @@ async def unsloth_prefs_set(body: dict):
         _ai.set_tts_instructions(str(body.get("tts_instructions") or "").strip())
     if "tts_language" in body:
         _ai.set_tts_language(str(body.get("tts_language") or "").strip())
-    if "stt_backend" in body:
-        try:
-            _ai.set_stt_backend(str(body.get("stt_backend") or "").strip())
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
     if "stt_model" in body:
         _ai.set_stt_model(str(body.get("stt_model") or "").strip())
     if "studio_console_url" in body:

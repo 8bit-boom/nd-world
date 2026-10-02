@@ -15,7 +15,7 @@
 // observable (fetch has no upload-progress event) — real byte-level percent
 // while bytes are still going over the wire, then an explicit "processing"
 // phase once the request body has fully arrived and the server is doing
-// its (unmeasurable — Whisper transcription/Ollama summarization report no
+// its (unmeasurable — speech-to-text transcription/Ollama summarization report no
 // progress of their own) work before responding.
 const ND_CHUNK_UPLOAD_THRESHOLD = 100 * 1024 * 1024;
 const ND_CHUNK_SIZE = 80 * 1024 * 1024; // safely under the 100MB cap, leaves headroom for multipart overhead

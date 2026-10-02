@@ -1,0 +1,47 @@
+<!-- ── Speech Panel (Unsloth Studio speech-to-text) ── -->
+<div id="speech-panel" style="display:none;padding:1.2rem;max-width:800px;margin:0 auto">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">🎙 Speech to text</span>
+    <button class="ig-btn" onclick="spLoadStatus()" style="white-space:nowrap">↺ Refresh</button>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Status</div>
+    <div id="sp-status" style="font-size:.85rem;color:var(--text-dim);white-space:pre-line">⏳ Checking…</div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2)">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Test transcription</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Pick an audio file and it's sent straight to Unsloth Studio to transcribe — nothing is saved or attached to a chat message, this is just a connectivity/sanity check.
+    </div>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <input type="file" id="sp-file" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*"
+             style="color:var(--text);font-size:.82rem;max-width:100%">
+      <button class="ig-btn" id="sp-transcribe-btn" onclick="spTranscribe()"
+              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">▶ Transcribe</button>
+      <button class="ig-btn" id="sp-mic-btn" onclick="spToggleMic()"
+              style="padding:.38rem 1rem;white-space:nowrap">🎤 Record</button>
+      <button class="ig-btn" id="sp-bgjob-btn" onclick="spStartBackgroundJob()"
+              title="Process the picked file as a background job — keeps running even if you close this tab"
+              style="padding:.38rem 1rem;white-space:nowrap">🔒 Process in Background</button>
+    </div>
+    <div id="sp-progress"></div>
+    <div id="sp-jobs-panel" class="nd-jobs-panel" style="display:none;margin-top:.6rem"></div>
+    <div id="sp-result" style="margin-top:.8rem;display:none">
+      <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Transcript</div>
+      <pre id="sp-result-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:0"></pre>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Recap instructions</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Extra steering for the AI-written recap itself (not transcription) — e.g. "Write summaries in Spanish", "Use a dry, sarcastic tone", "Focus only on combat". Applied to every session-recording recap (background jobs, one-shot upload, and re-summarize).
+    </div>
+    <textarea id="ri-textarea" rows="2" placeholder="e.g. Write the summary in French."
+              style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box;resize:vertical"></textarea>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <button class="ig-btn" id="ri-save-btn" onclick="riSaveInstructions()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
+      <span id="ri-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+</div><!-- /speech-panel -->
+

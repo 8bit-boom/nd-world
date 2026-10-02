@@ -23,9 +23,7 @@ differently:
   running `docker compose up -d ollama`. This module instead writes a GM's
   chosen values to a generated env file on a volume shared with the ollama
   container (write_server_env/render_env_file), which that container's
-  entrypoint sources at start — the exact mechanism app.ai's
-  active_whisper_model()/set_active_whisper_model() already use for the
-  Whisper service's active-model marker. Applying a change still needs an
+  entrypoint sources at start. Applying a change still needs an
   actual container restart — Ollama genuinely has no other way — so
   server_env_status() reports whether the running ollama container has
   caught up yet (comparing what was written against what its entrypoint
@@ -223,9 +221,8 @@ def render_env_file(values: dict) -> str:
 
 
 def write_server_env(values: dict) -> None:
-    """Atomically write ollama.env (tmp file + Path.replace — the same
-    pattern app.ai.set_active_whisper_model uses for its own shared-volume
-    marker file). Raises OSError if OLLAMA_CONFIG_DIR isn't writable; the
+    """Atomically write ollama.env (tmp file + Path.replace, so the
+    ollama container never reads a half-written file). Raises OSError if OLLAMA_CONFIG_DIR isn't writable; the
     caller surfaces that as a form warning rather than a 500, since an
     un-bind-mounted or read-only path is a deployment step not yet taken,
     not an application bug."""

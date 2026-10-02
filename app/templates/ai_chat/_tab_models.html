@@ -188,36 +188,5 @@
     </div>
   </div>
 
-  <!-- Whisper (audio transcription) model -->
-  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
-    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">🎙 Whisper (audio transcription)</div>
-    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
-      Transcribes an audio file attached to an AI Chat/Ask AI message into text — see
-      <strong>docs/DEPLOYMENT.md</strong> to enable the "whisper" service first. Downloading a model
-      below just writes it into the shared volume (the "whisper" service doesn't need to be running
-      yet) — download as many as you like, they won't overwrite each other. Click <strong>★ Make
-      active</strong> on a downloaded model to switch to it — usually instant (no restart), or
-      you'll be told when one's still needed (e.g. Whisper isn't reachable right now).
-    </div>
-    <div id="wp-status" style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">⏳ Checking…</div>
-    <div id="wp-model-list" style="display:flex;flex-direction:column;gap:.35rem;margin-bottom:.6rem"></div>
-    <details>
-      <summary style="cursor:pointer;font-size:.78rem;color:var(--text-dim)">Download a different model by URL…</summary>
-      <div style="margin-top:.5rem">
-        <input id="wp-custom-url" type="text" placeholder="Direct download URL — saved to the currently-active model's file"
-               style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.8rem;padding:.35rem .55rem;width:100%;box-sizing:border-box"
-               onkeydown="if(event.key==='Enter')wpDownload()">
-        <button class="ig-btn" onclick="wpDownload()"
-                style="margin-top:.4rem;border-color:var(--neon);color:var(--neon);padding:.3rem .8rem;font-size:.78rem">⬇ Download to active slot</button>
-      </div>
-    </details>
-    <div id="wp-progress" style="display:none;margin-top:.65rem">
-      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="wp-progress-label">Starting…</div>
-      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
-        <div id="wp-progress-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
-      </div>
-    </div>
-  </div>
-
 </div><!-- /models-panel -->
 

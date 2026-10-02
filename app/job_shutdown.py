@@ -4,7 +4,7 @@ app/chat_jobs.py) and the chunk loops in app/ai.py they drive.
 
 Why this exists: a routine `git pull && docker compose up -d --build` (or
 `docker compose restart`) used to just kill whatever background job was
-mid-flight — a Whisper transcription chunk can take minutes on CPU, so no
+mid-flight — a speech-to-text chunk can take minutes on CPU, so no
 Docker stop grace period can wait for one to actually finish. The fix isn't
 "wait longer", it's "checkpoint continuously, and on shutdown stop fast":
 
@@ -42,7 +42,7 @@ _log = logging.getLogger("nd.job_shutdown")
 
 # How long app.main's shutdown handler waits for in-flight jobs to reach a
 # checkpoint boundary on their own before cancelling them outright. NOT "wait
-# for the job to finish" — a single Whisper chunk can take minutes, so raising
+# for the job to finish" — a single speech-to-text chunk can take minutes, so raising
 # this well past a few seconds buys almost nothing (the checkpoint already
 # covers the rest) while eating into the deployment's stop_grace_period
 # budget. Tests set this to 0 (see tests/conftest.py) — the TestClient enters

@@ -912,7 +912,6 @@ def _migrate():
                 ("swarmui_external_url", "VARCHAR(512) DEFAULT ''"),
                 ("android_emulator_url", "VARCHAR(512) DEFAULT ''"),
                 ("editor_external_url", "VARCHAR(512) DEFAULT ''"),
-                ("whisper_url", "VARCHAR(512) DEFAULT ''"),
                 ("hover_preview_enabled", "BOOLEAN DEFAULT 1"),
                 ("hover_preview_delay_ms", "INTEGER DEFAULT 5000"),
                 ("hover_preview_hide_delay_ms", "INTEGER DEFAULT 400"),
@@ -1118,12 +1117,6 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN theme_json TEXT"))
             if "hero_style" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN hero_style VARCHAR(16) DEFAULT 'home'"))
-            if "whisper_glossary" not in w_cols:
-                conn.execute(text("ALTER TABLE worlds ADD COLUMN whisper_glossary TEXT"))
-            if "whisper_language" not in w_cols:
-                conn.execute(text("ALTER TABLE worlds ADD COLUMN whisper_language VARCHAR(16)"))
-            if "whisper_denoise" not in w_cols:
-                conn.execute(text("ALTER TABLE worlds ADD COLUMN whisper_denoise BOOLEAN DEFAULT 0"))
             if "recap_instructions" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN recap_instructions TEXT"))
             if "rules_md" not in w_cols:

@@ -66,17 +66,16 @@ def test_gpu_setup_doc_corrects_the_swarmui_vram_hold_claim():
     assert "10 minutes" in section or "default **10" in section
 
 
-def test_gpu_setup_doc_does_not_recommend_the_nonexistent_whisper_model():
-    """§6 recommended "ggml-large-v3-q8_0.bin" for better accuracy at lower
-    VRAM — that filename doesn't exist in whisper.cpp's own repo (only
-    large-v3-q5_0 and large-v3-turbo-q8_0 do; see app/ai.py's
-    WHISPER_KNOWN_MODELS). A GM following this doc's exact filename would
-    get a 404 from the Models tab's download button."""
+def test_gpu_setup_doc_section_6_is_about_studio_speech_to_text_not_whisper_cpp():
+    """§6 used to walk through a whisper.cpp CUDA build (ggml-*.bin model files, a Volta-targeted Dockerfile).
+    The sidecar is gone: transcription runs on Unsloth Studio, so §6 must say that and recommend no
+    whisper.cpp artifacts."""
     text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
     assert "## 6." in text
     section = text.split("## 6.", 1)[1].split("## 7.", 1)[0]
-    assert "ggml-large-v3-q8_0.bin" not in section
-    assert "ggml-large-v3-q5_0.bin" in section
+    assert "Unsloth" in section and "large-v3-turbo" in section
+    assert "ggml-" not in section and "docker/whisper-cuda" not in section and "WHISPER_MODELS_DIR" not in section
+    assert not (_REPO_ROOT / "docker" / "whisper-cuda").exists()
 
 
 def test_gpu_setup_doc_5a_replaces_vague_precision_advice_with_confirmed_log_lines():

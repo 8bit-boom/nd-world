@@ -22,13 +22,13 @@ def test_ai_page_still_renders_every_tab_and_loads_the_split_assets(client, seed
     r = client.get("/ai")
     assert r.status_code == 200
 
-    for panel_id in ("image-panel", "models-panel", "whisper-panel", "starred-panel"):
+    for panel_id in ("image-panel", "models-panel", "speech-panel", "starred-panel"):
         assert f'id="{panel_id}"' in r.text
-    for tab_btn in ("tab-chat", "tab-image", "tab-models", "tab-whisper", "tab-starred"):
+    for tab_btn in ("tab-chat", "tab-image", "tab-models", "tab-speech", "tab-starred"):
         assert f'id="{tab_btn}"' in r.text
 
     assert '<link rel="stylesheet" href="/static/css/ai-chat.css">' in r.text
-    for js in ("ai-chat-core.js", "ai-chat-image.js", "ai-chat-models.js", "ai-chat-whisper.js"):
+    for js in ("ai-chat-core.js", "ai-chat-image.js", "ai-chat-models.js", "ai-chat-speech.js"):
         assert re.search(rf'<script src="/static/js/{re.escape(js)}\?v=[0-9a-f]+"></script>', r.text)
 
     # The bootstrap block (server-rendered constants the split JS files need)
@@ -52,7 +52,7 @@ def test_split_static_assets_are_actually_served(client, seed):
         "/static/js/ai-chat-core.js",
         "/static/js/ai-chat-image.js",
         "/static/js/ai-chat-models.js",
-        "/static/js/ai-chat-whisper.js",
+        "/static/js/ai-chat-speech.js",
     ):
         r = client.get(path)
         assert r.status_code == 200, path
@@ -64,7 +64,7 @@ def test_bootstrap_constants_are_only_used_by_core_js_not_duplicated_elsewhere()
     # bootstrap script; the static bundles reference them as plain globals
     # (classic, non-module scripts share global scope) without redeclaring
     # them, since a `const` redeclared across files would throw at load time.
-    for js in ("ai-chat-core.js", "ai-chat-image.js", "ai-chat-models.js", "ai-chat-whisper.js"):
+    for js in ("ai-chat-core.js", "ai-chat-image.js", "ai-chat-models.js", "ai-chat-speech.js"):
         content = (STATIC / "js" / js).read_text()
         assert "{{" not in content and "{%" not in content, f"{js} still contains Jinja syntax"
         assert "const WORLD_SYSTEM" not in content
@@ -79,7 +79,7 @@ def test_every_tab_partial_is_a_self_contained_panel():
         "_tab_chat.html": None,  # the chat tab has no single wrapping #id — mobile bar + .ai-page
         "_tab_image.html": "image-panel",
         "_tab_models.html": "models-panel",
-        "_tab_whisper.html": "whisper-panel",
+        "_tab_speech.html": "speech-panel",
         "_tab_starred.html": "starred-panel",
     }
     for name, panel_id in expected.items():

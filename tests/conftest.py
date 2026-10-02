@@ -124,7 +124,7 @@ def client():
     # unconditionally for the same reason as the caches above.
     from app.rendering import clear_parse_stats_cache
     clear_parse_stats_cache()
-    # app.ai.whisper_job_semaphore/ollama_job_semaphore are module-level
+    # app.ai.stt_job_semaphore/ollama_job_semaphore are module-level
     # singletons that lazily bind to whichever asyncio event loop first
     # actually contends them (see asyncio.Semaphore.acquire — it only
     # calls _get_loop(), and so only binds, once a second waiter shows up)
@@ -135,7 +135,7 @@ def client():
     # event loop" in any later test whose own contention is the first to
     # reach it. Give every test fresh, as-yet-unbound instances, same
     # reasoning as _llm_cooldowns above.
-    ai_module.whisper_job_semaphore = asyncio.Semaphore(ai_module.WHISPER_JOB_CONCURRENCY)
+    ai_module.stt_job_semaphore = asyncio.Semaphore(ai_module.STT_JOB_CONCURRENCY)
     ai_module.ollama_job_semaphore = asyncio.Semaphore(ai_module.OLLAMA_JOB_CONCURRENCY)
     ai_module.imagegen_job_semaphore = asyncio.Semaphore(ai_module.IMAGEGEN_JOB_CONCURRENCY)
     with TestClient(app) as c:

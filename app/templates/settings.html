@@ -236,10 +236,6 @@
         <label for="editor-external-url">Content editor URL (Content Editor iframe)</label>
         <input id="editor-external-url" name="editor_external_url" value="{{ settings.editor_external_url or '' }}" placeholder="{{ env_editor_external_url or 'not set' }}">
       </div>
-      <div class="form-group">
-        <label for="whisper-url">Whisper URL (audio attachment transcription)</label>
-        <input id="whisper-url" name="whisper_url" value="{{ settings.whisper_url or '' }}" placeholder="{{ env_whisper_url or 'not set' }}">
-      </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Unsloth Studio server</h2>
       <div id="studio-auth-banner" style="display:none;border:1px solid #a33;background:rgba(170,51,51,.12);border-radius:6px;padding:.7rem .9rem;margin-bottom:1rem;font-size:.85rem">
         <strong style="color:#e07070">🔑 Studio rejected the API key.</strong>
@@ -294,18 +290,7 @@
         <input id="studio-tts-language" style="max-width:220px" placeholder="e.g. en or de — blank = model default"/>
       </div>
       <div class="form-group">
-        <label for="studio-stt-backend">Speech-to-text backend</label>
-        <select id="studio-stt-backend" style="max-width:220px">
-          <option value="whisper">whisper.cpp sidecar</option>
-          <option value="unsloth">Unsloth Studio</option>
-        </select>
-        <p id="studio-stt-backend-note" style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0;display:none">
-          On the Unsloth Studio backend, the world's Whisper settings (glossary, language, denoise) don't apply —
-          Studio's own Voice settings own those, and audio goes out with its original format/extension.
-        </p>
-      </div>
-      <div class="form-group">
-        <label for="studio-stt-model">STT model (Whisper family — Studio downloads it on first use)</label>
+        <label for="studio-stt-model">Speech-to-text model (Unsloth Studio — download it in Studio's Settings → Voice first)</label>
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
           <select id="studio-stt-model" style="max-width:220px">
             <option value="tiny">tiny</option>
@@ -1083,7 +1068,7 @@ function ndCopyRestartCmd() {
       }
       ttsSel.value = keepTts;
       // the STT picker grows hub-downloaded STT models (e.g. Qwen3-ASR)
-      // alongside the always-valid standard Whisper sizes
+      // alongside the always-valid standard speech-model sizes
       const sttSel = el('studio-stt-model');
       const keepStt = sttSel.value;
       (d.stt || []).forEach(m => {
@@ -1183,14 +1168,7 @@ function ndCopyRestartCmd() {
       el('studio-tts-voice').value = d.tts_voice || '';
       el('studio-tts-instructions').value = d.tts_instructions || '';
       el('studio-tts-language').value = d.tts_language || '';
-      el('studio-stt-backend').value = d.stt_backend || 'whisper';
       setSelect('studio-stt-model', d.stt_model || 'small');
-      // A programmatic .value set doesn't fire 'change', and this select was
-      // just flipped from its default to the stored backend — re-sync the
-      // STT Test button and the whisper-knobs note's visibility for it
-      // (otherwise both stay hidden on load when the stored backend is
-      // 'unsloth' until the GM manually touches the select).
-      syncSttTestVisibility();
       detectStudioModels();
       el('studio-detect-models').addEventListener('click', detectStudioModels);
       el('studio-version-btn').addEventListener('click', checkStudioVersion);
@@ -1318,7 +1296,6 @@ function ndCopyRestartCmd() {
           tts_voice: el('studio-tts-voice').value,
           tts_instructions: el('studio-tts-instructions').value,
           tts_language: el('studio-tts-language').value,
-          stt_backend: el('studio-stt-backend').value,
           stt_model: el('studio-stt-model').value,
           studio_console_url: el('studio-console-url').value,
         }),
@@ -1343,14 +1320,6 @@ function ndCopyRestartCmd() {
     }
     ctxOverrideSet(model, tokens);
   });
-  // STT test only makes sense against Studio — hide it on the whisper sidecar
-  const syncSttTestVisibility = () => {
-    const unsloth = el('studio-stt-backend').value === 'unsloth';
-    el('studio-stt-test').style.display = unsloth ? '' : 'none';
-    el('studio-stt-backend-note').style.display = unsloth ? '' : 'none';
-  };
-  el('studio-stt-backend').addEventListener('change', syncSttTestVisibility);
-  syncSttTestVisibility();
 
   if ({{ 'true' if active_tab == 'system' else 'false' }}) loadPrefs();
   // Also load when the tab is first opened (switchSettingsTab lazy-load hook)

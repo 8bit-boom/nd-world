@@ -47,7 +47,7 @@ LLM_CONTEXT_TOKENS = max(1024, int(os.getenv("LLM_CONTEXT_TOKENS", "16384")))
 # Concurrency limits for BACKGROUND-JOB work only (app/audio_jobs.py,
 # app/chat_jobs.py) — not the interactive chat/ask-AI/condense routes a GM
 # is actively waiting on, which should never queue behind a background job.
-# Without these, two session-recap jobs queued together interleave Whisper
+# Without these, two session-recap jobs queued together interleave speech-to-text
 # chunks (or Ollama calls) against each other on the same backend, roughly
 # doubling wall time for both and thrashing whatever's resident in VRAM.
 # Held for the FULL duration of one transcribe_audio/summarize_transcript/
@@ -55,34 +55,17 @@ LLM_CONTEXT_TOKENS = max(1024, int(os.getenv("LLM_CONTEXT_TOKENS", "16384")))
 # per-chunk loop), not just one HTTP request, so a job's chunks always run
 # back-to-back rather than interleaved with another job's. Env-tunable in
 # case a beefier host can genuinely run more than one at a time.
-WHISPER_JOB_CONCURRENCY = max(1, int(os.getenv("WHISPER_JOB_CONCURRENCY", "1")))
+# (WHISPER_JOB_CONCURRENCY is still honoured as the old name of STT_JOB_CONCURRENCY.)
+STT_JOB_CONCURRENCY = max(1, int(os.getenv("STT_JOB_CONCURRENCY") or os.getenv("WHISPER_JOB_CONCURRENCY") or "1"))
 OLLAMA_JOB_CONCURRENCY = max(1, int(os.getenv("OLLAMA_JOB_CONCURRENCY", "1")))
-# Unlike Whisper/Ollama above, SwarmUI/ComfyUI queue generations internally
+# Unlike speech-to-text/Ollama above, SwarmUI/ComfyUI queue generations internally
 # on their own end — this exists to keep app.image_jobs' queued jobs from
 # racing a concurrent direct /api/ai/imagegen/generate call (or each
 # other) at the httpx-client/timeout layer, not to protect the GPU itself.
 IMAGEGEN_JOB_CONCURRENCY = max(1, int(os.getenv("IMAGEGEN_JOB_CONCURRENCY", "1")))
-whisper_job_semaphore = asyncio.Semaphore(WHISPER_JOB_CONCURRENCY)
+stt_job_semaphore = asyncio.Semaphore(STT_JOB_CONCURRENCY)
 ollama_job_semaphore = asyncio.Semaphore(OLLAMA_JOB_CONCURRENCY)
 imagegen_job_semaphore = asyncio.Semaphore(IMAGEGEN_JOB_CONCURRENCY)
-
-# Optional whisper.cpp server (see the "whisper" Compose profile) for
-# transcribing an audio chat attachment into text — blank like IMAGEGEN_URL
-# below, since it's an optional add-on with no sane always-on default rather
-# than something like Ollama a bare install is expected to reach locally.
-WHISPER_URL = os.getenv("WHISPER_URL", "").rstrip("/")
-
-# How long a single /inference call is allowed to run — this is actual
-# transcription time, not network latency, and CPU-only whisper.cpp can run
-# well under realtime speed depending on the host and model size, so a full
-# multi-hour session recording can legitimately take a long time to
-# transcribe. Defaults to 8 hours: a too-short timeout costs a lot (a silent
-# empty transcript — see transcribe_audio's except block — that looks
-# identical to "Whisper isn't configured" from the caller's side, after
-# potentially hours of otherwise-successful processing), while a too-long
-# one costs almost nothing (it only matters if Whisper is genuinely stuck,
-# not just slow). Env-overridable either direction.
-WHISPER_TIMEOUT_SECONDS = float(os.getenv("WHISPER_TIMEOUT_SECONDS", str(8 * 3600)))
 
 # Runtime overrides (set from AppSettings via POST /settings/system, without
 # needing a restart — see main.py's _refresh_settings_overrides()). Blank means
@@ -91,7 +74,6 @@ _llm_url_override: str = ""
 _llm_model_override: str = ""
 _llm_api_key_override: str = ""
 _llm_context_tokens_override: int = 0
-_whisper_url_override: str = ""
 
 
 def set_llm_override(url: str = "", model: str = "", api_key: str = "", context_tokens: int = 0) -> None:
@@ -163,15 +145,6 @@ def effective_ollama_url() -> str:
 
 def effective_ollama_model() -> str:
     return effective_llm_model()
-
-
-def set_whisper_override(url: str) -> None:
-    global _whisper_url_override
-    _whisper_url_override = (url or "").rstrip("/")
-
-
-def effective_whisper_url() -> str:
-    return _whisper_url_override or WHISPER_URL
 
 
 # Per-request Ollama generation tuning (temperature, num_ctx, mirostat, etc.)
@@ -834,30 +807,6 @@ def set_tts_language(language: str) -> None:
     _save_data(data)
 
 
-def get_stt_backend() -> str:
-    """'whisper' (the whisper.cpp sidecar, default) or 'unsloth' (Studio's
-    /v1/audio/transcriptions — STT models are managed in Studio's own
-    Settings -> Voice page)."""
-    stored = _load_data().get("stt_backend")
-    if stored:
-        return stored
-    # Nothing chosen yet: a Studio-only install (key set, no whisper.cpp
-    # sidecar) has nothing else to transcribe with, so default to Studio
-    # instead of failing every chunk with "Whisper isn't configured". An
-    # install that has a sidecar keeps it; an explicit choice always wins.
-    if effective_llm_api_key() and not effective_whisper_url():
-        return "unsloth"
-    return "whisper"
-
-
-def set_stt_backend(backend: str) -> None:
-    if backend not in ("whisper", "unsloth"):
-        raise ValueError("stt backend must be 'whisper' or 'unsloth'")
-    data = _load_data()
-    data["stt_backend"] = backend
-    _save_data(data)
-
-
 def get_stt_model() -> str:
     return _load_data().get("stt_model") or DEFAULT_STT_MODEL
 
@@ -1139,8 +1088,8 @@ async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator
     files={filename: digest}) posts to /api/create referencing that
     digest): create_blob() only needs `path` readable by wherever THIS code
     runs (nd-world's own container) — the file does NOT need to live on a
-    volume shared with the "ollama" Compose service the way SWARMUI_MODELS_DIR/
-    WHISPER_MODELS_DIR do, since the blob is pushed over the network, not
+    volume shared with the "ollama" Compose service the way SWARMUI_MODELS_DIR
+    does, since the blob is pushed over the network, not
     read off a shared disk.
 
     Yields the same {"total":,"completed":}/{"status":"done",...}/
@@ -3296,7 +3245,7 @@ MAX_AUTO_NUM_CTX = max(8192, int(os.getenv("MAX_AUTO_NUM_CTX", "32768")))
 # the thinking length observed in the production failure that motivated
 # this whole mechanism (7781 chars ≈ 1,945-3,890 tokens depending on
 # script — see _chars_per_token_estimate). Env-tunable (same idiom as
-# WHISPER_JOB_CONCURRENCY above) as an escape hatch for an install that
+# STT_JOB_CONCURRENCY above) as an escape hatch for an install that
 # genuinely needs more, without changing the shipped default for everyone
 # — check generate_chat's own "thinking_chars=" log line (see its
 # _log.warning call) across a few failures before raising this.
@@ -3462,7 +3411,7 @@ def _ctx_override_if_needed(text: str, reserve_tokens: int) -> dict:
 
 
 _SUMMARIZE_TRANSCRIPT_SYSTEM = (
-    "You are a scribe for a tabletop RPG campaign. Below is a raw Whisper transcript of an "
+    "You are a scribe for a tabletop RPG campaign. Below is a raw speech-to-text transcript of an "
     "actual-play session recording — expect filler words, misheard names, and no punctuation "
     "structure. Turn it into a short, readable narrative recap in flowing prose — a few "
     "paragraphs, past tense, third person. Use your judgment to skip out-of-character chatter, "
@@ -3472,7 +3421,7 @@ _SUMMARIZE_TRANSCRIPT_SYSTEM = (
 )
 
 _SUMMARIZE_TRANSCRIPT_PART_SYSTEM = (
-    "You are a scribe for a tabletop RPG campaign. Below is ONE PART of a longer raw Whisper "
+    "You are a scribe for a tabletop RPG campaign. Below is ONE PART of a longer raw speech-to-text "
     "transcript of an actual-play session recording — expect filler words, misheard names, no "
     "punctuation structure, and this excerpt starting and ending mid-scene. Turn just this part "
     "into a short, readable narrative summary in flowing prose (past tense, third person) — it "
@@ -3677,8 +3626,8 @@ def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str
     enough in the window to still make meaningful progress.
 
     A single "\\n" is checked between the paragraph and sentence-punctuation
-    candidates because that's the real per-segment separator whisper.cpp
-    writes into a transcript — a raw Whisper transcript essentially never
+    candidates because that's the real per-segment separator a speech-to-text
+    transcript is joined with — a raw transcript essentially never
     contains a blank-line paragraph break or "word. " sentence spacing, so
     without this candidate every long transcript hard-cut mid-word."""
     if len(transcript) <= chunk_chars:
@@ -3756,7 +3705,7 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
                                 on_checkpoint=None, should_stop=None, resume: dict | None = None,
                                 think: bool = True, world_context: str = "",
                                 expanded_thinking: bool = False) -> str:
-    """Turn a raw Whisper transcript (see transcribe_audio) of a session
+    """Turn a raw speech-to-text transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before.
 
@@ -3974,7 +3923,7 @@ async def status() -> dict:
 
 
 async def debug_info() -> dict:
-    whisper = await whisper_status()
+    stt = await stt_status()
     try:
         resp = await _client().list()
         models = [m.model for m in resp.models]
@@ -3984,7 +3933,7 @@ async def debug_info() -> dict:
             "backend": llm_backend_name(),
             "loaded_models": models,
             "default_model": effective_ollama_model(),
-            "whisper": whisper,
+            "stt": stt,
         }
     except Exception as exc:
         return {
@@ -3993,7 +3942,7 @@ async def debug_info() -> dict:
             "backend": llm_backend_name(),
             "error": f"{type(exc).__name__}: {exc}",
             "default_model": effective_ollama_model(),
-            "whisper": whisper,
+            "stt": stt,
         }
 
 
@@ -4277,37 +4226,27 @@ async def swarmui_free_memory() -> dict:
         return {"ok": False}
 
 
-# ── Audio transcription (whisper.cpp server) ────────────────────────────────
-# See app/routers/ai.py's /attachments/upload — an uploaded audio attachment
-# is transcribed here (regardless of its original format; the server itself
-# transcodes via ffmpeg, see the "--convert" flag on the "whisper" Compose
-# service) so its content reaches the chat model as plain text, the same
-# reliable path a document attachment already uses — independent of whether
-# the chat model itself has any native audio understanding.
+# ── Audio transcription (Unsloth Studio) ───────────────────────────────────
+# See app/routers/ai.py's /attachments/upload - an uploaded audio attachment
+# is transcribed here (regardless of its original format; Studio decodes it,
+# and files over its request limit are re-encoded/split first) so its content
+# reaches the chat model as plain text, the same reliable path a document
+# attachment already uses - independent of whether the chat model itself has
+# any native audio understanding. Studio's /v1/audio/transcriptions is the
+# only speech-to-text backend.
 
-async def whisper_status() -> dict:
-    """Health probe for the ACTIVE STT backend — whisper.cpp /health by
-    default, or a cheap authenticated Studio call when the STT backend is
-    'unsloth' (Studio has no /health; /api/hub/cached-gguf answers quickly
-    and exercises the same auth path the transcription call uses)."""
-    if get_stt_backend() == "unsloth":
-        if not effective_llm_api_key():
-            return {"ok": False, "reason": "STT backend is 'unsloth' but no API key is configured", "backend": "unsloth"}
-        from . import unsloth_extras as _unsloth_extras
-        try:
-            await _unsloth_extras.hub_cached()
-            return {"ok": True, "backend": "unsloth", "url": effective_llm_url()}
-        except Exception as e:
-            return {"ok": False, "reason": str(e), "backend": "unsloth"}
-    url = effective_whisper_url()
-    if not url:
-        return {"ok": False, "reason": "not configured"}
+async def stt_status() -> dict:
+    """Health probe for speech-to-text: a cheap authenticated Studio call
+    (Studio has no /health; /api/hub/cached-gguf answers quickly and exercises
+    the same auth path the transcription call uses)."""
+    if not effective_llm_api_key():
+        return {"ok": False, "reason": "no Unsloth Studio API key is configured (Settings → System)", "backend": "unsloth"}
+    from . import unsloth_extras as _unsloth_extras
     try:
-        async with _httpx.AsyncClient(timeout=5) as c:
-            r = await c.get(f"{url}/health")
-            return {"ok": r.status_code == 200 and r.json().get("status") == "ok", "url": url}
+        await _unsloth_extras.hub_cached()
+        return {"ok": True, "backend": "unsloth", "url": effective_llm_url()}
     except Exception as e:
-        return {"ok": False, "reason": str(e), "url": url}
+        return {"ok": False, "reason": str(e), "backend": "unsloth", "url": effective_llm_url()}
 
 
 def _status_is_transient(status: int | None) -> bool:
@@ -4321,25 +4260,24 @@ def _status_is_transient(status: int | None) -> bool:
     return status in (408, 425, 429) or status >= 500
 
 
-class WhisperError(Exception):
-    """Raised by transcribe_audio when the request to Whisper itself failed
-    (not configured, unreachable, timed out, or returned a non-200/
-    unreadable response) — distinct from a successful transcription that
-    just happens to be empty (a genuinely silent clip), which is NOT an
-    error and returns "" normally. Callers that need real detail for the
-    GM (audio jobs, session recap routes) catch this and surface str(exc);
-    callers where a failed transcription should just quietly leave an
-    attachment without transcript text (_finish_attachment_upload) catch
-    and swallow it instead.
+class SttError(Exception):
+    """Raised by transcribe_audio when speech-to-text itself failed (no Studio
+    key, Studio unreachable or timed out, an STT model that isn't downloaded, an
+    unreadable response) - distinct from a successful transcription that just
+    happens to be empty (a genuinely silent clip), which is NOT an error and
+    returns "" normally. Callers that need real detail for the GM (audio jobs,
+    session recap routes) catch this and surface str(exc); callers where a
+    failed transcription should just quietly leave an attachment without
+    transcript text (_finish_attachment_upload) catch and swallow it instead.
 
     `partial_transcript`, when non-empty, is every chunk successfully
-    transcribed before the failing one, already joined and collapsed —
+    transcribed before the failing one, already joined and collapsed -
     set only by transcribe_audio's chunked path, when at least one prior
-    chunk succeeded. A whisper container restart 3 hours into a 4-hour
-    session used to discard all 3 hours of already-completed work along
-    with the error; a caller that saves this (audio_jobs.py) lets the GM
-    resummarize from the salvaged partial instead of re-uploading and
-    re-transcribing the whole recording from scratch."""
+    chunk succeeded. A Studio restart 3 hours into a 4-hour session used to
+    discard all 3 hours of already-completed work along with the error; a
+    caller that saves this (audio_jobs.py) lets the GM resummarize from the
+    salvaged partial instead of re-uploading and re-transcribing the whole
+    recording from scratch."""
 
     def __init__(self, message: str, partial_transcript: str = "", *, retryable: bool = False):
         super().__init__(message)
@@ -4353,13 +4291,11 @@ class WhisperError(Exception):
 
 
 def _collapse_repeated_transcript_lines(text: str, min_repeat: int = 4) -> str:
-    """whisper.cpp emits one newline-separated line per decoded segment
-    (see output_str() in examples/server/server.cpp — `result << text <<
-    "\\n"` per segment), so a degenerate repetition loop (see
-    transcribe_audio's docstring) shows up as the exact same line repeated
-    many times in a row. beam_size/entropy_thold already cut this down a
-    lot, but short runs (roughly 4-25 repeats observed in practice) still
-    slip through — a real conversation essentially never produces the
+    """Whisper-family speech models (which is what Studio runs) can fall into
+    a degenerate repetition loop on music or silence, which shows up as the
+    exact same line repeated many times in a row (transcript pieces are
+    joined one per line). Short runs (roughly 4-25 repeats observed in
+    practice) are common — a real conversation essentially never produces the
     exact same segment text 4+ times back to back, so collapsing any such
     run down to one copy is a safe, purely mechanical cleanup that needs
     no model call and can't accidentally remove genuine short exchanges
@@ -4389,13 +4325,13 @@ def _collapse_repeated_transcript_lines(text: str, min_repeat: int = 4) -> str:
 # ffprobe/ffmpeg round trip for the common case), short enough that a
 # multi-hour session recording still gets split into a meaningful number
 # of pieces.
-WHISPER_CHUNK_SECONDS = max(60.0, float(os.getenv("WHISPER_CHUNK_SECONDS", str(10 * 60))))
-# Always comfortably above WHISPER_CHUNK_SECONDS itself, so a clip just
+STT_CHUNK_SECONDS = max(60.0, float(os.getenv("STT_CHUNK_SECONDS") or os.getenv("WHISPER_CHUNK_SECONDS") or (10 * 60)))
+# Always comfortably above STT_CHUNK_SECONDS itself, so a clip just
 # over the threshold still splits into at least two real chunks instead of
 # producing a single-segment "split" that's really just the original file
 # with extra ffmpeg overhead (transcribe_audio handles that case safely
 # either way, but there's no reason to configure it into existence).
-_WHISPER_CHUNK_MIN_DURATION = max(15 * 60, WHISPER_CHUNK_SECONDS * 1.5)
+_STT_CHUNK_MIN_DURATION = max(15 * 60, STT_CHUNK_SECONDS * 1.5)
 
 
 async def _probe_audio_duration(path: Path) -> float | None:
@@ -4422,7 +4358,7 @@ async def _probe_audio_duration(path: Path) -> float | None:
 async def _split_audio_into_chunks(path: Path, chunk_seconds: float) -> tuple[list[Path], Path | None]:
     """Split a long recording into ~chunk_seconds pieces via ffmpeg's
     segment muxer (stream copy, no re-encode — fast and lossless) so a
-    whisper.cpp repetition loop (see transcribe_audio's docstring) can
+    speech-model repetition loop (see transcribe_audio's docstring) can
     only ever ruin one chunk's worth of audio instead of consuming the
     rest of a multi-hour file, and so a caller can report real per-chunk
     progress instead of one opaque multi-hour call.
@@ -4436,7 +4372,7 @@ async def _split_audio_into_chunks(path: Path, chunk_seconds: float) -> tuple[li
     import asyncio
     import shutil
     import tempfile
-    tmpdir = Path(tempfile.mkdtemp(prefix="nd-whisper-chunks-"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="nd-stt-chunks-"))
     pattern = tmpdir / f"chunk_%04d{path.suffix}"
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -4462,184 +4398,19 @@ async def _split_audio_into_chunks(path: Path, chunk_seconds: float) -> tuple[li
         return [path], None
 
 
-# ── Speech enhancement (DeepFilterNet) ──────────────────────────────────────
-# Optional: a real ML denoising model run over each audio file before it
-# reaches Whisper, meaningfully better against sustained background audio
-# (music, hum, HVAC) than a browser's own echo-cancellation/noise-gate
-# heuristics (see ndMicRecorder in base.html). NOT a base dependency —
-# torch alone is hundreds of MB — see requirements-denoise.txt and the
-# Dockerfile's INSTALL_DENOISE build arg. Every entry point below degrades
-# to a no-op (raw audio, unchanged) if the dependency isn't installed or
-# anything about denoising fails, so enabling this can never be the reason
-# a transcription fails outright.
-
-_speech_enhancement_available_cache: bool | None = None
-_denoise_model_cache = None  # (model, df_state) tuple, loaded lazily once per process
-
-
-def speech_enhancement_available() -> bool:
-    """Whether this container actually has the DeepFilterNet dependency
-    stack installed. Feature-detected once via try/except ImportError and
-    cached — importing torch is itself slow (hundreds of ms) and this is
-    checked on every denoise-enabled transcription plus the settings
-    route that lets a GM toggle World.whisper_denoise on."""
-    global _speech_enhancement_available_cache
-    if _speech_enhancement_available_cache is None:
-        try:
-            import torch  # noqa: F401
-            import torchaudio  # noqa: F401
-            import df.enhance  # noqa: F401
-        except ImportError:
-            _speech_enhancement_available_cache = False
-        else:
-            _speech_enhancement_available_cache = True
-    return _speech_enhancement_available_cache
-
-
-def _init_denoise_model():
-    """Lazily loads and caches the DeepFilterNet model + DF state (the
-    STFT/filtering state paired with it). Model loading is slow (downloads
-    ~50MB to XDG_CACHE_HOME on first run — see the Dockerfile) and must
-    only happen once per process, not once per audio file."""
-    global _denoise_model_cache
-    if _denoise_model_cache is None:
-        from df.enhance import init_df
-        model, df_state, _ = init_df()
-        _denoise_model_cache = (model, df_state)
-    return _denoise_model_cache
-
-
-def _denoise_audio_file_sync(path: Path) -> Path:
-    """Blocking DeepFilterNet enhancement of one audio file, writing the
-    result to a new sibling file and returning its path. Always run via
-    asyncio.to_thread (see denoise_audio_file) — this is CPU-bound (a
-    small neural net forward pass) and would otherwise stall the event
-    loop for however long the clip takes to process."""
-    from df.enhance import enhance
-    from df.io import load_audio, save_audio, resample
-    from df.model import ModelParams
-    model, df_state = _init_denoise_model()
-    df_sr = ModelParams().sr
-    audio, meta = load_audio(str(path), sr=df_sr)
-    enhanced = enhance(model, df_state, audio)
-    enhanced = resample(enhanced, df_sr, meta.sample_rate)
-    # Always .wav regardless of the input's own container/codec (e.g. a
-    # browser mic recording is typically .webm/opus) — torchaudio's save
-    # path (used by save_audio) can't reliably ENCODE every container it
-    # can decode, and .wav is the one format every backend can always
-    # write. whisper.cpp accepts it natively either way (no conversion
-    # needed on that end, unlike webm/opus, which it transcodes via
-    # --convert).
-    out_path = path.with_name(f"{path.stem}.denoised.wav")
-    save_audio(str(out_path), enhanced, sr=meta.sample_rate, log=False)
-    return out_path
-
-
-async def denoise_audio_file(path: Path) -> Path:
-    """Run speech enhancement over an audio file and return the path to
-    the enhanced version — the ORIGINAL path, unchanged, if the
-    dependency isn't installed or anything about denoising fails (a
-    corrupt/unsupported file, a model load error, out of memory, ...).
-    A denoising failure must never block transcription, since the raw
-    audio would have transcribed fine before this feature existed. The
-    caller owns cleanup of the returned path when it differs from the
-    input (see _transcribe_one_file)."""
-    if not speech_enhancement_available():
-        return path
-    try:
-        import asyncio
-        return await asyncio.to_thread(_denoise_audio_file_sync, path)
-    except Exception as exc:
-        _log.warning("speech enhancement failed, using raw audio instead: %s: %s", type(exc).__name__, exc)
-        return path
-
-
-async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise: bool = False) -> str:
-    """Transcribe one audio file — via the whisper.cpp /inference sidecar
-    (default), or via Studio's /v1/audio/transcriptions when the GM set the
-    STT backend to 'unsloth' (Settings → System). Kept separate from
-    transcribe_audio so the chunking orchestrator below can call it once
-    per chunk without duplicating any of this. Both backends return plain
-    text; the denoise pre-pass applies to either (it's a local ffmpeg step)."""
-    if get_stt_backend() == "unsloth":
-        return await _transcribe_one_file_unsloth(path)
-    url = effective_whisper_url()
-    if not url:
-        raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
-    if not path.is_file():
-        # Without this check, path.open() below raises FileNotFoundError,
-        # which the generic "Could not reach Whisper" handler catches and
-        # reports as a network/server problem — misleading for what's
-        # actually a local file that's missing or already cleaned up.
-        raise WhisperError(f"Audio file not found: {path.name}")
-    send_path = path
-    if denoise:
-        send_path = await denoise_audio_file(path)
-    data = {
-        "response_format": "json",
-        "language": language.strip() or "auto",
-        "beam_size": "5",
-        "entropy_thold": "2.6",
-    }
-    if glossary.strip():
-        data["prompt"] = glossary.strip()
-        # Without this, whisper.cpp only loads `prompt` into its rolling
-        # 30-second decode context (prompt_past1), which gets overwritten
-        # by decoded tokens after the very first window — so the glossary
-        # only actually biased the first ~30s of a recording. This flag
-        # (verified against whisper.cpp's source, src/whisper.cpp: the
-        # carry_initial_prompt branch keeps it in the static prompt_past0,
-        # prepended to every window instead) makes it apply for the whole
-        # file. Older whisper.cpp servers that don't recognize this field
-        # simply ignore it — no compatibility risk.
-        data["carry_initial_prompt"] = "true"
-    try:
-        try:
-            async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
-                with send_path.open("rb") as f:
-                    r = await c.post(
-                        f"{url}/inference",
-                        files={"file": (send_path.name, f, "application/octet-stream")},
-                        data=data,
-                    )
-        except (_httpx.TimeoutException, TimeoutError) as exc:
-            # httpx's own timeout exceptions (ReadTimeout/ConnectTimeout/...)
-            # derive from httpx.TimeoutException, NOT the builtin TimeoutError —
-            # catching only TimeoutError here meant a real Whisper timeout fell
-            # through to the generic "Could not reach Whisper" branch below
-            # (with an often-empty message, since httpx timeouts commonly
-            # stringify to "") instead of naming the actual timeout.
-            _log.warning("whisper transcription timed out: %s", exc)
-            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.", retryable=True) from exc
-        except Exception as exc:
-            _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
-            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}", retryable=True) from exc
-        if r.status_code != 200:
-            _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
-            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}", retryable=_status_is_transient(r.status_code))
-        try:
-            return (r.json().get("text") or "").strip()
-        except Exception as exc:
-            _log.warning("whisper returned an unreadable response: %s", exc)
-            raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
-    finally:
-        if send_path != path:
-            send_path.unlink(missing_ok=True)
-
-
 # Studio's /v1/audio/transcriptions rejects request bodies over 25 MiB
 # (observed live: 26,214,400 bytes). Stay under it with margin for the
 # multipart framing.
 _UNSLOTH_STT_MAX_BYTES = 23 * 1024 * 1024
 # Max MINUTES of audio per transcription request — duration cap alongside
-# the byte cap (see _transcribe_one_file_unsloth).
+# the byte cap (see _transcribe_one_file).
 _UNSLOTH_STT_CHUNK_SECONDS = 10 * 60
 # Audio is only re-split when it is clearly longer than one piece. The cut at
 # _UNSLOTH_STT_CHUNK_SECONDS is a stream copy, so the pieces it produces (and
-# the generic pipeline's own WHISPER_CHUNK_SECONDS pieces) measure a few
+# the generic pipeline's own STT_CHUNK_SECONDS pieces) measure a few
 # milliseconds OVER it — a strict "> 600" re-encoded every one of them and sent
 # Studio a second request carrying a sliver. 1.5x mirrors the generic
-# pipeline's _WHISPER_CHUNK_MIN_DURATION rule, and guarantees any remainder is
+# pipeline's _STT_CHUNK_MIN_DURATION rule, and guarantees any remainder is
 # at least half a piece long.
 _UNSLOTH_STT_SPLIT_ABOVE_SECONDS = _UNSLOTH_STT_CHUNK_SECONDS * 1.5
 
@@ -4658,7 +4429,7 @@ def _plan_unsloth_chunks(file_size: int, duration: float | None) -> float | None
 async def _transcode_audio_to_mp3(path: Path, tmpdir: Path) -> Path:
     """Re-encode to 16 kHz mono MP3 at 64 kbps — transcription-grade audio
     at ~8 KB/second, which shrinks a music-grade FLAC roughly 10x. Raises
-    WhisperError with the actionable reason if ffmpeg is missing or lacks
+    SttError with the actionable reason if ffmpeg is missing or lacks
     the MP3 encoder."""
     import asyncio
     out = tmpdir / (path.stem + "-nd-stt.mp3")
@@ -4670,28 +4441,26 @@ async def _transcode_audio_to_mp3(path: Path, tmpdir: Path) -> Path:
         )
         _, _ = await proc.communicate()
     except FileNotFoundError:
-        raise WhisperError(
+        raise SttError(
             "ffmpeg isn't available in this deployment, so the oversized audio "
             "can't be prepared for Studio's 25 MiB limit — convert it to MP3/OGG "
-            "manually, or switch the STT backend to whisper.cpp.")
+            "manually.")
     if proc.returncode != 0 or not out.is_file():
-        raise WhisperError(
+        raise SttError(
             f"Re-encoding {path.name} for Studio's 25 MiB limit failed "
             "(ffmpeg returned an error — it may be built without the MP3 "
-            "encoder). Convert it to MP3/OGG manually, or switch the STT "
-            "backend to whisper.cpp.")
+            "encoder). Convert it to MP3/OGG manually.")
     return out
 
 
-async def _transcribe_one_file_unsloth(path: Path) -> str:
+async def _transcribe_one_file(path: Path) -> str:
     """One audio file through Studio's /v1/audio/transcriptions (OpenAI
     multipart dialect — file + model, verified Phase 0.5). The `model`
     name maps to an STT model managed in Studio's own Settings → Voice;
     a missing one 409s with Studio's instructions, surfaced verbatim via
-    WhisperError so the existing job pipeline shows it to the GM. Note
-    the whisper.cpp-specific knobs (glossary prompt, beam size, denoise
-    flag) have no OpenAI-dialect equivalent — Studio's own STT settings
-    own those.
+    SttError so the existing job pipeline shows it to the GM. Decoding
+    options (language, vocabulary hints) are Studio's own STT settings;
+    nd-world sends only the file and the model.
 
     Studio rejects request bodies over 25 MiB, so oversized files (the
     typical case: a long session recorded as high-bitrate FLAC) are first
@@ -4702,9 +4471,9 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
     newlines, so a multi-hour recording transcribes as one transcript."""
     from . import unsloth_extras as _unsloth_extras
     if not effective_llm_api_key():
-        raise WhisperError("STT backend is set to Unsloth but no UNSLOTH_API_KEY is configured (Settings → System).")
+        raise SttError("STT backend is set to Unsloth but no UNSLOTH_API_KEY is configured (Settings → System).")
     if not path.is_file():
-        raise WhisperError(f"Audio file not found: {path.name}")
+        raise SttError(f"Audio file not found: {path.name}")
 
     parts = [path]
     cleanup_dirs = []
@@ -4716,11 +4485,11 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
         duration = await _probe_audio_duration(path)
         if size > _UNSLOTH_STT_MAX_BYTES or (duration and duration > _UNSLOTH_STT_SPLIT_ABOVE_SECONDS):
             if not duration or duration <= 0:
-                raise WhisperError(
+                raise SttError(
                     f"{path.name} is {(path.stat().st_size + 1048575) // 1048576} MiB — over Unsloth "
                     "Studio's 25 MiB transcription request limit — and its duration "
                     "couldn't be read to split it (ffmpeg/ffprobe missing?). Convert it "
-                    "to MP3/OGG first, or switch the STT backend to whisper.cpp.")
+                    "to MP3/OGG first.")
             import tempfile
             tmpdir = Path(tempfile.mkdtemp(prefix="nd-stt-"))
             cleanup_dirs.append(tmpdir)
@@ -4747,7 +4516,7 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
             try:
                 text = await _unsloth_extras.stt(part.read_bytes(), part.name, model=get_stt_model())
             except _unsloth_extras.StudioError as exc:
-                raise WhisperError(f"Unsloth Studio STT: {exc}",
+                raise SttError(f"Unsloth Studio STT: {exc}",
                                    retryable=exc.unreachable or _status_is_transient(exc.status_code)) from exc
             texts.append((text or "").strip())
         return chr(10).join(t for t in texts if t)
@@ -4757,56 +4526,26 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
             shutil.rmtree(d, ignore_errors=True)
 
 
-async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None,
-                            on_checkpoint=None, should_stop=None, resume: dict | None = None,
-                            denoise: bool = False) -> str:
-    """Transcribe an audio file via whisper.cpp's /inference endpoint,
+async def transcribe_audio(path: Path, on_progress=None, on_checkpoint=None, should_stop=None,
+                            resume: dict | None = None) -> str:
+    """Transcribe an audio file through Unsloth Studio's speech-to-text,
     transparently splitting a long recording into chunks first (see
     _split_audio_into_chunks) and collapsing any residual repetition-loop
     runs (see _collapse_repeated_transcript_lines) before returning.
     Returns "" for a successfully-transcribed silent clip. Raises
-    WhisperError — with the actual reason, not a generic message — if a
-    request to Whisper itself failed (a chunk's failure fails the whole
-    call; there's no partial-success return today).
+    SttError - with the actual reason, not a generic message - if the
+    request to Studio itself failed (a chunk's failure fails the whole
+    call, carrying the earlier chunks as `partial_transcript`).
 
-    `glossary` (a world's whisper_glossary — campaign NPC/place names and
-    invented terms) is passed through as whisper.cpp's "prompt" field, which
-    biases decoding toward those spellings/vocabulary without being
-    transcribed itself (this is whisper_full's initial_prompt, not a chat
-    prompt) — blank by default, so most callers are unaffected. Sent
-    alongside carry_initial_prompt=true so the bias applies for the whole
-    recording, not just its first ~30s window (see _transcribe_one_file);
-    a non-empty glossary is re-sent identically for every audio chunk, so
-    it stays in effect across chunk boundaries too.
-
-    `language` (an ISO-639-1 code like "ru", or "auto"/"" for auto-detect) is
-    always sent as whisper.cpp's "language" field, even when blank — omitting
-    it entirely is NOT the same as auto-detect: whisper.cpp's server hardcodes
-    `language = "en"` as its own default (see examples/server/server.cpp) and
-    only overrides it when the client explicitly sends this field. Without
-    this, every clip gets silently forced through English decoding regardless
-    of what's actually being spoken — the likely cause of a non-English
-    session producing a garbled, looping transcript rather than a WhisperError
-    (Whisper "succeeds" throughout, it's just decoding the wrong language).
-
-    Also always sends "beam_size"/"entropy_thold" overrides (see
-    _transcribe_one_file) to reduce a different, language-independent
-    failure mode: whisper.cpp's default greedy decoding can fall into a
-    degenerate loop repeating the same phrase — and once inside that loop
-    the model becomes MORE confident in repeating itself, so whisper.cpp's
-    own low-confidence fallback rarely fires to escape it (it doesn't check
-    compression-ratio/repetitiveness the way openai/whisper's reference
-    decoder does — confirmed by reading examples/server/server.cpp).
-    beam_size=5 and a slightly raised entropy_thold are the two settings
-    the whisper.cpp community consistently cites for this — see
-    ggml-org/whisper.cpp discussion #2286 and issue #1507. Splitting the
-    audio itself (this function) and collapsing repeated lines afterward
-    are this app's own additional mitigations on top of those, since even
-    with both settings tuned a short repetition run can still slip through
-    on a long enough recording.
+    Splitting the audio and collapsing repeated lines are this app's own
+    mitigations for the degenerate "repeat the same phrase forever" loop
+    Whisper-family models can fall into on music or silence: a loop can then
+    only ever ruin one chunk's worth of audio instead of the rest of a
+    multi-hour file. Decoding options (language, vocabulary hints) belong to
+    Studio's own STT settings; nd-world sends the file and the model name.
 
     `on_progress(current, total)`, if given, is called before each
-    chunk's /inference call (current is 1-based) — same shape
+    chunk's request (current is 1-based) - same shape
     summarize_transcript's own on_progress already uses, so a caller
     (audio_jobs.py) can persist real progress with the same DB fields for
     either phase. Never called at all for a clip short enough to skip
@@ -4815,57 +4554,51 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
     `on_checkpoint(state)`, if given, is called after each chunk
     transcribes successfully, with enough to both resume and to show a
     partial result: {"phase": "transcribe", "chunks_done", "chunk_total",
-    "chunk_seconds" (WHISPER_CHUNK_SECONDS at split time), "audio_size"
+    "chunk_seconds" (STT_CHUNK_SECONDS at split time), "audio_size"
     (path.stat().st_size), "text" (everything transcribed so far,
     collapsed)}. `should_stop`, if given, is polled before each chunk;
     when it returns true, JobInterrupted is raised instead of continuing
-    — the caller's already-persisted checkpoint is the resume point, not
+    - the caller's already-persisted checkpoint is the resume point, not
     this call's return value. `resume`, if given, is a previous
     checkpoint to continue from: chunks already covered by
     resume["chunks_done"] are skipped and resume["text"] seeds the
     accumulated result, but ONLY if chunk_total/chunk_seconds/audio_size
-    all still match this exact call — a mismatch (different audio, or
-    WHISPER_CHUNK_SECONDS changed since the checkpoint was written) means
+    all still match this exact call - a mismatch (different audio, or
+    STT_CHUNK_SECONDS changed since the checkpoint was written) means
     the chunk boundaries themselves may differ, so splicing old and new
     text could silently duplicate or drop audio; discarded (logged, not
     raised) and transcription starts over from chunk 0 instead. Only the
-    multi-chunk loop below checkpoints/resumes — the two single-call
-    paths above have nothing to checkpoint between.
-
-    `denoise`, if true, runs each audio file (the whole clip, or each
-    chunk individually once split) through DeepFilterNet speech
-    enhancement before it's sent to Whisper — see denoise_audio_file's
-    own docstring for the no-op fallback if the dependency isn't
-    installed or enhancement fails on a given file."""
+    multi-chunk loop below checkpoints/resumes - the two single-call
+    paths above have nothing to checkpoint between."""
     duration = await _probe_audio_duration(path)
-    if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
-        text = await _transcribe_one_file(path, glossary, language, denoise)
+    if not duration or duration <= _STT_CHUNK_MIN_DURATION:
+        text = await _transcribe_one_file(path)
         return _collapse_repeated_transcript_lines(text)
 
-    chunks, tmpdir = await _split_audio_into_chunks(path, WHISPER_CHUNK_SECONDS)
+    chunks, tmpdir = await _split_audio_into_chunks(path, STT_CHUNK_SECONDS)
     try:
         if len(chunks) == 1:
-            # Still reachable with a real tmpdir (e.g. WHISPER_CHUNK_SECONDS
-            # configured above _WHISPER_CHUNK_MIN_DURATION can produce a
+            # Still reachable with a real tmpdir (e.g. STT_CHUNK_SECONDS
+            # configured above _STT_CHUNK_MIN_DURATION can produce a
             # single-segment split) — this branch must stay inside the same
             # try/finally as the multi-chunk loop below, not return before
             # it, or the tmpdir (a full stream-copy of the recording) is
             # never cleaned up.
-            text = await _transcribe_one_file(chunks[0], glossary, language, denoise)
+            text = await _transcribe_one_file(chunks[0])
             return _collapse_repeated_transcript_lines(text)
 
         audio_size = path.stat().st_size
         start = 0
         parts = []
         if resume and resume.get("phase") == "transcribe" and resume.get("chunk_total") == len(chunks) \
-                and resume.get("chunk_seconds") == WHISPER_CHUNK_SECONDS and resume.get("audio_size") == audio_size:
+                and resume.get("chunk_seconds") == STT_CHUNK_SECONDS and resume.get("audio_size") == audio_size:
             start = resume.get("chunks_done", 0)
             parts = [resume.get("text", "")]
         elif resume:
             _log.warning(
                 "discarding a transcription checkpoint that no longer matches this audio "
                 "(chunk_total=%s vs %s, chunk_seconds=%s vs %s, audio_size=%s vs %s)",
-                resume.get("chunk_total"), len(chunks), resume.get("chunk_seconds"), WHISPER_CHUNK_SECONDS,
+                resume.get("chunk_total"), len(chunks), resume.get("chunk_seconds"), STT_CHUNK_SECONDS,
                 resume.get("audio_size"), audio_size,
             )
 
@@ -4876,12 +4609,12 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             if on_progress:
                 on_progress(i + 1, len(chunks))
             try:
-                parts.append(await _transcribe_one_file(chunk_path, glossary, language, denoise))
-            except WhisperError as exc:
+                parts.append(await _transcribe_one_file(chunk_path))
+            except SttError as exc:
                 if parts:
                     partial = _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
-                    raise WhisperError(
-                        f"Whisper failed on part {i + 1} of {len(chunks)}: {exc}. The first {i} part(s) "
+                    raise SttError(
+                        f"Speech-to-text failed on part {i + 1} of {len(chunks)}: {exc}. The first {i} part(s) "
                         "were transcribed and have been saved — you can re-summarize from the partial "
                         "transcript, or re-upload to redo the whole recording.",
                         partial_transcript=partial,
@@ -4891,7 +4624,7 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             if on_checkpoint:
                 on_checkpoint({
                     "phase": "transcribe", "chunks_done": i + 1, "chunk_total": len(chunks),
-                    "chunk_seconds": WHISPER_CHUNK_SECONDS, "audio_size": audio_size,
+                    "chunk_seconds": STT_CHUNK_SECONDS, "audio_size": audio_size,
                     "text": _collapse_repeated_transcript_lines("\n".join(p for p in parts if p)),
                 })
         return _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
@@ -4901,483 +4634,22 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-# ── Transcript + subtitles (library clips) ──────────────────────────────────
-# transcribe_audio above only ever requests response_format="json" (plain
-# text, no timings) — fine for a session recap, but a subtitle track needs
-# per-segment start/end times, which whisper.cpp only attaches when asked
-# for response_format="verbose_json" (see examples/server/server.cpp).
-# Rather than bolt segment support onto transcribe_audio's own
-# checkpoint/resume machinery (built for multi-hour session recordings
-# surviving a server restart — see its docstring), transcribe_audio_with_
-# subtitles below is a simpler sibling for app/routers/audio.py's and
-# video.py's "Generate transcript & subtitles" action on a library clip:
-# same chunking for long clips, but no checkpoint/resume — a GM/assistant
-# clip-transcribe click is a bounded, attended action, not a durable
-# background job, so losing progress on a server restart just means
-# clicking the button again.
+# ── Transcript for library clips ────────────────────────────────────────────
+# "Generate transcript" on an audio/video library clip (app/routers/audio.py,
+# video.py). Studio's OpenAI-dialect endpoint returns plain text without segment
+# timestamps, so there is never a subtitle track to build: the second element of
+# the pair is always "" and callers treat that as "transcript only" (the clip's
+# subtitle column is untouched). Long clips are split the same way a session
+# recording is (see _transcribe_one_file), without the checkpoint/resume a
+# durable background job gets - this is a bounded, attended click.
 
-def _format_vtt_timestamp(seconds: float) -> str:
-    """WebVTT cue timestamp: HH:MM:SS.mmm — WebVTT requires the hours
-    component (unlike SRT, which allows omitting it)."""
-    total_ms = round(max(0.0, seconds) * 1000)
-    hours, rem_ms = divmod(total_ms, 3600_000)
-    minutes, rem_ms = divmod(rem_ms, 60_000)
-    secs, ms = divmod(rem_ms, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{ms:03d}"
-
-
-def _segments_to_vtt(segments: list) -> str:
-    """Render Whisper segments ({"start", "end", "text"}, seconds) as a
-    WebVTT track — what a <track kind="subtitles"> src expects. Always
-    returns at least the bare header, a valid (if caption-less) track
-    rather than an empty file some browsers reject."""
-    lines = ["WEBVTT", ""]
-    for seg in segments:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        lines.append(f"{_format_vtt_timestamp(seg['start'])} --> {_format_vtt_timestamp(seg['end'])}")
-        lines.append(text)
-        lines.append("")
-    return "\n".join(lines)
-
-
-def _collapse_repeated_segments(segments: list, min_repeat: int = 4) -> list:
-    """Segment-level counterpart to _collapse_repeated_transcript_lines,
-    for the subtitle track: a whisper.cpp repetition-loop run (see that
-    function's docstring) shows up here as several consecutive segments
-    with identical text. Collapsing a run to one entry spanning the run's
-    own start-to-end keeps the subtitle timeline gap-free instead of
-    leaving a hole where the discarded duplicates used to be."""
-    out = []
-    i, n = 0, len(segments)
-    while i < n:
-        j = i
-        while j < n and segments[j]["text"] == segments[i]["text"]:
-            j += 1
-        if j - i >= min_repeat:
-            out.append({"start": segments[i]["start"], "end": segments[j - 1]["end"], "text": segments[i]["text"]})
-        else:
-            out.extend(segments[i:j])
-        i = j
-    return out
-
-
-async def _transcribe_one_file_verbose(path: Path, glossary: str, language: str, denoise: bool = False) -> tuple:
-    """Same whisper.cpp /inference call as _transcribe_one_file, but with
-    response_format="verbose_json" so the response also carries a
-    "segments" array of {start, end (seconds), text} entries — what a
-    subtitle track needs and the plain-text response can't provide. Kept
-    separate from _transcribe_one_file (rather than a mode flag on it) so
-    every other caller — which only ever wants the plain text — doesn't pay
-    for parsing a heavier response it doesn't use. Returns (text,
-    segments); raises WhisperError exactly like _transcribe_one_file."""
-    url = effective_whisper_url()
-    if not url:
-        raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
-    if not path.is_file():
-        raise WhisperError(f"Audio file not found: {path.name}")
-    send_path = path
-    if denoise:
-        send_path = await denoise_audio_file(path)
-    data = {
-        "response_format": "verbose_json",
-        "language": language.strip() or "auto",
-        "beam_size": "5",
-        "entropy_thold": "2.6",
-    }
-    if glossary.strip():
-        data["prompt"] = glossary.strip()
-        data["carry_initial_prompt"] = "true"
-    try:
-        try:
-            async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
-                with send_path.open("rb") as f:
-                    r = await c.post(
-                        f"{url}/inference",
-                        files={"file": (send_path.name, f, "application/octet-stream")},
-                        data=data,
-                    )
-        except (_httpx.TimeoutException, TimeoutError) as exc:
-            _log.warning("whisper transcription timed out: %s", exc)
-            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.", retryable=True) from exc
-        except Exception as exc:
-            _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
-            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}", retryable=True) from exc
-        if r.status_code != 200:
-            _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
-            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}", retryable=_status_is_transient(r.status_code))
-        try:
-            body = r.json()
-            text = (body.get("text") or "").strip()
-            segments = [
-                {"start": float(s.get("start", 0.0)), "end": float(s.get("end", 0.0)), "text": (s.get("text") or "").strip()}
-                for s in (body.get("segments") or [])
-                if (s.get("text") or "").strip()
-            ]
-            return text, segments
-        except Exception as exc:
-            _log.warning("whisper returned an unreadable response: %s", exc)
-            raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
-    finally:
-        if send_path != path:
-            send_path.unlink(missing_ok=True)
-
-
-async def transcribe_audio_with_subtitles(path: Path, glossary: str = "", language: str = "", denoise: bool = False) -> tuple:
-    """Transcribe `path` (audio OR video — ffmpeg, which whisper.cpp shells
-    out to for any non-WAV input, decodes a video container's audio track
-    the same as a plain audio file) into both a plain transcript and a
-    WebVTT subtitle track in one Whisper pass per chunk, via
-    _transcribe_one_file_verbose. Long clips are split the same way
-    transcribe_audio splits them (_split_audio_into_chunks/
-    WHISPER_CHUNK_SECONDS); each chunk's segment timestamps are offset by
-    the real (ffprobe-measured) duration of every chunk before it, so the
-    subtitle timeline stays correct across chunk boundaries. See this
-    module's own "Transcript + subtitles" section comment for why this
-    doesn't share transcribe_audio's checkpoint/resume support.
-
-    Returns (plain_text, vtt_text) — both collapsed against a
-    whisper.cpp repetition-loop run first (_collapse_repeated_transcript_
-    lines / _collapse_repeated_segments). Raises WhisperError exactly like
-    transcribe_audio; the caller decides what an empty transcript means
-    (no error — a genuinely silent/captionless clip transcribes fine).
-
-    STT backend 'unsloth' (Settings → System): the OpenAI dialect here
-    returns plain text without whisper.cpp's segment timestamps, so this
-    returns (text, "") — a transcript with no subtitle track."""
-    if get_stt_backend() == "unsloth":
-        text = await _transcribe_one_file_unsloth(path)
-        return _collapse_repeated_transcript_lines(text), ""
-    duration = await _probe_audio_duration(path)
-    if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
-        text, segments = await _transcribe_one_file_verbose(path, glossary, language, denoise)
-        return _collapse_repeated_transcript_lines(text), _segments_to_vtt(_collapse_repeated_segments(segments))
-
-    chunks, tmpdir = await _split_audio_into_chunks(path, WHISPER_CHUNK_SECONDS)
-    try:
-        if len(chunks) == 1:
-            text, segments = await _transcribe_one_file_verbose(chunks[0], glossary, language, denoise)
-            return _collapse_repeated_transcript_lines(text), _segments_to_vtt(_collapse_repeated_segments(segments))
-
-        parts = []
-        all_segments = []
-        offset = 0.0
-        for chunk_path in chunks:
-            text, segments = await _transcribe_one_file_verbose(chunk_path, glossary, language, denoise)
-            parts.append(text)
-            all_segments.extend({"start": s["start"] + offset, "end": s["end"] + offset, "text": s["text"]} for s in segments)
-            chunk_duration = await _probe_audio_duration(chunk_path)
-            offset += chunk_duration if chunk_duration else WHISPER_CHUNK_SECONDS
-        plain_text = _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
-        vtt_text = _segments_to_vtt(_collapse_repeated_segments(all_segments))
-        return plain_text, vtt_text
-    finally:
-        if tmpdir:
-            import shutil
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-# ── Whisper model download ──────────────────────────────────────────────────
-# nd-world's own container and the "whisper" Compose service both mount the
-# same host directory (see docker-compose.yml/truenas-compose.yml), just at
-# different internal paths — the same pattern SWARMUI_AC_DIR already uses to
-# share the tag-autocomplete folder between `world` and `swarmui`. That lets
-# a GM download a model file through nd-world instead of SSHing into the
-# host, without nd-world needing any access to the whisper.cpp container
-# itself (which has no download-a-model API of its own, unlike Ollama).
-
-WHISPER_MODELS_DIR = Path(os.getenv("WHISPER_MODELS_DIR", "/data/whisper-models"))
-# The "whisper" Compose service's fallback default — see active_whisper_model()
-# below, which prefers a GM-set marker file over this once one exists. Still
-# what a deployment on the OLD (pre-marker-aware) entrypoint actually loads,
-# since that entrypoint only ever reads this env var.
-WHISPER_MODEL_FILENAME = os.getenv("WHISPER_MODEL_FILE", "ggml-large-v3-turbo.bin")
-# ggerganov/whisper.cpp's own official model repo — confirmed against a real
-# deployment to be the format that actually loads. An earlier version of
-# this pointed at a third-party GGUF-format mirror instead, on the
-# assumption that ghcr.io/ggml-org/whisper.cpp:main's GGUF support (still an
-# open PR as of ollama/ollama#15243 and this being written — see
-# _build_ollama_messages' docstring in app/routers/ai.py, an unrelated
-# feature that hit the same open-PR situation) had landed for *audio*
-# models specifically; it hadn't — that image's whisper-server rejected the
-# GGUF file with "invalid model data (bad magic)" and crash-looped on every
-# restart. The classic ggml .bin format ggerganov/whisper.cpp itself
-# distributes doesn't have that risk, since it's what the image's own
-# loader has always targeted.
-DEFAULT_WHISPER_MODEL_URL = (
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
-)
-
-# A curated subset of ggerganov/whisper.cpp's official model list (see its
-# models/README.md) spanning the speed/accuracy range — not the full ~16
-# variants, same "curated, not exhaustive" choice as KNOWN_MODELS below for
-# Ollama. Sizes are the real download sizes from that README, not estimates.
-# Every filename here is downloaded from
-# f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}" —
-# nd-world only ever fetches from that one trusted host for these, unlike
-# the free-text custom-URL field download_whisper_model also accepts.
-WHISPER_KNOWN_MODELS = [
-    {"filename": "ggml-tiny.bin", "label": "Tiny", "size": "75 MiB"},
-    {"filename": "ggml-tiny.en.bin", "label": "Tiny (English only)", "size": "75 MiB"},
-    {"filename": "ggml-base.bin", "label": "Base", "size": "142 MiB"},
-    {"filename": "ggml-base.en.bin", "label": "Base (English only)", "size": "142 MiB"},
-    {"filename": "ggml-small.bin", "label": "Small", "size": "466 MiB"},
-    {"filename": "ggml-small.en.bin", "label": "Small (English only)", "size": "466 MiB"},
-    {"filename": "ggml-medium.bin", "label": "Medium", "size": "1.5 GiB"},
-    {"filename": "ggml-medium.en.bin", "label": "Medium (English only)", "size": "1.5 GiB"},
-    {"filename": "ggml-large-v3.bin", "label": "Large v3", "size": "2.9 GiB"},
-    # NOT "ggml-large-v3-q8_0.bin" — that filename doesn't exist in
-    # whisper.cpp's own repo at all (confirmed against its
-    # models/download-ggml-model.sh, which lists exactly large-v3,
-    # large-v3-q5_0, large-v3-turbo, large-v3-turbo-q5_0, and
-    # large-v3-turbo-q8_0 for the large-v3 family — no plain
-    # "large-v3-q8_0"). A prior version of this list used that nonexistent
-    # name, which would 404 the moment a GM tried to download it.
-    # NOT "ggml-large-v3-q5_0.gguf" either — a real file at that name
-    # exists on third-party HF repos, but it's in the GGUF container
-    # format, which whisper.cpp does not read (confirmed by its
-    # maintainer, and by this project's own prior incident — see
-    # _looks_like_ggml's docstring below, which exists specifically to
-    # reject one before it reaches whisper.cpp's /load and wedges the
-    # server). ".bin" below is the real ggml equivalent, straight from
-    # whisper.cpp's own official repo — same large-v3 accuracy as the row
-    # above at roughly a third of the size/RAM (5-bit quantization vs the
-    # row above's fp16), a good pick once GPU VRAM is limited or a CUDA
-    # build makes large-v3 fast enough to be worth the accuracy over
-    # Large v3 Turbo below.
-    {"filename": "ggml-large-v3-q5_0.bin", "label": "Large v3 (quantized, q5_0)", "size": "1.1 GiB"},
-    {"filename": "ggml-large-v3-turbo.bin", "label": "Large v3 Turbo", "size": "1.5 GiB"},
-    {"filename": "ggml-large-v3-turbo-q5_0.bin", "label": "Large v3 Turbo (quantized, q5_0)", "size": "547 MiB"},
-    # Real file (same download-ggml-model.sh list above), but not in that
-    # script's own curated README table, so this size is an estimate from
-    # the q5_0/q8_0 ggml block-size ratio (~34 vs ~22 bytes per 32
-    # weights), not a confirmed download size like the others in this list.
-    {"filename": "ggml-large-v3-turbo-q8_0.bin", "label": "Large v3 Turbo (quantized, q8_0)", "size": "~830 MiB"},
-]
-_WHISPER_KNOWN_FILENAMES = {m["filename"] for m in WHISPER_KNOWN_MODELS}
-
-# Filename prefix as the whisper.cpp CONTAINER sees WHISPER_MODELS_DIR — the
-# two only match by coincidence (both happening to be /data/whisper-models
-# on a from-scratch docker-compose deployment); an externally-hosted whisper
-# instance, or one with a differently-mounted volume, needs this set
-# separately. Only used to build the path sent to /load (a server-side
-# path) — never for anything nd-world reads/writes on its own side.
-WHISPER_SERVER_MODELS_DIR = os.getenv("WHISPER_SERVER_MODELS_DIR", "/models")
-
-# The "whisper" Compose service's entrypoint reads this file (if present) to
-# decide which downloaded model to load at container start/restart — see
-# docker-compose.yml. Written by set_active_whisper_model(), read by
-# active_whisper_model(); an un-migrated deployment (old entrypoint, no
-# marker support) just never sees this file, so WHISPER_MODEL_FILENAME
-# keeps working as the sole source of truth exactly like it did before this
-# existed — switching to the marker-aware entrypoint is the one manual,
-# one-time step nd-world genuinely can't do for a GM (see docs/DEPLOYMENT.md).
-_WHISPER_ACTIVE_MARKER = "active-model.txt"
-
-
-def active_whisper_model() -> str:
-    """The model filename nd-world currently considers "active" — the
-    marker file if one exists and names a real known model, else
-    WHISPER_MODEL_FILENAME (the env-var default, and what an un-migrated
-    "whisper" Compose service is still actually loading). Never raises —
-    a missing, unreadable, or garbage marker just falls back."""
-    try:
-        raw = (WHISPER_MODELS_DIR / _WHISPER_ACTIVE_MARKER).read_text(encoding="utf-8").strip()
-    except OSError:
-        return WHISPER_MODEL_FILENAME
-    if raw and raw in _WHISPER_KNOWN_FILENAMES:
-        return raw
-    return WHISPER_MODEL_FILENAME
-
-
-def set_active_whisper_model(filename: str) -> None:
-    """Record `filename` as the active model — persists across a "whisper"
-    Compose service restart (its entrypoint reads this same file) even if
-    load_whisper_model() below isn't called or fails. Raises ValueError on
-    an unknown or not-yet-downloaded filename."""
-    if filename not in _WHISPER_KNOWN_FILENAMES:
-        raise ValueError(f"Unknown model filename: {filename!r}")
-    if not (WHISPER_MODELS_DIR / filename).is_file():
-        raise ValueError(f"{filename} hasn't been downloaded yet.")
-    WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    marker = WHISPER_MODELS_DIR / _WHISPER_ACTIVE_MARKER
-    tmp = marker.with_name(marker.name + ".part")
-    tmp.write_text(filename, encoding="utf-8")
-    tmp.replace(marker)
-
-
-def _looks_like_ggml(path: Path) -> bool:
-    """Best-effort sanity check before calling load_whisper_model — NOT a
-    full format validator (that's whisper.cpp's own job when it actually
-    parses the file), just a guard against the one failure mode this app
-    has already hit in production: a GGUF-format file (a different,
-    incompatible model format whose files start with the literal bytes
-    "GGUF") landing in WHISPER_MODELS_DIR — most plausibly via the
-    free-text custom-URL download field, since every filename-based
-    download here only ever fetches from the correct official host. A
-    file this rejects is never sent to /load, since a load with a file
-    that fails to parse leaves the whisper.cpp server's /health endpoint
-    permanently reporting "loading model" until the container is
-    restarted (see load_whisper_model)."""
-    try:
-        if path.stat().st_size < 1_000_000:  # every real model here is >= 75 MiB
-            return False
-        with path.open("rb") as f:
-            head = f.read(4)
-        return head != b"GGUF"
-    except OSError:
-        return False
-
-
-async def load_whisper_model(filename: str) -> dict:
-    """Ask the running whisper.cpp server to hot-swap to `filename` via its
-    /load endpoint, without waiting for a container restart. Returns
-    {"ok": bool, "detail": str} — never raises.
-
-    Two things make this safe enough to call automatically (see
-    docs/DEPLOYMENT.md for the full reasoning): /load validates the file
-    exists before doing anything destructive, and the "whisper" Compose
-    service runs with restart: unless-stopped, so even the exit(1)-on-
-    unparseable-file case self-heals in a restart cycle rather than
-    requiring a manual one. What does NOT self-heal on its own: a 400
-    response (missing/invalid file) leaves the server's own /health
-    endpoint stuck reporting "loading model" — never ready — until the
-    container is restarted by hand, even though /inference keeps working
-    fine on whatever was loaded before. That's why _looks_like_ggml is
-    checked by the caller before this is ever invoked — not because
-    /load itself is unsafe to call on a real model file.
-
-    The path sent to whisper.cpp must be resolved on ITS side, not
-    nd-world's — WHISPER_SERVER_MODELS_DIR, not WHISPER_MODELS_DIR — and
-    must arrive as a multipart field (whisper.cpp's req.has_file("model")
-    check only recognizes multipart parts; a urlencoded body is silently
-    treated as "no file given" and 400s)."""
-    url = effective_whisper_url()
-    if not url:
-        return {"ok": False, "detail": "Whisper isn't configured (no Whisper URL set)."}
-    server_path = f"{WHISPER_SERVER_MODELS_DIR.rstrip('/')}/{filename}"
-    try:
-        async with _httpx.AsyncClient(timeout=300) as c:
-            r = await c.post(f"{url}/load", files={"model": (None, server_path)})
-    except Exception as exc:
-        _log.warning("whisper /load unreachable: %s: %s", type(exc).__name__, exc)
-        return {"ok": False, "detail": f"Could not reach Whisper: {type(exc).__name__}: {exc}"}
-    if r.status_code != 200:
-        _log.warning("whisper /load failed: HTTP %s: %s", r.status_code, r.text[:300])
-        return {
-            "ok": False,
-            "detail": (
-                f"Whisper rejected the load (HTTP {r.status_code}) — its /health endpoint may now be "
-                f"stuck reporting \"loading model\" until the whisper Compose service is restarted, "
-                f"even though transcription itself should still work on the previously loaded model."
-            ),
-        }
-    return {"ok": True, "detail": f"Switched to {filename}."}
-
-
-def whisper_model_status() -> dict:
-    """Whether a model file nd-world can see is already sitting in the
-    shared volume — checked from nd-world's own side (WHISPER_MODELS_DIR),
-    not by asking the whisper.cpp server itself (that's whisper_status()),
-    since the file needs to exist before the server can even be pointed at
-    it. Doesn't mean the *running* server has loaded it yet — that only
-    happens on container start/restart (see download_whisper_model).
-
-    "downloaded"/"filename"/"bytes" describe the *active* model — see
-    active_whisper_model() (the marker file if set, else
-    WHISPER_MODEL_FILENAME) — kept as top-level keys for whatever already
-    reads this shape. "models" is the fuller picture: every known model's
-    own download state and whether it's the currently-active one, so a GM
-    can download several without any of them clobbering another.
-    "active_source" is "marker" once a GM has explicitly activated
-    something via POST /whisper/activate, or "env" while still on
-    whatever WHISPER_MODEL_FILE happens to default to — lets the UI
-    explain why nothing looks "chosen" yet on a fresh deployment."""
-    active_filename = active_whisper_model()
-    active = WHISPER_MODELS_DIR / active_filename
-    models = []
-    for m in WHISPER_KNOWN_MODELS:
-        p = WHISPER_MODELS_DIR / m["filename"]
-        downloaded = p.is_file()
-        models.append({
-            **m,
-            "downloaded": downloaded,
-            "bytes": p.stat().st_size if downloaded else 0,
-            "active": m["filename"] == active_filename,
-        })
-    return {
-        "downloaded": active.is_file(),
-        "filename": active_filename,
-        "bytes": active.stat().st_size if active.is_file() else 0,
-        "active_source": "marker" if (WHISPER_MODELS_DIR / _WHISPER_ACTIVE_MARKER).is_file() else "env",
-        "models": models,
-    }
-
-
-async def download_whisper_model(url: str = "", filename: str = "") -> AsyncGenerator[dict, None]:
-    """Stream a whisper.cpp-compatible model file into WHISPER_MODELS_DIR,
-    yielding {"total":, "completed":} progress dicts as bytes arrive — same
-    shape Ollama's own /api/pull progress already uses (app/routers/ai.py's
-    /pull), so the client-side JS can reuse the same parsing — and a final
-    {"status": "done", ...} or {"error": "..."}.
-
-    `filename`, when given, must be one of WHISPER_KNOWN_MODELS' filenames
-    (checked here, not just trusted from the caller — this becomes a
-    filesystem path, so anything else is rejected outright rather than
-    risking a path-traversal write) — it's downloaded from the same
-    official ggerganov/whisper.cpp host every known model uses, to a file
-    of its own, so it can coexist with whatever's currently active. `url`
-    is ignored in that case. With no `filename`, behavior is unchanged from
-    before this parameter existed: `url` (or DEFAULT_WHISPER_MODEL_URL if
-    blank) downloads to active_whisper_model(), the currently-active slot
-    — note this is a free-text URL, so unlike the filename path above
-    there's no guarantee it's even the right file format; see
-    _looks_like_ggml, checked before a downloaded file is ever offered a
-    hot-swap via POST /whisper/activate.
-
-    Written to a "<filename>.part" file and only renamed into place once
-    fully downloaded, so an interrupted/failed download can never leave a
-    corrupt file behind for the whisper.cpp server to trip over — which
-    matters more here than most partial-download cases: whisper.cpp's own
-    /load endpoint calls exit(1) (killing the whole server process) if the
-    model file it's given fails to parse, rather than returning an error.
-    See load_whisper_model()/set_active_whisper_model() for how a GM
-    switches which downloaded model is active — a hot-swap via /load where
-    possible, falling back to "persists for next restart" (the marker file
-    the "whisper" Compose service's entrypoint reads) either way, so this
-    is no longer the fully manual step it once was."""
-    if filename:
-        if filename not in _WHISPER_KNOWN_FILENAMES:
-            yield {"error": f"Unknown model filename: {filename!r}"}
-            return
-        fetch_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}"
-        target_filename = filename
-    else:
-        fetch_url = (url or "").strip() or DEFAULT_WHISPER_MODEL_URL
-        target_filename = active_whisper_model()
-    WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = WHISPER_MODELS_DIR / target_filename
-    tmp = dest.with_name(dest.name + ".part")
-    try:
-        async with _httpx.AsyncClient(follow_redirects=True, timeout=60) as c:
-            async with c.stream("GET", fetch_url) as resp:
-                if resp.status_code >= 400:
-                    yield {"error": f"HTTP {resp.status_code} fetching model file"}
-                    return
-                total = int(resp.headers.get("content-length") or 0)
-                completed = 0
-                with tmp.open("wb") as f:
-                    async for chunk in resp.aiter_bytes(1024 * 1024):
-                        f.write(chunk)
-                        completed += len(chunk)
-                        yield {"total": total, "completed": completed}
-        tmp.replace(dest)
-        yield {"status": "done", "filename": target_filename, "bytes": dest.stat().st_size}
-    except Exception as exc:
-        tmp.unlink(missing_ok=True)
-        _log.warning("whisper model download failed: %s: %s", type(exc).__name__, exc)
-        yield {"error": f"{type(exc).__name__}: {exc}"}
+async def transcribe_audio_with_subtitles(path: Path) -> tuple:
+    """Transcribe `path` (audio OR video - ffmpeg decodes a video container's
+    audio track) and return (plain_text, ""). Raises SttError exactly like
+    transcribe_audio; an empty transcript is not an error (a genuinely silent
+    clip transcribes fine)."""
+    text = await _transcribe_one_file(path)
+    return _collapse_repeated_transcript_lines(text), ""
 
 
 async def imagegen_status() -> dict:
@@ -5612,8 +4884,8 @@ async def imagegen_progress() -> dict:
 
 # ── SwarmUI model downloads ─────────────────────────────────────────────────
 # Lets a GM pull a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's
-# own Models folder through nd-world's UI, same idea as download_whisper_model
-# above — only reachable at all because docker-compose.yml/truenas-compose.yml
+# own Models folder through nd-world's UI, same idea as the other model downloads
+# here — only reachable at all because docker-compose.yml/truenas-compose.yml
 # mount the SAME host directory into both nd-world (here, at
 # SWARMUI_MODELS_DIR) and the "swarmui" Compose service (at /SwarmUI/Models):
 # nd-world writes a file, SwarmUI already sees it at the same relative path,
@@ -5677,14 +4949,13 @@ def list_downloaded_swarmui_models() -> list[dict]:
 async def download_swarmui_model(url: str, subfolder: str = "", filename: str = "") -> AsyncGenerator[dict, None]:
     """Stream a model file into SWARMUI_MODELS_DIR, yielding {"total":,
     "completed":} progress dicts as bytes arrive and a final {"status":
-    "done", ...} or {"error": "..."} — same shape download_whisper_model
-    above uses, so the client-side JS can reuse identical parsing.
+    "done", ...} or {"error": "..."} — the same progress shape the other
+    model downloads use, so the client-side JS can reuse identical parsing.
 
-    Unlike Whisper's curated known-model list, there's no one canonical
+    There's no curated known-model list here and no one canonical
     trusted host for Stable-Diffusion-family checkpoints/VAEs/text-encoders
     — this is a free-text URL by design (HuggingFace, CivitAI, wherever the
-    GM sources it from), same trust model download_whisper_model's own
-    free-text custom-URL fallback already has.
+    GM sources it from).
 
     Written to a "<filename>.part" file and only renamed into place once
     fully downloaded, so an interrupted/failed download can never leave a

@@ -352,14 +352,14 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/sessions/ai/condense-recap` | GM / Assistant | AI: condenses/tightens an existing recap. |
 | POST | `/api/sessions/ai/condense-job` | GM / Assistant | Durable background-job variant of the condense pass above. |
 | POST | `/api/sessions/ai/summarize-transcript` | GM / Assistant | AI: summarizes an already-transcribed transcript text into a recap. |
-| POST | `/api/sessions/ai/summarize-from-audio` | GM / Assistant | AI: transcribes an uploaded/mic-recorded session audio clip via Whisper (biased by the world's name glossary) and summarizes it into a recap — session-independent, usable on the New Session form. |
+| POST | `/api/sessions/ai/summarize-from-audio` | GM / Assistant | AI: transcribes an uploaded/mic-recorded session audio clip through Unsloth Studio's speech-to-text and summarizes it into a recap — session-independent, usable on the New Session form. |
 | POST | `/api/sessions/ai/summarize-from-audio/chunk`, `/api/sessions/ai/summarize-from-audio/complete` | GM / Assistant | Chunked variant of the above for a recording over the direct-upload size threshold. |
 | POST | `/api/sessions/ai/audio-jobs`, `/api/sessions/ai/audio-jobs/chunk`, `/api/sessions/ai/audio-jobs/complete` | GM / Assistant | Transcribe (and, for `session_recap`, summarize) a session recording as a durable background job instead of blocking the upload request. |
 | GET | `/api/sessions/ai/audio-jobs/{job_id}`, `/api/sessions/ai/audio-jobs` | GM / Assistant | Poll one session audio job, or list them. |
 | POST | `/api/sessions/ai/audio-jobs/from-clip` | GM / Assistant | Starts a session audio job from an existing Audio Library clip (no re-upload). |
 | GET | `/sessions/{session_id}/summary.md` | GM / Assistant | Downloads the session's summary/recap as a Markdown file. |
 | GET | `/sessions/{session_id}/transcript.md` | GM / Assistant | Downloads the session's transcript as a Markdown file. |
-| POST | `/api/sessions/{session_id}/live-transcript/append` | GM / Assistant (edit level on the session's own world) | Transcribes one chunk of a live session recording via the configured STT backend (whisper.cpp sidecar or Unsloth Studio) and appends it to the session's running live transcript. When the client sends `save_audio`/`recording_id`/`segment_index` ("Save raw audio" checkbox), the raw segment is written to disk **before** transcription, so a failing STT backend never costs the audio. Errors: 404 for someone outside the session's world, 403 when their `sessions` level there is below edit, 409 while the same segment is still transcribing, **503** when the backend is unreachable/overloaded (retry later — the browser waits and retries), **400** for a setup problem with the reason in `detail` (no key, STT model not downloaded, bad audio), 507 when the archive can't be written (disk full — nothing was transcribed). |
+| POST | `/api/sessions/{session_id}/live-transcript/append` | GM / Assistant (edit level on the session's own world) | Transcribes one chunk of a live session recording through Unsloth Studio's speech-to-text and appends it to the session's running live transcript. When the client sends `save_audio`/`recording_id`/`segment_index` ("Save raw audio" checkbox), the raw segment is written to disk **before** transcription, so a failing STT backend never costs the audio. Errors: 404 for someone outside the session's world, 403 when their `sessions` level there is below edit, 409 while the same segment is still transcribing, **503** when the backend is unreachable/overloaded (retry later — the browser waits and retries), **400** for a setup problem with the reason in `detail` (no key, STT model not downloaded, bad audio), 507 when the archive can't be written (disk full — nothing was transcribed). |
 | GET | `/api/sessions/{session_id}/live-transcript/check` | GM / Assistant (edit level) | Pre-flight for the live panel: pushes a 2 s WebM/Opus tone (the format the browser records) through the configured STT backend. `{ok, backend, model, message}`; never errors. |
 | POST | `/api/sessions/{session_id}/live-transcript/clear` | GM / Assistant (edit level on the session's world) | Clears the accumulated live transcript. |
 | GET | `/api/sessions/{session_id}/live-audio` | GM / Assistant (read level on the session's world; 404 for non-members) | Lists the raw audio segments saved by a live recording (paths, count, total bytes). |
@@ -591,7 +591,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM / Assistant | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
 | POST | `/audio/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
 | POST | `/audio/{clip_id}/attach` | GM / Assistant | Attaches the clip to a lore entity (form `entity_id`; empty detaches) — the clip then renders in that entity page's 🎧 Media section. Clip and entity must share a world. |
-| POST | `/audio/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper (`app.ai.transcribe_audio_with_subtitles`), honoring the world's glossary/language/denoise settings. Synchronous; overwrites any existing transcript/subtitles. |
+| POST | `/audio/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript through Unsloth Studio's speech-to-text (`app.ai.transcribe_audio_with_subtitles`). Studio returns text without timestamps, so no subtitle track is produced and an existing one is kept. Synchronous; overwrites the existing transcript. |
 | POST | `/audio/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file. If it's the clip currently playing for players (below), clears that broadcast too. |
 | POST | `/audio/{clip_id}/play-for-players` | GM / Assistant | Pushes a clip (must already be `visible_to_players`) to every player's screen to auto-play in a persistent floating widget that survives page navigation — same broadcast mechanism as the image Spotlight (`/images/spotlight`), reported via `GET /api/spotlight`'s `audio_*` fields. Optional `loop` form field. |
 | POST | `/audio/now-playing/stop` | GM / Assistant | Stops the current "play for players" broadcast for everyone. |
@@ -613,7 +613,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/video/upload/chunk`, `/video/upload/complete` | GM / Assistant | Client-split large-upload pair, same as the Audio Library's. |
 | POST | `/video/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
 | POST | `/video/{clip_id}/attach` | GM / Assistant | Attaches the video to a lore entity (form `entity_id`; empty detaches) — renders in that entity page's 🎧 Media section. Clip and entity must share a world. |
-| POST | `/video/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper — same as the Audio Library's, and works directly on the video file (ffmpeg decodes its audio track). |
+| POST | `/video/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript through Unsloth Studio — same as the Audio Library's, and works directly on the video file (Studio decodes its audio track). |
 | POST | `/video/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file (and poster, if one was generated). |
 | POST | `/api/video-jobs/start` | GM | Starts an AI video generation via Studio's `/v1/videos` as a durable background job (`{prompt, model?, seconds?, size?, name?}`); returns the job id immediately. |
 | GET | `/api/video-jobs` | GM | This world's video generation jobs (latest 20), with the finished clip's URL once done. |
@@ -740,7 +740,7 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models / Whisper / Starred tabs). |
+| GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models / Speech / Starred tabs). |
 | GET | `/ai-chat` | GM* | Standalone, non-entity-scoped chat page for players — GM always; a player may if the active world's `players_can_use_ai_chat` is on. A deliberately lean sibling of `/ai`: no model/preset/session-history/imagegen management, just a chat box against the shared `/api/ai/stream`. |
 | GET | `/api/ai/world-context` | GM / Assistant | Keyword-search RAG context (relevant entities) for the current chat, unfiltered by player visibility. |
 | POST | `/api/ai/world-context-smart` | GM / Assistant | Same, backed by an FTS5 full-text index over entity name/summary/body/tags (falls back to plain `LIKE` if FTS5 is unavailable) — also returns `entities` (what was actually retrieved, for the RAG transparency panel/pinning). |
@@ -811,17 +811,10 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/models/reset` | GM | Restores all built-in models (clears the hidden list). |
 | POST | `/api/ai/pull` | GM | Streams progress while pulling a model into Ollama (SSE). |
 | GET/POST/DELETE | `/api/ai/sessions`, `/api/ai/sessions/{id}` | GM | AI Chat History — list, save, load, and delete a persisted chat conversation (`ChatSession`). |
-| POST | `/api/ai/attachments/upload` | GM* | Attaches an image/audio/document to a chat message — audio is transcribed via Whisper and documents text-extracted inline. |
+| POST | `/api/ai/attachments/upload` | GM* | Attaches an image/audio/document to a chat message — audio is transcribed through Unsloth Studio and documents text-extracted inline. |
 | POST | `/api/ai/attachments/upload/chunk`, `/api/ai/attachments/upload/complete` | GM* | Chunked variant of the above for an attachment over the direct-upload size threshold. |
 | POST | `/api/ai/attachments/audio-jobs`, `/api/ai/attachments/audio-jobs/chunk`, `/api/ai/attachments/audio-jobs/complete` | GM* | Transcribe a chat voice attachment as a durable background job instead of blocking the upload request. |
 | GET | `/api/ai/attachments/audio-jobs/{job_id}`, `/api/ai/attachments/audio-jobs` | GM* | Poll one attachment transcription job, or list them. |
-| GET | `/api/ai/whisper/model-status` | GM | Whether the Whisper model is downloaded, and which known models exist. |
-| POST | `/api/ai/whisper/pull` | GM | Streams progress while downloading a Whisper model (SSE). |
-| POST | `/api/ai/whisper/activate` | GM | Switches the active Whisper model: writes a marker file the "whisper" Compose service reads on its next (re)start, and — if `hot_swap` (default true) and the file passes a basic format sanity check — also asks the running server to switch immediately via its own `/load` endpoint, no restart needed. Falls back to `restart_required: true` if the hot-swap can't happen. |
-| GET | `/api/ai/whisper/glossary` | GM | The active world's Whisper name glossary (campaign vocabulary hinted to every session-recording transcription). |
-| POST | `/api/ai/whisper/glossary` | GM | Saves the world's Whisper glossary. |
-| GET | `/api/ai/whisper/language` | GM | The active world's pinned Whisper spoken-language code (e.g. `"ru"`), or `""` for auto-detect — applied to every session-recording transcription. |
-| POST | `/api/ai/whisper/language` | GM | Saves the world's pinned Whisper language. |
 | GET | `/api/ai/recap-instructions` | GM | The active world's extra steering for the recap-writing step (e.g. "write in Spanish") — applied to every session-recording recap, not transcription itself. |
 | POST | `/api/ai/recap-instructions` | GM | Saves the world's recap instructions. |
 | POST/GET | `/api/ai/chat/jobs` | GM | Runs a chat completion as a durable background job instead of live-streaming — same request shape as `/api/ai/stream` minus streaming; POST creates, GET lists recent jobs for the active world. |
@@ -842,7 +835,6 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/ollama/upload/direct` | GM | Points Ollama at a remote GGUF URL to pull itself (no nd-world relay). |
 | POST | `/api/ai/ollama/upload/chunk`, `/api/ai/ollama/upload/complete` | GM | Client-split upload pair for pushing a local `.gguf` into Ollama (up to `MAX_MODEL_UPLOAD_BYTES`). |
 | GET | `/api/ai/ollama/upload/status/{import_id}` | GM | Progress of an in-flight .gguf upload/pull. |
-| GET/POST | `/api/ai/whisper/denoise` | GM | Lists the bundled audio-denoise profiles / enqueues a denoise job for an audio attachment or session recording. |
 
 \* GM always; a player may if the active world's `players_can_ask_ai` is on (same axis `/api/ai/stream` uses) — these routes back the per-entity "Ask AI" / "Talk as this NPC" panel, not the GM-only `/ai` World Chat page. `/api/ai/stream` and `/api/ai/chat/compact` also open up when `players_can_use_ai_chat` is on instead (either toggle is enough — see `_require_ask_ai_access` in `app/routers/ai.py`), since `/ai-chat` shares the same endpoint.
 
@@ -923,7 +915,7 @@ A deliberately narrow slice of the above, opened up per-world via `World.players
 
 `app/routers/audio_jobs.py` — a unified view over every durable `AudioJob`
 regardless of which surface started it (Session Recap, an AI Chat/Ask AI
-voice-memo attachment, or the Whisper Test tab), backing the standalone
+voice-memo attachment, or the AI page's Speech tab), backing the standalone
 **Background Jobs** page where a GM (or a GM-Assistant) can see everything
 in flight across the whole world in one place, separate from the smaller inline panels embedded
 on each originating page. See [Updating without losing in-flight

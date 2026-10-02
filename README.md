@@ -350,7 +350,6 @@ In the TrueNAS web UI go to **Datasets** and create the following datasets under
 | `DeadPool/apps/swarmui/dlbackend` | ComfyUI backend (auto-downloaded) |
 | `DeadPool/apps/ollama` | Ollama model storage |
 | `DeadPool/apps/nd-world-ollama-config` | Shared with nd-world — lets Settings → System save Ollama server tuning without editing this file (see docs/DEPLOYMENT.md) |
-| `DeadPool/apps/whisper` | Whisper transcription model storage |
 
 > **Or** create them all via SSH shell:
 > ```bash
@@ -358,7 +357,6 @@ In the TrueNAS web UI go to **Datasets** and create the following datasets under
 > mkdir -p /mnt/DeadPool/apps/swarmui/{data,models,dlbackend}
 > mkdir -p /mnt/DeadPool/apps/ollama
 > mkdir -p /mnt/DeadPool/apps/nd-world-ollama-config
-> mkdir -p /mnt/DeadPool/apps/whisper
 > ```
 
 If your pool is named differently, search and replace `DeadPool` throughout `truenas-compose.yml`.
@@ -391,7 +389,7 @@ If your datasets are on a different pool or path, update all volume bind mounts 
    - Paste the full contents of your edited `truenas-compose.yml`
 4. Click **Install**
 
-TrueNAS will pull the images and start all containers (`world`, `swarmui`, `ollama`, `whisper`, `watchtower`).
+TrueNAS will pull the images and start all containers (`world`, `swarmui`, `ollama`, `watchtower`).
 
 ### Step 4 — Open the portals
 
@@ -455,17 +453,16 @@ ComfyUI-Manager manually if you still run the legacy `swarmui` profile.
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
 | `GM_PASSWORD_RESET` | _(empty)_ | Set (alongside `GM_EMAIL`) and restart to force-reset a locked-out GM's password — the GM has no one else with admin rights over their own account, unlike a player (who the GM can reset from the world's Members list). Logs out every session/trusted device for that account. **Remove it after the restart** — it re-applies (and re-logs-everyone-out) on every boot while set |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
-| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set any comma-separated combination of `unsloth`, `whisper`, `android`, `editor` — or the legacy pair `ollama,swarmui` (kept until the migration cutover; don't mix with `unsloth`) |
-| `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models, Whisper's transcription model, and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/`, `whisper/`, and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the corresponding profile(s) are enabled |
-| `WHISPER_MODEL_FILE` | `ggml-large-v3-turbo.bin` | Not read by the app itself — Docker Compose reads it to pick which file under `<AI_MODELS_DIR>/whisper/` the Whisper server loads. Only matters if the `whisper` profile is enabled |
+| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set any comma-separated combination of `unsloth`, `android`, `editor` — or the legacy pair `ollama,swarmui` (kept until the migration cutover; don't mix with `unsloth`) |
+| `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/` and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the corresponding profile(s) are enabled |
 
 ---
 
 ## AI Setup
 
 **Unsloth Studio** is the primary AI backend — it serves both AI chat and image
-generation from a single container. Whisper (audio-attachment transcription) is
-optional and unchanged. The legacy Ollama (chat) + SwarmUI (image) pair is still
+generation — and speech-to-text for audio attachments and session recordings —
+from a single container. The legacy Ollama (chat) + SwarmUI (image) pair is still
 shipped for rollback, but everything below marked "legacy" is scheduled for
 removal after the migration cutover — see [docs/UNSLOTH_PHASE0_FINDINGS.md](docs/UNSLOTH_PHASE0_FINDINGS.md).
 
@@ -505,7 +502,7 @@ Notes:
 
 ### GPU acceleration (incl. the Tesla V100)
 
-Unsloth Studio, the legacy Ollama/SwarmUI pair, and whisper.cpp all run much
+Unsloth Studio and the legacy Ollama/SwarmUI pair run much
 faster with an NVIDIA GPU — see **[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for
 the full walkthrough: host driver + nvidia-container-toolkit setup, the
 ready-made `docker-compose.gpu.yml` override, TrueNAS SCALE GPU assignment,
@@ -622,43 +619,18 @@ The **AI → Image Gen** panel supports:
 
 See **[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for GPU passthrough (incl. sharing one V100 between Ollama and SwarmUI) and Volta-specific performance notes.
 
-### Whisper (audio transcription)
+### Speech-to-text (audio transcription)
 
-Whisper is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the
-`whisper` Compose profile — it only starts if that profile is active. It transcribes
-an audio file attached to an AI Chat/Ask AI message into text, so the chat model
-understands it regardless of whether that model has any native audio support itself.
+Audio is transcribed by Unsloth Studio's `/v1/audio/transcriptions` — there is no separate
+transcription service to run. It turns an audio file attached to an AI Chat/Ask AI message into
+text (so the chat model understands it whether or not it has native audio support), transcribes
+session recordings (background jobs, one-shot upload and the live-recording panel), and writes
+transcripts for audio/video library clips.
 
-**Downloading a model:** start the `whisper` profile once, log in as the GM, and click
-**⬇ Download Whisper Model** on the AI page's **🤖 Models** tab — nd-world streams
-`whisper-large-v3-turbo` straight into the shared volume the `whisper` service reads
-from (turbo trades a little accuracy from `large-v3` for several times the speed, and
-is light enough to run acceptably on CPU). Restart the `whisper` service once
-afterward to load it — nd-world only writes the file, it doesn't (and can't safely)
-hot-swap the running server's model, since whisper.cpp itself exits if a reload fails.
-To use a different model instead, either paste its download URL into the same panel,
-or download one yourself into `<AI_MODELS_DIR>/whisper/` and set `WHISPER_MODEL_FILE`
-in `.env` to its exact filename — stick to the classic `ggml-*.bin` format from
-[ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp); the newer GGUF
-format used elsewhere in the ggml ecosystem isn't supported by this image's
-whisper-server yet and fails to load with "invalid model data (bad magic)".
-
-**"Illegal instruction" crash loop (exit code 132):** the prebuilt image is compiled
-with whatever CPU instruction set its GitHub Actions build runner happened to
-support, which silently includes AVX-512 on many runners — any host CPU without
-AVX-512 (common even on otherwise-modern hardware) then crashes the instant the
-model finishes loading. Comment out the `image:` line on the `whisper` service and
-uncomment the `build:` line right below it instead — it compiles `whisper-server`
-from source with AVX-512 excluded, using [`docker/whisper/Dockerfile`](docker/whisper/Dockerfile).
-See that file's comments, or [ggml-org/whisper.cpp#2928](https://github.com/ggml-org/whisper.cpp/issues/2928),
-for the full explanation.
-
-**GPU acceleration:** change the image to `ghcr.io/ggml-org/whisper.cpp:main-cuda` and
-uncomment the `deploy` block in the Whisper service (same shape as Ollama's, above).
-**Volta (V100, sm_70) owners:** that prebuilt image does NOT work on this card — its
-build only targets `CMAKE_CUDA_ARCHITECTURES='75;80;86;90'` (Turing and newer), so
-whisper-server never finds a usable GPU kernel on a V100. Build the Volta-targeted
-image from this repo instead: `docker/whisper-cuda` (see [docs/GPU_SETUP.md](docs/GPU_SETUP.md) §6).
+Download a Whisper model in Studio (Settings → Voice) — `large-v3-turbo` is a good default — then
+pick it under ⚙️ Settings → System → *Unsloth Studio server* → *Speech-to-text model* and press
+**▷ Test STT**. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#speech-to-text-unsloth-studio) for the
+model-name caveats, tuning variables and what was removed with the old whisper.cpp sidecar.
 
 ### ComfyUI (alternative backend)
 

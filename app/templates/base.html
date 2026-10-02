@@ -294,7 +294,7 @@ async function ndApiErrorFrom(res) {
 }
 
 // Shared by every background-job panel (Background Jobs page, the audio-jobs
-// widget, AI Chat's chat/image job panels): several job backends (Whisper's
+// widget, AI Chat's chat/image job panels): several job backends (speech-to-text's
 // /inference, Ollama's non-streaming chat()) are a single blocking call with
 // no interim progress signal, so there's no real percentage to show for a
 // job in flight. Elapsed time IS real, though, and lets a GM judge "still
@@ -382,7 +382,7 @@ function ndAccentFromHex(hexInput) {
 }
 
 // Shared microphone recorder used by the Sessions audio-recap dropzone, the
-// AI Chat/Ask AI attachment picker, and the Whisper Test tab — implemented
+// AI Chat/Ask AI attachment picker, and the AI page's Speech tab — implemented
 // once here instead of three times. onStop(blob, mimeType) fires with the
 // finished recording once the caller stops it; onError(err) fires if the
 // browser denies mic access or has no MediaRecorder support at all. Returns
@@ -493,9 +493,9 @@ function ndMicFilename(mimeType) {
 // "Record → feed into an ndAiAttachments() picker" toggle for a mic button —
 // used by /ai's chat compose bar and an entity's Ask AI panel, one instance
 // per btnId. The recorded clip becomes a normal audio attachment, which
-// already gets auto-transcribed via Whisper on upload and its transcript
+// already gets auto-transcribed by Unsloth Studio on upload and its transcript
 // folded into the message content when sent (see _build_ollama_messages) —
-// so this is how a mic turns into input for Ollama too, not just Whisper.
+// so this is how a mic turns into input for Ollama too, not just speech-to-text.
 var _ndMicRecorders = {};
 function ndToggleAttachMic(btnId, attachments) {
   var btn = document.getElementById(btnId);

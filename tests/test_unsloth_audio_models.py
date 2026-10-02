@@ -378,7 +378,7 @@ def test_transcribe_unsloth_small_file_single_call(client, seed, monkeypatch, tm
     monkeypatch.setattr("app.unsloth_extras.stt", fake_stt)
     monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
 
-    text = asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+    text = asyncio.run(ai_module._transcribe_one_file(f))
     assert text == "hello table"
     assert calls == [("clip.flac", 1024)]
 
@@ -422,7 +422,7 @@ def test_transcribe_unsloth_transcodes_then_splits(client, seed, monkeypatch, tm
     monkeypatch.setattr("app.unsloth_extras.stt", fake_stt)
     monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
 
-    text = asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+    text = asyncio.run(ai_module._transcribe_one_file(f))
     assert calls == ["part-001.mp3", "part-002.mp3"]
     assert text == "part text\npart text"
     assert transcoded_to  # the FLAC was re-encoded before splitting
@@ -434,7 +434,7 @@ def test_transcribe_unsloth_transcode_failure_clear_error(client, seed, monkeypa
     import asyncio
 
     from app import ai as ai_module
-    from app.ai import WhisperError
+    from app.ai import SttError
 
     f = tmp_path / "big.flac"
     f.write_bytes(b"b" * (24 * 1024 * 1024))
@@ -443,7 +443,7 @@ def test_transcribe_unsloth_transcode_failure_clear_error(client, seed, monkeypa
         return 3600.0
 
     async def fake_transcode(path, tmpdir):
-        raise WhisperError(
+        raise SttError(
             "Re-encoding big.flac failed — ffmpeg may lack the MP3 encoder. "
             "Convert it to MP3/OGG manually, or switch the STT backend to whisper.cpp.")
 
@@ -452,9 +452,9 @@ def test_transcribe_unsloth_transcode_failure_clear_error(client, seed, monkeypa
     monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
 
     try:
-        asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+        asyncio.run(ai_module._transcribe_one_file(f))
         raised = None
-    except WhisperError as e:
+    except SttError as e:
         raised = str(e)
     assert raised and "MP3/OGG" in raised
 
@@ -463,7 +463,7 @@ def test_transcribe_unsloth_no_duration_clear_error(client, seed, monkeypatch, t
     import asyncio
 
     from app import ai as ai_module
-    from app.ai import WhisperError
+    from app.ai import SttError
 
     f = tmp_path / "big.flac"
     f.write_bytes(b"b" * (24 * 1024 * 1024))
@@ -475,9 +475,9 @@ def test_transcribe_unsloth_no_duration_clear_error(client, seed, monkeypatch, t
     monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "sk-test")
 
     try:
-        asyncio.run(ai_module._transcribe_one_file_unsloth(f))
+        asyncio.run(ai_module._transcribe_one_file(f))
         raised = None
-    except WhisperError as e:
+    except SttError as e:
         raised = str(e)
     assert raised and "25 MiB" in raised and "MP3" in raised
 
@@ -572,7 +572,7 @@ def test_stt_piece_duration_cap():
 
     assert _UNSLOTH_STT_CHUNK_SECONDS == 600
     # a fitting-but-long MP3 (30 min, under the byte cap) still splits
-    # via the duration gate in _transcribe_one_file_unsloth — pinned by
+    # via the duration gate in _transcribe_one_file — pinned by
     # the transcode test's fake (25 MiB mp3 → split); here we pin the
     # constant + that min() clamps any size plan to 600 s
     size_plan = _plan_unsloth_chunks(50 * 1024 * 1024, 2 * 3600)  # 2h, 50MiB

@@ -264,7 +264,7 @@ async function loadDebug() {
   try {
     const r = await fetch('/api/ai/debug');
     const d = await r.json();
-    const w = d.whisper || {};
+    const w = d.stt || {};
     const lines = [
       'URL: ' + d.ollama_url,
       'Reachable: ' + (d.ollama_reachable ? '✓ yes' : '✗ no'),
@@ -274,8 +274,8 @@ async function loadDebug() {
       'Downloaded (' + (d.loaded_models || []).length + '):',
       ...(d.loaded_models || []).map(m => '  · ' + m),
       '',
-      'Whisper (audio transcription): ' + (w.url ? w.url : '(not configured)'),
-      w.url ? 'Whisper reachable: ' + (w.ok ? '✓ yes' : '✗ no' + (w.reason ? ' — ' + w.reason : '')) : null,
+      'Speech-to-text (Unsloth Studio): ' + (w.url ? w.url : '(not configured)'),
+      w.url ? 'Speech-to-text reachable: ' + (w.ok ? '✓ yes' : '✗ no' + (w.reason ? ' — ' + w.reason : '')) : null,
     ].filter(l => l !== null);
     el.textContent = lines.join('\n');
   } catch(e) {
@@ -1714,21 +1714,21 @@ function switchTab(tab) {
   const chatPage      = document.querySelector('.ai-page');
   const imgPanel      = document.getElementById('image-panel');
   const modelsPanel   = document.getElementById('models-panel');
-  const whisperPanel  = document.getElementById('whisper-panel');
+  const speechPanel   = document.getElementById('speech-panel');
   const starredPanel  = document.getElementById('starred-panel');
 
   chatPage.style.display     = tab === 'chat'    ? 'flex'  : 'none';
   imgPanel.style.display     = tab === 'image'   ? 'block' : 'none';
   modelsPanel.style.display  = tab === 'models'  ? 'block' : 'none';
-  whisperPanel.style.display = tab === 'whisper' ? 'block' : 'none';
+  speechPanel.style.display  = tab === 'speech'  ? 'block' : 'none';
   starredPanel.style.display = tab === 'starred' ? 'block' : 'none';
 
-  ['chat','image','models','whisper','starred'].forEach(t => {
+  ['chat','image','models','speech','starred'].forEach(t => {
     document.getElementById('tab-' + t)?.classList.toggle('active', t === tab);
   });
 
-  if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
-  if (tab === 'whisper') { wtLoadStatus(); wlLoadLanguage(); wgLoadGlossary(); wdLoadDenoise(); riLoadInstructions(); }
+  if (tab === 'models')  { mpLoad(); }
+  if (tab === 'speech')  { spLoadStatus(); riLoadInstructions(); }
   if (tab === 'starred') igLoadStarred();
   if (tab === 'image')   { dlmLoadDownloaded(); dlrLoadDownloaded(); }
 }

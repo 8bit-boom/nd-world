@@ -1,11 +1,11 @@
-# GPU Setup Guide — Unsloth Studio, Ollama/SwarmUI (legacy), Whisper, and pre-Ampere NVIDIA cards
+# GPU Setup Guide — Unsloth Studio, Ollama/SwarmUI (legacy), and pre-Ampere NVIDIA cards
 
 How to give nd-world's bundled AI stack a real GPU. **Unsloth Studio** is
 the current default backend for chat/recaps/facts AND image generation —
 the legacy **Ollama** (chat) + **SwarmUI** (image generation) pair is kept
 running behind its own Compose profiles as a rollback path, not deleted, so
-most of this guide covers both. **whisper.cpp** (transcription) is
-independent of either. Dedicated sections for the two cheapest ways to get
+most of this guide covers both. Speech-to-text (transcription) runs on
+Unsloth Studio too, so it uses the same GPU as chat. Dedicated sections for the two cheapest ways to get
 serious local-AI performance from the used market: the **Tesla T10**
 (Turing, 16 GB) — the current recommendation, fully inside the support
 envelope of every current driver/CUDA stack — and the **Tesla V100**
@@ -15,7 +15,7 @@ Volta callout).
 nd-world's own container never needs the GPU for AI inference — it talks to
 whichever backend is active over HTTP (`UNSLOTH_URL`, or the legacy
 `OLLAMA_URL`/`IMAGEGEN_URL`). Only the `unsloth` service (or, on the legacy
-path, `ollama` and `swarmui`) and optionally `whisper` need full GPU access.
+path, `ollama` and `swarmui`) need full GPU access.
 `docker-compose.gpu.yml` also optionally gives nd-world's own container
 minimal, `utility`-only GPU access (no real CUDA compute) — just enough for
 `nvidia-smi` to work inside it, so Settings → System's "Detected hardware"
@@ -159,8 +159,7 @@ docker compose logs swarmui | grep -i cuda                 # should mention your
 
 Here `docker-compose.gpu.yml` is required — it's what contains the NVIDIA
 device reservation for `ollama` and `swarmui` (a matching `utility`-only
-reservation for `world` either way — see above), plus a commented CUDA
-whisper switch. SwarmUI installs its own backend on first start (the
+reservation for `world` either way — see above), SwarmUI installs its own backend on first start (the
 "performs a first-run setup" step in the README) — that first-run install is
 what actually detects and uses the passed-through GPU, so give it a few
 minutes before checking the logs above.
@@ -349,7 +348,6 @@ SwarmUI install done after this cu130 switch; see below for the fix.)
 | `…sm_70 is not compatible with the current PyTorch installation` in SwarmUI/ComfyUI logs at startup | This section | Reinstall torch below |
 | `CUDA error: no kernel image is available for execution on the device` on the first generation attempt | Same — the warning above was ignored/missed | Reinstall torch below |
 | Ollama: `CUDA error: device kernel image is invalid` | Driver older than 550 (Ollama's CUDA 12 build needs ≥550) | Upgrade the driver — see §2 |
-| Whisper: never finds a GPU, silently runs on CPU | The prebuilt CUDA image doesn't target Volta at all (§6) | Build `docker/whisper-cuda` instead |
 
 **Check** (run on the SwarmUI host; find the container name with `docker ps`
 — TrueNAS names it `ix-<app-name>-swarmui-1`):
@@ -558,60 +556,28 @@ is mostly at the model/quantization level, not a settings panel:
 - **One GPU, two consumers**: see §3a for VRAM-sharing guidance if you run
   Ollama and SwarmUI on the same V100 (the normal single-card setup).
 
-## 6. Whisper on the GPU
+## 6. Speech-to-text on the GPU
 
-**The prebuilt `ghcr.io/ggml-org/whisper.cpp:main-cuda` image does NOT
-work on a V100.** Its own build compiles for
-`CMAKE_CUDA_ARCHITECTURES='75;80;86;90'` — Turing and newer only, which
-skips Volta (sm_70) entirely. This guide previously said "whisper.cpp's
-CUDA build supports Volta," which is true of the *project* but not of
-that *specific prebuilt image* — worth calling out explicitly since it's
-an easy image to reach for and it fails silently rather than refusing to
-start (whisper-server just never finds a usable GPU kernel).
+Transcription (audio attachments, session recordings, library clips) runs on
+**Unsloth Studio** through its `/v1/audio/transcriptions`, so it uses whatever
+GPU the `unsloth` service has — there is no separate transcription container to
+pass a GPU to. (The whisper.cpp sidecar and its Volta-specific CUDA image have
+been removed.)
 
-Build the bundled Volta-targeted image instead (already commented in
-`docker-compose.gpu.yml`) — a source build of whisper.cpp with
-`GGML_CUDA=ON` and `CMAKE_CUDA_ARCHITECTURES=70` pinned for the V100:
-
-```yaml
-whisper:
-  build: ./docker/whisper-cuda
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
-```
-
-(TrueNAS SCALE: use the git-context `build:` line already commented in
-`truenas-compose.yml` instead, same as the CPU AVX-512 fix.)
-
-If you ever add a newer card alongside the V100, widen
-`CMAKE_CUDA_ARCHITECTURES` in `docker/whisper-cuda/Dockerfile` (e.g.
-`"70;75;80;86"`) rather than switching to the prebuilt image — mixing
-"prebuilt for everything else, source build just for the V100" isn't
-worth the complexity when one build covers both.
-
-**Model file format:** only `ggml-*.bin` files (whisper.cpp's own
-format) work here — **not** `.gguf` files, even ones named
-"whisper-*-gguf" on Hugging Face. whisper.cpp does not read the GGUF
-container format at all (confirmed by its own maintainer); this project
-already hit that exact wall once in production (a GGUF file loaded into
-`WHISPER_MODELS_DIR` made whisper-server crash-loop with "invalid model
-data (bad magic)"), which is why `_looks_like_ggml()` in `app/ai.py` now
-refuses to hand one to `/load` at all. For the accuracy of `large-v3` at
-roughly a third of the size/VRAM, use `ggml-large-v3-q5_0.bin` instead
-(**not** `-q8_0` — that filename doesn't exist for plain `large-v3` in
-whisper.cpp's own repo, only for `large-v3-turbo`) — it's in the Models
-tab's "⬇ Download Whisper Model" list (Whisper tab on the AI page),
-fetched from the same official `ggerganov/whisper.cpp` repo as every
-other listed model.
-
-A V100 transcribes `whisper-large-v3-turbo` (or the more accurate
-`ggml-large-v3-q5_0.bin` above, once GPU-accelerated) several times
-faster than a typical NAS CPU — worth it if you record sessions.
+- **Pick a Whisper model in Studio** (Settings → Voice) and set the same name
+  in nd-world (Settings → System → *Speech-to-text model*, then **▷ Test STT**).
+  `large-v3-turbo` (~1.6 GB) gives most of `large-v3`'s accuracy at several
+  times the speed; `large-v3` (~3.1 GB) is the most accurate.
+- **VRAM sharing:** how Studio shares one card between the speech model and the
+  chat model is governed by its own auto-switch / idle-unload settings (not
+  verified here). If chat answers slow down right after a transcription, or the
+  other way round, the models may be swapping — an idle auto-unload of a few
+  minutes in Studio, and keeping long transcriptions out of the middle of play,
+  are the first things to try.
+- **Volta (V100):** the same image caveat as chat applies — see §2's Volta
+  callout about pinning `UNSLOTH_IMAGE` to a tag that still ships sm_70 kernels.
+- A V100 transcribes `large-v3-turbo` several times faster than a typical NAS
+  CPU — worth it if you record sessions.
 
 ## 7. Hardware notes (used cards)
 

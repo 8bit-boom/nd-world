@@ -219,7 +219,7 @@ def create_condense_job(
 
     Unlike a real audio job, there is no transcription phase: `text` is
     stored directly into job.transcript at creation (the row's "input"
-    field, same slot a Whisper transcript would occupy), audio_path is
+    field, same slot a speech-to-text transcript would occupy), audio_path is
     blank, and delete_after is False (nothing to delete — there was never
     an uploaded file). _run_job sees a non-empty job.transcript and no
     audio_path, skips straight past the transcribe branch (see its own
@@ -585,162 +585,6 @@ def create_world_summary_job(
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
     return job_id
-
-
-# Kinds worth hinting Whisper toward — proper nouns a session's spoken
-# audio is likely to actually contain. Excludes "note" (free text with no
-# guarantee its title is a clean proper noun) and "event"/"item"/"feat"
-# (not asked for, and less likely to be spoken names Whisper would
-# otherwise autocorrect). Both NPC and PC-subtype characters are included —
-# a player's own character's name gets said just as often as any NPC's.
-GLOSSARY_ENTITY_KINDS = ("character", "creature", "location", "organization", "race", "profession")
-# Cap on how many entity names get merged in — whisper.cpp's own
-# initial_prompt shares a real (if not precisely documented) token budget
-# with whatever a GM already typed by hand; capping keeps a large world's
-# full entity roster from crowding that out entirely rather than silently
-# truncating mid-list. Ordered by kind then name for a stable, predictable
-# list if a world does have more entities than fit.
-GLOSSARY_ENTITY_LIMIT = 50
-# GLOSSARY_ENTITY_LIMIT bounds the entity-name COUNT, not their total
-# length — whisper.cpp's initial_prompt prompt window is a small, fixed
-# token budget in practice, shared with whatever a GM already typed by
-# hand (see merge_glossary below), so a long GM-typed glossary plus 50
-# potentially-long entity names can still overflow it; whisper silently
-# truncates the tail (the entity names, appended last — GM text is never
-# trimmed) with no signal anything was dropped. This is a second, byte-
-# length cap on top of the count cap. ~600 chars is a conservative
-# fraction of that real (undocumented) budget, erring toward dropping a
-# few extra names rather than risking the same silent-truncation problem
-# this whole mechanism exists to avoid.
-_GLOSSARY_ENTITY_CHAR_BUDGET = 600
-
-
-def entity_glossary_terms(world_id: int, limit: int = GLOSSARY_ENTITY_LIMIT) -> list[str]:
-    """Entity names (see GLOSSARY_ENTITY_KINDS) to merge into a world's
-    Whisper glossary — see _glossary_for_world, which actually merges
-    these into the GM's own typed text. Public (no leading underscore):
-    also used by routers/ai.py's GET /whisper/glossary to show a GM how
-    many entity names are being added on top of what they typed, since the
-    merge happens at transcribe time and isn't visible in the saved
-    World.whisper_glossary text itself."""
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(Entity.name)
-            .filter(Entity.world_id == world_id, Entity.kind.in_(GLOSSARY_ENTITY_KINDS))
-            .order_by(Entity.kind, Entity.name)
-            .limit(limit)
-            .all()
-        )
-        return [r[0] for r in rows if r[0]]
-    finally:
-        db.close()
-
-
-def merge_glossary(gm_glossary: str, entity_terms: list[str]) -> tuple[str, int, int]:
-    """GM-typed terms first (a GM who bothered to type something presumably
-    cares about it most, and it's least likely to fall outside whatever
-    truncation whisper.cpp's own prompt budget applies), then entity names
-    — comma/newline-separated either way, matching whisper_glossary's own
-    existing free-text convention. Case-insensitive dedup against the GM's
-    own terms so a name that's both hand-typed AND an Entity isn't sent
-    twice.
-
-    Entity terms (post-dedup) are appended in order up to
-    _GLOSSARY_ENTITY_CHAR_BUDGET total characters — whole-term granularity
-    (never truncates mid-name), and GM text is never trimmed. Returns
-    (merged_text, included_count, dropped_count) rather than just the
-    string: `included`/`dropped` describe entity terms specifically (not
-    the GM's own text), and are what GET /api/ai/whisper/glossary surfaces
-    so a GM isn't left wondering why a name they know is on the roster
-    never gets biased for. Public (no leading underscore): called from
-    both _glossary_for_world below and that route, same reasoning
-    entity_glossary_terms' own docstring gives."""
-    if not entity_terms:
-        return gm_glossary, 0, 0
-    gm_terms_lower = {t.strip().lower() for t in gm_glossary.replace("\n", ",").split(",") if t.strip()}
-    new_terms = [t for t in entity_terms if t.strip().lower() not in gm_terms_lower]
-    if not new_terms:
-        return gm_glossary, 0, 0
-    included = []
-    used_chars = 0
-    for t in new_terms:
-        added = len(t) + 2  # ", " separator
-        if used_chars + added > _GLOSSARY_ENTITY_CHAR_BUDGET:
-            break
-        included.append(t)
-        used_chars += added
-    dropped = len(new_terms) - len(included)
-    if dropped:
-        _log.info(
-            "merge_glossary: %d entity name(s) dropped past the %d-char budget (%d included)",
-            dropped, _GLOSSARY_ENTITY_CHAR_BUDGET, len(included),
-        )
-    if not included:
-        return gm_glossary, 0, dropped
-    merged = f"{gm_glossary}, {', '.join(included)}" if gm_glossary else ", ".join(included)
-    return merged, len(included), dropped
-
-
-def _glossary_for_world(world_id: int, game_session_id: int | None = None) -> str:
-    """`game_session_id`, if given, feeds names from the GM's "Entities
-    Featured" picks for that session (see _session_featured_picks) to the
-    FRONT of the entity-name list, ahead of entity_glossary_terms' own
-    alphabetical-by-kind list — on a big world, the NPCs actually spoken
-    aloud this session could otherwise lose merge_glossary's
-    _GLOSSARY_ENTITY_CHAR_BUDGET to alphabetically-earlier entities that
-    never came up at all. GM-typed text (World.whisper_glossary) still
-    always comes first and is never trimmed — see merge_glossary's own
-    docstring; this only affects the ORDER of the entity names appended
-    after it, not whether they're included."""
-    db = SessionLocal()
-    try:
-        w = db.get(World, world_id)
-        gm_glossary = (w.whisper_glossary or "").strip() if w else ""
-        featured_names = []
-        if game_session_id:
-            pinned_entity_ids, pinned_pc_ids = _session_featured_picks(game_session_id)
-            if pinned_entity_ids:
-                rows = (
-                    db.query(Entity.name)
-                    .filter(Entity.world_id == world_id, Entity.id.in_(pinned_entity_ids))
-                    .order_by(Entity.kind, Entity.name)
-                    .all()
-                )
-                featured_names.extend(r[0] for r in rows if r[0])
-            if pinned_pc_ids:
-                pc_rows = (
-                    db.query(PlayerCharacter.name)
-                    .filter(PlayerCharacter.world_id == world_id, PlayerCharacter.id.in_(pinned_pc_ids))
-                    .order_by(PlayerCharacter.name)
-                    .all()
-                )
-                featured_names.extend(r[0] for r in pc_rows if r[0])
-    finally:
-        db.close()
-    entity_terms = entity_glossary_terms(world_id)
-    if featured_names:
-        featured_lower = {n.lower() for n in featured_names}
-        entity_terms = featured_names + [t for t in entity_terms if t.lower() not in featured_lower]
-    return merge_glossary(gm_glossary, entity_terms)[0]
-
-
-def _whisper_language_for_world(world_id: int) -> str:
-    db = SessionLocal()
-    try:
-        w = db.get(World, world_id)
-        return (w.whisper_language or "").strip() if w else ""
-    finally:
-        db.close()
-
-
-def _denoise_for_world(world_id: int) -> bool:
-    db = SessionLocal()
-    try:
-        w = db.get(World, world_id)
-        return bool(w and w.whisper_denoise)
-    finally:
-        db.close()
 
 
 def _recap_instructions_for_world(world_id: int) -> str:
@@ -1173,7 +1017,7 @@ async def _run_job(job_id: int) -> None:
         fields = {"checkpoint_json": _json.dumps(state)}
         if state.get("phase") == "transcribe":
             # Mirrored into `transcript` (not just checkpoint_json) so the
-            # partial is independently useful the same way WhisperError's
+            # partial is independently useful the same way SttError's
             # own partial_transcript already is — the existing "Retry
             # summary"/"Extract facts" actions key off job.transcript, and
             # a GM watching the Background Jobs page sees real progress
@@ -1220,22 +1064,19 @@ async def _run_job(job_id: int) -> None:
         )
         if not skip_transcribe:
             _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
-            glossary = _glossary_for_world(world_id, game_session_id) if world_id else ""
-            language = _whisper_language_for_world(world_id) if world_id else ""
-            denoise = _denoise_for_world(world_id) if world_id else False
             transcribe_resume = checkpoint if checkpoint and checkpoint.get("phase") == "transcribe" else None
             try:
                 # Held for this whole call (all its internal chunks), not
-                # just one HTTP request — see ai.whisper_job_semaphore's own
+                # just one HTTP request — see ai.stt_job_semaphore's own
                 # docstring for why: it's what actually stops two jobs'
-                # chunks from interleaving on the same Whisper backend.
-                async with _ai_module.whisper_job_semaphore:
+                # chunks from interleaving on the same Studio backend.
+                async with _ai_module.stt_job_semaphore:
                     transcript = await _ai_module.transcribe_audio(
-                        audio_path, glossary=glossary, language=language, denoise=denoise,
+                        audio_path,
                         on_progress=_on_progress, on_checkpoint=_checkpoint,
                         should_stop=_job_shutdown.stopping, resume=transcribe_resume,
                     )
-            except _ai_module.WhisperError as exc:
+            except _ai_module.SttError as exc:
                 fields = {"status": "error", "error": str(exc), "finished_at": datetime.utcnow(), "checkpoint_json": ""}
                 if exc.partial_transcript:
                     # At least one chunk transcribed before the failure —
@@ -1248,7 +1089,7 @@ async def _run_job(job_id: int) -> None:
                 return
             if not transcript:
                 _set(status="error", finished_at=datetime.utcnow(), checkpoint_json="", error=(
-                    "Whisper transcribed this clip successfully but found no speech in it "
+                    "Speech-to-text finished this clip but found no speech in it "
                     "— check the recording actually captured audio."
                 ))
                 return

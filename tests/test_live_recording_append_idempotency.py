@@ -207,7 +207,7 @@ def test_whisper_call_does_not_hold_a_pooled_db_connection(client, seed, monkeyp
 
 # ── docs/STT_LIVE_AUDIT_2026-09.md fixes ─────────────────────────────────────
 
-def test_transcription_holds_the_whisper_job_semaphore(client, seed, monkeypatch):
+def test_transcription_holds_the_stt_job_semaphore(client, seed, monkeypatch):
     """Live chunks now take the same single-slot semaphore the background
     transcription jobs hold (finding 1): the STT backend serves one piece
     of audio at a time, so letting a live chunk stack against a running
@@ -215,7 +215,7 @@ def test_transcription_holds_the_whisper_job_semaphore(client, seed, monkeypatch
     seen = {}
 
     async def fake_transcribe(path, glossary="", **kwargs):
-        seen["value"] = ai_module.whisper_job_semaphore._value
+        seen["value"] = ai_module.stt_job_semaphore._value
         return "text"
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
 

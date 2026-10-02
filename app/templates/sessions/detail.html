@@ -210,7 +210,7 @@
                    title="One-off notes for this summary, e.g. &quot;focus on combat tactics&quot; — added to (not replacing) the world's standing recap instructions"
                    style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
           </div>
-          <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording). "Process in Background" survives closing this tab; check the jobs list below to see it finish and load the result later.</div>
+          <div style="font-size:.72rem;margin-top:.3rem">Transcribed by Unsloth Studio, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording). "Process in Background" survives closing this tab; check the jobs list below to see it finish and load the result later.</div>
         </div>
         <div id="audio-recap-progress"></div>
         <div id="audio-jobs-panel" class="nd-jobs-panel" style="display:none"></div>
@@ -295,7 +295,7 @@
     </p>
     <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem;font-size:.8rem;color:var(--text-dim)">
       <label style="display:flex;align-items:center;gap:.35rem">Chunk length
-        <select id="live-chunk-seconds" title="Longer chunks mean fewer transcription-boundary artifacts — Whisper hallucination loops, duplicated passages, and repeated names tend to appear at the seam between two chunks — but also a longer delay before each chunk's text appears, and a bigger segment to re-upload if one fails. A change applies from the next chunk, even mid-recording." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+        <select id="live-chunk-seconds" title="Longer chunks mean fewer transcription-boundary artifacts — speech-model hallucination loops, duplicated passages, and repeated names tend to appear at the seam between two chunks — but also a longer delay before each chunk's text appears, and a bigger segment to re-upload if one fails. A change applies from the next chunk, even mid-recording." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
           <option value="60">1 min</option>
           <option value="120">2 min</option>
           <option value="180">3 min</option>
@@ -304,7 +304,7 @@
           <option value="900">15 min</option>
         </select>
       </label>
-      <label style="display:flex;align-items:center;gap:.35rem" title="Also keep each raw audio segment on the server, so the whole recording can be downloaded as one file afterwards and a bad transcript (Whisper hallucination loops, boundary duplicates) can be re-transcribed later with better settings.">
+      <label style="display:flex;align-items:center;gap:.35rem" title="Also keep each raw audio segment on the server, so the whole recording can be downloaded as one file afterwards and a bad transcript (speech-model hallucination loops, boundary duplicates) can be re-transcribed later with better settings.">
         <input type="checkbox" id="live-save-audio" checked style="width:auto"/> Save raw audio
       </label>
       <span id="live-audio-status" style="display:none;font-size:.78rem;color:var(--text-dim)"></span>
@@ -1396,12 +1396,12 @@ function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); 
 // holds more than one chunk's worth of unsaved audio at once. Uploads are
 // processed through a sequential queue (one at a time, in order) rather
 // than fired in parallel, both so the transcript can't end up scrambled
-// out of order and so a self-hosted Whisper server that's slower than
+// out of order and so a Studio backend that's slower than
 // realtime just falls behind gracefully instead of being hit with a burst
 // of concurrent requests.
 
 // Longer chunks mean fewer chunk boundaries, and chunk boundaries are where
-// the transcription artifacts live: Whisper hallucination loops (music and
+// the transcription artifacts live: speech-model hallucination loops (music and
 // silence around a seam feed them), duplicated passages straddling a seam,
 // repeated-name loops — a real 3.5-hour session at the old fixed 60s produced
 // pages of "Редактор субтитров…" spam. Against that, a longer chunk means the
@@ -1591,7 +1591,7 @@ async function liveProcessQueue() {
   try {
     while (_liveQueue.length) {
       if (_liveRecording && _liveQueue.length > 1) {
-        // A slower-than-realtime Whisper backend was previously invisible
+        // A slower-than-realtime transcription backend was previously invisible
         // here until chunks started timing out — surface the backlog.
         status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for transcription)`;
       }
@@ -1688,7 +1688,7 @@ function liveStartSegment() {
   // Segments stay separate MediaRecorder instances producing complete
   // standalone containers (each is transcribed independently server-side)
   // — deliberately NOT switched to a single long-running recorder with
-  // timeslice chunks, whose interior chunks lack container headers Whisper
+  // timeslice chunks, whose interior chunks lack container headers the transcriber
   // needs. Only the underlying mic STREAM is now shared across segments —
   // see _liveMicStream's own comment.
   // segStream pins WHICH stream this segment belongs to: if the mic dies

@@ -106,7 +106,7 @@ class World(Base):
     # every other player-AI toggle shares (see _require_ask_ai_access in
     # app/routers/ai.py, which grants access when EITHER this or
     # players_can_ask_ai is on). Off by default. The GM's full "/ai" World
-    # Chat page (model/preset/whisper management, chat history) and Content
+    # Chat page (model/preset management, chat history) and Content
     # Editor/Code Assist stay GM+Assistant-only regardless of any player
     # toggle — those manage the world/app itself, not just talk to a model.
     # (Image generation has its own narrower player toggle below,
@@ -176,44 +176,15 @@ class World(Base):
         '"parties":{"player":"none","assistant":"edit"},'
         '"tables":{"player":"none","assistant":"edit"}}'
     ))
-    # Campaign vocabulary (NPC names, places, invented terms) fed to Whisper
-    # as an initial-prompt hint on every session-recording transcription, so
-    # e.g. "Elyndra" doesn't come back as "Elandra" or "a lender". Per-world,
-    # not instance-wide (unlike ai_models.json's GM-personal-toolkit
-    # settings) since it's campaign content. NULL/"" = no hint sent.
-    whisper_glossary = Column(Text, nullable=True)
-    # ISO-639-1 code (e.g. "ru", "es") a GM can pin so Whisper decodes every
-    # session-recording transcription (background job, one-shot upload, and
-    # live recording) as that language instead of auto-detecting per clip —
-    # faster and more accurate for a table that's consistently non-English.
-    # NULL/"" = auto-detect (transcribe_audio's own default when this isn't
-    # set is "auto", never Whisper's server-side "en" fallback — see its
-    # docstring in app/ai.py). Same per-world scope as whisper_glossary;
-    # one-off chat attachments don't use this, matching that field's own
-    # established scope.
-    whisper_language = Column(String(16), nullable=True)
-    # Run a real speech-enhancement model (DeepFilterNet) over each
-    # session-recording chunk before it reaches Whisper — meaningfully
-    # better than a browser's own noise suppression against sustained
-    # background audio (music, hum) since it's a proper ML model, not just
-    # echo/noise-gate heuristics. Off by default: torch/deepfilternet are
-    # NOT in the base image (torch alone is hundreds of MB) — a deployment
-    # has to opt in at build time too (see requirements-denoise.txt, the
-    # Dockerfile's INSTALL_DENOISE build arg, and app.ai.
-    # speech_enhancement_available()). POST /api/ai/whisper/denoise refuses
-    # to set this True when the current container doesn't actually have it
-    # installed, so this being True is a reliable signal the feature is
-    # both wanted AND available — but see app.ai's own transcribe_audio
-    # docstring for what happens if a deployment is later rebuilt WITHOUT
-    # it while this is still True on an existing World (graceful skip, not
-    # a hard failure).
-    whisper_denoise = Column(Boolean, default=False)
     # Free-text steering for the recap-writing step specifically (not
-    # transcription — Whisper itself has no notion of "instructions", only
-    # the glossary hint above) — e.g. "Write summaries in Spanish" or "Use a
+    # transcription) — e.g. "Write summaries in Spanish" or "Use a
     # dry, sarcastic tone." Applied to every session-recording recap
-    # (background job, one-shot upload, and re-summarize), same per-world
-    # scope as whisper_glossary. NULL/"" = no extra instructions.
+    # (background job, one-shot upload, and re-summarize), per world.
+    # NULL/"" = no extra instructions.
+    #
+    # (worlds.whisper_glossary / whisper_language / whisper_denoise columns
+    # from the whisper.cpp era may still exist in an older database; nothing
+    # reads or writes them any more and they are harmless.)
     recap_instructions = Column(Text, nullable=True)
     # Durable watermark for recap-affecting content mutations that leave no
     # per-Fact row behind to timestamp: a recap-instructions save (the text is
@@ -1089,11 +1060,12 @@ class AudioClip(Base):
     # the library back to the lore. Healed via _heal_table_from_model.
     entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    # AI-generated via Whisper (see app.ai.transcribe_audio_with_subtitles and
-    # POST /audio/{id}/transcribe) — both blank until a GM/assistant clicks
-    # "Transcribe". transcript is the plain text (shown as a collapsible
-    # block to anyone who can already see the clip); subtitles_vtt is a
-    # WebVTT track built from Whisper's segment timestamps, embedded as a
+    # AI-generated via Unsloth Studio's speech-to-text (see
+    # app.ai.transcribe_audio_with_subtitles and POST /audio/{id}/transcribe) —
+    # both blank until a GM/assistant clicks "Transcribe". transcript is the
+    # plain text (shown as a collapsible block to anyone who can already see
+    # the clip); subtitles_vtt is a WebVTT track (Studio returns no timestamps,
+    # so it is only ever set by older whisper.cpp-era transcriptions), embedded as a
     # data: URI on the clip's <audio> element so a <track> can drive live
     # captions via the browser's own TextTrack API (audio has no visual
     # surface to render a native caption overlay onto, unlike video).
@@ -1123,7 +1095,7 @@ class VideoClip(Base):
     file, deleting the row deletes the file, visible_to_players defaults
     True (a GM only has to act to hide a clip). poster_url is a best-effort
     ffmpeg-generated thumbnail frame — nullable, since ffmpeg is optional
-    (see app.ai's identical graceful-degradation pattern for Whisper audio
+    (see app.ai's identical graceful-degradation pattern for audio
     splitting) and a player's browser still shows a native video-element
     frame if it's missing. album_id is NULL for a top-level (unfiled) clip."""
     __tablename__ = "video_clips"
@@ -1241,7 +1213,7 @@ class GameSession(Base):
     loot_json = Column(Text, default="[]")   # [{name, qty, notes}]
     xp_awarded = Column(Integer, default=0)
     party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
-    # Raw Whisper transcript accumulated live during a session recording,
+    # Raw speech-to-text transcript accumulated live during a session recording,
     # one short chunk (see MAX_LIVE_CHUNK_SECONDS in routers/sessions.py) at
     # a time via /api/sessions/{id}/live-transcript/append — persisted to
     # the DB immediately after every chunk (not held in browser memory
@@ -1256,7 +1228,7 @@ class GameSession(Base):
     # paths under the uploads dir, "live/<session_id>/<recording_id>/<6-digit
     # segment index><ext>", in recording order — see /live-transcript/append
     # in routers/sessions.py, which writes one entry per uploaded segment.
-    # Kept at all because Whisper hallucination loops / boundary duplicates
+    # Kept at all because speech-model hallucination loops / boundary duplicates
     # (the known failure modes of chunked transcription) make a transcript
     # unrecoverable once the audio is gone — with the audio on disk a bad
     # transcript can be re-transcribed later with better settings, and the
@@ -1269,7 +1241,7 @@ class GameSession(Base):
     # live_transcript — makes /live-transcript/append idempotent per segment,
     # the same way live_audio_files_json above already is for the raw file.
     # Without this, the client's 3-attempt retry ladder (a lost response, not
-    # just a lost request — a slow self-hosted Whisper backend behind a proxy
+    # just a lost request — a slow Studio backend behind a proxy
     # with its own timeout is a realistic way to hit this) re-POSTs a chunk
     # the server already transcribed and committed, and the second success
     # duplicates that chunk's text in the transcript. Same
@@ -1321,7 +1293,7 @@ class AudioJob(Base):
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     # "session_recap" (transcribe + summarize, feeds a GameSession's recap
-    # draft) or "attachment" (transcribe only — the Whisper Test tab and an
+    # draft) or "attachment" (transcribe only — the AI page's Speech test and an
     # AI Chat/Ask AI voice-memo attachment are mechanically identical on the
     # backend; only what the client does with a finished job differs).
     purpose = Column(String(32), nullable=False)
@@ -1928,10 +1900,6 @@ class AppSettings(Base):
     # Same idea again, for the embedded Content Editor viewer at /editor —
     # see app.main's EDITOR_EXTERNAL_URL and docs/DEPLOYMENT.md.
     editor_external_url = Column(String(512), default="")
-    # Same idea again, for the optional whisper.cpp server that transcribes
-    # an AI chat audio attachment into text — see app.ai's WHISPER_URL and
-    # docs/DEPLOYMENT.md's "Optional: audio transcription (Whisper)".
-    whisper_url = Column(String(512), default="")
     # Per-request Ollama generation options (see app.ai.effective_ollama_options()
     # and set_ollama_generation_overrides()) — all nullable/blank so an unset
     # field just omits that key from the options= dict passed to the Ollama

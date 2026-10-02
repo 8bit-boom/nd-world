@@ -450,7 +450,7 @@ def test_a_long_but_small_audio_file_is_split_before_transcription(tmp_path, mon
     monkeypatch.setattr(_ai, "_split_audio_into_chunks", fake_split)
     monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(ux, "stt", fake_stt)
-    out = asyncio.run(_ai._transcribe_one_file_unsloth(f))
+    out = asyncio.run(_ai._transcribe_one_file(f))
     assert split_args["secs"] <= _ai._UNSLOTH_STT_CHUNK_SECONDS and len(sent) == 12
     assert out.count("\n") == 11
 
@@ -471,12 +471,12 @@ def test_a_short_small_file_is_sent_whole(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
     monkeypatch.setattr(ux, "stt", fake_stt)
-    assert asyncio.run(_ai._transcribe_one_file_unsloth(f)) == "hi" and sent == ["clip.mp3"]
+    assert asyncio.run(_ai._transcribe_one_file(f)) == "hi" and sent == ["clip.mp3"]
 
 
 @pytest.mark.parametrize("secs", [600.0, 600.008, 600.064, 750.0, 899.0])
 def test_a_chunk_the_pipeline_cut_at_ten_minutes_is_one_request(tmp_path, monkeypatch, secs):
-    """The generic pipeline cuts long audio at WHISPER_CHUNK_SECONDS (600) with a stream copy, and the
+    """The generic pipeline cuts long audio at STT_CHUNK_SECONDS (600) with a stream copy, and the
     pieces measure 600.004-600.064 s. They must go to Studio as ONE request each — a duration trigger
     without slack re-encoded every piece and sent Studio a second, few-millisecond fragment (measured
     with real ffmpeg: 600.008 s webm/mp3/m4a pieces each produced 2 requests)."""
@@ -500,7 +500,7 @@ def test_a_chunk_the_pipeline_cut_at_ten_minutes_is_one_request(tmp_path, monkey
     monkeypatch.setattr(_ai, "_split_audio_into_chunks", boom)
     monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", boom)
     monkeypatch.setattr(ux, "stt", fake_stt)
-    assert asyncio.run(_ai._transcribe_one_file_unsloth(f)) == "hi" and sent == ["chunk_0000.webm"]
+    assert asyncio.run(_ai._transcribe_one_file(f)) == "hi" and sent == ["chunk_0000.webm"]
 
 
 def test_a_big_file_just_over_ten_minutes_is_not_split_into_a_sliver(tmp_path, monkeypatch):
@@ -532,7 +532,7 @@ def test_a_big_file_just_over_ten_minutes_is_not_split_into_a_sliver(tmp_path, m
     monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", fake_transcode)
     monkeypatch.setattr(_ai, "_split_audio_into_chunks", boom)
     monkeypatch.setattr(ux, "stt", fake_stt)
-    assert asyncio.run(_ai._transcribe_one_file_unsloth(f)) == "hi" and sent == ["long.mp3"]
+    assert asyncio.run(_ai._transcribe_one_file(f)) == "hi" and sent == ["long.mp3"]
 
 
 # ── image timeouts ───────────────────────────────────────────────────────────

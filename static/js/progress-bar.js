@@ -1,9 +1,9 @@
 "use strict";
 // Small shared progress-bar widget, driven by ndChunkedUpload's onProgress
 // callback (chunked-upload.js): a real percent while bytes are uploading,
-// an indeterminate animated state once the server is processing (Whisper
+// an indeterminate animated state once the server is processing (speech-to-text
 // transcription / Ollama summarization / chunk reassembly) with no
-// progress signal of its own. Used by the Whisper Test tab, Session audio
+// progress signal of its own. Used by the AI page's Speech tab, Session audio
 // recap, and the AI Chat/Ask AI attachment picker — anywhere audio goes
 // through ndChunkedUpload.
 

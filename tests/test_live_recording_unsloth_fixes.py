@@ -173,7 +173,7 @@ def test_clear_and_summarize_also_check_the_sessions_world(client, seed, monkeyp
 
 def _fail_transcription(monkeypatch, retryable):
     async def failing(path, **kw):
-        raise _ai.WhisperError("Unsloth Studio STT: STT model 'small' is not downloaded.", retryable=retryable)
+        raise _ai.SttError("Unsloth Studio STT: STT model 'small' is not downloaded.", retryable=retryable)
 
     monkeypatch.setattr(_ai, "transcribe_audio", failing)
 
@@ -240,21 +240,20 @@ def test_studio_failures_are_classified_by_what_the_gm_can_do(tmp_path, monkeypa
 
     monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
     monkeypatch.setattr(ux, "stt", fake_stt)
-    with pytest.raises(_ai.WhisperError) as ei:
-        asyncio.run(_ai._transcribe_one_file_unsloth(f))
+    with pytest.raises(_ai.SttError) as ei:
+        asyncio.run(_ai._transcribe_one_file(f))
     assert ei.value.retryable is retryable and message in str(ei.value)
 
 
-def test_whisper_sidecar_outages_are_transient_and_chunked_failures_keep_the_flag():
-    assert _ai.WhisperError("x").retryable is False
-    assert _ai.WhisperError("x", retryable=True).retryable is True
+def test_the_retryable_flag_defaults_off_and_survives_the_chunked_wrapper():
+    assert _ai.SttError("x").retryable is False
+    assert _ai.SttError("x", retryable=True).retryable is True
     src = (ROOT / "app" / "ai.py").read_text()
-    assert src.count("retryable=True") >= 4, "unreachable / timeout sites of both sidecar calls are transient"
-    assert src.count("retryable=_status_is_transient(") >= 2, "so are 5xx/429 answers"
+    assert "retryable=exc.unreachable or _status_is_transient(" in src, "Studio outages and 5xx/429 are transient"
     assert "retryable=exc.retryable" in src, "the chunked-transcription wrapper must not drop the flag"
 
 
-# ── 4. pre-flight and the Studio-only default ────────────────────────────────
+# ── 4. pre-flight ────────────────────────────────
 
 def test_the_check_route_reports_a_ready_studio_with_the_real_chunk_format(client, seed, monkeypatch):
     seen = []
@@ -265,7 +264,6 @@ def test_the_check_route_reports_a_ready_studio_with_the_real_chunk_format(clien
 
     monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
     monkeypatch.setattr(_ai, "_llm_url_override", "http://studio")
-    monkeypatch.setattr(_ai, "get_stt_backend", lambda: "unsloth")
     monkeypatch.setattr(ux, "stt", fake_stt)
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
@@ -280,7 +278,6 @@ def test_the_check_route_says_what_is_wrong(client, seed, monkeypatch):
 
     monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
     monkeypatch.setattr(_ai, "_llm_url_override", "http://studio")
-    monkeypatch.setattr(_ai, "get_stt_backend", lambda: "unsloth")
     monkeypatch.setattr(ux, "stt", fake_stt)
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
@@ -288,14 +285,9 @@ def test_the_check_route_says_what_is_wrong(client, seed, monkeypatch):
     assert d["ok"] is False and "not downloaded" in d["message"]
 
 
-def test_the_check_route_covers_the_sidecar_and_a_missing_setup(client, seed, monkeypatch):
+def test_the_check_route_says_so_when_no_studio_key_is_set(client, seed, monkeypatch):
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
-    monkeypatch.setattr(_ai, "get_stt_backend", lambda: "whisper")
-    monkeypatch.setattr(_ai, "effective_whisper_url", lambda: "")
-    d = client.get(f"/api/sessions/{sid}/live-transcript/check").json()
-    assert d["ok"] is False and d["backend"] == "whisper" and "Whisper" in d["message"]
-    monkeypatch.setattr(_ai, "get_stt_backend", lambda: "unsloth")
     monkeypatch.setattr(_ai, "effective_llm_api_key", lambda: "")
     d = client.get(f"/api/sessions/{sid}/live-transcript/check").json()
     assert d["ok"] is False and d["backend"] == "unsloth" and "key" in d["message"].lower()
@@ -314,25 +306,6 @@ def test_the_webm_check_tone_is_real_opus_in_webm():
     if data is None:
         pytest.skip("ffmpeg not available here")
     assert data[:4] == b"\x1a\x45\xdf\xa3", "EBML header — the container a browser MediaRecorder produces"
-
-
-def test_a_studio_only_install_defaults_its_stt_to_studio(monkeypatch):
-    stored = {}
-    monkeypatch.setattr(_ai, "_load_data", lambda: dict(stored))
-    monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
-    monkeypatch.setattr(_ai, "effective_whisper_url", lambda: "")
-    assert _ai.get_stt_backend() == "unsloth"
-    monkeypatch.setattr(_ai, "effective_whisper_url", lambda: "http://whisper:8080")
-    assert _ai.get_stt_backend() == "whisper", "an existing sidecar deployment keeps its backend"
-    stored["stt_backend"] = "unsloth"
-    assert _ai.get_stt_backend() == "unsloth"
-    stored["stt_backend"] = "whisper"
-    monkeypatch.setattr(_ai, "effective_whisper_url", lambda: "")
-    assert _ai.get_stt_backend() == "whisper", "an explicit choice always wins"
-    monkeypatch.setattr(_ai, "_llm_api_key_override", "")
-    monkeypatch.setattr(_ai, "UNSLOTH_API_KEY", "")
-    stored.clear()
-    assert _ai.get_stt_backend() == "whisper"
 
 
 # ── 5. the archive is not a public static file ───────────────────────────────

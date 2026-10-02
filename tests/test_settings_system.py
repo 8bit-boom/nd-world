@@ -33,7 +33,6 @@ def test_settings_system_roundtrip(client, seed, tmp_path, monkeypatch):
         "swarmui_external_url": "http://127.0.0.1:7801",
         "android_emulator_url": "http://127.0.0.1:6080",
         "editor_external_url": "http://127.0.0.1:6081",
-        "whisper_url": "http://127.0.0.1:8090",
     }, follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?tab=system"
@@ -44,7 +43,6 @@ def test_settings_system_roundtrip(client, seed, tmp_path, monkeypatch):
     assert "127.0.0.1:7801" in page.text
     assert "127.0.0.1:6080" in page.text
     assert "127.0.0.1:6081" in page.text
-    assert "127.0.0.1:8090" in page.text
 
     db = SessionLocal()
     try:
@@ -54,7 +52,6 @@ def test_settings_system_roundtrip(client, seed, tmp_path, monkeypatch):
         assert settings.swarmui_external_url == "http://127.0.0.1:7801"
         assert settings.android_emulator_url == "http://127.0.0.1:6080"
         assert settings.editor_external_url == "http://127.0.0.1:6081"
-        assert settings.whisper_url == "http://127.0.0.1:8090"
         assert settings.dreamlands_enabled is False
         assert settings.king_in_yellow_enabled is False
     finally:
@@ -139,35 +136,6 @@ def test_ollama_override_takes_effect_after_save(client, seed):
     r = client.get("/api/ai/models")
     assert r.status_code == 200
     assert r.json()["default"] == "llama3.1"
-
-
-def test_whisper_env_fallback_when_blank(client, seed):
-    assert ai_module.effective_whisper_url() == ai_module.WHISPER_URL
-
-
-def test_whisper_override_takes_effect_after_save(client, seed):
-    login(client, seed.gm.email, GM_PASSWORD)
-    client.post("/settings/system", data={
-        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
-        "whisper_url": "http://127.0.0.1:8090",
-    })
-    assert ai_module.effective_whisper_url() == "http://127.0.0.1:8090"
-
-
-def test_settings_system_invalid_whisper_url_rejected(client, seed):
-    login(client, seed.gm.email, GM_PASSWORD)
-    r = client.post("/settings/system", data={
-        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
-        "whisper_url": "not-a-url",
-    })
-    assert r.status_code == 400
-
-    db = SessionLocal()
-    try:
-        settings = db.query(AppSettings).first()
-        assert not settings or settings.whisper_url in (None, "")
-    finally:
-        db.close()
 
 
 def test_swarmui_env_fallback_when_blank(client, seed):
@@ -355,22 +323,24 @@ def test_upload_limits_inputs_render_with_env_default_placeholders(client, seed)
     assert 'placeholder="1024 (env default)"' in page.text # audio + AI attachments
 
 
-def test_stt_backend_note_discloses_whisper_knob_no_ops(client, seed):
-    """docs/STT_LIVE_AUDIT_2026-09.md finding 5: the world's glossary/
-    language/denoise settings silently no-op on the Unsloth Studio backend —
-    the Settings page must say so next to the backend selector."""
+def test_a_stale_whisper_url_in_a_posted_form_is_ignored(client, seed):
+    """whisper.cpp support was removed - an old form (or script) that still posts whisper_url must not fail,
+    and nothing is stored."""
     login(client, seed.gm.email, GM_PASSWORD)
-    page = client.get("/settings?tab=system").text
-    assert 'id="studio-stt-backend-note"' in page
-    assert "don't apply" in page
+    r = client.post("/settings/system", data={"ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+                                              "whisper_url": "not-a-url"}, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        assert not hasattr(db.query(AppSettings).first(), "whisper_url")
+    finally:
+        db.close()
 
 
-def test_stt_visibility_syncs_after_prefs_load(client, seed):
-    """Re-audit F2: a programmatic select .value set doesn't fire 'change',
-    so the STT Test button and the whisper-knobs note stayed hidden after
-    page load when the stored backend is 'unsloth' — loadPrefs must re-sync
-    (docs/STT_LIVE_AUDIT_2026-09.md)."""
+def test_speech_to_text_has_only_the_studio_model_control(client, seed):
+    """Studio is the only STT backend: the page has the model picker and its Test button, no backend selector
+    and no Whisper URL field."""
     login(client, seed.gm.email, GM_PASSWORD)
     page = client.get("/settings?tab=system").text
-    load_prefs_body = page.split("function loadPrefs()", 1)[1].split("\n  }", 1)[0]
-    assert "syncSttTestVisibility();" in load_prefs_body
+    assert 'id="studio-stt-model"' in page and 'id="studio-stt-test"' in page
+    assert "studio-stt-backend" not in page and "whisper" not in page.lower()

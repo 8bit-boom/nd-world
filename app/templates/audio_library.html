@@ -154,7 +154,7 @@
         </div>
         {% if can_edit(request) %}
         <div class="audio-clip-actions">
-          <button type="button" class="btn-cancel" id="audio-transcribe-btn-{{ c.id }}" title="Generate an AI transcript + subtitles via Whisper"
+          <button type="button" class="btn-cancel" id="audio-transcribe-btn-{{ c.id }}" title="Generate an AI transcript through Unsloth Studio"
                   style="font-size:.75rem;padding:.25rem .6rem" onclick="audioTranscribe({{ c.id }})">🎙{{ ' Re-transcribe' if c.transcript else ' Transcribe' }}</button>
           <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="audioToggleEdit({{ c.id }})">✏ Edit</button>
           <form method="post" action="{{ ('/audio/' + c.id|string + '/delete')|wq }}" onsubmit="return confirm('Delete this clip? This can\'t be undone.');" style="display:inline">

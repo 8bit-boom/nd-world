@@ -3,7 +3,7 @@ straight into the shared model volume through nd-world's own UI
 (app.ai.download_swarmui_model / list_downloaded_swarmui_models /
 delete_downloaded_swarmui_model, and the POST/GET/DELETE
 /api/ai/imagegen/models* routes in app/routers/ai.py) — the same
-shared-Docker-volume mechanic as download_whisper_model, but for
+shared-Docker-volume mechanic the model downloads use, but for
 SWARMUI_MODELS_DIR instead of WHISPER_MODELS_DIR, and with a free-text
 subfolder (SwarmUI's own model-type folders) since there's no one curated
 trusted host for Stable-Diffusion-family models the way ggerganov/whisper.cpp

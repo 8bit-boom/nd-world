@@ -1,17 +1,17 @@
 """Tests for the per-backend concurrency limits on background job work
-(app.ai.whisper_job_semaphore / ollama_job_semaphore, WAVE 2 / plan item
+(app.ai.stt_job_semaphore / ollama_job_semaphore, WAVE 2 / plan item
 AI 1.3). Without these, two session-recap jobs queued together interleave
 Whisper chunks (or Ollama calls) against each other on the same backend,
 roughly doubling wall time for both and thrashing whatever's resident in
 VRAM. The semaphores are shared, process-wide, module-level state in
-app/ai.py — audio_jobs.py acquires whisper_job_semaphore around its whole
+app/ai.py — audio_jobs.py acquires stt_job_semaphore around its whole
 transcribe_audio call and ollama_job_semaphore around its whole condense_
 recap/summarize_transcript call; chat_jobs.py acquires the same ollama_job_
 semaphore around its whole generate_chat call — so a queued chat job and a
 queued recap job serialize against each other too, not just two jobs of
 the same kind.
 
-These tests default WHISPER_JOB_CONCURRENCY/OLLAMA_JOB_CONCURRENCY to 1
+These tests default STT_JOB_CONCURRENCY/OLLAMA_JOB_CONCURRENCY to 1
 (same as production) and prove two jobs' calls never overlap in time; a
 peak-concurrency counter (not just start/end ordering) makes this robust
 against scheduling order."""
@@ -104,7 +104,7 @@ class _ConcurrencyTracker:
 
 
 def test_semaphores_default_to_one_permit():
-    assert ai_module.WHISPER_JOB_CONCURRENCY == 1
+    assert ai_module.STT_JOB_CONCURRENCY == 1
     assert ai_module.OLLAMA_JOB_CONCURRENCY == 1
 
 
@@ -192,7 +192,7 @@ async def test_two_image_jobs_never_generate_concurrently(client, seed, monkeypa
     """app.ai.imagegen_job_semaphore — added alongside the SwarmUI/ComfyUI
     error-surfacing fixes so a queued image job can't race a concurrent
     direct-generate call (or another queued job) at the httpx-client/
-    timeout layer, same reasoning as whisper_job_semaphore/
+    timeout layer, same reasoning as stt_job_semaphore/
     ollama_job_semaphore above."""
     tracker = _ConcurrencyTracker()
 
