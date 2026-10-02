@@ -623,6 +623,13 @@ what actually survives, not the wait itself.
 Either way, this happens automatically on the next boot — no GM action
 needed for the common case of an update landing mid-job.
 
+**Live recording during an update**: the browser keeps each chunk until the server has taken it. While nd-world
+restarts, the proxy in front of it answers 502/504/52x (or the connection just drops); the panel waits those out
+with a growing pause (5 s to 60 s, about 9 minutes in all) — "Can't reach the server — it may be restarting. The
+chunk is kept" — and then uploads the chunk, without using up its three failure attempts. Only a setup problem (no
+key, model not downloaded, login expired) parks a chunk straight away. With *Save raw audio* ticked the audio is also
+on disk before transcription starts, so a restart mid-chunk costs at most that chunk's text, never its audio.
+
 **The 3-attempt cap**: if a job keeps getting interrupted on every single
 restart (extremely unusual — normally means something about that specific
 job is itself crashing the server, not just an unrelated deploy catching it

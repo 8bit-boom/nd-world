@@ -366,7 +366,7 @@ def test_the_panel_shows_why_chunks_failed(client, seed):
     assert "_liveLastFailure" in page
     assert "err.httpStatus = res.status" in page, "the status code travels with the error"
     body = page.split("async function liveProcessQueue", 1)[1].split("function liveStartSegment", 1)[0]
-    assert "e.httpStatus === 503" in body, "an unavailable backend is waited out, not counted as a failed upload"
+    assert "kind === 'wait'" in body, "an unavailable backend (503, a gateway error, a dropped connection) is waited out, not counted as a failed upload"
     assert "attempt = 4" in body, "a setup problem (4xx) parks the chunk at once — three retries cannot fix it"
     refresh = page.split("function liveRefreshStatus()", 1)[1][:900]
     assert "_liveLastFailure" in refresh
