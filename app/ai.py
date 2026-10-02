@@ -4608,6 +4608,14 @@ _UNSLOTH_STT_MAX_BYTES = 23 * 1024 * 1024
 # Max MINUTES of audio per transcription request — duration cap alongside
 # the byte cap (see _transcribe_one_file_unsloth).
 _UNSLOTH_STT_CHUNK_SECONDS = 10 * 60
+# Audio is only re-split when it is clearly longer than one piece. The cut at
+# _UNSLOTH_STT_CHUNK_SECONDS is a stream copy, so the pieces it produces (and
+# the generic pipeline's own WHISPER_CHUNK_SECONDS pieces) measure a few
+# milliseconds OVER it — a strict "> 600" re-encoded every one of them and sent
+# Studio a second request carrying a sliver. 1.5x mirrors the generic
+# pipeline's _WHISPER_CHUNK_MIN_DURATION rule, and guarantees any remainder is
+# at least half a piece long.
+_UNSLOTH_STT_SPLIT_ABOVE_SECONDS = _UNSLOTH_STT_CHUNK_SECONDS * 1.5
 
 
 def _plan_unsloth_chunks(file_size: int, duration: float | None) -> float | None:
@@ -4680,7 +4688,7 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
         # low-bitrate recording): one request carrying that much audio
         # outruns the read timeout, so duration decides as well as size.
         duration = await _probe_audio_duration(path)
-        if size > _UNSLOTH_STT_MAX_BYTES or (duration and duration > _UNSLOTH_STT_CHUNK_SECONDS):
+        if size > _UNSLOTH_STT_MAX_BYTES or (duration and duration > _UNSLOTH_STT_SPLIT_ABOVE_SECONDS):
             if not duration or duration <= 0:
                 raise WhisperError(
                     f"{path.name} is {(path.stat().st_size + 1048575) // 1048576} MiB — over Unsloth "
@@ -4698,7 +4706,7 @@ async def _transcribe_one_file_unsloth(path: Path) -> str:
             # keeps each call comfortably inside the budget and makes
             # retries cheap (the audio-jobs pipeline re-runs pieces).
             if (mp3.stat().st_size <= _UNSLOTH_STT_MAX_BYTES
-                    and duration <= _UNSLOTH_STT_CHUNK_SECONDS):
+                    and duration <= _UNSLOTH_STT_SPLIT_ABOVE_SECONDS):
                 parts = [mp3]
             else:
                 size_plan = _plan_unsloth_chunks(mp3.stat().st_size, duration)

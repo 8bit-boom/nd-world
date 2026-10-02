@@ -474,6 +474,67 @@ def test_a_short_small_file_is_sent_whole(tmp_path, monkeypatch):
     assert asyncio.run(_ai._transcribe_one_file_unsloth(f)) == "hi" and sent == ["clip.mp3"]
 
 
+@pytest.mark.parametrize("secs", [600.0, 600.008, 600.064, 750.0, 899.0])
+def test_a_chunk_the_pipeline_cut_at_ten_minutes_is_one_request(tmp_path, monkeypatch, secs):
+    """The generic pipeline cuts long audio at WHISPER_CHUNK_SECONDS (600) with a stream copy, and the
+    pieces measure 600.004-600.064 s. They must go to Studio as ONE request each — a duration trigger
+    without slack re-encoded every piece and sent Studio a second, few-millisecond fragment (measured
+    with real ffmpeg: 600.008 s webm/mp3/m4a pieces each produced 2 requests)."""
+    f = tmp_path / "chunk_0000.webm"
+    f.write_bytes(b"x" * 100_000)
+    monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
+
+    async def fake_probe(p):
+        return secs
+
+    async def boom(*a, **k):
+        raise AssertionError("must not re-encode or re-split a chunk that is about ten minutes long")
+
+    sent = []
+
+    async def fake_stt(audio, name, model="small"):
+        sent.append(name)
+        return "hi"
+
+    monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(_ai, "_split_audio_into_chunks", boom)
+    monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", boom)
+    monkeypatch.setattr(ux, "stt", fake_stt)
+    assert asyncio.run(_ai._transcribe_one_file_unsloth(f)) == "hi" and sent == ["chunk_0000.webm"]
+
+
+def test_a_big_file_just_over_ten_minutes_is_not_split_into_a_sliver(tmp_path, monkeypatch):
+    """Over the byte limit it is re-encoded (small, mono mp3) — and if the result is only ~10 minutes it is
+    sent whole rather than as 600 s + a half-second remnant."""
+    f = tmp_path / "long.flac"
+    f.write_bytes(b"x" * (24 * 1024 * 1024))          # over Studio's 23 MiB budget
+    monkeypatch.setattr(_ai, "_llm_api_key_override", "sk-test")
+
+    async def fake_probe(p):
+        return 600.5
+
+    mp3 = tmp_path / "long.mp3"
+    mp3.write_bytes(b"m" * 5_000_000)
+
+    async def fake_transcode(p, d):
+        return mp3
+
+    async def boom(*a, **k):
+        raise AssertionError("no split for a ten-minute recording")
+
+    sent = []
+
+    async def fake_stt(audio, name, model="small"):
+        sent.append(name)
+        return "hi"
+
+    monkeypatch.setattr(_ai, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(_ai, "_transcode_audio_to_mp3", fake_transcode)
+    monkeypatch.setattr(_ai, "_split_audio_into_chunks", boom)
+    monkeypatch.setattr(ux, "stt", fake_stt)
+    assert asyncio.run(_ai._transcribe_one_file_unsloth(f)) == "hi" and sent == ["long.mp3"]
+
+
 # ── image timeouts ───────────────────────────────────────────────────────────
 
 def test_image_generation_has_a_tunable_long_timeout(monkeypatch):
