@@ -583,3 +583,22 @@ def test_speak_regenerate_rederives_and_resynthesizes(client, seed, monkeypatch)
     assert len(calls["derive_prompts"]) == 2  # re-derived
     assert len(calls["tts"]) == 2  # re-synthesized
     assert r.json()["audio_url"] == f"/uploads/npc-talk/npc{eid}-u{seed.gm.id}-m1.mp3"
+
+
+def test_a_spoken_npc_reply_is_stored_as_opus_when_studio_audio_was_converted(client, seed, monkeypatch):
+    from app.routers import npc_talk as _nt
+    eid = _npc(seed, body="Old salt of the docks.", summary="Harbor-master.")
+    _seed_conversation(eid, seed.gm.id, seed.world_a.id, [
+        {"role": "user", "content": "who runs this dock?"},
+        {"role": "assistant", "content": "Aye, that'd be me."},
+    ])
+    _speak_patch(monkeypatch, tts_calls={"derive_prompts": []})
+
+    async def _tts(text, model, voice="", response_format="wav", speed=1.0, instructions="", language=""):
+        return b"OggSopus", "audio/ogg; codecs=opus"
+    monkeypatch.setattr(_nt._unsloth_extras, "tts", _tts)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/npc-talk/{eid}/speak", json={"index": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["audio_url"].endswith(".opus")

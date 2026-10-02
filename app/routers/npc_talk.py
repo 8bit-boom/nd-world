@@ -546,7 +546,7 @@ async def npc_talk_speak(entity_id: int, body: NpcSpeakBody, request: Request, d
             instructions=hint,
             language=_ai.get_tts_language(),
         )
-        ext = ".wav" if "wav" in content_type else ".mp3"
+        ext = _unsloth_extras.audio_extension(content_type)
         # Deterministic per (entity, caller, message) — regeneration
         # overwrites the same file instead of orphaning the old one.
         target_dir = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "npc-talk"

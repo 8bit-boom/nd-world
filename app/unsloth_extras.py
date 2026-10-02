@@ -12,6 +12,8 @@ errors; ``_ollama.ResponseError`` shapes are reused so existing error
 handling stays uniform.
 """
 import logging
+import os
+import re
 import time
 
 import httpx as _httpx
@@ -474,7 +476,72 @@ async def tts(text: str, model: str, voice: str = "", response_format: str = TTS
     if audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
         # Callers choose the file extension from this; the bytes are the truth, not a generic header.
         content_type = "audio/wav"
+        if _tts_output_format() == "opus":
+            opus = await _wav_to_opus(audio)
+            if opus:
+                return opus, OPUS_CONTENT_TYPE
+            # No ffmpeg / it failed: the WAV is still good speech - keep it rather than lose the clip.
     return audio, content_type or "audio/wav"
+
+
+# ── WAV → Ogg Opus ───────────────────────────────────────────────────────────
+# Studio can only hand back WAV (uncompressed, ~50 KB/s). Opus is the better codec for speech - far smaller
+# than WAV and cleaner than MP3 at any size - so clips are stored as Ogg Opus when ffmpeg (already in the
+# image for transcription) can make it. TTS_OUTPUT_FORMAT=wav turns this off, e.g. for a player whose
+# browser cannot play Opus; TTS_OPUS_BITRATE (default 48k) trades size for fidelity.
+
+OPUS_CONTENT_TYPE = "audio/ogg; codecs=opus"
+_DEFAULT_OPUS_BITRATE = "48k"
+_OPUS_TIMEOUT_SECONDS = 120
+
+
+def _tts_output_format() -> str:
+    """"opus" (default) or "wav". Read per call so a changed environment needs no import-time state."""
+    return "wav" if (os.environ.get("TTS_OUTPUT_FORMAT") or "").strip().lower() == "wav" else "opus"
+
+
+def _opus_bitrate() -> str:
+    """TTS_OPUS_BITRATE as ffmpeg wants it ("48k"); anything but 6k-256k falls back to the default, so a
+    typo (or a hostile value) can never reach the command line."""
+    m = re.fullmatch(r"(\d{1,3})k", (os.environ.get("TTS_OPUS_BITRATE") or "").strip().lower())
+    if m and 6 <= int(m.group(1)) <= 256:
+        return f"{int(m.group(1))}k"
+    return _DEFAULT_OPUS_BITRATE
+
+
+async def _wav_to_opus(wav: bytes) -> bytes | None:
+    """WAV bytes → Ogg Opus bytes through ffmpeg (stdin → stdout, nothing touches disk). None when ffmpeg
+    is missing, fails, times out or produces something that is not an Ogg stream - the caller keeps the WAV."""
+    import asyncio as _asyncio
+    proc = None
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            "ffmpeg", "-v", "error", "-f", "wav", "-i", "pipe:0",
+            "-vn", "-c:a", "libopus", "-b:a", _opus_bitrate(), "-f", "ogg", "pipe:1",
+            stdin=_asyncio.subprocess.PIPE, stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.DEVNULL)
+        out, _ = await _asyncio.wait_for(proc.communicate(wav), timeout=_OPUS_TIMEOUT_SECONDS)
+    except Exception as exc:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        _log.warning("TTS WAV->Opus conversion failed (%s: %s) - keeping the WAV", type(exc).__name__, exc)
+        return None
+    if proc.returncode != 0 or not out.startswith(b"OggS"):
+        _log.warning("TTS WAV->Opus conversion gave no usable output (ffmpeg exit %s) - keeping the WAV", proc.returncode)
+        return None
+    return out
+
+
+def audio_extension(content_type: str | None) -> str:
+    """File extension for audio returned by tts(): .opus (Ogg Opus), .wav, else .mp3."""
+    ct = (content_type or "").lower()
+    if "opus" in ct or "ogg" in ct:
+        return ".opus"
+    if "wav" in ct:
+        return ".wav"
+    return ".mp3"
 
 
 async def verify_key(key: str | None = None) -> dict:
@@ -622,9 +689,13 @@ async def tts_health(model: str, voice: str = "", instructions: str = "", langua
     import asyncio as _asyncio
     try:
         async with _asyncio.timeout(_HEALTHCHECK_TIMEOUT_SECONDS):
-            audio, _ct = await tts("Ready.", model=model or "", voice=voice,
-                                   instructions=instructions, language=language)
-        return {"ok": True, "message": f"Studio synthesized {len(audio)} bytes — model is ready."}
+            audio, ct = await tts("Ready.", model=model or "", voice=voice,
+                                  instructions=instructions, language=language)
+        message = f"Studio synthesized {len(audio)} bytes — model is ready."
+        if ct == "audio/wav" and _tts_output_format() == "opus":
+            message += (" ffmpeg could not convert it to Opus, so clips will be saved as WAV "
+                        "(larger files) - is ffmpeg installed in the nd-world container?")
+        return {"ok": True, "message": message}
     except StudioMissing as exc:
         return {"ok": False, "message": str(exc)}
     except _asyncio.TimeoutError:

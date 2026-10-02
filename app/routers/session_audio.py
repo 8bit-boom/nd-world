@@ -270,7 +270,7 @@ async def recap_song(session_id: int, request: Request, db: Session = Depends(ge
         raise HTTPException(400, str(exc))
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, f"Unsloth Studio TTS: {exc}")
-    ext = ".wav" if "wav" in (content_type or "") else ".mp3"
+    ext = _unsloth_extras.audio_extension(content_type)
     target = _UPLOADS / "audio"
     target.mkdir(parents=True, exist_ok=True)
     dest = target / unique_upload_filename(f"song-{uuid.uuid4().hex[:8]}{ext}", ext)

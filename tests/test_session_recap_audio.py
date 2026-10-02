@@ -290,3 +290,21 @@ def test_the_style_picker_only_offers_styles_the_server_knows(client, seed):
 def test_lyrics_for_speech_unit():
     out = sa.lyrics_for_speech("# Title\n\n**Bold** line [Chorus]\nNormal _line_ (repeat x2)\n\n\n\nLast")
     assert out == "Title\n\nBold line\nNormal line\n\nLast"
+
+
+def test_a_performed_song_is_stored_as_opus_when_studio_audio_was_converted(client, seed, monkeypatch):
+    _gm(client, seed)
+    sid = _session(seed)
+
+    async def fake_tts(text, model, voice="", response_format="wav", speed=1.0, instructions="", language=""):
+        return b"OggSopus", "audio/ogg; codecs=opus"
+
+    monkeypatch.setattr(sa._unsloth_extras, "tts", fake_tts)
+    monkeypatch.setattr(sa._ai, "get_tts_model", lambda: "tts-model")
+    r = client.post(f"/api/sessions/{sid}/recap-song", json={"lyrics": "Oh the ledger burned bright", "name": "Opus Song"})
+    assert r.status_code == 200, r.text
+    db = SessionLocal()
+    try:
+        assert db.get(AudioClip, r.json()["clip"]["id"]).file_url.endswith(".opus")
+    finally:
+        db.close()

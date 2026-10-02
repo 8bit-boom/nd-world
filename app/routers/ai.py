@@ -3858,7 +3858,7 @@ async def unsloth_tts(body: TtsBody, request: Request, db: Session = Depends(get
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, f"Unsloth Studio TTS: {exc}")
 
-    ext = ".wav" if "wav" in content_type else ".mp3"
+    ext = _unsloth_extras.audio_extension(content_type)
     target_dir = _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "audio"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(f"tts-{_uuid.uuid4().hex[:8]}{ext}", ext)

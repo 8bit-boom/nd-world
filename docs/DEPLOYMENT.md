@@ -447,6 +447,19 @@ browser records) every time a recording starts.
   compact mono MP3 and split automatically (needs `ffmpeg`, which the image
   includes).
 
+### Text-to-speech output (Opus)
+
+Studio's speech endpoint can only return WAV (uncompressed, about 50 KB per second of speech). Before a clip is
+stored - NPC voice lines, read-aloud passages, recap songs, spoken NPC replies - nd-world converts it with
+`ffmpeg` to **Ogg Opus** (`.opus`): roughly 7x smaller than the WAV and cleaner than MP3 at any size. If
+`ffmpeg` is missing or fails, the WAV is kept (nothing is lost), and Settings → *Test TTS* says so.
+
+- `TTS_OPUS_BITRATE` (default `48k`, accepted range `6k`-`256k`) - size versus fidelity.
+- `TTS_OUTPUT_FORMAT=wav` - skip the conversion and keep Studio's WAV. Use this if someone at the table has a
+  browser or phone that cannot play Opus (older iOS/Safari).
+
+Set either one under `environment:` of the `world` service (TrueNAS custom app: add the line to the YAML and save).
+
 **Coming from the whisper.cpp sidecar?** It has been removed, along with its
 settings: the `whisper` Compose profile and service, `WHISPER_URL` and the
 Settings field, the model download/activate buttons, the world-level *spoken
