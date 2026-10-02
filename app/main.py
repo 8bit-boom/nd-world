@@ -360,9 +360,15 @@ def _seed_bundled_maps():
             shutil.copyfile(jf, dest)
 
 
+def _build_id() -> str:
+    """Short commit id of the running image (ND_BUILD, baked in by the publish workflow); "dev" when
+    run from a checkout. Read per call so a test can set it."""
+    return (os.getenv("ND_BUILD") or "").strip()[:7] or "dev"
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "build": _build_id()}
 
 
 # ── Auth gate ──────────────────────────────────────────────────────────────────
@@ -4346,6 +4352,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
     return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
+        "app_build": _build_id(),
         "active_tab": tab if tab in ("options", "system", "visibility", "navigation", "diagnostics") else "options",
         "env_ollama_model": _ai_module.OLLAMA_MODEL,
         "env_ollama_url": _ai_module.OLLAMA_URL,

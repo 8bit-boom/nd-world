@@ -508,6 +508,32 @@ recommended** to fill the relevant fields, review them, then Save as normal.
 
 ---
 
+## Is the new image the one that is running?
+
+Restarting or "redeploying" the app does **not** pull a newer `:latest` - Docker reuses the copy it
+already has, and Watchtower only swaps it on its next poll (every 5 minutes in `truenas-compose.yml`).
+Published images carry the commit they were built from:
+
+- `http://<host>:8087/health` answers `{"status":"ok","build":"0f4cfd1"}`, and ⚙️ Settings → System shows
+  `nd-world build 0f4cfd1` under its heading. `dev` means a checkout or a local build, not a published image.
+- Compare it with the newest commit on `main` (the `tests` and *Build & Publish Docker Image* runs must both be
+  green for an image to exist - the publish job waits for the test job).
+
+If the build is older than `main`: look at what Watchtower says (`docker logs <watchtower container>` -
+"Found new ghcr.io/8bit-boom/nd-world:latest image" means it pulled, an error line says why), or pull by hand
+and recreate the container:
+
+```bash
+docker pull ghcr.io/8bit-boom/nd-world:latest
+docker compose up -d world            # TrueNAS custom app: stop the app, start it again
+# or: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock nickfedor/watchtower --run-once --cleanup <nd-world container name>
+```
+
+Images built before this was added answer `{"status":"ok"}` with no `build` - that alone means "older than the
+build stamp". The registry side can be checked without credentials: the image is public, and
+`docker buildx imagetools inspect ghcr.io/8bit-boom/nd-world:latest` prints the digest to compare with
+`docker image inspect ghcr.io/8bit-boom/nd-world:latest --format '{{index .RepoDigests 0}}'`.
+
 ## Updating without losing in-flight jobs
 
 A routine `docker compose up -d --build` (or a Watchtower auto-update, or a

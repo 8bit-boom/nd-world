@@ -80,7 +80,7 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/health` | Public | Liveness probe — used by Docker/Compose healthchecks. |
+| GET | `/health` | Public | Liveness probe — used by Docker/Compose healthchecks. Also reports `build`: the commit id the image was built from (`dev` outside a published image). |
 | GET | `/uploads/{filepath}` | Player | Serves an uploaded file (portraits, note/entity images, map images) from the `/data/uploads` volume. |
 
 ## Auth

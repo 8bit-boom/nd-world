@@ -19,6 +19,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 
+# The commit this image was built from (set by .github/workflows/docker-publish.yml), shown by /health and
+# Settings > System so "is the new image actually the one running?" has a one-glance answer. Declared
+# after the COPYs so a new commit does not invalidate the dependency layers above.
+ARG GIT_SHA=""
+ENV ND_BUILD=${GIT_SHA}
+
 VOLUME ["/data"]
 ENV DB_PATH=/data/world.db
 EXPOSE 8000

@@ -165,6 +165,7 @@
   <div id="pane-system" {% if active_tab != 'system' %}style="display:none"{% endif %}>
     <form method="post" action="/settings/system" class="entity-form">
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">System &amp; integrations</h2>
+      <p id="app-build" style="font-size:.75rem;color:var(--text-dim);margin:-.2rem 0 .6rem">nd-world build <code>{{ app_build }}</code>{% if app_build == 'dev' %} (not a published image){% endif %}</p>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         These normally come from environment variables and need a container restart
         to change. Setting them here overrides the environment immediately, without
