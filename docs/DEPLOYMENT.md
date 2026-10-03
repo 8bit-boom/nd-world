@@ -90,6 +90,10 @@ have it) and publishes Studio's port on `UNSLOTH_BIND` (default `127.0.0.1`;
 set `0.0.0.0` to open the Studio console to other machines). nd-world itself
 reaches Studio over the compose network and doesn't use that mapping. A single
 image generation may run up to `UNSLOTH_IMAGE_TIMEOUT_SECONDS` (default 1800).
+When Studio has no image model loaded, a generation loads the model you picked in the picker by itself (the repo's
+default GGUF file), waits for it — up to `UNSLOTH_IMAGE_LOAD_TIMEOUT_SECONDS` (default 900; a first load may download
+the weights) — and then generates; Studio's media auto-switch is no longer required for that. A model that cannot
+load (not enough VRAM, a bad file) is reported with Studio's own reason.
 
 The other profiles: `android` and `editor` (see below), and the legacy
 `ollama`/`swarmui` pair (don't combine with `unsloth`). Speech-to-text — audio

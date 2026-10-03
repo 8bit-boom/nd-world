@@ -322,6 +322,68 @@ async def image_load(model_path: str, gguf_filename: str = "") -> dict:
                           timeout=_ACTION_TIMEOUT)
 
 
+# How a refused generation recovers when Studio has no image model resident: load the CHOSEN one ourselves, then
+# wait for Studio to say it is ready (a first load may download the weights, so the wait is generous).
+IMAGE_LOAD_POLL_SECONDS = 2.0
+IMAGE_LOAD_TIMEOUT_SECONDS = float(os.environ.get("UNSLOTH_IMAGE_LOAD_TIMEOUT_SECONDS", "900"))
+
+
+async def _default_gguf_file(repo_id: str) -> str:
+    """Which GGUF file of a repo to load: Studio's own default quant, else the first one it lists. "" when Studio
+    cannot say (an older build without the variants endpoint, or a repo with a single unnamed file) — the load is
+    then sent without a filename and Studio answers with its own reason if it needed one."""
+    try:
+        info = await gguf_variants(repo_id)
+    except StudioError:
+        return ""
+    if not isinstance(info, dict):
+        return ""
+    default = info.get("default_variant")
+    if isinstance(default, str) and default:
+        return default
+    variants = info.get("variants")
+    if isinstance(variants, list):
+        for v in variants:
+            name = v if isinstance(v, str) else (v.get("filename") or v.get("name") if isinstance(v, dict) else "")
+            if name:
+                return str(name)
+    return ""
+
+
+async def ensure_image_model(model: str) -> None:
+    """Make Studio load `model` (a hub repo id) as its diffusion model and wait until it is ready, so a generation
+    that was refused with "No diffusion model is loaded" can be retried. Raises StudioError carrying Studio's own
+    reason when the load is rejected, reports an error while loading, or does not finish within
+    IMAGE_LOAD_TIMEOUT_SECONDS."""
+    import asyncio
+    repo = (model or "").strip()
+    if not repo:
+        raise StudioError("No image model chosen to load", 400)
+    try:
+        await image_load(repo, await _default_gguf_file(repo))
+    except StudioEndpointMissing:
+        raise                                  # an older Studio: the caller falls back to telling the GM what to enable
+    except StudioError as exc:
+        raise StudioError(f"Could not load {repo}: {exc}", exc.status_code) from exc
+    deadline = time.monotonic() + IMAGE_LOAD_TIMEOUT_SECONDS
+    while True:
+        try:
+            status = await image_status()
+        except StudioError as exc:
+            raise StudioError(f"Could not check whether {repo} finished loading: {exc}", exc.status_code) from exc
+        if isinstance(status, dict):
+            if status.get("loaded"):
+                return
+            err = status.get("error")
+            if err:
+                raise StudioError(f"Could not load {repo}: {err}", 502)
+        if time.monotonic() >= deadline:
+            raise StudioError(
+                f"{repo} is still loading after {int(IMAGE_LOAD_TIMEOUT_SECONDS)} s — Studio may still be "
+                "downloading it; try again in a few minutes", 504)
+        await asyncio.sleep(IMAGE_LOAD_POLL_SECONDS)
+
+
 async def image_generate_progress() -> dict:
     """{active, step, total_steps, fraction, eta_seconds} — real generation
     progress for the Image Gen tab's progress bar."""

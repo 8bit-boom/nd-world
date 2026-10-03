@@ -188,6 +188,11 @@ async def test_imagegen_generate_503_explains_media_auto_switch(unsloth_image_mo
     def handler(method, url, headers, body):
         if "/api/inference/images/generate" in url:
             return _FakeResponse(404, payload={"detail": "API endpoint not found"})
+        if "/api/inference/images/load" in url:
+            # an older Studio that cannot load an image model on request: nd-world can only point at the setting
+            return _FakeResponse(404, payload={"detail": "API endpoint not found"})
+        if "/api/hub/gguf-variants" in url:
+            return _FakeResponse(404, payload={"detail": "API endpoint not found"})
         return _FakeResponse(503, payload={"error": {"message": "No image model loaded"}})
 
     _patch_http(monkeypatch, unsloth_image_mode, handler)

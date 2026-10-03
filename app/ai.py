@@ -5240,6 +5240,22 @@ async def _try_swarmui_ws_generate(u: str, payload: dict, save_image) -> list[st
         _reset_imagegen_progress()
 
 
+async def _autoload_unsloth_image_model(model: str) -> bool:
+    """Load the chosen image model into Studio (and wait for it) after a generation was refused for lack of one.
+    True when it is loaded and the generation can be retried; False when this Studio build has no load endpoint
+    (the caller keeps the old advice: enable media auto-switch / load it from the Models tab). Any other failure
+    becomes a ValueError carrying Studio's own reason, like every other imagegen error."""
+    from . import unsloth_extras as _unsloth_extras      # local: unsloth_extras imports this module
+    _log.info("Unsloth imagegen: no image model loaded — loading the chosen one (%s)", model)
+    try:
+        await _unsloth_extras.ensure_image_model(model)
+    except _unsloth_extras.StudioEndpointMissing:
+        return False
+    except _unsloth_extras.StudioError as exc:
+        raise ValueError(f"Unsloth Studio: {exc}") from exc
+    return True
+
+
 async def imagegen_generate(prompt: str, negative: str, model: str,
                             width: int, height: int, steps: int,
                             cfg: float, seed: int, uploads_dir: Path,
@@ -5351,18 +5367,34 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                         )
                         native_body["strength"] = float(init_strength)
                 used_native = True
-                try:
-                    gallery_records = await _unsloth_extras.image_generate_native(native_body)
-                except _unsloth_extras.StudioEndpointMissing:
-                    used_native = False
-                    gallery_records = []
-                except _unsloth_extras.StudioError as exc:
-                    hint = ""
-                    if "No diffusion model is loaded" in str(exc) or exc.status_code == 409:
-                        hint = (" — enable Studio's media auto-switch (Settings → API, or "
-                                "Settings → System → Studio server here) or load the image model "
-                                "once from the Models tab")
-                    raise ValueError(f"Unsloth Studio: {exc}{hint}") from exc
+                autoloaded = False
+                while True:
+                    try:
+                        gallery_records = await _unsloth_extras.image_generate_native(native_body)
+                        break
+                    except _unsloth_extras.StudioEndpointMissing:
+                        used_native = False
+                        gallery_records = []
+                        break
+                    except _unsloth_extras.StudioError as exc:
+                        refused = "No diffusion model is loaded" in str(exc) or exc.status_code == 409
+                        if refused and native_model and not autoloaded:
+                            # Nothing is resident in Studio but a model WAS chosen: load that one (the right GGUF
+                            # file of the repo), wait for it, and go again — once. Without Studio's media
+                            # auto-switch the request alone never loads it.
+                            autoloaded = True
+                            if await _autoload_unsloth_image_model(native_model):
+                                continue
+                            autoloaded = False          # this Studio cannot load by request: keep the advice below
+                        hint = ""
+                        if refused and autoloaded:
+                            hint = (f" — Studio still has no image model after loading {native_model}; "
+                                    "check the Models tab")
+                        elif refused:
+                            hint = (" — enable Studio's media auto-switch (Settings → API, or "
+                                    "Settings → System → Studio server here) or load the image model "
+                                    "once from the Models tab")
+                        raise ValueError(f"Unsloth Studio: {exc}{hint}") from exc
                 if used_native:
                     _log.info("Unsloth imagegen: native generate, %d image(s)", len(gallery_records))
                     for rec in gallery_records:
@@ -5399,21 +5431,32 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                         v1_body["seed"] = seed
                     if negative:
                         _log.info("Unsloth imagegen: negative prompt not supported by the /v1 images endpoint — ignoring")
-                    _imagegen_progress_state.update({"active": True, "percent": 0.0, "current_percent": 0.0, "preview": ""})
-                    try:
-                        gr = await c.post(f"{u}/v1/images/generations", json=v1_body,
-                                          headers=_unsloth_image_headers())
-                    finally:
-                        _reset_imagegen_progress()
-                    if gr.status_code >= 400:
-                        # `error` may be an object, a bare string or a list
-                        # depending on the Studio build — the shared parser
-                        # copes with all of them (a string used to crash here).
-                        detail = _unsloth_extras._error_message(gr)
-                        hint = ""
-                        if gr.status_code == 503 and "No image model loaded" in detail:
-                            hint = " — enable Studio's media auto-switch (Settings → API) or load the image model once"
-                        raise ValueError(f"Unsloth returned HTTP {gr.status_code}: {detail}{hint}")
+                    v1_autoloaded = False
+                    while True:
+                        _imagegen_progress_state.update({"active": True, "percent": 0.0, "current_percent": 0.0, "preview": ""})
+                        try:
+                            gr = await c.post(f"{u}/v1/images/generations", json=v1_body,
+                                              headers=_unsloth_image_headers())
+                        finally:
+                            _reset_imagegen_progress()
+                        if gr.status_code >= 400:
+                            # `error` may be an object, a bare string or a list
+                            # depending on the Studio build — the shared parser
+                            # copes with all of them (a string used to crash here).
+                            detail = _unsloth_extras._error_message(gr)
+                            refused = gr.status_code == 503 and "No image model loaded" in detail
+                            if refused and v1_body["model"] and not v1_autoloaded:
+                                v1_autoloaded = True       # same recovery as the native endpoint: load the chosen model once
+                                if await _autoload_unsloth_image_model(v1_body["model"]):
+                                    continue
+                                v1_autoloaded = False
+                            hint = ""
+                            if refused and v1_autoloaded:
+                                hint = f" — Studio still has no image model after loading {v1_body['model']}; check the Models tab"
+                            elif refused:
+                                hint = " — enable Studio's media auto-switch (Settings → API) or load the image model once"
+                            raise ValueError(f"Unsloth returned HTTP {gr.status_code}: {detail}{hint}")
+                        break
                     try:
                         data = gr.json()
                     except ValueError as exc:
