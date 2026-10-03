@@ -216,7 +216,9 @@ async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
             user_text += "\n\n=== WORLD LORE (for names/places grounding) ===\n" + rag
         if source_text:
             user_text += ("\n\n=== SOURCE SHEET (translate this character into this "
-                          "system's rules; keep its identity) ===\n" + source_text[:12000])
+                          "system's rules; keep its identity) ===\n" + source_text[:12000]
+                          + ("\n[…the rest of the sheet was cut off to fit — work from what is above…]"
+                             if len(source_text) > 12000 else ""))
         if prompt:
             user_text += "\n\n=== PLAYER'S REQUEST ===\n" + prompt[:4000]
 

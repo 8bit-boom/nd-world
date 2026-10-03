@@ -178,3 +178,53 @@ def test_the_page_offers_html_in_the_picker_and_the_help(client, seed):
     page = client.get("/characters/ai-new").text
     assert ".html,.htm" in page
     assert "HTML" in page.split("Import a sheet")[1][:200]
+
+
+# ── shape, learned from a real exported sheet (a Russian Hunt in the Moonlight page: tables, tags, nested lists) ──
+
+REAL_SHAPE = """<main><h2>Resources</h2>
+<table>
+<tr><th>Health</th><th>Stamina</th><th>Hunger</th></tr>
+<tr><td>5 / 5</td><td>5 / 5</td><td>0 / 10</td></tr>
+</table>
+<p>First paragraph.</p>
+<p>Second paragraph.</p>
+<h3>Tier 1</h3>
+<p><span class="tag">0 Stamina</span> <strong>Простой расходник.</strong> Мира создаёт <em>один</em> предмет.</p>
+<ol><li>Step one</li><li>Step two</li></ol>
+</main>"""
+
+
+def test_a_tables_header_row_and_its_values_are_on_adjacent_lines():
+    lines = html_to_sheet_text(REAL_SHAPE).splitlines()
+    i = lines.index("Health | Stamina | Hunger")
+    assert lines[i + 1] == "5 / 5 | 5 / 5 | 0 / 10"          # no blank line between them: the columns still pair up
+
+
+def test_paragraphs_and_headings_are_separated_by_a_blank_line():
+    t = html_to_sheet_text(REAL_SHAPE)
+    assert "First paragraph.\n\nSecond paragraph." in t
+    assert "\n\n### Tier 1\n\n" in t
+    assert "- Step one\n- Step two" in t                       # list items are consecutive lines
+
+
+def test_inline_tags_do_not_split_a_sentence():
+    assert "0 Stamina Простой расходник. Мира создаёт один предмет." in html_to_sheet_text(REAL_SHAPE)
+
+
+def test_cyrillic_survives_end_to_end():
+    t = html_to_sheet_text('<meta charset="utf-8"><h1>Мирабель «Мира»</h1><p>Пороховая Ведьма · Охотница</p>')
+    assert "# Мирабель «Мира»" in t and "Пороховая Ведьма · Охотница" in t
+
+
+def test_a_sheet_longer_than_the_models_window_says_so_instead_of_silently_stopping(client, seed, monkeypatch):
+    seen = {}
+    _patch_gen(monkeypatch, seen)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    long_page = "<html><body>" + "".join(f"<p>Line {n} of a very long sheet with plenty of words in it.</p>" for n in range(900)) + "</body></html>"
+    r = client.post("/api/characters/ai/start", files={"file": ("long.html", io.BytesIO(long_page.encode()), "text/html")},
+                    data={"prompt": "", "use_rag": "false"})
+    assert r.status_code == 200, r.text
+    assert _poll(client, r.json()["job_id"])["status"] == "done"
+    assert "was cut off to fit" in seen["user_text"]

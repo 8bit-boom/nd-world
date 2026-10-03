@@ -266,6 +266,10 @@ _SHEET_SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "iframe", 
 _SHEET_BLOCK_TAGS = {"p", "div", "section", "article", "header", "footer", "main", "aside", "nav", "form", "fieldset",
                      "legend", "table", "thead", "tbody", "tfoot", "tr", "ul", "ol", "dl", "dt", "dd", "blockquote",
                      "pre", "details", "summary", "figure", "figcaption", "address", "caption"}
+# These get a blank line around them (a paragraph, a table, a list, a heading); rows, items and plain divs just break the line,
+# so a table's header row and its values stay on adjacent lines.
+_SHEET_SPACED_TAGS = {"p", "table", "ul", "ol", "dl", "form", "fieldset", "blockquote", "pre", "section", "article",
+                      "details", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr"}
 _SHEET_SKIP_INPUTS = {"hidden", "password", "file", "button", "submit", "reset", "image", "color"}
 SHEET_TEXT_MAX_CHARS = 60_000
 
@@ -287,6 +291,14 @@ class _SheetTextParser(HTMLParser):
     def _nl(self):
         if self.parts and not self.parts[-1].endswith("\n"):
             self.parts.append("\n")
+
+    def _blank(self):
+        """Make sure the output ends with a blank line (a paragraph break)."""
+        if not self.parts:
+            return
+        joined_tail = "".join(self.parts[-2:])
+        if not joined_tail.endswith("\n\n"):
+            self.parts.append("\n" if joined_tail.endswith("\n") else "\n\n")
 
     def _add(self, text):
         if text:
@@ -312,7 +324,7 @@ class _SheetTextParser(HTMLParser):
         if tag == "title":
             self.in_title = True
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            self._nl()
+            self._blank()
             self._add("#" * int(tag[1]) + " ")
         elif tag == "li":
             self._nl()
@@ -320,9 +332,9 @@ class _SheetTextParser(HTMLParser):
         elif tag == "br":
             self._nl()
         elif tag == "hr":
-            self._nl()
+            self._blank()
             self._add("---")
-            self._nl()
+            self._blank()
         elif tag in ("td", "th"):
             if self.cell_in_row:
                 self._add(" | ")
@@ -340,7 +352,9 @@ class _SheetTextParser(HTMLParser):
             self.textarea = {"name": self._field_name(a), "text": ""}
         elif tag == "pre":
             self.preformatted += 1
-        if tag in _SHEET_BLOCK_TAGS:
+        if tag in _SHEET_SPACED_TAGS and tag not in ("hr",) and not tag.startswith("h"):
+            self._blank()
+        elif tag in _SHEET_BLOCK_TAGS:
             self._nl()
 
     def handle_startendtag(self, tag, attrs):
@@ -373,7 +387,11 @@ class _SheetTextParser(HTMLParser):
             self.textarea = None
         elif tag == "pre":
             self.preformatted = max(0, self.preformatted - 1)
-        if tag in _SHEET_BLOCK_TAGS or tag in ("h1", "h2", "h3", "h4", "h5", "h6", "li"):
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._blank()
+        elif tag in _SHEET_SPACED_TAGS:
+            self._blank()
+        elif tag in _SHEET_BLOCK_TAGS or tag == "li":
             self._nl()
 
     def _input(self, a):
@@ -402,7 +420,12 @@ class _SheetTextParser(HTMLParser):
         elif self.preformatted:
             self._add(data)
         else:
-            self._add(re.sub(r"\s+", " ", data))
+            text = re.sub(r"\s+", " ", data)
+            # whitespace between tags (the newline between </tr> and <tr>) is not content: don't let it become a
+            # blank line, and don't double up spaces
+            if text == " " and (not self.parts or self.parts[-1].endswith(("\n", " "))):
+                return
+            self._add(text)
 
 
 def html_to_sheet_text(raw_html: str) -> str:
