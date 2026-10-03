@@ -594,7 +594,7 @@
     barEl.style.display = 'block';
     statusEl.textContent = 'Building…';
     try {
-      const resp = await fetch('/api/kiy/build-model', { method: 'POST' });
+      const resp = await ndAiFetch('/api/kiy/build-model', { method: 'POST' });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         statusEl.textContent = 'Error: ' + (err.detail || resp.status);

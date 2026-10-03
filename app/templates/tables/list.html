@@ -12,7 +12,7 @@
       </div>
       <button type="submit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;cursor:pointer">Import</button>
     </form>
-    <form action="{{ '/tables/generate-ai'|wq }}" method="post" style="display:flex;align-items:center;gap:.4rem"
+    <form action="{{ '/tables/generate-ai'|wq }}" method="post" data-nd-ai-form style="display:flex;align-items:center;gap:.4rem"
           onsubmit="const d = prompt('Describe the table — what it rolls and its flavor:\\n(e.g. \\u201cStrange sights in the harbor at night, eerie\\u201d)'); if (!d) { return false; } this.description.value = d;">
       <input type="hidden" name="description" value=""/>
       <input type="hidden" name="count" value="20"/>

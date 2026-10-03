@@ -25,6 +25,10 @@
      floated panel. #}
   <script src="/static/js/nd-stage.js?v={{ asset_v('js/nd-stage.js') }}" defer></script>
   {% endif %}
+  {# AI tasks run in the background: ndAiFetch is the drop-in fetch that polls for the result (app/ai_background.py).
+     Loaded before any page script (no defer) so inline handlers can use it; its page-corner tray only mounts when a
+     task from a previous page is still pending. #}
+  <script src="/static/js/nd-ai-task.js?v={{ asset_v('js/nd-ai-task.js') }}"></script>
   <script src="/static/js/nd-poll.js?v={{ asset_v('js/nd-poll.js') }}"></script>
   <script src="/static/js/nd-float.js?v={{ asset_v('js/nd-float.js') }}" defer></script>
   <script src="/static/js/nd-live.js?v={{ asset_v('js/nd-live.js') }}" defer></script>

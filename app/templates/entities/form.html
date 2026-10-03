@@ -530,7 +530,7 @@ async function aiGenerate() {
   status.style.color = '#888';
   status.textContent = 'Generating…';
   try {
-    const res = await fetch('/api/ai/generate/entity-smart', {
+    const res = await ndAiFetch('/api/ai/generate/entity-smart', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ name, kind, subtype, summary: summary || body || '' })
@@ -616,7 +616,7 @@ async function aiDraftEntity() {
   st.textContent = 'Drafting… (a few seconds on a fast backend, longer on CPU)';
   try {
     const kind = document.getElementById('kind-select').value;
-    const res = await fetch('/api/ai/entity-from-text', {
+    const res = await ndAiFetch('/api/ai/entity-from-text', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text, kind: kind }),
     });

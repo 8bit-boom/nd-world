@@ -312,7 +312,7 @@ async function factsGenerateTale() {
   status.textContent = 'Weaving a tale…';
   resultWrap.style.display = 'none';
   try {
-    const res = await fetch('/api/facts/folk-tale', {
+    const res = await ndAiFetch('/api/facts/folk-tale', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         game_session_id: sessionSel.value || null,

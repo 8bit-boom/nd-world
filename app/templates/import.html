@@ -1111,7 +1111,7 @@ document.getElementById('photo-extract-btn').addEventListener('click', async () 
     selectedPhotoFiles.forEach(f => fd.append('files', f));
     fd.append('hint', hint);
     const endpoint = target === 'character' ? '/api/ai/character-from-images' : '/api/ai/entity-from-images';
-    const res = await fetch(endpoint, { method: 'POST', body: fd });
+    const res = await ndAiFetch(endpoint, { method: 'POST', body: fd });
     if (!res.ok) throw await ndApiErrorFrom(res);
     const draft = await res.json();
     resEl.textContent = 'Draft ready — review below before creating.';
@@ -1323,7 +1323,7 @@ document.getElementById('batch-extract-btn').addEventListener('click', async () 
   resEl.textContent = '✨ Reading document… this can take a while on a large model.';
   draftArea.innerHTML = '';
   try {
-    const res = await fetch('/api/ai/entities-from-text-batch', {
+    const res = await ndAiFetch('/api/ai/entities-from-text-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),

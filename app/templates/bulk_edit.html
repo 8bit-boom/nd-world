@@ -93,7 +93,7 @@
     parseStatus.textContent = '✨ Thinking…';
     parseNote.style.display = 'none';
     try {
-      const res = await fetch('/api/bulk-edit/parse', {
+      const res = await ndAiFetch('/api/bulk-edit/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ instruction }),

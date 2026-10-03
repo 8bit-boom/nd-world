@@ -464,7 +464,7 @@ async function videoTranscribe(id) {
   btn.disabled = true;
   btn.textContent = '⏳ Transcribing…';
   try {
-    const res = await fetch('/video/' + id + '/transcribe', { method: 'POST' });
+    const res = await ndAiFetch('/video/' + id + '/transcribe', { method: 'POST' });
     if (!res.ok) throw await videoUploadErrorFrom(res);
     window.location.reload();
   } catch (err) {

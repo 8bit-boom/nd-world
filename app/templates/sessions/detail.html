@@ -654,7 +654,7 @@ async function aiRunRecap(url, body) {
   status.textContent = 'Thinking…';
   _aiRecapButtons().forEach(b => b.disabled = true);
   try {
-    const res = await fetch(url, {
+    const res = await ndAiFetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ think: _recapThinkEnabled(), ...body }),
     });
@@ -760,7 +760,7 @@ async function aiFolkTale() {
   resultWrap.style.display = 'none';
   _aiRecapButtons().forEach(b => b.disabled = true);
   try {
-    const res = await fetch('/api/ai/assist', {
+    const res = await ndAiFetch('/api/ai/assist', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         op: 'folk_tale', surface: 'session-recap', body: summary,
@@ -812,7 +812,7 @@ const RA_BASE = '/api/sessions/{{ gsession.id }}/recap-audio';
 function raStatus(msg) { document.getElementById('ra-status').textContent = msg || ''; }
 
 async function raCall(url, opts) {
-  const res = await fetch(url, opts);
+  const res = await ndAiFetch(url, opts);
   if (!res.ok) throw await ndApiErrorFrom(res);
   return res.json();
 }
@@ -1190,7 +1190,7 @@ async function aiRetrySummaryFromTranscript() {
   status.textContent = '';
   _aiRecapButtons().forEach(b => b.disabled = true);
   try {
-    const res = await fetch('/api/sessions/ai/summarize-transcript', {
+    const res = await ndAiFetch('/api/sessions/ai/summarize-transcript', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         transcript,
@@ -2059,7 +2059,7 @@ async function generatePrep() {
   draftWrap.style.display = 'none';
   draftWrap.innerHTML = '';
   try {
-    const res = await fetch('/api/sessions/' + SESSION_ID + '/prep/generate', { method: 'POST' });
+    const res = await ndAiFetch('/api/sessions/' + SESSION_ID + '/prep/generate', { method: 'POST' });
     if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
     const tasks = data.tasks || [];

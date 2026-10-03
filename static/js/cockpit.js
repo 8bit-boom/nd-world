@@ -486,7 +486,7 @@
         out.style.display = 'block';
         out.textContent = '✨ Working…';
         try {
-          const r = await fetch('/api/ai/assist', {
+          const r = await ndAiFetch('/api/ai/assist', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ op: op, surface: 'cockpit-notes', body: ta.value.slice(0, 12000), think: false }),
           });

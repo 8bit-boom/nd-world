@@ -59,7 +59,7 @@
                 + ' ' + document.getElementById('set-date-dom').value + ', ' + document.getElementById('set-date-year').value)
             || 'today';
           const body = new URLSearchParams({ date_label: String(dateLabel) });
-          const res = await fetch((window.location.pathname.startsWith('/calendar') ? '/calendar' : window.location.pathname) + '/ai-day', {
+          const res = await ndAiFetch((window.location.pathname.startsWith('/calendar') ? '/calendar' : window.location.pathname) + '/ai-day', {
             method: 'POST', body: body,
           });
           const d = await res.json().catch(() => ({}));

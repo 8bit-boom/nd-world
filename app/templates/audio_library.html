@@ -280,7 +280,7 @@ function audioToggleAlbumRename() {
     btn.disabled = true;
     statusEl.textContent = '⏳ Generating speech…';
     try {
-      const r = await fetch('/api/ai/tts', {
+      const r = await ndAiFetch('/api/ai/tts', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text,
@@ -495,7 +495,7 @@ async function audioTranscribe(id) {
   btn.disabled = true;
   btn.textContent = '⏳ Transcribing…';
   try {
-    const res = await fetch('/audio/' + id + '/transcribe', { method: 'POST' });
+    const res = await ndAiFetch('/audio/' + id + '/transcribe', { method: 'POST' });
     if (!res.ok) throw await audioUploadErrorFrom(res);
     window.location.reload();
   } catch (err) {

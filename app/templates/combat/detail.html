@@ -23,7 +23,7 @@
         btn.disabled = true; btn.textContent = '✨ thinking…';
         panel.style.display = ''; panel.innerHTML = '<span style="color:var(--text-dim)">Asking the AI about this round…</span>';
         try {
-          const res = await fetch(window.location.pathname + '/ai-tactics', { method: 'POST' });
+          const res = await ndAiFetch(window.location.pathname + '/ai-tactics', { method: 'POST' });
           const d = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
           panel.innerHTML = '';

@@ -689,7 +689,7 @@ async function draftEntityFromMessage(text, bubble, btn) {
   const origLabel = btn.textContent;
   btn.textContent = '✨ Drafting…';
   try {
-    const res = await fetch('/api/ai/entity-from-text', {
+    const res = await ndAiFetch('/api/ai/entity-from-text', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.slice(0, 8000) }),
@@ -821,7 +821,7 @@ async function illustrateMessage(text, bubble, btn) {
   btn.textContent = '✨ Writing prompt…';
   try {
     const system = 'You are an image prompt writer for a cyberpunk-fantasy TTRPG. Given a passage of text, write ONE detailed image generation prompt depicting its central scene or subject — comma-separated tags and descriptive phrases, about 40-70 words. Output only the prompt, no explanation, no preamble, no quotes.';
-    const promptRes = await fetch('/api/ai/chat', {
+    const promptRes = await ndAiFetch('/api/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: [{ role: 'user', content: text.slice(0, 4000) }], system, model: activeModel, surface: 'chat' }),
@@ -1052,7 +1052,7 @@ async function compactChat() {
   if (overlay) overlay.style.display = 'flex';
   if (statusEl) statusEl.textContent = 'Summarizing older turns…';
   try {
-    const res = await fetch('/api/ai/chat/compact', {
+    const res = await ndAiFetch('/api/ai/chat/compact', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: older, model: activeModel, think: true }),

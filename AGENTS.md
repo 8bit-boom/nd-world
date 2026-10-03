@@ -145,6 +145,12 @@ tools that require GM access still check `is_gm` at call time.)
   text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It
   shows what the TABLE sees, so text from an entity must go through `strip_gm_only` + `strip_gm_directives`
   and image URLs through `safe_image_url`; the pop-up must be opened *before* any `await` (user activation).
+- **AI work runs in the background** (`app/ai_background.py`, `static/js/nd-ai-task.js`): a request that waits on the model
+  dies to Cloudflare's ~100 s cut, a backgrounded phone tab, or a reload. Every AI task route is listed in
+  `TASK_PATH_PATTERNS`; browsers call it with `ndAiFetch(...)` (drop-in for `fetch`, polls `/api/ai/tasks/{id}`), and an HTML
+  form that starts one carries `data-nd-ai-form`. A NEW AI route goes in that list, and `tests/test_ai_background.py` fails
+  while any page still calls a listed route with plain `fetch()`. Streaming chat surfaces stay live-streamed (they have a
+  Stop button that must cancel the model); the NPC conversation stream is detached instead so its saved turn completes.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

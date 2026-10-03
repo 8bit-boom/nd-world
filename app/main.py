@@ -42,6 +42,8 @@ from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry
 from .routers.ai import router as ai_router
+from .routers.ai_tasks import router as ai_tasks_router
+from . import ai_background as _ai_background
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
 from .routers.character_ai import router as character_ai_router
@@ -146,6 +148,7 @@ app = FastAPI(title="N&D World", lifespan=_lifespan)
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
+app.include_router(ai_tasks_router)
 app.include_router(account_router)
 # character_ai BEFORE characters: its /characters/ai-new and /api/characters/ai/*
 # paths would otherwise be swallowed by characters.py's /characters/{pc_id}
@@ -329,6 +332,7 @@ async def _shutdown_tasks():
     for the three phases and why waiting for a job to actually FINISH is
     not the mechanism (one speech-to-text chunk can take minutes; no Docker stop
     grace period covers that)."""
+    await _ai_background.shutdown()
     _job_shutdown.request_stop()
     tasks = (_audio_jobs.live_tasks() + _image_jobs.live_tasks()
              + _chat_jobs.live_tasks() + _video_jobs.live_tasks())
@@ -393,6 +397,10 @@ def _is_player_safe(method: str, path: str) -> bool:
         # sheet management.
         return True
     if path == "/api/me":
+        return True
+    if path == "/api/ai/tasks" or path.startswith("/api/ai/tasks/"):
+        # Poll / list / cancel the caller's OWN background AI tasks (app/ai_background.py). The handler returns
+        # 404 for a task that is not theirs; STARTING one still goes through the target route's own gate.
         return True
     if path == "/api/hover-preview/config":
         return True
@@ -1090,6 +1098,9 @@ if not _env_secret_key:
     )
 SECRET_KEY = _env_secret_key or secrets.token_hex(32)
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "true"
+# AI tasks run in the background when asked (X-ND-Background: 1) — see app/ai_background.py. Added BEFORE
+# SessionMiddleware so it sits inside it: scope["session"] is already filled when it decides who owns the task.
+app.add_middleware(_ai_background.AiBackgroundMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
 # ── Response-perf middlewares (app/http_perf.py) ────────────────────────────
 # GZip compresses HTML/JSON/static (~4-5x — cockpit.js alone is ~75 KB raw).

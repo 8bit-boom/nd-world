@@ -2,7 +2,7 @@
 
 Every HTTP route exposed by nd-world (`app/main.py` + `app/routers/*.py`), grouped by
 feature area, plus the MCP server's tools (`app/mcp_server.py`). Generated from a full
-audit of the route table — **453 HTTP routes** and **8 MCP tools** as of this writing,
+audit of the route table — **456 HTTP routes** and **8 MCP tools** as of this writing,
 and regression-enforced by `tests/test_api_reference_docs.py` (a new route fails CI
 until it gets a row here).
 
@@ -10,6 +10,21 @@ This is a reference for developers and AI agents working on the codebase, not
 end-user documentation — see the [README](../README.md) for how to use the app
 itself, and [AGENTS.md](../AGENTS.md) / [AI_ENTITY_GUIDE.md](AI_ENTITY_GUIDE.md) /
 [AI_SCHEMATIC_GUIDE.md](AI_SCHEMATIC_GUIDE.md) for content-authoring conventions.
+
+## Background AI tasks (`X-ND-Background: 1`)
+
+Every AI task route (the allowlist is `TASK_PATH_PATTERNS` in `app/ai_background.py`: chat, generate, assist, TTS, the
+session summaries / prep / recap song, NPC voice, transcribe, tactics, insights, tables, mystery boards, …) can be run
+**in the background** by sending the header `X-ND-Background: 1`. The server answers `202 {"task_id", "status":
+"running", "label"}` (also `X-ND-Task: <id>`) immediately, then runs the *same route* to completion on its own — through
+the full app, as the same user and world — whether or not the client stays connected. The result is polled from
+`GET /api/ai/tasks/{id}` and is exactly what the route would have returned inline (status code, content type, body;
+errors are the route's own errors). Finished results are kept for an hour; tasks live in memory, so a server restart
+drops them. Limits: 8 running per user, 48 overall. Without the header nothing changes — API users, MCP and tests keep
+the plain request/response contract. Browsers use `ndAiFetch` (`static/js/nd-ai-task.js`), a drop-in `fetch` that polls
+and returns a real `Response`; an HTML form that starts a task carries `data-nd-ai-form`.
+
+`POST /api/npc-talk/{id}/stream` is *detached*: the server finishes (and saves) the reply even if the reader leaves.
 
 ## Auth model
 
@@ -820,6 +835,9 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/recap-instructions` | GM | The active world's extra steering for the recap-writing step (e.g. "write in Spanish") — applied to every session-recording recap, not transcription itself. |
 | POST | `/api/ai/recap-instructions` | GM | Saves the world's recap instructions. |
 | POST/GET | `/api/ai/chat/jobs` | GM | Runs a chat completion as a durable background job instead of live-streaming — same request shape as `/api/ai/stream` minus streaming; POST creates, GET lists recent jobs for the active world. |
+| GET | `/api/ai/tasks` | Player | The caller's own recent background AI tasks (see "Background AI tasks" below) — newest first. |
+| GET | `/api/ai/tasks/{task_id}` | Player | Poll one background AI task: `running`, or `done` with the route's own `http_status`, `content_type`, `body` (and `location` for a redirect). 404 for an unknown task or one that is not the caller's. |
+| DELETE | `/api/ai/tasks/{task_id}` | Player | Cancel a running task, or forget a finished one. |
 | GET | `/api/ai/chat/jobs/{job_id}` | GM | Poll one chat job. |
 | POST | `/api/ai/chat/jobs/{job_id}/cancel` | GM | Cancels an in-progress chat job. |
 | DELETE | `/api/ai/chat/jobs/{job_id}` | GM | Deletes a finished chat job (400 if still in progress — cancel first). |

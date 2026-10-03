@@ -143,7 +143,7 @@
     const old = btn.textContent;
     btn.textContent = "🔊 synthesizing… (the character's voice is derived once, then cached)";
     try {
-      const res = await fetch(`/api/npc-talk/${npcId}/speak`, {
+      const res = await ndAiFetch(`/api/npc-talk/${npcId}/speak`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ index: index, regenerate: !!regenerate }),
       });

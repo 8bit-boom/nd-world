@@ -2317,7 +2317,7 @@ function igPickEntityForPortrait() {
       const sourceText = `Name: ${preview.name}\nKind: ${preview.kind}\n` + fields.join('\n');
 
       const system = 'You are an image prompt writer for a cyberpunk-fantasy TTRPG. Given a world entity\'s write-up, write ONE detailed image generation prompt depicting it — comma-separated tags and descriptive phrases, about 40-70 words. Output only the prompt, no explanation, no preamble, no quotes.';
-      const promptRes = await fetch('/api/ai/chat', {
+      const promptRes = await ndAiFetch('/api/ai/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: [{ role: 'user', content: sourceText.slice(0, 6000) }], system, model: activeModel, surface: 'image' }),
       });
