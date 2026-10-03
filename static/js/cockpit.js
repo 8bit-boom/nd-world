@@ -78,6 +78,20 @@
     return out;
   }
 
+  // ── screen size ──────────────────────────────────────────────────────
+  // The windows are pixels, and the same layout follows the GM across monitors (and a player's across the browser, the
+  // character page's Cockpit tab and a phone). So a layout is saved WITH the size of the workspace it was arranged for
+  // (refVp) and, opened on another screen, is scaled from that one to this one rather than used as raw pixels. The maths
+  // is in cockpit-layout.js (pure, tested across screen sizes); this file only applies it.
+  const LAYOUT = window.ndCockpitLayout;
+  let refVp = null;                       // the workspace size panels[] is currently expressed in
+  // null while the desktop workspace is hidden (the phone shell): it has no size then, so nothing is scaled or saved
+  function vpNow() {
+    const w = viewport.clientWidth, h = viewport.clientHeight;
+    return w >= 200 && h >= 150 ? { w: w, h: h } : null;
+  }
+  function prefHeight(p) { return (CK_TYPES[p.type] && CK_TYPES[p.type].h) || 300; }
+
   let panels = [];
   let presets = {};
   let zTop = 10;
@@ -127,7 +141,9 @@
     }, 500);
   }
   function saveNow() {
-    const ws = { current: { panels: panels }, presets: presets };
+    const now = vpNow();
+    if (now) refVp = now;   // what is on screen now is what is being saved
+    const ws = { current: { panels: panels, vp: refVp || undefined }, presets: presets };
     try { localStorage.setItem(LS_KEY, JSON.stringify(ws)); } catch (e) {}
     if (PLAYER) return;  // server workspace is GM-only
     fetch('/api/cockpit/workspace', {
@@ -146,12 +162,15 @@
   }
 
   function adopt(ws) {
+    let from = null;       // the screen this layout was arranged for (older layouts did not record it)
     if (ws && ws.current && Array.isArray(ws.current.panels) && ws.current.panels.length) {
       panels = ws.current.panels;
       presets = ws.presets || {};
+      from = LAYOUT.vpOk(ws.current.vp) ? ws.current.vp : null;
     } else {
       panels = defaultLayout();
       presets = {};
+      from = vpNow();
       save();
     }
     // Drop windows whose backing object vanished since the layout was saved
@@ -166,6 +185,7 @@
       panels = panels.slice(0, CK_MAX_PANELS);
       toast('This layout had more than ' + CK_MAX_PANELS + ' windows; the first ' + CK_MAX_PANELS + ' are shown.');
     }
+    adaptToScreen(from);   // before focusMyCharacter: the panel it adds is already in this screen's terms
     if (PLAYER) focusMyCharacter();
     recomputeSeq();
     // Re-mint ids on every load: guarantees uniqueness even if an older
@@ -173,7 +193,18 @@
     panels.forEach(function (p) { p.id = newId(); });
     renderPresetSelect();
     render();
-    clampX();
+  }
+
+  // Bring panels[] (arranged for screen `from`) to this screen: scaled when the screen really differs, otherwise just
+  // pulled back inside it. Nothing is saved: the stored layout stays the one the GM arranged until they change something.
+  function adaptToScreen(from) {
+    const now = vpNow();
+    if (!now) { if (from) refVp = from; return; }   // phone shell: remember what the layout is for; scale when the desktop shows
+    if (!panels.length) return;
+    const scale = !!from && LAYOUT.needsScale(from, now);
+    const next = scale ? LAYOUT.scalePanels(panels, from, now) : LAYOUT.fitPanels(panels, now);
+    next.forEach(function (q, i) { panels[i].x = q.x; panels[i].y = q.y; panels[i].w = q.w; panels[i].h = q.h; });
+    refVp = scale || !from ? now : from;   // a change within tolerance is not a new reference: drift would add up
   }
 
   // Opened from a character's page (?pc=): that character's My Character panel leads. A saved layout keeps
@@ -202,7 +233,6 @@
       let mirror = null;
       try { mirror = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) {}
       adopt(mirror);
-      clampX();
       return;
     }
     // Instant paint: the localStorage mirror renders immediately, so the
@@ -239,30 +269,28 @@
   }
 
   // ── defaults ───────────────────────────────────────────────────────────
+  // The windows a fresh cockpit opens with, tiled for THIS screen: the map (if any) is the stage, the rest share the
+  // remaining columns — 2 columns on a laptop, 3 on 1080p, more on a big or ultrawide monitor.
   function defaultLayout() {
     seq = 1;
-    const vw = viewport.clientWidth || 1200, vh = viewport.clientHeight || 700;
+    const vp = vpNow() || refVp || { w: 1200, h: 700 };
     const out = [];
     let n = 0;
-    function add(type, ref, title, x, y, w, h) {
+    function add(type, ref, title) {
       out.push({ id: newId(), type: type, ref: ref || '', title: title || '',
-        x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h),
-        z: ++n, collapsed: false, data: {} });
+        x: 0, y: 0, w: 300, h: 300, z: ++n, collapsed: false, data: {} });
     }
-    const hasMap = CK_MAPS.length > 0;
-    if (hasMap) add('map', CK_MAPS[0].slug, '🗺 ' + CK_MAPS[0].name, 8, 8, Math.min(820, vw * 0.58), vh - 16);
-    const rx = hasMap ? Math.min(836, vw * 0.58) + 16 : 8;
-    const rw = Math.max(300, vw - rx - 8);
-    let ry = 8;
+    if (CK_MAPS.length) add('map', CK_MAPS[0].slug, '🗺 ' + CK_MAPS[0].name);
     if (PLAYER && CK_MY_PCS.length) {
       // the player's character leads (and is the first tab in the phone shell)
       const me = CK_MY_PCS.find(function (m) { return m.id === CK_FOCUS_PC; }) || CK_MY_PCS[0];
-      add('pc', String(me.id), '🧙 ' + me.name, rx, ry, rw, 200); ry += 210;
+      add('pc', String(me.id), '🧙 ' + me.name);
     }
-    if (CK_PARTIES.length) { add('party', String(CK_PARTIES[0].id), '❤ ' + CK_PARTIES[0].name, rx, ry, rw, 230); ry += 240; }
-    add('quests', '', '📜 Quests', rx, ry, rw, 220); ry += 230;
-    add('dice', '', '🎲 Dice', rx, ry, rw, Math.max(220, vh - ry - 8));
-    return out;
+    if (CK_PARTIES.length) add('party', String(CK_PARTIES[0].id), '❤ ' + CK_PARTIES[0].name);
+    add('quests', '', '📜 Quests');
+    add('dice', '', '🎲 Dice');
+    refVp = vp;            // (a fallback size when the desktop workspace is hidden: scaled to the real one when it shows)
+    return LAYOUT.tilePanels(out, vp, { pref: prefHeight });
   }
 
   // ── rendering ──────────────────────────────────────────────────────────
@@ -1565,13 +1593,12 @@
     const pol = ndCockpitWindowPolicy({ count: panels.length, liveFrames: frames.stats().live, max: CK_MAX_PANELS, lowMemory: LOW_MEM });
     if (!pol.allow) { toast(pol.message); return null; }
     if (pol.warn) toast(pol.message);
-    const n = panels.length;
-    const casc = (n % 6) * 28;
+    const vp = vpNow() || refVp || { w: 1200, h: 700 };
+    const size = LAYOUT.sizeFor(t, vp);          // the type's usual size, scaled to this screen and never bigger than it
+    const at = LAYOUT.cascade(panels.length, size, vp);
     const p = {
       id: newId(), type: type, ref: ref || '', title: title || (t.icon + ' ' + t.label),
-      x: Math.min(48 + casc, Math.max(8, viewport.clientWidth - t.w - 8)),
-      y: Math.min(40 + casc, Math.max(8, viewport.clientHeight - 160)),
-      w: t.w, h: t.h, z: ++zTop, collapsed: false, data: {},
+      x: at.x, y: at.y, w: size.w, h: size.h, z: ++zTop, collapsed: false, data: {},
     };
     panels.push(p);
     if (opts && opts.autoRun) findAutoRan.add(p.id);   // must be known before buildWin: buildFind checks it
@@ -1604,8 +1631,8 @@
     panels = clone(presets[name].panels);
     recomputeSeq();
     panels.forEach(function (p) { p.id = newId(); });
+    adaptToScreen(LAYOUT.vpOk(presets[name].vp) ? presets[name].vp : null);   // arranged on another screen? scale it
     render();
-    clampX();
     save();
   });
 
@@ -1618,7 +1645,7 @@
     } else if (!confirm('Overwrite the saved layout "' + current + '" with the current windows?')) {
       return;
     }
-    presets[name.trim().slice(0, 40)] = clone({ panels: panels });
+    presets[name.trim().slice(0, 40)] = clone({ panels: panels, vp: vpNow() || refVp || undefined });
     renderPresetSelect(name.trim().slice(0, 40));
     save();
   });
@@ -1667,6 +1694,7 @@
   document.getElementById('ck-reset').addEventListener('click', function () {
     if (!confirm('Reset the cockpit to the default panel set?')) return;
     panels = defaultLayout();
+    refVp = vpNow() || refVp;
     render();
     save();
   });
@@ -1845,45 +1873,28 @@
       renderMobile();
     } else {
       document.body.classList.remove('ck-mobile');
+      adaptToScreen(refVp);
       render();
-      clampX();
     }
   }
 
   // ── auto-arrange (📌) ───────────────────────────────────────────────
-  // Packs every window into a tidy grid, starting at the top-left and
-  // flowing left-to-right, row by row. Columns fit the viewport width;
-  // cell height has a 320px floor, so a grid with many windows simply
-  // outgrows the screen — and the workspace scrolls down instead of
-  // squeezing anything. One-time arrangement: dragging stays free after.
+  // Tidies every window for THIS screen with the same tiler the default layout uses: the first map / combat window is
+  // the stage and the rest share the remaining columns, in their current top-to-bottom, left-to-right order. Columns
+  // follow the screen's width (2 on a laptop, 3 on 1080p, up to 6), a window is never made shorter than a readable
+  // height, and a grid with many windows simply outgrows the screen — the workspace scrolls. One-time arrangement:
+  // dragging stays free after.
   function autoArrange() {
     if (COMPACT.matches || !panels.length) return;
-    const vw = viewport.clientWidth, vh = viewport.clientHeight;
-    const n = panels.length;
-    const cols = Math.max(1, Math.min(n, Math.round(vw / 640)));
-    const rows = Math.ceil(n / cols);
-    const gap = 8;
-    const cellW = Math.floor(vw / cols) - gap;
-    const cellH = Math.max(320, Math.floor(vh / rows) - gap);
-    const ordered = panels.slice().sort(function (a, b) {
-      return (a.y - b.y) || (a.x - b.x);
+    const vp = vpNow();
+    if (!vp) return;
+    const ordered = panels.slice().sort(function (a, b) { return (a.y - b.y) || (a.x - b.x); });
+    LAYOUT.tilePanels(ordered, vp, { pref: prefHeight }).forEach(function (q, i) {
+      const p = ordered[i];
+      p.x = q.x; p.y = q.y; p.w = q.w; p.h = q.h; p.collapsed = false;
     });
-    ordered.forEach(function (p, i) {
-      const col = i % cols, row = Math.floor(i / cols);
-      p.x = col * (cellW + gap);
-      p.y = row * (cellH + gap);
-      p.w = cellW;
-      p.h = cellH;
-      p.collapsed = false;
-      const win = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
-      if (win) {
-        win.style.left = p.x + 'px';
-        win.style.top = p.y + 'px';
-        win.style.width = p.w + 'px';
-        win.style.height = p.h + 'px';
-        win.classList.remove('collapsed', 'maxed');
-      }
-    });
+    syncWindowStyles(true);
+    refVp = vp;
     save();
   }
   pinBtn.addEventListener('click', autoArrange);
@@ -1900,26 +1911,33 @@
     // The phone/tablet shell too: sized to a whole viewport BELOW the top bar, its tab bar sat off-screen.
     const mwrap = document.getElementById('ck-mwrap');
     if (mwrap) mwrap.style.height = h;
-    clampX();
+    scheduleAdapt();
   }
-  // Pull back any window the last layout left RIGHT of the viewport —
-  // horizontal overflow is hidden, so a window past the right edge is
-  // unreachable, not merely scrolled (vertical overflow scrolls fine).
-  // Runs on resize AND after every adoption: a layout arranged on a wide
-  // monitor must survive being reopened on a narrower window.
-  function clampX() {
-    let moved = false;
-    const maxX = Math.max(8, viewport.clientWidth - 60);
+
+  // Write panels[]'s geometry onto the open windows (no re-render: that would reload every iframe).
+  function syncWindowStyles(clearState) {
     panels.forEach(function (p) {
-      if (p.x > maxX) { p.x = maxX; moved = true; }
+      const win = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
+      if (!win) return;
+      win.style.left = p.x + 'px';
+      win.style.top = p.y + 'px';
+      win.style.width = p.w + 'px';
+      win.style.height = p.h + 'px';
+      if (clearState) win.classList.remove('collapsed', 'maxed');
     });
-    if (moved) {
-      panels.forEach(function (p) {
-        const win = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
-        if (win) win.style.left = p.x + 'px';
-      });
-      save();
-    }
+  }
+
+  // The workspace changed size — a window resized or maximised, fullscreen (⛶), the browser moved to another monitor,
+  // devtools opened: scale the windows with it (a scrollbar or a bookmarks bar is within tolerance and does not count).
+  // The scaling is not saved by itself; the next change the GM makes saves the layout for this screen.
+  let adaptTimer = null;
+  function scheduleAdapt() {
+    clearTimeout(adaptTimer);
+    adaptTimer = setTimeout(function () {
+      if (MOBILE() || !panels.length || !refVp) return;
+      adaptToScreen(refVp);
+      syncWindowStyles(false);
+    }, 150);
   }
 
   // matchMedia's change event is the primary mode switch (rotate), but
@@ -1929,8 +1947,8 @@
     if (MOBILE() && !document.body.classList.contains('ck-mobile')) renderMobile();
     else if (!MOBILE() && document.body.classList.contains('ck-mobile')) {
       document.body.classList.remove('ck-mobile');
+      adaptToScreen(refVp);
       render();
-      clampX();
     }
   }
   window.addEventListener('resize', function () { fitViewport(); syncMode(); });

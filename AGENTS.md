@@ -137,6 +137,12 @@ tools that require GM access still check `is_gm` at call time.)
   never set an iframe's `src` directly or use `frame.src = frame.src`, use `frames.mount` / `frames.reload`, and `frames.forget`
   when a window is removed. `CK_MAX_PANELS` mirrors `cockpit.MAX_PANELS` (the server rejects a bigger layout whole), and
   `saveNow` reports a rejected save. `tests/test_cockpit_scaling.py` runs the loader under Node.
+- **Cockpit window geometry is screen-relative** (`static/js/cockpit-layout.js`, pure functions tested across monitor sizes in
+  `tests/test_cockpit_layout.py`): a layout is saved with the workspace size it was arranged for (`vp`) and opened on another
+  screen it is *scaled* (`scalePanels`), pulled back inside (`fitPanels`) when it has no `vp`, and re-scaled live when the
+  window resizes or goes fullscreen (cockpit.js `scheduleAdapt`, no iframe reload, nothing saved until the user changes
+  something). The default layout and 📌 Auto-arrange are `tilePanels` (a map/combat *stage* plus tiles, columns chosen from
+  the width); a window added later is `sizeFor`/`cascade`. Never hard-code window pixels in cockpit.js again.
 - **Recap audio**: a session's `recap_audio_json` is a list of `AudioClip` ids (the /audio library owns the files, the
   clip's `visible_to_players` is what players hear, `transcript` holds the lyrics) — `app/routers/session_audio.py`.
   Readers skip dangling ids; use `attached_clips(db, gs, is_gm=...)` rather than parsing the JSON.

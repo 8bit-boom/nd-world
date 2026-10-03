@@ -61,6 +61,30 @@ def _clamp_int(v, lo, hi, default=0):
         return default
 
 
+def _sanitize_vp(raw) -> Optional[dict]:
+    """The screen (workspace size in CSS px) a layout was arranged for, so another screen can scale it instead of
+    using the pixels as they are. Anything that is not a plausible size is dropped — a layout without one is just fitted."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        w, h = int(raw.get("w")), int(raw.get("h"))
+    except (TypeError, ValueError):
+        return None
+    if not (200 <= w <= 20000 and 150 <= h <= 20000):
+        return None
+    return {"w": w, "h": h}
+
+
+def _sanitize_layout(raw) -> dict:
+    """One saved arrangement: its panels plus (when plausible) the screen it was arranged for."""
+    raw = raw if isinstance(raw, dict) else {}
+    out = {"panels": _sanitize_panels(raw.get("panels"))}
+    vp = _sanitize_vp(raw.get("vp"))
+    if vp:
+        out["vp"] = vp
+    return out
+
+
 def _sanitize_panels(raw_panels) -> list:
     """Round a posted panel list into the exact saved shape — unknown keys
     dropped, types allowlisted, geometry clamped, strings bounded. Raises
@@ -104,9 +128,9 @@ def _sanitize_workspace(raw) -> dict:
         name = str(name).strip()[:40]
         if not name:
             continue
-        presets[name] = {"panels": _sanitize_panels((layout or {}).get("panels"))}
+        presets[name] = _sanitize_layout(layout)
     return {
-        "current": {"panels": _sanitize_panels((raw.get("current") or {}).get("panels"))},
+        "current": _sanitize_layout(raw.get("current")),
         "presets": presets,
     }
 
