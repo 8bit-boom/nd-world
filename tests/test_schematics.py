@@ -430,7 +430,8 @@ def test_schematic_view_does_not_wire_drag_for_locked_own_token(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     r = client.get(f"/maps/schematic/{s.slug}/view")
     assert r.status_code == 200
-    assert "OWN_PC_ID && el.pc_id === OWN_PC_ID && !el.locked" in r.text
+    # (a world may allow several characters per player, so the check is "one of MY characters", still never a locked one)
+    assert "OWN_PC_IDS.includes(el.pc_id) && !el.locked" in r.text
 
 
 def test_schematic_editor_creature_tokens_default_visible_to_players(client, seed):
