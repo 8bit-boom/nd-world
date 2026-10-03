@@ -572,6 +572,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeLightbox();
 });
 </script>
+{# Inside a cockpit / floated window (an iframe) an image opens full screen in the MAIN window instead - see the file. #}
+<script src="/static/js/nd-lightbox-bridge.js?v={{ asset_v('js/nd-lightbox-bridge.js') }}"></script>
 
 {% if world and request.state.user %}
 <script>
@@ -614,6 +616,9 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
   // every other page load still re-syncs to the current broadcast.
   let suppressOnce = false;
   let suppressAudioOnce = false;
+  // The GM's lightbox "Send to players" button pushes an image without reloading the page: tell this poller the
+  // version it just made, or it would pop the same image up again on the GM's own screen four seconds later.
+  window.ndSpotlightSeen = function (version) { seenVersion = version; };
   try {
     if (sessionStorage.getItem('nd_spotlight_suppress_once') === '1') {
       suppressOnce = true;

@@ -294,7 +294,7 @@ async def image_spotlight_send(request: Request, db: Session = Depends(get_db), 
     db.commit()
     from .. import main as _main_module  # deferred — see audio_jobs.py's own use of this pattern
     _main_module._spotlight_cache.clear()
-    return {"ok": True}
+    return {"ok": True, "version": world.spotlight_version}
 
 
 @router.post("/images/spotlight/clear")
@@ -309,7 +309,7 @@ def image_spotlight_clear(request: Request, db: Session = Depends(get_db), activ
     db.commit()
     from .. import main as _main_module
     _main_module._spotlight_cache.clear()
-    return {"ok": True}
+    return {"ok": True, "version": world.spotlight_version}
 
 
 @router.get("/api/gallery/browse")

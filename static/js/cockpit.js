@@ -631,7 +631,7 @@
       if (!r.ok) throw new Error();
       const d = await r.json();
       live.innerHTML =
-        (d.image_url ? '<img src="' + esc(d.image_url) + '" alt=""/>' : '') +
+        (d.image_url ? '<img src="' + esc(d.image_url) + '" alt="' + esc(d.name) + '"/>' : '') +
         '<span class="entity-kind">' + esc((d.kind_icon || '') + ' ' + (d.kind || '')) + '</span>' +
         '<h3>' + esc(d.name) + '</h3>' +
         (d.summary ? '<p class="detail-summary">' + esc(d.summary) + '</p>' : '') +
@@ -1335,6 +1335,19 @@
       setTimeout(function () { d.classList.remove('on'); }, 2200);
     }
     scheduleLiveRefresh();
+  });
+
+  // A picture on one of the cockpit's own cards (entity card, My Character) opens full screen, with the GM's
+  // "send to second screen / to players" buttons — the pages in the other windows do the same through
+  // nd-lightbox-bridge.js. In the phone shell the cards live in #ck-mcontent instead of the workspace.
+  [viewport, mContent].forEach(function (host) {
+    if (!host) return;
+    host.addEventListener('click', function (e) {
+      const img = e.target && e.target.closest ? e.target.closest('.ck-card img') : null;
+      if (!img || typeof window.openLightbox !== 'function') return;
+      e.preventDefault();
+      window.openLightbox(img.getAttribute('data-full') || img.currentSrc || img.src, img.alt || '');
+    });
   });
 
   // ── drag / resize ──────────────────────────────────────────────────────

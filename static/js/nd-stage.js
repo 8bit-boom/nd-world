@@ -7,7 +7,9 @@
 //
 // What the GM gets without touching any template: a 📺 button (bottom-left) with the controls and a
 // history of what was shown; a "send to screen" button that appears over any image on hover; the same
-// button inside the lightbox; and a "show text" button next to any text selection.
+// button inside the lightbox, next to a "👥 Send to players" one (the world's Spotlight: app/routers/gallery.py); and a
+// "show text" button next to any text selection. An image clicked inside a cockpit window reaches that lightbox through
+// nd-lightbox-bridge.js.
 (function () {
   'use strict';
   if (window.ndStage) return;
@@ -46,7 +48,9 @@
     '.nd-stage-float{position:fixed;z-index:960;background:var(--neon,#0ff);color:#000;border:none;border-radius:4px;padding:.35rem .6rem;font:600 .78rem system-ui,sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.6);display:none}' +
     '#nd-stage-toast{position:fixed;left:14px;bottom:66px;z-index:970;background:#111;color:#eee;border:1px solid var(--neon,#0ff);border-radius:6px;padding:.45rem .75rem;font:.8rem system-ui,sans-serif;opacity:0;transition:opacity .25s;pointer-events:none;max-width:70vw}' +
     '#nd-stage-toast.on{opacity:1}' +
-    '#nd-stage-lightbtn{position:fixed;top:14px;right:70px;z-index:10001;display:block}' });
+    '#nd-lightbox-actions{position:fixed;top:14px;right:70px;z-index:10001;display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 90px)}' +
+    '#nd-lightbox-actions .nd-stage-float{position:static;display:block;min-height:36px;padding:.4rem .75rem}' +
+    '#nd-spot-lightbtn.on{background:#ff2d78;color:#fff}' });
   document.head.appendChild(css);
 
   // ── API ───────────────────────────────────────────────────────────────────
@@ -181,12 +185,53 @@
     imgBtn.style.display = 'none';
   });
 
-  // ── the lightbox gets the same button ─────────────────────────────────────
+  // ── the lightbox: send the image to the second screen, or to the players ───────────────
   var lb = document.getElementById('lightbox-overlay'), lbImg = document.getElementById('lightbox-img');
   if (lb && lbImg) {
+    var bar = el('div', { id: 'nd-lightbox-actions' });
     var lbBtn = el('button', { type: 'button', id: 'nd-stage-lightbtn', class: 'nd-stage-float', text: '📺 Send to screen' });
     lbBtn.addEventListener('click', function (e) { e.stopPropagation(); if (lbImg.src) api.showImage(lbImg.src, lbImg.alt || titleFor(lbImg)); });
-    lb.appendChild(lbBtn);
+    var spBtn = el('button', { type: 'button', id: 'nd-spot-lightbtn', class: 'nd-stage-float', text: '👥 Send to players' });
+    bar.appendChild(lbBtn); bar.appendChild(spBtn); lb.appendChild(bar);
+
+    // The players' popup is the world's Spotlight: ONE image at a time, shown to everyone until it is cleared.
+    var sending = false;                                   // is THIS image what the players are being shown?
+    function spotState() {
+      return fetch('/api/spotlight' + W, { credentials: 'same-origin' }).then(function (r) { return r.json(); }).catch(function () { return {}; });
+    }
+    function paintSpot(on) {
+      sending = !!on;
+      spBtn.textContent = sending ? '⏹ Stop showing to players' : '👥 Send to players';
+      spBtn.classList.toggle('on', sending);
+    }
+    function refreshSpot() {
+      var here = lbImg.src ? toPath(lbImg.src).split('?')[0] : '';
+      spotState().then(function (d) { paintSpot(!!(here && d && d.image_url && toPath(d.image_url).split('?')[0] === here)); });
+    }
+    spBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (!lbImg.src) return;
+      var clearing = sending;
+      fetch((clearing ? '/images/spotlight/clear' : '/images/spotlight') + W, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clearing ? {} : { url: toPath(lbImg.src).split('?')[0] }) })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) {
+            // the server only broadcasts images that belong to this world's gallery, portraits and pages
+            toast(res.status === 404 ? '👥 That picture is not in this world\'s gallery, so it can\'t be sent to the players'
+                                      : '👥 ' + (res.d.detail || ('HTTP ' + res.status)));
+            return;
+          }
+          if (window.ndSpotlightSeen && res.d.version != null) window.ndSpotlightSeen(res.d.version);   // not on my own screen again
+          paintSpot(!clearing);
+          toast(clearing ? '👥 Players\' popup closed' : '👥 Sent to all players');
+        })
+        .catch(function (err) { toast('👥 ' + err.message); });
+    });
+    // every time the lightbox opens, show whether the players are already looking at this very image
+    new MutationObserver(function () { if (lb.classList.contains('open')) { paintSpot(false); refreshSpot(); } })
+      .observe(lb, { attributes: true, attributeFilter: ['class'] });
   }
 
   // ── "show text" next to a selection ───────────────────────────────────────

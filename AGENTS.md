@@ -143,6 +143,11 @@ tools that require GM access still check `is_gm` at call time.)
   window resizes or goes fullscreen (cockpit.js `scheduleAdapt`, no iframe reload, nothing saved until the user changes
   something). The default layout and 📌 Auto-arrange are `tilePanels` (a map/combat *stage* plus tiles, columns chosen from
   the width); a window added later is `sizeFor`/`cascade`. Never hard-code window pixels in cockpit.js again.
+- **Images in cockpit / floated windows open full screen in the MAIN window** (`static/js/nd-lightbox-bridge.js`, tested under
+  Node in `tests/test_lightbox_bridge.py`): an embedded page's `openLightbox()` posts the image up to the window above (same
+  origin, image addresses only, passed up again through nested frames), because an iframe's lightbox is confined to its
+  window and the GM's 📺 *Send to screen* / 👥 *Send to players* buttons (`nd-stage.js`, GM-only, never loaded in iframes)
+  live in the top window's lightbox. Use `openLightbox(src, alt)` for any new clickable image; the cockpit's own cards do.
 - **Recap audio**: a session's `recap_audio_json` is a list of `AudioClip` ids (the /audio library owns the files, the
   clip's `visible_to_players` is what players hear, `transcript` holds the lyrics) — `app/routers/session_audio.py`.
   Readers skip dangling ids; use `attached_clips(db, gs, is_gm=...)` rather than parsing the JSON.
