@@ -794,7 +794,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/unsloth/hub/download` | GM | Starts downloading a hub model by repo id (returns immediately; poll the progress route). Optional `gguf_variant` (the quant) for repos requiring one — forwarded to Studio as `gguf_variant`. |
 | GET | `/api/ai/unsloth/hub/download-progress` | GM | Real per-repo download progress (bytes + fraction) from Studio. |
 | GET | `/api/ai/unsloth/gguf-variants` | GM | Quant variant filenames for a hub GGUF — the choices the image-load flow needs. |
-| POST | `/api/ai/unsloth/image/load` | GM | Loads an image-diffusion model in Studio (`repo_id` + optional `gguf_filename`); loading continues server-side — poll `/api/ai/unsloth/image/load-progress`. |
+| POST | `/api/ai/unsloth/image/load` | GM | Loads an image-diffusion model in Studio (`repo_id` + optional `gguf_filename` — blank = the repo's default `.gguf` file, worked out from Studio's variants list, else the repo's file list on Hugging Face; a quant label such as `Q4_K_M` is never sent as a file name); loading continues server-side — poll `/api/ai/unsloth/image/load-progress`. |
 | GET | `/api/ai/unsloth/image/load-progress` | GM | Loading progress for the in-flight diffusion model load. |
 | POST | `/api/ai/unsloth/image/unload` | GM | Unloads the diffusion model, freeing VRAM. |
 | GET | `/api/ai/unsloth/image/status` | GM | The loaded diffusion model's full status (repo, device, dtype, engine). |

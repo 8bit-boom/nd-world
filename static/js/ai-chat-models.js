@@ -727,10 +727,12 @@ async function mpUnslothImageLoad(repoId) {
     const vr = await fetch('/api/ai/unsloth/gguf-variants?repo_id=' + encodeURIComponent(repoId));
     if (vr.ok) {
       const vd = await vr.json();
-      const variants = vd.variants || [];
-      const defaultVariant = vd.default_variant || (variants.length === 1 ? variants[0] : '');
-      ggufFilename = prompt('GGUF file to load' + (variants.length ? ' (one of: ' + variants.slice(0, 6).join(', ') + (variants.length > 6 ? ', …' : '') + ')' : '') + ':', typeof defaultVariant === 'string' ? defaultVariant : '');
+      // Studio lists variants as objects ({filename, quant, …}) or plain strings, and its default is a quant LABEL
+      // ("Q4_K_M"), not a file — leave the box empty by default and the server picks the right .gguf file.
+      const names = (vd.variants || []).map(v => (typeof v === 'string' ? v : (v && (v.filename || v.quant || v.name)) || '')).filter(Boolean);
+      ggufFilename = prompt('GGUF file to load — leave empty to use the default file' + (names.length ? ' (one of: ' + names.slice(0, 6).join(', ') + (names.length > 6 ? ', …' : '') + ')' : '') + ':', '');
       if (ggufFilename === null) return;
+      ggufFilename = ggufFilename.trim();
     }
   } catch (e) { /* variants endpoint optional — load without */ }
   try {

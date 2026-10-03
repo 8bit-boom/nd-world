@@ -3350,13 +3350,18 @@ async def unsloth_gguf_variants(repo_id: str):
 @router.post("/unsloth/image/load")
 async def unsloth_image_load(body: dict):
     """Load an image-diffusion model. Single-file GGUF repos need
-    gguf_filename. Loading continues server-side — poll load-progress."""
+    gguf_filename — left blank, the repo's default .gguf file is looked up
+    (the same lookup a refused image generation uses). Loading continues
+    server-side — poll load-progress."""
     _unsloth_or_400()
     repo_id = str(body.get("repo_id") or "").strip()
     if not repo_id:
         raise HTTPException(400, "repo_id is required")
+    filename = str(body.get("gguf_filename") or "").strip()
     try:
-        return await _unsloth_extras.image_load(repo_id, str(body.get("gguf_filename") or "").strip())
+        if not filename:
+            filename = await _unsloth_extras.resolve_gguf_filename(repo_id)
+        return await _unsloth_extras.image_load(repo_id, filename)
     except _unsloth_extras.StudioError as exc:
         raise HTTPException(exc.status_code, str(exc))
 

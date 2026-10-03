@@ -26,8 +26,10 @@ class Studio:
     def __init__(self, *, generate=("409", "ok"), variants=None, load=None, status_after=2, status_error=None):
         self.calls = []
         self.generate_script = list(generate)
-        self.variants = variants if variants is not None else {"variants": ["Krea-2-Turbo-Q4_K_M.gguf", "Krea-2-Turbo-Q8_0.gguf"],
-                                                               "default_variant": "Krea-2-Turbo-Q4_K_M.gguf"}
+        self.variants = variants if variants is not None else {
+            "variants": [{"filename": "Krea-2-Turbo-Q8_0.gguf", "quant": "Q8_0", "size_bytes": 9, "downloaded": False},
+                         {"filename": "Krea-2-Turbo-Q4_K_M.gguf", "quant": "Q4_K_M", "size_bytes": 5, "downloaded": False}],
+            "default_variant": "Q4_K_M"}
         self.load = load or (lambda body: _FakeResponse(200, payload={"loaded": False}))
         self.status_polls = 0
         self.status_after = status_after          # polls before "loaded": true
@@ -67,6 +69,16 @@ async def _generate(tmp_path, model=CHOSEN):
 def _fast(monkeypatch):
     monkeypatch.setattr(unsloth_extras, "IMAGE_LOAD_POLL_SECONDS", 0.0)
 
+    async def no_hf(repo_id, suffix=".gguf"):          # the repo's own file list on Hugging Face: unreachable unless a test says
+        return []
+    monkeypatch.setattr(ai_module, "list_huggingface_repo_files_recursive", no_hf)
+
+
+def hf_files(monkeypatch, *paths):
+    async def listing(repo_id, suffix=".gguf"):
+        return [{"path": p, "size_bytes": 1} for p in paths]
+    monkeypatch.setattr(ai_module, "list_huggingface_repo_files_recursive", listing)
+
 
 @pytest.mark.asyncio
 async def test_loads_the_chosen_model_then_generates(unsloth_image_mode, monkeypatch, tmp_path):
@@ -96,23 +108,61 @@ async def test_nothing_is_loaded_when_the_first_try_works(unsloth_image_mode, mo
 
 
 @pytest.mark.asyncio
+async def test_a_quant_label_is_never_sent_as_the_file_name(unsloth_image_mode, monkeypatch, tmp_path):
+    """The failure seen live: Studio's default_variant is a QUANT LABEL ("Q4_K_M"), and sending it as gguf_filename got
+    "a 'gguf' load requires a .gguf checkpoint name"."""
+    studio = Studio()
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    await _generate(tmp_path)
+    assert studio.load_body["gguf_filename"].endswith(".gguf")
+    assert studio.load_body["gguf_filename"] == "Krea-2-Turbo-Q4_K_M.gguf"        # the file of the default quant, not "Q4_K_M"
+
+
+@pytest.mark.asyncio
 async def test_a_repo_with_one_file_and_no_default_uses_that_file(unsloth_image_mode, monkeypatch, tmp_path):
-    studio = Studio(variants={"variants": ["only-one.gguf"]})
+    studio = Studio(variants={"variants": [{"filename": "only-one.gguf", "quant": "Q8_0"}]})
     _patch_http(monkeypatch, unsloth_image_mode, studio)
     await _generate(tmp_path)
     assert studio.load_body["gguf_filename"] == "only-one.gguf"
 
 
 @pytest.mark.asyncio
-async def test_a_repo_with_several_files_and_no_default_still_loads_one(unsloth_image_mode, monkeypatch, tmp_path):
-    studio = Studio(variants={"variants": ["m-Q4_K_M.gguf", "m-Q8_0.gguf"]})
+async def test_with_no_default_the_usual_quant_wins_over_list_order(unsloth_image_mode, monkeypatch, tmp_path):
+    studio = Studio(variants={"variants": [{"filename": "m-Q8_0.gguf", "quant": "Q8_0"}, {"filename": "m-Q4_K_M.gguf", "quant": "Q4_K_M"}]})
     _patch_http(monkeypatch, unsloth_image_mode, studio)
     await _generate(tmp_path)
-    assert studio.load_body["gguf_filename"] == "m-Q4_K_M.gguf"        # the first listed, not a refusal
+    assert studio.load_body["gguf_filename"] == "m-Q4_K_M.gguf"
 
 
 @pytest.mark.asyncio
-async def test_studio_without_a_variants_endpoint_is_loaded_without_a_filename(unsloth_image_mode, monkeypatch, tmp_path):
+async def test_a_quant_already_on_disk_is_preferred_to_downloading_another(unsloth_image_mode, monkeypatch, tmp_path):
+    studio = Studio(variants={"variants": [{"filename": "m-Q4_K_M.gguf", "quant": "Q4_K_M", "downloaded": False},
+                                           {"filename": "m-Q8_0.gguf", "quant": "Q8_0", "downloaded": True}],
+                              "default_variant": "Q4_K_M"})
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    await _generate(tmp_path)
+    assert studio.load_body["gguf_filename"] == "m-Q8_0.gguf"
+
+
+@pytest.mark.asyncio
+async def test_file_names_listed_as_plain_strings_still_work(unsloth_image_mode, monkeypatch, tmp_path):
+    studio = Studio(variants={"variants": ["m-Q8_0.gguf", "m-Q4_K_M.gguf"], "default_variant": "m-Q8_0.gguf"})
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    await _generate(tmp_path)
+    assert studio.load_body["gguf_filename"] == "m-Q8_0.gguf"
+
+
+@pytest.mark.asyncio
+async def test_quant_labels_only_are_matched_against_the_repos_own_file_list(unsloth_image_mode, monkeypatch, tmp_path):
+    studio = Studio(variants={"variants": ["Q8_0", "Q4_K_M"], "default_variant": "Q4_K_M"})
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    hf_files(monkeypatch, "z-image-turbo-Q8_0.gguf", "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-mmproj-F16.gguf")
+    await _generate(tmp_path)
+    assert studio.load_body["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
+
+
+@pytest.mark.asyncio
+async def test_studio_without_a_variants_endpoint_falls_back_to_the_repos_file_list(unsloth_image_mode, monkeypatch, tmp_path):
     class NoVariants(Studio):
         def __call__(self, method, url, headers, body):
             if "/api/hub/gguf-variants" in url:
@@ -122,8 +172,21 @@ async def test_studio_without_a_variants_endpoint_is_loaded_without_a_filename(u
 
     studio = NoVariants()
     _patch_http(monkeypatch, unsloth_image_mode, studio)
+    hf_files(monkeypatch, "TURBO/m-Q8_0.gguf", "TURBO/m-Q4_K_M.gguf")
     await _generate(tmp_path)
-    assert studio.load_body == {"model_path": CHOSEN, "model_kind": "gguf"}
+    assert studio.load_body == {"model_path": CHOSEN, "model_kind": "gguf", "gguf_filename": "TURBO/m-Q4_K_M.gguf"}
+
+
+@pytest.mark.asyncio
+async def test_no_file_name_anywhere_sends_none_and_says_what_to_do(unsloth_image_mode, monkeypatch, tmp_path):
+    refuse = lambda body: _FakeResponse(400, payload={"detail": "a 'gguf' load requires a .gguf checkpoint name."})
+    studio = Studio(variants={"variants": ["Q4_K_M"], "default_variant": "Q4_K_M"}, load=refuse)
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    with pytest.raises(ValueError) as e:
+        await _generate(tmp_path)
+    assert "gguf_filename" not in studio.load_body, "a label must not be sent as a file name"
+    msg = str(e.value)
+    assert CHOSEN in msg and "checkpoint name" in msg and "Models tab" in msg
 
 
 @pytest.mark.asyncio
@@ -218,3 +281,25 @@ async def test_a_studio_without_an_image_load_endpoint_keeps_the_old_advice(unsl
         await _generate(tmp_path)
     assert "No diffusion model is loaded" in str(e.value) and "media auto-switch" in str(e.value)
     assert studio.calls.count(("POST", "/api/inference/images/generate")) == 1, "nothing was loaded, so nothing to retry"
+
+
+# ── the Models tab's own "load" button uses the same file-name lookup ───────────────────────────
+
+def test_the_models_tab_load_finds_the_file_when_none_is_given(client, seed, unsloth_image_mode, monkeypatch):
+    from .conftest import GM_PASSWORD, login
+    studio = Studio()
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/unsloth/image/load", json={"repo_id": CHOSEN, "gguf_filename": ""})
+    assert r.status_code == 200, r.text
+    assert studio.load_body == {"model_path": CHOSEN, "model_kind": "gguf", "gguf_filename": "Krea-2-Turbo-Q4_K_M.gguf"}
+
+
+def test_a_file_name_typed_in_the_models_tab_is_used_as_given(client, seed, unsloth_image_mode, monkeypatch):
+    from .conftest import GM_PASSWORD, login
+    studio = Studio()
+    _patch_http(monkeypatch, unsloth_image_mode, studio)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/unsloth/image/load", json={"repo_id": CHOSEN, "gguf_filename": "my-own.gguf"})
+    assert r.status_code == 200, r.text
+    assert studio.load_body["gguf_filename"] == "my-own.gguf"

@@ -328,26 +328,91 @@ IMAGE_LOAD_POLL_SECONDS = 2.0
 IMAGE_LOAD_TIMEOUT_SECONDS = float(os.environ.get("UNSLOTH_IMAGE_LOAD_TIMEOUT_SECONDS", "900"))
 
 
-async def _default_gguf_file(repo_id: str) -> str:
-    """Which GGUF file of a repo to load: Studio's own default quant, else the first one it lists. "" when Studio
-    cannot say (an older build without the variants endpoint, or a repo with a single unnamed file) — the load is
-    then sent without a filename and Studio answers with its own reason if it needed one."""
+# When a repo offers several quantisations and Studio names no default, take the one people run (and the one the image
+# model was verified with); a name that matches none of these ranks last.
+_QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q4_0", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "BF16", "F16")
+
+
+def _quant_rank(text: str) -> int:
+    up = (text or "").upper()
+    for i, quant in enumerate(_QUANT_PREFERENCE):
+        if quant in up:
+            return i
+    return len(_QUANT_PREFERENCE)
+
+
+def _variant_file(entry) -> str:
+    """The .gguf file name a variants entry names — a plain string, or an object with filename/file/path/name."""
+    if isinstance(entry, str):
+        return entry if entry.lower().endswith(".gguf") else ""
+    if isinstance(entry, dict):
+        for key in ("filename", "file", "gguf_filename", "path", "name"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.lower().endswith(".gguf"):
+                return value
+    return ""
+
+
+def _variant_quant(entry) -> str:
+    """The quantisation label of a variants entry ("Q4_K_M"), which is NOT a file name."""
+    if isinstance(entry, str):
+        return "" if entry.lower().endswith(".gguf") else entry
+    if isinstance(entry, dict):
+        for key in ("quant", "variant", "label", "id", "name"):
+            value = entry.get(key)
+            if isinstance(value, str) and value and not value.lower().endswith(".gguf"):
+                return value
+    return ""
+
+
+async def resolve_gguf_filename(repo_id: str) -> str:
+    """The .gguf file of `repo_id` to load, as Studio's image-load wants it (`gguf_filename` must end in .gguf — a
+    quantisation label such as "Q4_K_M" is refused: "a 'gguf' load requires a .gguf checkpoint name").
+
+    Studio's variants answer is the first source: its `default_variant` is a quant LABEL, so the file is the variant of
+    that quant; a quant already downloaded wins over fetching another; with no default the usual quant wins over list
+    order. A Studio that names no files (labels only, an older build without the endpoint) is complemented by the repo's
+    own file list on Hugging Face, matched on the same labels. "" when no file name can be worked out — the caller sends
+    none and Studio's own refusal explains it."""
+    from . import ai as _ai_module          # call-time lookup: this module is imported by ai
+    info = {}
     try:
         info = await gguf_variants(repo_id)
     except StudioError:
+        pass
+    default_label = ""
+    candidates = []
+    if isinstance(info, dict):
+        value = info.get("default_variant")
+        default_label = value if isinstance(value, str) else ""
+        for entry in info.get("variants") or []:
+            candidates.append({"file": _variant_file(entry), "quant": _variant_quant(entry),
+                               "downloaded": bool(isinstance(entry, dict) and entry.get("downloaded"))})
+    # labels Studio prefers: the default if it is on disk, then whatever is on disk, then the default
+    on_disk = [c["quant"] or c["file"] for c in candidates if c["downloaded"]]
+    prefer = ([default_label] if default_label and default_label in on_disk else []) + on_disk + ([default_label] if default_label else [])
+
+    named = [c for c in candidates if c["file"]]
+    if named:
+        for label in prefer:
+            for c in named:
+                if label.lower() in (c["quant"].lower(), c["file"].lower()):
+                    return c["file"]
+        return min(named, key=lambda c: _quant_rank(c["quant"] or c["file"]))["file"]
+
+    try:
+        listing = await _ai_module.list_huggingface_repo_files_recursive(repo_id, ".gguf")
+    except Exception:
+        listing = []
+    files = [str(f.get("path") or "") for f in listing if isinstance(f, dict)]
+    files = [f for f in files if f and "mmproj" not in f.lower()]
+    if not files:
         return ""
-    if not isinstance(info, dict):
-        return ""
-    default = info.get("default_variant")
-    if isinstance(default, str) and default:
-        return default
-    variants = info.get("variants")
-    if isinstance(variants, list):
-        for v in variants:
-            name = v if isinstance(v, str) else (v.get("filename") or v.get("name") if isinstance(v, dict) else "")
-            if name:
-                return str(name)
-    return ""
+    for label in prefer:
+        for f in files:
+            if label and label.lower() in f.lower():
+                return f
+    return min(files, key=_quant_rank)
 
 
 async def ensure_image_model(model: str) -> None:
@@ -359,12 +424,17 @@ async def ensure_image_model(model: str) -> None:
     repo = (model or "").strip()
     if not repo:
         raise StudioError("No image model chosen to load", 400)
+    filename = await resolve_gguf_filename(repo)
     try:
-        await image_load(repo, await _default_gguf_file(repo))
+        await image_load(repo, filename)
     except StudioEndpointMissing:
         raise                                  # an older Studio: the caller falls back to telling the GM what to enable
     except StudioError as exc:
-        raise StudioError(f"Could not load {repo}: {exc}", exc.status_code) from exc
+        hint = ""
+        if not filename and "gguf" in str(exc).lower():
+            hint = (" — nd-world could not work out which .gguf file of this repo to load (Studio named none and the "
+                    "repo's file list was unavailable); load it once from the Models tab, which asks for the file")
+        raise StudioError(f"Could not load {repo}: {exc}{hint}", exc.status_code) from exc
     deadline = time.monotonic() + IMAGE_LOAD_TIMEOUT_SECONDS
     while True:
         try:
