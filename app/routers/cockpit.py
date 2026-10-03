@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai
+from .. import ai_queue as _ai_queue
 from .. import retrieval as _retrieval
 from ..database import get_db, SessionLocal
 from ..deps import get_world_ctx
@@ -299,6 +300,7 @@ async def cockpit_ai_find_poll(job_id: int, request: Request):
     return {"status": "done", "results": job["results"]}
 
 
+@_ai_queue.serialized("cockpit find", "job")
 async def _cockpit_find_task(job_id: int, world_id: int, query: str,
                              entity_id: Optional[int]):
     """The find worker: RAG retrieves world excerpts (always on), the model

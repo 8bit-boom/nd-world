@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from .. import ai as _ai
+from .. import ai_queue as _ai_queue
 from .. import live
 from .. import retrieval as _retrieval
 from ..database import SessionLocal, get_db
@@ -426,6 +427,7 @@ async def quests_suggest_poll(job_id: int):
     return {"status": "done", "suggestions": job["suggestions"]}
 
 
+@_ai_queue.serialized("quest sync", "job")
 async def _quests_suggest_task(job_id: int, world_id: int,
                                session_id: Optional[int], text: str, model: str,
                                use_rag: bool, think: bool = True):

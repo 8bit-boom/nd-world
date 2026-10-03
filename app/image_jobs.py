@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 from . import ai as _ai_module
+from . import ai_queue as _ai_queue
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
 from .imaging import thumbnail_path_for
@@ -80,6 +81,7 @@ def create_job(world_id: int, prompt: str, params: dict, created_by_user_id=None
     return job_id
 
 
+@_ai_queue.serialized("image job", "job")
 async def _run_job(job_id: int, params: dict) -> None:
     def _set(**fields):
         db = SessionLocal()

@@ -34,6 +34,8 @@ from typing import Optional
 
 from starlette.responses import JSONResponse
 
+from . import ai_queue as _ai_queue
+
 _log = logging.getLogger("nd.ai_background")
 
 BG_HEADER = b"x-nd-background"
@@ -88,14 +90,14 @@ def label_for(path: str) -> str:
 
 class Task:
     __slots__ = ("id", "user_id", "path", "label", "status", "started", "finished", "http_status",
-                 "content_type", "location", "body", "task")
+                 "content_type", "location", "body", "task", "ticket")
 
     def __init__(self, user_id, path, label):
         self.id = secrets.token_urlsafe(12)
         self.user_id = user_id
         self.path = path
         self.label = label
-        self.status = "running"            # running | done | cancelled
+        self.status = "running"            # queued | running | done | cancelled
         self.started = time.time()
         self.finished: Optional[float] = None
         self.http_status = 0
@@ -103,11 +105,14 @@ class Task:
         self.location = ""                 # a redirect's target (the form-post AI routes answer 303)
         self.body = b""
         self.task: Optional[asyncio.Task] = None
+        self.ticket = None                 # its place in the one-at-a-time AI queue (app/ai_queue.py)
 
     def view(self, with_body=False) -> dict:
         end = self.finished or time.time()
         d = {"id": self.id, "label": self.label, "status": self.status, "elapsed": int(end - self.started),
              "started": self.started}
+        if self.status == "queued" and self.ticket is not None:
+            d["position"] = max(1, _ai_queue.queue.position(self.ticket))    # 1 = next to run
         if self.status == "done":
             d["http_status"] = self.http_status
             d["content_type"] = self.content_type
@@ -159,7 +164,7 @@ def tasks_for(user_id: int) -> list:
 
 
 def cancel(task: Task) -> bool:
-    if task.status != "running" or task.task is None:
+    if task.status not in ("queued", "running") or task.task is None:
         return False
     task.task.cancel()
     return True
@@ -167,7 +172,7 @@ def cancel(task: Task) -> bool:
 
 async def shutdown() -> None:
     """Server stopping: AI tasks are in-memory and not resumable — cancel them rather than leave them half-run."""
-    running = [t.task for t in _TASKS.values() if t.status == "running" and t.task is not None]
+    running = [t.task for t in _TASKS.values() if t.status in ("queued", "running") and t.task is not None]
     for t in running:
         t.cancel()
     if running:
@@ -175,7 +180,7 @@ async def shutdown() -> None:
 
 
 def _running_count(user_id=None) -> int:
-    return sum(1 for t in _TASKS.values() if t.status == "running" and (user_id is None or t.user_id == user_id))
+    return sum(1 for t in _TASKS.values() if t.status in ("queued", "running") and (user_id is None or t.user_id == user_id))
 
 
 # ── plumbing shared by both modes ───────────────────────────────────────────────────────────────
@@ -255,7 +260,12 @@ class AiBackgroundMiddleware:
         label = next((v.decode("latin-1")[:60] for k, v in scope["headers"] if k == LABEL_HEADER), "") or label_for(scope["path"])
         task = Task(user_id, scope["path"], label)
         _TASKS[task.id] = task
+        # Join the one-at-a-time AI queue NOW, so the position is known the moment the task is accepted. The ticket is
+        # freed by the done-callback too: a task cancelled before its first step never reaches a `finally`.
+        task.ticket = _ai_queue.queue.enter(label, "task")
+        task.status = "queued" if _ai_queue.queue.position(task.ticket) > 0 else "running"
         task.task = asyncio.create_task(self._run(task, scope, body))
+        task.task.add_done_callback(lambda _t, tk=task.ticket: _ai_queue.queue.leave(tk))
         await JSONResponse({"task_id": task.id, "status": "running", "label": label}, status_code=202,
                            headers={"X-ND-Task": task.id})(scope, receive, send)
 
@@ -270,6 +280,8 @@ class AiBackgroundMiddleware:
                 buf.extend(msg.get("body", b""))
 
         try:
+            await _ai_queue.queue.wait_turn(task.ticket)       # one AI task at a time, first come first served
+            task.status = "running"
             await self.app(_inner_scope(scope, body), _replay(body), collect)
         except asyncio.CancelledError:
             task.status = "cancelled"

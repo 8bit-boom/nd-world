@@ -20,7 +20,7 @@ session summaries / prep / recap song, NPC voice, transcribe, tactics, insights,
 the full app, as the same user and world — whether or not the client stays connected. The result is polled from
 `GET /api/ai/tasks/{id}` and is exactly what the route would have returned inline (status code, content type, body;
 errors are the route's own errors). Finished results are kept for an hour; tasks live in memory, so a server restart
-drops them. Limits: 8 running per user, 48 overall. Without the header nothing changes — API users, MCP and tests keep
+drops them. **AI tasks run one at a time**, first come first served (`app/ai_queue.py`) — the 202+poll tasks, the durable job engines (audio/recap, chat, image, video) and the in-memory job runners all share one line, because two model jobs at once fight over the GPU. A task waiting its turn polls as `queued` with its `position` (1 = next); live streams (AI Chat, Ask AI, the NPC conversation) are not queued. A task holding the slot longer than `AI_QUEUE_MAX_HOLD_SECONDS` (default 7200) is cancelled so one hung call cannot freeze the line. Limits: 8 queued-or-running per user, 48 overall. Without the header nothing changes — API users, MCP and tests keep
 the plain request/response contract. Browsers use `ndAiFetch` (`static/js/nd-ai-task.js`), a drop-in `fetch` that polls
 and returns a real `Response`; an HTML form that starts a task carries `data-nd-ai-form`.
 
@@ -836,7 +836,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/recap-instructions` | GM | Saves the world's recap instructions. |
 | POST/GET | `/api/ai/chat/jobs` | GM | Runs a chat completion as a durable background job instead of live-streaming — same request shape as `/api/ai/stream` minus streaming; POST creates, GET lists recent jobs for the active world. |
 | GET | `/api/ai/tasks` | Player | The caller's own recent background AI tasks (see "Background AI tasks" below) — newest first. |
-| GET | `/api/ai/tasks/{task_id}` | Player | Poll one background AI task: `running`, or `done` with the route's own `http_status`, `content_type`, `body` (and `location` for a redirect). 404 for an unknown task or one that is not the caller's. |
+| GET | `/api/ai/tasks/{task_id}` | Player | Poll one background AI task: `queued` (with `position`), `running`, or `done` with the route's own `http_status`, `content_type`, `body` (and `location` for a redirect). 404 for an unknown task or one that is not the caller's. |
 | DELETE | `/api/ai/tasks/{task_id}` | Player | Cancel a running task, or forget a finished one. |
 | GET | `/api/ai/chat/jobs/{job_id}` | GM | Poll one chat job. |
 | POST | `/api/ai/chat/jobs/{job_id}/cancel` | GM | Cancels an in-progress chat job. |

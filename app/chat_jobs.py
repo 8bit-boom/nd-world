@@ -9,6 +9,7 @@ import json
 import logging
 
 from . import ai as _ai_module
+from . import ai_queue as _ai_queue
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
 from .models import ChatJob
@@ -98,6 +99,7 @@ def create_job(
     return job_id
 
 
+@_ai_queue.serialized("chat job", "job")
 async def _run_job(job_id: int, messages: list[dict], system: str, model: str, options: dict) -> None:
     def _set(**fields):
         db = SessionLocal()

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import ai as _ai_module
+from . import ai_queue as _ai_queue
 from . import ai_assist as _ai_assist
 from . import job_shutdown as _job_shutdown
 from . import retrieval as _retrieval
@@ -925,6 +926,7 @@ def _build_rag_context(
         db.close()
 
 
+@_ai_queue.serialized("audio job", "job")
 async def _run_job(job_id: int) -> None:
     """Runs (or resumes) a job's transcribe [+ summarize] work. Everything
     this used to take as function arguments (audio_path, purpose,

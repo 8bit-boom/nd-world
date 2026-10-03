@@ -44,6 +44,9 @@ UNSLOTH_IMAGE_MODEL = os.getenv("UNSLOTH_IMAGE_MODEL", "")
 # chunks will mis-size. Clamped to MAX_AUTO_NUM_CTX like any computed ctx.
 LLM_CONTEXT_TOKENS = max(1024, int(os.getenv("LLM_CONTEXT_TOKENS", "16384")))
 
+# NOTE: since app/ai_queue.py, every background AI task also takes its turn in ONE global first-come queue (one AI task
+# at a time across STT, LLM, TTS and image work); the per-backend limits below still bound the calls INSIDE a task and
+# anything that does not go through that queue.
 # Concurrency limits for BACKGROUND-JOB work only (app/audio_jobs.py,
 # app/chat_jobs.py) — not the interactive chat/ask-AI/condense routes a GM
 # is actively waiting on, which should never queue behind a background job.

@@ -151,6 +151,10 @@ tools that require GM access still check `is_gm` at call time.)
   form that starts one carries `data-nd-ai-form`. A NEW AI route goes in that list, and `tests/test_ai_background.py` fails
   while any page still calls a listed route with plain `fetch()`. Streaming chat surfaces stay live-streamed (they have a
   Stop button that must cancel the model); the NPC conversation stream is detached instead so its saved turn completes.
+- **AI tasks run ONE AT A TIME** (`app/ai_queue.py`): one Studio, one GPU. Every background AI runner takes its turn in a single
+  first-come queue for its whole run — decorate a new job runner with `@ai_queue.serialized("label")` (the 202+poll tasks and
+  all four job engines already are; `tests/test_ai_queue.py` lists them and fails for one that is missing). Never take the slot
+  from code already running inside a queued task (it would wait for itself), and don't queue live streams.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

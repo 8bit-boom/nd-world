@@ -35,7 +35,7 @@ def stop_or_forget_task(task_id: str, request: Request):
     task = _bg.get_task(task_id, _user(request))
     if task is None:
         raise HTTPException(404, "Unknown AI task")
-    if task.status == "running":
+    if task.status in ("queued", "running"):
         _bg.cancel(task)
         return {"ok": True, "cancelled": True}
     _bg._TASKS.pop(task.id, None)

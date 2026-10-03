@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 
 from . import job_shutdown as _job_shutdown
+from . import ai_queue as _ai_queue
 from . import unsloth_extras as _studio
 from .database import SessionLocal
 from .models import VideoClip, VideoJob
@@ -222,6 +223,7 @@ def _video_ext(content_type: str) -> str:
     return ".mp4"
 
 
+@_ai_queue.serialized("video job", "job")
 async def _run_job(job_id: int, params: dict) -> None:
     def _set(**fields):
         db = SessionLocal()

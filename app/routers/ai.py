@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
+from .. import ai_queue as _ai_queue
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from .. import auth as _auth
@@ -3745,6 +3746,7 @@ async def auto_tag_poll(job_id: int):
             "total": job["total"], "tagged": job["tagged"]}
 
 
+@_ai_queue.serialized("auto-tag", "job")
 async def _auto_tag_task(job_id: int, world_id: int, entity_ids: list,
                          overwrite: bool, think: bool):
     """The tagging worker: batches of _AUTO_TAG_BATCH entities per local-

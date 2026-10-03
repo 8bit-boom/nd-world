@@ -27,6 +27,7 @@ import io
 from pathlib import Path
 
 from . import ai_instructions as _ai_instructions
+from . import ai_queue as _ai_queue
 from . import deps
 from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
@@ -2793,6 +2794,7 @@ async def map_ai_markers_poll(slug: str, job_id: int, request: Request):
     return {"status": "done", "markers": job["markers"]}
 
 
+@_ai_queue.serialized("map markers", "job")
 async def _map_ai_markers_task(job_id: int, slug: str, world_id: int, prompt: str,
                                count: int, model: str, think: bool, use_rag: bool):
     db = SessionLocal()
@@ -7392,6 +7394,7 @@ async def _schematic_ai_build_task_inner(job_id: int, slug: str, world_id: int,
     )
 
 
+@_ai_queue.serialized("map build", "job")
 async def _schematic_ai_build_task(job_id: int, slug: str, world_id: int,
                                    desc: str, replace_flag: bool, image_b64s: list):
     """Thin crash-capture wrapper: any exception in the build task lands in

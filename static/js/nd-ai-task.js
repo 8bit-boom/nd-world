@@ -45,6 +45,26 @@
   }
   try { document.addEventListener('visibilitychange', function () { if (!document.hidden) wakers.slice().forEach(function (w) { w(); }); }); } catch (e) {}
 
+  /* "waiting its turn" pill: AI tasks run one at a time, so a task started behind a long one says where it is */
+  var waiting = {};
+  function renderWait() {
+    try {
+      var ids = Object.keys(waiting), el = document.getElementById('nd-ai-wait');
+      if (!ids.length) { if (el) el.remove(); return; }
+      if (!document.body || !document.createElement) return;
+      if (!el) {
+        el = document.createElement('div'); el.id = 'nd-ai-wait'; el.setAttribute('role', 'status');
+        el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--nd-fab-bottom,14px) + 44px);z-index:9997;' +
+          'background:var(--bg2,#181820);border:1px solid var(--border,#444);border-radius:999px;padding:.35rem .8rem;' +
+          'color:var(--text-dim,#999);font-size:.8rem;box-shadow:0 2px 10px rgba(0,0,0,.5)';
+        document.body.appendChild(el);
+      }
+      var ahead = Math.min.apply(null, ids.map(function (i) { return waiting[i]; }));
+      el.textContent = '⏳ Waiting for the AI — ' + ahead + (ahead === 1 ? ' task' : ' tasks') + ' ahead (they run one at a time)';
+    } catch (e) {}
+  }
+  function setWaiting(id, position) { if (position > 0) waiting[id] = position; else delete waiting[id]; renderWait(); }
+
   function synthetic(status, detail) {
     return new Response(JSON.stringify({ detail: detail }), { status: status, headers: { 'Content-Type': 'application/json' } });
   }
@@ -102,14 +122,16 @@
         if (!r.ok) { if (++failures > 150) { forget(id); return r; } continue; }
         failures = 0;
         var d = await r.json();
+        setWaiting(id, d.status === 'queued' ? d.position : 0);
         if (opts.onProgress) { try { opts.onProgress(d); } catch (e) {} }
-        if (d.status === 'running') continue;
+        if (d.status === 'running' || d.status === 'queued') continue;     // queued = waiting its turn (one AI task at a time)
         forget(id);
         if (d.status === 'cancelled') return synthetic(499, 'Cancelled.');
         return asResponse(d);
       }
     } finally {
       delete live[id];
+      setWaiting(id, 0);
     }
   };
 
@@ -207,7 +229,9 @@
       if (running.length) {
         var p = document.createElement('div');
         p.style.cssText = 'background:var(--bg2,#181820);border:1px solid var(--border,#444);border-radius:999px;padding:.35rem .8rem;color:var(--text-dim,#999);box-shadow:0 2px 10px rgba(0,0,0,.5)';
-        p.textContent = '✨ AI is working in the background (' + running.length + ')…';
+        var waiting = running.filter(function (i) { return state[i].position > 0; }).length;
+        p.textContent = '✨ AI is working in the background (' + running.length + ')…' +
+          (waiting ? ' ' + waiting + ' waiting in line' : '');
         pill.appendChild(p);
       }
       ids.filter(function (i) { return state[i].status === 'done'; }).forEach(function (i) {
@@ -233,7 +257,7 @@
           if (r.status === 404 || r.status === 401 || r.status === 403) { drop(id); continue; }
           if (!r.ok) continue;
           var d = await r.json();
-          if (d.status === 'running') continue;
+          if (d.status === 'running' || d.status === 'queued') { state[id].position = d.status === 'queued' ? d.position : 0; continue; }
           if (d.status === 'cancelled') { drop(id); continue; }
           state[id].status = 'done'; state[id].data = d; render();
         } catch (e) { /* offline: try again next tick */ }

@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai
+from .. import ai_queue as _ai_queue
 from .. import auth
 from .. import retrieval as _retrieval
 from ..database import SessionLocal, get_db
@@ -149,6 +150,7 @@ def _custom_sheet_prompt(tpl, rules: str) -> tuple:
     return system, schema
 
 
+@_ai_queue.serialized("character draft", "job")
 async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
                       source_text: str, think: bool, use_rag: bool, template_id: int = 0):
     db = SessionLocal()
@@ -436,6 +438,7 @@ def rules_for_character(db, world, pc, viewer_is_gm: bool, limit: int = 7000):
     return "\n\n".join(parts)[:limit], label, native
 
 
+@_ai_queue.serialized("sheet review", "job")
 async def _analysis_task(job_id: int, pc_id: int, viewer_is_gm: bool,
                          focus: str, think: bool, use_rag: bool):
     db = SessionLocal()

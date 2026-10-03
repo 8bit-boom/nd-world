@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai
+from .. import ai_queue as _ai_queue
 from .. import retrieval as _retrieval
 from ..database import SessionLocal, get_db
 from ..deps import get_world_ctx
@@ -91,6 +92,7 @@ def _is_gm(request: Request) -> bool:
     return bool(user and user.is_gm)
 
 
+@_ai_queue.serialized("system draft", "job")
 async def _draft_task(job_id: int, source: str, system_name: str, wishes: str, think: bool):
     job = _TPL_AI_JOBS[job_id]
     try:
