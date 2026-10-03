@@ -966,6 +966,7 @@ def _migrate():
                 ("llm_model", "VARCHAR(256) DEFAULT ''"),
                 ("llm_api_key", "VARCHAR(256) DEFAULT ''"),
                 ("llm_context_tokens", "INTEGER"),
+                ("character_import_max_chars", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

@@ -110,7 +110,8 @@ from . import job_shutdown as _job_shutdown
 from . import backups as _backups
 from . import diagnostics as _diagnostics
 from . import auth as _auth
-from .constants import KINDS, SUBTYPES, KIND_ICONS, MAX_CHARACTERS_PER_PLAYER
+from .constants import (KINDS, SUBTYPES, KIND_ICONS, MAX_CHARACTERS_PER_PLAYER, CHARACTER_IMPORT_DEFAULT_CHARS,
+                        CHARACTER_IMPORT_MIN_CHARS as _CHARACTER_IMPORT_MIN, CHARACTER_IMPORT_MAX_CHARS as _CHARACTER_IMPORT_MAX)
 
 BASE_DIR = Path(__file__).parent.parent
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
@@ -4400,6 +4401,9 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         # them; the form routes still accept the fields for API compat).
         "unsloth_configured": bool(_ai_module.effective_llm_api_key()),
         "env_llm_context_tokens": _ai_module.LLM_CONTEXT_TOKENS,
+        "character_import_default": CHARACTER_IMPORT_DEFAULT_CHARS,
+        "character_import_min": _CHARACTER_IMPORT_MIN,
+        "character_import_max": _CHARACTER_IMPORT_MAX,
         "llm_active": bool(_ai_module.effective_llm_api_key()),
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
@@ -4601,6 +4605,7 @@ def settings_system_save(
     llm_api_key: str = Form(""),
     llm_api_key_clear: str = Form(""),
     llm_context_tokens: str = Form(""),
+    character_import_max_chars: str = Form(""),
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
@@ -4660,6 +4665,7 @@ def settings_system_save(
     llm_model = llm_model.strip()
     llm_api_key = llm_api_key.strip()
     llm_context_tokens = llm_context_tokens.strip()
+    character_import_max_chars = character_import_max_chars.strip()
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
     android_emulator_url = android_emulator_url.strip().rstrip("/")
     editor_external_url = editor_external_url.strip().rstrip("/")
@@ -4706,6 +4712,8 @@ def settings_system_save(
         ("ollama_main_gpu", "Primary GPU index", ollama_main_gpu, int, 0, 15),
         ("ollama_vram_override_mb", "VRAM override (MB)", ollama_vram_override_mb, int, 0, 1048576),
         ("llm_context_tokens", "Unsloth context window (tokens)", llm_context_tokens, int, 1024, 1048576),
+        ("character_import_max_chars", "Max sheet length for AI character import (characters)",
+         character_import_max_chars, int, _CHARACTER_IMPORT_MIN, _CHARACTER_IMPORT_MAX),
     ):
         val, err = _parse_optional_number(label, raw, kind, lo, hi)
         if err:

@@ -1897,6 +1897,9 @@ class AppSettings(Base):
     # chunk-sizing budget source under Unsloth (see app.ai.llm_context_tokens
     # and the migration plan §6.3). Must match Studio's per-model setting.
     llm_context_tokens = Column(Integer, nullable=True)
+    # How many characters of an uploaded character sheet the AI character creator reads (NULL = the built-in
+    # default, see routers/character_ai.character_import_limit).
+    character_import_max_chars = Column(Integer, nullable=True)
     swarmui_external_url = Column(String(512), default="")
     # Same idea as swarmui_external_url, for the embedded Android app viewer
     # at /androidapp — see app.main's ANDROID_EMULATOR_URL and docs/DEPLOYMENT.md.

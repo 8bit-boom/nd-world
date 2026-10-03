@@ -50,6 +50,7 @@
 
     <button type="button" class="btn-primary" id="ai-go">✨ Generate my character</button>
     <span id="ai-status" style="font-size:.8rem;color:var(--text-dim);margin-left:.6rem"></span>
+    <div id="ai-cut" role="status" style="display:none;margin-top:.6rem;padding:.4rem .6rem;font-size:.8rem;border:1px solid var(--warn, #c9a227);border-radius:4px;color:var(--text)"></div>
   </div>
 
   <!-- Draft review + apply (posts to the existing /characters/new) -->
@@ -162,6 +163,16 @@ const WORLD_SLUG = {{ world.slug | tojson }};
     form.scrollIntoView({ behavior: 'smooth' });
   }
 
+  // Shown when the uploaded sheet is longer than the GM's import limit (Settings → System): the model reads only the start.
+  const cutBox = document.getElementById('ai-cut');
+  function showCut(d) {
+    if (!d.source_truncated) { cutBox.style.display = 'none'; cutBox.textContent = ''; return; }
+    cutBox.textContent = '⚠ Your sheet is ' + Number(d.source_chars).toLocaleString() + ' characters long; only the first '
+      + Number(d.source_limit).toLocaleString() + ' were read, so anything after that is missing from the draft — check it below, '
+      + 'or ask the GM to raise the limit (Settings → System).';
+    cutBox.style.display = '';
+  }
+
   function poll(jobId, tries) {
     if ((tries || 0) > 400) { status.textContent = '⚠ Still running after ~20 minutes.'; return; }
     fetch('/api/characters/ai/' + jobId).then(r => r.json()).then(d => {
@@ -192,11 +203,13 @@ const WORLD_SLUG = {{ world.slug | tojson }};
     if (sys && sys.value) fd.set('template_id', sys.value);
     if (pickedFile) fd.set('file', pickedFile);
     status.textContent = '⏳ Starting…';
+    showCut({});
     form.style.display = 'none';
     try {
       const r = await fetch('/api/characters/ai/start' + (WORLD_SLUG ? '?w=' + encodeURIComponent(WORLD_SLUG) : ''), { method: 'POST', body: fd });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      showCut(d);
       poll(d.job_id, 0);
     } catch (e) {
       status.textContent = '⚠ ' + e.message;

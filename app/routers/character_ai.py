@@ -31,7 +31,8 @@ from .. import ai as _ai
 from .. import ai_queue as _ai_queue
 from .. import auth
 from .. import retrieval as _retrieval
-from ..database import SessionLocal, get_db
+from ..constants import CHARACTER_IMPORT_DEFAULT_CHARS, CHARACTER_IMPORT_MAX_CHARS, CHARACTER_IMPORT_MIN_CHARS
+from ..database import SessionLocal, get_app_settings, get_db
 from ..deps import check_llm_cooldown, get_world_ctx
 from ..models import PlayerCharacter, SheetTemplate, World
 from ..rules_render import strip_gm_directives
@@ -50,6 +51,20 @@ _MAX_IMPORT_BYTES = 12 * 1024 * 1024
 _TEXT_EXTS = {".md", ".txt", ".markdown"}
 _HTML_EXTS = {".html", ".htm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+def character_import_limit(settings) -> int:
+    """How many characters of an imported sheet the model is shown: the GM's Settings -> System value, else the
+    default. A hand-edited database value outside the allowed range is clamped and a non-number ignored, so a
+    bad row can never make the creator read nothing — or a sheet bigger than any context window."""
+    raw = getattr(settings, "character_import_max_chars", None)
+    if raw is None:
+        return CHARACTER_IMPORT_DEFAULT_CHARS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return CHARACTER_IMPORT_DEFAULT_CHARS
+    return max(CHARACTER_IMPORT_MIN_CHARS, min(CHARACTER_IMPORT_MAX_CHARS, value))
+
 
 _DRAFT_FORMAT = {
     "type": "object",
@@ -161,7 +176,8 @@ def _custom_sheet_prompt(tpl, rules: str) -> tuple:
 
 @_ai_queue.serialized("character draft", "job")
 async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
-                      source_text: str, think: bool, use_rag: bool, template_id: int = 0):
+                      source_text: str, think: bool, use_rag: bool, template_id: int = 0,
+                      source_limit: int = CHARACTER_IMPORT_DEFAULT_CHARS):
     db = SessionLocal()
     try:
         world = db.get(World, world_id)
@@ -216,9 +232,9 @@ async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
             user_text += "\n\n=== WORLD LORE (for names/places grounding) ===\n" + rag
         if source_text:
             user_text += ("\n\n=== SOURCE SHEET (translate this character into this "
-                          "system's rules; keep its identity) ===\n" + source_text[:12000]
+                          "system's rules; keep its identity) ===\n" + source_text[:source_limit]
                           + ("\n[…the rest of the sheet was cut off to fit — work from what is above…]"
-                             if len(source_text) > 12000 else ""))
+                             if len(source_text) > source_limit else ""))
         if prompt:
             user_text += "\n\n=== PLAYER'S REQUEST ===\n" + prompt[:4000]
 
@@ -313,6 +329,7 @@ async def pc_ai_start(request: Request,
     if not _ai.effective_llm_api_key():
         raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System).")
 
+    source_limit = character_import_limit(get_app_settings(db))
     job_id = _PC_AI_SEQ[0] + 1
     _PC_AI_SEQ[0] = job_id
     _PC_AI_JOBS[job_id] = {"status": "running", "started": time.time(),
@@ -323,8 +340,10 @@ async def pc_ai_start(request: Request,
 
     import asyncio
     asyncio.get_running_loop().create_task(
-        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag, template_id))
-    return {"job_id": job_id, "status": "running"}
+        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag, template_id, source_limit))
+    # What the creator will read of the upload — the page tells the player when the end of a long sheet is cut.
+    return {"job_id": job_id, "status": "running", "source_chars": len(source_text),
+            "source_limit": source_limit, "source_truncated": len(source_text) > source_limit}
 
 
 @router.get("/api/characters/ai/{job_id}")

@@ -106,7 +106,7 @@ def test_endpoint_accepts_a_builtin_custom_system(client, seed, monkeypatch):
     tid = _tpl_id("asterion")
     r = client.post("/api/characters/ai/start", data={"prompt": "a minor god of storms", "template_id": str(tid)})
     assert r.status_code == 200, r.text
-    assert calls and calls[0][-1] == tid
+    assert calls and calls[0][6] == tid          # (job_id, world_id, prompt, source_text, think, use_rag, template_id, source_limit)
 
 
 def test_page_offers_the_systems_and_can_preselect(client, seed):
