@@ -12,7 +12,7 @@
     <summary style="cursor:pointer;color:var(--neon);font-weight:600;font-size:.9rem">How this works</summary>
     <div style="font-size:.85rem;color:var(--text-dim);margin-top:.5rem;line-height:1.55">
       <p style="margin:.3rem 0"><strong style="color:var(--text)">1. Describe</strong> the character you want to play — concept, personality, role in the party, anything you care about. The AI builds the sheet <strong style="color:var(--text)">following this world's rules</strong> ({{ world.name }}).</p>
-      <p style="margin:.3rem 0"><strong style="color:var(--text)">Or import</strong> a character from another system: upload its sheet as <strong>PDF, Markdown, TXT, JSON, or a photo/scan</strong> — the AI reads it and translates it into this world's rules, keeping its identity.</p>
+      <p style="margin:.3rem 0"><strong style="color:var(--text)">Or import</strong> a character from another system: upload its sheet as <strong>PDF, HTML (a saved web page), Markdown, TXT, JSON, or a photo/scan</strong> — the AI reads it and translates it into this world's rules, keeping its identity.</p>
       <p style="margin:.3rem 0"><strong style="color:var(--text)">2. Review</strong> the draft — you can edit name, race, class, level and backstory right in the review before creating.</p>
       <p style="margin:.3rem 0"><strong style="color:var(--text)">3. Create</strong> — nothing is saved until you press the button. Scanned PDF with no text? Upload its pages as images instead.</p>
       <p style="margin:.3rem 0;color:var(--text-dim)">Examples: <em>“a grizzled ex-cop turned fixer, great with a pistol but terrible with people”</em> · <em>“young hacker prodigy, optimistic, owes the wrong people money”</em> · <em>“translate this D&amp;D bard into this world”</em></p>
@@ -41,9 +41,9 @@
         <input type="checkbox" id="ai-rag" checked style="width:auto"> 🔍 World lore
       </label>
       <label class="btn-secondary" style="display:inline-flex;gap:.4rem;align-items:center;cursor:pointer;font-size:.8rem">
-        📎 Import a sheet (PDF / MD / TXT / JSON / image)
+        📎 Import a sheet (PDF / HTML / MD / TXT / JSON / image)
         <input type="file" id="ai-file" style="display:none"
-               accept=".pdf,.md,.markdown,.txt,.json,.png,.jpg,.jpeg,.webp">
+               accept=".pdf,.html,.htm,.md,.markdown,.txt,.json,.png,.jpg,.jpeg,.webp">
       </label>
       <span id="ai-file-name" style="font-size:.75rem;color:var(--text-dim)"></span>
     </div>

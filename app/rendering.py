@@ -6,9 +6,11 @@ main.py, so a router importing from main.py would be circular. That circular
 import was the root cause of every router building its own copy-pasted
 Jinja2Templates instance instead of sharing one (see app/templating.py).
 """
+import codecs
 import html as _html
 import re
 from collections import OrderedDict
+from html.parser import HTMLParser
 
 import html2text
 import markdown2
@@ -236,6 +238,195 @@ def html_to_markdown(raw_html: str) -> str:
     converter.body_width = 0  # don't hard-wrap paragraphs at 78 cols
     converter.ignore_images = True
     return converter.handle(raw_html).strip()
+
+
+def decode_html_bytes(data: bytes) -> str:
+    """An uploaded .html file's bytes -> text. UTF-8 (with or without a BOM) first; else the page's own declared
+    charset (<meta charset=…>); else Windows-1252, which is what most "Save page as…" files in other encodings are."""
+    if data.startswith(codecs.BOM_UTF8):
+        return data[3:].decode("utf-8", errors="replace")
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    m = re.search(rb"""charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", data[:4096], re.I)
+    if m:
+        try:
+            return data.decode(m.group(1).decode("ascii"), errors="replace")
+        except LookupError:
+            pass
+    return data.decode("cp1252", errors="replace")
+
+
+# Most of an HTML character sheet is form fields — and a filled-in field's value is an ATTRIBUTE (<input value="16">),
+# which a tag-stripper throws away along with the tags. html_to_markdown above is for articles; this one is for sheets.
+_SHEET_SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "iframe", "object", "embed", "canvas", "button"}
+_SHEET_BLOCK_TAGS = {"p", "div", "section", "article", "header", "footer", "main", "aside", "nav", "form", "fieldset",
+                     "legend", "table", "thead", "tbody", "tfoot", "tr", "ul", "ol", "dl", "dt", "dd", "blockquote",
+                     "pre", "details", "summary", "figure", "figcaption", "address", "caption"}
+_SHEET_SKIP_INPUTS = {"hidden", "password", "file", "button", "submit", "reset", "image", "color"}
+SHEET_TEXT_MAX_CHARS = 60_000
+
+
+class _SheetTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list = []
+        self.skip: list = []          # stack of open skipped tags (script, style, …)
+        self.cell_in_row = False
+        self.title: list = []
+        self.in_title = False
+        self.select = None            # {"name", "options": [(text, selected)]} while inside a <select>
+        self.option = None            # [text, selected] while inside an <option>
+        self.textarea = None          # {"name", "text"} while inside a <textarea>
+        self.preformatted = 0
+
+    # -- output helpers
+    def _nl(self):
+        if self.parts and not self.parts[-1].endswith("\n"):
+            self.parts.append("\n")
+
+    def _add(self, text):
+        if text:
+            self.parts.append(text)
+
+    @staticmethod
+    def _field_name(a):
+        for k in ("aria-label", "name", "id", "title", "placeholder"):
+            if a.get(k):
+                return a[k].strip()
+        return ""
+
+    # -- tags
+    def handle_starttag(self, tag, attrs):
+        a = {k: (v if v is not None else "") for k, v in attrs}
+        if self.skip:
+            if tag in _SHEET_SKIP_TAGS and tag not in ("input",):
+                self.skip.append(tag)
+            return
+        if tag in _SHEET_SKIP_TAGS:
+            self.skip.append(tag)
+            return
+        if tag == "title":
+            self.in_title = True
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._nl()
+            self._add("#" * int(tag[1]) + " ")
+        elif tag == "li":
+            self._nl()
+            self._add("- ")
+        elif tag == "br":
+            self._nl()
+        elif tag == "hr":
+            self._nl()
+            self._add("---")
+            self._nl()
+        elif tag in ("td", "th"):
+            if self.cell_in_row:
+                self._add(" | ")
+            self.cell_in_row = True
+        elif tag == "tr":
+            self._nl()
+            self.cell_in_row = False
+        elif tag == "input":
+            self._input(a)
+        elif tag == "select":
+            self.select = {"name": self._field_name(a), "options": []}
+        elif tag == "option" and self.select is not None:
+            self.option = ["", "selected" in a]
+        elif tag == "textarea":
+            self.textarea = {"name": self._field_name(a), "text": ""}
+        elif tag == "pre":
+            self.preformatted += 1
+        if tag in _SHEET_BLOCK_TAGS:
+            self._nl()
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in ("input", "br", "hr", "img", "meta", "link"):
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if self.skip:
+            if self.skip[-1] == tag:
+                self.skip.pop()
+            return
+        if tag == "title":
+            self.in_title = False
+        elif tag == "option" and self.select is not None and self.option is not None:
+            self.select["options"].append((self.option[0].strip(), self.option[1]))
+            self.option = None
+        elif tag == "select" and self.select is not None:
+            opts = self.select["options"]
+            chosen = next((t for t, sel in opts if sel), opts[0][0] if opts else "")
+            if chosen:
+                self._add(f"[{self.select['name'] + ': ' if self.select['name'] else ''}{chosen}] ")
+            self.select = None
+        elif tag == "textarea" and self.textarea is not None:
+            body = self.textarea["text"].strip("\r\n").rstrip()
+            if body.strip():
+                self._nl()
+                self._add(f"{self.textarea['name'] + ': ' if self.textarea['name'] else ''}{body}")
+                self._nl()
+            self.textarea = None
+        elif tag == "pre":
+            self.preformatted = max(0, self.preformatted - 1)
+        if tag in _SHEET_BLOCK_TAGS or tag in ("h1", "h2", "h3", "h4", "h5", "h6", "li"):
+            self._nl()
+
+    def _input(self, a):
+        kind = (a.get("type") or "text").strip().lower()
+        if kind in _SHEET_SKIP_INPUTS:
+            return
+        name = self._field_name(a)
+        if kind in ("checkbox", "radio"):
+            self._add(f"[{'x' if 'checked' in a else ' '}] {name} ".rstrip() + " ")
+            return
+        value = (a.get("value") or "").strip()
+        if value:
+            self._add(f"[{name + ': ' if name else ''}{value}] ")
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        if self.in_title:
+            self.title.append(data)
+        elif self.textarea is not None:
+            self.textarea["text"] += data
+        elif self.option is not None:
+            self.option[0] += data
+        elif self.select is not None:
+            return
+        elif self.preformatted:
+            self._add(data)
+        else:
+            self._add(re.sub(r"\s+", " ", data))
+
+
+def html_to_sheet_text(raw_html: str) -> str:
+    """An HTML character sheet -> readable plain text for the AI to read: scripts / styles / hidden and password
+    fields dropped, headings / lists / table rows kept as lines, and the VALUES in form fields (inputs, selects,
+    textareas, checkboxes) written next to their field names. Capped at SHEET_TEXT_MAX_CHARS. Never raises on bad
+    markup. Plain text only — nothing in the page is executed, fetched or rendered."""
+    if not raw_html or not raw_html.strip():
+        return ""
+    parser = _SheetTextParser()
+    try:
+        parser.feed(raw_html)
+        parser.close()
+    except Exception:
+        pass                                   # keep whatever was read before the parser gave up
+    text = "".join(parser.parts)
+    title = " ".join("".join(parser.title).split())
+    if title:
+        text = f"Page title: {title}\n{text}"
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) > SHEET_TEXT_MAX_CHARS:
+        text = text[:SHEET_TEXT_MAX_CHARS].rsplit("\n", 1)[0].rstrip() + "\n(truncated)"
+    return text
 
 
 # Allowlist for sanitize_note_html below — deliberately no <img> (an

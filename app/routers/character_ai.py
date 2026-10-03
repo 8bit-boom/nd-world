@@ -35,6 +35,7 @@ from ..database import SessionLocal, get_db
 from ..deps import check_llm_cooldown, get_world_ctx
 from ..models import PlayerCharacter, SheetTemplate, World
 from ..rules_render import strip_gm_directives
+from ..rendering import decode_html_bytes, html_to_sheet_text
 from ..templating import templates
 from ..pc_stats import pc_maxima
 from .. import sheet_systems as _sheet_systems
@@ -47,6 +48,7 @@ _PC_AI_JOBS: dict = {}
 _PC_AI_SEQ: list = [0]
 _MAX_IMPORT_BYTES = 12 * 1024 * 1024
 _TEXT_EXTS = {".md", ".txt", ".markdown"}
+_HTML_EXTS = {".html", ".htm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 _DRAFT_FORMAT = {
@@ -117,13 +119,20 @@ async def _extract_file_text(data: bytes, ext: str, hint: str) -> str:
             raise ValueError("This PDF has no extractable text (it may be a scan) — "
                              "upload its page as an IMAGE instead so the AI can read it visually.")
         return text
+    if ext in _HTML_EXTS:
+        text = html_to_sheet_text(decode_html_bytes(data))
+        if not text.strip():
+            raise ValueError("This HTML file has no readable text (the page may be built by scripts that did not run when "
+                             "it was saved) — print the finished page to PDF, or take a screenshot and upload that as an "
+                             "image instead.")
+        return text
     if ext in _IMAGE_EXTS:
         draft = await _ai.parse_character_from_images([data], hint=hint)
         return json.dumps(draft, indent=1, ensure_ascii=False)
     if ext in (".doc", ".docx", ".odt"):
         raise ValueError("Word documents aren't readable in this deployment — "
                          "export the sheet to PDF or plain text, or paste its contents.")
-    raise ValueError(f"Unsupported file type {ext!r} — use PDF, MD, TXT, JSON, "
+    raise ValueError(f"Unsupported file type {ext!r} — use PDF, HTML, MD, TXT, JSON, "
                      "an image, or paste the text.")
 
 
@@ -298,7 +307,7 @@ async def pc_ai_start(request: Request,
                 raise HTTPException(400, str(exc))
     if not prompt and not source_text:
         raise HTTPException(400, "Describe the character you want, or upload a sheet "
-                                 "(PDF / MD / TXT / JSON / image).")
+                                 "(PDF / HTML / MD / TXT / JSON / image).")
     if not _ai.effective_llm_api_key():
         raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System).")
 
