@@ -271,7 +271,7 @@ _SHEET_BLOCK_TAGS = {"p", "div", "section", "article", "header", "footer", "main
 _SHEET_SPACED_TAGS = {"p", "table", "ul", "ol", "dl", "form", "fieldset", "blockquote", "pre", "section", "article",
                       "details", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr"}
 _SHEET_SKIP_INPUTS = {"hidden", "password", "file", "button", "submit", "reset", "image", "color"}
-SHEET_TEXT_MAX_CHARS = 60_000
+SHEET_TEXT_MAX_CHARS = 200_000
 
 
 class _SheetTextParser(HTMLParser):

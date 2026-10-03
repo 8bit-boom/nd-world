@@ -17,7 +17,7 @@ def test_character_ai_rag_forced_off_for_players(client, seed, monkeypatch):
     from app.routers import character_ai as _cai
     captured = {}
 
-    async def _task(job_id, world_id, prompt, source_text, think, use_rag, template_id=0, source_limit=0):
+    async def _task(job_id, world_id, prompt, source_text, think, use_rag, template_id=0, source_limit=0, part_chars=0):
         captured["use_rag"] = use_rag
     monkeypatch.setattr(_cai, "_pc_ai_task", _task)
 
@@ -34,7 +34,7 @@ def test_character_ai_rag_stays_on_for_gm(client, seed, monkeypatch):
     from app.routers import character_ai as _cai
     captured = {}
 
-    async def _task(job_id, world_id, prompt, source_text, think, use_rag, template_id=0, source_limit=0):
+    async def _task(job_id, world_id, prompt, source_text, think, use_rag, template_id=0, source_limit=0, part_chars=0):
         captured["use_rag"] = use_rag
     monkeypatch.setattr(_cai, "_pc_ai_task", _task)
 

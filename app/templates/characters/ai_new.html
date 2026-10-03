@@ -163,22 +163,32 @@ const WORLD_SLUG = {{ world.slug | tojson }};
     form.scrollIntoView({ behavior: 'smooth' });
   }
 
-  // Shown when the uploaded sheet is longer than the GM's import limit (Settings → System): the model reads only the start.
+  // A long sheet is read in parts (condensed into notes, then the character is built from the notes); only a sheet beyond
+  // what even that can read is cut. Tell the player either way, because it takes longer / leaves something out.
   const cutBox = document.getElementById('ai-cut');
+  const num = n => Number(n || 0).toLocaleString();
   function showCut(d) {
-    if (!d.source_truncated) { cutBox.style.display = 'none'; cutBox.textContent = ''; return; }
-    cutBox.textContent = '⚠ Your sheet is ' + Number(d.source_chars).toLocaleString() + ' characters long; only the first '
-      + Number(d.source_limit).toLocaleString() + ' were read, so anything after that is missing from the draft — check it below, '
-      + 'or ask the GM to raise the limit (Settings → System).';
-    cutBox.style.display = '';
+    let msg = '';
+    if (d.source_truncated) {
+      msg = '⚠ Your sheet is ' + num(d.source_chars) + ' characters long — more than can be read even in parts. About '
+        + num(d.source_unread_chars) + ' characters at the end were left out, so check the draft below for anything missing.';
+    } else if (d.source_parts > 0) {
+      msg = 'ℹ Your sheet is long (' + num(d.source_chars) + ' characters), so it is read in ' + d.source_parts
+        + (d.source_parts === 1 ? ' part' : ' parts') + ' first and the character is then built from the notes — this takes longer.';
+    }
+    cutBox.textContent = msg;
+    cutBox.style.display = msg ? '' : 'none';
   }
 
   function poll(jobId, tries) {
-    if ((tries || 0) > 400) { status.textContent = '⚠ Still running after ~20 minutes.'; return; }
+    if ((tries || 0) > 800) { status.textContent = '⚠ Still running after ~40 minutes.'; return; }
     fetch('/api/characters/ai/' + jobId).then(r => r.json()).then(d => {
       if (d.status === 'running') {
         const el = d.elapsed || 0, m = Math.floor(el / 60), s = el % 60;
-        status.textContent = `⏳ Building your character… (${m > 0 ? m + 'm ' : ''}${s}s) — following this world's rules`;
+        const took = `(${m > 0 ? m + 'm ' : ''}${s}s)`;
+        status.textContent = d.stage === 'reading' && d.parts
+          ? `📖 Reading your sheet — part ${Math.max(1, d.part)} of ${d.parts}… ${took}`
+          : `⏳ Building your character… ${took} — following this world's rules`;
         setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
       } else if (d.status === 'error') {
         status.textContent = '⚠ ' + d.error;

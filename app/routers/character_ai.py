@@ -20,6 +20,7 @@ outlives Cloudflare's ~100 s no-byte timeout.
 import base64
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +32,7 @@ from .. import ai as _ai
 from .. import ai_queue as _ai_queue
 from .. import auth
 from .. import retrieval as _retrieval
-from ..constants import CHARACTER_IMPORT_DEFAULT_CHARS, CHARACTER_IMPORT_MAX_CHARS, CHARACTER_IMPORT_MIN_CHARS
+from ..constants import CHARACTER_IMPORT_AUTO_MIN_CHARS, CHARACTER_IMPORT_MAX_CHARS, CHARACTER_IMPORT_MIN_CHARS
 from ..database import SessionLocal, get_app_settings, get_db
 from ..deps import check_llm_cooldown, get_world_ctx
 from ..models import PlayerCharacter, SheetTemplate, World
@@ -52,18 +53,92 @@ _TEXT_EXTS = {".md", ".txt", ".markdown"}
 _HTML_EXTS = {".html", ".htm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
-def character_import_limit(settings) -> int:
-    """How many characters of an imported sheet the model is shown: the GM's Settings -> System value, else the
-    default. A hand-edited database value outside the allowed range is clamped and a non-number ignored, so a
-    bad row can never make the creator read nothing — or a sheet bigger than any context window."""
+# ── how much of an imported sheet the model reads ───────────────────────────────────────────────
+# A sheet that fits the model's context window (beside the world rules, the system prompt and room for the answer) goes
+# to the draft prompt as it is. A longer one is read in PARTS: each part is condensed into notes by the model, and the
+# character is built from the notes — so nothing is silently dropped. Only a sheet beyond MAX_SHEET_PARTS parts is cut,
+# and then the player is told.
+MAX_SHEET_PARTS = 8
+_RESPONSE_RESERVE_TOKENS = 2000      # the JSON draft itself: backstory paragraphs, equipment, stats
+_RAG_CHARS = 3000                    # _pc_ai_task keeps at most this much world lore
+_PROMPT_CHARS = 4000                 # ... and this much of the player's own request
+_NOTES_OUT_TOKENS = 1500             # what the model writes back for one part of a sheet
+
+_NOTES_SYSTEM = (
+    "You are preparing a long character sheet from another tabletop system so that the character can be rebuilt in a "
+    "different system. You are reading PART {part} OF {parts} of the sheet. Write compact plain-text notes that keep "
+    "EVERY fact needed to rebuild the character: name, player, race/species, class/archetype, level, attributes and "
+    "stats with their exact numbers, HP and other resources, skills, abilities / spells / feats (name plus a short "
+    "effect), equipment, appearance, backstory, relationships, goals. Keep numbers, names and spellings exactly as "
+    "written, in the sheet's own language. Group the notes under short headings, one fact per short line, no commentary, "
+    "and never invent anything that is not in the text. Use at most about {budget} characters in total."
+)
+
+
+def sheet_budgets(settings, *, source_text: str, system: str, header: str, prompt: str, use_rag: bool, think: bool) -> tuple:
+    """(limit, part_chars): how many characters of the sheet the draft prompt can take at once, and how many one
+    notes call can read. `limit` follows the model's context window — what rides along (system prompt, rules header,
+    the player's request, world lore) and room for the answer come off first — unless the GM set a number in
+    Settings -> System (clamped to its allowed range; junk means automatic). A part carries no rules, so it can be
+    bigger. Token counts use the same chars-per-token estimate the transcript chunking uses (denser scripts such as
+    Cyrillic get fewer characters)."""
+    cpt = _ai._chars_per_token_estimate
+    extra = (len(header) // cpt(header)
+             + (len(prompt[:_PROMPT_CHARS]) // cpt(prompt) if prompt else 0)
+             + (_RAG_CHARS // cpt(source_text) if use_rag else 0)
+             + _RESPONSE_RESERVE_TOKENS)
+    limit = _ai._transcript_chunk_char_budget(source_text, system, think, extra)
+    limit = max(CHARACTER_IMPORT_AUTO_MIN_CHARS, min(CHARACTER_IMPORT_MAX_CHARS, limit))
     raw = getattr(settings, "character_import_max_chars", None)
-    if raw is None:
-        return CHARACTER_IMPORT_DEFAULT_CHARS
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return CHARACTER_IMPORT_DEFAULT_CHARS
-    return max(CHARACTER_IMPORT_MIN_CHARS, min(CHARACTER_IMPORT_MAX_CHARS, value))
+    if raw is not None:
+        try:
+            limit = max(CHARACTER_IMPORT_MIN_CHARS, min(CHARACTER_IMPORT_MAX_CHARS, int(raw)))
+        except (TypeError, ValueError):
+            pass
+    part_chars = _ai._transcript_chunk_char_budget(source_text, _NOTES_SYSTEM.format(part=1, parts=1, budget=limit),
+                                                   False, _NOTES_OUT_TOKENS)
+    return limit, max(CHARACTER_IMPORT_AUTO_MIN_CHARS, part_chars)
+
+
+@dataclass
+class SheetPlan:
+    direct: bool                                   # fits in one go: goes to the draft prompt as it is
+    parts: list = field(default_factory=list)      # otherwise: the pieces to condense, in order
+    truncated: bool = False                        # more than MAX_SHEET_PARTS parts: the end is not read
+    unread_chars: int = 0
+
+
+def plan_sheet(text: str, limit: int, part_chars: int) -> SheetPlan:
+    """Decide how a sheet is read. `limit` <= 0 means no limit (a caller that never sized it)."""
+    if limit <= 0 or len(text) <= limit:
+        return SheetPlan(True)
+    parts = _ai._split_transcript_into_chunks(text, max(1, part_chars))
+    if len(parts) <= MAX_SHEET_PARTS:
+        return SheetPlan(False, parts)
+    kept = parts[:MAX_SHEET_PARTS]
+    return SheetPlan(False, kept, True, max(0, len(text) - sum(len(x) for x in kept)))
+
+
+async def _condense_sheet(job_id: int, plan: SheetPlan, limit: int) -> str:
+    """Read the parts one by one (plain text, no thinking) and return their notes joined, small enough that the
+    final draft prompt still fits `limit`. A part the model cannot read fails the whole job with its number."""
+    n = len(plan.parts)
+    budget = max(500, limit // n)
+    out = []
+    for i, part in enumerate(plan.parts, 1):
+        if job_id in _PC_AI_JOBS:
+            _PC_AI_JOBS[job_id].update(stage="reading", part=i, parts=n)
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": part}],
+            system=_NOTES_SYSTEM.format(part=i, parts=n, budget=budget), model="", think=False)
+        notes = (raw or "").strip()
+        if not notes or _ai.is_failure_sentinel(notes):
+            raise ValueError(f"The AI could not read part {i} of {n} of the sheet"
+                             + (f" ({notes[:160]})" if notes else "") + " — try again, or upload a shorter sheet.")
+        out.append(f"### Part {i} of {n}\n{notes[:budget]}")
+    if job_id in _PC_AI_JOBS:
+        _PC_AI_JOBS[job_id].update(stage="building", part=n, parts=n)
+    return "\n\n".join(out)
 
 
 _DRAFT_FORMAT = {
@@ -174,26 +249,61 @@ def _custom_sheet_prompt(tpl, rules: str) -> tuple:
     return system, schema
 
 
+def _draft_frame(db, world, tpl):
+    """(system prompt, response schema, rules header) for a draft — what every draft call carries besides the sheet,
+    the lore and the request. The start route sizes the sheet against this same frame the task then uses."""
+    rules = ""
+    try:
+        if tpl is not None:
+            digest = _sheet_systems.system_rules_markdown(tpl)
+            own = (world.rules_md or "").strip()
+            rules = "\n\n".join(p for p in (digest, ("## This world's own rules\n" + own) if own else "") if p)[:7000]
+        else:
+            rules = (_retrieval.world_rules_markdown(world) or "")[:6000]
+    except Exception:
+        rules = ""
+    stat_ids = ", ".join(_stats_ids())
+    system = (
+        "You are the character-creation assistant for a tabletop RPG. Create or "
+        "translate ONE PlayerCharacter for THIS world, strictly following its rules "
+        "below for stat ranges, level, HP computation, and tone. Return STRICT JSON only:\n"
+        '{"name": str, "player_name": str, "race": str, "char_class": str, '
+        '"level": int, "xp": int, "stats": {' + stat_ids.replace(", ", ": int, ") + ": int}, "
+        '"max_hp": int, "shock_max": int, "backstory": str (2-4 rich paragraphs, '
+        "in-world), \"notes\": str (play hooks, contacts, appearance), "
+        '"equipment": [{"name": str, "qty": int}]}\n'
+        "Rules: stats respect the world's rules (typical range and point budget); "
+        "max_hp follows the world's HP formula at that level; start low-level for a "
+        "new character unless the source clearly says otherwise; equipment is the "
+        "starting kit the rules give this class/race; every id in stats gets a "
+        "value. No comments, no markdown fences."
+    )
+    if tpl is not None:
+        system, draft_format = _custom_sheet_prompt(tpl, rules)
+        header = f"=== {tpl.name.upper()} RULES ===\n" + (rules or "(no written rules — use only what the field catalogue implies)")
+    else:
+        draft_format = _DRAFT_FORMAT
+        header = "=== WORLD RULES ===\n" + (rules or "(no custom rules — standard N&D)")
+    return system, draft_format, header
+
+
+def _usable_template(db, world_id, template_id):
+    tpl = db.get(SheetTemplate, template_id) if template_id else None
+    if tpl is not None and (tpl.sheet_mode != "custom" or tpl.world_id not in (None, world_id)):
+        return None            # only a custom system visible in this world drives a custom draft
+    return tpl
+
+
 @_ai_queue.serialized("character draft", "job")
 async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
                       source_text: str, think: bool, use_rag: bool, template_id: int = 0,
-                      source_limit: int = CHARACTER_IMPORT_DEFAULT_CHARS):
+                      source_limit: int = 0, part_chars: int = 0):
     db = SessionLocal()
     try:
         world = db.get(World, world_id)
-        tpl = db.get(SheetTemplate, template_id) if template_id else None
-        if tpl is not None and (tpl.sheet_mode != "custom" or tpl.world_id not in (None, world_id)):
-            tpl = None  # only a custom system visible in this world drives a custom draft
-        rules = ""
-        try:
-            if tpl is not None:
-                digest = _sheet_systems.system_rules_markdown(tpl)
-                own = (world.rules_md or "").strip()
-                rules = "\n\n".join(p for p in (digest, ("## This world's own rules\n" + own) if own else "") if p)[:7000]
-            else:
-                rules = (_retrieval.world_rules_markdown(world) or "")[:6000]
-        except Exception:
-            rules = ""
+        tpl = _usable_template(db, world_id, template_id)
+        system, draft_format, header = _draft_frame(db, world, tpl)
+        plan = plan_sheet(source_text, source_limit, part_chars) if source_text else None
         rag = ""
         if use_rag:
             try:
@@ -201,43 +311,29 @@ async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
                     db, world_id, (prompt or source_text)[:1500],
                     entity_limit=8, notes_limit=2)
                 if rag:
-                    rag = rag[:3000]
+                    rag = rag[:_RAG_CHARS]
             except Exception:
                 rag = ""
 
-        stat_ids = ", ".join(_stats_ids())
-        system = (
-            "You are the character-creation assistant for a tabletop RPG. Create or "
-            "translate ONE PlayerCharacter for THIS world, strictly following its rules "
-            "below for stat ranges, level, HP computation, and tone. Return STRICT JSON only:\n"
-            '{"name": str, "player_name": str, "race": str, "char_class": str, '
-            '"level": int, "xp": int, "stats": {' + stat_ids.replace(", ", ": int, ") + ": int}, "
-            '"max_hp": int, "shock_max": int, "backstory": str (2-4 rich paragraphs, '
-            "in-world), \"notes\": str (play hooks, contacts, appearance), "
-            '"equipment": [{"name": str, "qty": int}]}\n'
-            "Rules: stats respect the world's rules (typical range and point budget); "
-            "max_hp follows the world's HP formula at that level; start low-level for a "
-            "new character unless the source clearly says otherwise; equipment is the "
-            "starting kit the rules give this class/race; every id in stats gets a "
-            "value. No comments, no markdown fences."
-        )
-        if tpl is not None:
-            system, draft_format = _custom_sheet_prompt(tpl, rules)
-            header = f"=== {tpl.name.upper()} RULES ===\n" + (rules or "(no written rules — use only what the field catalogue implies)")
-        else:
-            draft_format = _DRAFT_FORMAT
-            header = "=== WORLD RULES ===\n" + (rules or "(no custom rules — standard N&D)")
         user_text = header
         if rag:
             user_text += "\n\n=== WORLD LORE (for names/places grounding) ===\n" + rag
         if source_text:
-            user_text += ("\n\n=== SOURCE SHEET (translate this character into this "
-                          "system's rules; keep its identity) ===\n" + source_text[:source_limit]
-                          + ("\n[…the rest of the sheet was cut off to fit — work from what is above…]"
-                             if len(source_text) > source_limit else ""))
+            if plan.direct:
+                user_text += ("\n\n=== SOURCE SHEET (translate this character into this "
+                              "system's rules; keep its identity) ===\n" + source_text)
+            else:
+                notes = await _condense_sheet(job_id, plan, source_limit)
+                user_text += (f"\n\n=== SOURCE SHEET (a long sheet, read in {len(plan.parts)} parts and condensed into notes; "
+                              "translate this character into this system's rules; keep its identity) ===\n" + notes)
+                if plan.truncated:
+                    user_text += (f"\n[…about {plan.unread_chars} characters at the end of the sheet could not be read — "
+                                  "work from what is above…]")
         if prompt:
             user_text += "\n\n=== PLAYER'S REQUEST ===\n" + prompt[:4000]
 
+        if job_id in _PC_AI_JOBS:
+            _PC_AI_JOBS[job_id].update(stage="building")
         raw = await _ai.generate_chat(
             [{"role": "user", "content": user_text}],
             system=system, model="", think=think, format=draft_format,
@@ -329,21 +425,31 @@ async def pc_ai_start(request: Request,
     if not _ai.effective_llm_api_key():
         raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System).")
 
-    source_limit = character_import_limit(get_app_settings(db))
+    # Size the sheet against the prompt it will ride in: read in one go if it fits the model's window, else in parts.
+    source_limit = part_chars = 0
+    plan = SheetPlan(True)
+    if source_text:
+        system, _fmt, header = _draft_frame(db, world, _usable_template(db, world.id, template_id))
+        source_limit, part_chars = sheet_budgets(get_app_settings(db), source_text=source_text, system=system,
+                                                 header=header, prompt=prompt, use_rag=use_rag, think=think)
+        plan = plan_sheet(source_text, source_limit, part_chars)
+    parts = 0 if plan.direct else len(plan.parts)
     job_id = _PC_AI_SEQ[0] + 1
     _PC_AI_SEQ[0] = job_id
     _PC_AI_JOBS[job_id] = {"status": "running", "started": time.time(),
-                           "user_id": user.id, "draft": None, "error": ""}
+                           "user_id": user.id, "draft": None, "error": "",
+                           "stage": "reading" if parts else "building", "part": 0, "parts": parts}
     done = [j for j, v in _PC_AI_JOBS.items() if v["status"] != "running"]
     while len(done) > 12:
         _PC_AI_JOBS.pop(done.pop(0), None)
 
     import asyncio
     asyncio.get_running_loop().create_task(
-        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag, template_id, source_limit))
-    # What the creator will read of the upload — the page tells the player when the end of a long sheet is cut.
-    return {"job_id": job_id, "status": "running", "source_chars": len(source_text),
-            "source_limit": source_limit, "source_truncated": len(source_text) > source_limit}
+        _pc_ai_task(job_id, world.id, prompt, source_text, think, use_rag, template_id, source_limit, part_chars))
+    # How the upload will be read: in one go (source_parts 0) or in that many parts; only a sheet beyond the part cap
+    # is cut (source_truncated, source_unread_chars) — the page tells the player.
+    return {"job_id": job_id, "status": "running", "source_chars": len(source_text), "source_limit": source_limit,
+            "source_parts": parts, "source_truncated": plan.truncated, "source_unread_chars": plan.unread_chars}
 
 
 @router.get("/api/characters/ai/{job_id}")
@@ -356,7 +462,8 @@ async def pc_ai_poll(job_id: int, request: Request):
     if not user or (not user.is_gm and user.id != job["user_id"]):
         raise HTTPException(403)
     if job["status"] == "running":
-        return {"status": "running", "elapsed": round(time.time() - job["started"])}
+        return {"status": "running", "elapsed": round(time.time() - job["started"]),
+                "stage": job.get("stage") or "building", "part": job.get("part") or 0, "parts": job.get("parts") or 0}
     if job["status"] == "error":
         return {"status": "error", "error": job["error"]}
     return {"status": "done", "draft": job["draft"]}

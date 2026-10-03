@@ -79,7 +79,7 @@ def test_survives_broken_markup_and_empty_input():
 
 def test_a_huge_page_is_capped_with_a_note():
     t = html_to_sheet_text("<p>" + ("word " * 100_000) + "</p>")
-    assert len(t) < 70_000 and t.rstrip().endswith("(truncated)")
+    assert 150_000 < len(t) < 210_000 and t.rstrip().endswith("(truncated)")
 
 
 # ── the upload path ─────────────────────────────────────────────────────────────────────────────
@@ -217,14 +217,26 @@ def test_cyrillic_survives_end_to_end():
     assert "# Мирабель «Мира»" in t and "Пороховая Ведьма · Охотница" in t
 
 
-def test_a_sheet_longer_than_the_models_window_says_so_instead_of_silently_stopping(client, seed, monkeypatch):
-    seen = {}
-    _patch_gen(monkeypatch, seen)
+def test_a_sheet_longer_than_the_models_window_is_read_in_parts_not_cut(client, seed, monkeypatch):
+    calls = []
+
+    async def fake_generate_chat(messages, **kw):
+        calls.append((kw.get("format") is not None, messages[0]["content"]))
+        return ('{"name": "Bardoc", "race": "Half-elf", "char_class": "Bard", "level": 3, "stats": {}, "backstory": "x"}'
+                if kw.get("format") is not None else "notes about the character")
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    monkeypatch.setattr(ai_module, "UNSLOTH_API_KEY", "sk-test")
+    monkeypatch.setattr(ai_module, "_llm_context_tokens_override", 8192)          # a small window
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
-    long_page = "<html><body>" + "".join(f"<p>Line {n} of a very long sheet with plenty of words in it.</p>" for n in range(900)) + "</body></html>"
+    long_page = ("<html><body>" + "".join(f"<p>Line {n} of a very long sheet with plenty of words in it.</p>" for n in range(900))
+                 + "<p>THE-LAST-LINE</p></body></html>")
     r = client.post("/api/characters/ai/start", files={"file": ("long.html", io.BytesIO(long_page.encode()), "text/html")},
                     data={"prompt": "", "use_rag": "false"})
     assert r.status_code == 200, r.text
+    assert r.json()["source_parts"] >= 1 and r.json()["source_truncated"] is False
     assert _poll(client, r.json()["job_id"])["status"] == "done"
-    assert "was cut off to fit" in seen["user_text"]
+    notes_texts = [t for is_draft, t in calls if not is_draft]
+    assert notes_texts and "THE-LAST-LINE" in notes_texts[-1]          # the end of the page was read, not dropped
+    assert calls[-1][0] is True and "was cut off" not in calls[-1][1]

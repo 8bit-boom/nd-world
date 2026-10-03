@@ -155,6 +155,11 @@ tools that require GM access still check `is_gm` at call time.)
   first-come queue for its whole run — decorate a new job runner with `@ai_queue.serialized("label")` (the 202+poll tasks and
   all four job engines already are; `tests/test_ai_queue.py` lists them and fails for one that is missing). Never take the slot
   from code already running inside a queued task (it would wait for itself), and don't queue live streams.
+- **The AI character creator reads an imported sheet in one go if it fits, else in parts** (`routers/character_ai.py`:
+  `sheet_budgets` sizes it from the model's context window — what rides along comes off first — and `plan_sheet` /
+  `_condense_sheet` turn a longer sheet into notes part by part, up to `MAX_SHEET_PARTS`). Settings → System
+  `character_import_max_chars` only overrides the one-go size. Reuse `ai._transcript_chunk_char_budget` /
+  `_split_transcript_into_chunks` for any new long-input feature rather than a fixed character cut.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

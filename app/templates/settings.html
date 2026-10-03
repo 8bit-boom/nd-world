@@ -215,17 +215,17 @@
         </small>
       </div>
       <div class="form-group">
-        <label for="character-import-max-chars">Max sheet length for AI character import (characters)</label>
+        <label for="character-import-max-chars">Sheet length read in one go for AI character import (characters)</label>
         <input id="character-import-max-chars" type="number" step="1" min="{{ character_import_min }}" max="{{ character_import_max }}"
                name="character_import_max_chars"
                value="{{ settings.character_import_max_chars if settings.character_import_max_chars is not none else '' }}"
-               placeholder="{{ character_import_default }} (default)" style="max-width:220px">
+               placeholder="automatic" style="max-width:220px">
         <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">
-          How much of an imported character sheet (PDF / HTML / text) the AI character creator reads; anything past it is
-          cut off, and the player is told when that happens. Raise it for long sheets — but the whole sheet has to fit the
-          model's context window together with the world rules and the answer (about 3 characters per token, fewer for
-          non-Latin text), so keep it well under the window set above. {{ character_import_min }}–{{ character_import_max }};
-          blank = {{ character_import_default }}. Applies from the next import, no restart.
+          Leave blank (recommended): the length is worked out automatically from the context window above, so a bigger
+          window reads more of an imported sheet at once. A sheet longer than that is not cut off — the creator reads it
+          in parts (up to 8), condenses each into notes and builds the character from the notes; this just takes longer.
+          Type a number ({{ character_import_min }}–{{ character_import_max }}) only to force a smaller or larger size; keep it
+          well under the context window (about 4 characters per token, about 2 for non-Latin text).
         </small>
       </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Legacy Ollama backend</h2>

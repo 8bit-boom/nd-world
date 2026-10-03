@@ -49,7 +49,9 @@ ND_DEFAULT_CURRENCY = [
 # Upper bound for World.max_characters_per_player — the GM's "Characters per player" setting is clamped to 1..this.
 MAX_CHARACTERS_PER_PLAYER = 20
 
-# How much of an uploaded character sheet the AI character creator reads (Settings -> System can raise it).
-CHARACTER_IMPORT_DEFAULT_CHARS = 12000
+# How much of an uploaded character sheet the AI character creator reads IN ONE GO. By default that is worked out from
+# the model's context window (never below AUTO_MIN); Settings -> System can override it with a number in MIN..MAX.
+# A longer sheet is read in parts, not cut (routers/character_ai.py).
 CHARACTER_IMPORT_MIN_CHARS = 2000
+CHARACTER_IMPORT_AUTO_MIN_CHARS = 3000
 CHARACTER_IMPORT_MAX_CHARS = 60000
