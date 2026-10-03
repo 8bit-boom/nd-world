@@ -955,7 +955,7 @@ no way to sign up otherwise.
 - See any **notes** the GM has attached to a visible entity and un-hidden — the
   entity's own visibility and each note's visibility are independent, so the GM can
   show you a location while still keeping a couple of secret notes on it GM-only
-- Create and manage **one character** via the [creation wizard](#character-creation-wizard--export),
+- Create and manage your character(s) — **one** by default, more if the GM raises the world's *Characters per player* — via the [creation wizard](#character-creation-wizard--export),
   including live HP/Shock/PP/MP tracking and `.ndc` export
 - View party members' characters read-only, if the GM has enabled that
 - Read private notes the GM has written to you (**🔒 My Notes** in the nav)

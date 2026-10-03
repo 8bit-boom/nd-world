@@ -11,10 +11,20 @@
     <a href="{{ (('/player-cockpit?pc=' ~ my_character.id) if my_character else '/player-cockpit')|wq }}" class="btn-secondary" style="text-decoration:none" title="Your live table dashboard — party vitals, quests, dice, maps{% if my_character %}, opened on {{ my_character.name }}{% endif %}">🎛 Cockpit</a>
     {% endif %}
     <a href="{{ '/characters/templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">🗒 Systems &amp; Templates</a>
+    {% if can_create_character %}
     <a href="{{ '/characters/ai-new'|wq }}" class="btn-secondary" style="text-decoration:none">✨ Create with AI</a>
     <a href="{{ '/characters/new'|wq }}" class="btn-primary">+ New Character</a>
+    {% endif %}
   </div>
 </div>
+{% if user and not user.is_gm and my_character %}
+<p style="margin:-.9rem 0 1.2rem;font-size:.8rem;color:var(--text-dim)">
+  Your characters: <strong style="color:var(--text)">{{ my_character_count }} of {{ character_limit }}</strong>
+  {% if not can_create_character %}— you're at this world's limit. Delete one to make a new character, or ask your GM to raise the limit.{% endif %}
+</p>
+{% elif user and not user.is_gm and character_limit > 1 %}
+<p style="margin:-.9rem 0 1.2rem;font-size:.8rem;color:var(--text-dim)">Your characters: <strong style="color:var(--text)">0 of {{ character_limit }}</strong></p>
+{% endif %}
 
 {% if my_party %}
 <div style="background:var(--bg2);border:1px solid var(--neon);border-radius:6px;padding:.9rem 1.1rem;margin-bottom:1.2rem;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
@@ -54,7 +64,7 @@
   {# The card is a <div> with ONE stretched link (.pc-card-main::after covers it). Links inside
      a link (the party badge) are invalid HTML and browsers tear the card apart. #}
   <div class="pc-card"
-     {% if my_character and pc.id == my_character.id %}style="outline:2px solid var(--neon);outline-offset:-2px"{% endif %}>
+     {% if pc.id in my_character_ids %}style="outline:2px solid var(--neon);outline-offset:-2px"{% endif %}>
     <div class="pc-card-portrait">
       {# The initial is ALWAYS the backdrop and the image overlays it when
          loaded — over a slow tunnel a lazy portrait used to render as a
@@ -68,7 +78,7 @@
     <div class="pc-card-body">
       <div class="pc-card-name">
         <a class="pc-card-main" href="{{ ('/characters/' + pc.id|string)|wq }}">{{ pc.name }}</a>
-        {% if my_character and pc.id == my_character.id %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">YOURS</span>{% endif %}
+        {% if pc.id in my_character_ids %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">YOURS</span>{% endif %}
         {% if pc.id in levelup_ready %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle" title="XP crossed the threshold — open the sheet to apply">⬆ Level-up</span>{% endif %}
         {% if user and user.is_gm and pc.owner_user_id and owner_names.get(pc.owner_user_id) %}<span style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">👤 {{ owner_names[pc.owner_user_id] }}</span>{% endif %}
         {% if ppt %}<a href="{{ ('/parties/' + ppt.id|string)|wq }}" style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle;text-decoration:none">🛡 {{ ppt.name }}</a>{% endif %}

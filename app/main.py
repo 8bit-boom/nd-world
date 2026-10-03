@@ -110,7 +110,7 @@ from . import job_shutdown as _job_shutdown
 from . import backups as _backups
 from . import diagnostics as _diagnostics
 from . import auth as _auth
-from .constants import KINDS, SUBTYPES, KIND_ICONS
+from .constants import KINDS, SUBTYPES, KIND_ICONS, MAX_CHARACTERS_PER_PLAYER
 
 BASE_DIR = Path(__file__).parent.parent
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
@@ -1712,6 +1712,7 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
         # player/assistant roles, just not mint a co-owner (member_set_role
         # enforces this server-side regardless of what the form shows).
         "viewer_is_gm": bool(viewer and viewer.is_gm),
+        "max_characters_cap": MAX_CHARACTERS_PER_PLAYER,
     })
 
 @app.post("/worlds/{world_id}/edit")
@@ -1723,6 +1724,7 @@ def world_edit_post(
     font: str = Form(""),
     font_size: str = Form("100"),
     players_see_party: Optional[str] = Form(None),
+    max_characters_per_player: Optional[str] = Form(None),
     players_can_download_rules: Optional[str] = Form(None),
     players_can_download_entities: Optional[str] = Form(None),
     players_can_ask_ai: Optional[str] = Form(None),
@@ -1744,6 +1746,11 @@ def world_edit_post(
     w.font = _sanitize_font(font, fallback=w.font)
     w.font_size = _sanitize_font_size(font_size, fallback=w.font_size or 100)
     w.players_see_party = bool(players_see_party)
+    # None = the field wasn't in the form (an older cached page, another client): keep what the GM set. Present but empty
+    # or not a number -> back to the default of 1. Anything else is clamped to 1..MAX.
+    if max_characters_per_player is not None:
+        raw = max_characters_per_player.strip()
+        w.max_characters_per_player = max(1, min(MAX_CHARACTERS_PER_PLAYER, int(raw))) if raw.isdigit() else 1
     w.players_can_download_rules = bool(players_can_download_rules)
     w.players_can_download_entities = bool(players_can_download_entities)
     w.players_can_ask_ai = bool(players_can_ask_ai)
@@ -3374,11 +3381,11 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
         if not el.get("hidden")
         and (el.get("type") != "token" or el.get("visible_to_players", True))
     ]
-    own_pc_id, own_pc_currency = None, []
+    own_pc_id, own_pc_currency, own_pc_ids = None, [], []
     if user and not user.is_gm:
-        pc = db.query(PlayerCharacter).filter(
-            PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
-        ).first()
+        own_pcs = _own_pcs_for_schematic(db, s, user)
+        own_pc_ids = [c.id for c in own_pcs]
+        pc = _active_own_pc(own_pcs, elements)
         if pc:
             own_pc_id = pc.id
             own_pc_currency = json.loads(pc.currency_json or "[]")
@@ -3391,7 +3398,7 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
             if ordered and 0 <= cs.active_idx < len(ordered):
                 active_combatant_id = ordered[cs.active_idx].get("id")
             combat_round = cs.round_num
-    return elements, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round
+    return elements, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids
 
 
 @app.get("/maps/schematic/{slug}/view", response_class=HTMLResponse)
@@ -3404,7 +3411,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         raise HTTPException(404)
     worlds = _visible_worlds(request, db)
     user = getattr(request.state, "user", None)
-    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
+    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids = _schematic_player_payload(db, s, user)
     _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
     return templates.TemplateResponse("schematic_view.html", {
         "request": request, "world": world, "worlds": worlds,
@@ -3414,6 +3421,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         "grid_type": s.grid_type or "none",
         "grid_config_json": s.grid_config_json or "{}",
         "own_pc_id": own_pc_id,
+        "own_pc_ids": own_pc_ids,
         "own_pc_currency_json": json.dumps(own_pc_currency),
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
@@ -3429,12 +3437,13 @@ def schematic_player_view_json(slug: str, request: Request, db: Session = Depend
     if not world or s.world_id != world.id:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
-    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
+    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids = _schematic_player_payload(db, s, user)
     return {
         "elements": visible,
         "image_url": s.image_url,
         "party_pins": _party_pins_for(db, s.world_id, "schematic", slug, request),
         "own_pc_id": own_pc_id,
+        "own_pc_ids": own_pc_ids,
         "own_pc_currency": own_pc_currency,
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
@@ -3499,10 +3508,8 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
         if not el:
             raise HTTPException(404)
         if not user.is_gm:
-            pc = db.query(PlayerCharacter).filter(
-                PlayerCharacter.world_id == s2.world_id, PlayerCharacter.owner_user_id == user.id
-            ).first()
-            if not pc or el.get("pc_id") != pc.id:
+            # Any of the player's OWN characters (the world may allow several per player)
+            if el.get("pc_id") not in {c.id for c in _own_pcs_for_schematic(db, s2, user)}:
                 raise HTTPException(403, "Not your character's token")
             if not el.get("visible_to_players", True):
                 raise HTTPException(403)
@@ -3533,10 +3540,22 @@ def _merge_equipment_item(pc: PlayerCharacter, name: str, qty: int):
     pc.equipment_json = json.dumps(equipment)
 
 
-def _own_pc_for_schematic(db: Session, s: Schematic, user) -> Optional[PlayerCharacter]:
+def _own_pcs_for_schematic(db: Session, s: Schematic, user) -> list:
+    """Every character the player owns in the schematic's world, oldest first (a world may allow several per player)."""
     return db.query(PlayerCharacter).filter(
         PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
-    ).first()
+    ).order_by(PlayerCharacter.id).all()
+
+
+def _active_own_pc(own_pcs: list, elements: list) -> Optional[PlayerCharacter]:
+    """Which of a player's characters is "them" on this map: the first with a token on it, else their first. Item
+    pickups and merchant purchases are credited to this one."""
+    on_map = {e.get("pc_id") for e in elements if e.get("type") == "token" and e.get("pc_id")}
+    return next((c for c in own_pcs if c.id in on_map), own_pcs[0] if own_pcs else None)
+
+
+def _own_pc_for_schematic(db: Session, s: Schematic, user) -> Optional[PlayerCharacter]:
+    return _active_own_pc(_own_pcs_for_schematic(db, s, user), json.loads(s.elements_json or "[]"))
 
 
 @app.post("/api/maps/schematic/{slug}/pickup-item")

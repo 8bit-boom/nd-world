@@ -45,3 +45,6 @@ ND_DEFAULT_CURRENCY = [
     {"label": "Creds",  "abbr": "CR", "value": 0},
     {"label": "Tokens", "abbr": "TK", "value": 0},
 ]
+
+# Upper bound for World.max_characters_per_player — the GM's "Characters per player" setting is clamped to 1..this.
+MAX_CHARACTERS_PER_PLAYER = 20

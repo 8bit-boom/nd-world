@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai
@@ -39,7 +39,7 @@ from ..templating import templates
 from ..pc_stats import pc_maxima
 from .. import sheet_systems as _sheet_systems
 from ..sheet_systems import system_label, system_rules_markdown
-from .characters import _can_manage_character, _pc_to_markdown
+from .characters import _can_manage_character, _limit_reached_message, _own_characters, _pc_to_markdown, character_limit
 
 router = APIRouter()
 
@@ -266,6 +266,11 @@ async def pc_ai_start(request: Request,
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(403)
+    # No point drafting a character the world's limit won't let this player save (Apply posts to /characters/new).
+    if not user.is_gm:
+        owned = len(_own_characters(db, world.id, user.id))
+        if owned >= character_limit(world):
+            raise HTTPException(400, _limit_reached_message(owned, character_limit(world)))
     # RAG retrieval runs UNFILTERED for player callers unless gated (see
     # _pc_ai_task's smart_world_context call — user=None means GM
     # visibility: hidden entities, GM-only notes, un-stripped [gmonly]
@@ -337,6 +342,10 @@ def pc_ai_page(request: Request, template_id: int = 0, db: Session = Depends(get
     if not world:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
+    if user and not user.is_gm:
+        mine = _own_characters(db, world.id, user.id)
+        if len(mine) >= character_limit(world):
+            return RedirectResponse(f"/characters/{mine[0].id}" if len(mine) == 1 else "/characters", status_code=303)
     systems = (db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom")
                .filter((SheetTemplate.world_id.is_(None)) | (SheetTemplate.world_id == world.id))
                .order_by(SheetTemplate.name).all())

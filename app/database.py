@@ -1060,6 +1060,8 @@ def _migrate():
             w_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()]
             if "players_see_party" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_see_party BOOLEAN DEFAULT 1"))
+            if "max_characters_per_player" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN max_characters_per_player INTEGER DEFAULT 1"))
             if "players_can_download_rules" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_download_rules BOOLEAN DEFAULT 0"))
             if "players_can_download_entities" not in w_cols:

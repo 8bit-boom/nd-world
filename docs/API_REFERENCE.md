@@ -247,7 +247,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/characters/catalog` | Player | Race/profession/feat/equipment catalog JSON that powers the wizard frontend. |
 | POST | `/api/characters/upload-image` | Player | Image upload for the shared rich-text toolbar on player-writable character fields (reuses the portrait-upload pipeline). |
 | POST | `/api/characters/upload-media` | Player | Player-reachable equivalent of `/api/upload-media` — also accepts audio/video for the backstory/notes fields' toolbar. |
-| POST | `/characters/new` | Player | Submits the finished wizard, creating a `PlayerCharacter`. |
+| POST | `/characters/new` | Player | Submits the finished wizard, creating a `PlayerCharacter`. A player is limited to the world's `max_characters_per_player` (default 1; GM-set on the world's Edit page) — 400 past it. |
 | GET | `/characters/{pc_id}` | Player | Character sheet — stats, HP/Shock/PP/MP tracking, equipment, feats. For the character's **owner** it is also the player's hub: a tab bar (Sheet / Journey / Quests & goals / Notes & journal / Known world / Schedule, deep-linkable as `#hub-<tab>`) over the sheet, on both the native and custom sheet layouts. Anyone else viewing the sheet (GM, party-mates) gets the plain sheet. A global GM looking at someone else's character gets the same tab bar read-only (no Notes & journal tab, no claiming, banner naming the owning player). The Sheet tab itself is split into pages by a strip under the header (native sheet: Overview / Feats & gear / Story / Dice; custom sheets: `sheet_systems.sheet_pages` — per-system groups for Hunt in the Moonlight and Asterion, one page per section for any other template with 4+ sections, sections nobody placed on a "More" page) plus an **All** view; the last page is remembered per character, and printing/PDF shows everything. |
 | POST | `/characters/{pc_id}/owner` | GM | Links (or unlinks) a `PlayerCharacter` to a connected player's account. |
 | GET | `/characters/{pc_id}/edit` | Player | Edit form (own character, or any if GM). |
@@ -279,7 +279,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/characters/{pc_id}/hub/entries/{entry_id}/delete` | Owner | Deletes an entry. Entries are also deleted with the character (delete / retire-to-NPC) and with the world. |
 | POST | `/api/characters/{pc_id}/hub/loot` | Owner | Journey tab: `{action: "claim"\|"unclaim", lid}` marks a party-stash item for the owner's own character only (a body `pc_id` is ignored). Not tied to the Parties section level — the Journey tab already shows a player their own party's stash; handing items over (`give`) stays on the party page. 409 if the item is gone. |
 | POST | `/api/worlds/{world_id}/characters/sync` | Player | Creates a new character from a NeonDragonsApp sync payload (upsert-by-name). |
-| GET | `/api/me` | Player | The caller's own user info (id, display name, is_gm, active world) — used by the Android app and frontend JS. |
+| GET | `/api/me` | Player | The caller's own user info (id, display name, is_gm, active world) — used by the Android app and frontend JS. Each world lists `character_id` (the first character), `character_ids` (all of them) and `max_characters` (the world's per-player limit). |
 | POST | `/api/characters/roll` | Player | Server-side dice roller (stat/skill checks) used by the character sheet. |
 | POST | `/characters/{pc_id}/retire-to-npc` | GM | Converts a retired player character into a `character`-kind Entity, preserving its lore. |
 

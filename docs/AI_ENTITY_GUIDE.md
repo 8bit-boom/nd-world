@@ -452,8 +452,8 @@ Other JSON fields, all `[...]` arrays of objects:
 
 - `owner_user_id`: `NULL` = GM-managed (an NPC-as-PC, or pre-dates player
   accounts). Set automatically to the logged-in user's id when a non-GM
-  player creates their character — **one character per player per world**;
-  a second attempt 400s. As GM, every character you create has
+  player creates their character — **at most `World.max_characters_per_player` per player
+  per world** (default 1; the GM raises it on the world's Edit page); past it, the create 400s. As GM, every character you create has
   `owner_user_id = NULL` regardless.
 
 ### Routes

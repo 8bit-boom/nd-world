@@ -303,10 +303,36 @@ def _current_user(request: Request):
     return getattr(request.state, "user", None)
 
 
-def _own_character(db: Session, world_id: int, user_id: int) -> Optional[PlayerCharacter]:
+def _own_characters(db: Session, world_id: int, user_id: int) -> list:
+    """Every character `user_id` owns in the world, oldest first."""
     return db.query(PlayerCharacter).filter(
         PlayerCharacter.world_id == world_id, PlayerCharacter.owner_user_id == user_id
-    ).first()
+    ).order_by(PlayerCharacter.id).all()
+
+
+def _own_character(db: Session, world_id: int, user_id: int) -> Optional[PlayerCharacter]:
+    """The player's FIRST (oldest) character — what code that predates the per-world character limit means by "the"
+    character. Use _own_characters where more than one can matter."""
+    mine = _own_characters(db, world_id, user_id)
+    return mine[0] if mine else None
+
+
+def character_limit(world) -> int:
+    """How many characters one player may own in `world` (World.max_characters_per_player; 1 = the classic rule)."""
+    try:
+        return max(1, int(getattr(world, "max_characters_per_player", None) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _limit_reached_message(owned: int, limit: int, *, sync: bool = False) -> str:
+    """The 400 text for a player who is at the limit. The limit-of-one wording is the original, kept verbatim."""
+    if limit <= 1:
+        return ("You already have a character in this world — use PUT .../sync to update it." if sync
+                else "You already have a character in this world.")
+    return (f"You already have {owned} characters in this world — the limit is {limit}. "
+            + ("Use PUT .../sync to update one, or delete one" if sync else "Delete one")
+            + ", or ask your GM to raise the limit.")
 
 
 def _levelup_ready(pc: PlayerCharacter) -> bool:
@@ -379,7 +405,12 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
     derived = {pc.id: _derived(pc) for pc in pcs}
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
     custom_tpl_ids = {t.id for t in sheet_templates_list if t.sheet_mode == "custom"}
-    my_character = _own_character(db, world.id, user.id) if (world and user and not user.is_gm) else None
+    my_characters = _own_characters(db, world.id, user.id) if (world and user and not user.is_gm) else []
+    my_character = my_characters[0] if my_characters else None
+    my_ids = {c.id for c in my_characters}
+    limit = character_limit(world) if world else 1
+    # The "+ New Character" / "Create with AI" buttons: a GM always; a player while under the world's limit.
+    can_create = bool(user and (user.is_gm or len(my_characters) < limit))
 
     # Party badges + the player's own-party shortcut: one pass over the
     # world's parties, membership read from the JSON lists.
@@ -391,7 +422,7 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
             ids = _member_ids(party.member_pc_ids_json)
             for pcid in ids:
                 pc_party.setdefault(pcid, party)
-            if my_character is not None and my_character.id in ids:
+            if my_ids and my_ids.intersection(ids) and my_party is None:
                 my_party = party
 
     # Custom-system cards show their vital tracks (Health 3/5 ...) instead of
@@ -418,7 +449,8 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
         "pcs": pcs, "derived": derived,
         "sheet_templates": sheet_templates_list,
         "custom_tpl_ids": custom_tpl_ids, "custom_tracks": custom_tracks,
-        "user": user, "my_character": my_character,
+        "user": user, "my_character": my_character, "my_character_ids": my_ids,
+        "character_limit": limit, "my_character_count": len(my_characters), "can_create_character": can_create,
         "q": term, "sort": sort,
         "pc_party": pc_party, "owner_names": owner_names, "my_party": my_party,
         "levelup_ready": {pc.id for pc in pcs if _levelup_ready(pc)},
@@ -439,10 +471,11 @@ def character_new_form(
         raise HTTPException(400, "No world selected")
     user = _current_user(request)
     if user and not user.is_gm:
-        existing = _own_character(db, world.id, user.id)
-        if existing:
-            # One character per player per world — go straight to their sheet.
-            return RedirectResponse(f"/characters/{existing.id}", status_code=303)
+        mine = _own_characters(db, world.id, user.id)
+        if len(mine) >= character_limit(world):
+            # At the limit. With a single character that is "go straight to your sheet" (the original behaviour);
+            # with several, back to the list where they all are.
+            return RedirectResponse(f"/characters/{mine[0].id}" if len(mine) == 1 else "/characters", status_code=303)
     # Pre-select template if given
     chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.id == template_id).first() if template_id else None
     if not chosen_tpl:
@@ -524,8 +557,9 @@ async def character_create(
     user = _current_user(request)
     owner_id = None
     if user and not user.is_gm:
-        if _own_character(db, world.id, user.id):
-            raise HTTPException(400, "You already have a character in this world.")
+        owned = len(_own_characters(db, world.id, user.id))
+        if owned >= character_limit(world):
+            raise HTTPException(400, _limit_reached_message(owned, character_limit(world)))
         owner_id = user.id
     form = await request.form()
     data = dict(form)
@@ -826,16 +860,15 @@ def character_set_owner(
             WorldMembership.world_id == pc.world_id, WorldMembership.user_id == target.id
         ).first():
             raise HTTPException(400, "That player isn't invited to this world")
-        other = db.query(PlayerCharacter).filter(
-            PlayerCharacter.world_id == pc.world_id,
-            PlayerCharacter.owner_user_id == target.id,
-            PlayerCharacter.id != pc.id,
-        ).first()
-        if other:
+        others = [c for c in _own_characters(db, pc.world_id, target.id) if c.id != pc.id]
+        limit = character_limit(db.get(World, pc.world_id))
+        if len(others) >= limit:
+            who = target.display_name or target.email
+            if limit <= 1:
+                raise HTTPException(400, f'{who} already owns "{others[0].name}" in this world — unassign that one first.')
             raise HTTPException(
-                400,
-                f'{target.display_name or target.email} already owns "{other.name}" in this world — unassign that one first.',
-            )
+                400, f"{who} already owns {len(others)} characters in this world — the limit is {limit}. "
+                     "Unassign one first, or raise the limit in the world's settings.")
         pc.owner_user_id = target.id
         if not pc.player_name:
             pc.player_name = target.display_name or target.email
@@ -2012,8 +2045,10 @@ async def character_sync_create(world_id: int, request: Request, db: Session = D
     world = db.query(World).filter(World.id == world_id).first()
     if not world or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
-    if _own_character(db, world_id, user.id):
-        raise HTTPException(400, "You already have a character in this world — use PUT .../sync to update it.")
+    if not user.is_gm:
+        owned = len(_own_characters(db, world_id, user.id))
+        if owned >= character_limit(world):
+            raise HTTPException(400, _limit_reached_message(owned, character_limit(world), sync=True))
     body = await request.json()
     pc = PlayerCharacter(world_id=world_id, owner_user_id=user.id, name="Unnamed")
     _apply_sync_json(pc, body)
@@ -2040,13 +2075,16 @@ def api_me(request: Request, db: Session = Depends(get_db)):
         )
     world_list = []
     for w in worlds:
-        pc = _own_character(db, w.id, user.id)
+        mine = _own_characters(db, w.id, user.id)
+        pc = mine[0] if mine else None
         # slug lets a caller select this world via the ?w=<slug> query param
         # (see deps.resolve_world_slug) on any world-scoped endpoint, e.g.
         # /api/import/execute — added for NeonDragonsEditor's export flow.
         # Additive only: existing clients (NeonDragonsApp's Gson-based
         # MeWorldDto) simply ignore JSON fields they don't declare.
-        world_list.append({"id": w.id, "name": w.name, "slug": w.slug, "character_id": pc.id if pc else None})
+        # character_id stays the FIRST character for clients written for one-per-player; character_ids lists them all.
+        world_list.append({"id": w.id, "name": w.name, "slug": w.slug, "character_id": pc.id if pc else None,
+                           "character_ids": [c.id for c in mine], "max_characters": character_limit(w)})
     return {
         "user": {"id": user.id, "email": user.email, "is_gm": user.is_gm},
         "worlds": world_list,

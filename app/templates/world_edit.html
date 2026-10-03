@@ -55,6 +55,14 @@
              style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_see_party %}checked{% endif %}>
       <label for="players-see-party" style="margin:0">Players can see each other's characters (party roster)</label>
     </div>
+    <div class="form-group">
+      <label for="max-characters">Characters per player</label>
+      <input type="number" id="max-characters" name="max_characters_per_player" min="1" max="{{ max_characters_cap }}" step="1"
+             value="{{ edit_world.max_characters_per_player or 1 }}" style="width:6rem">
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">How many characters each player may create in this world (1–{{ max_characters_cap }}). 1 is the classic
+        one-character-per-player rule; raise it so players can make an alt or a replacement themselves. Lowering it never deletes
+        anything — it only stops new ones. Characters you make for a player aren't blocked by it.</p>
+    </div>
     <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-download-rules" name="players_can_download_rules" value="1"
              style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_download_rules %}checked{% endif %}>

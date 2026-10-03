@@ -65,6 +65,7 @@ let partyPins = JSON.parse({{ party_pins_json | tojson }});
 let gridType   = {{ grid_type | tojson }};
 let gridConfig = JSON.parse({{ grid_config_json | tojson }});
 const OWN_PC_ID = {{ own_pc_id | default(none) | tojson }};
+const OWN_PC_IDS = {{ own_pc_ids | default([]) | tojson }};   // every character this player may drag (a world can allow several)
 let ownPcCurrency = JSON.parse({{ own_pc_currency_json | default('[]') | tojson }});
 let activeCombatantId = {{ combat_active_combatant_id | default(none) | tojson }};
 let combatRound = {{ combat_round | default(none) | tojson }};
@@ -85,7 +86,7 @@ function redraw() {
     if (!g) return;
     if (el.type === 'token') {
       g.dataset.id = el.id;
-      if (OWN_PC_ID && el.pc_id === OWN_PC_ID && !el.locked) {
+      if (OWN_PC_IDS.length && OWN_PC_IDS.includes(el.pc_id) && !el.locked) {
         g.classList.add('own-token');
         wireDrag(g, el);
       } else if (el.source === 'item') {

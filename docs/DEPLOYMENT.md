@@ -702,8 +702,8 @@ Players only see worlds they've been invited to, and lore is filtered by each
 entity's **Visibility** setting (on the entity's edit page): **Everyone**,
 **GM only**, or **Specific players** — pick the last one to share a secret
 with just one or two party members instead of the whole table. They manage
-one character each (via the character creation wizard, or
-directly on their sheet), and — if you leave **Players can see each other's
+one character each by default (via the character creation wizard, or
+directly on their sheet) — raise **Characters per player** on the world's Edit page so they can make alts or replacements themselves, and — if you leave **Players can see each other's
 characters** checked on the world's Edit page — can see the rest of the party
 read-only.
 

@@ -86,6 +86,10 @@ class World(Base):
     hero_style = Column(String(16), default="home")
     # Whether player members can see each other's Player Characters (read-only) or only their own.
     players_see_party = Column(Boolean, default=True)
+    # How many Player Characters one player may own in this world. 1 (the default) is the original one-character-per-player
+    # rule; the GM raises it so players can make alts / replacements themselves. Never deletes anything when lowered — it
+    # only stops NEW ones. Clamped 1..20 where it is set (main.world_edit_post). GM-made characters are not counted against it.
+    max_characters_per_player = Column(Integer, default=1)
     # Whether players may use the "Download as .md" button on the Rules page.
     # Off by default — a GM must opt in per world. Independent of whether the
     # rules content itself is visible (it always is; /rules is player-safe).
