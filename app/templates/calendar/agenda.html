@@ -30,10 +30,10 @@
       </tr></thead>
       <tbody>
         {% for row in rows %}
-        <tr data-search="{{ row.month_name }} {{ row.dom }} {{ row.year }} {% for e in row.events %}{{ e.title }} {{ e.notes }} {{ e.entity_label }} {{ e.session_label }} {{ e.character_label }} {{ e.party_label }} {% endfor %}{% for ic in row.icons %}{{ ic.label }} {% endfor %}">
+        <tr data-search="{{ row.month_name }} {{ row.dom }} {{ row.year_text }} {% for e in row.events %}{{ e.title }} {{ e.notes }} {{ e.entity_label }} {{ e.session_label }} {{ e.character_label }} {{ e.party_label }} {% endfor %}{% for ic in row.icons %}{{ ic.label }} {% endfor %}">
           <td class="col-name">
             <a href="{{ ('/calendar?year=' + row.year|string + '&month=' + row.month_idx|string + '&day=' + row.day_num|string)|wq }}"
-               style="color:var(--neon);font-weight:bold;text-decoration:none">{{ row.month_name }} {{ row.dom }}, Year {{ row.year }}</a>
+               style="color:var(--neon);font-weight:bold;text-decoration:none">{{ row.month_name }} {{ row.dom }}, {{ row.year_text }}</a>
           </td>
           <td>
             {% if row.events %}

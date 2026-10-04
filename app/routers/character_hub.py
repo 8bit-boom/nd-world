@@ -43,7 +43,7 @@ from ..models import (
 from ..party_refs import load_loot, parties_for_pc
 from ..pc_stats import pc_maxima
 from ..rendering import strip_gm_only, strip_md
-from .calendar import _default_config, _months_of, _resolve_date
+from .calendar import _default_config, date_label
 
 router = APIRouter()
 
@@ -400,11 +400,9 @@ def hub_schedule(pc_id: int, request: Request, db: Session = Depends(get_db)):
             current_day = int(config.get("current_day", 1))
         except (TypeError, ValueError):
             current_day = 1
-        months = _months_of(config)
 
         def _label(day_num: int) -> str:
-            year, month_idx, dom = _resolve_date(config, day_num)
-            return f"{months[month_idx]['name']} {dom}, Year {year}"
+            return date_label(config, day_num)
 
         today_label = _label(current_day)
         pinned = [CalendarEvent.character_id == pc.id]

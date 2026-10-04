@@ -2035,3 +2035,8 @@ a.cal-nav-btn:hover { border-color: var(--neon); color: var(--neon); }
 a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .cal-yd.has-content { background: rgba(68,136,255,.28); color: var(--text); font-weight: bold; }
 .cal-yd.today { outline: 2px solid var(--neon); color: var(--neon); }
+.cal-season { display: inline-flex; align-items: center; gap: .35rem; font-size: .76rem; margin-top: .1rem; color: var(--text-dim); }
+.cal-season-dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; }
+.cal-ym-season { font-size: .68rem; color: var(--text-dim); margin: -.2rem 0 .35rem; display: flex; align-items: center; gap: .3rem; }
+.cal-yd.holiday { box-shadow: inset 0 -2px 0 #e6b84a; }
+.cal-yd.head { background: transparent; aspect-ratio: auto; min-height: 0; font-size: .62rem; opacity: .7; text-transform: uppercase; }

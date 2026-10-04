@@ -59,6 +59,7 @@ from .routers.combat import _candidates as _combat_candidates
 from .routers.parties import router as parties_router, visible_member_count as _party_visible_member_count
 from .routers.quests import router as quests_router
 from .routers.sessions import router as sessions_router, _live_audio_root as _session_live_audio_root
+from . import calendar_config as _calendar_config
 from .routers.calendar import router as calendar_router, _delete_icon_file as _delete_calendar_icon_file
 from .routers.importer import router as importer_router
 from .routers.races import router as races_router
@@ -1544,13 +1545,17 @@ def _sanitize_theme(data: dict) -> dict:
 def worlds_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     worlds = _visible_worlds(request, db)
     current = get_active_world(request, db, active_world)
-    return templates.TemplateResponse("worlds.html", {"request": request, "worlds": worlds, "current": current})
+    return templates.TemplateResponse("worlds.html", {
+        "request": request, "worlds": worlds, "current": current,
+        "calendar_presets": {k: p["label"] for k, p in _calendar_config.CALENDAR_PRESETS.items()},
+    })
 
 @app.post("/worlds/new")
 def world_create(
     name: str = Form(...),
     description: str = Form(""),
     accent: str = Form("#00f0ff"),
+    calendar_preset: str = Form(""),
     db: Session = Depends(get_db),
 ):
     slug = name.lower().replace(" ", "-").replace("&", "and")
@@ -1559,6 +1564,13 @@ def world_create(
     db.add(w)
     db.commit()
     db.refresh(w)
+    # A world starts with the generic calendar unless the GM picked one of the presets (the calendar page's settings
+    # can change or replace it any time) - an unknown key is ignored, never an error.
+    if calendar_preset in _calendar_config.CALENDAR_PRESETS:
+        db.add(WorldCalendar(world_id=w.id, config_json=json.dumps(
+            {**_calendar_config.clean_calendar_config(_calendar_config.CALENDAR_PRESETS[calendar_preset]), "current_day": 1}
+        )))
+        db.commit()
     resp = RedirectResponse("/worlds", status_code=303)
     resp.set_cookie(DEFAULT_WORLD_COOKIE, w.slug, max_age=60*60*24*365)
     return resp

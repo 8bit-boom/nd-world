@@ -17,14 +17,28 @@
     <button type="button" id="cal-preset-apply" class="btn-cancel">Apply preset</button>
   </div>
   <p style="font-size:.78rem;color:var(--text-dim);margin:.3rem 0 1rem">
-    Fills in Era Name, Days per Week, Months and Moons below for review — nothing is saved until
-    you click Save.
+    Fills in the era, year format, weekdays, months, moons and holidays below for review — nothing is saved until
+    you click Save. Every world keeps its own calendar.
   </p>
   {% endif %}
+  <div class="form-group" id="cal-ai-design" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.7rem .9rem;margin-bottom:1rem">
+    <label for="cal-ai-brief">✨ Design a calendar for this world with AI</label>
+    <textarea id="cal-ai-brief" rows="2" maxlength="1500" placeholder="Optional — e.g. five-day weeks, thirteen months named after the Moon's moods, a long burning season…" style="width:100%"></textarea>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-top:.4rem">
+      <button type="button" id="cal-ai-design-btn" class="btn-cancel" style="border-color:#ef4444;color:#f87171">✨ Draft a calendar</button>
+      <span id="cal-ai-design-status" style="font-size:.78rem;color:var(--text-dim)" role="status"></span>
+    </div>
+    <p style="font-size:.76rem;color:var(--text-dim);margin:.4rem 0 0">Uses the world's name and description. The draft fills the form below for you to edit — nothing is saved until you click Save.</p>
+  </div>
   <form method="post" action="/calendar/config" id="cal-config-form" class="entity-form">
     <div class="form-group">
       <label>Era Name</label>
-      <input name="era_name" value="{{ config.era_name or '' }}" placeholder="e.g. Year 1, Cycle 447"/>
+      <input name="era_name" value="{{ config.era_name or '' }}" placeholder="e.g. After the Last Flight, Y.S.F."/>
+    </div>
+    <div class="form-group">
+      <label>How a year is written <small>(use {year}, and {era} for the era name)</small></label>
+      <input name="year_format" id="year-format" value="{{ year_format }}" maxlength="40" placeholder="Year {year}"/>
+      <small id="year-format-preview" style="color:var(--text-dim)"></small>
     </div>
     <div class="form-group">
       <label>Current Day <small>(pick a year, month and day — no need to compute an absolute day count)</small></label>
@@ -42,12 +56,24 @@
       <label>Days per Week <small>(how many days the month grid wraps at)</small></label>
       <input type="number" name="days_per_week" value="{{ config.days_per_week or 7 }}" min="1" max="60"/>
     </div>
+    <div class="form-group">
+      <label>Weekday names <small>(optional — separate with commas, in order; shown above the month grid)</small></label>
+      <input name="weekday_names" id="weekday-names" value="{{ weekday_names_text }}" placeholder="e.g. Starday, Moonday, Fireday, Waveday, Windday"/>
+      <small id="weekday-count" style="color:var(--text-dim)"></small>
+    </div>
 
     <div class="form-group">
-      <label>Months</label>
+      <label>Months <small>(name, length in days, optional season and colour)</small></label>
       <div id="months-list" style="display:flex;flex-direction:column;gap:.4rem"></div>
       <button type="button" onclick="addMonth()" class="btn-cancel" style="align-self:flex-start;margin-top:.5rem">+ Add Month</button>
       <input type="hidden" name="months_json" id="months-json-input"/>
+    </div>
+
+    <div class="form-group">
+      <label>Yearly holidays <small>(optional — come round every year on the same day; marked on the month grid)</small></label>
+      <div id="holidays-list" style="display:flex;flex-direction:column;gap:.4rem"></div>
+      <button type="button" onclick="addHoliday()" class="btn-cancel" style="align-self:flex-start;margin-top:.5rem">+ Add Holiday</button>
+      <input type="hidden" name="holidays_json" id="holidays-json-input"/>
     </div>
 
     <div class="form-group">
@@ -65,14 +91,27 @@
 </div>
 
 <style>
-.month-row { display:grid; grid-template-columns:2fr 100px 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
-.month-row input { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.82rem; border-radius:3px; width:100%; }
+.month-row { display:grid; grid-template-columns:2fr 80px 1.3fr 44px 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
+.month-row input[type="text"], .month-row input[type="number"] { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.82rem; border-radius:3px; width:100%; min-width:0; }
+.month-row input[type="color"], .hol-row input[type="color"] { width:100%; height:28px; background:var(--bg3); border:1px solid var(--border); border-radius:3px; padding:2px; }
+.month-row input[type="color"].unset, .hol-row input[type="color"].unset { opacity:.35; }
+.hol-row { display:grid; grid-template-columns:2fr 1.3fr 70px 44px 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
+.hol-row input[type="text"], .hol-row input[type="number"], .hol-row select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.82rem; border-radius:3px; width:100%; min-width:0; }
+.hol-row .hol-notes { grid-column:1 / -1; }
+@media (max-width: 600px) {
+  .month-row { grid-template-columns:1fr 70px 44px 32px; }
+  .month-row .month-season { grid-column:1 / 4; order:5; }
+  .hol-row { grid-template-columns:1fr 70px 44px 32px; }
+  .hol-row .hol-month { grid-column:1 / 3; }
+}
 .month-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
 .moon-row { display:grid; grid-template-columns:2fr 90px 44px 90px 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
 .moon-row input[type="text"], .moon-row input[type="number"] { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.82rem; border-radius:3px; width:100%; }
 .moon-row input[type="color"] { width:100%; height:28px; background:var(--bg3); border:1px solid var(--border); border-radius:3px; padding:2px; }
 .moon-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
 </style>
+
+<datalist id="season-names"><option>Spring</option><option>Summer</option><option>Autumn</option><option>Winter</option></datalist>
 
 <script>
 let _months = {{ config.months | tojson }};
@@ -88,7 +127,9 @@ function renderMonths() {
     row.className = 'month-row';
     row.innerHTML = `
       <input type="text" placeholder="Month name" value="${esc(m.name||'')}" oninput="updateMonth(${i},'name',this.value)"/>
-      <input type="number" min="1" placeholder="Days" value="${m.days ?? 30}" oninput="updateMonth(${i},'days',this.value)"/>
+      <input type="number" min="1" max="1000" placeholder="Days" value="${m.days ?? 30}" oninput="updateMonth(${i},'days',this.value)"/>
+      <input type="text" class="month-season" maxlength="40" list="season-names" placeholder="Season (optional)" value="${esc(m.season||'')}" oninput="updateMonth(${i},'season',this.value)"/>
+      <input type="color" class="${m.color ? '' : 'unset'}" value="${esc(m.color || '#808080')}" title="Colour of this month / season (optional)" oninput="this.classList.remove('unset');updateMonth(${i},'color',this.value)"/>
       <button type="button" class="month-del" onclick="removeMonth(${i})" title="Remove">✕</button>
     `;
     list.appendChild(row);
@@ -131,13 +172,93 @@ function syncCurrentDayHidden() {
 
 function updateMonth(i, key, val) {
   _months[i][key] = key === 'days' ? (parseInt(val, 10) || 1) : val;
+  if (key === 'season' && !val) delete _months[i].season;
   syncMonthsHidden();
+  if (key === 'name') refreshHolidayMonthNames();
 }
-function removeMonth(i) { if (_months.length > 1) { _months.splice(i, 1); renderMonths(); } }
-function addMonth() { _months.push({ name: '', days: 30 }); renderMonths(); }
+function removeMonth(i) {
+  if (_months.length > 1) {
+    _months.splice(i, 1);
+    // holidays are filed by month number: drop the removed month's, shift the later ones down
+    _holidays = _holidays.filter(h => h.month !== i).map(h => h.month > i ? Object.assign({}, h, { month: h.month - 1 }) : h);
+    renderMonths(); renderHolidays();
+  }
+}
+function addMonth() { _months.push({ name: '', days: 30 }); renderMonths(); renderHolidays(); }
 
 function syncMonthsHidden() {
   document.getElementById('months-json-input').value = JSON.stringify(_months);
+}
+
+let _holidays = {{ holidays | tojson }};
+
+function refreshHolidayMonthNames() {
+  document.querySelectorAll('.hol-month').forEach(sel => {
+    Array.from(sel.options).forEach((o, i) => { o.textContent = (_months[i] && _months[i].name) || ('Month ' + (i + 1)); });
+  });
+}
+
+function renderHolidays() {
+  const list = document.getElementById('holidays-list');
+  list.innerHTML = '';
+  _holidays.forEach((h, i) => {
+    const row = document.createElement('div');
+    row.className = 'hol-row';
+    const opts = _months.map((m, k) => `<option value="${k}" ${k === h.month ? 'selected' : ''}>${esc(m.name || 'Month ' + (k + 1))}</option>`).join('');
+    row.innerHTML = `
+      <input type="text" placeholder="Holiday name" maxlength="60" value="${esc(h.name||'')}" oninput="updateHoliday(${i},'name',this.value)"/>
+      <select class="hol-month" onchange="updateHoliday(${i},'month',this.value)">${opts}</select>
+      <input type="number" min="1" placeholder="Day" value="${h.day ?? 1}" title="Day of the month" oninput="updateHoliday(${i},'day',this.value)"/>
+      <input type="color" class="${h.color ? '' : 'unset'}" value="${esc(h.color || '#e6b84a')}" title="Colour (optional)" oninput="this.classList.remove('unset');updateHoliday(${i},'color',this.value)"/>
+      <button type="button" class="month-del" onclick="removeHoliday(${i})" title="Remove">✕</button>
+      <input type="text" class="hol-notes" placeholder="Notes (optional) — a custom, a feast, who keeps it" maxlength="200" value="${esc(h.notes||'')}" oninput="updateHoliday(${i},'notes',this.value)"/>
+    `;
+    list.appendChild(row);
+  });
+  syncHolidaysHidden();
+}
+function updateHoliday(i, key, val) {
+  _holidays[i][key] = (key === 'day' || key === 'month') ? (parseInt(val, 10) || (key === 'day' ? 1 : 0)) : val;
+  syncHolidaysHidden();
+}
+function removeHoliday(i) { _holidays.splice(i, 1); renderHolidays(); }
+function addHoliday() { _holidays.push({ name: '', month: 0, day: 1 }); renderHolidays(); }
+function syncHolidaysHidden() {
+  document.getElementById('holidays-json-input').value = JSON.stringify(_holidays.filter(h => (h.name || '').trim()));
+}
+
+// ── year format preview, weekday-name count ──
+function updateYearPreview() {
+  const fmt = document.getElementById('year-format').value || 'Year {year}';
+  const era = document.querySelector('[name="era_name"]').value.trim();
+  const year = parseInt(document.getElementById('cd-year').value, 10) || 1;
+  const ok = fmt.indexOf('{year}') >= 0;
+  const text = fmt.split('{year}').join(year).split('{era}').join(era).replace(/\s+/g, ' ').trim();
+  document.getElementById('year-format-preview').textContent = ok ? 'Looks like: ' + text : 'Needs {year} — "Year {year}" will be used.';
+}
+function updateWeekdayCount() {
+  const names = document.getElementById('weekday-names').value.split(/[,;\n]/).map(x => x.trim()).filter(Boolean);
+  const want = parseInt(document.querySelector('[name="days_per_week"]').value, 10) || 7;
+  document.getElementById('weekday-count').textContent = names.length
+    ? names.length + ' named, ' + want + ' days per week' + (names.length === want ? '' : ' — extra names are dropped, missing ones become "Day N"')
+    : 'No weekday names — the month grid shows no weekday row.';
+}
+['year-format'].forEach(id => document.getElementById(id).addEventListener('input', updateYearPreview));
+document.querySelector('[name="era_name"]').addEventListener('input', updateYearPreview);
+document.getElementById('weekday-names').addEventListener('input', updateWeekdayCount);
+document.querySelector('[name="days_per_week"]').addEventListener('input', updateWeekdayCount);
+
+// A whole calendar (a preset or an AI draft) into the form — for review, nothing is saved.
+function applyConfig(cfg) {
+  document.querySelector('[name="era_name"]').value = cfg.era_name || '';
+  document.getElementById('year-format').value = cfg.year_format || 'Year {year}';
+  document.querySelector('[name="days_per_week"]').value = cfg.days_per_week || 7;
+  document.getElementById('weekday-names').value = (cfg.weekday_names || []).join(', ');
+  _months = JSON.parse(JSON.stringify(cfg.months || []));
+  _moons = JSON.parse(JSON.stringify(cfg.moons || []));
+  _holidays = JSON.parse(JSON.stringify(cfg.holidays || []));
+  renderMonths(); renderMoons(); renderHolidays();
+  updateYearPreview(); updateWeekdayCount();
 }
 
 let _moons = {{ config.moons | default([]) | tojson }};
@@ -179,25 +300,42 @@ document.getElementById('cd-dom').addEventListener('input', syncCurrentDayHidden
 document.getElementById('cd-year').addEventListener('input', syncCurrentDayHidden);
 
 document.getElementById('cal-config-form').addEventListener('submit', () => {
-  syncMonthsHidden(); syncMoonsHidden(); syncCurrentDayHidden();
+  syncMonthsHidden(); syncMoonsHidden(); syncHolidaysHidden(); syncCurrentDayHidden();
 });
 renderMonths();
 renderMoons();
+renderHolidays();
+updateYearPreview();
+updateWeekdayCount();
+document.getElementById('cd-year').addEventListener('input', updateYearPreview);
 
 const _presets = {{ calendar_presets | default({}) | tojson }};
 const presetApplyBtn = document.getElementById('cal-preset-apply');
 if (presetApplyBtn) {
   presetApplyBtn.addEventListener('click', () => {
-    const key = document.getElementById('cal-preset-select').value;
-    const preset = _presets[key];
-    if (!preset) return;
-    document.querySelector('[name="era_name"]').value = preset.era_name || '';
-    document.querySelector('[name="days_per_week"]').value = preset.days_per_week || 7;
-    _months = JSON.parse(JSON.stringify(preset.months || []));
-    _moons = JSON.parse(JSON.stringify(preset.moons || []));
-    renderMonths();
-    renderMoons();
+    const preset = _presets[document.getElementById('cal-preset-select').value];
+    if (preset) applyConfig(preset);
   });
 }
+
+// ✨ Draft a calendar with AI — fills the form, saves nothing.
+document.getElementById('cal-ai-design-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('cal-ai-design-btn');
+  const status = document.getElementById('cal-ai-design-status');
+  btn.disabled = true; status.textContent = 'Designing… (this can take a minute)';
+  try {
+    const res = await ndAiFetch('/calendar/ai-design', {
+      method: 'POST', body: new URLSearchParams({ brief: document.getElementById('cal-ai-brief').value }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+    applyConfig(d.config);
+    status.textContent = 'Draft filled in below — edit anything, then Save.';
+  } catch (e) {
+    status.textContent = '⚠ ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 </script>
 {% endblock %}

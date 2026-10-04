@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
+from .. import calendar_config as _cc
 from ..database import get_app_settings, get_db
 from ..deps import (
     can_edit_content, get_world_ctx, with_world, world_can_edit_row, world_can_edit_section, world_can_view_section,
@@ -39,52 +40,11 @@ def _can_manage_calendar(request: Request, world) -> bool:
     user = getattr(request.state, "user", None)
     return bool(user and (user.is_gm or getattr(request.state, "is_assistant", False)))
 
-DEFAULT_MONTHS = [
-    {"name": n, "days": 30} for n in [
-        "Frostwake", "Thawmoon", "Greentide", "Sunhigh", "Longlight", "Harvestfall",
-        "Amberfall", "Duskmere", "Stormtide", "Coldreach", "Deepwinter", "Yearsend",
-    ]
-]
-DEFAULT_DAYS_PER_WEEK = 7
-
-# Built-in calendar presets a GM can one-click apply from the config page
-# (app/templates/calendar/config.html's "Apply preset" control) instead of
-# hand-typing months/moons — same "starter, not a straitjacket" spirit as
-# the Rules page's "Auto-build tabs from headings" button: applying a
-# preset only fills in the form fields, the GM still reviews and clicks
-# Save themselves.
-#
-# "hunt_in_the_moonlight" is the Moonfall Calendar from the bundled Hunt in
-# the Moonlight rules (ch. 31): 13 months of 25 days each (325-day year),
-# five 5-day weeks per month, and a single Moon whose 25-day shape cycle
-# is fixed to line up exactly with the month length (the source's own
-# canon note on this: "This calendar fixes the lunar cycle at exactly 25
-# days"). The Moon's rich Color mechanic (ch. 32-33 — Red/Violet/Green/
-# Blue/White/Black/Pink/Teal/Amber/Grey/Yellow, per-month scheduled
-# Moonshifts, phase-based intensity, Bleeding Moon) is GM/dice-table
-# content this calendar widget has no mechanism to encode (moons[] here
-# has one static display color, not a day-by-day color schedule) — the
-# preset's color is left at Grey, which happens to double as the source's
-# own "ordinary, nothing-special" default state.
-CALENDAR_PRESETS = {
-    "hunt_in_the_moonlight": {
-        "label": "Hunt in the Moonlight — Moonfall Calendar",
-        "era_name": "After the Last Flight",
-        "days_per_week": 5,
-        "months": [
-            {"name": n, "days": 25} for n in [
-                "Ashwake", "Rainscar", "Blackbloom", "Cinderfast", "Hollowtide",
-                "Gildfall", "Veilwane", "Glassfrost", "Emberwane", "Nightroot",
-                "Palevigil", "Thawblood", "Last Lantern",
-            ]
-        ],
-        "moons": [{"name": "The Moon", "cycle_days": 25, "offset": 0, "color": "#888888"}],
-    },
-}
-# 1..60 — a week of 1 degenerates to "every day starts a new row" (still
-# renders fine), and 60 is generous headroom past any real-world calendar
-# convention while still keeping the week-row grid a sane width.
-_MIN_DAYS_PER_WEEK, _MAX_DAYS_PER_WEEK = 1, 60
+# Re-exported under their old names (tests and other routers import them from here).
+DEFAULT_MONTHS = _cc.DEFAULT_MONTHS
+DEFAULT_DAYS_PER_WEEK = _cc.DEFAULT_DAYS_PER_WEEK
+CALENDAR_PRESETS = _cc.CALENDAR_PRESETS
+_MIN_DAYS_PER_WEEK, _MAX_DAYS_PER_WEEK = _cc.MIN_DAYS_PER_WEEK, _cc.MAX_DAYS_PER_WEEK
 
 # Icon uploads are small "sticker" images, same size/format contract as a
 # portrait or entity art image elsewhere in this app (see main.py's own
@@ -104,8 +64,8 @@ _MOON_PHASE_NAMES = (
     "New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous",
     "Full Moon", "Waning Gibbous", "Last Quarter", "Waning Crescent",
 )
-_DEFAULT_MOON_COLOR = "#cccccc"
-_DEFAULT_MOON_CYCLE_DAYS = 29
+_DEFAULT_MOON_COLOR = _cc.DEFAULT_MOON_COLOR
+_DEFAULT_MOON_CYCLE_DAYS = _cc.DEFAULT_MOON_CYCLE_DAYS
 
 
 def _default_config() -> dict:
@@ -116,11 +76,7 @@ def _default_config() -> dict:
 
 
 def _days_per_week(config: dict) -> int:
-    try:
-        dpw = int(config.get("days_per_week", DEFAULT_DAYS_PER_WEEK))
-    except (TypeError, ValueError):
-        return DEFAULT_DAYS_PER_WEEK
-    return max(_MIN_DAYS_PER_WEEK, min(_MAX_DAYS_PER_WEEK, dpw)) or DEFAULT_DAYS_PER_WEEK
+    return _cc.clean_days_per_week(config.get("days_per_week", DEFAULT_DAYS_PER_WEEK))
 
 
 def _delete_icon_file(icon: CalendarDayIcon) -> None:
@@ -304,10 +260,10 @@ def _relative_days_label(delta: int, year_days: int, months_per_year: int = 12) 
 
 
 def date_label(config: dict, day_num: int) -> str:
-    """One absolute day as the calendar writes it: "Palevigil 7, Year 427"."""
+    """One absolute day as the world's calendar writes it: "Palevigil 7, Year 427" (or "Palevigil 7, 427 Y.S.F.")."""
     months = _months_of(config)
     year, month_idx, dom = _resolve_date(config, max(1, day_num))
-    return f"{months[month_idx]['name']} {dom}, Year {year}"
+    return f"{months[month_idx]['name']} {dom}, {_cc.format_year(config, year)}"
 
 
 def _month_href(year: int, month_idx: int, day: int = 0) -> str:
@@ -394,9 +350,11 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         icons_by_day.setdefault(ic.day, []).append({"id": ic.id, "image_url": ic.image_url, "label": ic.label})
 
     moons = _moons_of(config)
+    holidays = _cc.holiday_index(config)
     days = [{"day_num": month_start + i, "dom": i + 1, "is_current": (month_start + i) == current_day,
              "events": events_by_day.get(month_start + i, []),
              "icons": icons_by_day.get(month_start + i, []),
+             "holidays": holidays.get((month_idx, i + 1), []),
              "moons": [_moon_phase_for_day(m, month_start + i) for m in moons]} for i in range(month["days"])]
 
     # Weeks run continuously across the whole calendar (day 1 always starts
@@ -467,6 +425,10 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         "current_day": current_day, "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
         "prev_month": prev_month, "next_month": next_month, "nav": nav,
         "offset_label": offset_label, "none_notice": none_notice, "max_year": MAX_YEAR, "month_start": month_start,
+        "weekday_names": _cc.weekday_names_of(config), "season": month.get("season", ""),
+        "month_color": month.get("color", ""),
+        "year_text": _cc.format_year(config, year), "cur_year_text": _cc.format_year(config, cur_year),
+        "today_label": date_label(config, current_day),
         "entities": entities, "sessions": sessions, "characters": characters, "parties": parties,
         "can_manage": _can_manage_calendar(request, world),
         "can_add_event": world_can_edit_section(request, world, "calendar"),
@@ -518,7 +480,7 @@ def calendar_agenda(request: Request, db: Session = Depends(get_db), active_worl
         year, month_idx, dom = _resolve_date(config, day_num)
         rows.append({
             "day_num": day_num, "year": year, "month_idx": month_idx,
-            "month_name": months[month_idx]["name"], "dom": dom,
+            "month_name": months[month_idx]["name"], "dom": dom, "year_text": _cc.format_year(config, year),
             "events": by_day[day_num]["events"], "icons": by_day[day_num]["icons"],
         })
 
@@ -635,6 +597,7 @@ def calendar_year(request: Request, db: Session = Depends(get_db), active_world:
     ).distinct().all()}
 
     days_per_week = _days_per_week(config)
+    holidays = _cc.holiday_index(config)
     grid = []
     for idx, month in enumerate(months):
         start = _month_start_day(months, year, idx)
@@ -642,13 +605,15 @@ def calendar_year(request: Request, db: Session = Depends(get_db), active_world:
         for i in range(month["days"]):
             day_num = start + i
             titles = titles_by_day.get(day_num, [])
+            names = [h["name"] for h in holidays.get((idx, i + 1), [])]
             days.append({
                 "day_num": day_num, "dom": i + 1, "is_current": day_num == current_day,
-                "has_content": bool(titles) or day_num in icon_days,
-                "title": "; ".join(titles[:4]) + (" …" if len(titles) > 4 else ""),
+                "has_content": bool(titles) or day_num in icon_days, "is_holiday": bool(names),
+                "title": "; ".join(["✦ " + n for n in names] + titles[:4]) + (" …" if len(titles) > 4 else ""),
             })
         grid.append({
             "idx": idx, "name": month["name"], "days": days, "lead_pad": range((start - 1) % days_per_week),
+            "season": month.get("season", ""), "color": month.get("color", ""),
             "events": sum(len(titles_by_day.get(start + i, [])) for i in range(month["days"])),
             "href": _month_href(year, idx),
             "is_current": (year, idx) == (cur_year, cur_month_idx),
@@ -664,7 +629,10 @@ def calendar_year(request: Request, db: Session = Depends(get_db), active_world:
     }
     return templates.TemplateResponse("calendar/year.html", {
         "request": request, "world": world, "worlds": worlds, "era_name": config.get("era_name", "Year"),
-        "year": year, "cur_year": cur_year, "max_year": MAX_YEAR, "grid": grid, "days_per_week": days_per_week, "nav": nav,
+        "year": year, "cur_year": cur_year, "max_year": MAX_YEAR, "grid": grid,
+        "weekday_names": _cc.weekday_names_of(config),
+        "year_text": _cc.format_year(config, year),
+        "prev_year_text": _cc.format_year(config, max(1, year - 1)), "next_year_text": _cc.format_year(config, min(MAX_YEAR, year + 1)), "days_per_week": days_per_week, "nav": nav,
         "offset_label": _span_label(abs(year - cur_year) * len(months), len(months)),
         "year_delta": year - cur_year,
     })
@@ -684,7 +652,10 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
     cur_year, cur_month_idx, cur_dom = _resolve_date(config, current_day)
     return templates.TemplateResponse("calendar/config.html", {
         "request": request, "world": world, "worlds": worlds, "config": config,
-        "calendar_presets": CALENDAR_PRESETS,
+        "calendar_presets": {k: {"label": p["label"], **_cc.clean_calendar_config(p)} for k, p in CALENDAR_PRESETS.items()},
+        "weekday_names_text": ", ".join(_cc.weekday_names_of(config)),
+        "year_format": _cc.clean_year_format(config.get("year_format")),
+        "holidays": _cc.holidays_of(config),
         "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
     })
 
@@ -700,34 +671,42 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
     cal = _get_or_create_calendar(db, world_id)
     form = await request.form()
     config = json.loads(cal.config_json or "{}") or _default_config()
-    config["era_name"] = str(form.get("era_name", "")).strip() or "Year"
+    config["era_name"] = _cc.clean_era_name(form.get("era_name"))
     config["current_day"] = max(1, _safe_int(form.get("current_day"), 1))
     config["days_per_week"] = _days_per_week({"days_per_week": form.get("days_per_week")})
-    raw_months = str(form.get("months_json", "[]") or "[]")
+    # Each part is cleaned on its own: a part whose value is unusable (not JSON, a month length that is not a number)
+    # is skipped and the stored one survives, instead of 500ing the page or half-applying a corrupt entry.
     try:
-        months = json.loads(raw_months)
-        if isinstance(months, list) and months:
-            config["months"] = [{"name": m.get("name") or "Month", "days": max(1, int(m.get("days") or 1))} for m in months]
+        months = _cc.clean_months(json.loads(str(form.get("months_json", "[]") or "[]")))
+        if months:
+            config["months"] = months
     except Exception:
         pass
-    raw_moons = str(form.get("moons_json", "[]") or "[]")
     try:
-        moons = json.loads(raw_moons)
-        if isinstance(moons, list):
-            # Unlike months, an empty list is valid here — a GM removing
-            # every moon they'd added should actually clear them, not fall
-            # back to keeping the previous ones.
-            config["moons"] = [
-                {
-                    "name": (m.get("name") or "Moon").strip()[:64] or "Moon",
-                    "cycle_days": max(1, int(m.get("cycle_days") or _DEFAULT_MOON_CYCLE_DAYS)),
-                    "offset": int(m.get("offset") or 0),
-                    "color": str(m.get("color") or _DEFAULT_MOON_COLOR)[:16],
-                }
-                for m in moons
-            ]
+        # Unlike months, an empty list is valid here - a GM removing every moon they'd added should actually clear
+        # them, not fall back to keeping the previous ones.
+        config["moons"] = _cc.clean_moons(json.loads(str(form.get("moons_json", "[]") or "[]")))
     except Exception:
         pass
+    # Weekday names, holidays and the year format are newer than the form fields above: a client that does not send
+    # them (an older page, a script) leaves what is stored alone; sending an empty value clears them.
+    months = _months_of(config)
+    if "holidays_json" in form:
+        try:
+            config["holidays"] = _cc.clean_holidays(json.loads(str(form.get("holidays_json") or "[]")), months)
+        except Exception:
+            pass
+    if "year_format" in form:
+        config["year_format"] = _cc.clean_year_format(form.get("year_format"))
+    names = form.get("weekday_names") if "weekday_names" in form else config.get("weekday_names") or []
+    try:
+        config["weekday_names"] = _cc.clean_weekday_names(names, config["days_per_week"])
+    except ValueError:
+        config["weekday_names"] = _cc.weekday_names_of(config)
+    try:    # months may have shrunk since the holidays were saved
+        config["holidays"] = _cc.clean_holidays(config.get("holidays") or [], months)
+    except ValueError:
+        config["holidays"] = []
     config["current_day"] = _clamp_day(_months_of(config), config["current_day"])
     cal.config_json = json.dumps(config)
     db.commit()
@@ -943,3 +922,54 @@ async def calendar_ai_day(request: Request, db: Session = Depends(get_db),
     if not (out["weather"] or out["omen"] or out["sights"]):
         raise HTTPException(502, "The AI reply wasn't usable — try again.")
     return out
+
+
+# ── AI: design a calendar for this world ─────────────────────────────────────
+
+_DESIGN_SYSTEM = (
+    "You design the in-world calendar for a tabletop RPG setting. Reply ONLY with JSON, no fences, in this shape:\n"
+    '{"era_name": str (what the years are counted from, e.g. "After the Last Flight"), '
+    '"year_format": str (how a year is written; must contain {year}; may contain {era}, e.g. "Year {year}" or "{year} AA"), '
+    '"days_per_week": int (1-12), "weekday_names": [str, ...] (exactly days_per_week names), '
+    '"months": [{"name": str, "days": int (10-60), "season": str (optional)}, ...] (6-16 months), '
+    '"moons": [{"name": str, "cycle_days": int, "color": "#rrggbb"}, ...] (0-3 moons), '
+    '"holidays": [{"name": str, "month": str (exactly one of the month names above), "day": int, "notes": str}, ...] '
+    "(3-8 recurring yearly holidays)}\n"
+    "Make the names fit the setting's tone and give the calendar a character of its own - unusual month lengths, week "
+    "lengths and moons are welcome when they suit the world. Never copy a real-world calendar's month or weekday names "
+    "unless the setting is our own world."
+)
+
+
+@router.post("/calendar/ai-design")
+async def calendar_ai_design(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+                             brief: str = Form("")):
+    """Draft a calendar (months, weekdays, seasons, holidays, moons, year format) for this world from a short brief
+    and the world's own description. GM-only; returns a cleaned config for the settings form to fill in for review -
+    it saves nothing."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    from .. import ai as _ai
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
+    brief = (brief or "").strip()[:1500]
+    about = f"World: {world.name}" + (f"\nAbout the world: {(world.description or '').strip()[:800]}" if world.description else "")
+    ask = about + (f"\nWhat the GM wants from the calendar: {brief}" if brief else "\nNo further wishes - surprise me.")
+    try:
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": ask}], system=_DESIGN_SYSTEM, options={"num_predict": 2000}, think=False,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"AI call failed: {exc}") from exc
+    if _ai.is_failure_sentinel(raw or ""):
+        raise HTTPException(502, raw)
+    from .boards_generate import _extract_json_object
+    data = _extract_json_object(raw) or {}
+    config = _cc.clean_calendar_config(data)
+    if not (isinstance(data.get("months"), list) and data["months"]):
+        raise HTTPException(502, "The AI reply wasn't usable — try again.")
+    return {"config": config}

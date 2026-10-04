@@ -171,6 +171,13 @@ tools that require GM access still check `is_gm` at call time.)
   `_condense_sheet` turn a longer sheet into notes part by part, up to `MAX_SHEET_PARTS`). Settings → System
   `character_import_max_chars` only overrides the one-go size. Reuse `ai._transcript_chunk_char_budget` /
   `_split_transcript_into_chunks` for any new long-input feature rather than a fixed character cut.
+- **Every world has its own calendar** (`app/calendar_config.py`, a leaf module): era, `year_format` (`Year {year}` / `{year} {era}`),
+  weekday names, months with an optional season + colour, moons, yearly holidays. Everything that stores one goes through its
+  `clean_*` functions (settings form, presets, the AI draft at `/calendar/ai-design`, world creation) and every place that writes a
+  date uses `calendar.date_label` / `calendar_config.format_year`, never a hard-coded "Year N". Navigation (`/calendar/year`,
+  `/calendar/event-jump`, `/api/calendar/search`) only reads; year / day values from a URL or JSON go through `_normalise_month` /
+  `_clamp_day` so an absurd number cannot overflow SQLite's integer. A new calendar field: add it to `clean_calendar_config`, the
+  config form and `tests/test_world_calendar.py`.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

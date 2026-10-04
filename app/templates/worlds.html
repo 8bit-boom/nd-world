@@ -54,6 +54,14 @@
                    data-pick-id="new-accent-pick" oninput="ndAccentFromHex(this)"/>
           </div>
         </div>
+        <div class="form-group">
+          <label for="new-world-calendar">Calendar</label>
+          <select name="calendar_preset" id="new-world-calendar">
+            <option value="">Generic — 12 months × 30 days</option>
+            {% for key, label in calendar_presets.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+          </select>
+          <small style="color:var(--text-dim)">Each world keeps its own calendar. You can change or design it any time under Calendar → Configure.</small>
+        </div>
         <button class="btn-save" type="submit">Create</button>
       </form>
     </div>

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "calendar/_nav.html" import navbtn %}
-{% block title %}Year {{ year }} — Calendar — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block title %}{{ year_text }} — Calendar — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:1100px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
@@ -18,16 +18,16 @@
     <div class="cal-nav-main">
       <span class="cal-nav-group">
         {{ navbtn('prev-decade', '«', 'Back 10 years', nav.prev_decade|wq if nav.prev_decade else None) }}
-        {{ navbtn('prev-year', '‹ Year ' ~ (year - 1), 'Previous year ( ← )', nav.prev_year|wq if nav.prev_year else None) }}
+        {{ navbtn('prev-year', '‹ ' ~ prev_year_text, 'Previous year ( ← )', nav.prev_year|wq if nav.prev_year else None) }}
       </span>
       <div class="cal-nav-title">
-        <h2 id="cal-title">Year {{ year }}</h2>
+        <h2 id="cal-title">{{ year_text }}</h2>
         <div class="cal-offset" id="cal-offset">
           {% if year_delta == 0 %}this year{% elif year_delta > 0 %}in {{ offset_label }}{% else %}{{ offset_label }} ago{% endif %}
         </div>
       </div>
       <span class="cal-nav-group">
-        {{ navbtn('next-year', 'Year ' ~ (year + 1) ~ ' ›', 'Next year ( → )', nav.next_year|wq if nav.next_year else None) }}
+        {{ navbtn('next-year', next_year_text ~ ' ›', 'Next year ( → )', nav.next_year|wq if nav.next_year else None) }}
         {{ navbtn('next-decade', '»', 'Forward 10 years', nav.next_decade|wq if nav.next_decade else None) }}
       </span>
     </div>
@@ -48,9 +48,11 @@
         <span>{{ m.name }}</span>
         {% if m.events %}<span class="cal-ym-count">{{ m.events }} event{{ '' if m.events == 1 else 's' }}</span>{% endif %}
       </a>
+      {% if m.season %}<div class="cal-ym-season">{% if m.color %}<span class="cal-season-dot" style="background:{{ m.color }}"></span>{% endif %}{{ m.season }}</div>{% endif %}
       <div class="cal-ym-days" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
+        {% for n in weekday_names %}<span class="cal-yd head" title="{{ n }}">{{ n[:1] }}</span>{% endfor %}
         {% for _ in m.lead_pad %}<span class="cal-yd pad"></span>{% endfor %}
-        {% for d in m.days %}<a class="cal-yd{% if d.is_current %} today{% endif %}{% if d.has_content %} has-content{% endif %}" href="{{ (m.href ~ '&day=' ~ d.day_num)|wq }}" data-day="{{ d.day_num }}"{% if d.title %} title="{{ d.title }}"{% endif %}>{{ d.dom }}</a>{% endfor %}
+        {% for d in m.days %}<a class="cal-yd{% if d.is_current %} today{% endif %}{% if d.has_content %} has-content{% endif %}{% if d.is_holiday %} holiday{% endif %}" href="{{ (m.href ~ '&day=' ~ d.day_num)|wq }}" data-day="{{ d.day_num }}"{% if d.title %} title="{{ d.title }}"{% endif %}>{{ d.dom }}</a>{% endfor %}
       </div>
     </section>
     {% endfor %}

@@ -7,7 +7,7 @@
     <div>
       <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🗓 {{ era_name }}</h1>
       <div style="color:var(--text-dim);font-size:.82rem;margin-top:.2rem">
-        Today: {{ months[cur_month_idx].name }} {{ cur_dom }}, Year {{ cur_year }} <span style="opacity:.6">(day {{ current_day }})</span>
+        Today: {{ months[cur_month_idx].name }} {{ cur_dom }}, {{ cur_year_text }} <span style="opacity:.6">(day {{ current_day }})</span>
       </div>
     </div>
     <div style="display:flex;gap:.9rem;align-items:center">
@@ -96,7 +96,8 @@
         {{ navbtn('prev-month', '‹ ' ~ months[prev_month].name, 'Previous month ( ← )', nav.prev_month|wq if nav.prev_month else None) }}
       </span>
       <div class="cal-nav-title">
-        <h2 id="cal-title">{{ month.name }}, Year {{ year }}</h2>
+        <h2 id="cal-title">{{ month.name }}, {{ year_text }}</h2>
+        {% if season %}<div class="cal-season" id="cal-season"{% if month_color %} style="color:{{ month_color }}"{% endif %}>{% if month_color %}<span class="cal-season-dot" style="background:{{ month_color }}"></span>{% endif %}{{ season }}</div>{% endif %}
         <div class="cal-offset" id="cal-offset">{{ offset_label }}</div>
       </div>
       <span class="cal-nav-group">
@@ -125,12 +126,17 @@
     </div>
   </div>
 
+  {% if weekday_names %}
+  <div class="cal-weekdays" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)" aria-hidden="true">
+    {% for n in weekday_names %}<div class="cal-weekday" title="{{ n }}"><span class="cal-weekday-full">{{ n }}</span><span class="cal-weekday-short">{{ n[:3] }}</span></div>{% endfor %}
+  </div>
+  {% endif %}
   <div class="cal-grid" id="cal-grid" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
     {% for _ in lead_pad %}
     <div class="cal-cell cal-cell-pad"></div>
     {% endfor %}
     {% for d in days %}
-    <div class="cal-cell {% if d.is_current %}today{% endif %} {% if d.events or d.icons %}has-content{% endif %}" data-day="{{ d.day_num }}">
+    <div class="cal-cell {% if d.is_current %}today{% endif %} {% if d.events or d.icons %}has-content{% endif %}{% if d.holidays %} holiday{% endif %}" data-day="{{ d.day_num }}">
       <div class="cal-daynum-row">
         <span class="cal-daynum">{{ d.dom }}</span>
         {% if d.moons %}
@@ -150,6 +156,9 @@
         {% endfor %}
       </div>
       {% endif %}
+      {% for h in d.holidays %}
+      <div class="cal-holiday" style="{% if h.color %}color:{{ h.color }}{% endif %}" title="{{ h.name }}{% if h.notes %} — {{ h.notes }}{% endif %}">✦ {{ h.name }}</div>
+      {% endfor %}
       {% for e in d.events %}
       <div class="cal-event" style="background:{{ e.color }}22;border-left:3px solid {{ e.color }}" title="{{ e.title }}{% if e.notes %} — {{ e.notes }}{% endif %}{% if e.entity_label %} · {{ e.entity_label }}{% endif %}{% if e.session_label %} · {{ e.session_label }}{% endif %}{% if e.character_label %} · {{ e.character_label }}{% endif %}{% if e.party_label %} · {{ e.party_label }}{% endif %}">{{ e.title }}</div>
       {% endfor %}
@@ -178,6 +187,12 @@
 .cal-moon { width:15px; height:15px; border-radius:50%; flex-shrink:0; border:1px solid rgba(255,255,255,.25); background:var(--bg3); position:relative; overflow:hidden; }
 .cal-moon-lit { position:absolute; inset:0; border-radius:50%; }
 .cal-icons { display:flex; flex-wrap:wrap; gap:.15rem; }
+.cal-holiday { font-size:.68rem; padding:.05rem .2rem; color:#e6b84a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cal-cell.holiday { background:linear-gradient(180deg, rgba(230,184,74,.10), var(--bg2) 55%); }
+.cal-weekdays { display:grid; gap:.4rem; margin-bottom:.3rem; }
+.cal-weekday { text-align:center; font-size:.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cal-weekday-short { display:none; }
+@media (max-width: 600px) { .cal-weekday-full { display:none; } .cal-weekday-short { display:inline; } .cal-weekdays { gap:.4rem; } } flex-wrap:wrap; gap:.15rem; }
 .cal-icon { width:18px; height:18px; object-fit:cover; border-radius:3px; }
 .cal-event { font-size:.68rem; padding:.1rem .3rem; border-radius:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* "Only show days with content" — dims rather than removes empty cells,
@@ -202,6 +217,7 @@ const SESSIONS = {{ sessions | tojson }};
 const CHARACTERS = {{ characters | tojson }};
 const PARTIES = {{ parties | tojson }};
 const DAYS_DATA = {{ days | tojson }};
+const CURRENT_DATE_LABEL = {{ today_label | tojson }};
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 document.querySelectorAll('.cal-cell').forEach(cell => {
@@ -213,6 +229,7 @@ function openDayPanel(dayNum) {
   panel.style.display = 'block';
   panel.innerHTML = `
     <h3 style="color:var(--neon);font-size:.9rem;margin:0 0 .6rem">Day ${dayNum}</h3>
+    <div id="day-holidays"></div>
     <div id="day-icons" style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem"></div>
     ${CAN_MANAGE ? `
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem">
@@ -244,10 +261,22 @@ function openDayPanel(dayNum) {
       <button type="button" id="ev-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Event</button>
     </div>` : ''}
   `;
+  renderDayHolidays(dayNum);
   renderDayIcons(dayNum);
   renderDayEvents(dayNum);
   if (CAN_MANAGE) document.getElementById('icon-add-btn').addEventListener('click', () => addIcon(dayNum));
   if (CAN_ADD_EVENT) document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
+}
+
+function renderDayHolidays(dayNum) {
+  const dayData = DAYS_DATA.find(d => d.day_num === dayNum);
+  const box = document.getElementById('day-holidays');
+  (dayData ? dayData.holidays : []).forEach(h => {
+    const row = document.createElement('div');
+    row.style.cssText = 'font-size:.84rem;margin:0 0 .5rem;padding:.3rem .5rem;border-left:3px solid ' + (h.color || '#e6b84a') + ';background:var(--bg3);border-radius:3px';
+    row.textContent = '✦ ' + h.name + (h.notes ? ' — ' + h.notes : '');
+    box.appendChild(row);
+  });
 }
 
 function renderDayIcons(dayNum) {

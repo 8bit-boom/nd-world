@@ -137,7 +137,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/worlds` | GM | List/manage all of the GM's worlds. |
-| POST | `/worlds/new` | GM | Creates a new `World`. |
+| POST | `/worlds/new` | GM | Creates a new `World`. Optional `calendar_preset` (a key of `calendar_config.CALENDAR_PRESETS`: `earth_like`, `fantasy_classic`, `lunar_13x28`, `hunt_in_the_moonlight`) gives it that calendar from day one; unknown / blank keeps the generic one. |
 | POST | `/worlds/{world_id}/delete` | GM / Owner (own world) | Deletes a world and every row/file it owns (entities, characters, maps, schematics, uploads, etc.) — irreversible. |
 | GET | `/worlds/switch/{slug}` | Player | Sets the `active_world` cookie to this world and redirects to `?next=` (or `/`) — the world-switcher dropdown's target. |
 | GET | `/worlds/{world_id}/edit` | GM / Owner (own world) | World settings form: name, accent color, font/font size (`World.font`/`World.font_size` — simple direct fields, no JSON needed), visual theme, hero banner placement (off/home page/every page), party-visibility toggle, invites, members list, and the "Player World Access" checkboxes (`World.player_section_access_json` — which of Maps/Calendar/Quests/Parties/Random Tables players may read-only browse; see `deps.PLAYER_TOGGLEABLE_SECTIONS`). |
@@ -492,7 +492,8 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/calendar/event-jump` | GM / Assistant / Player* | Previous / next event (`?dir=prev\|next&from=<absolute day>`, default the current day): 303 to the month view with that day opened, or back to the starting month with `none=prev\|next` when nothing is left that way. Never changes the current day. *Same opt-in. |
 | GET | `/api/calendar/search` | GM / Assistant / Player* | Search events by title, notes or linked entity / character / party / session name (`?q=`, `?near=<day>` ordering anchor, `?limit=` ≤ 50): JSON `{results: [{id, day, title, label, when, delta_days, href, …}], truncated}`, nearest first; `when` is measured from the current day. A player only matches entity names of entities visible to players. *Same opt-in. |
 | GET | `/calendar/config` | GM / Assistant | Calendar configuration form (month names/lengths, starting date). |
-| POST | `/calendar/config` | GM / Assistant | Saves calendar configuration. |
+| POST | `/calendar/config` | GM / Assistant | Saves calendar configuration: era name, `year_format` (`Year {year}` / `{year} {era}`), days per week and `weekday_names`, `months_json` (name, days, optional season + colour), `moons_json`, `holidays_json` (yearly holidays: name, month, day). Every part is cleaned by `app/calendar_config.py`; a part whose value is unusable is skipped, and weekday names / holidays / year format that are not sent are left as stored. |
+| POST | `/calendar/ai-design` | GM | Drafts a whole calendar for the world (months, seasons, weekday names, holidays, moons, year format) from a short `brief` and the world's description; returns `{config}` cleaned for the settings form to fill in for review - saves nothing. A background AI task. |
 | POST | `/api/calendar/events` | GM / Assistant | Adds an event on a given in-world date. |
 | POST | `/api/calendar/events/{event_id}/delete` | GM / Assistant | Deletes an event. |
 | POST | `/api/calendar/days/{day}/icons` | GM / Assistant | Attaches weather/condition icons to a calendar day. |
