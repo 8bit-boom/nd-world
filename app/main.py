@@ -41,7 +41,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, SessionPlan, SessionPlanSlot, SessionPlanVote
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from . import ai_background as _ai_background
@@ -58,6 +58,7 @@ from .routers.combat import router as combat_router
 from .routers.combat import _candidates as _combat_candidates
 from .routers.parties import router as parties_router, visible_member_count as _party_visible_member_count
 from .routers.quests import router as quests_router
+from .routers.schedule import router as schedule_router
 from .routers.sessions import router as sessions_router, _live_audio_root as _session_live_audio_root
 from . import calendar_config as _calendar_config
 from .routers.calendar import router as calendar_router, _delete_icon_file as _delete_calendar_icon_file
@@ -168,6 +169,7 @@ app.include_router(quests_router)
 app.include_router(sessions_router)
 app.include_router(session_audio_router)
 app.include_router(calendar_router)
+app.include_router(schedule_router)
 app.include_router(importer_router)
 app.include_router(races_router)
 app.include_router(professions_router)
@@ -589,6 +591,13 @@ def _is_player_safe(method: str, path: str) -> bool:
     if method == "POST" and re.match(r"^/tables/\d+/(edit|delete)$", path):
         return True
     if method == "POST" and path == "/api/calendar/events":
+        return True
+    # The session planner is a table function for everybody in the world: the handlers (app/routers/schedule.py) check
+    # the world membership through get_world_ctx and make sure everyone only ever votes as themselves; confirming /
+    # reopening / managing other people's plans is GM / assistant / owner there.
+    if path == "/schedule" or path == "/schedule/confirmed.ics" or re.match(r"^/schedule/plans/\d+\.ics$", path):
+        return method == "GET"
+    if path.startswith("/api/schedule/"):
         return True
     if method == "GET" and path == "/api/calendar/search":
         # read-only; the handler gates on world_can_view_section(..., "calendar") like the page itself
@@ -1596,6 +1605,7 @@ _WORLD_DELETE_MODELS = (
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
     EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, CharacterJournalEntry,
+    SessionPlan, SessionPlanSlot, SessionPlanVote,
 )
 
 

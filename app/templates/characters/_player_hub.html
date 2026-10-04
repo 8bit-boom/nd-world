@@ -377,6 +377,20 @@ a.pch-title:hover { color:var(--neon); }
 
   function renderSchedule(el, d) {
     const parts = [];
+    // the planned (real-world) session: next confirmed time, and polls still waiting for an answer
+    parts.push(h('div', { class: 'pch-sub', text: '📅 Next game night' }));
+    if (d.next_session) {
+      const ns = d.next_session, when = new Date(ns.starts_at);
+      parts.push(h('div', { class: 'pch-row' },
+        h('a', { class: 'pch-title', href: d.schedule_href, text: ns.title }),
+        h('span', { class: 'pch-chip', text: when.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }),
+        ns.location ? h('span', { class: 'pch-muted', text: ' 📍 ' + ns.location }) : null,
+        h('span', { class: 'pch-chip', text: ns.my ? ({ yes: '✔ coming', maybe: '? maybe', no: '✖ can\u2019t' }[ns.my]) : 'no answer yet' })));
+    } else {
+      parts.push(h('p', { class: 'pch-muted', text: 'No session has been scheduled yet.' }));
+    }
+    if (d.polls_waiting) parts.push(h('a', { class: 'pch-muted', href: d.schedule_href, text: d.polls_waiting + ' poll' + (d.polls_waiting === 1 ? '' : 's') + ' waiting for ' + (OWNER ? 'your' : 'their') + ' answer →' }));
+    else parts.push(h('a', { class: 'pch-muted', href: d.schedule_href, text: 'Open the session schedule →' }));
     parts.push(h('div', { class: 'pch-sub', text: '🎲 Next sessions' }));
     if (!d.sessions.length) parts.push(h('p', { class: 'pch-muted', text: OWNER ? 'No upcoming session dates set for your party.' : 'No upcoming session dates set for their party.' }));
     d.sessions.forEach(s => parts.push(h('div', { class: 'pch-row' },

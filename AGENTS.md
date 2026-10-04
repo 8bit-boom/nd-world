@@ -178,6 +178,11 @@ tools that require GM access still check `is_gm` at call time.)
   `/calendar/event-jump`, `/api/calendar/search`) only reads; year / day values from a URL or JSON go through `_normalise_month` /
   `_clamp_day` so an absurd number cannot overflow SQLite's integer. A new calendar field: add it to `clean_calendar_config`, the
   config form and `tests/test_world_calendar.py`.
+- **The session planner is a table function, not world content** (`app/routers/schedule.py`, `app/ical.py`): any member of the
+  world proposes times and votes (always as themselves), GM / assistant / owner confirm; it deliberately bypasses the per-section
+  Players / Assistants matrix, so every handler starts with `_ctx` (membership through `get_world_ctx`) and `/api/schedule/*` is
+  allowlisted for all. Times are naive UTC in the DB and ISO `…Z` on the wire - the browser does the time-zone display, never format
+  a slot's time on the server. `next_confirmed` / `polls_waiting` feed the calendar page and the hub; a change calls `live.touch`.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

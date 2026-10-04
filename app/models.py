@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey, Float, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey, Float, Index, UniqueConstraint
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -1840,6 +1840,55 @@ class CalendarDayIcon(Base):
     image_url = Column(String(512), nullable=False)
     label = Column(String(120), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SessionPlan(Base):
+    """A real-world session being planned: "when do we play next?" The table proposes time slots
+    (SessionPlanSlot), everybody marks each Yes / Maybe / No (SessionPlanVote), and a GM confirms one. After that
+    the votes on the chosen slot are the RSVPs. Separate from the in-world calendar (CalendarEvent.day is a day of the
+    fictional calendar) and from GameSession (the log of a session that happened - a confirmed plan can optionally
+    create one). Times are UTC, naive, like every other DateTime column here; the browser shows them in the viewer's
+    own time zone."""
+    __tablename__ = "session_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    title = Column(String(160), nullable=False)
+    notes = Column(Text, default="")
+    location = Column(String(200), default="")
+    duration_min = Column(Integer, default=180)
+    status = Column(String(16), default="open")          # open | confirmed | cancelled
+    # The chosen slot once confirmed. No ForeignKey: the slot rows are deleted with the plan, and a dangling id is
+    # simply ignored by the reader.
+    confirmed_slot_id = Column(Integer, nullable=True)
+    session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SessionPlanSlot(Base):
+    __tablename__ = "session_plan_slots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("session_plans.id"), nullable=False, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    starts_at = Column(DateTime, nullable=False, index=True)
+    proposed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SessionPlanVote(Base):
+    """One person's answer for one slot - "yes", "maybe" or "no"; no row = no answer yet."""
+    __tablename__ = "session_plan_votes"
+    __table_args__ = (UniqueConstraint("slot_id", "user_id", name="uq_session_plan_vote_slot_user"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("session_plans.id"), nullable=False, index=True)
+    slot_id = Column(Integer, ForeignKey("session_plan_slots.id"), nullable=False, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    choice = Column(String(8), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Schematic(Base):

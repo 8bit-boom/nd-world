@@ -69,6 +69,7 @@ worlds they've been invited into (`WorldMembership`).
 - [Dice](#dice)
 - [Parties](#parties)
 - [Calendar](#calendar)
+- [Session schedule](#session-schedule)
 - [Maps](#maps)
 - [Schematics](#schematics)
 - [Investigation Boards](#investigation-boards)
@@ -500,6 +501,28 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/calendar/icons/{icon_id}/delete` | GM / Assistant | Removes a day icon. |
 | POST | `/api/calendar/advance` | GM / Assistant | Advances the in-world "current date" by N days. |
 | POST | `/api/calendar/set-date` | GM / Assistant | Sets the in-world "current date" directly from a (year, month, day-of-month) triple instead of an absolute day count. |
+
+## Session schedule
+
+`app/routers/schedule.py` — plan the real-world game night: anyone proposes time slots, everybody marks each one Yes / Maybe / No, a GM confirms one. Open to every member of the world (it is a table function, not content, so the per-section access matrix does not apply); everyone only ever votes as themselves. **Manager** below = GM, or an assistant / owner of the world. Times are UTC ISO-8601 (`…Z`); the page shows them in the viewer's own time zone.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/schedule` | Member | The planner page (poll cards with a participant × time matrix, a month overview, "Plan a session"). The page embeds the same state as `/api/schedule/state` and refreshes itself on every live-sync ping. |
+| GET | `/api/schedule/state` | Member | `{me, participants, plans[{id, title, notes, location, duration_min, status open\|confirmed\|cancelled, created_by, can_edit, confirmed_slot_id, session_id, session_href, past, my_answered, slots[{id, starts_at, ends_at, proposed_by, can_delete, counts, votes{user_id: choice}, mine}]}], now}`. Votes of people who left the world do not count. |
+| POST | `/api/schedule/plans` | Member | Starts a plan: `{title, notes?, location?, duration_min? (15-1440, default 180), slots?: [ISO times, max 20]}`. |
+| POST | `/api/schedule/plans/{plan_id}/edit` | Creator / manager | Edits `title`, `notes`, `location`, `duration_min` (only the keys sent). |
+| POST | `/api/schedule/plans/{plan_id}/slots` | Member | Proposes another time `{starts_at}` while the plan is open (a repeated time is not a second slot). |
+| POST | `/api/schedule/slots/{slot_id}/delete` | Proposer / manager | Removes a time and the answers on it (the chosen time of a confirmed plan needs a reopen first). |
+| POST | `/api/schedule/slots/{slot_id}/vote` | Member | `{choice: yes\|maybe\|no\|clear}` - always the caller's own vote. Once a plan is confirmed only the chosen slot takes answers (the RSVP); a cancelled plan takes none. |
+| POST | `/api/schedule/plans/{plan_id}/confirm` | Manager | `{slot_id, create_session?, session_date?}` - picks the time; `create_session` also creates the session log once (`session_date` = the viewer's local date, else the slot's UTC date). |
+| POST | `/api/schedule/plans/{plan_id}/reopen` | Manager | Back to an open poll (confirmed or cancelled), keeping all answers. |
+| POST | `/api/schedule/plans/{plan_id}/cancel` | Creator / manager | Marks the plan cancelled. |
+| POST | `/api/schedule/plans/{plan_id}/delete` | Creator / manager | Deletes the plan with its times and answers (a session log made from it stays). |
+| GET | `/schedule/plans/{plan_id}.ics` | Member | One confirmed session as an iCalendar file (404 until a time is chosen). |
+| GET | `/schedule/confirmed.ics` | Member | Every confirmed session from yesterday on as one iCalendar file. |
+
+The next confirmed session also shows on the in-world calendar page and in each player's hub Schedule tab (`/api/characters/{id}/hub/schedule` gained `next_session`, `polls_waiting`, `schedule_href`).
 
 ## Maps
 

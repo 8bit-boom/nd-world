@@ -11,6 +11,7 @@
       </div>
     </div>
     <div style="display:flex;gap:.9rem;align-items:center">
+      <a href="{{ '/schedule'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none" title="Plan real-world game nights: propose times, everyone votes">📅 Plan sessions</a>
       <a href="{{ '/calendar/agenda'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">📋 Agenda</a>
       <a href="{{ nav.year|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">🗓 Year view</a>
       {% if can_manage %}
@@ -18,6 +19,19 @@
       {% endif %}
     </div>
   </div>
+
+  {% if next_session %}
+  <div id="cal-next-session" style="background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--neon);padding:.5rem .9rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">
+    📅 Next game night: <a href="{{ '/schedule'|wq }}" style="color:var(--neon);text-decoration:none">{{ next_session.title }}</a>
+    — <time datetime="{{ next_session.starts_at }}" data-nd-time>{{ next_session.starts_at }}</time>{% if next_session.location %} · 📍 {{ next_session.location }}{% endif %}
+  </div>
+  <script>
+    document.querySelectorAll('time[data-nd-time]').forEach(function (t) {
+      var d = new Date(t.getAttribute('datetime'));
+      if (!isNaN(d)) t.textContent = d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    });
+  </script>
+  {% endif %}
 
   {% if request.query_params.get('saved') %}
   <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">Calendar settings saved.</div>

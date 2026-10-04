@@ -38,12 +38,13 @@ from ..database import get_db
 from ..deps import filter_visible_entities, with_world, world_can_view_section, world_section_access
 from ..models import (
     CalendarEvent, CharacterJournalEntry, Entity, GameSession, Party, PlayerCharacter,
-    PrivateNote, Quest, World, WorldCalendar, entity_player_access,
+    PrivateNote, Quest, SessionPlanVote, World, WorldCalendar, entity_player_access,
 )
 from ..party_refs import load_loot, parties_for_pc
 from ..pc_stats import pc_maxima
 from ..rendering import strip_gm_only, strip_md
 from .calendar import _default_config, date_label
+from .schedule import next_confirmed, polls_waiting
 
 router = APIRouter()
 
@@ -427,9 +428,25 @@ def hub_schedule(pc_id: int, request: Request, db: Session = Depends(get_db)):
         if when >= today:
             upcoming.append((when, s))
     upcoming.sort(key=lambda t: t[0])
+    # The session planner (app/routers/schedule.py) is open to every member of the world: the next confirmed session,
+    # and how many open polls this character's PLAYER has not answered yet.
+    asker = pc.owner_user_id or user.id
+    nxt = next_confirmed(db, world.id)
+    next_session = None
+    if nxt:
+        plan, slot = nxt
+        mine = db.query(SessionPlanVote).filter(SessionPlanVote.slot_id == slot.id, SessionPlanVote.user_id == asker).first()
+        next_session = {
+            "id": plan.id, "title": plan.title, "location": plan.location or "",
+            "starts_at": slot.starts_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "duration_min": plan.duration_min,
+            "my": mine.choice if mine else None,
+        }
     return {
         "calendar_section": level,
         "calendar_href": with_world("/calendar", world) if level != "none" else None,
+        "schedule_href": with_world("/schedule", world),
+        "next_session": next_session,
+        "polls_waiting": polls_waiting(db, world.id, asker),
         "today": today_label,
         "events": events,
         "sessions": [{

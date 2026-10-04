@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block title %}Session Schedule — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="sch" id="sch">
+  <div class="sch-head">
+    <div>
+      <h1>📅 Session schedule</h1>
+      <div class="sch-sub">Propose times, everyone answers Yes / Maybe / No, the GM picks one. Times are shown in your time zone (<span id="sch-tz"></span>).</div>
+    </div>
+    <div class="sch-head-links">
+      <a href="{{ '/schedule/confirmed.ics'|wq }}" title="All confirmed sessions as one file for Google / Apple / Outlook calendar">⬇ Calendar file (.ics)</a>
+      <a href="{{ '/calendar'|wq }}">🗓 In-world calendar</a>
+    </div>
+  </div>
+
+  <div class="sch-top">
+    <section class="sch-new" aria-label="Plan a session">
+      <button type="button" id="sch-new-toggle" class="sch-btn primary">＋ Plan a session</button>
+      <form id="sch-new-form" hidden>
+        <label>Title <input name="title" maxlength="160" required placeholder="Session 12 — The Heist"/></label>
+        <div class="sch-row2">
+          <label>Where <input name="location" maxlength="200" placeholder="Discord, Alex's place…"/></label>
+          <label>How long <select name="duration_min">
+            <option value="120">2 hours</option><option value="180" selected>3 hours</option><option value="240">4 hours</option>
+            <option value="300">5 hours</option><option value="360">6 hours</option><option value="480">8 hours</option>
+          </select></label>
+        </div>
+        <label>Notes <textarea name="notes" rows="2" maxlength="1500" placeholder="Bring dice, character sheets ready, we start with…"></textarea></label>
+        <div class="sch-slots-label">Times that could work <small>(your time zone)</small></div>
+        <div id="sch-new-slots"></div>
+        <button type="button" id="sch-new-addslot" class="sch-btn">＋ Another time</button>
+        <div class="sch-actions">
+          <button type="submit" class="sch-btn primary">Create</button>
+          <button type="button" id="sch-new-cancel" class="sch-btn">Cancel</button>
+          <span id="sch-new-err" class="sch-err" role="alert"></span>
+        </div>
+      </form>
+    </section>
+    <section class="sch-mini" aria-label="Month overview">
+      <div class="sch-mini-head">
+        <button type="button" id="sch-mini-prev" class="sch-btn" aria-label="Previous month">‹</button>
+        <strong id="sch-mini-title"></strong>
+        <button type="button" id="sch-mini-next" class="sch-btn" aria-label="Next month">›</button>
+      </div>
+      <div class="sch-mini-grid" id="sch-mini-grid"></div>
+      <div class="sch-legend"><span class="dot conf"></span> confirmed <span class="dot open"></span> proposed</div>
+    </section>
+  </div>
+
+  <div id="sch-err" class="sch-err" role="alert"></div>
+  <h2 class="sch-h">Confirmed</h2>
+  <div id="sch-confirmed"></div>
+  <h2 class="sch-h">Open polls</h2>
+  <div id="sch-open"></div>
+  <details id="sch-past-wrap" class="sch-past">
+    <summary>Past and cancelled <span id="sch-past-count"></span></summary>
+    <div id="sch-past"></div>
+  </details>
+</div>
+
+<script id="schedule-state" type="application/json">{{ state | tojson }}</script>
+
+<style>
+.sch { max-width: 1000px; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+.sch-head { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; align-items: flex-start; margin-bottom: 1rem; }
+.sch-head h1 { color: var(--neon); font-size: 1.3rem; margin: 0; }
+.sch-sub { color: var(--text-dim); font-size: .82rem; margin-top: .2rem; max-width: 40rem; }
+.sch-head-links { display: flex; gap: .9rem; flex-wrap: wrap; font-size: .82rem; }
+.sch-head-links a { color: var(--text-dim); text-decoration: none; }
+.sch-head-links a:hover { color: var(--neon); }
+.sch-top { display: grid; grid-template-columns: 1fr 250px; gap: 1rem; align-items: start; margin-bottom: 1rem; }
+@media (max-width: 720px) { .sch-top { grid-template-columns: 1fr; } }
+.sch-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .35rem .8rem; min-height: 34px; border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: .82rem; }
+.sch-btn:hover { border-color: var(--neon); color: var(--neon); }
+.sch-btn.primary { border-color: var(--neon); color: var(--neon); }
+.sch-btn.danger { border-color: #c44; color: #e07070; }
+.sch-btn:disabled { opacity: .5; cursor: default; }
+.sch-new form { display: flex; flex-direction: column; gap: .6rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: .9rem; margin-top: .6rem; }
+.sch-new form[hidden] { display: none; }
+.sch label { display: flex; flex-direction: column; gap: .2rem; font-size: .78rem; color: var(--text-dim); }
+.sch input, .sch select, .sch textarea { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .4rem .55rem; font-family: var(--font); font-size: .85rem; border-radius: 4px; min-height: 34px; box-sizing: border-box; width: 100%; }
+.sch-row2 { display: grid; grid-template-columns: 1fr 140px; gap: .6rem; }
+.sch-slots-label { font-size: .78rem; color: var(--text-dim); }
+.sch-slotrow { display: flex; gap: .4rem; margin-bottom: .35rem; }
+.sch-slotrow input { flex: 1; }
+.sch-actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.sch-err { color: #e07070; font-size: .82rem; }
+.sch-mini { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: .6rem; }
+.sch-mini-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .4rem; font-size: .85rem; }
+.sch-mini-head .sch-btn { min-height: 28px; padding: 0 .55rem; }
+.sch-mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.sch-mini-grid .dow { font-size: .62rem; color: var(--text-dim); text-align: center; text-transform: uppercase; }
+.sch-mini-grid .d { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; font-size: .7rem; border-radius: 3px; color: var(--text-dim); background: var(--bg3); border: none; padding: 0; font-family: var(--font); }
+.sch-mini-grid .d.pad { background: transparent; }
+.sch-mini-grid .d.today { outline: 1px solid var(--neon); color: var(--neon); }
+.sch-mini-grid .d.open { box-shadow: inset 0 0 0 1px #e6b84a; color: var(--text); }
+.sch-mini-grid .d.conf { background: var(--neon); color: #000; font-weight: bold; cursor: pointer; }
+.sch-legend { font-size: .68rem; color: var(--text-dim); margin-top: .4rem; display: flex; gap: .6rem; align-items: center; }
+.sch-legend .dot { width: .6rem; height: .6rem; border-radius: 2px; display: inline-block; }
+.sch-legend .dot.conf { background: var(--neon); } .sch-legend .dot.open { box-shadow: inset 0 0 0 1px #e6b84a; }
+.sch-h { color: var(--neon); font-size: 1rem; margin: 1.4rem 0 .5rem; }
+.sch-empty { color: var(--text-dim); font-style: italic; font-size: .85rem; margin: 0 0 .5rem; }
+.sch-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: .9rem 1rem; margin-bottom: .8rem; }
+.sch-card.confirmed { border-color: var(--neon); }
+.sch-card.cancelled { opacity: .65; }
+.sch-card.flash { animation: sch-flash 1.6s ease-out; }
+@keyframes sch-flash { from { box-shadow: 0 0 0 2px var(--neon); } to { box-shadow: none; } }
+.sch-card-head { display: flex; justify-content: space-between; gap: .6rem; flex-wrap: wrap; align-items: baseline; }
+.sch-card-title { font-size: 1rem; color: var(--text); font-weight: bold; overflow-wrap: anywhere; }
+.sch-chip { font-size: .7rem; padding: .05rem .45rem; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); margin-left: .4rem; font-weight: normal; }
+.sch-chip.waiting { border-color: #e6b84a; color: #e6b84a; }
+.sch-meta { color: var(--text-dim); font-size: .78rem; margin: .25rem 0 .6rem; overflow-wrap: anywhere; }
+.sch-when { font-size: 1.15rem; color: var(--neon); margin: .3rem 0; }
+.sch-tools { display: flex; gap: .4rem; flex-wrap: wrap; }
+.sch-tablewrap { overflow-x: auto; margin: .4rem 0; -webkit-overflow-scrolling: touch; }
+.sch-table { border-collapse: collapse; font-size: .8rem; min-width: 100%; }
+.sch-table th, .sch-table td { border: 1px solid var(--border); padding: .3rem .5rem; text-align: center; white-space: nowrap; }
+.sch-table th.who, .sch-table td.who { text-align: left; position: sticky; left: 0; background: var(--bg2); z-index: 1; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; }
+.sch-table th small { display: block; color: var(--text-dim); font-weight: normal; font-size: .68rem; }
+.sch-table th.best { box-shadow: inset 0 -2px 0 var(--neon); }
+.sch-cell { min-width: 2.2rem; }
+.sch-cell.yes { color: #4f4; background: rgba(68,255,68,.08); }
+.sch-cell.maybe { color: #fc8; background: rgba(255,200,100,.08); }
+.sch-cell.no { color: #e07070; background: rgba(224,112,112,.08); }
+.sch-cell button { width: 100%; background: transparent; border: 1px dashed var(--border); color: inherit; border-radius: 3px; min-height: 28px; cursor: pointer; font-family: var(--font); }
+.sch-cell button:hover { border-color: var(--neon); }
+.sch-cell.mine { outline: 1px solid var(--border); }
+.sch-sum td { color: var(--text-dim); font-size: .74rem; }
+.sch-rsvp { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; }
+.sch-rsvp .sch-btn.on { background: var(--neon); color: #000; border-color: var(--neon); }
+.sch-going { font-size: .8rem; color: var(--text-dim); margin: .2rem 0; }
+.sch-going b { color: var(--text); }
+.sch-add { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-top: .5rem; }
+.sch-add input { width: auto; flex: 1; min-width: 12rem; }
+.sch-past summary { cursor: pointer; color: var(--text-dim); font-size: .9rem; margin: 1.2rem 0 .6rem; }
+@media (max-width: 600px) { .sch-btn { min-height: 40px; } .sch-row2 { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+(function () {
+  'use strict';
+  let state = JSON.parse(document.getElementById('schedule-state').textContent);
+  const $ = id => document.getElementById(id);
+  const SYMBOL = { yes: '✔', maybe: '?', no: '✖' };
+  const NEXT = { null: 'yes', yes: 'maybe', maybe: 'no', no: 'clear' };
+
+  // ── tiny DOM helper (text only - nothing from the server goes through innerHTML) ──
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const k in (attrs || {})) {
+      const v = attrs[k];
+      if (v == null || v === false) continue;
+      if (k === 'text') el.textContent = v;
+      else if (k === 'class') el.className = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    kids.flat().forEach(c => { if (c != null && c !== false) el.append(c.nodeType ? c : document.createTextNode(c)); });
+    return el;
+  }
+
+  // ── times: stored in UTC, shown in this browser's time zone ──
+  $('sch-tz').textContent = (Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time');
+  const thisYear = new Date().getFullYear();
+  function fmtDay(iso) {
+    const d = new Date(iso);
+    return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: d.getFullYear() === thisYear ? undefined : 'numeric' });
+  }
+  function fmtTime(iso) { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+  function fmtFull(iso) { return fmtDay(iso) + ' · ' + fmtTime(iso); }
+  function fmtDuration(min) { return min % 60 === 0 ? (min / 60) + ' h' : Math.floor(min / 60) + ' h ' + (min % 60) + ' min'; }
+  function localDate(iso) {
+    const d = new Date(iso);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function toIso(localValue) { const d = new Date(localValue); return isNaN(d) ? null : d.toISOString(); }
+
+  // ── talking to the server ──
+  async function api(method, url, body) {
+    const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : ('HTTP ' + res.status));
+    return data;
+  }
+  async function act(method, url, body, then) {
+    $('sch-err').textContent = '';
+    try { const out = await api(method, url, body); await load(); if (then) then(out); }
+    catch (e) { $('sch-err').textContent = '⚠ ' + e.message; await load(); }
+  }
+  async function load() {
+    try { state = await api('GET', '/api/schedule/state'); } catch (e) { $('sch-err').textContent = '⚠ ' + e.message; return; }
+    render();
+  }
+
+  // ── a poll: who answered what ──
+  function best(plan) {
+    let top = null;
+    plan.slots.forEach(s => {
+      const score = s.counts.yes * 3 + s.counts.maybe - s.counts.no * 3;
+      if (s.counts.yes + s.counts.maybe && (!top || score > top.score)) top = { id: s.id, score };
+    });
+    return top ? top.id : null;
+  }
+  function voteCell(plan, slot, person) {
+    const choice = slot.votes[String(person.id)] || null;
+    const mine = person.id === state.me.id;
+    if (!mine) return h('td', { class: 'sch-cell ' + (choice || ''), title: choice || 'no answer yet', text: choice ? SYMBOL[choice] : '·' });
+    const btn = h('button', { type: 'button', 'aria-label': 'Your answer: ' + (choice || 'none') + '. Click to change.', text: choice ? SYMBOL[choice] : '＋',
+      onclick: () => act('POST', '/api/schedule/slots/' + slot.id + '/vote', { choice: NEXT[choice] }) });
+    return h('td', { class: 'sch-cell mine ' + (choice || '') }, btn);
+  }
+  function pollTable(plan) {
+    const top = best(plan);
+    const head = h('tr', {}, h('th', { class: 'who', text: '' }), plan.slots.map(s => h('th', { class: s.id === top ? 'best' : '', title: s.id === top ? 'Most popular so far' : null },
+      fmtDay(s.starts_at), h('small', { text: fmtTime(s.starts_at) }), s.id === top ? h('small', { text: '★ best so far' }) : null,
+      s.proposed_by ? h('small', { text: 'by ' + s.proposed_by.name }) : null,
+      s.can_delete ? h('button', { type: 'button', class: 'sch-btn danger', style: 'min-height:24px;padding:0 .4rem;font-size:.7rem;margin-top:.2rem', text: 'remove',
+        onclick: () => { if (confirm('Remove this time (and the answers on it)?')) act('POST', '/api/schedule/slots/' + s.id + '/delete'); } }) : null)));
+    const rows = state.participants.map(p => h('tr', {}, h('td', { class: 'who', text: p.name + (p.id === state.me.id ? ' (you)' : '') }), plan.slots.map(s => voteCell(plan, s, p))));
+    const sum = h('tr', { class: 'sch-sum' }, h('td', { class: 'who', text: 'Total' }),
+      plan.slots.map(s => h('td', { text: '✔ ' + s.counts.yes + '  ? ' + s.counts.maybe + '  ✖ ' + s.counts.no })));
+    const rowsAll = [head, ...rows, sum];
+    if (state.me.can_manage && plan.slots.length) {
+      rowsAll.push(h('tr', {}, h('td', { class: 'who', text: 'Pick one' }), plan.slots.map(s => h('td', {},
+        h('button', { type: 'button', class: 'sch-btn primary', text: 'Confirm', title: 'Choose this time for the session',
+          onclick: () => confirmSlot(plan, s) })))));
+    }
+    return h('div', { class: 'sch-tablewrap' }, h('table', { class: 'sch-table' }, rowsAll));
+  }
+  function confirmSlot(plan, slot) {
+    const make = plan.session_id ? false : confirm('Also create the session log for this date?\n\nOK = create it, Cancel = just confirm the time.');
+    act('POST', '/api/schedule/plans/' + plan.id + '/confirm', { slot_id: slot.id, create_session: make, session_date: localDate(slot.starts_at) });
+  }
+  function addSlotRow(plan) {
+    const input = h('input', { type: 'datetime-local', 'aria-label': 'Another time' });
+    return h('div', { class: 'sch-add' }, input, h('button', { type: 'button', class: 'sch-btn', text: '＋ Propose this time', onclick: () => {
+      const iso = toIso(input.value);
+      if (!iso) { $('sch-err').textContent = '⚠ Pick a date and time first.'; return; }
+      act('POST', '/api/schedule/plans/' + plan.id + '/slots', { starts_at: iso });
+    } }));
+  }
+  function editPlan(plan) {
+    const title = prompt('Title', plan.title); if (title == null) return;
+    const location = prompt('Where', plan.location); if (location == null) return;
+    const notes = prompt('Notes', plan.notes); if (notes == null) return;
+    act('POST', '/api/schedule/plans/' + plan.id + '/edit', { title, location, notes });
+  }
+  function planTools(plan) {
+    const tools = [];
+    if (plan.status === 'confirmed' && state.me.can_manage) tools.push(h('button', { type: 'button', class: 'sch-btn', text: '↩ Reopen poll', onclick: () => act('POST', '/api/schedule/plans/' + plan.id + '/reopen') }));
+    if (plan.status === 'cancelled' && state.me.can_manage) tools.push(h('button', { type: 'button', class: 'sch-btn', text: '↩ Reopen poll', onclick: () => act('POST', '/api/schedule/plans/' + plan.id + '/reopen') }));
+    if (plan.can_edit && plan.status !== 'cancelled') tools.push(h('button', { type: 'button', class: 'sch-btn', text: '✎ Edit', onclick: () => editPlan(plan) }));
+    if (plan.can_edit && plan.status !== 'cancelled') tools.push(h('button', { type: 'button', class: 'sch-btn', text: 'Cancel session', onclick: () => { if (confirm('Cancel "' + plan.title + '"?')) act('POST', '/api/schedule/plans/' + plan.id + '/cancel'); } }));
+    if (plan.can_edit) tools.push(h('button', { type: 'button', class: 'sch-btn danger', text: 'Delete', onclick: () => { if (confirm('Delete "' + plan.title + '" and every answer on it?')) act('POST', '/api/schedule/plans/' + plan.id + '/delete'); } }));
+    return h('div', { class: 'sch-tools' }, tools);
+  }
+  function meta(plan) {
+    const bits = [fmtDuration(plan.duration_min)];
+    if (plan.location) bits.push('📍 ' + plan.location);
+    if (plan.created_by) bits.push('planned by ' + plan.created_by.name);
+    return h('div', { class: 'sch-meta' }, bits.join(' · '), plan.notes ? h('div', { text: plan.notes, style: 'margin-top:.25rem;white-space:pre-wrap' }) : null);
+  }
+  function openCard(plan) {
+    const waiting = plan.slots.length && !plan.my_answered;
+    return h('article', { class: 'sch-card', 'data-plan': plan.id },
+      h('div', { class: 'sch-card-head' }, h('div', { class: 'sch-card-title' }, plan.title, waiting ? h('span', { class: 'sch-chip waiting', text: 'waiting for your answer' }) : null), planTools(plan)),
+      meta(plan),
+      plan.slots.length ? pollTable(plan) : h('p', { class: 'sch-empty', text: 'No times proposed yet - add one below.' }),
+      addSlotRow(plan));
+  }
+  function confirmedCard(plan) {
+    const slot = plan.slots.find(s => s.id === plan.confirmed_slot_id);
+    if (!slot) return openCard(plan);
+    const mine = slot.mine;
+    const group = c => state.participants.filter(p => slot.votes[String(p.id)] === c).map(p => p.name);
+    const silent = state.participants.filter(p => !slot.votes[String(p.id)]).map(p => p.name);
+    const going = [['✔ Coming', group('yes')], ['? Maybe', group('maybe')], ['✖ Can’t', group('no')], ['· No answer', silent]]
+      .filter(g => g[1].length).map(g => h('div', { class: 'sch-going' }, h('b', { text: g[0] + ': ' }), g[1].join(', ')));
+    return h('article', { class: 'sch-card confirmed', 'data-plan': plan.id },
+      h('div', { class: 'sch-card-head' }, h('div', { class: 'sch-card-title' }, plan.title, h('span', { class: 'sch-chip', text: 'confirmed' })), planTools(plan)),
+      h('div', { class: 'sch-when', text: fmtFull(slot.starts_at) + ' – ' + fmtTime(slot.ends_at) }),
+      meta(plan),
+      h('div', { class: 'sch-rsvp' }, h('span', { text: 'Are you coming?', style: 'font-size:.82rem;color:var(--text-dim)' }),
+        ['yes', 'maybe', 'no'].map(c => h('button', { type: 'button', class: 'sch-btn' + (mine === c ? ' on' : ''), text: { yes: '✔ Yes', maybe: '? Maybe', no: '✖ Can’t' }[c],
+          onclick: () => act('POST', '/api/schedule/slots/' + slot.id + '/vote', { choice: mine === c ? 'clear' : c }) }))),
+      going,
+      h('div', { class: 'sch-tools', style: 'margin-top:.5rem' },
+        h('a', { class: 'sch-btn', href: '/schedule/plans/' + plan.id + '.ics', text: '⬇ Add to my calendar (.ics)', style: 'text-decoration:none;display:inline-flex;align-items:center' }),
+        plan.session_href ? h('a', { class: 'sch-btn', href: plan.session_href, text: '📓 Session log', style: 'text-decoration:none;display:inline-flex;align-items:center' }) : null));
+  }
+  function pastCard(plan) {
+    if (plan.status === 'confirmed') {
+      const slot = plan.slots.find(s => s.id === plan.confirmed_slot_id);
+      return h('article', { class: 'sch-card' }, h('div', { class: 'sch-card-head' }, h('div', { class: 'sch-card-title' }, plan.title, h('span', { class: 'sch-chip', text: slot ? fmtFull(slot.starts_at) : 'played' })), planTools(plan)), meta(plan));
+    }
+    return h('article', { class: 'sch-card cancelled' }, h('div', { class: 'sch-card-head' }, h('div', { class: 'sch-card-title' }, plan.title, h('span', { class: 'sch-chip', text: 'cancelled' })), planTools(plan)), meta(plan));
+  }
+
+  function render() {
+    const focused = document.activeElement;
+    if (focused && focused.closest && focused.closest('#sch-open, #sch-confirmed') && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) { pending = true; return; }
+    pending = false;
+    const upcoming = state.plans.filter(p => p.status === 'confirmed' && !p.past);
+    const open = state.plans.filter(p => p.status === 'open');
+    const past = state.plans.filter(p => (p.status === 'confirmed' && p.past) || p.status === 'cancelled');
+    $('sch-confirmed').replaceChildren(...(upcoming.length ? upcoming.map(confirmedCard) : [h('p', { class: 'sch-empty', text: 'Nothing confirmed yet.' })]));
+    $('sch-open').replaceChildren(...(open.length ? open.map(openCard) : [h('p', { class: 'sch-empty', text: 'No open polls. Plan a session to start one.' })]));
+    $('sch-past').replaceChildren(...past.map(pastCard));
+    $('sch-past-count').textContent = past.length ? '(' + past.length + ')' : '';
+    $('sch-past-wrap').hidden = !past.length;
+    renderMini();
+  }
+  let pending = false;
+  document.addEventListener('focusout', () => { if (pending) setTimeout(() => { if (pending) render(); }, 200); });
+
+  // ── month overview (this browser's calendar and time zone) ──
+  let mini = new Date(); mini = new Date(mini.getFullYear(), mini.getMonth(), 1);
+  function renderMini() {
+    $('sch-mini-title').textContent = mini.toLocaleDateString([], { month: 'long', year: 'numeric' });
+    const days = {};
+    state.plans.forEach(p => {
+      if (p.status === 'cancelled') return;
+      const slots = p.status === 'confirmed' ? p.slots.filter(s => s.id === p.confirmed_slot_id) : p.slots;
+      slots.forEach(s => {
+        const d = new Date(s.starts_at);
+        if (d.getFullYear() !== mini.getFullYear() || d.getMonth() !== mini.getMonth()) return;
+        const entry = days[d.getDate()] || (days[d.getDate()] = { conf: false, open: false, plan: p.id });
+        if (p.status === 'confirmed') { entry.conf = true; entry.plan = p.id; } else entry.open = true;
+      });
+    });
+    const grid = $('sch-mini-grid'); grid.replaceChildren();
+    const first = (new Date(mini.getFullYear(), mini.getMonth(), 1).getDay() + 6) % 7;      // Monday first
+    ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(x => grid.append(h('div', { class: 'dow', text: x })));
+    for (let i = 0; i < first; i++) grid.append(h('div', { class: 'd pad' }));
+    const count = new Date(mini.getFullYear(), mini.getMonth() + 1, 0).getDate();
+    const now = new Date();
+    for (let day = 1; day <= count; day++) {
+      const e = days[day];
+      const isToday = now.getFullYear() === mini.getFullYear() && now.getMonth() === mini.getMonth() && now.getDate() === day;
+      const cls = 'd' + (isToday ? ' today' : '') + (e ? (e.conf ? ' conf' : ' open') : '');
+      grid.append(e && e.conf ? h('button', { type: 'button', class: cls, text: day, title: 'Go to this session', onclick: () => jumpTo(e.plan) }) : h('div', { class: cls, text: day }));
+    }
+  }
+  function jumpTo(planId) {
+    const card = document.querySelector('[data-plan="' + planId + '"]');
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+  }
+  $('sch-mini-prev').addEventListener('click', () => { mini = new Date(mini.getFullYear(), mini.getMonth() - 1, 1); renderMini(); });
+  $('sch-mini-next').addEventListener('click', () => { mini = new Date(mini.getFullYear(), mini.getMonth() + 1, 1); renderMini(); });
+
+  // ── plan a session ──
+  const form = $('sch-new-form');
+  function addNewSlot(value) {
+    const row = h('div', { class: 'sch-slotrow' }, h('input', { type: 'datetime-local', 'aria-label': 'A time that could work', value: value || '' }),
+      h('button', { type: 'button', class: 'sch-btn', text: '✕', 'aria-label': 'Remove this time', onclick: () => row.remove() }));
+    $('sch-new-slots').append(row);
+  }
+  $('sch-new-toggle').addEventListener('click', () => { form.hidden = !form.hidden; if (!form.hidden && !$('sch-new-slots').children.length) addNewSlot(); });
+  $('sch-new-addslot').addEventListener('click', () => addNewSlot());
+  $('sch-new-cancel').addEventListener('click', () => { form.hidden = true; });
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const err = $('sch-new-err'); err.textContent = '';
+    const slots = [...$('sch-new-slots').querySelectorAll('input')].map(i => i.value && toIso(i.value)).filter(Boolean);
+    try {
+      await api('POST', '/api/schedule/plans', {
+        title: form.title.value, location: form.location.value, notes: form.notes.value,
+        duration_min: parseInt(form.duration_min.value, 10), slots,
+      });
+      form.reset(); $('sch-new-slots').replaceChildren(); form.hidden = true;
+      await load();
+    } catch (e) { err.textContent = '⚠ ' + e.message; }
+  });
+
+  // someone else answered / planned: the server pings every open page
+  let liveTimer = null;
+  window.addEventListener('nd-live', () => { clearTimeout(liveTimer); liveTimer = setTimeout(load, 300); });
+
+  render();
+})();
+</script>
+{% endblock %}

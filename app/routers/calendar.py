@@ -301,6 +301,16 @@ def _icon_or_404(db: Session, world_id: int, icon_id: int) -> CalendarDayIcon:
     return icon
 
 
+def _next_session_info(db: Session, world):
+    """The next confirmed real-world session from the session planner, for the line at the top of the calendar."""
+    from .schedule import next_confirmed
+    found = next_confirmed(db, world.id)
+    if not found:
+        return None
+    plan, slot = found
+    return {"title": plan.title, "starts_at": slot.starts_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "location": plan.location or ""}
+
+
 @router.get("/calendar", response_class=HTMLResponse)
 def calendar_view(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -429,6 +439,7 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         "month_color": month.get("color", ""),
         "year_text": _cc.format_year(config, year), "cur_year_text": _cc.format_year(config, cur_year),
         "today_label": date_label(config, current_day),
+        "next_session": _next_session_info(db, world),
         "entities": entities, "sessions": sessions, "characters": characters, "parties": parties,
         "can_manage": _can_manage_calendar(request, world),
         "can_add_event": world_can_edit_section(request, world, "calendar"),

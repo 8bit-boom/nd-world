@@ -87,7 +87,7 @@ def test_rendered_pages_have_parseable_inline_scripts(client, seed):
 
     pages = {
         "gm": ["/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
-               f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/calendar/year", "/calendar/config", "/worlds", "/combat",
+               f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/calendar/year", "/calendar/config", "/worlds", "/schedule", "/combat",
                "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings", "/npc-talk",
                "/new", f"/entity/{npc}/edit", "/races", "/professions"],
         "player": [f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk"],
