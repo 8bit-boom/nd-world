@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block title %}AI rename — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="mr" id="mr">
+  <h1>✨ AI rename</h1>
+  <p class="mr-sub">
+    Scan audio, video and images - their names, the tags and lyrics inside the files, transcripts, where an image is used, and
+    (optionally) the picture itself - and let the AI propose names you can actually search for. You review every proposal,
+    edit what you like, and apply; the whole batch can be undone. Files are never renamed on disk, so nothing that points at
+    them breaks.
+  </p>
+  {% if not ai_ready %}
+  <div class="mr-warn">No AI backend is configured, so names cannot be suggested yet (Settings → System → set the Studio API key). You can still browse the library here.</div>
+  {% endif %}
+
+  <section class="mr-box">
+    <h2>1 · Choose what to rename</h2>
+    <div class="mr-tabs" id="mr-tabs" role="tablist"></div>
+    <div class="mr-filters">
+      <select id="mr-album" aria-label="Album"><option value="0">All albums</option></select>
+      <input id="mr-q" type="search" placeholder="Filter by name…" aria-label="Filter by name"/>
+      <label class="mr-check"><input type="checkbox" id="mr-generic"/> only names that need work</label>
+      <span class="mr-count" id="mr-count"></span>
+    </div>
+    <div class="mr-bulk">
+      <button type="button" class="mr-btn" id="mr-sel-all">Select all shown</button>
+      <button type="button" class="mr-btn" id="mr-sel-generic">Select the ones that need work</button>
+      <button type="button" class="mr-btn" id="mr-sel-none">Clear selection</button>
+    </div>
+    <div id="mr-list" class="mr-list" aria-live="polite"></div>
+    <div id="mr-more" class="mr-note"></div>
+  </section>
+
+  <section class="mr-box">
+    <h2>2 · How</h2>
+    <div class="mr-how">
+      <label>Naming style
+        <select id="mr-preset">
+          <option value="">Plain and descriptive (default)</option>
+          {% for key, text in presets.items() %}<option value="{{ key }}" title="{{ text }}">{{ {'descriptive': 'Descriptive Title Case', 'short': 'Very short', 'lore': 'Fits the setting', 'music': 'Artist - Title for music', 'sfx': 'Sound-effect style'}[key] }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Your own wishes <input id="mr-style" maxlength="300" placeholder="e.g. no numbers, keep the region name, Title Case"/></label>
+    </div>
+    <label class="mr-check"><input type="checkbox" id="mr-pictures" checked/> Look at the pictures (images, and the poster frame of videos) - slower, and needs a vision-capable model</label>
+    <label class="mr-check"><input type="checkbox" id="mr-listen"/> Listen to audio that has no transcript yet - slow; only short clips, nothing is saved</label>
+    <div class="mr-run">
+      <button type="button" class="mr-btn primary" id="mr-go" {% if not ai_ready %}disabled{% endif %}>✨ Suggest names</button>
+      <button type="button" class="mr-btn" id="mr-stop" hidden>Stop</button>
+      <span id="mr-progress" class="mr-note" role="status"></span>
+    </div>
+    <div id="mr-errors" class="mr-errors" role="alert"></div>
+  </section>
+
+  <section class="mr-box" id="mr-review-box" hidden>
+    <h2>3 · Review and apply</h2>
+    <p class="mr-note" style="margin:0 0 .6rem">Names of clips players can see are shown to them - check the proposals for spoilers (the AI is told where an item is used, including secret characters and places).</p>
+    <div class="mr-bulk">
+      <button type="button" class="mr-btn" id="mr-rv-all">Tick all changes</button>
+      <button type="button" class="mr-btn" id="mr-rv-none">Untick all</button>
+      <label class="mr-check"><input type="checkbox" id="mr-rv-changed" checked/> hide unchanged</label>
+      <button type="button" class="mr-btn primary" id="mr-apply">Apply ticked renames</button>
+      <span id="mr-apply-msg" class="mr-note" role="status"></span>
+    </div>
+    <div class="mr-tablewrap"><table class="mr-table" id="mr-review"><thead><tr><th></th><th></th><th>Now</th><th>New name (editable)</th><th>Based on</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="mr-box">
+    <h2>Recent renames</h2>
+    <div id="mr-history"></div>
+  </section>
+</div>
+
+<script id="mr-start" type="application/json">{{ {'start': start, 'history': history} | tojson }}</script>
+
+<style>
+.mr { max-width: 1000px; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+.mr h1 { color: var(--neon); font-size: 1.3rem; margin: 0 0 .3rem; }
+.mr-sub { color: var(--text-dim); font-size: .85rem; max-width: 46rem; margin: 0 0 1rem; }
+.mr-warn { background: rgba(255,170,0,.1); border: 1px solid #a86; color: #fc8; padding: .6rem .9rem; border-radius: 4px; margin-bottom: 1rem; font-size: .85rem; }
+.mr-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: .9rem 1rem; margin-bottom: 1rem; }
+.mr-box h2 { color: var(--neon); font-size: .95rem; margin: 0 0 .7rem; }
+.mr-tabs { display: flex; gap: .3rem; margin-bottom: .6rem; flex-wrap: wrap; }
+.mr-tab { background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); padding: .35rem .9rem; border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: .85rem; min-height: 34px; }
+.mr-tab[aria-selected="true"] { border-color: var(--neon); color: var(--neon); }
+.mr-filters, .mr-bulk, .mr-how, .mr-run { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .55rem; }
+.mr-how label { display: flex; flex-direction: column; gap: .2rem; font-size: .78rem; color: var(--text-dim); flex: 1 1 14rem; }
+.mr input[type=search], .mr input[type=text], .mr input:not([type]), .mr select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .4rem .55rem; font-family: var(--font); font-size: .85rem; border-radius: 4px; min-height: 34px; box-sizing: border-box; }
+.mr-filters input[type=search] { flex: 1 1 12rem; }
+.mr-check { display: flex; gap: .4rem; align-items: center; font-size: .82rem; color: var(--text-dim); margin: .25rem 0; }
+.mr-count { color: var(--text-dim); font-size: .8rem; margin-left: auto; }
+.mr-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .35rem .8rem; min-height: 34px; border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: .82rem; }
+.mr-btn:hover:not(:disabled) { border-color: var(--neon); color: var(--neon); }
+.mr-btn.primary { border-color: var(--neon); color: var(--neon); }
+.mr-btn:disabled { opacity: .45; cursor: default; }
+.mr-list { max-height: 26rem; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+.mr-row { display: grid; grid-template-columns: 1.6rem 40px 1fr auto; gap: .6rem; align-items: center; padding: .35rem .6rem; border-bottom: 1px solid var(--border); font-size: .84rem; cursor: pointer; }
+.mr-row:last-child { border-bottom: none; }
+.mr-row:hover { background: var(--bg3); }
+.mr-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 3px; background: var(--bg3); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
+.mr-name { overflow-wrap: anywhere; }
+.mr-name small { display: block; color: var(--text-dim); font-size: .72rem; }
+.mr-chip { font-size: .68rem; padding: .05rem .45rem; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; }
+.mr-chip.warn { border-color: #e6b84a; color: #e6b84a; }
+.mr-note { color: var(--text-dim); font-size: .8rem; }
+.mr-errors { color: #e07070; font-size: .82rem; white-space: pre-wrap; }
+.mr-tablewrap { overflow-x: auto; }
+.mr-table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.mr-table th { text-align: left; color: var(--text-dim); font-weight: normal; font-size: .75rem; padding: .3rem .5rem; border-bottom: 1px solid var(--border); }
+.mr-table td { padding: .35rem .5rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.mr-table td.old { color: var(--text-dim); overflow-wrap: anywhere; max-width: 16rem; }
+.mr-table input[type=text] { width: 100%; min-width: 12rem; }
+.mr-table tr.unchanged td { opacity: .55; }
+.mr-hist { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; padding: .35rem 0; border-bottom: 1px solid var(--border); font-size: .82rem; }
+.mr-hist:last-child { border-bottom: none; }
+.mr-hist .ex { color: var(--text-dim); flex: 1 1 14rem; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .mr-btn { min-height: 40px; } .mr-row { grid-template-columns: 1.6rem 40px 1fr; } .mr-row .mr-chips { grid-column: 3; } }
+</style>
+
+<script>
+(function () {
+  'use strict';
+  const boot = JSON.parse(document.getElementById('mr-start').textContent);
+  const $ = id => document.getElementById(id);
+  const ICON = { audio: '🎵', video: '🎬', image: '🖼' };
+  const LABEL = { audio: 'Audio', video: 'Video', image: 'Images' };
+  const BASIS = { tags: 'tags in the file', lyrics: 'lyrics', transcript: 'transcript', listened: 'listened to it', prompt: 'generation prompt',
+                  picture: 'the picture', usage: 'where it is used', filename: 'file name' };
+
+  let kind = boot.start.kinds.includes(boot.start.kind) ? boot.start.kind : boot.start.kinds[0];
+  let items = [];                       // the list being shown (one kind)
+  const selected = new Map();           // key -> item, kept across tab switches
+  const proposals = new Map();          // key -> {item, old, name, checked, basis, changed, note}
+  let stopRequested = false, running = false;
+
+  const keyOf = it => it.kind + ':' + (it.kind === 'image' ? it.url : it.id);
+  const refOf = it => it.kind === 'image' ? { kind: 'image', url: it.url } : { kind: it.kind, id: it.id };
+
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const k in (attrs || {})) {
+      const v = attrs[k];
+      if (v == null || v === false) continue;
+      if (k === 'text') el.textContent = v;
+      else if (k === 'class') el.className = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    kids.flat().forEach(c => { if (c != null && c !== false) el.append(c.nodeType ? c : document.createTextNode(c)); });
+    return el;
+  }
+  async function api(method, url, body) {
+    const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : ('HTTP ' + res.status));
+    return data;
+  }
+
+  // ── 1 · the list ──
+  function renderTabs() {
+    $('mr-tabs').replaceChildren(...boot.start.kinds.map(k => h('button', { type: 'button', class: 'mr-tab', role: 'tab', 'aria-selected': String(k === kind),
+      text: ICON[k] + ' ' + LABEL[k], onclick: () => { kind = k; $('mr-album').value = '0'; loadItems(); renderTabs(); } })));
+  }
+  function shown() {
+    const onlyGeneric = $('mr-generic').checked;
+    return items.filter(it => !onlyGeneric || it.generic);
+  }
+  function renderList() {
+    const rows = shown();
+    $('mr-list').replaceChildren(...(rows.length ? rows.map(it => {
+      const box = h('input', { type: 'checkbox', 'aria-label': 'Select ' + it.name });
+      box.checked = selected.has(keyOf(it));
+      const row = h('label', { class: 'mr-row' }, box,
+        it.thumb ? h('img', { class: 'mr-thumb', src: it.thumb, alt: '', loading: 'lazy' }) : h('div', { class: 'mr-thumb', text: ICON[it.kind] }),
+        h('div', { class: 'mr-name' }, it.name || '(no name)', h('small', { text: [it.filename && it.filename !== it.name ? 'file: ' + it.filename : '', it.album].filter(Boolean).join(' · ') })),
+        h('div', { class: 'mr-chips' }, it.generic ? h('span', { class: 'mr-chip warn', text: 'needs a name' }) : null, it.has_transcript ? h('span', { class: 'mr-chip', text: 'transcript' }) : null));
+      box.addEventListener('change', () => { box.checked ? selected.set(keyOf(it), it) : selected.delete(keyOf(it)); updateCount(); });
+      return row;
+    }) : [h('div', { class: 'mr-note', style: 'padding:.8rem', text: 'Nothing here.' })]));
+    updateCount();
+  }
+  function updateCount() {
+    const rows = shown();
+    const needs = items.filter(i => i.generic).length;
+    $('mr-count').textContent = rows.length + ' shown · ' + needs + ' need work · ' + selected.size + ' selected';
+    $('mr-go').disabled = !selected.size || running || !{{ 'true' if ai_ready else 'false' }};
+  }
+  async function loadItems() {
+    $('mr-list').replaceChildren(h('div', { class: 'mr-note', style: 'padding:.8rem', text: 'Loading…' }));
+    const params = new URLSearchParams({ kind, album: $('mr-album').value || '0', q: $('mr-q').value.trim() });
+    try {
+      const d = await api('GET', '/api/media-rename/items?' + params);
+      items = d.items;
+      const keep = $('mr-album').value;
+      $('mr-album').replaceChildren(h('option', { value: '0', text: 'All albums' }), ...d.albums.map(a => h('option', { value: String(a.id), text: a.name })));
+      $('mr-album').value = d.albums.some(a => String(a.id) === keep) ? keep : '0';
+      $('mr-more').textContent = d.truncated ? 'Only the first ' + items.length + ' are listed - filter to narrow it down.' : '';
+      renderList();
+    } catch (e) { $('mr-list').replaceChildren(h('div', { class: 'mr-errors', style: 'padding:.8rem', text: '⚠ ' + e.message })); }
+  }
+  let qTimer = null;
+  $('mr-q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(loadItems, 250); });
+  $('mr-album').addEventListener('change', loadItems);
+  $('mr-generic').addEventListener('change', renderList);
+  $('mr-sel-all').addEventListener('click', () => { shown().forEach(it => selected.set(keyOf(it), it)); renderList(); });
+  $('mr-sel-generic').addEventListener('click', () => { items.filter(i => i.generic).forEach(it => selected.set(keyOf(it), it)); renderList(); });
+  $('mr-sel-none').addEventListener('click', () => { selected.clear(); renderList(); });
+
+  // ── 2 · asking the AI, a few items at a time ──
+  async function suggest() {
+    const picked = [...selected.values()];
+    if (!picked.length || running) return;
+    running = true; stopRequested = false;
+    $('mr-go').disabled = true; $('mr-stop').hidden = false; $('mr-errors').textContent = '';
+    const pictures = $('mr-pictures').checked;
+    const chunkSize = pictures ? 3 : 6;
+    let done = 0;
+    const errors = [];
+    for (let i = 0; i < picked.length && !stopRequested; i += chunkSize) {
+      const chunk = picked.slice(i, i + chunkSize);
+      $('mr-progress').textContent = 'Working… ' + done + ' / ' + picked.length + ' (the AI handles one request at a time)';
+      try {
+        const res = await ndAiFetch('/api/media-rename/suggest', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: chunk.map(refOf), preset: $('mr-preset').value, style: $('mr-style').value, pictures, listen: $('mr-listen').checked }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof d.detail === 'string' ? d.detail : ('HTTP ' + res.status));
+        (d.errors || []).forEach(e => errors.push(e));
+        (d.results || []).forEach(r => {
+          const it = chunk.find(c => (r.kind === 'image' ? c.url === r.url : c.id === r.id) && c.kind === r.kind);
+          if (!it) return;
+          proposals.set(keyOf(it), { item: it, old: r.old, name: r.new || r.old, checked: !!r.changed, basis: r.basis || [], changed: !!r.changed, note: r.note || '' });
+        });
+      } catch (e) { errors.push(e.message); break; }
+      done += chunk.length;
+      renderReview();
+    }
+    running = false; $('mr-stop').hidden = true;
+    $('mr-progress').textContent = (stopRequested ? 'Stopped after ' : 'Done - ') + done + ' / ' + picked.length + '.';
+    $('mr-errors').textContent = errors.length ? errors.slice(0, 6).join('\n') : '';
+    updateCount();
+  }
+  $('mr-go').addEventListener('click', suggest);
+  $('mr-stop').addEventListener('click', () => { stopRequested = true; $('mr-progress').textContent = 'Stopping after this request…'; });
+
+  // ── 3 · review ──
+  function renderReview() {
+    $('mr-review-box').hidden = proposals.size === 0;
+    const hideSame = $('mr-rv-changed').checked;
+    const body = $('mr-review').querySelector('tbody');
+    body.replaceChildren(...[...proposals.entries()].filter(([, p]) => !hideSame || p.changed || p.name !== p.old).map(([key, p]) => {
+      const box = h('input', { type: 'checkbox', 'aria-label': 'Apply this rename' });
+      box.checked = p.checked;
+      box.addEventListener('change', () => { p.checked = box.checked; });
+      const input = h('input', { type: 'text', maxlength: '256', value: p.name, 'aria-label': 'New name for ' + p.old });
+      input.addEventListener('input', () => { p.name = input.value; p.checked = input.value.trim() !== p.old; box.checked = p.checked; });
+      return h('tr', { class: p.changed ? '' : 'unchanged' }, h('td', {}, box),
+        h('td', {}, p.item.thumb ? h('img', { class: 'mr-thumb', src: p.item.thumb, alt: '' }) : h('div', { class: 'mr-thumb', text: ICON[p.item.kind] })),
+        h('td', { class: 'old', text: p.old || '(no name)' }), h('td', {}, input),
+        h('td', {}, p.basis.length ? p.basis.map(b => h('span', { class: 'mr-chip', text: BASIS[b] || b, style: 'margin-right:.25rem' })) : h('span', { class: 'mr-note', text: p.note || 'no clues beyond the name' })));
+    }));
+  }
+  $('mr-rv-changed').addEventListener('change', renderReview);
+  $('mr-rv-all').addEventListener('click', () => { proposals.forEach(p => { p.checked = p.name.trim() !== p.old; }); renderReview(); });
+  $('mr-rv-none').addEventListener('click', () => { proposals.forEach(p => { p.checked = false; }); renderReview(); });
+  $('mr-apply').addEventListener('click', async () => {
+    const todo = [...proposals.entries()].filter(([, p]) => p.checked && p.name.trim());
+    if (!todo.length) { $('mr-apply-msg').textContent = 'Nothing ticked.'; return; }
+    if (!confirm('Rename ' + todo.length + ' item' + (todo.length === 1 ? '' : 's') + '? You can undo the batch afterwards.')) return;
+    $('mr-apply').disabled = true;
+    try {
+      const d = await api('POST', '/api/media-rename/apply', { renames: todo.map(([, p]) => Object.assign(refOf(p.item), { name: p.name.trim() })) });
+      todo.forEach(([key, p]) => { p.item.name = p.name.trim(); proposals.delete(key); });
+      $('mr-apply-msg').textContent = '✔ Renamed ' + d.applied + (d.skipped.length ? ' · skipped ' + d.skipped.length + ': ' + d.skipped.slice(0, 3).map(s => s.reason).join(' ') : '') + '.';
+      renderReview(); renderList(); loadHistory();
+    } catch (e) { $('mr-apply-msg').textContent = '⚠ ' + e.message; }
+    $('mr-apply').disabled = false;
+  });
+
+  // ── history / undo ──
+  function renderHistory(batches) {
+    $('mr-history').replaceChildren(...(batches.length ? batches.map(b => h('div', { class: 'mr-hist' },
+      h('span', { text: new Date(b.at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' · ' + b.by }),
+      h('span', { text: b.count + ' rename' + (b.count === 1 ? '' : 's') }),
+      h('span', { class: 'ex', text: b.examples.map(e => (e.old || '(no title)') + ' → ' + (e.new || '(cleared)')).join('  ·  ') }),
+      b.undone ? h('span', { class: 'mr-chip', text: 'undone' }) : h('button', { type: 'button', class: 'mr-btn', text: '↩ Undo', onclick: async () => {
+        if (!confirm('Put these ' + b.count + ' name(s) back?')) return;
+        try {
+          const d = await api('POST', '/api/media-rename/undo', { batch_id: b.batch_id });
+          $('mr-apply-msg').textContent = '↩ Restored ' + d.restored + (d.skipped.length ? ' · left ' + d.skipped.length + ' (' + d.skipped[0].reason + ')' : '') + '.';
+        } catch (e) { $('mr-apply-msg').textContent = '⚠ ' + e.message; }
+        loadHistory(); loadItems();
+      } }))) : [h('div', { class: 'mr-note', text: 'Nothing renamed yet.' })]));
+  }
+  async function loadHistory() { try { renderHistory((await api('GET', '/api/media-rename/history')).batches); } catch (e) { /* the list stays as it was */ } }
+
+  renderTabs(); renderHistory(boot.history); loadItems();
+})();
+</script>
+{% endblock %}

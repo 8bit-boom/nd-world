@@ -64,6 +64,8 @@ _GENERICALLY_HEALED_TABLES = (
     # above. The vote table's (slot, user) uniqueness is a table constraint,
     # which create_all() applies; generic healing only ever adds columns.
     "session_plans", "session_plan_slots", "session_plan_votes",
+    # media_titles / media_rename_log (app.models - the AI media renamer): brand new, same reasoning as above.
+    "media_titles", "media_rename_log",
 )
 
 

@@ -32,6 +32,9 @@
     </select>
     <button type="submit" class="btn-save">Move</button>
   </form>
+  {% if can_edit(request) and image_urls %}
+  <a class="btn-cancel" style="display:inline-block;font-size:.78rem;padding:.25rem .7rem;margin:.2rem 0 .4rem;text-decoration:none" href="{{ ('/media-rename?kind=image&album=' ~ album.id)|wq }}" title="Let the AI look at this album's images and propose better names - you review before anything changes">✨ AI rename…</a>
+  {% endif %}
   <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">{{ image_urls|length }} image{{ '' if image_urls|length == 1 else 's' }}</p>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.2rem">

@@ -70,6 +70,7 @@ worlds they've been invited into (`WorldMembership`).
 - [Parties](#parties)
 - [Calendar](#calendar)
 - [Session schedule](#session-schedule)
+- [AI media rename](#ai-media-rename)
 - [Maps](#maps)
 - [Schematics](#schematics)
 - [Investigation Boards](#investigation-boards)
@@ -523,6 +524,19 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/schedule/confirmed.ics` | Member | Every confirmed session from yesterday on as one iCalendar file. |
 
 The next confirmed session also shows on the in-world calendar page and in each player's hub Schedule tab (`/api/characters/{id}/hub/schedule` gained `next_session`, `polls_waiting`, `schedule_href`).
+
+## AI media rename
+
+`app/routers/media_rename.py` (logic in `app/media_rename.py`, file tags in `app/media_meta.py`) — the AI scans audio clips, video clips and images and proposes better names; the GM reviews, applies in one batch, and can undo the batch. Clips are renamed through their `name`; an image gets a label (`MediaTitle`) that wins over the name the gallery would derive — files are never renamed on disk, so portraits and markdown embeds keep working. GM and assistants (content tier): every call needs the `audio` / `video` / `images` **edit** level for the kinds it touches. Clues read per item: current name, file name, album, attached entity / where an image is used, tags inside the file (ID3, MP4, FLAC, Ogg, WAV, PNG text / EXIF incl. the generation prompt of AI images, ffprobe as a fallback), lyrics, the stored transcript, optionally a short listen to an untranscribed clip and the picture / video poster for a vision model. Scanning writes nothing.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/media-rename` | GM / Assistant | The page: choose items (per kind, album filter, "needs work" hint), pick a style, review the proposals, apply, undo. `?kind=audio\|video\|image&album=<id>` preselects (linked from the Audio / Video / Images pages). |
+| GET | `/api/media-rename/items` | GM / Assistant | `?kind=audio\|video\|image`, `?album=`, `?q=` → `{items[{kind, id\|url, name, filename, album, generic, …}], albums, truncated, generic_count}`; `generic` = the name says nothing searchable ("IMG_2041", "Recording 12", a file name). |
+| POST | `/api/media-rename/suggest` | GM / Assistant | `{items:[{kind,id\|url}] (≤ 12), preset?, style?, pictures?, listen?}` → `{results[{kind, id\|url, old, new, changed, basis[], generic, note}], errors[]}`. Text items go to the model eight at a time, pictures one per call; nothing is changed. A background AI task ("Media names"). |
+| POST | `/api/media-rename/apply` | GM / Assistant | `{renames:[{kind, id\|url, name}]}` (≤ 500) → `{batch_id, applied, skipped[{ref, reason}]}`. An empty name for an image clears its label. |
+| POST | `/api/media-rename/undo` | GM / Assistant | `{batch_id}` → `{restored, skipped[]}`; anything renamed again since is left alone; a batch is undone once. |
+| GET | `/api/media-rename/history` | GM / Assistant | The latest applied batches (who, when, how many, examples, undone). |
 
 ## Maps
 

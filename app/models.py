@@ -1891,6 +1891,40 @@ class SessionPlanVote(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MediaTitle(Base):
+    """A display name for an IMAGE, chosen by hand or by the AI renamer (app/media_rename.py). Images have no row of
+    their own - the library only knows their /uploads/... URL - and renaming the file would break every entity portrait
+    and markdown embed that points at it, so the name is a label kept beside the URL. It wins over the name the gallery
+    would otherwise derive (where the image is used, or its file name). Audio and video clips have their own `name`."""
+    __tablename__ = "media_titles"
+    __table_args__ = (UniqueConstraint("world_id", "url", name="uq_media_title_world_url"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    url = Column(String(512), nullable=False, index=True)
+    title = Column(String(256), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MediaRenameLog(Base):
+    """One row per rename the renamer applied, grouped by batch, so a whole batch can be undone. kind is "audio",
+    "video" or "image"; clips are referenced by ref_id, images by ref_url. An empty old_name on an image means it had no
+    title before (undo removes the title)."""
+    __tablename__ = "media_rename_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    batch_id = Column(String(32), nullable=False, index=True)
+    kind = Column(String(8), nullable=False)
+    ref_id = Column(Integer, nullable=True)
+    ref_url = Column(String(512), nullable=True)
+    old_name = Column(String(256), default="")
+    new_name = Column(String(256), default="")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    undone_at = Column(DateTime, nullable=True)
+
+
 class Schematic(Base):
     __tablename__ = "schematics"
 

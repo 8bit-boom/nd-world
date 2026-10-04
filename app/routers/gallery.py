@@ -15,9 +15,9 @@ from sqlalchemy.orm import Session
 from .. import media_albums
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, world_can_edit_section, world_can_view_section
-from ..gallery import all_world_image_urls, discover_world_images, image_display_name
+from ..gallery import all_world_image_urls, discover_world_images, image_display_name, world_image_names
 from ..imaging import convert_image, make_thumbnail
-from ..models import ImageAlbum, World
+from ..models import ImageAlbum, MediaTitle, World
 from ..templating import templates, thumb_url
 from ..uploads import (
     MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, reassemble_upload_chunks, save_upload_chunk,
@@ -258,6 +258,8 @@ async def image_delete(request: Request, db: Session = Depends(get_db), active_w
         raise HTTPException(404, "Image not found")
     db.commit()
 
+    db.query(MediaTitle).filter(MediaTitle.world_id == world.id, MediaTitle.url == url).delete()
+    db.commit()
     path = _resolve_upload_path(url)
     if path:
         path.unlink()
@@ -330,8 +332,8 @@ def gallery_browse(
         album = _album_or_404(db, world.id, album_id)
         child_albums = db.query(ImageAlbum).filter(ImageAlbum.parent_id == album.id).order_by(ImageAlbum.name).all()
         urls = _load_urls(album)
-        discovered_names = {e["url"]: e["name"] for e in discover_world_images(db, world)}
-        images = [{"url": u, "name": discovered_names.get(u, image_display_name(u))} for u in urls]
+        names = world_image_names(db, world, urls)
+        images = [{"url": u, "name": names[u]} for u in urls]
         breadcrumb = _breadcrumb(db, album) + [album]
     else:
         child_albums = (
@@ -390,8 +392,7 @@ def album_detail(album_id: int, request: Request, db: Session = Depends(get_db),
     # A name for each image: the label of wherever it's already used (an
     # entity/PC name — what the GM actually thinks of it as), falling back
     # to its filename for an image that only lives in this album so far.
-    discovered_names = {e["url"]: e["name"] for e in discover_world_images(db, world)}
-    image_names = {u: discovered_names.get(u, image_display_name(u)) for u in urls}
+    image_names = world_image_names(db, world, urls)
     child_albums = (
         db.query(ImageAlbum).filter(ImageAlbum.parent_id == album.id).order_by(ImageAlbum.name).all()
     )

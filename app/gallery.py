@@ -8,7 +8,7 @@ import re
 
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Entity, ImageAlbum, PlayerCharacter, World
+from .models import Entity, ImageAlbum, MediaTitle, PlayerCharacter, World
 
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 
@@ -34,6 +34,19 @@ def image_display_name(url: str, uses: list = None) -> str:
         return uses[0]["label"]
     fname = url.rsplit("/", 1)[-1]
     return _UPLOAD_PREFIX_RE.sub("", fname) or fname
+
+
+def title_overrides(db: Session, world_id: int) -> dict:
+    """{url: title} - the names given to images by hand or by the AI renamer (MediaTitle). They win over the name
+    the gallery would derive from where an image is used or from its file name."""
+    return {url: title for url, title in db.query(MediaTitle.url, MediaTitle.title).filter(MediaTitle.world_id == world_id).all()}
+
+
+def world_image_names(db: Session, world: World, urls: list) -> dict:
+    """{url: display name} for `urls`: a chosen title, else where it is used, else its file name."""
+    overrides = title_overrides(db, world.id)
+    used = {e["url"]: e["name"] for e in discover_world_images(db, world)}
+    return {u: overrides.get(u) or used.get(u) or image_display_name(u) for u in urls}
 
 
 def discover_world_images(db: Session, world: World) -> list:
@@ -78,8 +91,9 @@ def discover_world_images(db: Session, world: World) -> list:
         for url in _extract_md_images(pc.notes):
             _add(url, f"{pc.name} (notes)", href)
 
+    overrides = title_overrides(db, world.id)
     for entry in found.values():
-        entry["name"] = image_display_name(entry["url"], entry["uses"])
+        entry["name"] = overrides.get(entry["url"]) or image_display_name(entry["url"], entry["uses"])
     return sorted(found.values(), key=lambda entry: entry["url"])
 
 
@@ -95,6 +109,7 @@ def all_world_image_urls(db: Session, world: World) -> list:
     for each rather than a bare UUID filename."""
     discovered = {entry["url"]: entry["name"] for entry in discover_world_images(db, world)}
     names = dict(discovered)
+    overrides = title_overrides(db, world.id)
     albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).all()
     for album in albums:
         try:
@@ -104,5 +119,5 @@ def all_world_image_urls(db: Session, world: World) -> list:
         if isinstance(album_urls, list):
             for u in album_urls:
                 if isinstance(u, str) and u not in names:
-                    names[u] = image_display_name(u)
+                    names[u] = overrides.get(u) or image_display_name(u)
     return [{"url": u, "name": names[u]} for u in sorted(names)]

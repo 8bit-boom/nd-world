@@ -183,6 +183,13 @@ tools that require GM access still check `is_gm` at call time.)
   Players / Assistants matrix, so every handler starts with `_ctx` (membership through `get_world_ctx`) and `/api/schedule/*` is
   allowlisted for all. Times are naive UTC in the DB and ISO `…Z` on the wire - the browser does the time-zone display, never format
   a slot's time on the server. `next_confirmed` / `polls_waiting` feed the calendar page and the hub; a change calls `live.touch`.
+- **The AI media renamer proposes, the GM disposes** (`app/media_rename.py`, `app/media_meta.py`, `app/routers/media_rename.py`):
+  scanning only reads (file tags through `media_meta.read_metadata`, which never raises and bounds every read; the stored
+  transcript; optionally a picture sent to the model) and never writes; names change only through `apply_renames`, which logs a
+  batch for `undo_batch`. Clips rename their `name`; an image gets a `MediaTitle` label (`gallery.title_overrides` /
+  `world_image_names` apply it everywhere a name is derived) - never rename an upload on disk, every portrait and markdown embed
+  points at its URL. An image is only read if it belongs to the world (`image_usage`), and every read stays inside the uploads
+  folder. A new file format worth reading: add a parser to `media_meta` with a test that builds the bytes.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;
