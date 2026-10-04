@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "calendar/_nav.html" import navbtn %}
 {% block title %}Calendar — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:900px;margin:0 auto;padding:1.5rem 1rem">
@@ -11,6 +12,7 @@
     </div>
     <div style="display:flex;gap:.9rem;align-items:center">
       <a href="{{ '/calendar/agenda'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">📋 Agenda</a>
+      <a href="{{ nav.year|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">🗓 Year view</a>
       {% if can_manage %}
       <a href="{{ '/calendar/config'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
       {% endif %}
@@ -84,10 +86,43 @@
   </div>
   {% endif %}
 
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
-    <a href="{{ ('/calendar?year=' + prev_year|string + '&month=' + prev_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">← {{ months[prev_month].name }}</a>
-    <h2 style="color:var(--neon);font-size:1rem;margin:0">{{ month.name }}, Year {{ year }}</h2>
-    <a href="{{ ('/calendar?year=' + next_year|string + '&month=' + next_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">{{ months[next_month].name }} →</a>
+  {% if none_notice %}<div class="cal-notice" id="cal-notice" role="status">{{ none_notice }}</div>{% endif %}
+
+  <div class="cal-nav" id="cal-nav">
+    <div class="cal-nav-main">
+      <span class="cal-nav-group">
+        {{ navbtn('prev-decade', '«', 'Back 10 years', nav.prev_decade|wq if nav.prev_decade else None) }}
+        {{ navbtn('prev-year', '‹‹', 'Back 1 year', nav.prev_year|wq if nav.prev_year else None) }}
+        {{ navbtn('prev-month', '‹ ' ~ months[prev_month].name, 'Previous month ( ← )', nav.prev_month|wq if nav.prev_month else None) }}
+      </span>
+      <div class="cal-nav-title">
+        <h2 id="cal-title">{{ month.name }}, Year {{ year }}</h2>
+        <div class="cal-offset" id="cal-offset">{{ offset_label }}</div>
+      </div>
+      <span class="cal-nav-group">
+        {{ navbtn('next-month', months[next_month].name ~ ' ›', 'Next month ( → )', nav.next_month|wq if nav.next_month else None) }}
+        {{ navbtn('next-year', '››', 'Forward 1 year ( Shift + → )', nav.next_year|wq if nav.next_year else None) }}
+        {{ navbtn('next-decade', '»', 'Forward 10 years', nav.next_decade|wq if nav.next_decade else None) }}
+      </span>
+    </div>
+    <div class="cal-nav-tools">
+      <form class="cal-jump" id="cal-jump" method="get" action="/calendar" title="Go to any month — this does not change today's date">
+        {% if world %}<input type="hidden" name="w" value="{{ world.slug }}"/>{% endif %}
+        <select name="month" aria-label="Month">
+          {% for m in months %}<option value="{{ loop.index0 }}"{% if loop.index0 == month_idx %} selected{% endif %}>{{ m.name }}</option>{% endfor %}
+        </select>
+        <input type="number" name="year" min="1" max="{{ max_year }}" value="{{ year }}" aria-label="Year"/>
+        <button type="submit" class="cal-nav-btn primary">Go</button>
+      </form>
+      {{ navbtn('today', 'Today', 'Back to the current month', nav.today|wq) }}
+      {{ navbtn('year', '🗓 Year', 'Whole-year overview ( Y )', nav.year|wq) }}
+      {{ navbtn('prev-event', '◀ Event', 'Jump to the previous event ( [ )', nav.prev_event|wq) }}
+      {{ navbtn('next-event', 'Event ▶', 'Jump to the next event ( ] )', nav.next_event|wq) }}
+      <div class="cal-search">
+        <input id="cal-search" type="search" placeholder="Search events…  ( / )" autocomplete="off" aria-label="Search events"/>
+        <div class="cal-search-results" id="cal-search-results" hidden></div>
+      </div>
+    </div>
   </div>
 
   <div class="cal-grid" id="cal-grid" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
@@ -322,6 +357,90 @@ if (CAN_MANAGE) {
     window.location.href = `${window.location.pathname}?year=${d.year}&month=${d.month_idx}`;
   });
 }
+
+// ── Navigation: search box and keyboard shortcuts ────────────────────────────────────────────────────────────
+// Browsing never changes today's date; these only move the view. ← / → month, Shift + ← / → year, T today, Y year view,
+// [ / ] previous / next event, / search.
+(function () {
+  const input = document.getElementById('cal-search');
+  const box = document.getElementById('cal-search-results');
+  const NEAR = {{ month_start }};
+  let timer = null, seq = 0;
+  function hideBox() { box.hidden = true; box.innerHTML = ''; }
+  function showHits(data) {
+    box.innerHTML = '';
+    if (!data.results.length) {
+      const empty = document.createElement('div');
+      empty.className = 'cal-search-empty';
+      empty.textContent = 'No events match.';
+      box.appendChild(empty);
+    }
+    data.results.forEach(r => {
+      const a = document.createElement('a');
+      a.className = 'cal-search-hit';
+      a.href = r.href;
+      a.style.setProperty('--hit', /^#[0-9a-f]{3,8}$/i.test(r.color || '') ? r.color : 'var(--neon)');
+      a.textContent = r.title;
+      const small = document.createElement('small');
+      small.textContent = r.label + ' · ' + r.when;
+      a.appendChild(small);
+      box.appendChild(a);
+    });
+    if (data.truncated) {
+      const more = document.createElement('div');
+      more.className = 'cal-search-empty';
+      more.textContent = 'More matches — refine the search.';
+      box.appendChild(more);
+    }
+    box.hidden = false;
+  }
+  async function run() {
+    const q = input.value.trim();
+    if (!q) { hideBox(); return; }
+    const mine = ++seq;
+    try {
+      const res = await fetch('/api/calendar/search?q=' + encodeURIComponent(q) + '&near=' + NEAR);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (mine === seq) showHits(data);
+    } catch (e) {
+      if (mine !== seq) return;
+      box.innerHTML = '';
+      const err = document.createElement('div');
+      err.className = 'cal-search-empty';
+      err.textContent = 'Search failed: ' + e.message;
+      box.appendChild(err);
+      box.hidden = false;
+    }
+  }
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 200); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { input.value = ''; hideBox(); input.blur(); }
+    if (e.key === 'ArrowDown') { const first = box.querySelector('a'); if (first) { e.preventDefault(); first.focus(); } }
+  });
+  box.addEventListener('keydown', e => {
+    const links = Array.from(box.querySelectorAll('a')), i = links.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' && i < links.length - 1) { e.preventDefault(); links[i + 1].focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); (i > 0 ? links[i - 1] : input).focus(); }
+    if (e.key === 'Escape') { hideBox(); input.focus(); }
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.cal-search')) hideBox(); });
+
+  const KEYS = { t: 'today', y: 'year', '[': 'prev-event', ']': 'next-event' };
+  document.addEventListener('keydown', e => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+    const t = e.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+    let key = null;
+    if (e.key === 'ArrowLeft') key = e.shiftKey ? 'prev-year' : 'prev-month';
+    else if (e.key === 'ArrowRight') key = e.shiftKey ? 'next-year' : 'next-month';
+    else if (e.key === '/') { e.preventDefault(); input.focus(); return; }
+    else key = KEYS[e.key.toLowerCase()] || null;
+    if (!key) return;
+    const link = document.querySelector('a[data-cal-nav="' + key + '"]');
+    if (link) { e.preventDefault(); window.location.href = link.href; }
+  });
+})();
 
 // Jump-to-day — the Agenda page links here with ?day=N so a GM doesn't have
 // to re-find the day they just clicked from the "days with content" table.

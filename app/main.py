@@ -589,6 +589,9 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method == "POST" and path == "/api/calendar/events":
         return True
+    if method == "GET" and path == "/api/calendar/search":
+        # read-only; the handler gates on world_can_view_section(..., "calendar") like the page itself
+        return True
     if method == "POST" and re.match(r"^/api/calendar/events/\d+/delete$", path):
         return True
     # Parties has no "own row" concept — a player's "edit" level only ever
@@ -652,7 +655,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         # off by default) is the real gate, same "reachable vs. actually
         # allowed" split as every route here.
         return True
-    if path in ("/calendar", "/calendar/agenda", "/quests", "/parties", "/tables") or re.match(
+    if path in ("/calendar", "/calendar/agenda", "/calendar/year", "/calendar/event-jump", "/quests", "/parties", "/tables") or re.match(
         r"^/(quests|parties)/\d+$", path
     ) or re.match(r"^/parties/\d+/(summary|roster)$", path):
         # Read-only browsing for the GM-tool-shaped world sections a GM can

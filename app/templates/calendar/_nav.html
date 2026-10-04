@@ -1,0 +1,10 @@
+{# One calendar navigation control: a link, or - when there is nothing further that way - a greyed-out span. `href` is
+   already world-qualified by the caller (the |wq filter needs the page context, which an imported macro lacks). Shared
+   by the month view and the year overview; tests find the controls by data-cal-nav. #}
+{% macro navbtn(key, label, title, href) -%}
+{%- if href -%}
+<a class="cal-nav-btn" data-cal-nav="{{ key }}" href="{{ href }}" title="{{ title }}">{{ label }}</a>
+{%- else -%}
+<span class="cal-nav-btn disabled" data-cal-nav="{{ key }}" aria-disabled="true" title="{{ title }}">{{ label }}</span>
+{%- endif -%}
+{%- endmacro %}

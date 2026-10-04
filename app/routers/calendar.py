@@ -5,10 +5,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, world_can_edit_row, world_can_edit_section, world_can_view_section
+from ..deps import (
+    can_edit_content, get_world_ctx, with_world, world_can_edit_row, world_can_edit_section, world_can_view_section,
+)
 from ..imaging import convert_image
 from ..models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, World, WorldCalendar
 from ..templating import templates
@@ -230,6 +233,92 @@ def _month_start_day(months: list, year: int, month_idx: int) -> int:
     return (year - 1) * total + sum(m["days"] for m in months[:month_idx]) + 1
 
 
+# Nobody's campaign runs a hundred thousand years, but a typed-in year must not be able to push a day number past
+# what SQLite stores in one integer column (a 500 on every later page view of the calendar).
+MAX_YEAR = 99_999
+
+
+def _year_length(months: list) -> int:
+    return sum(m["days"] for m in months) or 1
+
+
+def _max_day(months: list) -> int:
+    return MAX_YEAR * _year_length(months)
+
+
+def _clamp_day(months: list, day) -> int:
+    return max(1, min(_max_day(months), day))
+
+
+def _normalise_month(months: list, year: int, month_idx: int):
+    """(year, month_idx) for any year / month pair a URL can carry: a month index past either end rolls into the
+    neighbouring year(s), and nothing goes before year 1 / month 0 or past MAX_YEAR."""
+    n = max(1, len(months))
+    year = max(1, min(MAX_YEAR, year))
+    absolute = max(0, min(MAX_YEAR * n - 1, (year - 1) * n + month_idx))
+    return absolute // n + 1, absolute % n
+
+
+def _step_month(months: list, year: int, month_idx: int, delta: int):
+    return _normalise_month(months, year, month_idx + delta)
+
+
+def _plural(n: int, unit: str) -> str:
+    return f"{n} {unit}" if n == 1 else f"{n} {unit}s"
+
+
+def _span_label(total_months: int, per_year: int) -> str:
+    years, months = divmod(total_months, max(1, per_year))
+    parts = []
+    if years:
+        parts.append(_plural(years, "year"))
+    if months:
+        parts.append(_plural(months, "month"))
+    return ", ".join(parts)
+
+
+def _relative_months_label(delta: int, per_year: int) -> str:
+    """How far a viewed month is from the current one: "this month", "last month", "3 months ago", "in 2 years, 2 months"."""
+    if delta == 0:
+        return "this month"
+    if abs(delta) == 1 and per_year > 1:
+        return "next month" if delta > 0 else "last month"
+    span = _span_label(abs(delta), per_year)
+    return f"in {span}" if delta > 0 else f"{span} ago"
+
+
+def _relative_days_label(delta: int, year_days: int, months_per_year: int = 12) -> str:
+    """The same for a day: "today", "5 days ago", "in 3 months" (months at the calendar's average month length)."""
+    if delta == 0:
+        return "today"
+    if delta == 1:
+        return "tomorrow"
+    if delta == -1:
+        return "yesterday"
+    if abs(delta) < 60:
+        span = _plural(abs(delta), "day")
+    else:
+        month_len = max(1.0, year_days / max(1, months_per_year))
+        span = _span_label(round(abs(delta) / month_len), months_per_year) or _plural(abs(delta), "day")
+    return f"in {span}" if delta > 0 else f"{span} ago"
+
+
+def date_label(config: dict, day_num: int) -> str:
+    """One absolute day as the calendar writes it: "Palevigil 7, Year 427"."""
+    months = _months_of(config)
+    year, month_idx, dom = _resolve_date(config, max(1, day_num))
+    return f"{months[month_idx]['name']} {dom}, Year {year}"
+
+
+def _month_href(year: int, month_idx: int, day: int = 0) -> str:
+    return f"/calendar?year={year}&month={month_idx}" + (f"&day={day}" if day else "")
+
+
+def _like_escape(text: str) -> str:
+    """A user's text as a LIKE pattern body: %, _ and the escape character itself mean themselves."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _safe_int(value, default: int) -> int:
     """int(value), falling back to `default` on anything that isn't a clean
     integer — a bare int(...) on a query param or form field 500s the whole
@@ -267,17 +356,13 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
     months = _months_of(config)
-    current_day = int(config.get("current_day", 1))
+    current_day = _clamp_day(months, _safe_int(config.get("current_day"), 1))
     cur_year, cur_month_idx, cur_dom = _resolve_date(config, current_day)
 
-    year = _safe_int(request.query_params.get("year"), cur_year)
-    month_idx = _safe_int(request.query_params.get("month"), cur_month_idx)
-    if month_idx < 0:
-        month_idx = len(months) - 1
-        year -= 1
-    elif month_idx >= len(months):
-        month_idx = 0
-        year += 1
+    year, month_idx = _normalise_month(
+        months, _safe_int(request.query_params.get("year"), cur_year),
+        _safe_int(request.query_params.get("month"), cur_month_idx),
+    )
 
     month = months[month_idx]
     month_start = _month_start_day(months, year, month_idx)
@@ -322,12 +407,30 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     days_per_week = _days_per_week(config)
     lead_pad = (month_start - 1) % days_per_week
 
-    prev_month = month_idx - 1
-    prev_year = year if prev_month >= 0 else year - 1
-    prev_month = prev_month if prev_month >= 0 else len(months) - 1
-    next_month = month_idx + 1
-    next_year = year if next_month < len(months) else year + 1
-    next_month = next_month if next_month < len(months) else 0
+    # Navigation: every control is a plain link (None = nothing further in that direction), so browsing the calendar
+    # never touches the campaign's current day.
+    n_months = len(months)
+    first = (year, month_idx) == (1, 0)
+    last = (year, month_idx) == (MAX_YEAR, n_months - 1)
+    prev_year, prev_month = _step_month(months, year, month_idx, -1)
+    next_year, next_month = _step_month(months, year, month_idx, 1)
+    nav = {
+        "prev_month": None if first else _month_href(prev_year, prev_month),
+        "next_month": None if last else _month_href(next_year, next_month),
+        "prev_year": None if year <= 1 else _month_href(year - 1, month_idx),
+        "next_year": None if year >= MAX_YEAR else _month_href(year + 1, month_idx),
+        "prev_decade": None if year <= 1 else _month_href(max(1, year - 10), month_idx),
+        "next_decade": None if year >= MAX_YEAR else _month_href(min(MAX_YEAR, year + 10), month_idx),
+        "today": _month_href(cur_year, cur_month_idx),
+        "year": f"/calendar/year?year={year}",
+        "prev_event": f"/calendar/event-jump?dir=prev&from={month_start}",
+        "next_event": f"/calendar/event-jump?dir=next&from={month_end}",
+    }
+    offset_label = _relative_months_label(
+        ((year - 1) * n_months + month_idx) - ((cur_year - 1) * n_months + cur_month_idx), n_months,
+    )
+    none_notice = {"next": "No later events on the calendar.", "prev": "No earlier events on the calendar."}.get(
+        request.query_params.get("none", ""))
 
     # Populate the "link this event to…" dropdowns — capped rather than
     # loading every row in the world on every month view (a mature campaign's
@@ -362,7 +465,8 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         "days": days, "era_name": config.get("era_name", "Year"),
         "days_per_week": days_per_week, "lead_pad": range(lead_pad),
         "current_day": current_day, "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
-        "prev_month": prev_month, "prev_year": prev_year, "next_month": next_month, "next_year": next_year,
+        "prev_month": prev_month, "next_month": next_month, "nav": nav,
+        "offset_label": offset_label, "none_notice": none_notice, "max_year": MAX_YEAR, "month_start": month_start,
         "entities": entities, "sessions": sessions, "characters": characters, "parties": parties,
         "can_manage": _can_manage_calendar(request, world),
         "can_add_event": world_can_edit_section(request, world, "calendar"),
@@ -425,6 +529,147 @@ def calendar_agenda(request: Request, db: Session = Depends(get_db), active_worl
     })
 
 
+def _calendar_ctx(request: Request, db: Session, active_world):
+    """The viewer's world, its calendar config, and the gate every read-only calendar page and API shares."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "calendar"):
+        raise HTTPException(403)
+    cal = _get_or_create_calendar(db, world.id)
+    config = json.loads(cal.config_json or "{}") or _default_config()
+    months = _months_of(config)
+    current_day = _clamp_day(months, _safe_int(config.get("current_day"), 1))
+    return world, worlds, config, months, current_day
+
+
+@router.get("/calendar/event-jump")
+def calendar_event_jump(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Previous / next event from a day — "what happened before this?" without scrolling month by month and without
+    moving the campaign's current day. ?dir=next|prev&from=<absolute day> (default: the current day); redirects to the
+    month view with the day opened (`day=`), or back to where the user was with `none=` when nothing is left that way."""
+    world, _, config, months, current_day = _calendar_ctx(request, db, active_world)
+    direction = request.query_params.get("dir")
+    if direction not in ("next", "prev"):
+        raise HTTPException(400, "dir must be 'next' or 'prev'")
+    frm = _clamp_day(months, _safe_int(request.query_params.get("from"), current_day))
+    q = db.query(CalendarEvent).filter(CalendarEvent.world_id == world.id)
+    if direction == "next":
+        ev = q.filter(CalendarEvent.day > frm).order_by(CalendarEvent.day, CalendarEvent.id).first()
+    else:
+        ev = q.filter(CalendarEvent.day < frm).order_by(CalendarEvent.day.desc(), CalendarEvent.id).first()
+    if ev:
+        year, month_idx, _ = _resolve_date(config, ev.day)
+        target = _month_href(year, month_idx, ev.day)
+    else:
+        year, month_idx, _ = _resolve_date(config, frm)
+        target = _month_href(year, month_idx) + f"&none={direction}"
+    return RedirectResponse(with_world(target, world), status_code=303)
+
+
+_SEARCH_DEFAULT_LIMIT, _SEARCH_MAX_LIMIT = 20, 50
+
+
+@router.get("/api/calendar/search")
+def calendar_search(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Find events by title, notes or the name of what they are linked to, nearest to a day first (?q=, ?near=<day>,
+    default the current day, ?limit=). Each hit says how far it is from TODAY (the campaign's current day), whatever
+    `near` is. Read-only, same audience as the calendar page itself."""
+    world, _, config, months, current_day = _calendar_ctx(request, db, active_world)
+    text = (request.query_params.get("q") or "").strip()[:100]
+    if not text:
+        return {"results": [], "truncated": False}
+    limit = max(1, min(_SEARCH_MAX_LIMIT, _safe_int(request.query_params.get("limit"), _SEARCH_DEFAULT_LIMIT)))
+    near = _clamp_day(months, _safe_int(request.query_params.get("near"), current_day))
+    pattern = f"%{_like_escape(text)}%"
+
+    def like(col):
+        return col.ilike(pattern, escape="\\")
+
+    # What an event is linked to is searchable too — but a player must not be able to probe the names of entities the
+    # GM keeps hidden from them by seeing which events a search turns up.
+    entity_match = CalendarEvent.entity.has(like(Entity.name))
+    if not can_edit_content(request):
+        entity_match = CalendarEvent.entity.has((Entity.visible_to_players.is_(True)) & like(Entity.name))
+    rows = db.query(CalendarEvent).options(joinedload(CalendarEvent.entity)).filter(
+        CalendarEvent.world_id == world.id,
+        or_(
+            like(CalendarEvent.title), like(CalendarEvent.notes), entity_match,
+            CalendarEvent.character.has(like(PlayerCharacter.name)),
+            CalendarEvent.party.has(like(Party.name)),
+            CalendarEvent.session.has(like(GameSession.title)),
+        ),
+    ).order_by(func.abs(CalendarEvent.day - near), CalendarEvent.day, CalendarEvent.id).limit(limit + 1).all()
+
+    year_days = _year_length(months)
+    results = []
+    for ev in rows[:limit]:
+        year, month_idx, _ = _resolve_date(config, ev.day)
+        results.append({
+            "id": ev.id, "day": ev.day, "title": ev.title, "notes": (ev.notes or "")[:140], "color": ev.color,
+            "label": date_label(config, ev.day), "delta_days": ev.day - current_day,
+            "when": _relative_days_label(ev.day - current_day, year_days, len(months)),
+            "href": with_world(_month_href(year, month_idx, ev.day), world),
+        })
+    return {"results": results, "truncated": len(rows) > limit}
+
+
+@router.get("/calendar/year", response_class=HTMLResponse)
+def calendar_year(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """One year at a glance: every month as a small grid, days with events marked, a count per month — the way to spot
+    where in a decades-long calendar things happened. Links into the month view."""
+    world, worlds, config, months, current_day = _calendar_ctx(request, db, active_world)
+    cur_year, cur_month_idx, _ = _resolve_date(config, current_day)
+    year = max(1, min(MAX_YEAR, _safe_int(request.query_params.get("year"), cur_year)))
+    year_start = _month_start_day(months, year, 0)
+    year_end = year_start + _year_length(months) - 1
+
+    titles_by_day: dict = {}
+    rows = db.query(CalendarEvent.day, CalendarEvent.title).filter(
+        CalendarEvent.world_id == world.id, CalendarEvent.day >= year_start, CalendarEvent.day <= year_end,
+    ).order_by(CalendarEvent.day, CalendarEvent.id).limit(_MAX_AGENDA_ROWS * 5).all()
+    for day, title in rows:
+        titles_by_day.setdefault(day, []).append(title)
+    icon_days = {d for (d,) in db.query(CalendarDayIcon.day).filter(
+        CalendarDayIcon.world_id == world.id, CalendarDayIcon.day >= year_start, CalendarDayIcon.day <= year_end,
+    ).distinct().all()}
+
+    days_per_week = _days_per_week(config)
+    grid = []
+    for idx, month in enumerate(months):
+        start = _month_start_day(months, year, idx)
+        days = []
+        for i in range(month["days"]):
+            day_num = start + i
+            titles = titles_by_day.get(day_num, [])
+            days.append({
+                "day_num": day_num, "dom": i + 1, "is_current": day_num == current_day,
+                "has_content": bool(titles) or day_num in icon_days,
+                "title": "; ".join(titles[:4]) + (" …" if len(titles) > 4 else ""),
+            })
+        grid.append({
+            "idx": idx, "name": month["name"], "days": days, "lead_pad": range((start - 1) % days_per_week),
+            "events": sum(len(titles_by_day.get(start + i, [])) for i in range(month["days"])),
+            "href": _month_href(year, idx),
+            "is_current": (year, idx) == (cur_year, cur_month_idx),
+        })
+
+    nav = {
+        "prev_year": None if year <= 1 else f"/calendar/year?year={year - 1}",
+        "next_year": None if year >= MAX_YEAR else f"/calendar/year?year={year + 1}",
+        "prev_decade": None if year <= 1 else f"/calendar/year?year={max(1, year - 10)}",
+        "next_decade": None if year >= MAX_YEAR else f"/calendar/year?year={min(MAX_YEAR, year + 10)}",
+        "today": f"/calendar/year?year={cur_year}",
+        "month_view": _month_href(year, cur_month_idx if year == cur_year else 0),
+    }
+    return templates.TemplateResponse("calendar/year.html", {
+        "request": request, "world": world, "worlds": worlds, "era_name": config.get("era_name", "Year"),
+        "year": year, "cur_year": cur_year, "max_year": MAX_YEAR, "grid": grid, "days_per_week": days_per_week, "nav": nav,
+        "offset_label": _span_label(abs(year - cur_year) * len(months), len(months)),
+        "year_delta": year - cur_year,
+    })
+
+
 @router.get("/calendar/config", response_class=HTMLResponse)
 def calendar_config_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -483,6 +728,7 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
             ]
     except Exception:
         pass
+    config["current_day"] = _clamp_day(_months_of(config), config["current_day"])
     cal.config_json = json.dumps(config)
     db.commit()
     return RedirectResponse("/calendar?saved=1", status_code=303)
@@ -504,8 +750,9 @@ async def calendar_event_add(request: Request, db: Session = Depends(get_db), ac
     # since both already have unrestricted rights on every event here.
     user = getattr(request.state, "user", None)
     is_gm_or_assistant = bool(user and (user.is_gm or getattr(request.state, "is_assistant", False)))
+    months = _months_of(json.loads(_get_or_create_calendar(db, world_id).config_json or "{}"))
     ev = CalendarEvent(
-        world_id=world_id, day=int(body.get("day", 1)),
+        world_id=world_id, day=_clamp_day(months, _safe_int(body.get("day"), 1)),
         title=str(body.get("title", "")).strip() or "Event",
         notes=str(body.get("notes", "")),
         entity_id=int(body["entity_id"]) if body.get("entity_id") else None,
@@ -546,9 +793,9 @@ async def calendar_advance(request: Request, db: Session = Depends(get_db), acti
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     body = await request.json()
-    delta = int(body.get("days", 1))
+    delta = _safe_int(body.get("days"), 1)
     config = json.loads(cal.config_json or "{}") or _default_config()
-    config["current_day"] = max(1, int(config.get("current_day", 1)) + delta)
+    config["current_day"] = _clamp_day(_months_of(config), _safe_int(config.get("current_day"), 1) + delta)
     cal.config_json = json.dumps(config)
     db.commit()
     year, month_idx, dom = _resolve_date(config, config["current_day"])
@@ -577,7 +824,7 @@ async def calendar_set_date(request: Request, db: Session = Depends(get_db), act
     body = await request.json()
     config = json.loads(cal.config_json or "{}") or _default_config()
     months = _months_of(config)
-    year = max(1, _safe_int(body.get("year"), 1))
+    year = max(1, min(MAX_YEAR, _safe_int(body.get("year"), 1)))
     month_idx = max(0, min(len(months) - 1, _safe_int(body.get("month_idx"), 0)))
     dom = max(1, min(months[month_idx]["days"], _safe_int(body.get("dom"), 1)))
     config["current_day"] = _month_start_day(months, year, month_idx) + dom - 1
@@ -600,6 +847,7 @@ async def calendar_day_icon_add(
     if not _can_manage_calendar(request, world):
         raise HTTPException(403)
     world_id = world.id
+    day = _clamp_day(_months_of(json.loads(_get_or_create_calendar(db, world_id).config_json or "{}")), day)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _ICON_ALLOWED_EXTS:
         raise HTTPException(400, "Unsupported image type")
