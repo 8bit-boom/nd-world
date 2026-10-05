@@ -190,6 +190,11 @@ tools that require GM access still check `is_gm` at call time.)
   `world_image_names` apply it everywhere a name is derived) - never rename an upload on disk, every portrait and markdown embed
   points at its URL. An image is only read if it belongs to the world (`image_usage`), and every read stays inside the uploads
   folder. A new file format worth reading: add a parser to `media_meta` with a test that builds the bytes.
+  **Bulk renames are a durable job** (`app/media_rename_jobs.py`, `MediaRenameRun`) shaped like `chat_jobs.py` - create / run /
+  cancel / delete / live_tasks / mark_stragglers_interrupted / sweep / resume are all wired in `main._startup_tasks` and
+  `_shutdown_tasks` - with one difference: the AI queue slot is taken per CHUNK (`_process_chunk`, listed in
+  `tests/test_ai_queue.py`), not for the whole run, so a several-hundred-file run does not lock chat out. Progress is saved after
+  every chunk and a resume continues from `done`; the run routes must stay OFF `TASK_PATH_PATTERNS` (a run is its own job).
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

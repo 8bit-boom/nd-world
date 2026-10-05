@@ -13,6 +13,26 @@
   <div class="mr-warn">No AI backend is configured, so names cannot be suggested yet (Settings → System → set the Studio API key). You can still browse the library here.</div>
   {% endif %}
 
+  <section class="mr-box" id="mr-bulk-box">
+    <h2>⚡ Bulk: everything that still needs a name</h2>
+    <div id="mr-summary" class="mr-summary" aria-live="polite"></div>
+    <div class="mr-filters" style="margin-top:.5rem">
+      <label class="mr-check"><input type="radio" name="mr-scope" value="needs_work" checked/> only names that need work (recommended)</label>
+      <label class="mr-check"><input type="radio" name="mr-scope" value="all"/> every item of the ticked kinds</label>
+    </div>
+    <div class="mr-run">
+      <button type="button" class="mr-btn" id="mr-bulk-select">Select them</button>
+      <button type="button" class="mr-btn primary" id="mr-bulk-run" {% if not ai_ready %}disabled{% endif %}>⚡ Select and run in the background</button>
+      <span id="mr-bulk-msg" class="mr-note" role="status"></span>
+    </div>
+    <p class="mr-note" style="margin:.2rem 0 0">"Select them" ticks them in the list below so you can untick any you want left alone, pick a style, and then run. A background run keeps going if you close this page; you review its proposals here afterwards.</p>
+  </section>
+
+  <section class="mr-box" id="mr-runs-box" hidden>
+    <h2>⏳ Background runs</h2>
+    <div id="mr-runs"></div>
+  </section>
+
   <section class="mr-box">
     <h2>1 · Choose what to rename</h2>
     <div class="mr-tabs" id="mr-tabs" role="tablist"></div>
@@ -45,7 +65,8 @@
     <label class="mr-check"><input type="checkbox" id="mr-pictures" checked/> Look at the pictures (images, and the poster frame of videos) - slower, and needs a vision-capable model</label>
     <label class="mr-check"><input type="checkbox" id="mr-listen"/> Listen to audio that has no transcript yet - slow; only short clips, nothing is saved</label>
     <div class="mr-run">
-      <button type="button" class="mr-btn primary" id="mr-go" {% if not ai_ready %}disabled{% endif %}>✨ Suggest names</button>
+      <button type="button" class="mr-btn primary" id="mr-go" {% if not ai_ready %}disabled{% endif %}>✨ Suggest names here</button>
+      <button type="button" class="mr-btn" id="mr-bg" {% if not ai_ready %}disabled{% endif %} title="Runs on the server - you can leave this page and come back to review">⚡ Run in the background</button>
       <button type="button" class="mr-btn" id="mr-stop" hidden>Stop</button>
       <span id="mr-progress" class="mr-note" role="status"></span>
     </div>
@@ -62,6 +83,7 @@
       <button type="button" class="mr-btn primary" id="mr-apply">Apply ticked renames</button>
       <span id="mr-apply-msg" class="mr-note" role="status"></span>
     </div>
+    <button type="button" class="mr-btn" id="mr-review-more" hidden style="margin-bottom:.5rem"></button>
     <div class="mr-tablewrap"><table class="mr-table" id="mr-review"><thead><tr><th></th><th></th><th>Now</th><th>New name (editable)</th><th>Based on</th></tr></thead><tbody></tbody></table></div>
   </section>
 
@@ -111,6 +133,12 @@
 .mr-table td.old { color: var(--text-dim); overflow-wrap: anywhere; max-width: 16rem; }
 .mr-table input[type=text] { width: 100%; min-width: 12rem; }
 .mr-table tr.unchanged td { opacity: .55; }
+.mr-summary { display: flex; gap: 1rem; flex-wrap: wrap; }
+.mr-run-row { display: grid; grid-template-columns: 1fr auto; gap: .4rem .8rem; align-items: center; padding: .5rem 0; border-bottom: 1px solid var(--border); font-size: .84rem; }
+.mr-run-row:last-child { border-bottom: none; }
+.mr-tools { display: flex; gap: .4rem; flex-wrap: wrap; }
+.mr-bar { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; margin-top: .3rem; }
+.mr-bar > span { display: block; height: 100%; background: var(--neon); transition: width .4s; }
 .mr-hist { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; padding: .35rem 0; border-bottom: 1px solid var(--border); font-size: .82rem; }
 .mr-hist:last-child { border-bottom: none; }
 .mr-hist .ex { color: var(--text-dim); flex: 1 1 14rem; overflow-wrap: anywhere; }
@@ -132,6 +160,9 @@
   const selected = new Map();           // key -> item, kept across tab switches
   const proposals = new Map();          // key -> {item, old, name, checked, basis, changed, note}
   let stopRequested = false, running = false;
+  const KINDS = boot.start.kinds;
+  const AI_READY = {{ 'true' if ai_ready else 'false' }};
+  let reviewLimit = 200;
 
   const keyOf = it => it.kind + ':' + (it.kind === 'image' ? it.url : it.id);
   const refOf = it => it.kind === 'image' ? { kind: 'image', url: it.url } : { kind: it.kind, id: it.id };
@@ -183,7 +214,8 @@
     const rows = shown();
     const needs = items.filter(i => i.generic).length;
     $('mr-count').textContent = rows.length + ' shown · ' + needs + ' need work · ' + selected.size + ' selected';
-    $('mr-go').disabled = !selected.size || running || !{{ 'true' if ai_ready else 'false' }};
+    $('mr-go').disabled = !selected.size || running || !AI_READY;
+    $('mr-bg').disabled = !selected.size || !AI_READY;
   }
   async function loadItems() {
     $('mr-list').replaceChildren(h('div', { class: 'mr-note', style: 'padding:.8rem', text: 'Loading…' }));
@@ -230,7 +262,7 @@
         (d.results || []).forEach(r => {
           const it = chunk.find(c => (r.kind === 'image' ? c.url === r.url : c.id === r.id) && c.kind === r.kind);
           if (!it) return;
-          proposals.set(keyOf(it), { item: it, old: r.old, name: r.new || r.old, checked: !!r.changed, basis: r.basis || [], changed: !!r.changed, note: r.note || '' });
+          proposals.set(keyOf(it), { item: Object.assign({}, it, { thumb: it.thumb || r.thumb }), old: r.old, name: r.new || r.old, checked: !!r.changed, basis: r.basis || [], changed: !!r.changed, note: r.note || '', runId: null });
         });
       } catch (e) { errors.push(e.message); break; }
       done += chunk.length;
@@ -249,7 +281,11 @@
     $('mr-review-box').hidden = proposals.size === 0;
     const hideSame = $('mr-rv-changed').checked;
     const body = $('mr-review').querySelector('tbody');
-    body.replaceChildren(...[...proposals.entries()].filter(([, p]) => !hideSame || p.changed || p.name !== p.old).map(([key, p]) => {
+    const visible = [...proposals.entries()].filter(([, p]) => !hideSame || p.changed || p.name !== p.old);
+    const more = $('mr-review-more');
+    more.hidden = visible.length <= reviewLimit;
+    more.textContent = 'Show ' + Math.min(200, visible.length - reviewLimit) + ' more (' + (visible.length - reviewLimit) + ' not shown yet)';
+    body.replaceChildren(...visible.slice(0, reviewLimit).map(([key, p]) => {
       const box = h('input', { type: 'checkbox', 'aria-label': 'Apply this rename' });
       box.checked = p.checked;
       box.addEventListener('change', () => { p.checked = box.checked; });
@@ -261,7 +297,8 @@
         h('td', {}, p.basis.length ? p.basis.map(b => h('span', { class: 'mr-chip', text: BASIS[b] || b, style: 'margin-right:.25rem' })) : h('span', { class: 'mr-note', text: p.note || 'no clues beyond the name' })));
     }));
   }
-  $('mr-rv-changed').addEventListener('change', renderReview);
+  $('mr-rv-changed').addEventListener('change', () => { reviewLimit = 200; renderReview(); });
+  $('mr-review-more').addEventListener('click', () => { reviewLimit += 200; renderReview(); });
   $('mr-rv-all').addEventListener('click', () => { proposals.forEach(p => { p.checked = p.name.trim() !== p.old; }); renderReview(); });
   $('mr-rv-none').addEventListener('click', () => { proposals.forEach(p => { p.checked = false; }); renderReview(); });
   $('mr-apply').addEventListener('click', async () => {
@@ -269,14 +306,103 @@
     if (!todo.length) { $('mr-apply-msg').textContent = 'Nothing ticked.'; return; }
     if (!confirm('Rename ' + todo.length + ' item' + (todo.length === 1 ? '' : 's') + '? You can undo the batch afterwards.')) return;
     $('mr-apply').disabled = true;
+    let applied = 0; const skipped = [];
     try {
-      const d = await api('POST', '/api/media-rename/apply', { renames: todo.map(([, p]) => Object.assign(refOf(p.item), { name: p.name.trim() })) });
-      todo.forEach(([key, p]) => { p.item.name = p.name.trim(); proposals.delete(key); });
-      $('mr-apply-msg').textContent = '✔ Renamed ' + d.applied + (d.skipped.length ? ' · skipped ' + d.skipped.length + ': ' + d.skipped.slice(0, 3).map(s => s.reason).join(' ') : '') + '.';
-      renderReview(); renderList(); loadHistory();
+      const groups = new Map();                                   // proposals from the same background run go together
+      todo.forEach(entry => { const g = entry[1].runId || 0; (groups.get(g) || groups.set(g, []).get(g)).push(entry); });
+      for (const [runId, entries] of groups) {
+        const body = { renames: entries.map(([, p]) => Object.assign(refOf(p.item), { name: p.name.trim() })) };
+        if (runId) body.run_id = runId;
+        const d = await api('POST', '/api/media-rename/apply', body);
+        applied += d.applied; skipped.push(...d.skipped);
+        entries.forEach(([key, p]) => { p.item.name = p.name.trim(); proposals.delete(key); });
+      }
+      $('mr-apply-msg').textContent = '✔ Renamed ' + applied + (skipped.length ? ' · skipped ' + skipped.length + ': ' + skipped.slice(0, 3).map(s => s.reason).join(' ') : '') + '.';
+      renderReview(); renderList(); loadHistory(); loadRuns(); loadSummary();
     } catch (e) { $('mr-apply-msg').textContent = '⚠ ' + e.message; }
     $('mr-apply').disabled = false;
   });
+
+  // ── bulk: counts, select everything remaining, background runs ──
+  let summary = {};
+  async function loadSummary() {
+    try {
+      const d = summary = await api('GET', '/api/media-rename/summary');
+      $('mr-summary').replaceChildren(...KINDS.filter(k => d[k]).map(k => h('label', { class: 'mr-check' },
+        h('input', { type: 'checkbox', 'data-bulk-kind': k, checked: d[k].needs_work > 0 }),
+        ICON[k] + ' ' + LABEL[k] + ': ', h('b', { text: String(d[k].needs_work) }), ' of ' + d[k].total + ' still need a name')));
+    } catch (e) { $('mr-summary').textContent = '⚠ ' + e.message; }
+  }
+  // "everything" ticks every kind that has anything in it; "only what needs work" ticks the kinds that do
+  document.querySelectorAll('input[name=mr-scope]').forEach(r => r.addEventListener('change', () => {
+    const all = document.querySelector('input[name=mr-scope]:checked').value === 'all';
+    document.querySelectorAll('[data-bulk-kind]').forEach(b => { const c = summary[b.getAttribute('data-bulk-kind')] || {}; b.checked = all ? c.total > 0 : c.needs_work > 0; });
+  }));
+  function bulkKinds() { return [...document.querySelectorAll('[data-bulk-kind]')].filter(b => b.checked).map(b => b.getAttribute('data-bulk-kind')); }
+  async function bulkSelect() {
+    const kinds = bulkKinds();
+    if (!kinds.length) { $('mr-bulk-msg').textContent = 'Tick at least one kind.'; return 0; }
+    const scope = document.querySelector('input[name=mr-scope]:checked').value;
+    try {
+      const d = await api('POST', '/api/media-rename/select', { kinds, scope });
+      d.items.forEach(ref => selected.set(keyOf(ref), ref));
+      $('mr-bulk-msg').textContent = d.count ? 'Selected ' + d.items.length + (d.capped ? ' of ' + d.count + ' (the most one run takes - do the rest afterwards)' : '') + '.' : 'Nothing matches - every name looks fine.';
+      renderList();
+      return d.items.length;
+    } catch (e) { $('mr-bulk-msg').textContent = '⚠ ' + e.message; return 0; }
+  }
+  $('mr-bulk-select').addEventListener('click', bulkSelect);
+  $('mr-bulk-run').addEventListener('click', async () => { if (await bulkSelect()) startRun(); });
+  $('mr-bg').addEventListener('click', startRun);
+
+  async function startRun() {
+    const picked = [...selected.values()];
+    if (!picked.length) return;
+    if (picked.length > 20 && !confirm('Run ' + picked.length + ' items in the background? The AI works through them one request at a time; you can leave this page.')) return;
+    try {
+      await api('POST', '/api/media-rename/runs', { items: picked.map(refOf), preset: $('mr-preset').value, style: $('mr-style').value,
+        pictures: $('mr-pictures').checked, listen: $('mr-listen').checked });
+      $('mr-progress').textContent = '⚡ Started in the background - see "Background runs" at the top.';
+      selected.clear(); renderList(); await loadRuns();
+    } catch (e) { $('mr-errors').textContent = '⚠ ' + e.message; }
+  }
+
+  let runTimer = null;
+  const STATUS_TEXT = { pending: 'starting…', running: 'working…', done: 'finished', cancelled: 'cancelled (what was done is kept)', error: 'stopped by an error', interrupted: 'paused by a restart - resumes by itself' };
+  async function loadRuns() {
+    clearTimeout(runTimer);
+    let runs = [];
+    try { runs = (await api('GET', '/api/media-rename/runs')).runs; } catch (e) { return; }
+    $('mr-runs-box').hidden = runs.length === 0;
+    $('mr-runs').replaceChildren(...runs.map(r => {
+      const live = r.status === 'pending' || r.status === 'running' || r.status === 'interrupted';
+      const pct = r.total ? Math.round(100 * r.done / r.total) : 0;
+      const when = r.created_at ? new Date(r.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      return h('div', { class: 'mr-run-row' },
+        h('div', {}, h('div', { text: when + ' · ' + r.by + ' · ' + r.done + ' / ' + r.total + ' (' + STATUS_TEXT[r.status] + ') · ' + r.proposals + ' proposal' + (r.proposals === 1 ? '' : 's') + (r.errors_count ? ' · ' + r.errors_count + ' problem' + (r.errors_count === 1 ? '' : 's') : '') }),
+          live ? h('div', { class: 'mr-bar' }, h('span', { style: 'width:' + pct + '%' })) : null,
+          r.error && r.status === 'error' ? h('div', { class: 'mr-errors', text: r.error }) : null),
+        h('div', { class: 'mr-tools' },
+          r.proposals ? h('button', { type: 'button', class: 'mr-btn primary', text: 'Review ' + r.proposals, onclick: () => reviewRun(r.id) }) : null,
+          r.status === 'running' || r.status === 'pending' ? h('button', { type: 'button', class: 'mr-btn', text: 'Cancel', onclick: async () => { try { await api('POST', '/api/media-rename/runs/' + r.id + '/cancel'); } catch (e) { $('mr-bulk-msg').textContent = '⚠ ' + e.message; } loadRuns(); } }) : null,
+          !(r.status === 'running' || r.status === 'pending') ? h('button', { type: 'button', class: 'mr-btn', text: 'Discard', onclick: async () => { if (!confirm('Throw away this run and its unreviewed proposals?')) return; try { await api('POST', '/api/media-rename/runs/' + r.id + '/delete'); } catch (e) { $('mr-bulk-msg').textContent = '⚠ ' + e.message; } loadRuns(); } }) : null));
+    }));
+    if (runs.some(r => r.status === 'pending' || r.status === 'running')) runTimer = setTimeout(loadRuns, 3500);
+  }
+  async function reviewRun(id) {
+    try {
+      const d = await api('GET', '/api/media-rename/runs/' + id);
+      d.results.forEach(r => {
+        const item = { kind: r.kind, id: r.id, url: r.url, thumb: r.thumb, name: r.old };
+        const key = keyOf(item);
+        if (proposals.has(key) && proposals.get(key).runId === id) return;      // keep edits already made
+        proposals.set(key, { item, old: r.old, name: r.new || r.old, checked: !!r.changed, basis: r.basis || [], changed: !!r.changed, note: r.note || '', runId: id });
+      });
+      reviewLimit = 200; renderReview();
+      $('mr-review-box').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (d.errors && d.errors.length) $('mr-errors').textContent = d.errors.slice(0, 6).join('\n');
+    } catch (e) { $('mr-bulk-msg').textContent = '⚠ ' + e.message; }
+  }
 
   // ── history / undo ──
   function renderHistory(batches) {
@@ -295,7 +421,7 @@
   }
   async function loadHistory() { try { renderHistory((await api('GET', '/api/media-rename/history')).batches); } catch (e) { /* the list stays as it was */ } }
 
-  renderTabs(); renderHistory(boot.history); loadItems();
+  renderTabs(); renderHistory(boot.history); loadItems(); loadSummary(); loadRuns();
 })();
 </script>
 {% endblock %}

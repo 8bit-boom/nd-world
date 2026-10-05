@@ -293,6 +293,7 @@ def test_queued_tasks_count_towards_the_per_user_limit(client, seed, gated_model
     ("app.routers.ai", "_auto_tag_task"), ("app.routers.quests", "_quests_suggest_task"),
     ("app.routers.character_ai", "_pc_ai_task"), ("app.routers.character_ai", "_analysis_task"),
     ("app.routers.template_ai", "_draft_task"), ("app.routers.cockpit", "_cockpit_find_task"),
+    ("app.media_rename_jobs", "_process_chunk"),
 ])
 def test_every_background_ai_runner_goes_through_the_queue(module, name):
     fn = getattr(importlib.import_module(module), name)

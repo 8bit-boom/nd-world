@@ -298,6 +298,12 @@ def picture_b64(path: Optional[Path]) -> Optional[str]:
         return None
 
 
+def _thumb(url) -> Optional[str]:
+    """The small preview of an upload (the thumbnail written beside it when there is one), for the review table."""
+    from .templating import thumb_url
+    return thumb_url(url) if isinstance(url, str) and url else None
+
+
 def image_usage(db: Session, world) -> dict:
     """{url: {"uses": [where it is used], "albums": [its albums], "name": its display name}} for every image of the world
     (used somewhere, or in an album), computed in one pass - a request that touches many images calls this once."""
@@ -359,6 +365,7 @@ async def gather_signals(db: Session, world, kind: str, ref: dict, *, usage: Opt
             "album": album.name if album else "", "attached": entity.name if entity else "",
             "description": row.description or "", "meta": meta, "transcript": transcript, "listened": listened,
             "uses": [], "albums": [], "picture_b64": picture_b64(poster) if pictures else None,
+            "thumb": _thumb(row.poster_url) if kind == "video" and getattr(row, "poster_url", None) else None,
         }
     if kind == "image":
         url = ref.get("url")
@@ -375,6 +382,7 @@ async def gather_signals(db: Session, world, kind: str, ref: dict, *, usage: Opt
             "filename": readable_filename(url), "album": "", "attached": "", "description": "",
             "meta": media_meta.read_metadata(path, "image"), "transcript": "", "listened": False,
             "uses": info["uses"], "albums": info["albums"], "picture_b64": picture_b64(path) if pictures else None,
+            "thumb": _thumb(url),
         }
     return None
 
@@ -390,6 +398,7 @@ def _result(sig: dict, new: str, note: str = "") -> dict:
     return {
         "kind": sig["kind"], "id": sig["id"], "url": sig["url"], "old": sig["name"], "new": new, "changed": changed,
         "basis": _basis(sig), "generic": looks_generic(sig["name"], sig.get("filename", "")), "note": note,
+        "thumb": sig.get("thumb"),
     }
 
 

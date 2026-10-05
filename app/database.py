@@ -65,7 +65,7 @@ _GENERICALLY_HEALED_TABLES = (
     # which create_all() applies; generic healing only ever adds columns.
     "session_plans", "session_plan_slots", "session_plan_votes",
     # media_titles / media_rename_log (app.models - the AI media renamer): brand new, same reasoning as above.
-    "media_titles", "media_rename_log",
+    "media_titles", "media_rename_log", "media_rename_runs",
 )
 
 

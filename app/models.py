@@ -1925,6 +1925,30 @@ class MediaRenameLog(Base):
     undone_at = Column(DateTime, nullable=True)
 
 
+class MediaRenameRun(Base):
+    """A bulk AI rename running in the background (app/media_rename_jobs.py): the items chosen, the options, and the
+    proposals gathered so far - saved after every chunk, so closing the page costs nothing, a cancel keeps what was done
+    and a server restart resumes from `done`. Reviewing and applying the proposals happens on the rename page, which
+    removes each applied proposal from results_json. Same status vocabulary as the other job tables: pending ->
+    running -> done, or cancelled / error / interrupted."""
+    __tablename__ = "media_rename_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status = Column(String(16), default="pending")
+    options_json = Column(Text, default="{}")
+    items_json = Column(Text, default="[]")      # [{kind, id | url}], in the order they are processed
+    results_json = Column(Text, default="[]")    # the proposals so far (see media_rename.suggest)
+    errors_json = Column(Text, default="[]")
+    total = Column(Integer, default=0)
+    done = Column(Integer, default=0)
+    error = Column(Text, default="")
+    resumed_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Schematic(Base):
     __tablename__ = "schematics"
 

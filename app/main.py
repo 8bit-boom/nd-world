@@ -41,7 +41,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from . import ai_background as _ai_background
@@ -107,6 +107,7 @@ from . import ai as _ai_module
 from . import audio_jobs as _audio_jobs
 from . import ollama_tuning as _tuning
 from . import chat_jobs as _chat_jobs
+from . import media_rename_jobs as _media_rename_jobs
 from . import image_jobs as _image_jobs
 from . import video_jobs as _video_jobs
 from . import job_shutdown as _job_shutdown
@@ -320,10 +321,12 @@ def _startup_tasks():
     _image_jobs.sweep_interrupted_jobs()
     _chat_jobs.sweep_interrupted_jobs()
     _video_jobs.sweep_interrupted_jobs()
+    _media_rename_jobs.sweep_interrupted_runs()
     _audio_jobs.resume_interrupted_jobs()
     _image_jobs.resume_interrupted_jobs()
     _chat_jobs.resume_interrupted_jobs()
     _video_jobs.resume_interrupted_jobs()
+    _media_rename_jobs.resume_interrupted_runs()
     # Optional scheduled DB snapshots — no-op unless ND_BACKUP_DIR is set,
     # so the test suite (which never sets it) never grows a thread.
     _backups.start()
@@ -342,12 +345,13 @@ async def _shutdown_tasks():
     await _ai_background.shutdown()
     _job_shutdown.request_stop()
     tasks = (_audio_jobs.live_tasks() + _image_jobs.live_tasks()
-             + _chat_jobs.live_tasks() + _video_jobs.live_tasks())
+             + _chat_jobs.live_tasks() + _video_jobs.live_tasks() + _media_rename_jobs.live_tasks())
     await _job_shutdown.drain(tasks)
     _audio_jobs.mark_stragglers_interrupted()
     _image_jobs.mark_stragglers_interrupted()
     _chat_jobs.mark_stragglers_interrupted()
     _video_jobs.mark_stragglers_interrupted()
+    _media_rename_jobs.mark_stragglers_interrupted()
     _backups.stop()
     # Await, not just cancel, the diagnostics heartbeat so it reaps cleanly
     # inside this still-running loop (see its docstring for the TestClient
@@ -1611,7 +1615,7 @@ _WORLD_DELETE_MODELS = (
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
     EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, CharacterJournalEntry,
-    SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog,
+    SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun,
 )
 
 
