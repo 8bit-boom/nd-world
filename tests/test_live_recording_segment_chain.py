@@ -56,7 +56,7 @@ def test_live_start_segment_catches_a_rejected_start_promise(client, seed):
     rejected start() promise (see the ndMicRecorder tests above) vanished —
     the chunk timer was never re-armed and _liveRecording was never cleared."""
     page = _get_page(client, seed)
-    segment_body = page.split("function liveStartSegment()", 1)[1][:3400]
+    segment_body = page.split("function liveStartSegment()", 1)[1][:5200]
     assert ".catch(err => liveHandleMicFailure(err))" in segment_body
     # The non-throwing failure path (started === false) must also route
     # through the recorder's own onError rather than duplicating error UI —
@@ -72,8 +72,10 @@ def test_mic_failure_handler_recovers_with_a_bounded_ladder(client, seed):
     page = _get_page(client, seed)
     assert "async function liveHandleMicFailure(err)" in page
     assert "const LIVE_MAX_RECOVER_ATTEMPTS = 3;" in page
-    handler_body = page.split("async function liveHandleMicFailure(err)", 1)[1][:1800]
-    assert "_liveRecoverAttempts >= LIVE_MAX_RECOVER_ATTEMPTS" in handler_body
+    handler_body = page.split("async function liveHandleMicFailure(err)", 1)[1][:5000]
+    # 3 quick tries (LIVE_MAX_RECOVER_ATTEMPTS), then slow ones for ~30 minutes: the budget is the module's RECONNECT_ATTEMPTS.
+    assert "_liveRecoverAttempts >= LIVE_RECOVER_BUDGET" in handler_body
+    assert "const LIVE_RECOVER_BUDGET = ndLiveHealth.RECONNECT_ATTEMPTS;" in page
     assert "navigator.mediaDevices.getUserMedia(" in handler_body
     assert "_liveLastError" in handler_body
     # Giving up must reset the button, not leave it claiming "Stop Recording"
@@ -101,7 +103,7 @@ def test_sticky_mic_error_is_surfaced_by_status_refresh(client, seed):
     a sticky post-give-up error must render there, not just get set once and
     risk being silently overwritten by the next refresh."""
     page = _get_page(client, seed)
-    status_body = page.split("function liveRefreshStatus()", 1)[1][:900]
+    status_body = page.split("function liveRefreshStatus(tick)", 1)[1][:2200]
     assert "_liveLastError" in status_body
 
 
@@ -111,7 +113,7 @@ def test_stop_checks_is_recording_before_treating_the_chain_as_alive(client, see
     it silently no-ops (onStop never fires), which used to leave the mic
     hot forever and the status stuck on 'finishing the last chunk…'."""
     page = _get_page(client, seed)
-    stop_body = page.split("async function toggleLiveRecording()", 1)[1][:900]
+    stop_body = page.split("async function toggleLiveRecording()", 1)[1][:1800]
     assert "_liveCurrentRecorder && _liveCurrentRecorder.isRecording()" in stop_body
     assert "liveStopMicStream();" in stop_body
 
@@ -134,7 +136,7 @@ def test_queue_busy_flag_is_cleared_in_a_finally(client, seed):
     leave _liveQueueBusy stuck true forever, silently wedging every future
     chunk behind this function's own early-return guard."""
     page = _get_page(client, seed)
-    queue_body = page.split("async function liveProcessQueue()", 1)[1][:6500]
+    queue_body = page.split("async function liveProcessQueue()", 1)[1][:9000]
     assert "} finally {" in queue_body
     finally_body = queue_body.split("} finally {", 1)[1][:500]
     assert "_liveQueueBusy = false;" in finally_body
@@ -146,15 +148,16 @@ def test_transcript_display_is_rendered_outside_the_upload_retry_try(client, see
     the server already saved — the exact duplicate-append trigger item 3
     guards against server-side."""
     page = _get_page(client, seed)
-    queue_body = page.split("async function liveProcessQueue()", 1)[1][:6500]
+    queue_body = page.split("async function liveProcessQueue()", 1)[1][:9000]
     assert "if (uploaded) {" in queue_body
-    render_guard = queue_body.split("if (uploaded) {", 1)[1][:200]
+    render_guard = queue_body.split("if (uploaded) {", 1)[1][:700]
     assert "liveSetTranscriptDisplay(transcriptText)" in render_guard
 
 
 def test_fire_and_forget_queue_calls_have_a_catch(client, seed):
     page = _get_page(client, seed)
-    assert page.count("liveProcessQueue().catch(e => console.error('live upload queue', e));") == 2
+    # segment onStop, Retry, and the "send the chunks left over from an earlier visit" button
+    assert page.count("liveProcessQueue().catch(e => console.error('live upload queue', e));") == 3
 
 
 def test_beforeunload_also_guards_a_pending_upload_queue(client, seed):
@@ -163,7 +166,7 @@ def test_beforeunload_also_guards_a_pending_upload_queue(client, seed):
     Retry) can still be unsaved for a while afterward — closing the tab in
     that window used to lose it with no warning at all."""
     page = _get_page(client, seed)
-    assert "_liveRecording || _liveQueue.length || _liveFailedChunks.length || _liveQueueBusy" in page
+    assert "_liveRecording || _liveFinalizing || _liveQueue.length || _liveFailedChunks.length || _liveQueueBusy" in page
 
 
 def test_one_shot_mic_buttons_also_catch_a_rejected_start(client, seed):

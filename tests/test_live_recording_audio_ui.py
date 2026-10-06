@@ -92,8 +92,8 @@ def test_raw_audio_status_line_is_wired(client, seed):
     assert "/live-audio/download" in page
     assert "Raw audio: " in page
     # Refreshed when a recording stops …
-    stop = page.split("Stopped — finishing the last chunk…", 1)[1][:300]
-    assert "liveRefreshAudioStatus();" in stop
+    stop = page.split("async function toggleLiveRecording()", 1)[1][:2200]
+    assert "_liveFinalizing = true;" in stop and "liveRefreshAudioStatus();" in stop.split("_liveCurrentRecorder.stop();", 1)[1]
     # … on page load (after the renderPrep/renderLoot init) …
     tail = page.split("renderLoot();", 1)[1]
     assert "liveRefreshAudioStatus();" in tail

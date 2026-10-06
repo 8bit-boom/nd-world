@@ -195,6 +195,13 @@ tools that require GM access still check `is_gm` at call time.)
   `_shutdown_tasks` - with one difference: the AI queue slot is taken per CHUNK (`_process_chunk`, listed in
   `tests/test_ai_queue.py`), not for the whole run, so a several-hundred-file run does not lock chat out. Progress is saved after
   every chunk and a resume continues from `done`; the run routes must stay OFF `TASK_PATH_PATTERNS` (a run is its own job).
+- **Live session recording must never say "saved" before it is true** (`static/js/live-health.js`, `static/js/live-store.js`,
+  the panel in `templates/sessions/detail.html`): the status line comes from `ndLiveHealth.summarize` (recorded vs transcribed,
+  backlog, ETA; "✔ … saved" only once the last chunk has been cut AND transcribed), every chunk is copied to IndexedDB
+  (`ndLiveStore`) until the server has it and offered back after a reload, and a lost microphone / sleeping computer / muted
+  mic raises a loud alert (`liveRaiseAlert`) instead of a grey status line. New live-recording behaviour goes through those
+  pieces; the decisions are pure and tested under Node (`tests/test_live_health.py`). Never print a "saved" message from a
+  timer or a click handler. `docs/LIVE_RECORDING_AUDIT.md` Wave 6 has the story.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

@@ -368,7 +368,7 @@ def test_the_panel_shows_why_chunks_failed(client, seed):
     body = page.split("async function liveProcessQueue", 1)[1].split("function liveStartSegment", 1)[0]
     assert "kind === 'wait'" in body, "an unavailable backend (503, a gateway error, a dropped connection) is waited out, not counted as a failed upload"
     assert "attempt = 4" in body, "a setup problem (4xx) parks the chunk at once — three retries cannot fix it"
-    refresh = page.split("function liveRefreshStatus()", 1)[1][:900]
+    refresh = page.split("function liveRefreshStatus(tick)", 1)[1][:1800]
     assert "_liveLastFailure" in refresh
 
 
@@ -382,7 +382,8 @@ def test_the_panel_runs_a_preflight_and_says_when_transcription_lags(client, see
 
 def test_the_panel_no_longer_blames_whisper_for_every_backend(client, seed):
     page = _page(client, seed)
-    assert "chunk(s) waiting for Whisper" not in page and "chunk(s) waiting for transcription" in page
+    # the backlog line is built by live-health.js's summarize() from the queue's own counters, and names no backend
+    assert "waiting for Whisper" not in page and "chunksWaiting: _liveQueue.length" in page
 
 
 def test_member_section_level_follows_the_membership_in_that_world(seed):

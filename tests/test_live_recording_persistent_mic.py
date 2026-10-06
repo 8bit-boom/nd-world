@@ -70,7 +70,7 @@ def test_live_recording_passes_the_shared_stream_into_every_segment(client, seed
     # Since the stream-generation fix (docs/STT_LIVE_AUDIT_2026-09.md
     # finding 3) the shared stream is pinned into segStream first and THAT
     # is passed as ndMicRecorder's 3rd arg — same contract, generation-safe.
-    segment_body = page.split("function liveStartSegment()", 1)[1][:2600]
+    segment_body = page.split("function liveStartSegment()", 1)[1][:5000]
     assert "const segStream = _liveMicStream;" in segment_body
     assert "segStream," in segment_body  # passed as ndMicRecorder's 3rd arg
 
@@ -81,7 +81,7 @@ def test_live_recording_only_releases_the_mic_after_the_final_segment(client, se
     once there's no next segment to start, not synchronously when Stop is
     clicked."""
     page = _get_page(client, seed)
-    segment_body = page.split("function liveStartSegment()", 1)[1][:2600]
+    segment_body = page.split("function liveStartSegment()", 1)[1][:5000]
     assert "liveStopMicStream();  // that was the final segment" in segment_body
 
 

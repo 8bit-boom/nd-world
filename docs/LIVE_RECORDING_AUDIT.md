@@ -420,3 +420,52 @@ that long; `app/audio_jobs.py`'s job-based alternative exists precisely
 for callers who don't want to hold a request open that long). Items 12–13
 remove the *pool-exhaustion* consequence of a slow/stuck call without
 touching that intentional tradeoff for the routes it was designed for.
+
+---
+
+## Wave 6 — "It recorded only about 3/4" (the end of the session was missing)
+
+A GM on a laptop browser reported that a live recording stopped about three quarters of the way through; what was missing
+was **the end**. The earlier waves had made the capture chain itself reliable — and it still is: a fake microphone recorded
+for 200 s produced 99% of the wall-clock time (segments of 59.9 s, no gaps). What lost the end of a session was everything
+*around* the capture, which this wave closes. The out-of-scope note at the top ("recovering a recording after the tab is
+closed") is partly lifted: chunks that never reached the server are now kept in the browser and offered back.
+
+### 15. "Stopped — transcript saved." was printed the instant Stop was pressed — **fixed**
+
+The last chunk had not even been cut, and on a speech model slower than real time a backlog of minutes (or an hour) could
+still be waiting in the tab. The GM read "saved", closed the laptop, and the rest never existed. The status line is now built
+from honest counters (`static/js/live-health.js`, `summarize`): *recorded* (including the chunk still being recorded) vs
+*transcribed*, how far the transcript is behind, an estimate of the time left from the measured transcription speed, and — only
+when the last chunk has been cut, sent and transcribed — "✔ Stopped — all H:MM:SS transcribed and saved." A green banner and the
+tab title (✔) say it too, so it can be seen from another window. `beforeunload` also covers the moment before the last chunk is cut.
+
+### 16. Chunks that had not been uploaded existed only in memory — **fixed**
+
+Every chunk is copied into IndexedDB (`static/js/live-store.js`, db `nd-live-recording`) before it is queued and removed once
+the server has transcribed it. After a reload, a crash or a long outage the page offers "Send them now / Discard". The chunks
+keep their `(recording_id, segment_index)` slot, so a chunk the server already has is replaced, never duplicated (the append
+route's existing idempotency). Best effort: if IndexedDB is unavailable the recording works as before.
+
+### 17. A vanished microphone was given up on after 3 tries (~6 s), quietly — **fixed**
+
+Mic loss now raises a red banner (plus a beep and, if allowed, a desktop notification) at once, retries 1 s / 2 s / 3 s and then
+every 15 s for ~30 minutes (123 tries), counts the lost time, and says afterwards "the microphone was back after 0:47 — that
+stretch was not recorded". Giving up is loud, resets the button and says what happened to the part already captured. Stop during
+a long pause is answered at once.
+
+### 18. A sleeping computer, a muted microphone, a dead recorder — **fixed**
+
+* A 1-second heartbeat notices the computer or tab being suspended (a gap of > 15 s between beats) and reports the minutes that
+  were not recorded; the final message repeats them ("… BUT 1:03 in 2 stretches was NOT recorded").
+* A level meter shows what the microphone hears; 2½ minutes of silence or a system mute shows an amber warning.
+* If the recorder stops without anyone asking (4 beats), a new segment is started.
+
+### Checked
+
+`tests/test_live_health.py` (the pure decisions under Node, including the IndexedDB store against an in-memory fake),
+`tests/test_live_recording_safety_net.py` (the wiring in the page), and a real-browser run (Chromium with a fake microphone:
+Stop with a backlog, an outage followed by closing the tab and recovering the chunks, a mic that comes back after the slow
+phase, a mic that never comes back, a simulated sleep).
+
+**Not changed:** the 25 MiB per-chunk cap and the server routes — the loss was client-side.

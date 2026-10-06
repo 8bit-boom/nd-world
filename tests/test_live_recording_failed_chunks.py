@@ -59,8 +59,11 @@ def test_status_settles_to_a_final_message_once_idle(client, seed):
     forever once the queue actually drained. liveRefreshStatus must be the
     one place status settles once nothing is uploading."""
     page = _get_page(client, seed)
-    assert "function liveRefreshStatus()" in page
-    assert "'Stopped — transcript saved.'" in page
+    assert "function liveRefreshStatus(tick)" in page
+    # The honest counters (static/js/live-health.js) own the final message: "saved" is only said once the last chunk has
+    # been cut AND transcribed - the unconditional "Stopped — transcript saved." the page used to print on Stop is gone.
+    assert "ndLiveHealth.summarize(liveHealthState())" in page
+    assert "Stopped — transcript saved." not in page
     # Called at the end of the upload loop, not just under `if (_liveRecording)`.
     # liveProcessQueue grew with the patient in-flight 409 polling
     # (docs/STT_LIVE_AUDIT_2026-09.md finding 1) — same assertion, wider window.
@@ -69,7 +72,10 @@ def test_status_settles_to_a_final_message_once_idle(client, seed):
 
 def test_backlog_is_shown_while_still_recording(client, seed):
     page = _get_page(client, seed)
-    assert "chunk(s) waiting for transcription" in page
+    # The backlog line comes from live-health.js's summarize(): "transcript is 15:00 behind (15 chunks waiting)".
+    assert "chunksWaiting: _liveQueue.length" in page
+    assert "queuedSec: secs(_liveQueue)" in page
+    assert "ndLiveHealth.summarize(" in page
 
 
 def test_summarize_in_background_button_is_wired(client, seed):

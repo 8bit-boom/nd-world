@@ -287,11 +287,12 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording <small id="live-transcript-token-count" style="color:var(--text-dim);font-weight:normal"></small></h2>
     <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
-      Records in short chunks, each transcribed and saved to this session as it finishes — safe for a
-      multi-hour session, and nothing is lost beyond the current chunk if your browser, mic, or connection drops
-      (a dropped mic reconnects automatically and resumes). Keep this tab open, awake, and in the foreground —
-      a backgrounded tab can lengthen chunks or drop the mic on some devices, and the recording stops entirely
-      if the tab is closed.
+      Records in short chunks, each transcribed and saved to this session as it finishes. Every chunk is also
+      kept in this browser until the server has it, so a reload, a closed tab or a long outage does not lose it
+      (you are offered to send it on the next visit). A dropped mic is retried for about half an hour and you are
+      told loudly if it does not come back. <b>Keep this tab open and the computer awake</b> — a sleeping laptop
+      records nothing — and after pressing Stop <b>wait until it says "saved"</b>: if the speech model is slower
+      than the table talks, the last stretch is still being transcribed.
     </p>
     <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem;font-size:.8rem;color:var(--text-dim)">
       <label style="display:flex;align-items:center;gap:.35rem">Chunk length
@@ -317,6 +318,13 @@
       <button type="button" class="ai-recap-btn" onclick="clearLiveTranscript()">🗑 Clear transcript</button>
       <a id="live-transcript-download-link" class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/transcript.md')|wq }}" style="display:none;text-decoration:none">⬇ Download .md</a>
       <span id="live-record-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+    <div id="live-alert" role="alert" style="display:none;font-size:.85rem;font-weight:bold;color:#fff;background:#8a1c2b;border:1px solid #e55;border-radius:4px;padding:.55rem .8rem;margin-bottom:.6rem;line-height:1.45"></div>
+    <div id="live-recover" style="display:none;font-size:.82rem;color:var(--text);background:var(--bg3);border:1px solid #e0b050;border-radius:4px;padding:.55rem .8rem;margin-bottom:.6rem;line-height:1.5"></div>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;font-size:.75rem;color:var(--text-dim)" title="What the microphone is hearing right now. If it stays flat while people are talking, the wrong device is selected or it is muted.">
+      <span>🎙 Mic</span>
+      <div id="live-level" style="flex:0 0 140px;height:8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;overflow:hidden"><span style="display:block;height:100%;width:0;background:var(--neon);transition:width .12s"></span></div>
+      <span id="live-mic-warning" style="color:#e0b050"></span>
     </div>
     <div id="live-stt-warning" style="display:none;font-size:.78rem;color:#e0b050;margin-bottom:.6rem;line-height:1.45"></div>
     <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ gsession.live_transcript or '(nothing recorded yet)' }}</div>
@@ -514,6 +522,8 @@
 <script src="/static/js/audio-jobs.js?v={{ asset_v('js/audio-jobs.js') }}"></script>
 <script src="/static/js/entity-picker.js?v={{ asset_v('js/entity-picker.js') }}"></script>
 <script src="/static/js/facts-recap-parser.js?v={{ asset_v('js/facts-recap-parser.js') }}"></script>
+<script src="/static/js/live-health.js?v={{ asset_v('js/live-health.js') }}"></script>
+<script src="/static/js/live-store.js?v={{ asset_v('js/live-store.js') }}"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
@@ -1457,6 +1467,7 @@ chunkSel.addEventListener('change', () => {
 let _liveMicStream = null;
 
 function liveStopMicStream() {
+  liveStopMeter();
   if (_liveMicStream) {
     _liveMicStream.getTracks().forEach(t => t.stop());
     _liveMicStream = null;
@@ -1464,6 +1475,56 @@ function liveStopMicStream() {
 }
 let _liveQueue = [];
 let _liveQueueBusy = false;
+
+// ── Honest counters (static/js/live-health.js, tests/test_live_health.py) ──
+// Audio captured / transcribed this page load, in seconds, from each chunk's REAL length. The status line used to say
+// "saved" the instant Stop was pressed, while the last chunk had not even been cut and a whole backlog could still be
+// waiting in this tab.
+let _liveRecordedSeconds = 0;
+let _liveDoneSeconds = 0;
+let _liveFinalizing = false;        // Stop pressed, the last chunk not yet cut and queued
+let _liveSegStartedAt = 0;          // when the chunk being recorded right now began (0 between chunks / while the mic is lost)
+let _liveSpeed = null;              // audio seconds the speech model gets through per second of waiting
+let _liveSayUntil = 0;              // a transient message ("retrying in 20 s…") owns the status line until then
+let _liveGaps = [];                 // [{at, seconds}] stretches that were not recorded (computer asleep, mic gone)
+const _liveOrigTitle = document.title;
+const _liveStore = window.ndLiveStore ? ndLiveStore.shared : null;   // a local copy of every chunk until the server has it
+
+let _liveSayText = '';
+function liveSay(text, holdMs) {
+  document.getElementById('live-record-status').textContent = text;
+  _liveSayText = text;
+  _liveSayUntil = Date.now() + (holdMs || 0);
+}
+
+// The one moment worth a loud, positive message: Stop was pressed and EVERYTHING recorded is now transcribed and saved
+// on the server. If part of the time was not recorded (computer asleep, mic gone) that is said here too - it is the
+// last thing the GM sees before closing the tab.
+let _liveDoneAnnounced = true;
+function liveAnnounceIfDone() {
+  if (_liveRecording || _liveFinalizing || _liveQueue.length || _liveQueueBusy || _liveFailedChunks.length) return;
+  if (_liveDoneAnnounced || _liveRecordedSeconds <= 0) return;
+  _liveDoneAnnounced = true;
+  let text = ndLiveHealth.summarize(liveHealthState()).text.replace(/^✔\s*/, '');
+  if (_liveGaps.length) {
+    const lost = _liveGaps.reduce((sum, g) => sum + g.seconds, 0);
+    liveRaiseAlert('✔ ' + text + ' BUT ' + ndLiveHealth.clock(lost) + ' in ' + _liveGaps.length + ' stretch(es) was NOT recorded (this computer was paused or the microphone was lost).', { beep: false });
+  } else {
+    liveRaiseAlert('✔ ' + text, { good: true });
+  }
+}
+
+function liveHealthState() {
+  const secs = list => list.reduce((sum, f) => sum + (f.ndSeconds || 0), 0);
+  return {
+    recording: _liveRecording, finalizing: _liveFinalizing, doneSec: _liveDoneSeconds,
+    // what is on the clock: chunks already cut plus the one still being recorded (up to a whole chunk length)
+    recordedSec: _liveRecordedSeconds + ((_liveRecording || _liveFinalizing) && _liveSegStartedAt && !_liveRecovering
+      ? Math.max(0, Math.round((Date.now() - _liveSegStartedAt) / 1000)) : 0),
+    queuedSec: secs(_liveQueue), chunksWaiting: _liveQueue.length, uploading: _liveQueueBusy,
+    failedChunks: _liveFailedChunks.length, failedSec: secs(_liveFailedChunks), speed: _liveSpeed,
+  };
+}
 // Chunks that failed all 3 upload attempts — kept (not discarded) so the GM
 // can retry them instead of silently losing ~1min of transcript. Retried
 // chunks append at the current end of the queue, so the transcript may gain
@@ -1475,6 +1536,111 @@ let _liveFailedChunks = [];
 // can say what to fix instead of only "failed to upload".
 let _liveLastFailure = '';
 let _liveSlowStreak = 0;
+
+// ── Loud alerts: a recording that stops itself, or chunks that cannot be sent, must not hide in small grey text ──
+let _liveAudioCtx = null;
+let _liveAlertActive = false;
+function liveBeep() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    _liveAudioCtx = _liveAudioCtx || new AC();
+    if (_liveAudioCtx.state === 'suspended') _liveAudioCtx.resume().catch(() => {});
+    [0, 0.35].forEach(delay => {
+      const osc = _liveAudioCtx.createOscillator(), gain = _liveAudioCtx.createGain();
+      osc.frequency.value = 880; gain.gain.value = 0.15;
+      osc.connect(gain); gain.connect(_liveAudioCtx.destination);
+      osc.start(_liveAudioCtx.currentTime + delay); osc.stop(_liveAudioCtx.currentTime + delay + 0.22);
+    });
+  } catch (e) { /* a sound is a bonus */ }
+}
+function liveRaiseAlert(text, opts) {
+  opts = opts || {};
+  const el = document.getElementById('live-alert');
+  if (!el) return;
+  el.textContent = text;
+  el.style.background = opts.good ? '#1f5a34' : '#8a1c2b';
+  el.style.borderColor = opts.good ? '#4c8' : '#e55';
+  el.style.display = '';
+  _liveAlertActive = !opts.good;
+  document.title = (opts.good ? '✔ ' : '⚠ ') + text.slice(0, 70) + ' — ' + _liveOrigTitle;
+  if (!opts.good && opts.beep !== false) liveBeep();
+  try {
+    if (!opts.good && 'Notification' in window && Notification.permission === 'granted') new Notification('Live recording', { body: text });
+  } catch (e) { /* best effort */ }
+}
+function liveClearAlert() {
+  const el = document.getElementById('live-alert');
+  if (el) el.style.display = 'none';
+  _liveAlertActive = false;
+  document.title = _liveOrigTitle;
+}
+function liveMicWarning(text) {
+  const el = document.getElementById('live-mic-warning');
+  if (el) el.textContent = text ? '⚠ ' + text : '';
+}
+
+// What the microphone is hearing (the meter) — and the warning when it has heard nothing for minutes, which is what a
+// muted or wrong device looks like: the recording "runs" but every chunk transcribes to nothing.
+let _liveMeterTimer = null, _liveMeterSource = null, _liveSilence = null;
+function liveStartMeter(stream) {
+  liveStopMeter();
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC || !stream) return;
+    _liveAudioCtx = _liveAudioCtx || new AC();
+    if (_liveAudioCtx.state === 'suspended') _liveAudioCtx.resume().catch(() => {});
+    _liveMeterSource = _liveAudioCtx.createMediaStreamSource(stream);
+    const analyser = _liveAudioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    _liveMeterSource.connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const bar = document.querySelector('#live-level > span');
+    _liveSilence = ndLiveHealth.createSilenceMonitor({ thresholdRms: 0.004, silentAfterSec: 150 });
+    let shown = 0;   // the bar falls slowly, so a short word is still visible a moment later
+    _liveMeterTimer = setInterval(() => {
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      shown = Math.max(shown * 0.85, Math.min(100, Math.sqrt(rms) * 140));
+      if (bar) bar.style.width = Math.round(shown) + '%';
+      const r = _liveSilence.push(rms, Date.now());
+      if (r.justBecameSilent) liveMicWarning('No sound from the microphone for ' + ndLiveHealth.humanDuration(r.silentForSec) + ' — is it muted, or the wrong device?');
+      if (r.justRecovered) liveMicWarning('');
+    }, 100);
+  } catch (e) { /* the meter is a bonus: recording never depends on it */ }
+}
+function liveStopMeter() {
+  clearInterval(_liveMeterTimer); _liveMeterTimer = null;
+  try { if (_liveMeterSource) _liveMeterSource.disconnect(); } catch (e) { /* already gone */ }
+  _liveMeterSource = null;
+  const bar = document.querySelector('#live-level > span');
+  if (bar) bar.style.width = '0';
+  liveMicWarning('');
+}
+
+// A heartbeat every second: keeps the counters ticking, notices the computer or tab being suspended (a sleeping laptop
+// records nothing, and used to say nothing), and restarts a recorder that died without telling anyone.
+let _liveBeatTimer = null, _liveLastBeat = Date.now(), _liveRecorderIdle = 0;
+function liveBeat() {
+  const now = Date.now();
+  const pause = ndLiveHealth.detectPause(_liveLastBeat, now);
+  _liveLastBeat = now;
+  if (_liveRecording && pause.paused) {
+    _liveGaps.push({ at: now, seconds: pause.seconds });
+    liveRaiseAlert(ndLiveHealth.pauseMessage(pause.seconds), { beep: false });
+  }
+  if (_liveRecording && !_liveRecovering && _liveMicStream) {
+    if (_liveCurrentRecorder && _liveCurrentRecorder.isRecording()) {
+      _liveRecorderIdle = 0;
+    } else if (++_liveRecorderIdle >= 4) {      // 4 beats, not 1: the instant between two chunks is not a death
+      _liveRecorderIdle = 0;
+      liveStartSegment();
+    }
+  }
+  if (_liveRecording || _liveFinalizing || _liveQueue.length || _liveQueueBusy) liveRefreshStatus(true);
+}
 
 // One amber line under the controls for things the GM should know before
 // they cost transcript: the STT backend isn't ready, or it is falling
@@ -1536,9 +1702,16 @@ function liveSetTranscriptDisplay(text) {
 // pressed with nothing in flight, a retry resolves) so the status line
 // never gets stuck showing a transient message ("Stopped — finishing the
 // last chunk…") forever once there's nothing left to finish.
-function liveRefreshStatus() {
+function liveRefreshStatus(tick) {
   const status = document.getElementById('live-record-status');
+  // A message meant to stay up for a while ("retrying in 20 s…") keeps the line - and is put back if a state change
+  // (Stop pressed, the last chunk cut) wrote over it, so the status never goes stale while the server is unreachable.
+  if (Date.now() < _liveSayUntil) {
+    if (status.textContent !== _liveSayText) status.textContent = _liveSayText;
+    return;
+  }
   if (_liveFailedChunks.length) {
+    if (tick) return;
     status.textContent = '';
     status.append(`⚠ ${_liveFailedChunks.length} chunk(s) failed to upload — `);
     if (_liveLastFailure) status.append(`${_liveLastFailure.slice(0, 300)} `);
@@ -1557,7 +1730,15 @@ function liveRefreshStatus() {
     status.textContent = '⚠ ' + _liveLastError;
     return;
   }
-  status.textContent = _liveRecording ? 'Recording…' : 'Stopped — transcript saved.';
+  // Otherwise the honest counters: recorded vs transcribed, how far behind, and — after Stop — that it is NOT saved
+  // until the backlog has drained.
+  const summary = ndLiveHealth.summarize(liveHealthState());
+  status.textContent = summary.text;
+  status.style.color = summary.level === 'warn' ? '#e0b050' : summary.level === 'bad' ? '#e07070' : '';
+  if (!_liveAlertActive) {
+    document.title = _liveRecording ? '🔴 ' + _liveOrigTitle
+      : (summary.level === 'warn' ? '⏳ ' + _liveOrigTitle : _liveOrigTitle);
+  }
 }
 
 function liveRetryFailedChunks() {
@@ -1614,11 +1795,8 @@ async function liveProcessQueue() {
   const MAX_TRANSIENT_WAITS = 12;
   try {
     while (_liveQueue.length) {
-      if (_liveRecording && _liveQueue.length > 1) {
-        // A slower-than-realtime transcription backend was previously invisible
-        // here until chunks started timing out — surface the backlog.
-        status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for transcription)`;
-      }
+      // (A slower-than-realtime backend's backlog is shown by liveRefreshStatus: "transcript is 4:00 behind (3 chunks
+      // waiting for transcription)".)
       const file = _liveQueue[0];
       let uploaded = false;
       let transcriptText = null;
@@ -1643,9 +1821,7 @@ async function liveProcessQueue() {
             // being transcribed by an earlier upload of ours (or its proxy-
             // orphaned twin). Not a failure — wait and re-ask.
             if (inflightWaits++ >= MAX_INFLIGHT_WAITS) throw await ndApiErrorFrom(res);
-            status.textContent = _liveRecording
-              ? `Recording… (server still transcribing a chunk — ${_liveQueue.length} waiting)`
-              : 'Finishing — the server is still transcribing the last chunk…';
+            liveSay(`The server is still transcribing a chunk (${_liveQueue.length} waiting) — checking again in ${Math.round(INFLIGHT_WAIT_MS / 1000)} s…`, INFLIGHT_WAIT_MS + 3000);
             await new Promise(r => setTimeout(r, INFLIGHT_WAIT_MS));
             continue;  // attempt NOT incremented: this isn't a failure
           }
@@ -1662,9 +1838,9 @@ async function liveProcessQueue() {
           const kind = liveUploadFailureKind(e);
           if (kind === 'wait' && transientWaits++ < MAX_TRANSIENT_WAITS) {
             const pause = Math.min(60000, 5000 * 2 ** Math.min(transientWaits - 1, 4));
-            status.textContent = (e && e.httpStatus === 503)
+            liveSay((e && e.httpStatus === 503)
               ? `⚠ Transcription backend unavailable (${_liveLastFailure.slice(0, 160)}) — retrying in ${Math.round(pause / 1000)} s…`
-              : `⚠ Can't reach the server (${e && e.httpStatus ? 'HTTP ' + e.httpStatus : _liveLastFailure.slice(0, 80)}) — it may be restarting. The chunk is kept; retrying in ${Math.round(pause / 1000)} s…`;
+              : `⚠ Can't reach the server (${e && e.httpStatus ? 'HTTP ' + e.httpStatus : _liveLastFailure.slice(0, 80)}) — it may be restarting. The chunk is kept; retrying in ${Math.round(pause / 1000)} s…`, pause + 3000);
             await new Promise(r => setTimeout(r, pause));
             continue;  // attempt NOT incremented: waiting for the server/backend isn't a failed upload
           }
@@ -1675,6 +1851,8 @@ async function liveProcessQueue() {
           }
           if (attempt > 3) {
             _liveFailedChunks.push(file);
+            liveRaiseAlert(`${_liveFailedChunks.length} recorded chunk(s) could not be sent to the server (${_liveLastFailure.slice(0, 140)}). `
+              + 'They are kept in this browser — fix the problem, then press Retry.');
           } else {
             await new Promise(r => setTimeout(r, 1500 * attempt));
           }
@@ -1686,6 +1864,10 @@ async function liveProcessQueue() {
       // duplicate its text in the transcript (docs/LIVE_RECORDING_AUDIT.md
       // items 3 and 4).
       if (uploaded) {
+        _liveDoneSeconds += file.ndSeconds || 0;
+        _liveSayUntil = 0;   // a success makes any "retrying…" message obsolete
+        _liveSpeed = ndLiveHealth.updateSpeed(_liveSpeed, file.ndSeconds, (Date.now() - uploadStartedAt) / 1000);
+        if (_liveStore && file.ndStoreKey) _liveStore.remove(file.ndStoreKey);   // the server has it: the local copy can go
         try { liveSetTranscriptDisplay(transcriptText); } catch (e) { /* display-only — the chunk itself is already saved */ }
         try { liveNoteTranscriptionSpeed(file, (Date.now() - uploadStartedAt) / 1000); } catch (e) { /* hint only */ }
       }
@@ -1697,7 +1879,9 @@ async function liveProcessQueue() {
     // silently wedge every future chunk behind the early-return at the top
     // of this function (docs/LIVE_RECORDING_AUDIT.md item 4).
     _liveQueueBusy = false;
+    _liveSayUntil = 0;
     liveRefreshStatus();
+    liveAnnounceIfDone();
   }
   // The post-stop flush (recording already stopped) is the moment the saved
   // segment count/bytes settle — refresh the raw-audio line then, and only
@@ -1725,6 +1909,7 @@ function liveStartSegment() {
   // segment — both were possible when onStop inferred liveness from
   // _liveRecording alone (docs/STT_LIVE_AUDIT_2026-09.md finding 3).
   const segStream = _liveMicStream;
+  let segStartedAt = Date.now();
   _liveCurrentRecorder = ndMicRecorder(
     (blob, mimeType) => {
       // The segment's archive identity is stamped at capture time, not
@@ -1733,8 +1918,20 @@ function liveStartSegment() {
       const segFile = new File([blob], ndMicFilename(mimeType), { type: mimeType });
       segFile.ndRecordingId = _liveRecordingId;
       segFile.ndSegmentIndex = _liveSegmentIndex++;
-      segFile.ndSeconds = liveChunkSeconds();   // for the "transcription is slower than the recording" hint
+      // The chunk's REAL length (the final one is shorter, a throttled tab's can be longer) — feeds the
+      // recorded / transcribed counters and the "transcription is slower than the recording" hint.
+      segFile.ndSeconds = Math.max(1, Math.round((Date.now() - segStartedAt) / 1000));
+      segFile.ndStoreKey = ndLiveHealth.storeKey(SESSION_ID, segFile.ndRecordingId, segFile.ndSegmentIndex);
+      _liveRecordedSeconds += segFile.ndSeconds;
+      _liveSegStartedAt = 0;   // that chunk is counted above; the next one starts the clock again
+      // A copy in this browser until the server has transcribed it: a reload, a crash or a long outage no longer
+      // loses the chunk (the page offers to send leftovers on the next visit). Best effort, never blocks recording.
+      if (_liveStore) _liveStore.put({
+        key: segFile.ndStoreKey, sessionId: SESSION_ID, recordingId: segFile.ndRecordingId, index: segFile.ndSegmentIndex,
+        seconds: segFile.ndSeconds, name: segFile.name, mimeType: mimeType, savedAt: Date.now(), blob: blob,
+      });
       _liveQueue.push(segFile);
+      if (!_liveRecording) { _liveFinalizing = false; liveRefreshStatus(); }   // that was the final chunk: it is queued now
       liveProcessQueue().catch(e => console.error('live upload queue', e));
       if (_liveMicStream !== segStream) return;  // a superseded generation — recovery owns the chain now
       if (_liveRecording) {
@@ -1748,6 +1945,8 @@ function liveStartSegment() {
   );
   _liveCurrentRecorder.start().then(started => {
     if (!started) return;  // ndMicRecorder already invoked onError above
+    segStartedAt = Date.now();
+    _liveSegStartedAt = segStartedAt;
     _liveRecoverAttempts = 0;  // a segment started cleanly — reset the retry ladder
     clearTimeout(_liveChunkTimer);
     // liveChunkSeconds() is read HERE, per segment, not once at recording
@@ -1769,7 +1968,8 @@ function liveStartSegment() {
 // case. Reached from ndMicRecorder's onError (a failed start) and from
 // liveWatchMicTracks (the stream dying mid-segment, not just at a boundary).
 let _liveRecoverAttempts = 0;
-const LIVE_MAX_RECOVER_ATTEMPTS = 3;
+const LIVE_MAX_RECOVER_ATTEMPTS = 3;                       // the quick tries (1 s, 2 s, 3 s apart) ...
+const LIVE_RECOVER_BUDGET = ndLiveHealth.RECONNECT_ATTEMPTS;   // ... then one every 15 s, ~30 minutes in all, before giving up
 let _liveLastError = '';
 // Single-flight mutex: ONE mic death reaches this handler from TWO places
 // at once — track.onended AND the dead segment's own chained
@@ -1789,23 +1989,33 @@ async function liveHandleMicFailure(err) {
   if (_liveRecovering) return;  // a twin invocation — the ladder already in flight owns recovery
   _liveRecovering = true;
   const status = document.getElementById('live-record-status');
+  const lostAt = Date.now();
+  clearTimeout(_liveChunkTimer);
+  _liveSegStartedAt = 0;
+  // Loud, at once: from this moment NOTHING is being recorded, and a grey status line is not how anyone should learn it.
+  liveRaiseAlert('⚠ The microphone stopped — nothing is being recorded until it is back. Trying to reconnect…');
   try {
     // A loop, not a recursive self-call: recursion would now hit the
     // mutex above and silently do nothing, stranding the failure.
     while (true) {
-      if (_liveRecoverAttempts >= LIVE_MAX_RECOVER_ATTEMPTS) {
+      if (_liveRecoverAttempts >= LIVE_RECOVER_BUDGET) {
         _liveRecording = false;
+        _liveFinalizing = false;
         clearTimeout(_liveChunkTimer);
         liveStopMicStream();
         liveReleaseWakeLock();
         document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
         _liveLastError = 'Mic lost and could not be reconnected: ' + (err && err.message ? err.message : err) +
                           ' — recording stopped. Press Start to resume.';
+        liveRaiseAlert('⛔ Recording STOPPED: the microphone could not be reconnected for ' +
+          ndLiveHealth.humanDuration((Date.now() - lostAt) / 1000) + '. What was captured before is still being transcribed. ' +
+          'Check the microphone, then press Start Recording to carry on.');
+        _liveSayUntil = 0;
         liveRefreshStatus();
         return;
       }
       _liveRecoverAttempts++;
-      status.textContent = `⚠ Mic dropped — reconnecting (${_liveRecoverAttempts}/${LIVE_MAX_RECOVER_ATTEMPTS})…`;
+      liveSay(`⚠ Mic dropped — reconnecting (${_liveRecoverAttempts}/${LIVE_MAX_RECOVER_ATTEMPTS}${_liveRecoverAttempts > LIVE_MAX_RECOVER_ATTEMPTS ? '+' : ''})…`, 4000);
       liveStopMicStream();  // drop the dead stream before asking for a new one
       try {
         _liveMicStream = await navigator.mediaDevices.getUserMedia({
@@ -1814,14 +2024,23 @@ async function liveHandleMicFailure(err) {
         break;  // re-acquired
       } catch (e) {
         err = e;  // report the LATEST failure if the ladder gives up
-        await new Promise(r => setTimeout(r, 1000 * _liveRecoverAttempts));
+        // Sliced waits, so Stop pressed during a 15 s pause is answered at once, and the status keeps counting.
+        const pause = ndLiveHealth.reconnectDelayMs(_liveRecoverAttempts);
+        for (let waited = 0; waited < pause && _liveRecording; waited += 500) {
+          liveSay(`⚠ Microphone lost ${ndLiveHealth.clock((Date.now() - lostAt) / 1000)} ago — still trying to reconnect (try ${_liveRecoverAttempts}). Nothing is recorded until it is back.`, 2000);
+          await new Promise(r => setTimeout(r, Math.min(500, pause - waited)));
+        }
         // loop: re-check the attempt budget and try again
       }
       if (!_liveRecording) { liveStopMicStream(); return; }  // GM pressed Stop while we were reconnecting
     }
     if (!_liveRecording) { liveStopMicStream(); return; }  // GM pressed Stop while we were reconnecting
     liveWatchMicTracks();
-    status.textContent = 'Recording… (mic reconnected)';
+    liveStartMeter(_liveMicStream);
+    const lostFor = Math.max(1, Math.round((Date.now() - lostAt) / 1000));
+    _liveGaps.push({ at: Date.now(), seconds: lostFor });
+    liveRaiseAlert(`The microphone is back after ${ndLiveHealth.clock(lostFor)} — that stretch was not recorded. Recording continues.`, { beep: false });
+    liveSay('Recording… (mic reconnected)', 4000);
     liveStartSegment();
   } finally {
     _liveRecovering = false;
@@ -1837,6 +2056,9 @@ function liveWatchMicTracks() {
     t.onended = () => {
       if (_liveRecording) liveHandleMicFailure(new Error('Microphone disconnected'));
     };
+    // A system- or app-level mute keeps the track alive and delivers silence: the recording "runs" and says nothing.
+    t.onmute = () => { if (_liveRecording) liveMicWarning('The microphone is muted (by the system or another app) — it is sending silence.'); };
+    t.onunmute = () => liveMicWarning('');
   });
 }
 
@@ -1879,14 +2101,21 @@ async function toggleLiveRecording() {
     // MediaRecorder is null/inactive, so .stop() would silently no-op,
     // onStop would never fire, and the mic would stay hot forever (item 2).
     if (_liveCurrentRecorder && _liveCurrentRecorder.isRecording()) {
+      _liveFinalizing = true;       // the last chunk is not cut yet: "saved" would be a lie until it is queued and sent
       _liveCurrentRecorder.stop();  // its onStop (liveStartSegment) releases the mic once the last chunk is captured
+      setTimeout(() => {
+        if (_liveFinalizing) {
+          _liveFinalizing = false;
+          liveRaiseAlert('⚠ The last chunk could not be finished — the final seconds before Stop may be missing.');
+          liveRefreshStatus();
+        }
+      }, 30000);
     } else {
       _liveCurrentRecorder = null;
       liveStopMicStream();
     }
     liveReleaseWakeLock();
     btn.textContent = '🔴 Start Recording';
-    status.textContent = 'Stopped — finishing the last chunk…';
     // Refresh the raw-audio line now; if a segment is still uploading, the
     // queue drain below refreshes it again once the server's count/bytes
     // have actually settled.
@@ -1901,6 +2130,9 @@ async function toggleLiveRecording() {
   }
   _liveStarting = true;
   btn.disabled = true;
+  // Asked inside the click, so the browser allows it: a desktop notification is how a problem reaches a GM who has
+  // switched to another window during a long session.
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { /* optional */ }
   try {
     // Acquired ONCE here for the whole recording — see _liveMicStream's
     // own comment for why, and ndMicRecorder's own comment (base.html) for
@@ -1917,6 +2149,13 @@ async function toggleLiveRecording() {
   _liveLastError = '';
   _liveRecoverAttempts = 0;
   _liveRecording = true;
+  liveClearAlert();
+  _liveGaps = [];
+  _liveFinalizing = false;
+  _liveDoneAnnounced = false;
+  // A fresh set of counters, unless the previous recording's backlog is still being worked off in this tab.
+  if (!_liveQueue.length && !_liveQueueBusy && !_liveFailedChunks.length) { _liveRecordedSeconds = 0; _liveDoneSeconds = 0; }
+  _liveLastBeat = Date.now();
   // One id per recording (not per segment, not per page load) — the server
   // groups a recording's saved raw segments under it, and a fresh recording
   // in the same session never collides with a previous one's files.
@@ -1928,6 +2167,7 @@ async function toggleLiveRecording() {
   status.textContent = 'Recording…';
   liveAcquireWakeLock();
   liveWatchMicTracks();
+  liveStartMeter(_liveMicStream);
   liveStartSegment();
   liveSetWarning('');
   _liveSlowStreak = 0;
@@ -1955,6 +2195,47 @@ async function liveRefreshAudioStatus() {
     el.appendChild(a);
   } catch (e) { /* best-effort: the transcript itself never depends on this */ }
 }
+
+// ── Chunks that never reached the server (tab closed or crashed mid-backlog, a long outage): offered on the next visit ──
+// Each is a complete recording of its own; the server files it under its original (recording, index) slot, so sending one
+// the server already has just replaces it - nothing is ever duplicated in the transcript.
+async function liveRecoverUnsent() {
+  const box = document.getElementById('live-recover');
+  if (!box || !_liveStore) return;
+  let rows = [];
+  try { rows = await _liveStore.list(SESSION_ID); } catch (e) { return; }
+  const inHand = new Set([..._liveQueue, ..._liveFailedChunks].map(f => f.ndStoreKey));
+  rows = rows.filter(r => r && r.blob && !inHand.has(r.key));
+  if (!rows.length) { box.style.display = 'none'; box.textContent = ''; return; }
+  const secs = rows.reduce((sum, r) => sum + (r.seconds || 0), 0);
+  box.textContent = '';
+  box.append(`💾 ${rows.length} recorded chunk(s) (${ndLiveHealth.clock(secs)} of audio) from an earlier visit never reached the server — they were still waiting in this browser. `);
+  const send = document.createElement('button');
+  send.type = 'button'; send.className = 'bg-job-btn'; send.textContent = 'Send them now';
+  send.onclick = () => {
+    rows.forEach(r => {
+      const f = new File([r.blob], r.name || 'recovered.webm', { type: r.mimeType || r.blob.type || 'audio/webm' });
+      f.ndRecordingId = r.recordingId; f.ndSegmentIndex = r.index; f.ndSeconds = r.seconds || 0; f.ndStoreKey = r.key;
+      _liveRecordedSeconds += f.ndSeconds;
+      _liveQueue.push(f);
+    });
+    _liveDoneAnnounced = false;
+    box.style.display = 'none';
+    liveProcessQueue().catch(e => console.error('live upload queue', e));
+  };
+  const drop = document.createElement('button');
+  drop.type = 'button'; drop.className = 'bg-job-btn'; drop.style.marginLeft = '.4rem'; drop.textContent = 'Discard';
+  drop.onclick = async () => {
+    if (!confirm('Throw away these unsent recordings? They cannot be brought back.')) return;
+    for (const r of rows) await _liveStore.remove(r.key);
+    box.style.display = 'none';
+  };
+  box.append(send, drop);
+  box.style.display = '';
+}
+
+if (_liveStore) liveRecoverUnsent();
+_liveBeatTimer = setInterval(liveBeat, 1000);
 
 async function clearLiveTranscript() {
   if (!confirm('Clear the live transcript? This cannot be undone.')) return;
@@ -2007,7 +2288,7 @@ window.addEventListener('beforeunload', (e) => {
   // the GM to click Retry) well after that — closing the tab then loses it
   // silently, contradicting the panel's own "nothing is lost beyond the
   // current chunk" promise (docs/LIVE_RECORDING_AUDIT.md item 6).
-  if (_liveRecording || _liveQueue.length || _liveFailedChunks.length || _liveQueueBusy) {
+  if (_liveRecording || _liveFinalizing || _liveQueue.length || _liveFailedChunks.length || _liveQueueBusy) {
     e.preventDefault();
     e.returnValue = '';
   }
