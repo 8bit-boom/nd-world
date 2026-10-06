@@ -345,6 +345,52 @@ def test_rules_and_notes_gm_bundles_rules_and_all_notes_unfiltered(client, seed)
     assert "Meets at the noodle stand." in r.text
 
 
+def test_rules_and_notes_includes_the_worlds_notes_even_those_hidden_from_players(client, seed):
+    """The world's Notes (entities of kind "note": lore, session notes, rumors, ...) are the notes a GM actually keeps;
+    the export used to carry only the small notes pinned to other entities, so a world full of Notes exported as
+    rules alone."""
+    _set_world(seed.world_a.id, rules_md="# Custom Rules\n\nHouse rules here.")
+    _add_entity(seed.world_a.id, kind="note", subtype="session note", name="Session 3 recap",
+                body="The crew met the Worm under the old pier.", visible_to_players=False)
+    _add_entity(seed.world_a.id, kind="note", subtype="rumor", name="The pier rumor",
+                body="Dockhands say the water hums at night.", visible_to_players=True)
+    _add_entity(seed.world_a.id, kind="character", name="Vex the Informant", body="Knows everyone in the Hollow.")
+    _add_entity(seed.world_b.id, kind="note", name="Another world's note", body="Not for this export.")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/export/rules-and-notes.md")
+    assert r.status_code == 200
+    text = r.text
+    assert "# Custom Rules" in text and "## Notes" in text
+    assert "### Session 3 recap" in text and "session note" in text
+    assert "The crew met the Worm under the old pier." in text           # hidden from players: this is the GM's export
+    assert "### The pier rumor" in text and "Dockhands say the water hums at night." in text
+    assert text.index("# Custom Rules") < text.index("## Notes") < text.index("### Session 3 recap")
+    assert "Knows everyone in the Hollow." not in text                    # only Notes, not the rest of the lore
+    assert "Another world" not in text
+    assert "## Entity notes" not in text                                   # no pinned notes exist in this world
+
+
+def test_rules_and_notes_keeps_pinned_notes_in_their_own_section_after_the_notes(client, seed):
+    _add_entity(seed.world_a.id, kind="note", name="Session 3 recap", body="The crew met the Worm.")
+    eid = _add_entity(seed.world_a.id, name="Vex the Informant", kind="character")
+    _add_note(eid, "Secretly a corp plant.", visible_to_players=False)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    text = client.get("/export/rules-and-notes.md").text
+    assert text.index("## Notes") < text.index("### Session 3 recap") < text.index("## Entity notes") < text.index("### Vex the Informant (Character)")
+    assert "Secretly a corp plant." in text
+
+
+def test_rules_and_notes_page_describes_what_it_contains(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    hub = client.get("/export").text
+    assert "Download Rules and Notes" in hub
+    block = hub.split("Rules and Notes</h2>", 1)[1][:900]
+    assert "session notes" in block and "pinned to an entity" in block
+
+
 def test_rules_and_notes_omits_notes_section_when_no_notes_exist(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

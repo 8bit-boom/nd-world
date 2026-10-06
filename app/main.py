@@ -5183,12 +5183,27 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
 def export_rules_and_notes(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     # Not in _is_player_safe, so /export and everything under it is already
     # GM-only via the auth_gate middleware — unlike the per-entity/kind
-    # downloads above, this always includes every note unfiltered (it's a GM
-    # prep/archival export, same trust level as Full Backup and World Book).
+    # downloads above, this always includes every note unfiltered - the world's
+    # Notes and the notes pinned to entities, hidden-from-players ones too (it's
+    # a GM prep/archival export, same trust level as Full Backup and World Book).
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     parts = [f"# {world.name} — Rules & Notes", "", _world_rules_markdown(world).rstrip(), ""]
+    # The world's Notes: entities of kind "note" (lore, session notes, rumors, ...) - what the nav's Notes menu lists and
+    # what a GM actually writes their prep in. They used to be missing: only the small notes pinned to OTHER entities
+    # (below) were exported, so a world full of Notes came out as its rules alone. Full text, hidden ones included.
+    note_docs = (
+        db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == "note")
+        .order_by(Entity.name, Entity.id).all()
+    )
+    if note_docs:
+        parts += ["---", "", "## Notes", ""]
+        for doc in note_docs:
+            parts += [f"### {doc.name}" + (f" [{doc.subtype}]" if doc.subtype else ""), ""]
+            text = (doc.body or doc.summary or "").strip()
+            if text:
+                parts += [text, ""]
     notes = (
         db.query(EntityNote)
         .join(Entity, EntityNote.entity_id == Entity.id)
@@ -5197,7 +5212,7 @@ def export_rules_and_notes(request: Request, db: Session = Depends(get_db), acti
         .all()
     )
     if notes:
-        parts += ["---", "", "## Notes", ""]
+        parts += ["---", "", "## Entity notes", ""]
         last_entity_id = None
         for note in notes:
             if note.entity_id != last_entity_id:

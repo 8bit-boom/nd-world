@@ -796,7 +796,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | GET | `/worlds/{world_id}/export/entities/{kind}.json` | GM | All entities of one kind as JSON. |
 | GET | `/worlds/{world_id}/export/templates/{template_id}.json` | GM | One Sheet Template as JSON. |
 | GET | `/export/foundry.json` | GM | Foundry VTT import pack for the whole active world. |
-| GET | `/export/rules-and-notes.md` | GM | Downloads the world's rules plus entity notes as one Markdown file. |
+| GET | `/export/rules-and-notes.md` | GM | Downloads the world's rules plus all its notes as one Markdown file: the world's Notes (entities of kind `note` — lore, session notes, rumors…) in full under `## Notes`, then every note pinned to an entity under `## Entity notes`. Everything is included unfiltered, hidden-from-players notes too. |
 
 ## AI — Chat & World-Building
 
