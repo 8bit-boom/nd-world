@@ -131,28 +131,53 @@
         {% endif %}
 
         {% if gsession %}
-        <!-- ── Recap audio: a folk song about the session, a read-aloud of the recap. The files live in the
-             /audio library (app/routers/session_audio.py); players hear the clips marked "players can hear"
-             on the Session Log page. -->
-        <div id="recap-audio-panel" style="margin-top:.9rem;padding:.8rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px">
-          <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.4rem">🎵 <strong style="color:var(--text)">Recap audio</strong>
-            — a folk song about the session, a read-aloud of the recap. Players hear the clips you tick “players can hear” on the Session Log.</div>
-          <div id="ra-list"></div>
-          <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.5rem">
-            <select id="ra-library" aria-label="Attach a clip from the audio library" style="max-width:260px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
-              <option value="">Attach from the audio library…</option>
-            </select>
-            <button type="button" class="ai-recap-btn" onclick="raAttach()">Attach</button>
-            <label class="ai-recap-btn" style="cursor:pointer;margin:0">⬆ Upload a song / audio file
-              <input type="file" id="ra-file" accept="audio/*,.mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac" style="display:none" onchange="raUpload(this)">
+        <!-- ── Session media: pictures, videos and audio that go with the session (app/session_media.py,
+             app/routers/session_media.py, app/routers/session_audio.py). Drop files anywhere on this panel, or pick them
+             from the libraries. Players see the items you tick "players can see" on the Session Log page. One limit
+             covers all three kinds - Settings > System. -->
+        <div id="session-media-panel" style="margin-top:.9rem;padding:.8rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px">
+          <div style="display:flex;justify-content:space-between;gap:.6rem;flex-wrap:wrap;font-size:.8rem;color:var(--text-dim);margin-bottom:.5rem">
+            <span>🖼 <strong style="color:var(--text)">Session media</strong>
+              — pictures, videos and audio (a folk song about the session, a read-aloud of the recap). Players see the items you tick “players can see” on the Session Log.</span>
+            <span id="sm-count" style="white-space:nowrap" title="Pictures, videos and audio clips in all. The limit is in Settings > System."></span>
+          </div>
+          <div id="sm-drop" tabindex="0" role="button" aria-label="Drop pictures, videos or audio here, or press to choose files"
+               style="border:2px dashed var(--border);border-radius:6px;padding:1rem;text-align:center;font-size:.85rem;color:var(--text-dim);cursor:pointer;transition:border-color .12s,background .12s">
+            ⬇ Drop pictures, videos or audio here — or click to choose files
+            <input type="file" id="sm-file" multiple style="display:none"
+                   accept="image/*,video/*,audio/*,.jpg,.jpeg,.png,.gif,.webp,.avif,.mp4,.m4v,.webm,.ogv,.mov,.mkv,.avi,.mpg,.mpeg,.mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.aac">
+          </div>
+          <div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:center;margin:.4rem 0 .2rem">
+            <label style="display:inline-flex;gap:.3rem;align-items:center;font-size:.76rem;color:var(--text-dim);cursor:pointer">
+              <input type="checkbox" id="sm-visible" style="width:auto"> Players can see new uploads straight away
             </label>
             <span id="ra-status" style="font-size:.78rem;color:var(--text-dim)"></span>
           </div>
+          <div id="sm-progress" style="font-size:.78rem;color:var(--text-dim)"></div>
+
+          <div id="sm-images" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:.6rem;margin-top:.5rem"></div>
+          <div id="sm-videos"></div>
+          <div id="recap-audio-panel">
+            <div id="ra-list"></div>
+          </div>
+
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.6rem;padding-top:.6rem;border-top:1px solid var(--border)">
+            <button type="button" class="ai-recap-btn" onclick="smPickPicture()">🖼 Choose a picture from the gallery…</button>
+            <select id="sm-video-library" aria-label="Attach a video from the video library" style="max-width:240px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <option value="">Attach from the video library…</option>
+            </select>
+            <button type="button" class="ai-recap-btn" onclick="smAttachVideo()">Attach</button>
+            <select id="ra-library" aria-label="Attach a clip from the audio library" style="max-width:240px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <option value="">Attach from the audio library…</option>
+            </select>
+            <button type="button" class="ai-recap-btn" onclick="raAttach()">Attach</button>
+          </div>
           <div style="font-size:.74rem;color:var(--text-dim);margin-top:.45rem;line-height:1.45">
-            Made a song somewhere else (Suno, Udio, a recording at the table)? Upload it. Or write lyrics with
+            Made a song somewhere else (Suno, Udio, a recording at the table)? Drop it in. Or write lyrics with
             “🎵 Turn into folk tale/song” above and — if you are the GM — press “🎤 Perform it” to have the voice model sing them.
           </div>
         </div>
+        {% if gallery_images is defined %}{% include "_gallery_picker_modal.html" %}{% endif %}
         {% endif %}
 
         <details style="margin-top:.4rem">
@@ -816,8 +841,10 @@ async function aiSaveTale() {
 }
 
 {% if gsession %}
-// ── Recap audio (app/routers/session_audio.py) ──────────────────────────────
+// ── Session media (app/routers/session_media.py, app/routers/session_audio.py) ──────────────────────────────
 const RA_BASE = '/api/sessions/{{ gsession.id }}/recap-audio';
+const SM_BASE = '/api/sessions/{{ gsession.id }}/media';
+let smLast = null;                       // the last panel the server sent: what is attached, and how much room is left
 
 function raStatus(msg) { document.getElementById('ra-status').textContent = msg || ''; }
 
@@ -827,7 +854,111 @@ async function raCall(url, opts) {
   return res.json();
 }
 
+const SM_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif'];
+const SM_VIDEO_EXTS = ['.mp4', '.m4v', '.webm', '.ogv', '.mov', '.mkv', '.avi', '.ts', '.wmv', '.flv', '.mpg', '.mpeg'];
+const SM_AUDIO_EXTS = ['.mp3', '.ogg', '.oga', '.wav', '.m4a', '.flac', '.opus', '.webm', '.aac'];
+// What a dropped file is: by its extension, and for the few that fit two (.webm) by the type the browser reports.
+function smKindOf(file) {
+  const m = /\.[^.]+$/.exec(file.name || '');
+  const ext = m ? m[0].toLowerCase() : '';
+  const isImage = SM_IMAGE_EXTS.includes(ext), isVideo = SM_VIDEO_EXTS.includes(ext), isAudio = SM_AUDIO_EXTS.includes(ext);
+  if (isImage) return 'image';
+  if (isVideo && isAudio) return (file.type || '').startsWith('audio/') ? 'audio' : 'video';
+  if (isVideo) return 'video';
+  if (isAudio) return 'audio';
+  return '';
+}
+
+function smThumb(url) {                   // the small preview the gallery writes beside every upload, else the picture itself
+  return url.replace(/\.[^./]+$/, '') + '_thumb.webp';
+}
+
+function smSwitch(labelText, checked, onChange) {
+  const label = document.createElement('label');
+  label.style.cssText = 'display:inline-flex;gap:.3rem;align-items:center;font-size:.76rem;color:var(--text-dim);cursor:pointer';
+  const box = document.createElement('input');
+  box.type = 'checkbox'; box.checked = !!checked; box.style.width = 'auto';
+  box.addEventListener('change', () => onChange(box));
+  label.append(box, document.createTextNode(labelText));
+  return label;
+}
+
+function smRemoveButton(title, onClick) {
+  const rm = document.createElement('button');
+  rm.type = 'button'; rm.className = 'ai-recap-btn'; rm.textContent = '✕ Remove'; rm.title = title;
+  rm.addEventListener('click', onClick);
+  return rm;
+}
+
+async function smSetVisible(url, box, okText) {
+  raStatus('Saving…');
+  try {
+    raRender(await raCall(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ visible_to_players: box.checked }) }));
+    raStatus(box.checked ? okText : 'Hidden from players.');
+  } catch (e) { box.checked = !box.checked; raStatus('Failed: ' + e.message); }
+}
+
 function raRender(d) {
+  smLast = d;
+  const room = Math.max(0, (d.max || 0) - (d.used || 0));
+  const count = document.getElementById('sm-count');
+  count.textContent = (d.used || 0) + ' of ' + (d.max || 0) + ' used';
+  count.style.color = room ? '' : '#e0b050';
+  document.getElementById('sm-drop').style.opacity = room ? '' : '.55';
+
+  // pictures
+  const images = document.getElementById('sm-images');
+  images.textContent = '';
+  (d.images || []).forEach(im => {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--border);border-radius:5px;padding:.4rem;background:var(--bg3)';
+    const img = document.createElement('img');
+    img.src = smThumb(im.url); img.alt = im.caption || 'Session picture'; img.loading = 'lazy';
+    img.onerror = () => { img.onerror = null; img.src = im.url; };
+    img.style.cssText = 'width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:3px;cursor:zoom-in;display:block';
+    img.addEventListener('click', () => openLightbox(im.url, img.alt));
+    const cap = document.createElement('div');
+    cap.textContent = im.caption || ''; cap.style.cssText = 'font-size:.78rem;margin:.3rem 0;word-break:break-word';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;gap:.4rem;align-items:center;flex-wrap:wrap';
+    row.append(
+      smSwitch('players can see', im.visible_to_players, box => smSetVisible(SM_BASE + '/image/' + im.uid + '/visibility', box, 'Players can now see it.')),
+      smRemoveButton(im.own ? 'Remove it from this session — the picture is deleted too' : 'Take it off this session — it stays in the gallery', async () => {
+        try { raRender(await raCall(SM_BASE + '/image/' + im.uid + '/remove', { method: 'POST' })); raStatus(''); }
+        catch (e) { raStatus('Failed: ' + e.message); }
+      }));
+    card.append(img, cap, row);
+    images.appendChild(card);
+  });
+
+  // videos
+  const videos = document.getElementById('sm-videos');
+  videos.textContent = '';
+  (d.videos || []).forEach(v => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:.45rem 0;border-bottom:1px solid var(--border)';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.3rem;font-size:.85rem';
+    const name = document.createElement('strong');
+    name.textContent = '🎬 ' + v.name;
+    head.append(
+      name,
+      smSwitch('players can watch this (also in the Video library)', v.visible_to_players,
+               box => smSetVisible(SM_BASE + '/video/' + v.id + '/visibility', box, 'Players can now watch it.')),
+      smRemoveButton('Detach it from this session — the video stays in the Video library', async () => {
+        try { raRender(await raCall(SM_BASE + '/video/' + v.id + '/remove', { method: 'POST' })); raStatus(''); }
+        catch (e) { raStatus('Failed: ' + e.message); }
+      }));
+    const video = document.createElement('video');
+    video.controls = true; video.preload = 'none'; video.src = v.file_url;
+    if (v.poster_url) video.poster = v.poster_url;
+    video.style.cssText = 'width:100%;max-height:340px;background:#000;border-radius:4px';
+    row.append(head, video);
+    videos.appendChild(row);
+  });
+
+  // audio (as it always was)
   const list = document.getElementById('ra-list');
   list.textContent = '';
   (d.clips || []).forEach(c => {
@@ -836,29 +967,15 @@ function raRender(d) {
     const head = document.createElement('div');
     head.style.cssText = 'display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.3rem;font-size:.85rem';
     const name = document.createElement('strong');
-    name.textContent = c.name;
-    const vis = document.createElement('label');
-    vis.style.cssText = 'display:inline-flex;gap:.3rem;align-items:center;font-size:.76rem;color:var(--text-dim);cursor:pointer';
-    const box = document.createElement('input');
-    box.type = 'checkbox'; box.checked = !!c.visible_to_players; box.style.width = 'auto';
-    box.addEventListener('change', async () => {
-      raStatus('Saving…');
-      try {
-        raRender(await raCall(RA_BASE + '/' + c.id + '/visibility', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ visible_to_players: box.checked }) }));
-        raStatus(box.checked ? 'Players can now hear it.' : 'Hidden from players.');
-      } catch (e) { box.checked = !box.checked; raStatus('Failed: ' + e.message); }
-    });
-    vis.append(box, document.createTextNode('players can hear this (also in the Audio library)'));
-    const rm = document.createElement('button');
-    rm.type = 'button'; rm.className = 'ai-recap-btn'; rm.textContent = '✕ Remove';
-    rm.title = 'Detach it from this recap — the clip stays in the Audio library';
-    rm.addEventListener('click', async () => {
-      try { raRender(await raCall(RA_BASE + '/' + c.id + '/remove', { method: 'POST' })); raStatus(''); }
-      catch (e) { raStatus('Failed: ' + e.message); }
-    });
-    head.append(name, vis, rm);
+    name.textContent = '🎵 ' + c.name;
+    head.append(
+      name,
+      smSwitch('players can hear this (also in the Audio library)', c.visible_to_players,
+               box => smSetVisible(RA_BASE + '/' + c.id + '/visibility', box, 'Players can now hear it.')),
+      smRemoveButton('Detach it from this session — the clip stays in the Audio library', async () => {
+        try { raRender(await raCall(RA_BASE + '/' + c.id + '/remove', { method: 'POST' })); raStatus(''); }
+        catch (e) { raStatus('Failed: ' + e.message); }
+      }));
     const audio = document.createElement('audio');
     audio.controls = true; audio.preload = 'none'; audio.src = c.file_url; audio.style.width = '100%';
     row.append(head, audio);
@@ -873,23 +990,28 @@ function raRender(d) {
     }
     list.appendChild(row);
   });
-  if (!(d.clips || []).length) {
+  if (!(d.used || 0)) {
     const none = document.createElement('div');
-    none.style.cssText = 'font-size:.8rem;color:var(--text-dim)';
-    none.textContent = 'No audio attached yet.';
+    none.style.cssText = 'font-size:.8rem;color:var(--text-dim);margin-top:.4rem';
+    none.textContent = 'Nothing attached yet.';
     list.appendChild(none);
   }
-  const sel = document.getElementById('ra-library');
-  sel.length = 1;
-  (d.library || []).forEach(c => {
-    const o = document.createElement('option');
-    o.value = c.id; o.textContent = c.name + (c.visible_to_players ? '' : ' (GM only)');
-    sel.appendChild(o);
-  });
+
+  const fill = (id, items) => {
+    const sel = document.getElementById(id);
+    sel.length = 1;
+    (items || []).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name + (c.visible_to_players ? '' : ' (GM only)');
+      sel.appendChild(o);
+    });
+  };
+  fill('ra-library', d.library);
+  fill('sm-video-library', d.video_library);
 }
 
 async function raLoad() {
-  try { raRender(await raCall(RA_BASE)); } catch (e) { raStatus('Could not load: ' + e.message); }
+  try { raRender(await raCall(SM_BASE)); } catch (e) { raStatus('Could not load: ' + e.message); }
 }
 
 async function raAttach() {
@@ -903,19 +1025,89 @@ async function raAttach() {
   } catch (e) { raStatus('Failed: ' + e.message); }
 }
 
-async function raUpload(input) {
-  const f = input.files && input.files[0];
-  if (!f) return;
-  const fd = new FormData();
-  fd.set('file', f);
-  fd.set('name', f.name.replace(/\.[^.]+$/, ''));
-  raStatus('Uploading…');
+async function smAttachVideo() {
+  const id = document.getElementById('sm-video-library').value;
+  if (!id) { raStatus('Pick a video from the library first.'); return; }
+  raStatus('Attaching…');
   try {
-    raRender(await raCall(RA_BASE + '/upload', { method: 'POST', body: fd }));
-    raStatus('Uploaded and attached. Tick “players can hear this” to share it.');
+    raRender(await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                 body: JSON.stringify({ kind: 'video', id: Number(id) }) }));
+    raStatus('Attached. Tick “players can watch this” to share it.');
   } catch (e) { raStatus('Failed: ' + e.message); }
-  input.value = '';
 }
+
+function smPickPicture() {
+  if (typeof ndGalleryPickerOpen !== 'function') { raStatus('The gallery picker is not available on this page.'); return; }
+  ndGalleryPickerOpen(async entry => {
+    raStatus('Attaching…');
+    try {
+      raRender(await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                   body: JSON.stringify({ kind: 'image', url: entry.url }) }));
+      raStatus('Attached. Tick “players can see” to share it.');
+    } catch (e) { raStatus('Failed: ' + e.message); }
+  });
+}
+
+// Dropped (or chosen) files, one after another: each goes to the server with its kind worked out here and checked there.
+// Big files are cut into parts by ndChunkedUpload, as everywhere else in the app. A file that would not fit under the
+// limit is not even sent - the server would refuse it anyway, after the bytes had travelled.
+let smBusy = false;
+async function smDropFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length || smBusy) return;
+  smBusy = true;
+  const progress = document.getElementById('sm-progress');
+  progress.textContent = '';
+  const line = text => { const el = document.createElement('div'); el.textContent = text; progress.appendChild(el); return el; };
+  let room = smLast ? Math.max(0, smLast.max - smLast.used) : Infinity;
+  const visible = document.getElementById('sm-visible').checked;
+  let added = 0;
+  try {
+    for (const file of files) {
+      const kind = smKindOf(file);
+      if (!kind) { line('✕ ' + file.name + ' — not a picture, video or audio file.'); continue; }
+      if (room <= 0) { line('✕ ' + file.name + ' — the session is full (' + (smLast ? smLast.max : '?') + ' items; raise the limit in Settings > System).'); continue; }
+      const el = line('⬆ ' + file.name + ' …');
+      try {
+        const d = await ndChunkedUpload(file, {
+          directUrl: SM_BASE + '/upload', chunkUrl: SM_BASE + '/upload/chunk', completeUrl: SM_BASE + '/upload/complete',
+          extraFields: { name: file.name.replace(/\.[^.]+$/, ''), kind: kind, visible_to_players: visible ? '1' : '' },
+          onProgress: p => { el.textContent = '⬆ ' + file.name + (p.phase === 'upload' ? ' — ' + p.percent + '%' : ' — processing…'); },
+        });
+        raRender(d);
+        room--; added++;
+        el.textContent = '✓ ' + file.name;
+      } catch (e) {
+        el.textContent = '✕ ' + file.name + ' — ' + e.message;
+      }
+    }
+  } finally {
+    smBusy = false;
+  }
+  raStatus(added ? (visible ? added + ' added — players can see them.' : added + ' added — tick “players can see” on each to share it.') : '');
+}
+
+(function smWireDropZone() {
+  const panel = document.getElementById('session-media-panel');
+  const zone = document.getElementById('sm-drop');
+  const input = document.getElementById('sm-file');
+  if (!panel || !zone || !input) return;
+  const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  const on = () => { zone.style.borderColor = 'var(--neon)'; zone.style.background = 'var(--bg3)'; };
+  const off = () => { zone.style.borderColor = ''; zone.style.background = ''; };
+  let depth = 0;                         // dragenter/leave fire for every child element: count them
+  panel.addEventListener('dragenter', e => { if (hasFiles(e)) { e.preventDefault(); depth++; on(); } });
+  panel.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+  panel.addEventListener('dragleave', e => { if (hasFiles(e) && --depth <= 0) { depth = 0; off(); } });
+  panel.addEventListener('drop', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); depth = 0; off();
+    smDropFiles(e.dataTransfer.files);
+  });
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
+  input.addEventListener('change', () => { smDropFiles(input.files); input.value = ''; });
+})();
 
 async function aiPerformTale() {
   const lyrics = document.getElementById('tale-result-text').textContent.trim();

@@ -27,6 +27,36 @@
   </section>
   {% endif %}
 
+  {% if session_media and (session_media.videos or session_media.images) %}
+  {# Pictures and videos the GM put with this session (app/session_media.py). Players only get the items marked visible
+     to them; a GM also sees the hidden ones, flagged. #}
+  <section id="session-media" aria-label="Session pictures and video" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.9rem 1.1rem;margin:0 0 1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .6rem">🖼 Pictures and video</h2>
+    {% if session_media.images %}
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.6rem;margin-bottom:{{ '.8rem' if session_media.videos else '0' }}">
+      {% for i in session_media.images %}
+      <figure style="margin:0">
+        <img src="{{ i.url|thumb }}" data-full="{{ i.url }}" alt="{{ i.caption or 'Session picture' }}" loading="lazy"
+             onclick="openLightbox(this.dataset.full, this.alt)"
+             style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:4px;border:1px solid var(--border);cursor:zoom-in;display:block"/>
+        <figcaption style="font-size:.78rem;color:var(--text-dim);margin-top:.2rem">{{ i.caption }}
+          {% if not i.visible_to_players %}<span style="font-size:.66rem;border:1px solid var(--neon2);color:var(--neon2);border-radius:10px;padding:.05rem .4rem;margin-left:.3rem">GM only</span>{% endif %}
+        </figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% for v in session_media.videos %}
+    <div style="padding:.5rem 0;{% if not loop.last %}border-bottom:1px solid var(--border){% endif %}">
+      <div style="font-size:.88rem;margin-bottom:.3rem">{{ v.name }}
+        {% if not v.visible_to_players %}<span style="font-size:.68rem;border:1px solid var(--neon2);color:var(--neon2);border-radius:10px;padding:.05rem .45rem;margin-left:.3rem">GM only — players can't watch this yet</span>{% endif %}
+      </div>
+      <video controls preload="none" {% if v.poster_url %}poster="{{ v.poster_url }}"{% endif %} src="{{ v.file_url }}" style="width:100%;max-height:70vh;background:#000;border-radius:4px"></video>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if player_recap_published %}
   <!-- A GM-published recap is the canonical content: rendered verbatim
        server-side, no AI call, no polling. -->

@@ -91,6 +91,15 @@ def discover_world_images(db: Session, world: World) -> list:
         for url in _extract_md_images(pc.notes):
             _add(url, f"{pc.name} (notes)", href)
 
+    # Pictures that go with a session (app/session_media.py): used there, so the gallery names them after the session and
+    # refuses to delete them from under it.
+    from .session_media import media_items
+    from .models import GameSession
+    for gs in db.query(GameSession).filter(GameSession.world_id == world.id).all():
+        for it in media_items(gs):
+            if it["kind"] == "image":
+                _add(it["url"], f"{gs.title} (session media)", f"/sessions/{gs.id}")
+
     overrides = title_overrides(db, world.id)
     for entry in found.values():
         entry["name"] = overrides.get(entry["url"]) or image_display_name(entry["url"], entry["uses"])

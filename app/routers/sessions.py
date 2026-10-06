@@ -26,6 +26,8 @@ from ..pc_stats import pc_maxima
 from ..sheet_systems import apply_xp_award, parse_custom_fields
 from ..rendering import render_md, strip_gm_only
 from ..templating import templates
+from .. import gallery as _gallery_module
+from .. import session_media as _session_media
 from .session_audio import attached_clips, recap_clip_ids, sessions_with_audio_for_players
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
@@ -295,6 +297,8 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
     fact_top_tags = sorted(fact_tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return templates.TemplateResponse("sessions/detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
+        # the "Choose from Gallery" picker behind the session media panel's picture button (GM only)
+        "gallery_images": (_gallery_module.all_world_image_urls(db, world) if world and _user and _user.is_gm else []),  # GM only, like the other pages that offer the picker
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
         "npc_names": npc_names, "party_pcs": party_pcs,
         "npc_candidates_json": _featured_entity_candidates(db, gs.world_id),
@@ -475,6 +479,8 @@ def session_delete(session_id: int, request: Request, db: Session = Depends(get_
     # referenced by nothing else once the row is gone — delete it with the
     # row, the same way the row's other on-disk dependents are cleaned up.
     shutil.rmtree(_live_audio_root(session_id), ignore_errors=True)
+    # Pictures uploaded for this session go with it (ones picked from the gallery stay); audio and video stay in their libraries.
+    _session_media.delete_own_pictures(gs)
     db.delete(gs)
     db.commit()
     return RedirectResponse("/sessions", status_code=303)
@@ -1798,12 +1804,15 @@ def session_log_list(request: Request, db: Session = Depends(get_db), active_wor
             markers[s.id] = None
     # sessions with a song / read-aloud the viewer can hear (a 🎵 in the list)
     viewer = getattr(request.state, "user", None)
-    audio_ids = ({s.id for s in sessions if recap_clip_ids(s)} if (viewer and viewer.is_gm)
+    is_gm_viewer = bool(viewer and viewer.is_gm)
+    audio_ids = ({s.id for s in sessions if recap_clip_ids(s)} if is_gm_viewer
                  else sessions_with_audio_for_players(db, sessions))
+    media_ids = _session_media.sessions_with_pictures_or_video(db, sessions, is_gm=is_gm_viewer)
     return templates.TemplateResponse("sessions/player_list.html", {
         "request": request, "world": world, "worlds": worlds, "sessions": sessions,
         "recap_markers": markers,
         "audio_session_ids": audio_ids,
+        "media_session_ids": media_ids,
     })
 
 
@@ -1861,6 +1870,7 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
         "player_recap_published": published, "player_summary_html": player_summary_html,
         "recap_defaults": recap_defaults,
         "recap_audio": attached_clips(db, gs, is_gm=bool(user and user.is_gm)),
+        "session_media": _session_media.viewer_media(db, gs, is_gm=bool(user and user.is_gm)),
     })
 
 

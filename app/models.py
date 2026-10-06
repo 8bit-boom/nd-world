@@ -1271,6 +1271,12 @@ class GameSession(Base):
     # from the library) are simply skipped by readers — see app/routers/session_audio.py.
     # game_sessions is in database._migrate's heal list, so existing installs get the column on boot.
     recap_audio_json = Column(Text, default="[]")
+    # Pictures and videos that go with the session (audio stays in recap_audio_json): a JSON list of
+    # {"uid", "kind": "image", "url", "caption", "visible", "own"} (a picture; "own" = uploaded for this session, so it is
+    # deleted with it) and {"uid", "kind": "video", "clip_id"} (a /video library clip, which owns its file and its
+    # players-can-watch switch). One limit covers audio + pictures + videos together - Settings -> System, 10 by default.
+    # See app/session_media.py and app/routers/session_media.py. Healed onto existing installs like recap_audio_json.
+    recap_media_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -2007,6 +2013,9 @@ class AppSettings(Base):
     # How many characters of an uploaded character sheet the AI character creator reads (NULL = the built-in
     # default, see routers/character_ai.character_import_limit).
     character_import_max_chars = Column(Integer, nullable=True)
+    # How many pictures + videos + audio clips one session may carry (NULL = the built-in default, 10) -
+    # see app/session_media.py. Settings -> System.
+    session_media_max = Column(Integer, nullable=True)
     swarmui_external_url = Column(String(512), default="")
     # Same idea as swarmui_external_url, for the embedded Android app viewer
     # at /androidapp — see app.main's ANDROID_EMULATOR_URL and docs/DEPLOYMENT.md.

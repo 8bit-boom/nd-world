@@ -32,6 +32,7 @@ from . import deps
 from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
+from . import session_media as _session_media
 from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_edit_section, world_can_view_section, world_row_visible, world_section_access
@@ -50,6 +51,7 @@ from .routers.characters import router as characters_router
 from .routers.character_ai import router as character_ai_router
 from .routers.template_ai import router as template_ai_router
 from .routers.session_audio import router as session_audio_router
+from .routers.session_media import router as session_media_router
 from .routers.character_hub import router as character_hub_router
 from .routers.characters import _pc_to_foundry_journal
 from .routers.auth import router as auth_router
@@ -170,6 +172,7 @@ app.include_router(parties_router)
 app.include_router(quests_router)
 app.include_router(sessions_router)
 app.include_router(session_audio_router)
+app.include_router(session_media_router)
 app.include_router(calendar_router)
 app.include_router(schedule_router)
 app.include_router(media_rename_router)
@@ -1682,6 +1685,9 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     # since it only removes the GameSession row, not files keyed by its id.
     for gs_id in [row[0] for row in db.query(GameSession.id).filter(GameSession.world_id == world_id).all()]:
         shutil.rmtree(_session_live_audio_root(gs_id), ignore_errors=True)
+    # Pictures uploaded for a session (the media panel) are owned by that session too.
+    for gs in db.query(GameSession).filter(GameSession.world_id == world_id).all():
+        _session_media.delete_own_pictures(gs)
 
     for slug, _data in list(_iter_world_maps(world_id)):
         jf = _MAPS_DIR / f"{slug}.json"
@@ -4438,6 +4444,8 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_llm_context_tokens": _ai_module.LLM_CONTEXT_TOKENS,
         "character_import_min": _CHARACTER_IMPORT_MIN,
         "character_import_max": _CHARACTER_IMPORT_MAX,
+        "session_media_default": _session_media.DEFAULT_MAX,
+        "session_media_hard_max": _session_media.HARD_MAX,
         "llm_active": bool(_ai_module.effective_llm_api_key()),
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
@@ -4640,6 +4648,7 @@ def settings_system_save(
     llm_api_key_clear: str = Form(""),
     llm_context_tokens: str = Form(""),
     character_import_max_chars: str = Form(""),
+    session_media_max: str = Form(""),
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
@@ -4700,6 +4709,7 @@ def settings_system_save(
     llm_api_key = llm_api_key.strip()
     llm_context_tokens = llm_context_tokens.strip()
     character_import_max_chars = character_import_max_chars.strip()
+    session_media_max = session_media_max.strip()
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
     android_emulator_url = android_emulator_url.strip().rstrip("/")
     editor_external_url = editor_external_url.strip().rstrip("/")
@@ -4748,6 +4758,7 @@ def settings_system_save(
         ("llm_context_tokens", "Unsloth context window (tokens)", llm_context_tokens, int, 1024, 1048576),
         ("character_import_max_chars", "Sheet length read in one go for AI character import (characters)",
          character_import_max_chars, int, _CHARACTER_IMPORT_MIN, _CHARACTER_IMPORT_MAX),
+        ("session_media_max", "Pictures, videos and audio per session", session_media_max, int, 1, _session_media.HARD_MAX),
     ):
         val, err = _parse_optional_number(label, raw, kind, lo, hi)
         if err:

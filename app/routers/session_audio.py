@@ -8,7 +8,10 @@ page's "Turn into folk tale/song" writes them) with a delivery style such as "se
 only the attached clips marked visible, on the Session Log page.
 
 Writes need the Sessions section's edit level (GM, or an assistant the world allows) — checked in each
-handler, because the route allowlist alone admits every assistant."""
+handler, because the route allowlist alone admits every assistant.
+
+Since pictures and videos joined the session (app/session_media.py, app/routers/session_media.py) one limit covers all
+of them together, and every route here answers with the shared panel (audio under `clips`, as before)."""
 import json
 import os
 import re
@@ -21,16 +24,17 @@ from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Reque
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai
+from .. import session_media as _sm
 from .. import unsloth_extras as _unsloth_extras
 from ..database import get_db
 from ..deps import get_world_ctx, world_can_edit_section
 from ..models import AudioClip, GameSession
+from ..session_media import attached_clips, recap_clip_ids, sessions_with_audio_for_players   # noqa: F401  (re-exported: sessions.py, mcp_server.py)
 from ..uploads import copy_upload_bounded, unique_upload_filename
 from .audio import _ALLOWED_EXTS, _MAX_CLIPS_PER_WORLD, _MAX_DESCRIPTION, _MAX_NAME, _effective_audio_bytes
 
 router = APIRouter()
 
-MAX_RECAP_CLIPS = 6
 MAX_LYRICS = 20000
 _UPLOADS = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
 
@@ -60,62 +64,22 @@ def _require_gm_edit(request: Request, db: Session, session_id: int, active_worl
     return world, gs
 
 
-def recap_clip_ids(gs) -> list:
-    """The session's attached clip ids as a clean, de-duplicated list of ints."""
-    try:
-        raw = json.loads(getattr(gs, "recap_audio_json", None) or "[]")
-    except (TypeError, ValueError):
-        return []
-    out = []
-    for v in raw if isinstance(raw, list) else []:
-        if isinstance(v, int) and not isinstance(v, bool) and v not in out:
-            out.append(v)
-    return out
-
-
 def _store(gs, ids: list) -> None:
-    gs.recap_audio_json = json.dumps(ids[:MAX_RECAP_CLIPS])
+    _sm.store_clip_ids(gs, ids)
 
 
 def _clip_dict(c: AudioClip) -> dict:
-    return {"id": c.id, "name": c.name, "description": c.description or "", "file_url": c.file_url,
-            "visible_to_players": bool(c.visible_to_players), "transcript": c.transcript or ""}
-
-
-def attached_clips(db: Session, gs, *, is_gm: bool) -> list:
-    """The clips attached to this session, in order, that the viewer may hear: a GM sees them all, a
-    player only the ones marked visible. Ids whose clip is gone are skipped."""
-    ids = recap_clip_ids(gs)
-    if not ids:
-        return []
-    by_id = {c.id: c for c in db.query(AudioClip).filter(AudioClip.id.in_(ids), AudioClip.world_id == gs.world_id).all()}
-    return [_clip_dict(by_id[i]) for i in ids if i in by_id and (is_gm or by_id[i].visible_to_players)]
-
-
-def sessions_with_audio_for_players(db: Session, sessions: list) -> set:
-    """Ids of the sessions among `sessions` that have at least one player-audible clip (one query)."""
-    wanted = {s.id: recap_clip_ids(s) for s in sessions}
-    all_ids = {i for ids in wanted.values() for i in ids}
-    if not all_ids:
-        return set()
-    audible = {row[0] for row in db.query(AudioClip.id).filter(AudioClip.id.in_(all_ids), AudioClip.visible_to_players.is_(True)).all()}
-    return {sid for sid, ids in wanted.items() if audible.intersection(ids)}
+    return _sm.audio_dict(c)
 
 
 def _panel(db: Session, gs) -> dict:
-    ids = set(recap_clip_ids(gs))
-    library = (db.query(AudioClip).filter(AudioClip.world_id == gs.world_id).order_by(AudioClip.created_at.desc()).limit(200).all())
-    return {"clips": attached_clips(db, gs, is_gm=True),
-            "library": [{"id": c.id, "name": c.name, "visible_to_players": bool(c.visible_to_players)}
-                        for c in library if c.id not in ids],
-            "max": MAX_RECAP_CLIPS}
+    return _sm.panel(db, gs)
 
 
 def _attach(db: Session, gs, clip: AudioClip, visible: Optional[bool]) -> None:
     ids = recap_clip_ids(gs)
     if clip.id not in ids:
-        if len(ids) >= MAX_RECAP_CLIPS:
-            raise HTTPException(400, f"A recap can carry at most {MAX_RECAP_CLIPS} audio clips — remove one first.")
+        _sm.require_room(db, gs)
         ids.append(clip.id)
         _store(gs, ids)
     if visible is not None:
@@ -160,8 +124,7 @@ async def recap_audio_upload(session_id: int, request: Request, file: UploadFile
     ext = Path(file.filename).suffix.lower()
     if ext not in _ALLOWED_EXTS:
         raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(sorted(_ALLOWED_EXTS))}")
-    if len(recap_clip_ids(gs)) >= MAX_RECAP_CLIPS:
-        raise HTTPException(400, f"A recap can carry at most {MAX_RECAP_CLIPS} audio clips — remove one first.")
+    _sm.require_room(db, gs)
     if db.query(AudioClip).filter(AudioClip.world_id == world.id).count() >= _MAX_CLIPS_PER_WORLD:
         raise HTTPException(400, f"This world already has the maximum of {_MAX_CLIPS_PER_WORLD} audio clips.")
     target = _UPLOADS / "audio"
@@ -256,8 +219,7 @@ async def recap_song(session_id: int, request: Request, db: Session = Depends(ge
         raise HTTPException(400, "No lyrics to perform")
     if len(lyrics) > MAX_LYRICS:
         raise HTTPException(400, f"Lyrics are too long (over {MAX_LYRICS} characters)")
-    if len(recap_clip_ids(gs)) >= MAX_RECAP_CLIPS:
-        raise HTTPException(400, f"A recap can carry at most {MAX_RECAP_CLIPS} audio clips — remove one first.")
+    _sm.require_room(db, gs)
     spoken = lyrics_for_speech(lyrics)
     if not spoken:
         raise HTTPException(400, "No lyrics to perform")

@@ -151,6 +151,13 @@ tools that require GM access still check `is_gm` at call time.)
 - **Recap audio**: a session's `recap_audio_json` is a list of `AudioClip` ids (the /audio library owns the files, the
   clip's `visible_to_players` is what players hear, `transcript` holds the lyrics) — `app/routers/session_audio.py`.
   Readers skip dangling ids; use `attached_clips(db, gs, is_gm=...)` rather than parsing the JSON.
+  **Session media generalises it** (`app/session_media.py` leaf + `app/routers/session_media.py`): pictures and videos live in
+  `recap_media_json` (`{"kind":"image","url",...,"own"}` / `{"kind":"video","clip_id"}`; videos reference the /video library,
+  pictures carry their own `visible` flag), and ONE limit covers audio + pictures + videos together - `AppSettings.session_media_max`
+  (Settings > System, 10 by default; lowering it never drops what is already there). Every add path calls
+  `session_media.require_room` BEFORE writing a file. Read through `media_items` / `viewer_media` / `panel`, never the raw JSON;
+  a picture uploaded for the session (`own`) is deleted with it, one picked from the gallery never is, and `discover_world_images`
+  counts session pictures as used (so the gallery cannot delete them from under the session). Players see only what is ticked.
 - **Second screen** (`app/routers/display.py`, `templates/display.html`, `static/js/nd-stage.js`): a GM-only
   `/display` window for a second monitor plus "send to screen" actions (hover any image, the lightbox, any
   text selection, the entity page's 📺 buttons). The stage is per-world in-memory state like `live.py`. It

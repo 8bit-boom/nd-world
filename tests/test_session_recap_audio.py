@@ -9,6 +9,7 @@ import pytest
 from app.database import SessionLocal
 from app.main import UPLOADS_DIR
 from app.models import AudioClip, GameSession, World
+from app import session_media as sm
 from app.routers import session_audio as sa
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -110,11 +111,11 @@ def test_only_this_worlds_clips_and_sessions_can_be_used(client, seed):
 def test_the_number_of_attached_clips_is_capped(client, seed):
     _gm(client, seed)
     sid = _session(seed)
-    ids = [_clip(seed.world_a, f"Clip {i}") for i in range(sa.MAX_RECAP_CLIPS + 1)]
+    ids = [_clip(seed.world_a, f"Clip {i}") for i in range(sm.DEFAULT_MAX + 1)]
     for cid in ids[:-1]:
         assert client.post(f"/api/sessions/{sid}/recap-audio", json={"clip_id": cid}).status_code == 200
     r = client.post(f"/api/sessions/{sid}/recap-audio", json={"clip_id": ids[-1]})
-    assert r.status_code == 400 and str(sa.MAX_RECAP_CLIPS) in r.text
+    assert r.status_code == 400 and str(sm.DEFAULT_MAX) in r.text
 
 
 def test_upload_creates_a_library_clip_and_attaches_it(client, seed):
