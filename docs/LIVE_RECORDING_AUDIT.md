@@ -461,11 +461,26 @@ a long pause is answered at once.
 * A level meter shows what the microphone hears; 2½ minutes of silence or a system mute shows an amber warning.
 * If the recorder stops without anyone asking (4 beats), a new segment is started.
 
+### 19. Recording through an internet outage — **fixed**
+
+Capturing audio never needed the network (the microphone and `MediaRecorder` are local), but the *uploads* did: a dropped
+connection was waited out for about nine minutes and then the chunk was parked behind a manual Retry button. Now an
+unreachable server (a failed `fetch`, or the browser's `offline` event, which also aborts an upload that would otherwise hang
+until a TCP timeout) is neither a failure nor a deadline: recording carries on, every chunk is already in the local store, the
+status line says "📴 offline — N chunks (M:SS) waiting in this browser, they upload by themselves", and the queue resumes **by
+itself** the moment the browser reports `online` (otherwise it retries every 5–30 s, for as long as it takes). After Stop the
+line reads "… safe in this browser but NOT on the server yet … keep this page open, or reopen this session later and it will
+offer to send them". After ten minutes offline one quiet reminder says the audio exists only in this browser. HTTP errors
+(502/503/504, a restarting container) keep their own, capped policy; a 4xx still parks the chunk with its reason.
+
+*Limits, stated plainly:* the session page must already be open (a page reload while offline cannot load it; there is no
+service worker), and the chunks live in this browser's storage until the connection returns.
+
 ### Checked
 
 `tests/test_live_health.py` (the pure decisions under Node, including the IndexedDB store against an in-memory fake),
 `tests/test_live_recording_safety_net.py` (the wiring in the page), and a real-browser run (Chromium with a fake microphone:
 Stop with a backlog, an outage followed by closing the tab and recovering the chunks, a mic that comes back after the slow
-phase, a mic that never comes back, a simulated sleep).
+phase, a mic that never comes back, a simulated sleep, and the network switched off - idle and mid-upload - then back on).
 
 **Not changed:** the 25 MiB per-chunk cap and the server routes — the loss was client-side.

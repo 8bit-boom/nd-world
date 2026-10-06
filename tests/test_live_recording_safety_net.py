@@ -176,3 +176,47 @@ def test_the_recorded_clock_includes_the_chunk_being_recorded(client, seed):
     page = _get_page(client, seed)
     state = _body(page, "function liveHealthState()", 900)
     assert "_liveSegStartedAt" in state and "_liveRecovering" in state
+
+
+# ── no internet: recording carries on, chunks wait in the browser, uploads resume by themselves ──────
+
+def test_a_connection_that_is_down_is_never_a_deadline_and_never_parks_a_chunk(client, seed):
+    """The capture is local (MediaRecorder), so recording never needed the network; what used to end was the upload:
+    after ~9 minutes of failed fetches a chunk was parked behind a manual Retry button."""
+    page = _get_page(client, seed)
+    queue = _body(page, "async function liveProcessQueue()", 12000)
+    assert "const offlineErr =" in queue
+    # an unreachable server is dealt with BEFORE the capped transient-wait counter is ever consulted
+    assert queue.index("if (offlineErr) {") < queue.index("transientWaits++ < MAX_TRANSIENT_WAITS")
+    offline = queue.split("if (offlineErr) {", 1)[1][:900]
+    assert "_liveOffline = true;" in offline and "await liveWaitOrOnline(" in offline and "continue;" in offline
+    assert "_liveFailedChunks.push" not in offline
+
+
+def test_the_wait_ends_the_moment_the_browser_is_back_online(client, seed):
+    page = _get_page(client, seed)
+    fn = _body(page, "function liveWaitOrOnline(ms)", 700)
+    assert "addEventListener('online'" in fn and "removeEventListener('online'" in fn and "setTimeout(" in fn
+    # going offline aborts an upload that would otherwise hang until a TCP timeout, so it is retried cleanly on 'online'
+    assert "addEventListener('offline'" in page and "_liveUploadAbort" in page
+    queue = _body(page, "async function liveProcessQueue()", 12000)
+    assert "signal: _liveUploadAbort.signal" in queue and "e.name === 'AbortError'" in queue
+
+
+def test_a_successful_upload_clears_the_offline_state(client, seed):
+    page = _get_page(client, seed)
+    queue = _body(page, "async function liveProcessQueue()", 12000)
+    uploaded = queue.split("if (uploaded) {", 1)[1][:900]
+    assert "_liveOffline = false;" in uploaded and "_liveOfflineSince = 0;" in uploaded
+
+
+def test_the_counters_know_when_the_browser_is_offline_even_between_chunks(client, seed):
+    page = _get_page(client, seed)
+    state = _body(page, "function liveHealthState()", 1200)
+    assert "offline: _liveOffline || navigator.onLine === false" in state
+
+
+def test_a_long_outage_raises_a_reminder_that_the_audio_only_lives_in_this_browser(client, seed):
+    page = _get_page(client, seed)
+    beat = _body(page, "function liveBeat()", 2400)
+    assert "_liveOfflineAlerted" in beat and "only in this browser" in beat

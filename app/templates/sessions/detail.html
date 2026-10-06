@@ -1487,6 +1487,9 @@ let _liveSegStartedAt = 0;          // when the chunk being recorded right now b
 let _liveSpeed = null;              // audio seconds the speech model gets through per second of waiting
 let _liveSayUntil = 0;              // a transient message ("retrying in 20 s…") owns the status line until then
 let _liveGaps = [];                 // [{at, seconds}] stretches that were not recorded (computer asleep, mic gone)
+let _liveOffline = false;           // the last upload could not reach the server at all (no internet, Wi-Fi gone, VPN down)
+let _liveOfflineSince = 0, _liveOfflineAlerted = false;
+let _liveUploadAbort = null;        // aborts the upload in flight when the browser goes offline (it would hang until a TCP timeout)
 const _liveOrigTitle = document.title;
 const _liveStore = window.ndLiveStore ? ndLiveStore.shared : null;   // a local copy of every chunk until the server has it
 
@@ -1522,6 +1525,7 @@ function liveHealthState() {
     recordedSec: _liveRecordedSeconds + ((_liveRecording || _liveFinalizing) && _liveSegStartedAt && !_liveRecovering
       ? Math.max(0, Math.round((Date.now() - _liveSegStartedAt) / 1000)) : 0),
     queuedSec: secs(_liveQueue), chunksWaiting: _liveQueue.length, uploading: _liveQueueBusy,
+    offline: _liveOffline || navigator.onLine === false,
     failedChunks: _liveFailedChunks.length, failedSec: secs(_liveFailedChunks), speed: _liveSpeed,
   };
 }
@@ -1639,6 +1643,13 @@ function liveBeat() {
       liveStartSegment();
     }
   }
+  // A long outage: the recording is safe, but the only copy is in this browser - say so once, quietly, after 10 minutes.
+  if (_liveOffline && _liveOfflineSince && !_liveOfflineAlerted && now - _liveOfflineSince > 600000) {
+    _liveOfflineAlerted = true;
+    const waitingSec = _liveQueue.reduce((sum, f) => sum + (f.ndSeconds || 0), 0);
+    liveRaiseAlert(`Still offline after ${ndLiveHealth.humanDuration((now - _liveOfflineSince) / 1000)} — ${ndLiveHealth.clock(waitingSec)} of audio is stored only in this browser ` +
+      'until the connection is back. Recording carries on; keep this browser open and do not clear its site data.', { beep: false });
+  }
   if (_liveRecording || _liveFinalizing || _liveQueue.length || _liveQueueBusy) liveRefreshStatus(true);
 }
 
@@ -1749,6 +1760,21 @@ function liveRetryFailedChunks() {
   liveProcessQueue().catch(e => console.error('live upload queue', e));
 }
 
+// Waits `ms`, or less: the moment the browser reports it is back online. Recording never depended on the network (the
+// microphone is captured locally); the uploads wait it out and carry on by themselves.
+function liveWaitOrOnline(ms) {
+  return new Promise(resolve => {
+    const done = () => { clearTimeout(timer); window.removeEventListener('online', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    window.addEventListener('online', done);
+  });
+}
+window.addEventListener('offline', () => {
+  if (_liveUploadAbort) _liveUploadAbort.abort();     // a request on a dead connection would hang for minutes: retry cleanly instead
+  liveRefreshStatus(true);
+});
+window.addEventListener('online', () => { liveRefreshStatus(true); });
+
 // BEGIN live-upload-policy
 // What an upload failure means for the chunk. "wait": the same audio can succeed shortly - the transcription
 // backend is down (503), a reverse proxy answers 502/504/52x while nd-world's container restarts (Watchtower swapping
@@ -1802,6 +1828,7 @@ async function liveProcessQueue() {
       let transcriptText = null;
       let inflightWaits = 0;
       let transientWaits = 0;
+      let offlineWaits = 0;
       const uploadStartedAt = Date.now();
       for (let attempt = 1; attempt <= 3 && !uploaded; ) {
         try {
@@ -1815,7 +1842,8 @@ async function liveProcessQueue() {
           fd.append('save_audio', saveChk && saveChk.checked ? '1' : '');
           fd.append('recording_id', file.ndRecordingId || '');
           fd.append('segment_index', String(typeof file.ndSegmentIndex === 'number' ? file.ndSegmentIndex : -1));
-          const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
+          _liveUploadAbort = new AbortController();
+          const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd, signal: _liveUploadAbort.signal });
           if (res.status === 409) {
             // The server's in-flight guard: this exact segment is already
             // being transcribed by an earlier upload of ours (or its proxy-
@@ -1836,6 +1864,18 @@ async function liveProcessQueue() {
         } catch (e) {
           _liveLastFailure = (e && e.message) ? e.message : String(e);
           const kind = liveUploadFailureKind(e);
+          // The browser could not reach the server at all (or aborted because it went offline): not a failure, not a deadline.
+          const offlineErr = (kind === 'wait' && !(e && e.httpStatus)) || (e && e.name === 'AbortError');
+          if (offlineErr) {
+            // The chunk is safe (in memory and in the local store), recording carries on, and the upload resumes by itself:
+            // at once when the browser says it is back online, otherwise every 5-30 s. It is never parked behind Retry.
+            _liveOffline = true;
+            if (!_liveOfflineSince) _liveOfflineSince = Date.now();
+            _liveSayUntil = 0;
+            liveRefreshStatus();
+            await liveWaitOrOnline(Math.min(30000, 5000 * 2 ** Math.min(offlineWaits++, 3)));
+            continue;  // attempt NOT incremented
+          }
           if (kind === 'wait' && transientWaits++ < MAX_TRANSIENT_WAITS) {
             const pause = Math.min(60000, 5000 * 2 ** Math.min(transientWaits - 1, 4));
             liveSay((e && e.httpStatus === 503)
@@ -1866,6 +1906,7 @@ async function liveProcessQueue() {
       if (uploaded) {
         _liveDoneSeconds += file.ndSeconds || 0;
         _liveSayUntil = 0;   // a success makes any "retrying…" message obsolete
+        _liveOffline = false; _liveOfflineSince = 0; _liveOfflineAlerted = false;   // the connection works again
         _liveSpeed = ndLiveHealth.updateSpeed(_liveSpeed, file.ndSeconds, (Date.now() - uploadStartedAt) / 1000);
         if (_liveStore && file.ndStoreKey) _liveStore.remove(file.ndStoreKey);   // the server has it: the local copy can go
         try { liveSetTranscriptDisplay(transcriptText); } catch (e) { /* display-only — the chunk itself is already saved */ }

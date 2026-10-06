@@ -199,7 +199,9 @@ tools that require GM access still check `is_gm` at call time.)
   the panel in `templates/sessions/detail.html`): the status line comes from `ndLiveHealth.summarize` (recorded vs transcribed,
   backlog, ETA; "✔ … saved" only once the last chunk has been cut AND transcribed), every chunk is copied to IndexedDB
   (`ndLiveStore`) until the server has it and offered back after a reload, and a lost microphone / sleeping computer / muted
-  mic raises a loud alert (`liveRaiseAlert`) instead of a grey status line. New live-recording behaviour goes through those
+  mic raises a loud alert (`liveRaiseAlert`) instead of a grey status line. No connection is neither a failure nor a
+  deadline: an unreachable server is waited out for as long as it takes (`liveWaitOrOnline`, woken by the browser's `online`
+  event) and never parks a chunk behind Retry. New live-recording behaviour goes through those
   pieces; the decisions are pure and tested under Node (`tests/test_live_health.py`). Never print a "saved" message from a
   timer or a click handler. `docs/LIVE_RECORDING_AUDIT.md` Wave 6 has the story.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a

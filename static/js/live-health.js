@@ -48,9 +48,10 @@
     return speed > 0 ? queuedSec / speed : null;
   }
 
-  // state: {recording, finalizing, recordedSec, doneSec, queuedSec, chunksWaiting, uploading, failedChunks, failedSec, speed}
+  // state: {recording, finalizing, recordedSec, doneSec, queuedSec, chunksWaiting, uploading, failedChunks, failedSec, speed, offline}
   //   recordedSec - audio captured so far; doneSec - audio the server has transcribed; queuedSec - audio cut and waiting
   //   finalizing  - Stop was pressed and the last chunk has not been cut and queued yet
+  //   offline     - the server cannot be reached: recording carries on, chunks wait in the browser and send themselves
   function summarize(state) {
     state = state || {};
     var rec = num(state.recordedSec), behind = num(state.queuedSec), waiting = Math.max(0, Math.floor(num(state.chunksWaiting)));
@@ -66,7 +67,12 @@
     }
     if (state.recording) {
       out.text = 'Recording… ' + clock(rec);
-      if (behind > 0 || waiting > 0) {
+      if (state.offline) {
+        out.level = 'warn';
+        out.text += waiting > 0 || behind > 0
+          ? ' · 📴 offline — ' + plural(waiting, 'chunk') + ' (' + clock(behind) + ') waiting in this browser, they upload by themselves when the connection is back'
+          : ' · 📴 offline — recording continues, chunks are kept in this browser and upload by themselves when the connection is back';
+      } else if (behind > 0 || waiting > 0) {
         out.text += ' · transcript is ' + clock(behind) + ' behind (' + plural(waiting, 'chunk') + ' waiting)';
         out.level = behind > 300 ? 'warn' : 'busy';
       } else {
@@ -77,6 +83,12 @@
     if (state.finalizing) {
       out.level = 'warn';
       out.text = 'Stopped — finishing the last chunk (' + clock(rec) + ' recorded)… keep this page open.';
+      return out;
+    }
+    if (state.offline && (waiting > 0 || behind > 0)) {
+      out.level = 'warn';
+      out.text = 'Stopped — 📴 offline: ' + plural(waiting, 'chunk') + ' (' + clock(behind) + ' of audio) are safe in this browser but NOT on the server yet. ' +
+        'They upload by themselves when the connection is back — keep this page open, or reopen this session later and it will offer to send them.';
       return out;
     }
     if (waiting > 0 || behind > 0 || state.uploading) {

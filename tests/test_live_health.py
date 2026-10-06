@@ -114,6 +114,37 @@ def test_stopped_and_fully_transcribed_is_the_only_time_it_says_saved():
     assert "saved" in s["text"].lower() and "1:02:05" in s["text"] and s["level"] == "ok"
 
 
+# ── offline: recording carries on, nothing is lost, and the status says where the audio is ────────────────
+
+@needs_node
+def test_recording_offline_says_where_the_chunks_are_and_that_they_send_themselves():
+    s = _summary(recording=True, recordedSec=300, doneSec=240, queuedSec=60, chunksWaiting=1, uploading=True, offline=True)
+    assert "offline" in s["text"].lower() and "1 chunk" in s["text"] and "1:00" in s["text"]
+    assert "in this browser" in s["text"] and "by themselves" in s["text"] and s["level"] == "warn"
+    assert "saved up to" not in s["text"]      # the transcript is NOT current: it must not say so
+
+
+@needs_node
+def test_recording_offline_with_nothing_queued_yet_still_says_so():
+    s = _summary(recording=True, recordedSec=30, doneSec=0, offline=True)
+    assert "offline" in s["text"].lower() and "recording continues" in s["text"] and s["level"] == "warn"
+
+
+@needs_node
+def test_stopped_offline_is_not_saved_and_says_how_to_get_it_saved():
+    s = _summary(recordedSec=900, doneSec=300, queuedSec=600, chunksWaiting=10, uploading=True, offline=True)
+    text = s["text"].lower()
+    assert "not on the server yet" in text and "10 chunks" in text and "10:00" in s["text"]
+    assert "reopen" in text and "keep this page open" in text and s["level"] == "warn"
+    assert "transcribed and saved" not in text
+
+
+@needs_node
+def test_offline_but_everything_was_already_saved_just_says_saved():
+    s = _summary(recordedSec=900, doneSec=900, offline=True)
+    assert "saved" in s["text"].lower() and "offline" not in s["text"].lower() and s["level"] == "ok"
+
+
 @needs_node
 def test_failed_chunks_are_never_called_saved():
     s = _summary(recordedSec=900, doneSec=600, failedChunks=2, failedSec=300)
