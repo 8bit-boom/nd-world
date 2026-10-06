@@ -85,6 +85,22 @@ def test_rules_download_player_allowed_once_gm_enables_it(client, seed):
     assert "# Opt-In Rules" in r.text
 
 
+def test_export_hub_offers_the_rules_on_their_own_as_well_as_with_notes(client, seed):
+    """The Export page had only 'Rules and Notes'; a GM who wants just the rules (no entity notes, nothing hidden from
+    players riding along) gets a card for the existing /rules/download.md."""
+    _set_world(seed.world_a.id, rules_md="# Custom Rules\n\nHouse rules here.")
+    eid = _add_entity(seed.world_a.id, name="Vex the Informant", kind="character", visible_to_players=True)
+    _add_note(eid, "Secretly a corp plant.", visible_to_players=False)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    hub = client.get("/export").text
+    assert 'href="/rules/download.md"' in hub and "Download Rules" in hub
+    assert 'href="/export/rules-and-notes.md"' in hub          # the existing card stays
+    r = client.get("/rules/download.md")
+    assert r.status_code == 200 and "# Custom Rules" in r.text
+    assert "Secretly a corp plant." not in r.text and "## Notes" not in r.text and "Vex the Informant" not in r.text
+
+
 # ── Single entity download ──────────────────────────────────────────────────
 
 def test_entity_download_gm_gets_body_and_hidden_notes(client, seed):
