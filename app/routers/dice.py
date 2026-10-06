@@ -39,10 +39,10 @@ _TERM_RE = re.compile(r"([+-]?)\s*(?:(\d{0,3})d(\d{1,4})|(\d{1,6}))", re.IGNOREC
 HISTORY_LIMIT = 50
 
 
-def parse_and_roll(notation: str) -> tuple:
-    """Roll a notation string. Returns (breakdown, total) where breakdown is
-    a JSON-serializable list of per-term results. Raises ValueError with a
-    user-presentable message on anything the grammar doesn't accept."""
+def _evaluate(notation: str, draw) -> tuple:
+    """Walk a notation string and let ``draw(n, sides)`` supply each dice term's faces (random for a server roll, the
+    values a physics throw showed for a recorded one). Returns (breakdown, total) where breakdown is a JSON-serializable
+    list of per-term results. Raises ValueError with a user-presentable message on anything the grammar doesn't accept."""
     text = (notation or "").strip()
     if not text:
         raise ValueError("Enter a dice notation like 2d6+3")
@@ -73,7 +73,7 @@ def parse_and_roll(notation: str) -> tuple:
                 raise ValueError("Dice need at least 2 sides")
             if sides > MAX_SIDES:
                 raise ValueError(f"Dice can have at most {MAX_SIDES} sides")
-            rolls = [random.randint(1, sides) for _ in range(n)]
+            rolls = draw(n, sides)
             term_total = sum(rolls) * (-1 if negative else 1)
             breakdown.append({
                 "term": ("-" if negative else "+") + f"{n}d{sides}",
@@ -82,6 +82,37 @@ def parse_and_roll(notation: str) -> tuple:
             })
         total += term_total
     return breakdown, total
+
+
+def parse_and_roll(notation: str) -> tuple:
+    """Roll a notation string with the server's random numbers. Returns (breakdown, total)."""
+    return _evaluate(notation, lambda n, sides: [random.randint(1, sides) for _ in range(n)])
+
+
+def parse_recorded(notation: str, values) -> tuple:
+    """Like parse_and_roll, but the dice were thrown elsewhere - the physics tray in the browser - and ``values`` is what
+    they showed, in notation order (a d100 is one value, 1-100). Checked against the notation so a client cannot log a
+    d6 showing 9 or the wrong number of dice; the result has exactly the shape of a server roll."""
+    if not isinstance(values, list):
+        raise ValueError("Send the values the dice showed as a list")
+    if len(values) > MAX_TERMS * MAX_DICE_PER_TERM:
+        raise ValueError("Too many dice")
+    used = [0]
+
+    def draw(n: int, sides: int) -> list:
+        chunk = values[used[0]:used[0] + n]
+        if len(chunk) != n:
+            raise ValueError("The thrown dice do not match the notation")
+        for v in chunk:
+            if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= sides:
+                raise ValueError(f"A d{sides} cannot show {v!r}")
+        used[0] += n
+        return list(chunk)
+
+    result = _evaluate(notation, draw)
+    if used[0] != len(values):
+        raise ValueError("The thrown dice do not match the notation")
+    return result
 
 
 def _roll_response(roll: DiceRoll) -> dict:
@@ -95,8 +126,9 @@ def _roll_response(roll: DiceRoll) -> dict:
     }
 
 
-def _store_roll(db: Session, request: Request, world, notation: str) -> DiceRoll:
-    breakdown, total = parse_and_roll(notation)
+def _store_roll(db: Session, request: Request, world, notation: str, values=None) -> DiceRoll:
+    """Roll ``notation`` and store it; with ``values`` (a physics throw's faces) store those instead of random ones."""
+    breakdown, total = parse_and_roll(notation) if values is None else parse_recorded(notation, values)
     user = getattr(request.state, "user", None)
     roll = DiceRoll(
         world_id=world.id,
@@ -164,6 +196,26 @@ async def api_dice_roll(body: RollBody, request: Request, db: Session = Depends(
         raise HTTPException(403)
     try:
         roll = _store_roll(db, request, world, body.notation)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _roll_response(roll)
+
+
+class RecordBody(BaseModel):
+    notation: str
+    values: list
+
+
+@router.post("/api/dice/record")
+async def api_dice_record(body: RecordBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Log a roll thrown on the 3D tray: the browser reports the faces the dice showed, checked against the notation."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    if not world_can_view_section(request, world, "dice"):
+        raise HTTPException(403)
+    try:
+        roll = _store_roll(db, request, world, body.notation, values=body.values)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _roll_response(roll)

@@ -147,6 +147,7 @@ CASES = [
     ("GET", "/dice", True),
     ("POST", "/dice", True),
     ("POST", "/api/dice/roll", True),
+    ("POST", "/api/dice/record", True),
     ("GET", "/api/dice/history", True),
     ("GET", "/races", True),
     ("GET", "/professions", True),

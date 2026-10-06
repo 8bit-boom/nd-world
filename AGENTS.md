@@ -204,6 +204,14 @@ tools that require GM access still check `is_gm` at call time.)
   event) and never parks a chunk behind Retry. New live-recording behaviour goes through those
   pieces; the decisions are pure and tested under Node (`tests/test_live_health.py`). Never print a "saved" message from a
   timer or a click handler. `docs/LIVE_RECORDING_AUDIT.md` Wave 6 has the story.
+- **The dice tray is real physics, and the numbers come from the dice** (`static/js/dice-geometry.js` - pure, tested under Node in
+  `tests/test_dice_geometry.py`; `static/js/dice-tray.js` - three.js + cannon-es; `/dice`): press on the table, drag, let go.
+  Each settled die is read with `readValue` (the face that points up; a d4 reads its top corner; a leaning die is nudged until it
+  lies flat) - the result is never chosen or adjusted in code. It is logged through `POST /api/dice/record`, whose values
+  `parse_recorded` checks against the notation (the same grammar and breakdown shape as a server roll); like dice at a real table
+  it trusts the thrower. The libraries are vendored under `static/vendor/` with their MIT notices and imported by their versioned
+  file names - never a CDN (the table may have no internet; `tests/test_dice_tray_page.py` fails on one). A d100 is two d10s
+  (tens + units). A new die shape goes in `shape()` with the convexity / opposite-faces / fairness tests it must pass.
 - **Inline scripts must parse**: one syntax error (a `\\'` inside a quoted JS string, a stray `});`, a quote closed by a
   backtick) kills the WHOLE `<script>` block — every function in it is undefined and the buttons just do nothing, with no
   Python-side symptom. `tests/test_template_scripts.py` renders pages and runs every inline script through node's parser;

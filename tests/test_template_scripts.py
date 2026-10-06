@@ -83,14 +83,14 @@ def test_rendered_pages_have_parseable_inline_scripts(client, seed):
                        member_entity_ids_json=json.dumps([npc])))
     _add(Quest(world_id=seed.world_a.id, title="Errand", assigned_party_id=party))
     # the quest page's AI-sync panel (and its script) only exists once a session does
-    _add(GameSession(world_id=seed.world_a.id, title="Session one"))
+    session = _add(GameSession(world_id=seed.world_a.id, title="Session one"))
 
     pages = {
         "gm": ["/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
                f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/calendar/year", "/calendar/config", "/worlds", "/schedule", "/media-rename", "/combat",
                "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings", "/npc-talk",
-               "/new", f"/entity/{npc}/edit", "/races", "/professions"],
-        "player": [f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk"],
+               "/new", f"/entity/{npc}/edit", "/races", "/professions", "/dice", f"/sessions/{session}"],
+        "player": [f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk", "/dice"],
     }
     scripts, checked = [], []
     for who, paths in pages.items():

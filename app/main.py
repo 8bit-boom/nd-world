@@ -524,7 +524,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         # gate (this allowlist only decides "reachable at all"), same
         # shape as every other player-writable POST route above.
         return True
-    if path in ("/dice", "/api/dice/roll", "/api/dice/history"):
+    if path in ("/dice", "/api/dice/roll", "/api/dice/record", "/api/dice/history"):
         # The shared dice roller: every member of the active world may roll
         # and read the roll log by default — world membership plus
         # deps.world_can_view_section(..., "dice") (off by default = "read",

@@ -18,6 +18,21 @@
   </div>
   {% else %}
 
+  <div id="dice-tray-box" style="display:none;margin-bottom:.8rem">
+    <div id="dice-tray" style="width:100%;aspect-ratio:18/11;max-height:380px;min-height:210px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
+    <div style="display:flex;gap:.35rem;flex-wrap:wrap;align-items:center;margin-top:.5rem">
+      <span style="font-size:.75rem;color:var(--text-dim)">Add a die:</span>
+      {% for s in [4, 6, 8, 10, 12, 20, 100] %}
+      <button type="button" class="dice-add" data-sides="{{ s }}" title="Add a d{{ s }} to the roll"
+              style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .55rem;font-size:.78rem;font-family:monospace;border-radius:3px;cursor:pointer">d{{ s }}</button>
+      {% endfor %}
+      <button type="button" id="dice-throw-btn" class="btn-primary" title="Throw the dice in the box above from the side of the table">🖐 Throw</button>
+      <button type="button" id="dice-sweep-btn" style="background:none;border:1px solid var(--border);color:var(--text-dim);padding:.25rem .55rem;font-size:.78rem;border-radius:3px;cursor:pointer" title="Clear the table">Clear table</button>
+      <label style="display:flex;align-items:center;gap:.25rem;font-size:.75rem;color:var(--text-dim);cursor:pointer;margin-left:auto" title="Dice clatter"><input type="checkbox" id="dice-sound" checked style="width:auto"/> 🔊</label>
+    </div>
+    <div id="dice-tray-result" aria-live="polite" style="min-height:1.4rem;margin-top:.4rem;font-size:.9rem;color:var(--text)"></div>
+  </div>
+
   <form id="dice-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:.6rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
     <div class="form-group" style="flex:1;min-width:220px;margin:0">
       <label>Roll</label>
@@ -54,6 +69,8 @@
     </div>
   </div>
 
+  <script src="/static/js/dice-geometry.js?v={{ asset_v('js/dice-geometry.js') }}"></script>
+  <script type="module" src="/static/js/dice-tray.js?v={{ asset_v('js/dice-tray.js') }}"></script>
   <script>
   (function(){
     // Rolling is fetch-based (no page navigation): a roll from ANY window —
@@ -129,6 +146,88 @@
     // Live refresh so a roll made on another device (or in a floated tray)
     // shows up without reloading — same poll-the-small-JSON-endpoint pattern
     // as the spotlight and schematic player views.
+
+    // ── The 3D tray: real dice on a table, thrown with the mouse ────────────────────────────────────
+    // static/js/dice-tray.js (three.js + cannon-es, vendored - no network needed) simulates the throw and
+    // static/js/dice-geometry.js reads the number each settled die shows. Whatever the dice land on is what counts; it
+    // is then logged through /api/dice/record so the whole table sees it in the roll log. The box stays hidden until
+    // the tray has actually started: without WebGL (or in an old browser) this page is the instant roller it always was.
+    var G = window.ndDiceGeometry, trayBox = document.getElementById('dice-tray-box');
+    var notationInput = document.querySelector('#dice-form input[name="notation"]');
+    var resultEl = document.getElementById('dice-tray-result');
+    var thrownText = '';
+
+    function formatTerms(terms) {
+      return terms.map(function (t, i) {
+        var sign = t.sign < 0 ? '-' : (i ? '+' : '');
+        return sign + (t.flat !== undefined ? t.flat : t.count + 'd' + t.sides);
+      }).join('');
+    }
+    function addDie(sides) {
+      var p = G.parseNotation(notationInput.value);
+      if (p.error) { notationInput.value = '1d' + sides; return; }
+      var hit = p.terms.filter(function (t) { return t.flat === undefined && t.sides === sides && t.sign > 0; })[0];
+      if (hit) hit.count = Math.min(50, hit.count + 1);
+      else p.terms.push({ sign: 1, count: 1, sides: sides });
+      notationInput.value = formatTerms(p.terms);
+    }
+    // what a throw uses: the notation in the box, or a d20 when it is empty
+    function currentPlan() {
+      var text = (notationInput.value || '').trim();
+      if (!text) { text = 'd20'; notationInput.value = text; }
+      thrownText = text;
+      return G.plan(text);
+    }
+    function showResult(res, note) {
+      resultEl.textContent = '';
+      var parts = res.breakdown.map(function (t) { return t.term.replace(/^\+/, '') + (t.rolls ? ' [' + t.rolls.join(', ') + ']' : ''); });
+      resultEl.append(parts.join('  ') + ' = ');
+      var total = document.createElement('strong');
+      total.style.cssText = 'color:var(--neon);font-size:1.15rem';
+      total.textContent = res.total;
+      resultEl.append(total);
+      if (note) { var n = document.createElement('span'); n.style.cssText = 'color:var(--text-dim);font-size:.78rem;margin-left:.6rem'; n.textContent = '(' + note + ')'; resultEl.append(n); }
+    }
+
+    function bootTray() {
+      if (!trayBox || !window.ndDiceTray || !G || trayBox.dataset.booted) return;
+      var tray = window.ndDiceTray.create(document.getElementById('dice-tray'), {
+        getPlan: currentPlan,
+        onGrab: function () { showError(''); resultEl.textContent = ''; },
+        onError: function (msg) { showError(msg); },
+        onSettled: function (r) {
+          var res = r.result;
+          showResult(res, 'saving…');
+          fetch('/api/dice/record', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notation: thrownText, values: res.values }),
+          }).then(function (resp) { return resp.json().then(function (d) { return { ok: resp.ok, d: d }; }); }).then(function (out) {
+            if (!out.ok) { showResult(res, (out.d && out.d.detail) || 'not saved to the shared log'); return; }
+            showResult(res, 'logged');
+            refresh();
+          }).catch(function () { showResult(res, 'not saved to the shared log - no connection'); });
+        },
+      });
+      if (!tray) return;
+      trayBox.dataset.booted = '1';
+      trayBox.style.display = '';
+      var sound = document.getElementById('dice-sound');
+      try { sound.checked = localStorage.getItem('ndDiceSound') !== '0'; } catch (e) { /* storage blocked: keep the default */ }
+      tray.setSound(sound.checked);
+      sound.addEventListener('change', function () {
+        tray.setSound(sound.checked);
+        try { localStorage.setItem('ndDiceSound', sound.checked ? '1' : '0'); } catch (e) { /* optional */ }
+      });
+      document.getElementById('dice-throw-btn').addEventListener('click', function () { showError(''); tray.throwNow(); });
+      document.getElementById('dice-sweep-btn').addEventListener('click', function () { tray.clear(); resultEl.textContent = ''; showError(''); });
+      document.querySelectorAll('.dice-add').forEach(function (btn) {
+        btn.addEventListener('click', function () { addDie(parseInt(btn.dataset.sides, 10)); });
+      });
+      window.ndDiceTrayInstance = tray;
+    }
+    if (window.ndDiceTray) bootTray(); else window.addEventListener('nd-dice-tray-ready', bootTray);
+
     ndPoll(refresh, 5000);
   })();
   </script>
