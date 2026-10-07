@@ -2005,6 +2005,9 @@ class Schematic(Base):
     # (players are never told) lives in one place.
     walls_json = Column(Text, default="[]")
     fog_json = Column(Text, default="{}")
+    # The room-drawing tool's own state (app/map_rooms.py): which cells are floor, which room, which edges are doors. The
+    # floors and walls on the map are generated from it, so it only exists to make the drawing editable again.
+    rooms_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -229,6 +229,20 @@
     var sh = $('walls-show'); if (sh) sh.onchange = render;
   }
 
+  // The room tool owns the walls whose id starts with `prefix`: they are replaced wholesale, every other wall (drawn by hand) is
+  // untouched, and a door keeps the open/closed state it had.
+  function replaceByPrefix(prefix, fresh) {
+    var keep = walls.filter(function (w) { return String(w.id).indexOf(prefix) !== 0; });
+    walls = keep.concat(fresh);
+    if (selected && !walls.some(function (w) { return w.id === selected; })) selected = null;
+    save(); render(); list();
+  }
+  function stateMap() {
+    var m = {};
+    walls.forEach(function (w) { if (w.state) m[w.id] = w.state; });
+    return m;
+  }
+
   function init(opts) {
     o = opts;
     layer = el('g', { id: 'walls-layer', 'pointer-events': 'none' });
@@ -238,5 +252,5 @@
     }).catch(function () { bindFog(); msg('Could not load the walls.'); });
   }
 
-  root.ndWalls = { cut: cutWalls, init: init, pointerDown: pointerDown, pointerMove: pointerMove, finish: finish, cancel: cancel, deleteSelected: deleteSelected, render: render };
+  root.ndWalls = { cut: cutWalls, replaceByPrefix: replaceByPrefix, stateMap: stateMap, init: init, pointerDown: pointerDown, pointerMove: pointerMove, finish: finish, cancel: cancel, deleteSelected: deleteSelected, render: render };
 })(window);

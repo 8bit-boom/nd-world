@@ -849,7 +849,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if method == "GET" and re.match(r"^/maps/schematic/[^/]+$", path):
         # The GM schematic editor canvas itself — editing is its purpose.
         return True
-    if method == "GET" and re.match(r"^/maps/schematic/[^/]+/walls\.json$", path):
+    if method == "GET" and re.match(r"^/maps/schematic/[^/]+/(walls|rooms)\.json$", path):
         # The editor's wall/fog data (handler checks the Maps edit level).
         return True
     if method == "POST" and path.startswith("/maps/schematic/"):
