@@ -35,6 +35,7 @@ from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import map_layout as _map_layout
 from . import map_walls as _map_walls_mod
+from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
@@ -3248,6 +3249,47 @@ async def schematic_new(
                   canvas_bg=canvas_bg, elements_json="[]")
     db.add(s); db.commit(); db.refresh(s)
     return RedirectResponse(f"/maps/schematic/{s.slug}", status_code=303)
+
+@app.post("/maps/schematic/import-uvtt")
+async def schematic_import_uvtt(
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(""),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    """Make a new schematic from a Universal VTT file (.dd2vtt / .uvtt / .df2vtt): the map picture becomes the background, the
+    grid is set to the file's squares, walls, object outlines and doors become wall data (fog of war works at once). Lights are
+    not imported yet. Returns {"slug", "url", "warnings", "stats"}."""
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No world selected")
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
+    raw = await file.read(_uvtt_import.MAX_FILE_BYTES + 1)
+    try:
+        parsed = await asyncio.to_thread(_uvtt_import.parse_uvtt, raw)
+        webp = await asyncio.to_thread(_uvtt_import.encode_image, parsed["image"])
+    except _uvtt_import.UvttError as e:
+        raise HTTPException(400, str(e))
+    title = " ".join((name or Path(file.filename or "").stem.replace("_", " ").replace("-", " ")).split())[:120] or "Imported map"
+    slug = _slug_from_name(title) or "imported-map"
+    base, i = slug, 2
+    while db.query(Schematic).filter(Schematic.slug == slug).first():
+        slug = f"{base}-{i}"; i += 1
+    sch_dir = UPLOADS_DIR / "schematics"
+    sch_dir.mkdir(parents=True, exist_ok=True)
+    (sch_dir / f"{slug}.webp").write_bytes(webp)
+    walls, wwarn = _map_walls_mod.clean_walls(parsed["walls"], parsed["width"], parsed["height"])
+    s = Schematic(world_id=world.id, name=title, slug=slug, is_html=False, canvas_width=parsed["width"], canvas_height=parsed["height"],
+                  canvas_bg="dark", elements_json="[]", image_url=f"/uploads/schematics/{slug}.webp",
+                  grid_type="square", grid_config_json=json.dumps({"cell_size": parsed["cell"], "offset_x": 0, "offset_y": 0,
+                                                                     "unit_per_cell": 5, "unit_label": "ft"}),
+                  walls_json=json.dumps(walls), fog_json=json.dumps(_map_walls_mod.clean_fog({})))
+    db.add(s); db.commit()
+    _live_module.touch(world.id)
+    return {"slug": slug, "url": f"/maps/schematic/{slug}", "warnings": parsed["warnings"] + wwarn, "stats": {**parsed["stats"], "wall_lines": len(walls)}}
+
 
 @app.get("/maps/schematic/{slug}", response_class=HTMLResponse)
 def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):

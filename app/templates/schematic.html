@@ -111,6 +111,8 @@
     <div style="flex:1"></div>
     <button class="tb" onclick="exportSVG()" title="Download SVG">↓ SVG</button>
     <button class="tb" onclick="exportPNG()" title="Download PNG">↓ PNG</button>
+    <button class="tb" onclick="vttExport('uvtt')" title="Download as a Universal VTT file (.dd2vtt) - picture, walls and doors - for Foundry, Roll20, Owlbear, Arkenforge and more">↓ VTT</button>
+    <button class="tb" onclick="vttExport('foundry')" title="Download a Foundry VTT scene (JSON) and its picture">↓ Foundry</button>
     <button class="tb" style="color:var(--neon2)" onclick="clearAll()">🗑 Clear</button>
   </div>
 
@@ -2345,6 +2347,7 @@ document.addEventListener('click', hideCtx);
 function cleanCloneForExport() {
   const c = svg.cloneNode(true);
   c.querySelector('#hit').remove();
+  const wl = c.querySelector('#walls-layer'); if (wl) wl.remove();       // the GM's wall overlay is not part of the picture
   c.querySelector('#sel-layer').innerHTML='';
   c.querySelector('#prev-layer').innerHTML='';
   c.querySelector('#guide-layer').innerHTML='';
@@ -2369,6 +2372,24 @@ function exportPNG() {
     a.href = cv.toDataURL('image/png'); a.download=(SLUG||'schematic')+'.png'; a.click();
   };
   img.src = url;
+}
+
+// ── Export for other VTTs (static/js/map-export.js) ─────────────────────────────
+async function vttExport(kind) {
+  const answer = prompt('Pixels per square for the exported picture (20-280). 70 suits a laptop or TV; more makes a bigger file:', '70');
+  if (answer === null) return;
+  const ppg = parseInt(answer, 10);
+  if (!(ppg >= 20 && ppg <= 280)) { alert('Enter a number between 20 and 280.'); return; }
+  try {
+    const wd = await (await fetch(`/maps/schematic/${SLUG}/walls.json`)).json();
+    const ctx = { slug: SLUG, name: {{ schematic.name | tojson }}, elements, walls: wd.walls || [], canvasW: CW, canvasH: CH,
+      bg: {{ canvas_bg_color | tojson }}, imageUrl: {{ (schematic.image_url or '') | tojson }},
+      cell: (gridType === 'square' && gridConfig.cell_size) ? gridConfig.cell_size : 50, hasGrid: gridType === 'square' && !!gridConfig.cell_size,
+      offsetX: gridConfig.offset_x || 0, offsetY: gridConfig.offset_y || 0, ppg,
+      gridDistance: gridConfig.unit_per_cell || 5, gridUnits: gridConfig.unit_label || 'ft' };
+    const warnings = await (kind === 'foundry' ? ndMapExport.exportFoundry(ctx) : ndMapExport.exportUvtt(ctx));
+    alert('Exported.' + (warnings.length ? '\n\n' + warnings.map(w => '• ' + w).join('\n') : ''));
+  } catch (e) { alert('Export failed: ' + e.message); }
 }
 
 // ── Clear ────────────────────────────────────────────────────────────────────
@@ -2536,6 +2557,7 @@ window.addEventListener('beforeunload', e => {
   if (dirty) { e.preventDefault(); e.returnValue = ''; }
 });
 </script>
+<script src="/static/js/map-export.js?v={{ asset_v('js/map-export.js') }}"></script>
 <script src="/static/js/schematic-walls.js?v={{ asset_v('js/schematic-walls.js') }}"></script>
 <script>
 // Walls, doors and the fog-of-war settings (static/js/schematic-walls.js)

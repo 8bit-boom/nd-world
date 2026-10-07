@@ -69,9 +69,34 @@
 <div class="list-header" style="margin-top:2.5rem">
   <h2>📐 SCHEMATICS</h2>
   {% if _can_edit %}
-  <a href="{{ '/maps/schematic/new'|wq }}" class="btn-new">+ New Schematic</a>
+  <span>
+    <button type="button" class="btn-new" id="uvtt-btn" style="cursor:pointer" title="Make a schematic from a Dungeondraft, Dungeon Alchemist or other Universal VTT file: the picture, the grid, the walls and doors come with it">⬆ Import Universal VTT</button>
+    <input type="file" id="uvtt-file" accept=".dd2vtt,.uvtt,.df2vtt,.json" style="display:none"/>
+    <a href="{{ '/maps/schematic/new'|wq }}" class="btn-new">+ New Schematic</a>
+  </span>
   {% endif %}
 </div>
+{% if _can_edit %}
+<div id="uvtt-msg" role="status" style="font-size:.8rem;color:var(--text-dim);white-space:pre-line;margin:.3rem 0"></div>
+<script>
+(function () {
+  const btn = document.getElementById('uvtt-btn'), input = document.getElementById('uvtt-file'), msg = document.getElementById('uvtt-msg');
+  btn.onclick = () => input.click();
+  input.onchange = async () => {
+    const f = input.files[0]; input.value = ''; if (!f) return;
+    msg.textContent = 'Importing ' + f.name + '…';
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      const r = await fetch('/maps/schematic/import-uvtt', { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = '⚠ ' + (d.detail || ('Import failed (' + r.status + ')')); return; }
+      msg.textContent = '✓ Imported: ' + d.stats.wall_lines + ' wall lines, ' + d.stats.doors + ' doors.' + (d.warnings.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
+      setTimeout(() => { location.href = d.url; }, d.warnings.length ? 3500 : 700);
+    } catch (e) { msg.textContent = '⚠ Import failed — network error'; }
+  };
+})();
+</script>
+{% endif %}
 
 <div class="maps-grid">
   {% for s in schematics %}

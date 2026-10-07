@@ -87,7 +87,7 @@ def test_rendered_pages_have_parseable_inline_scripts(client, seed):
 
     _add(Schematic(world_id=seed.world_a.id, name="Tavern", slug="tv-check", is_html=False, elements_json="[]"))
     pages = {
-        "gm": ["/maps/schematic/tv-check", "/maps/schematic/tv-check/view", "/display/map/tv-check", "/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
+        "gm": ["/maps", "/maps/schematic/tv-check", "/maps/schematic/tv-check/view", "/display/map/tv-check", "/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
                f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/calendar/year", "/calendar/config", "/worlds", "/schedule", "/media-rename", "/combat",
                "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings", "/npc-talk",
                "/new", f"/entity/{npc}/edit", "/races", "/professions", "/dice", f"/sessions/{session}"],
