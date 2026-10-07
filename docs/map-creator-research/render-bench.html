@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Map renderer bench — Canvas 2D vs Konva vs PixiJS</title>
+<!--
+  Run this on REAL hardware (a laptop with a GPU, and a mid-range phone) before choosing the renderer for a map creator.
+  docs/MAP_CREATOR_RESEARCH.md explains why: the research sandbox had no GPU, so WebGL numbers taken there say nothing.
+
+  Setup (two files next to this one, from the npm packages; both MIT):
+    npm pack pixi.js konva            # then untar both
+    cp package/dist/pixi.min.js  ./pixi.min.js        # from pixi.js-*.tgz
+    cp package/konva.min.js      ./konva.min.js       # from konva-*.tgz
+    python3 -m http.server 8000       # open http://localhost:8000/render-bench.html?n=12000
+
+  It draws N rectangles (a stand-in for walls, furniture and scatter on a 4000x3000 map) and, for a few seconds each, pans
+  and zooms the view, reporting frames per second. Same scene in every renderer. Nothing here is the editor: it only tells
+  you which renderer has headroom for a map with thousands of objects.
+-->
+<style>body{margin:0;background:#111;color:#ddd;font:14px system-ui}pre{padding:1rem;margin:0}#stage{width:1000px;height:600px}</style>
+<pre id="out">Running… (about 10 seconds per renderer)</pre>
+<div id="stage"></div>
+<script src="pixi.min.js"></script>
+<script src="konva.min.js"></script>
+<script>
+const N = +(new URLSearchParams(location.search).get('n') || 12000), W = 4000, H = 3000, VW = 1000, VH = 600;
+let seed = 7; const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+const items = Array.from({ length: N }, (_, i) => ({ x: rnd() * W, y: rnd() * H, w: 20 + rnd() * 60, h: 10 + rnd() * 20, c: ['#334455', '#3a6a3a', '#555555', '#5a4a3a'][i % 4] }));
+const view = n => { const z = 0.5 + 0.5 * Math.abs(Math.sin(n / 40)); return { z, x: -(n * 3 % 1500) * z, y: -300 * z }; };
+function frames(step, ms) {
+  return new Promise(res => {
+    let n = 0; const t0 = performance.now();
+    (function f() { step(n++); if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(+(n / ((performance.now() - t0) / 1000)).toFixed(1)); })();
+  });
+}
+const stage = document.getElementById('stage');
+async function canvas2d(cull) {
+  const cv = document.createElement('canvas'); cv.width = VW; cv.height = VH; stage.replaceChildren(cv); const g = cv.getContext('2d');
+  return frames(n => {
+    const v = view(n); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, VW, VH); g.setTransform(v.z, 0, 0, v.z, v.x, v.y);
+    const x0 = -v.x / v.z, y0 = -v.y / v.z, x1 = x0 + VW / v.z, y1 = y0 + VH / v.z;
+    for (const it of items) {
+      if (cull && (it.x > x1 || it.y > y1 || it.x + it.w < x0 || it.y + it.h < y0)) continue;
+      g.fillStyle = it.c; g.fillRect(it.x, it.y, it.w, it.h); g.strokeStyle = '#0ff'; g.lineWidth = 2; g.strokeRect(it.x, it.y, it.w, it.h);
+    }
+  }, 3000);
+}
+async function konva() {
+  const st = new Konva.Stage({ container: stage, width: VW, height: VH }); const layer = new Konva.Layer(); st.add(layer);
+  const t0 = performance.now();
+  for (const it of items) layer.add(new Konva.Rect({ x: it.x, y: it.y, width: it.w, height: it.h, fill: it.c, stroke: '#0ff', strokeWidth: 2, listening: false }));
+  const build = Math.round(performance.now() - t0);
+  const fps = await frames(n => { const v = view(n); layer.scale({ x: v.z, y: v.z }); layer.position({ x: v.x, y: v.y }); layer.draw(); }, 3000);
+  return { fps, buildMs: build };
+}
+async function pixi() {
+  const app = new PIXI.Application(); await app.init({ width: VW, height: VH, background: '#111111', antialias: true });
+  stage.replaceChildren(app.canvas); const world = new PIXI.Container(); app.stage.addChild(world);
+  const t0 = performance.now(); const gr = new PIXI.Graphics();
+  for (const it of items) gr.rect(it.x, it.y, it.w, it.h).fill(it.c).stroke({ width: 2, color: 0x00ffff });
+  world.addChild(gr); const build = Math.round(performance.now() - t0);
+  const fps = await frames(n => { const v = view(n); world.scale.set(v.z); world.position.set(v.x, v.y); app.renderer.render(app.stage); }, 3000);
+  return { fps, buildMs: build, renderer: app.renderer.name };
+}
+(async () => {
+  const r = { objects: N, userAgent: navigator.userAgent };
+  r.canvas2d_every_object = await canvas2d(false);
+  r.canvas2d_viewport_culled = await canvas2d(true);
+  if (window.Konva) r.konva = await konva();
+  if (window.PIXI) r.pixi = await pixi();
+  document.getElementById('out').textContent = JSON.stringify(r, null, 2) + '\n\n(frames per second; higher is better; 60 is the ceiling)';
+})();
+</script>
