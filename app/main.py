@@ -34,6 +34,7 @@ from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import map_layout as _map_layout
+from . import map_walls as _map_walls_mod
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
@@ -55,6 +56,7 @@ from .routers.character_ai import router as character_ai_router
 from .routers.template_ai import router as template_ai_router
 from .routers.session_audio import router as session_audio_router
 from .routers.map_props import delete_prop_file as _delete_prop_file, router as map_props_router
+from .routers.map_walls import router as map_walls_router
 from .routers.session_media import router as session_media_router
 from .routers.character_hub import router as character_hub_router
 from .routers.characters import _pc_to_foundry_journal
@@ -178,6 +180,7 @@ app.include_router(sessions_router)
 app.include_router(session_audio_router)
 app.include_router(session_media_router)
 app.include_router(map_props_router)
+app.include_router(map_walls_router)
 app.include_router(calendar_router)
 app.include_router(schedule_router)
 app.include_router(media_rename_router)
@@ -844,6 +847,9 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         return True
     if method == "GET" and re.match(r"^/maps/schematic/[^/]+$", path):
         # The GM schematic editor canvas itself — editing is its purpose.
+        return True
+    if method == "GET" and re.match(r"^/maps/schematic/[^/]+/walls\.json$", path):
+        # The editor's wall/fog data (handler checks the Maps edit level).
         return True
     if method == "POST" and path.startswith("/maps/schematic/"):
         return True
@@ -3477,6 +3483,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         "own_pc_currency_json": json.dumps(own_pc_currency),
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
+        "fog_json": json.dumps(_schematic_payload.fog_payload(s)),
     })
 
 
@@ -3499,6 +3506,7 @@ def schematic_player_view_json(slug: str, request: Request, db: Session = Depend
         "own_pc_currency": own_pc_currency,
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
+        **_schematic_payload.fog_payload(s),
     }
 
 
@@ -7580,7 +7588,7 @@ async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
     except ValueError as exc:
         _AI_BUILD_JOBS[job_id].update(status="error", error=f"The model's plan could not be used ({exc}) — try again or rephrase.")
         return
-    new_elements, more = _map_layout.layout(spec, cell, canvas_w, canvas_h, props=props, origin=origin)
+    new_elements, new_walls, more = _map_layout.layout_full(spec, cell, canvas_w, canvas_h, props=props, origin=origin)
     warnings = warnings + more
     for el in new_elements:                                   # a room that names a lore entity keeps the link
         name = el.pop("entity_name", None)
@@ -7602,6 +7610,13 @@ async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
             elements = []
         elements = new_elements if replace_flag else (elements if isinstance(elements, list) else []) + new_elements
         sch.elements_json = json.dumps(elements)
+        # the walls and doors of the plan, as data, so fog of war works on the result straight away (switch it on in Walls & fog)
+        try:
+            old_walls = [] if replace_flag else json.loads(sch.walls_json or "[]")
+        except ValueError:
+            old_walls = []
+        merged_walls, _wwarn = _map_walls_mod.clean_walls((old_walls if isinstance(old_walls, list) else []) + new_walls, canvas_w, canvas_h)
+        sch.walls_json = json.dumps(merged_walls)
         db.commit()
         _live_module.touch(sch.world_id)
         total = len(elements)

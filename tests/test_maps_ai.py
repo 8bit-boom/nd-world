@@ -284,8 +284,11 @@ def test_plan_mode_lays_out_a_plan_into_real_elements(client, seed, monkeypatch)
     assert any(e.get("hidden") for e in data["elements"] if e["type"] == "line")      # the secret door is GM-only
     db = SessionLocal()
     try:
-        stored = json.loads(db.query(Schematic).filter(Schematic.slug == "plan-den").first().elements_json)
+        row = db.query(Schematic).filter(Schematic.slug == "plan-den").first()
+        stored = json.loads(row.elements_json)
         assert len(stored) == data["total"] and stored[0]["id"] == "keep-me"
+        walls = json.loads(row.walls_json)                                           # the same walls and doors, as data for fog of war
+        assert {w["kind"] for w in walls} == {"wall", "door", "secret"} and all(len(w["pts"]) >= 2 for w in walls)
     finally:
         db.close()
 

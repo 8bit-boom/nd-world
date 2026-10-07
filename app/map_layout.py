@@ -495,6 +495,14 @@ def _seed_of(spec, seed):
 def layout(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, origin=(0, 0)):
     """(elements, warnings): the spec laid out as schematic elements on a canvas of canvas_w x canvas_h with squares of `cell`
     pixels. `origin` is the grid's offset, so everything lands on the map's own grid lines."""
+    els, _walls, warnings = layout_full(spec, cell, canvas_w, canvas_h, props, seed, origin)
+    return els, warnings
+
+
+def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, origin=(0, 0)):
+    """(elements, walls, warnings): like layout(), plus the same walls and doors as DATA (app/map_walls.py format) - what fog
+    of war and line of sight are computed from. A secret door is a wall to everyone but the GM's editor; an `open` link is a
+    gap; every other door is closed."""
     rng = random.Random(_seed_of(spec, seed))
     warnings = []
     cell = max(8, int(cell or 50))
@@ -502,7 +510,7 @@ def layout(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, o
     warnings += w1
     links = list(spec["links"]) + extra_links
     if not placed:
-        return [], warnings
+        return [], [], warnings
     x0 = min(r[0] for r in placed.values()); y0 = min(r[1] for r in placed.values())
     bw = max(r[0] + r[2] for r in placed.values()) - x0
     bh = max(r[1] + r[3] for r in placed.values()) - y0
@@ -556,6 +564,13 @@ def layout(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, o
 
     wall_edges = [e for e in edge_owner if e not in door_cells or door_cells[e] == "secret"]
     stroke_w = max(3, round(cell * 0.1))
+    walls = []
+    plain_edges = [e for e in wall_edges if door_cells.get(e) != "secret"]      # the secret door's cell is a wall segment of its own
+    for kind, fixed, a, b in _merge(plain_edges):
+        if kind == "h":
+            walls.append({"id": "ai-w" + uuid.uuid4().hex[:8], "pts": [[ox + a * cell, oy + fixed * cell], [ox + b * cell, oy + fixed * cell]], "kind": "wall"})
+        else:
+            walls.append({"id": "ai-w" + uuid.uuid4().hex[:8], "pts": [[ox + fixed * cell, oy + a * cell], [ox + fixed * cell, oy + b * cell]], "kind": "wall"})
     for kind, fixed, a, b in _merge(wall_edges):
         if kind == "h":
             x1, y1, x2, y2 = ox + a * cell, oy + fixed * cell, ox + b * cell, oy + fixed * cell
@@ -572,6 +587,7 @@ def layout(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, o
             x1, y1, x2, y2 = ox + pos * cell + pad, oy + fixed * cell, ox + (pos + 1) * cell - pad, oy + fixed * cell
         else:
             x1, y1, x2, y2 = ox + fixed * cell, oy + pos * cell + pad, ox + fixed * cell, oy + (pos + 1) * cell - pad
+        walls.append({"id": "ai-d" + uuid.uuid4().hex[:8], "pts": [[x1, y1], [x2, y2]], "kind": "secret" if t == "secret" else "door", "state": "closed"})
         d = {"id": "ai-" + uuid.uuid4().hex[:10], "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
              "stroke": colours[t], "strokeW": stroke_w + 2, "layer": "Tracks"}
         if t == "secret":
@@ -582,4 +598,4 @@ def layout(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, o
     # furniture
     for rid, rect in placed.items():
         els.extend(_furnish_room(by_id[rid], rect, doors_of_room[rid], rng, props, cell, ox, oy))
-    return els, warnings
+    return els, walls, warnings

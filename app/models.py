@@ -2000,6 +2000,11 @@ class Schematic(Base):
     grid_type = Column(String(16), default="none")
     grid_config_json = Column(Text, default="{}")
     combat_session_id = Column(Integer, ForeignKey("combat_sessions.id"), nullable=True, index=True)
+    # Walls, doors and windows (app/map_walls.py) - the geometry fog of war and line of sight are computed from - and the
+    # fog settings. Kept apart from elements_json: decoration changes often, geometry rarely, and the secret-door rule
+    # (players are never told) lives in one place.
+    walls_json = Column(Text, default="[]")
+    fog_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

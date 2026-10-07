@@ -24,6 +24,7 @@
     <button class="tb"    id="t-pin"     onclick="setTool('pin')"     title="Pin · N">📍</button>
     <button class="tb"    id="t-party"   onclick="setTool('party')"   title="Place Party">🧑‍🤝‍🧑</button>
     <button class="tb"    id="t-token"   onclick="setTool('token')"   title="Token (PC/creature/NPC) · G">🧙</button>
+    <button class="tb"    id="t-wall"    onclick="setTool('wall')"    title="Walls, doors and windows for fog of war · W  (click points; Enter or double-click finishes)">🧱</button>
     <button class="tb"    id="t-pencil"  onclick="setTool('pencil')"  title="Pencil · K">✏</button>
     <button class="tb"    id="t-measure" onclick="setTool('measure')" title="Measure · M">📏</button>
     <button class="tb"    id="t-image"   onclick="pickImage()"        title="Embed image · I">🖼</button>
@@ -177,6 +178,28 @@
           <button type="button" class="props-mini" onclick="rotateSelectedImages(15)" title="Turn the selected object right 15° ( ] )">↻ 15°</button>
           <button type="button" class="props-mini" onclick="rotateSelectedImages(90)" title="Turn the selected object a quarter turn (Shift + ] )">↻ 90°</button>
         </div>
+      </div>
+      <div class="panel-hdr panel-hdr-toggle" onclick="toggleWallsPanel()">
+        Walls &amp; fog <span id="walls-toggle">▸</span>
+      </div>
+      <div id="walls-body">
+        <div class="props-row" style="margin-top:0">
+          <label>Draw as <select id="walls-kind"><option value="wall">Wall</option><option value="door">Door</option><option value="window">Window</option><option value="secret">Secret door</option></select></label>
+          <button type="button" class="props-mini" onclick="setTool('wall')" title="Click points on the map; Enter or double-click finishes; Esc cancels">🧱 Draw</button>
+        </div>
+        <div class="props-row">
+          <button type="button" class="props-mini" id="walls-from-rects" title="Give every rectangle (room) on the map a wall around it">▭ Rooms → walls</button>
+          <button type="button" class="props-mini" id="walls-clear">Clear</button>
+          <label><input type="checkbox" id="walls-show" checked/> show</label>
+        </div>
+        <div id="walls-list"></div>
+        <div class="props-row" style="border-top:1px solid #2a2a2a;padding-top:.4rem">
+          <label title="Players and the table screen see only what their characters can see, and remember what they have explored"><input type="checkbox" id="walls-fog-enabled"/> <b>Fog of war</b></label>
+          <label title="How far characters see, in squares. Empty = as far as the walls allow.">sight <input type="number" id="walls-fog-range" min="0" max="100" step="1" placeholder="∞"/> sq</label>
+          <button type="button" class="props-mini" id="walls-fog-reset" title="Everyone forgets what they have explored">Reset fog</button>
+        </div>
+        <div style="font-size:.68rem;opacity:.6;line-height:1.35">Table-trust fog: it keeps honest players honest. A secret door looks like a wall to players. Characters (tokens linked to a character) are the ones who see.</div>
+        <div id="walls-msg" role="status"></div>
       </div>
       <div id="layers-panel" style="border-top:1px solid #2a2a2a;padding:.5rem">
         <div style="font-size:.7rem;color:#777;margin-bottom:.3rem">LAYERS</div>
@@ -521,6 +544,14 @@
 .prop-item span { display:block; font-size:.62rem; line-height:1.15; max-height:2.3em; overflow:hidden; opacity:.8; }
 .prop-item .prop-x { position:absolute; top:0; right:0; border:none; background:rgba(0,0,0,.6); color:#f88; cursor:pointer; font-size:.7rem; border-radius:0 4px 0 4px; padding:0 .25rem; display:none; }
 .prop-item:hover .prop-x, .prop-item:focus-within .prop-x { display:block; }
+#walls-body { display:none; padding:.4rem .5rem; border-bottom:1px solid rgba(255,255,255,.07); }
+#walls-body.open { display:block; }
+#walls-list { max-height:200px; overflow:auto; margin:.3rem 0; }
+.wall-row { display:flex; align-items:center; gap:.3rem; font-size:.72rem; padding:2px 3px; border-radius:4px; flex-wrap:wrap; }
+.wall-row span { flex:1; cursor:pointer; min-width:70px; }
+.wall-row.on { background:rgba(255,107,214,.15); }
+.wall-row select { font-size:.68rem; max-width:90px; }
+#walls-msg { font-size:.72rem; color:#ffb066; min-height:1em; margin-top:.3rem; }
 .stamp-btn.on { border-color:var(--neon); background:rgba(0,240,255,.12); }
 .stamp-btn svg { width:32px; height:32px; }
 
@@ -809,6 +840,11 @@ function setTool(t) {
   if (t !== 'stamp') stampSpec = null;
   redraw(); cancelDraw();
   hit.style.cursor = t === 'select' ? 'default' : 'crosshair';
+  if (window.ndWalls) {
+    ndWalls.render();
+    const wb = document.getElementById('walls-body');
+    if (t === 'wall' && wb && !wb.classList.contains('open')) toggleWallsPanel();
+  }
 }
 
 // getBounds/getBoundsMulti now live in static/js/schematic-render.js.
@@ -1356,6 +1392,7 @@ hit.addEventListener('pointerdown', e => {
     if (!e.shiftKey) { selIds.clear(); redraw(); }
     return;
   }
+  if (tool === 'wall')   { ndWalls.pointerDown(svgXYRaw(e), e.shiftKey); return; }
   if (tool === 'text')   { pendingTextPt=pt; openTextDlg(); return; }
   if (tool === 'pin')    { addPin(pt); return; }
   if (tool === 'party')  { pendingPartyPt=pt; openPartyDlg(); return; }
@@ -1376,7 +1413,9 @@ hit.addEventListener('pointerdown', e => {
   drawing=true; drawStart=pt;
 });
 
+hit.addEventListener('pointermove', e => { if (tool === 'wall') ndWalls.pointerMove(svgXYRaw(e)); });
 hit.addEventListener('dblclick', e => {
+  if (tool === 'wall') { ndWalls.finish(); return; }
   if (tool==='poly' && polyPts.length>=3) { finishPoly(); return; }
   if (tool==='select' && selIds.size===1) {
     const el = primary();
@@ -1417,7 +1456,7 @@ hit.addEventListener('pointerup', e => {
   finishShape(svgXY(e)); drawing=false; drawStart=null; prevLayer.innerHTML='';
 });
 
-function cancelDraw() { drawing=false; drawStart=null; polyPts=[]; pencilPts=null; measurePt=null; prevLayer.innerHTML=''; }
+function cancelDraw() { drawing=false; drawStart=null; polyPts=[]; pencilPts=null; measurePt=null; prevLayer.innerHTML=''; if (window.ndWalls) ndWalls.cancel(); }
 
 // ── Marquee selection ─────────────────────────────────────────────────────────
 function drawMarquee() {
@@ -1977,6 +2016,11 @@ function buildStamps() {
 // ── Props: the world's library of map objects (pictures of beds, barrels, wall sections...) ──────────────
 let propsLoaded = false, propsList = [];
 function propsMsg(t) { document.getElementById('props-msg').textContent = t || ''; }
+function toggleWallsPanel() {
+  const body = document.getElementById('walls-body'), tog = document.getElementById('walls-toggle');
+  body.classList.toggle('open');
+  tog.textContent = body.classList.contains('open') ? '▾' : '▸';
+}
 function toggleProps() {
   const body = document.getElementById('props-body'), tog = document.getElementById('props-toggle');
   body.classList.toggle('open');
@@ -2431,7 +2475,8 @@ document.addEventListener('keydown', e => {
     redraw(); snapshot();
     return;
   }
-  const map={v:'select',r:'rect',c:'circle',l:'line',a:'arrow',p:'poly',t:'text',n:'pin',k:'pencil',m:'measure',g:'token'};
+  if (e.key === 'Enter' && tool === 'wall') { ndWalls.finish(); return; }
+  const map={v:'select',r:'rect',c:'circle',l:'line',a:'arrow',p:'poly',t:'text',n:'pin',k:'pencil',m:'measure',g:'token',w:'wall'};
   if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
   if (e.key==='o'||e.key==='O') {
     octilinear=!octilinear;
@@ -2455,6 +2500,7 @@ document.addEventListener('keydown', e => {
       }
       activeWpHandle=null;
     }
+    if (tool === 'wall' && ndWalls.deleteSelected()) return;
     delSelected();
     return;
   }
@@ -2488,6 +2534,18 @@ setTimeout(() => { fitZoom(); renderMinimap(); }, 60);
 // Warn before leaving with unsaved
 window.addEventListener('beforeunload', e => {
   if (dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+</script>
+<script src="/static/js/schematic-walls.js?v={{ asset_v('js/schematic-walls.js') }}"></script>
+<script>
+// Walls, doors and the fog-of-war settings (static/js/schematic-walls.js)
+ndWalls.init({
+  svg, prevLayer, slug: SLUG,
+  getTool: () => tool, getZoom: () => zoom,
+  snapOn: () => document.getElementById('cb-snap').checked,
+  getGrid: () => ({ square: gridType === 'square' && !!gridConfig.cell_size, cell: gridConfig.cell_size || 50, ox: gridConfig.offset_x || 0, oy: gridConfig.offset_y || 0 }),
+  getCanvas: () => ({ w: CW, h: CH }),
+  getRects: () => elements.filter(e => e.type === 'rect' && !e.hidden),
 });
 </script>
 {% endblock %}

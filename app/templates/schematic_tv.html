@@ -32,6 +32,10 @@
 
 <script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
 <script src="/static/js/map-viewport.js?v={{ asset_v('js/map-viewport.js') }}"></script>
+<script src="/static/js/map-geom.js?v={{ asset_v('js/map-geom.js') }}"></script>
+<script src="/static/js/map-vision.js?v={{ asset_v('js/map-vision.js') }}"></script>
+<script src="/static/js/map-fog.js?v={{ asset_v('js/map-fog.js') }}"></script>
+<script src="/static/js/map-fog-glue.js?v={{ asset_v('js/map-fog-glue.js') }}"></script>
 <script>
 "use strict";
 (function () {
@@ -51,13 +55,21 @@
   var elements = [];
 
   // ── drawing ────────────────────────────────────────────────────────────────
+  // fog of war: the party's characters see, everything else shows only inside their view (static/js/map-fog-glue.js)
+  var fog = ndFogGlue.create({
+    svg: svg, tokenLayer: tokenLayer, key: 'tv_' + WORLD + '_' + SLUG,
+    getElements: function () { return elements; },
+    getGrid: function () { return { cell: (window.gridType !== 'none' && window.gridConfig.cell_size) ? window.gridConfig.cell_size : 50 }; },
+    getCanvas: function () { return { w: window.CW, h: window.CH }; },
+  });
   function redraw() {
     elLayer.innerHTML = ''; tokenLayer.innerHTML = '';
     renderBattleGrid();
     elements.forEach(function (el) {
       var g = makeElSVG(el); if (!g) return;
-      (el.type === 'token' ? tokenLayer : elLayer).appendChild(g);
+      if (el.type === 'token') { g.dataset.id = el.id; tokenLayer.appendChild(g); } else elLayer.appendChild(g);
     });
+    fog.apply();
   }
   function applyData(d) {
     window.CW = d.canvas.w; window.CH = d.canvas.h; window.gridType = d.grid_type; window.gridConfig = d.grid_config || {};
@@ -67,6 +79,7 @@
     if (d.image_url) { img.setAttribute('href', d.image_url); img.setAttribute('width', d.canvas.w); img.setAttribute('height', d.canvas.h); img.setAttribute('display', 'inline'); }
     else img.setAttribute('display', 'none');
     elements = d.elements || [];
+    fog.setState({ fog: d.fog, walls: d.walls });
     redraw(); render();
   }
 

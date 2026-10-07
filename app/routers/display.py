@@ -31,7 +31,7 @@ from ..deps import get_world_ctx
 from ..models import Entity, Schematic
 from ..rendering import render_md, strip_gm_only
 from ..rules_render import strip_gm_directives
-from ..schematic_payload import BG_COLORS, player_visible
+from ..schematic_payload import BG_COLORS, fog_payload, player_visible
 from ..templating import templates
 
 router = APIRouter()
@@ -228,6 +228,7 @@ def display_map_data(slug: str, request: Request, db: Session = Depends(get_db),
         "canvas": {"w": s.canvas_width or 2000, "h": s.canvas_height or 1500, "bg": BG_COLORS.get(s.canvas_bg or "dark", "#111111")},
         "grid_type": s.grid_type or "none",
         "grid_config": grid_config if isinstance(grid_config, dict) else {},
+        **fog_payload(s),
     }
 
 

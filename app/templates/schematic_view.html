@@ -65,6 +65,10 @@
 
 <script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
 <script src="/static/js/map-viewport.js?v={{ asset_v('js/map-viewport.js') }}"></script>
+<script src="/static/js/map-geom.js?v={{ asset_v('js/map-geom.js') }}"></script>
+<script src="/static/js/map-vision.js?v={{ asset_v('js/map-vision.js') }}"></script>
+<script src="/static/js/map-fog.js?v={{ asset_v('js/map-fog.js') }}"></script>
+<script src="/static/js/map-fog-glue.js?v={{ asset_v('js/map-fog-glue.js') }}"></script>
 <script>
 "use strict";
 const SLUG = {{ schematic.slug | tojson }};
@@ -80,12 +84,21 @@ let ownPcCurrency = JSON.parse({{ own_pc_currency_json | default('[]') | tojson 
 let activeCombatantId = {{ combat_active_combatant_id | default(none) | tojson }};
 let combatRound = {{ combat_round | default(none) | tojson }};
 const layerState = {};
+const FOG_STATE = JSON.parse({{ fog_json | default('{"fog":{"enabled":false,"range":0,"epoch":0},"walls":[]}') | tojson }});   // {fog, walls}: walls only while fog is on
 
 const svg = document.getElementById('sch-svg');
 const elLayer = document.getElementById('el-layer');
 const tokenLayer = document.getElementById('token-layer');
 const partyLayer = document.getElementById('party-layer');
 const battleGridLayer = document.getElementById('battle-grid-layer');
+
+// Fog of war: the party's characters see; everything else shows only inside their view (static/js/map-fog-glue.js)
+const fog = ndFogGlue.create({
+  svg: document.getElementById('sch-svg'), tokenLayer: document.getElementById('token-layer'),
+  key: (document.body.dataset.worldSlug || '') + '_' + SLUG,
+  getElements: () => elements, getGrid: () => ({ cell: (gridType !== 'none' && gridConfig.cell_size) ? gridConfig.cell_size : 50 }),
+  getCanvas: () => ({ w: CW, h: CH }),
+});
 
 function redraw() {
   elLayer.innerHTML = '';
@@ -116,6 +129,7 @@ function redraw() {
     document.getElementById('sv-round').style.display = '';
     document.getElementById('sv-round-num').textContent = combatRound;
   }
+  fog.apply();
 }
 
 // ── Popup scaffold (shared by item pickup and merchant shop) ─────────────────
@@ -329,9 +343,11 @@ async function poll() {
     ownPcCurrency = data.own_pc_currency || [];
     activeCombatantId = data.combat_active_combatant_id;
     combatRound = data.combat_round;
+    fog.setState({ fog: data.fog, walls: data.walls });      // applies the fog; redraw() below applies it again to the rebuilt tokens
     redraw();
   } catch (e) { /* transient network error — try again next tick */ }
 }
+fog.setState(FOG_STATE);
 redraw();
 // Changes arrive over the live bus (a GM edit, a door, another player's move) and refresh the map at once; the slow
 // poll is only the safety net for a dropped connection.
