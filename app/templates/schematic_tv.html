@@ -1,0 +1,184 @@
+<!doctype html>
+{# A live map for the table's TV, shown inside the second screen (see app/routers/display.py). A bare document on
+   purpose: no site chrome. It receives only what players may see; changes arrive over the live bus. #}
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="robots" content="noindex"/>
+<title>{{ schematic.name }} — Table map</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family:system-ui, sans-serif; }
+  #tv-svg { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; user-select:none; cursor:grab; }
+  #tv-svg.panning { cursor:grabbing; }
+  body.hide-cursor, body.hide-cursor * { cursor:none !important; }
+  #tv-note { position:fixed; left:1rem; bottom:1rem; max-width:30rem; padding:.5rem .8rem; border-radius:6px; background:rgba(20,20,20,.85);
+             color:#cfcabb; font-size:13px; line-height:1.4; transition:opacity .8s; }
+  #tv-note.gone { opacity:0; pointer-events:none; }
+  #tv-off { position:fixed; right:1rem; bottom:1rem; font-size:12px; color:#a55; display:none; }
+</style>
+</head>
+<body>
+<svg id="tv-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {{ schematic.canvas_width or 2000 }} {{ schematic.canvas_height or 1500 }}">
+  <rect id="bg" x="-100000" y="-100000" width="200000" height="200000" fill="#111"/>
+  <g id="canvas-bg"><rect id="bg-canvas" width="{{ schematic.canvas_width or 2000 }}" height="{{ schematic.canvas_height or 1500 }}" fill="#111"/></g>
+  <image id="bg-image" display="none" x="0" y="0" width="{{ schematic.canvas_width or 2000 }}" height="{{ schematic.canvas_height or 1500 }}" preserveAspectRatio="none" pointer-events="none"/>
+  <g id="el-layer"></g>
+  <g id="battle-grid-layer" pointer-events="none"></g>
+  <g id="token-layer"></g>
+</svg>
+<div id="tv-note"></div>
+<div id="tv-off">reconnecting…</div>
+
+<script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
+<script src="/static/js/map-viewport.js?v={{ asset_v('js/map-viewport.js') }}"></script>
+<script>
+"use strict";
+(function () {
+  var SLUG = {{ schematic.slug | tojson }};
+  var WORLD = {{ world.slug | tojson }};
+  var W = '?w=' + encodeURIComponent(WORLD);
+  var DATA_URL = '/display/map/' + encodeURIComponent(SLUG) + '/data.json' + W;
+  var DIAG_KEY = 'nd_tv_diagonal_inches';
+
+  // globals schematic-render.js expects
+  window.gridType = 'none'; window.gridConfig = {}; window.CW = {{ schematic.canvas_width or 2000 }}; window.CH = {{ schematic.canvas_height or 1500 }};
+  window.layerState = {}; window.activeCombatantId = null;
+  var svg = document.getElementById('tv-svg');
+  window.battleGridLayer = document.getElementById('battle-grid-layer');
+  var elLayer = document.getElementById('el-layer'), tokenLayer = document.getElementById('token-layer');
+  var note = document.getElementById('tv-note');
+  var elements = [];
+
+  // ── drawing ────────────────────────────────────────────────────────────────
+  function redraw() {
+    elLayer.innerHTML = ''; tokenLayer.innerHTML = '';
+    renderBattleGrid();
+    elements.forEach(function (el) {
+      var g = makeElSVG(el); if (!g) return;
+      (el.type === 'token' ? tokenLayer : elLayer).appendChild(g);
+    });
+  }
+  function applyData(d) {
+    window.CW = d.canvas.w; window.CH = d.canvas.h; window.gridType = d.grid_type; window.gridConfig = d.grid_config || {};
+    document.getElementById('bg').setAttribute('fill', d.canvas.bg);
+    var c = document.getElementById('bg-canvas'); c.setAttribute('width', d.canvas.w); c.setAttribute('height', d.canvas.h); c.setAttribute('fill', d.canvas.bg);
+    var img = document.getElementById('bg-image');
+    if (d.image_url) { img.setAttribute('href', d.image_url); img.setAttribute('width', d.canvas.w); img.setAttribute('height', d.canvas.h); img.setAttribute('display', 'inline'); }
+    else img.setAttribute('display', 'none');
+    elements = d.elements || [];
+    redraw(); render();
+  }
+
+  // ── view: "fit" (whole map, zoom/pan freely) or "scale" (one grid square = one inch) ───────────────
+  var mode = 'fit', view = null, centre = null;
+  function bounds() { return { w: window.CW, h: window.CH }; }
+  function screen() { return { w: window.innerWidth, h: window.innerHeight }; }
+  function diagonal() { try { var v = parseFloat(localStorage.getItem(DIAG_KEY)); return v > 0 ? v : null; } catch (e) { return null; } }
+  function ppi() { return ndViewport.cssPerInch(window.screen.width, window.screen.height, diagonal()); }
+  function unitsPerInch() {
+    var cs = Math.max(5, window.gridConfig.cell_size || 50);
+    return window.gridType === 'hex' ? cs * Math.sqrt(3) : cs;   // a hex is one inch flat to flat
+  }
+  function render() {
+    var v;
+    if (mode === 'scale' && ppi()) {
+      if (!centre) centre = { x: window.CW / 2, y: window.CH / 2 };
+      v = ndViewport.trueScale(bounds(), screen(), unitsPerInch(), ppi(), centre.x, centre.y);
+    } else {
+      mode = 'fit';
+      view = ndViewport.constrain(view || ndViewport.fit(bounds()), bounds());
+      v = view;
+    }
+    svg.setAttribute('viewBox', ndViewport.toAttr(v));
+  }
+  function say(text, ms) { note.textContent = text; note.classList.remove('gone'); clearTimeout(say.t); say.t = setTimeout(function () { note.classList.add('gone'); }, ms || 7000); }
+  function describe() {
+    if (mode === 'scale') return '1 grid square = 1 inch (' + diagonal() + '″ screen).  S: whole map · D: screen size';
+    return ppi() ? 'Whole map.  S: one square = one inch · D: screen size' : 'Whole map.  D: tell it the screen size (inches, diagonal) to show one square per inch';
+  }
+  function askDiagonal() {
+    var v = window.prompt('Screen size in inches, measured corner to corner (e.g. 43):', diagonal() || '');
+    if (v === null) return;
+    var n = parseFloat(v);
+    if (!(n >= 5 && n <= 200)) { say('That is not a screen size between 5 and 200 inches.'); return; }
+    try { localStorage.setItem(DIAG_KEY, String(n)); } catch (e) {}
+    mode = 'scale'; render(); say(describe());
+  }
+  function toggleScale() {
+    if (mode === 'scale') { mode = 'fit'; render(); say(describe()); }
+    else if (!ppi()) askDiagonal();
+    else { mode = 'scale'; render(); say(describe()); }
+  }
+
+  // ── gestures: wheel / buttons zoom the whole-map view; dragging pans either mode ───────────────────
+  var pointers = new Map(), lastPair = null;
+  function local(e) { return { x: e.clientX, y: e.clientY }; }
+  svg.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    if (mode !== 'fit') return;
+    var c = ndViewport.toCanvas(view, screen(), e.clientX, e.clientY);
+    view = ndViewport.zoomAt(view, bounds(), Math.exp(-Math.max(-300, Math.min(300, e.deltaY)) * 0.0015), c.x, c.y); render();
+  }, { passive: false });
+  svg.addEventListener('pointerdown', function (e) {
+    pointers.set(e.pointerId, local(e)); svg.classList.add('panning');
+    lastPair = pointers.size === 2 ? Array.from(pointers.values()) : null;
+    try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  svg.addEventListener('pointermove', function (e) {
+    if (!pointers.has(e.pointerId)) return;
+    var before = pointers.get(e.pointerId), now = local(e); pointers.set(e.pointerId, now);
+    if (mode === 'scale') {
+      var k = unitsPerInch() / ppi();                       // canvas units per screen pixel
+      centre = { x: (centre ? centre.x : window.CW / 2) - (now.x - before.x) * k, y: (centre ? centre.y : window.CH / 2) - (now.y - before.y) * k };
+    } else if (pointers.size >= 2 && lastPair) {
+      var pair = Array.from(pointers.values()).slice(0, 2);
+      view = ndViewport.pinch(view, bounds(), lastPair, pair, screen()); lastPair = pair;
+    } else {
+      view = ndViewport.panBy(view, bounds(), now.x - before.x, now.y - before.y, screen());
+    }
+    render();
+  });
+  function end(e) { pointers.delete(e.pointerId); lastPair = pointers.size === 2 ? Array.from(pointers.values()) : null; if (!pointers.size) svg.classList.remove('panning'); }
+  svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
+  window.addEventListener('resize', render);
+
+  // ── keys (and the parent second-screen page forwards fullscreen clicks) ────────────────────────────
+  document.addEventListener('keydown', function (e) {
+    var k = e.key;
+    if (k === 's' || k === 'S') toggleScale();
+    else if (k === 'd' || k === 'D') askDiagonal();
+    else if (k === '0') { mode = 'fit'; view = ndViewport.fit(bounds()); render(); }
+    else if (k === 'f' || k === 'F') { try { parent.postMessage({ type: 'nd-fullscreen' }, location.origin); } catch (_) {} }
+    else if (mode === 'fit' && (k === '+' || k === '=')) { view = ndViewport.zoomAt(view, bounds(), 1.25); render(); }
+    else if (mode === 'fit' && k === '-') { view = ndViewport.zoomAt(view, bounds(), 1 / 1.25); render(); }
+  });
+  var cursorTimer = null;
+  document.addEventListener('mousemove', function () {
+    document.body.classList.remove('hide-cursor'); clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(function () { document.body.classList.add('hide-cursor'); }, 2500);
+  });
+
+  // ── live: the world's change counter, with a slow poll as the safety net ───────────────────────────
+  var busy = false, again = false;
+  function load() {
+    if (busy) { again = true; return; }
+    busy = true;
+    fetch(DATA_URL, { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (d) { document.getElementById('tv-off').style.display = 'none'; applyData(d); })
+      .catch(function () { document.getElementById('tv-off').style.display = 'block'; })
+      .then(function () { busy = false; if (again) { again = false; load(); } });
+  }
+  try {
+    var es = new EventSource('/api/live' + W);
+    var first = true;
+    es.addEventListener('version', function () { if (first) { first = false; return; } load(); });
+  } catch (e) { /* the poll covers it */ }
+  setInterval(function () { if (!document.hidden) load(); }, 20000);
+  load();
+  say(describe(), 9000);
+})();
+</script>
+</body>
+</html>

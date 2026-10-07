@@ -93,3 +93,30 @@ def test_center_on_a_token_stays_inside_and_to_canvas_inverts_the_mapping():
     # a view 500x375 shown on a 400x300 screen: scale 0.8; the screen centre is the view centre
     p = _js("V.toCanvas({x:100,y:200,w:500,h:375}, {w:400,h:300}, 200, 150)")
     assert p == {"x": 350, "y": 387.5}
+
+
+@needs_node
+def test_css_pixels_per_inch_from_the_diagonal():
+    # a 1920x1080 panel of 43 inches: 2203 px diagonal / 43 = ~51.2 px per inch
+    assert _js("V.cssPerInch(1920, 1080, 43)") == pytest.approx(51.23, abs=0.01)
+    for bad in ("V.cssPerInch(0, 1080, 43)", "V.cssPerInch(1920, 1080, 0)", "V.cssPerInch(1920, 1080, 1)",
+                "V.cssPerInch(NaN, 1080, 43)", "V.cssPerInch(1920, 1080, 9999)", "V.cssPerInch(1920, 1080, 'x')"):
+        assert _js(bad) is None, bad
+
+
+@needs_node
+def test_true_scale_one_square_is_one_inch():
+    # 50-unit squares, 100 px per inch, a 1000x500 px window: it shows 10 x 5 squares = 500 x 250 units
+    v = _js(f"V.trueScale({B}, {{w:1000,h:500}}, 50, 100, 1000, 750)")
+    assert v["w"] == pytest.approx(500) and v["h"] == pytest.approx(250)
+    assert v["x"] == pytest.approx(750) and v["y"] == pytest.approx(625)
+    # near the edge the view stays on the map
+    corner = _js(f"V.trueScale({B}, {{w:1000,h:500}}, 50, 100, 0, 0)")
+    assert corner["x"] == 0 and corner["y"] == 0
+    # a map smaller than the screen is centred, not stretched: 400x300 canvas, view 500x250 wide
+    small = _js("V.trueScale({w:400,h:300}, {w:1000,h:500}, 50, 100, 200, 150)")
+    assert small["w"] == pytest.approx(500) and small["x"] == pytest.approx(-50)
+    assert small["y"] == pytest.approx(25)
+    # nonsense falls back to showing the whole map
+    assert _js(f"V.trueScale({B}, {{w:1000,h:500}}, 0, 100, 1, 1)") == {"x": 0, "y": 0, "w": 2000, "h": 1500}
+    assert _js(f"V.trueScale({B}, {{w:1000,h:500}}, 50, NaN, 1, 1)") == {"x": 0, "y": 0, "w": 2000, "h": 1500}

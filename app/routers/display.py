@@ -28,9 +28,10 @@ from sqlalchemy.orm import Session
 from .. import live
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import Entity
+from ..models import Entity, Schematic
 from ..rendering import render_md, strip_gm_only
 from ..rules_render import strip_gm_directives
+from ..schematic_payload import BG_COLORS, player_visible
 from ..templating import templates
 
 router = APIRouter()
@@ -145,8 +146,18 @@ def _entity_item(db: Session, world, entity_id, mode) -> dict:
             "image": image, "source": source}
 
 
+def _map_item(db: Session, world, slug) -> dict:
+    s = db.query(Schematic).filter(Schematic.slug == slug).first() if isinstance(slug, str) else None
+    if not s or s.world_id != world.id or (s.is_html and s.html_file):
+        raise HTTPException(404, "Map not found")
+    return {"kind": "map", "url": f"/display/map/{s.slug}", "title": _text(s.name, _TITLE_CAP),
+            "source": {"type": "map", "slug": s.slug}}
+
+
 def _build_item(db: Session, world, body: dict) -> dict:
     kind = body.get("kind")
+    if kind == "map":
+        return _map_item(db, world, body.get("slug"))
     if kind == "entity":
         return _entity_item(db, world, body.get("entity_id"), body.get("mode"))
     if kind == "image":
@@ -161,7 +172,7 @@ def _build_item(db: Session, world, body: dict) -> dict:
             raise HTTPException(400, "Nothing to show")
         return {"kind": "text", "title": _text(body.get("title"), _TITLE_CAP), "html": _text_html(text),
                 "source": {"type": "text"}}
-    raise HTTPException(400, "kind must be image, text or entity")
+    raise HTTPException(400, "kind must be image, text, entity or map")
 
 
 # ── routes (GM only) ─────────────────────────────────────────────────────────
@@ -181,6 +192,43 @@ def display_page(request: Request, db: Session = Depends(get_db), active_world: 
     """The window to put on the second monitor: black, nothing but what was sent."""
     world, _ = _gm_world(request, db, active_world)
     return templates.TemplateResponse("display.html", {"request": request, "world": world})
+
+
+def _tv_schematic(db: Session, world, slug: str) -> Schematic:
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s or s.world_id != world.id or (s.is_html and s.html_file):
+        raise HTTPException(404)
+    return s
+
+
+@router.get("/display/map/{slug}", response_class=HTMLResponse)
+def display_map_page(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """A live map for the table's TV: a bare page inside the second screen, one grid square = one inch once the
+    screen size is known. It shows what players see (hidden elements never leave the server)."""
+    world, _ = _gm_world(request, db, active_world)
+    s = _tv_schematic(db, world, slug)
+    return templates.TemplateResponse("schematic_tv.html", {"request": request, "world": world, "schematic": s})
+
+
+@router.get("/display/map/{slug}/data.json")
+def display_map_data(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = _gm_world(request, db, active_world)
+    s = _tv_schematic(db, world, slug)
+    try:
+        elements = json.loads(s.elements_json or "[]")
+    except ValueError:
+        elements = []
+    try:
+        grid_config = json.loads(s.grid_config_json or "{}")
+    except ValueError:
+        grid_config = {}
+    return {
+        "elements": player_visible(elements),
+        "image_url": safe_image_url(s.image_url or "") or None,
+        "canvas": {"w": s.canvas_width or 2000, "h": s.canvas_height or 1500, "bg": BG_COLORS.get(s.canvas_bg or "dark", "#111111")},
+        "grid_type": s.grid_type or "none",
+        "grid_config": grid_config if isinstance(grid_config, dict) else {},
+    }
 
 
 @router.get("/api/display/state")

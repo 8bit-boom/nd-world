@@ -11,6 +11,8 @@
     <a class="tb" href="{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}" target="_blank" title="Open the read-only live view players see">🔴 Live View</a>
     <button class="tb" type="button" title="Float the live view in a small always-available window (stays open while you edit or browse)"
             onclick="ndFloat('{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}', {title:'🗺 {{ schematic.name }}', w:760, h:600})">⇱ Float</button>
+    <button class="tb" type="button" title="Show this map on the second screen (the TV on the table): live, one grid square = one inch once the screen size is set"
+            onclick="window.ndStage ? ndStage.showMap({{ schematic.slug|tojson }}, {{ schematic.name|tojson }}) : alert('The second screen is not available on this page.')">📺 Table screen</button>
     <div class="tb-sep"></div>
     <button class="tb on" id="t-select"  onclick="setTool('select')"  title="Select · V">↖</button>
     <button class="tb"    id="t-rect"    onclick="setTool('rect')"    title="Rect · R">▭</button>

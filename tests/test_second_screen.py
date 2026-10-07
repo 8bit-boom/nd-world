@@ -10,7 +10,7 @@ import pytest
 
 from app import live
 from app.database import SessionLocal
-from app.models import Entity
+from app.models import Entity, Schematic
 from app.routers import display as display_router
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -280,3 +280,78 @@ def test_the_display_page_pins_its_world_so_a_world_switch_elsewhere_cannot_chan
     _gm(client, seed)
     html = client.get("/display").text
     assert "'?w=' + encodeURIComponent(SLUG)" in html and f'"{seed.world_a.slug}"' in html
+
+
+# ── a live map on the TV ─────────────────────────────────────────────────────
+
+def _map(seed, slug="tv-map", elements=None, world=None, **kw):
+    db = SessionLocal()
+    try:
+        m = Schematic(world_id=(world or seed.world_a).id, name=kw.pop("name", "Smugglers' Cove"), slug=slug, is_html=False,
+                      canvas_width=1000, canvas_height=800, canvas_bg="blueprint", grid_type=kw.pop("grid_type", "square"),
+                      grid_config_json=json.dumps({"cell_size": 40}), elements_json=json.dumps(elements or []), **kw)
+        db.add(m)
+        db.commit()
+        return m.slug
+    finally:
+        db.close()
+
+
+def test_a_map_can_be_sent_to_the_screen(client, seed):
+    _gm(client, seed)
+    slug = _map(seed)
+    d = _show(client, kind="map", slug=slug).json()
+    cur = d["current"]
+    assert cur["kind"] == "map" and cur["url"] == f"/display/map/{slug}" and cur["title"] == "Smugglers' Cove"
+    assert cur["source"] == {"type": "map", "slug": slug}
+
+
+def test_only_this_worlds_maps_can_be_sent(client, seed):
+    _gm(client, seed)
+    other = _map(seed, slug="elsewhere", world=seed.world_b)
+    assert _show(client, kind="map", slug=other).status_code == 404
+    assert _show(client, kind="map", slug="nope").status_code == 404
+    assert _show(client, kind="map", slug=["x"]).status_code == 404
+    assert _show(client, kind="map").status_code == 404
+
+
+def test_the_tv_map_never_receives_what_players_may_not_see(client, seed):
+    _gm(client, seed)
+    els = [
+        {"id": "a", "type": "rect", "x": 0, "y": 0, "w": 50, "h": 50},
+        {"id": "secret", "type": "rect", "x": 9, "y": 9, "w": 5, "h": 5, "hidden": True},
+        {"id": "t1", "type": "token", "x": 5, "y": 5, "label": "Guard", "visible_to_players": True},
+        {"id": "t2", "type": "token", "x": 6, "y": 6, "label": "Ambusher", "visible_to_players": False},
+        "junk",
+    ]
+    slug = _map(seed, elements=els)
+    r = client.get(f"/display/map/{slug}/data.json")
+    assert r.status_code == 200
+    d = r.json()
+    assert sorted(e["id"] for e in d["elements"]) == ["a", "t1"]
+    assert "secret" not in r.text and "Ambusher" not in r.text
+    assert d["canvas"] == {"w": 1000, "h": 800, "bg": "#0d1b2a"}
+    assert d["grid_type"] == "square" and d["grid_config"] == {"cell_size": 40}
+
+
+def test_the_tv_map_is_gm_only_and_world_checked(client, seed):
+    slug = _map(seed)
+    other = _map(seed, slug="elsewhere", world=seed.world_b)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/display/map/{slug}").status_code == 403
+    assert client.get(f"/display/map/{slug}/data.json").status_code == 403
+    _gm(client, seed)
+    assert client.get(f"/display/map/{slug}").status_code == 200
+    assert client.get(f"/display/map/{other}").status_code == 404
+    assert client.get(f"/display/map/{other}/data.json").status_code == 404
+    assert client.get("/display/map/nope/data.json").status_code == 404
+
+
+def test_the_tv_page_has_the_true_scale_controls(client, seed):
+    _gm(client, seed)
+    slug = _map(seed)
+    html = client.get(f"/display/map/{slug}").text
+    assert "map-viewport.js" in html and "cssPerInch" in html and "trueScale" in html
+    assert "/api/live" in html                       # follows the world's change counter
+    assert "https://" not in html.replace("http://www.w3.org", "")   # nothing is fetched from elsewhere

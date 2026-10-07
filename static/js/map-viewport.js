@@ -87,11 +87,36 @@
     return { x: view.x + (num(px, 0) - offX) / scale, y: view.y + (num(py, 0) - offY) / scale };
   }
 
+  // ── TV mode: one grid square = one inch on the glass ──────────────────────────────────────────────
+  // CSS pixels per physical inch for a screen of `diagonal` inches (screen.width/height are CSS pixels already, so the
+  // device pixel ratio cancels out). null when the inputs make no sense.
+  function cssPerInch(screenW, screenH, diagonal) {
+    var w = num(screenW, 0), h = num(screenH, 0), d = num(diagonal, 0);
+    if (w <= 0 || h <= 0 || d < 5 || d > 200) return null;
+    return Math.hypot(w, h) / d;
+  }
+
+  // A view in which `unitsPerInch` canvas units (the grid cell size, for one square per inch) cover one physical inch,
+  // centred on (cx, cy). Unlike a zoomed view this may be LARGER than the canvas (a small map on a big TV): it is then
+  // centred with empty space around it instead of being stretched.
+  function trueScale(bounds, screen, unitsPerInch, pxPerInch, cx, cy) {
+    var b = fit(bounds);
+    var sw = Math.max(1, num(screen && screen.w, 1)), sh = Math.max(1, num(screen && screen.h, 1));
+    var upi = num(unitsPerInch, 0), ppi = num(pxPerInch, 0);
+    if (upi <= 0 || ppi <= 0) return b;
+    var w = sw / ppi * upi, h = sh / ppi * upi;
+    function place(centre, size, whole) {
+      if (size >= whole) return (whole - size) / 2;
+      return clamp(num(centre, whole / 2) - size / 2, 0, whole - size);
+    }
+    return { x: place(cx, w, b.w), y: place(cy, h, b.h), w: w, h: h };
+  }
+
   function toAttr(view) { return [view.x, view.y, view.w, view.h].map(function (n) { return Math.round(n * 100) / 100; }).join(' '); }
 
   root.ndViewport = {
     fit: fit, zoomOf: zoomOf, constrain: constrain, zoomAt: zoomAt, panBy: panBy, pinch: pinch,
-    centerOn: centerOn, toCanvas: toCanvas, toAttr: toAttr, MIN_ZOOM: MIN_ZOOM, MAX_ZOOM: MAX_ZOOM,
+    centerOn: centerOn, toCanvas: toCanvas, cssPerInch: cssPerInch, trueScale: trueScale, toAttr: toAttr, MIN_ZOOM: MIN_ZOOM, MAX_ZOOM: MAX_ZOOM,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.ndViewport;
 })(typeof window !== 'undefined' ? window : globalThis);

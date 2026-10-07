@@ -3,7 +3,7 @@
 // is loaded by base.html for GMs on normal (non-embed) pages.
 //
 //   window.ndStage.showImage(url, title, caption)   window.ndStage.showText(text, title)
-//   window.ndStage.showEntity(id, mode)             window.ndStage.clear()   window.ndStage.openDisplay()
+//   window.ndStage.showMap(mapSlug, title)         window.ndStage.showEntity(id, mode)             window.ndStage.clear()   window.ndStage.openDisplay()
 //
 // What the GM gets without touching any template: a 📺 button (bottom-left) with the controls and a
 // history of what was shown; a "send to screen" button that appears over any image on hover; the same
@@ -75,6 +75,7 @@
   var api = {
     showImage: function (url, title, caption) { return send('/api/display/show', { kind: 'image', url: toPath(url), title: title || '', caption: caption || '' }, '📺 ' + (title || 'Image') + ' → second screen'); },
     showText: function (text, title) { return send('/api/display/show', { kind: 'text', text: text, title: title || '' }, '📺 Text → second screen'); },
+    showMap: function (mapSlug, title) { return send('/api/display/show', { kind: 'map', slug: mapSlug }, '📺 ' + (title || 'Map') + ' → second screen'); },
     showEntity: function (id, mode) { return send('/api/display/show', { kind: 'entity', entity_id: id, mode: mode || '' }, '📺 Sent to the second screen'); },
     clear: function () { return send('/api/display/clear', {}, '📺 Screen blanked'); },
     openDisplay: openDisplay

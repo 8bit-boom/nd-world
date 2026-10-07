@@ -15,3 +15,7 @@ def player_visible(elements) -> list:
         and not el.get("hidden")
         and (el.get("type") != "token" or el.get("visible_to_players", True))
     ]
+
+
+# canvas background presets (the editor's "dark / blueprint / ..." choices)
+BG_COLORS = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}

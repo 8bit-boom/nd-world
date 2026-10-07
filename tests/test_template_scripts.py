@@ -19,7 +19,7 @@ import subprocess
 import pytest
 
 from app.database import SessionLocal
-from app.models import Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate
+from app.models import Entity, GameSession, Party, PlayerCharacter, Quest, Schematic, SheetTemplate
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -85,12 +85,13 @@ def test_rendered_pages_have_parseable_inline_scripts(client, seed):
     # the quest page's AI-sync panel (and its script) only exists once a session does
     session = _add(GameSession(world_id=seed.world_a.id, title="Session one"))
 
+    _add(Schematic(world_id=seed.world_a.id, name="Tavern", slug="tv-check", is_html=False, elements_json="[]"))
     pages = {
-        "gm": ["/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
+        "gm": ["/maps/schematic/tv-check", "/maps/schematic/tv-check/view", "/display/map/tv-check", "/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
                f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/calendar/year", "/calendar/config", "/worlds", "/schedule", "/media-rename", "/combat",
                "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings", "/npc-talk",
                "/new", f"/entity/{npc}/edit", "/races", "/professions", "/dice", f"/sessions/{session}"],
-        "player": [f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk", "/dice"],
+        "player": ["/maps/schematic/tv-check/view", f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk", "/dice"],
     }
     scripts, checked = [], []
     for who, paths in pages.items():
