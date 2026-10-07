@@ -16,6 +16,8 @@ of the running app, audited the whole map stack in the code, and found — and v
 **Evidence tags used below:** **[measured]** run here, numbers given · **[tested]** a prototype does it and a test pins it · **[primary]** read from a real file, type definition, licence or README ·
 **[secondary]** a search summary or a page the sandbox could not open · **[inferred]** my reasoning, worth checking. The sandbox has **no GPU**, so rendering speed on real hardware is the main thing still unmeasured.
 
+**Built since this research (October 2026):** the D1 patch (a player can no longer brick a map with `NaN`/`Infinity`); zoom, pan and pinch in the player view (`static/js/map-viewport.js`, Node-tested); live updates through the world's change counter (the poll is now a 20 s safety net); Leaflet vendored; **TV mode** - a map on the second screen, one grid square = one inch once the screen size is known (`/display/map/{slug}`); a **prop library** to import map objects as PNG, JPG, WebP, GIF, AVIF, BMP, TIFF or SVG (`app/prop_images.py`, `app/routers/map_props.py`, with a hardened SVG allow-list); and **AI Build plan mode** - the model plans rooms and links, `app/map_layout.py` lays out walls, doors and furniture (a Python port of the building/furnishing ideas from the prototypes). This covers WP0, WP3 and the first parts of WP5/WP6; walls as data, fog and lights (WP1-2) and UVTT/Foundry export (WP4) are still to do.
+
 ---
 
 ## 1. The answer
