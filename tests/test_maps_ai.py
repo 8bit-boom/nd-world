@@ -222,3 +222,108 @@ def test_schematic_preview_gated_for_non_maps_viewers(client, seed):
     finally:
         db.close()
     assert client.get("/maps/schematic/preview-sch/preview.svg").status_code == 403
+
+
+# ── plan & build: the AI plans, app/map_layout.py lays it out ───────────────────
+
+_CANNED_PLAN = {
+    "title": "The Rusty Anchor", "entry": "bar",
+    "rooms": [
+        {"id": "bar", "name": "Bar", "kind": "tavern", "size": "large", "entity": "Old Salt"},
+        {"id": "kitchen", "name": "Kitchen", "kind": "kitchen"},
+        {"id": "store", "name": "Store", "kind": "storage", "size": "small"},
+        {"id": "ghost", "name": "Ghost room", "kind": "other"},
+    ],
+    "links": [["bar", "kitchen"], {"a": "kitchen", "b": "store", "type": "secret"}, ["bar", "nowhere"]],
+}
+
+
+def _plan_fake(monkeypatch, reply, seen=None):
+    import app.main as main_module
+
+    async def _fake_generate_chat(messages, system="", model="", options=None, think=False, format=None):
+        if seen is not None:
+            seen.append((system, format))
+        return reply if isinstance(reply, str) else "```json\n" + json.dumps(reply) + "\n```"
+
+    monkeypatch.setattr(main_module._ai_module, "generate_chat", _fake_generate_chat)
+
+
+def _start(client, slug, **data):
+    r = client.post(f"/maps/schematic/{slug}/ai-build/start", data={"description": "a tavern", **data})
+    assert r.status_code == 200, r.text
+    return _poll_job(client, slug, r.json()["job_id"])
+
+
+def test_plan_mode_lays_out_a_plan_into_real_elements(client, seed, monkeypatch):
+    from app.models import Entity, MapProp
+    seen = []
+    _plan_fake(monkeypatch, _CANNED_PLAN, seen)
+    existing = [{"id": "keep-me", "type": "rect", "x": 0, "y": 0, "w": 10, "h": 10}]
+    _schematic(seed, slug="plan-den", elements=existing)
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="npc", name="Old Salt"))
+        db.add(MapProp(world_id=seed.world_a.id, name="Big Bed", file_url="/uploads/props/bed.webp", cells_w=2, cells_h=1))
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    data = _start(client, "plan-den", mode="plan")
+    assert data["status"] == "done", data
+    assert "You do NOT draw" in seen[0][0] and "rooms" in seen[0][1]["properties"]       # the planning prompt, structured output
+    assert data["title"] == "The Rusty Anchor"
+    assert any("had no way in" in w for w in data["warnings"])                          # the 'ghost' room was joined to the entrance
+    # the returned list is the MERGED canvas, so the editor can adopt it without losing what was there
+    assert data["elements"][0]["id"] == "keep-me" and data["total"] == len(data["elements"]) == 1 + data["added"]
+    floors = [e for e in data["elements"] if e.get("layer") == "Background"]
+    assert sorted(f["label"] for f in floors) == ["Bar", "Ghost room", "Kitchen", "Store"]
+    bar = next(f for f in floors if f["label"] == "Bar")
+    assert bar["entity_id"] and "entity_name" not in bar                              # lore entity resolved by name
+    assert any(e.get("hidden") for e in data["elements"] if e["type"] == "line")      # the secret door is GM-only
+    db = SessionLocal()
+    try:
+        stored = json.loads(db.query(Schematic).filter(Schematic.slug == "plan-den").first().elements_json)
+        assert len(stored) == data["total"] and stored[0]["id"] == "keep-me"
+    finally:
+        db.close()
+
+
+def test_plan_mode_replace_uses_the_grid_and_rejects_nonsense(client, seed, monkeypatch):
+    _schematic(seed, slug="plan-grid", elements=[{"id": "old", "type": "rect", "x": 1}])
+    db = SessionLocal()
+    try:
+        s = db.query(Schematic).filter(Schematic.slug == "plan-grid").first()
+        s.grid_type, s.grid_config_json = "square", json.dumps({"cell_size": 40, "offset_x": 10, "offset_y": 20})
+        db.commit()
+    finally:
+        db.close()
+    _plan_fake(monkeypatch, _CANNED_PLAN)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    data = _start(client, "plan-grid", mode="plan", replace="1")
+    assert data["status"] == "done" and not any(e["id"] == "old" for e in data["elements"])
+    floors = [e for e in data["elements"] if e.get("layer") == "Background"]
+    assert all((f["x"] - 10) % 40 == 0 and (f["y"] - 20) % 40 == 0 and f["w"] % 40 == 0 for f in floors)   # on the map's own grid
+    _plan_fake(monkeypatch, "I'm sorry, I can't plan that.")
+    bad = _start(client, "plan-grid", mode="plan")
+    assert bad["status"] == "error" and "plan could not be used" in bad["error"]
+    _plan_fake(monkeypatch, {"rooms": []})
+    assert _start(client, "plan-grid", mode="plan")["status"] == "error"
+
+
+def test_an_unknown_mode_falls_back_to_free_drawing(client, seed, monkeypatch):
+    import app.main as main_module
+    prompts = []
+
+    async def _fake(messages, system="", model="", options=None, think=False, format=None):
+        prompts.append(system)
+        return json.dumps(_CANNED_ELEMENTS)
+
+    monkeypatch.setattr(main_module._ai_module, "generate_chat", _fake)
+    _schematic(seed, slug="plan-mode")
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    assert _start(client, "plan-mode", mode="surprise")["status"] == "done"
+    assert "2000 x 1500" in prompts[0]

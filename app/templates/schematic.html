@@ -577,6 +577,11 @@
       The build runs in the background and can take a few minutes (much longer
       without a GPU).
     </p>
+    <label style="display:block;font-size:.78rem;color:var(--text-dim);margin:0 0 .2rem">How to build</label>
+    <select id="ai-build-mode" style="width:100%;background:var(--bg3,#0d0d12);border:1px solid var(--border,#333);color:var(--text,#ddd);padding:.4rem;border-radius:4px;font-size:.82rem;margin-bottom:.5rem">
+      <option value="plan" selected>Plan &amp; build — the AI plans rooms and doors, the app lays out walls, doors and furniture (recommended)</option>
+      <option value="draw">Free drawing — the AI places every shape itself (rougher)</option>
+    </select>
     <textarea id="ai-build-desc" rows="4" placeholder="e.g. A smuggler's den: L-shaped bar with stools, two storage rooms behind a hidden door, a central gambling table, back exit into the alley."
       style="width:100%;background:var(--bg3,#0d0d12);border:1px solid var(--border,#333);color:var(--text,#ddd);padding:.5rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:4px;resize:vertical;box-sizing:border-box"></textarea>
     <label style="display:block;font-size:.78rem;color:var(--text-dim);margin:.5rem 0 .2rem">Sketch / floorplan images (optional, up to 3)</label>
@@ -615,6 +620,7 @@ function aiBuildClose() {
       const fd = new FormData();
       fd.append('description', desc);
       fd.append('replace', replace);
+      fd.append('mode', document.getElementById('ai-build-mode').value);
       for (const f of files) fd.append('images', f);
       // Start (returns immediately) — the build runs in the background,
       // because reasoning + RAG + generation exceeds Cloudflare's ~100 s
@@ -646,8 +652,10 @@ function aiBuildClose() {
         elements = pd.elements;
         selIds.clear(); redraw(); snapshot(); markClean();
         await save();
-        statusEl.textContent = `✓ Added ${pd.added} element(s).`;
-        setTimeout(aiBuildClose, 900);
+        statusEl.textContent = `✓ Added ${pd.added} element(s)` + (pd.title ? ` — ${pd.title}` : '.') +
+          ((pd.warnings && pd.warnings.length) ? '\n⚠ ' + pd.warnings.join('\n⚠ ') : '');
+        statusEl.style.whiteSpace = 'pre-line';
+        setTimeout(aiBuildClose, (pd.warnings && pd.warnings.length) ? 6000 : 900);
         break;
       }
     } catch (e) {

@@ -33,6 +33,7 @@ from . import deps
 from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
+from . import map_layout as _map_layout
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
@@ -7504,19 +7505,120 @@ async def _schematic_ai_build_task_inner(job_id: int, slug: str, world_id: int,
         total = len(elements)
     finally:
         db.close()
+    # `elements` is the AUTHORITATIVE merged list: the editor adopts it as-is, so returning only the new
+    # shapes would make an "append" build wipe everything that was already on the canvas.
     _AI_BUILD_JOBS[job_id].update(
-        status="done", added=len(new_elements), total=total, elements=new_elements,
+        status="done", added=len(new_elements), total=total, elements=elements,
     )
+
+
+async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
+                                        desc: str, replace_flag: bool, image_b64s: list):
+    """AI Build, plan mode: the model returns a PLAN (rooms, kinds, sizes, links), app/map_layout.py lays it out - walls with
+    door gaps, doors, furniture from the world's prop library - and the result is saved as ordinary elements. Never raises;
+    failures land in the job row for the poll route."""
+    db = SessionLocal()
+    try:
+        sch = db.query(Schematic).filter(Schematic.slug == slug, Schematic.world_id == world_id).first()
+        if not sch:
+            _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
+            return
+        canvas_w, canvas_h = sch.canvas_width or 2000, sch.canvas_height or 1500
+        try:
+            gcfg = json.loads(sch.grid_config_json or "{}")
+        except ValueError:
+            gcfg = {}
+        gcfg = gcfg if isinstance(gcfg, dict) else {}
+        square = (sch.grid_type or "none") == "square" and (gcfg.get("cell_size") or 0) > 0
+        cell = float(gcfg["cell_size"]) if square else 50.0
+        origin = (float(gcfg.get("offset_x") or 0), float(gcfg.get("offset_y") or 0)) if square else (0.0, 0.0)
+        props = [{"id": p.id, "name": p.name, "tags": p.tags or "", "url": p.file_url, "cells_w": p.cells_w, "cells_h": p.cells_h}
+                 for p in db.query(MapProp).filter(MapProp.world_id == world_id).all()]
+        entity_ids = {(e.name or "").strip().lower(): e.id
+                      for e in db.query(Entity.id, Entity.name).filter(Entity.world_id == world_id).limit(5000).all()}
+    finally:
+        db.close()
+
+    system = _map_layout.PLAN_SYSTEM
+    try:
+        db = SessionLocal()
+        try:
+            from . import retrieval as _retrieval
+            rag, _n, _notes = _retrieval.smart_world_context(db, world_id, desc, entity_limit=8, notes_limit=2)
+        finally:
+            db.close()
+        if rag:
+            system += "\n=== World lore — match the setting, names, architecture, and factions described below ===\n" + rag[:4000]
+    except Exception:
+        pass  # RAG is enhancement, never a hard dependency
+
+    user_msg: dict = {"role": "user", "content": desc}
+    if image_b64s:
+        user_msg["images"] = image_b64s
+    fmt = {"type": "object", "properties": {"rooms": {"type": "array"}, "links": {"type": "array"}}, "required": ["rooms"]}
+
+    async def _call(with_format: bool):
+        return await _ai_module.generate_chat([user_msg], system=system, think=True, format=(fmt if with_format else None))
+
+    try:
+        try:
+            raw = await _call(with_format=True)
+        except Exception as exc:
+            msg = str(exc)
+            if "response_format" in msg and ("grammar" in msg or "unsupported" in msg.lower()):
+                raw = await _call(with_format=False)       # Studio without a GGUF chat model rejects structured output
+            else:
+                raise
+    except Exception as exc:
+        _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc}")
+        return
+    if not (raw or "").strip():
+        _AI_BUILD_JOBS[job_id].update(status="error", error="The model returned nothing — try a more concrete description.")
+        return
+    try:
+        spec, warnings = _map_layout.clean_map_spec(_map_layout.extract_json(raw))
+    except ValueError as exc:
+        _AI_BUILD_JOBS[job_id].update(status="error", error=f"The model's plan could not be used ({exc}) — try again or rephrase.")
+        return
+    new_elements, more = _map_layout.layout(spec, cell, canvas_w, canvas_h, props=props, origin=origin)
+    warnings = warnings + more
+    for el in new_elements:                                   # a room that names a lore entity keeps the link
+        name = el.pop("entity_name", None)
+        if name and entity_ids.get(name.strip().lower()):
+            el["entity_id"] = entity_ids[name.strip().lower()]
+    if not new_elements:
+        _AI_BUILD_JOBS[job_id].update(status="error", error="The plan could not be laid out — " + (" ".join(warnings) or "try again."))
+        return
+
+    db = SessionLocal()
+    try:
+        sch = db.query(Schematic).filter(Schematic.slug == slug, Schematic.world_id == world_id).first()
+        if not sch:
+            _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
+            return
+        try:
+            elements = json.loads(sch.elements_json or "[]")
+        except ValueError:
+            elements = []
+        elements = new_elements if replace_flag else (elements if isinstance(elements, list) else []) + new_elements
+        sch.elements_json = json.dumps(elements)
+        db.commit()
+        _live_module.touch(sch.world_id)
+        total = len(elements)
+    finally:
+        db.close()
+    _AI_BUILD_JOBS[job_id].update(status="done", added=len(new_elements), total=total, elements=elements,
+                                  warnings=warnings[:12], title=spec.get("title") or "")
 
 
 @_ai_queue.serialized("map build", "job")
 async def _schematic_ai_build_task(job_id: int, slug: str, world_id: int,
-                                   desc: str, replace_flag: bool, image_b64s: list):
+                                   desc: str, replace_flag: bool, image_b64s: list, mode: str = "draw"):
     """Thin crash-capture wrapper: any exception in the build task lands in
     the job row (status=error) instead of dying silently on the loop."""
     try:
-        await _schematic_ai_build_task_inner(job_id, slug, world_id, desc,
-                                             replace_flag, image_b64s)
+        inner = _schematic_ai_plan_task_inner if mode == "plan" else _schematic_ai_build_task_inner
+        await inner(job_id, slug, world_id, desc, replace_flag, image_b64s)
     except Exception as exc:
         _AI_BUILD_JOBS.setdefault(job_id, {"status": "error", "slug": slug})
         _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build crashed: {exc}")
@@ -7530,6 +7632,7 @@ async def schematic_ai_build_start(
     request: Request,
     description: str = Form(...),
     replace: str = Form(""),
+    mode: str = Form("draw"),
     images: List[UploadFile] = File(None),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
@@ -7565,7 +7668,8 @@ async def schematic_ai_build_start(
         _AI_BUILD_JOBS.pop(done.pop(0), None)
 
     asyncio.get_event_loop().create_task(
-        _schematic_ai_build_task(job_id, slug, sch.world_id, desc, replace_flag, image_b64s)
+        _schematic_ai_build_task(job_id, slug, sch.world_id, desc, replace_flag, image_b64s,
+                                 "plan" if (mode or "").strip().lower() == "plan" else "draw")
     )
     return {"job_id": job_id, "status": "running"}
 
@@ -7583,7 +7687,7 @@ async def schematic_ai_build_poll(slug: str, job_id: int):
         return {"status": "running",
                 "elapsed": round(time.time() - job.get("started", time.time()))}
     return {"status": "done", "added": job["added"], "total": job["total"],
-            "elements": job["elements"]}
+            "elements": job["elements"], "warnings": job.get("warnings", []), "title": job.get("title", "")}
 
 
 
