@@ -185,8 +185,9 @@ def test_player_view_poller_is_visibility_aware(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     r = client.get(f"/maps/schematic/{s.slug}/view")
     assert r.status_code == 200
-    assert "ndPoll(poll, 4000)" in r.text
-    assert "setInterval(poll, 4000)" not in r.text
+    assert "ndPoll(pollNow, 20000)" in r.text      # a slow safety net; changes arrive over the live bus
+    assert "addEventListener('nd-live'" in r.text
+    assert "setInterval(poll" not in r.text
 
 
 def test_hidden_element_never_reaches_player_payload(client, seed):
@@ -469,3 +470,17 @@ def test_move_token_refuses_nan_infinity_and_junk_and_keeps_tokens_on_the_canvas
     assert client.post(url, json={"token_id": "tok1", "x": 1e300, "y": -99999}).status_code == 200
     el = client.get(f"/maps/schematic/{s.slug}/view.json").json()["elements"][0]
     assert (el["x"], el["y"]) == (2000.0, 0.0)
+
+
+def test_map_writes_bump_the_live_counter_so_players_refresh_at_once(client, seed):
+    from app import live
+    s = _make_schematic(seed.world_a.id, "live-bump")
+    login(client, seed.gm.email, GM_PASSWORD)
+    before = live.version(seed.world_a.id)
+    r = client.post(f"/maps/schematic/{s.slug}/elements", json={"elements": []})
+    assert r.status_code == 200
+    assert live.version(seed.world_a.id) > before
+    mid = live.version(seed.world_a.id)
+    r = client.post(f"/maps/schematic/{s.slug}/grid", json={"grid_type": "square", "grid_config": {"cell_size": 50}})
+    assert r.status_code == 200, r.text
+    assert live.version(seed.world_a.id) > mid

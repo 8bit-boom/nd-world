@@ -7,6 +7,11 @@
     <span id="sv-round" style="display:none">Round <span id="sv-round-num"></span></span>
     <div style="flex:1"></div>
     <span id="sv-status" style="opacity:.5;font-size:.75rem">live</span>
+    <span id="sv-zoom" aria-label="Zoom">
+      <button type="button" id="sv-zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+      <button type="button" id="sv-zoom-fit" title="Show the whole map" aria-label="Fit the whole map">⤢</button>
+      <button type="button" id="sv-zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+    </span>
     <button type="button" class="nd-float-btn" title="Float this map — it stays open while you browse other pages"
             onclick="ndFloat('{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}', {title:{{ ('🗺 ' + schematic.name)|tojson }}, w:760, h:600})">⇱ Float</button>
     <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"
@@ -35,8 +40,12 @@
 #sv-toolbar { display:flex; align-items:center; gap:.6rem; padding:.5rem .8rem; background:var(--bg2,#1a1a2e); border-bottom:1px solid var(--border,#333); font-family:var(--font); }
 #sv-title { color:var(--neon,#00f0ff); font-weight:bold; font-size:.95rem; }
 #sv-round { color:var(--text-dim,#888); font-size:.85rem; }
-#sv-canvas-wrap { flex:1; overflow:auto; background:#0a0a0a; display:flex; align-items:center; justify-content:center; }
-#sch-svg { max-width:100%; max-height:100%; }
+#sv-canvas-wrap { flex:1; min-height:0; overflow:hidden; background:#0a0a0a; position:relative; }
+#sch-svg { width:100%; height:100%; display:block; touch-action:none; user-select:none; -webkit-user-select:none; cursor:grab; }
+#sch-svg.panning { cursor:grabbing; }
+#sv-zoom { display:inline-flex; gap:.25rem; }
+#sv-zoom button { min-width:2.2rem; min-height:2.2rem; background:var(--bg3,#222); border:1px solid var(--border,#333); color:var(--text,#eee); border-radius:4px; cursor:pointer; font-size:1rem; }
+#sv-zoom button:hover { border-color:var(--neon,#00f0ff); color:var(--neon,#00f0ff); }
 .own-token { cursor:grab; }
 .own-token:active { cursor:grabbing; }
 .clickable-token { cursor:pointer; }
@@ -55,6 +64,7 @@
 </style>
 
 <script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
+<script src="/static/js/map-viewport.js?v={{ asset_v('js/map-viewport.js') }}"></script>
 <script>
 "use strict";
 const SLUG = {{ schematic.slug | tojson }};
@@ -225,6 +235,57 @@ function renderPartyPins() {
   });
 }
 
+// ── Zoom, pan and pinch ─────────────────────────────────────────────────────
+// The view is the visible part of the canvas, written to the svg's viewBox (see static/js/map-viewport.js).
+const BOUNDS = { w: CW, h: CH };
+let view = ndViewport.fit(BOUNDS);
+function applyView() { svg.setAttribute('viewBox', ndViewport.toAttr(view)); }
+function screenSize() { const r = svg.getBoundingClientRect(); return { w: r.width, h: r.height }; }
+function localPt(e) { const r = svg.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function zoomBy(factor, e) {
+  const c = e ? ndViewport.toCanvas(view, screenSize(), localPt(e).x, localPt(e).y) : null;
+  view = ndViewport.zoomAt(view, BOUNDS, factor, c && c.x, c && c.y);
+  applyView();
+}
+document.getElementById('sv-zoom-in').onclick = () => zoomBy(1.5);
+document.getElementById('sv-zoom-out').onclick = () => zoomBy(1 / 1.5);
+document.getElementById('sv-zoom-fit').onclick = () => { view = ndViewport.fit(BOUNDS); applyView(); };
+svg.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomBy(Math.exp(-Math.max(-300, Math.min(300, e.deltaY)) * 0.0015), e);
+}, { passive: false });
+const pointers = new Map();   // pointerId -> {x, y} for the background gesture (pan with one, pinch with two)
+let lastPair = null;
+svg.addEventListener('pointerdown', e => {
+  if (dragEl) return;                         // a token drag owns this pointer
+  pointers.set(e.pointerId, localPt(e));
+  if (pointers.size === 1) svg.classList.add('panning');
+  lastPair = pointers.size === 2 ? [...pointers.values()] : null;
+  try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+});
+function bgMove(e) {
+  if (!pointers.has(e.pointerId)) return;
+  const now = localPt(e), before = pointers.get(e.pointerId);
+  pointers.set(e.pointerId, now);
+  if (pointers.size >= 2 && lastPair) {
+    const pair = [...pointers.values()].slice(0, 2);
+    view = ndViewport.pinch(view, BOUNDS, lastPair, pair, screenSize());
+    lastPair = pair;
+  } else if (pointers.size === 1) {
+    view = ndViewport.panBy(view, BOUNDS, now.x - before.x, now.y - before.y, screenSize());
+  }
+  applyView();
+}
+function bgEnd(e) {
+  pointers.delete(e.pointerId);
+  lastPair = pointers.size === 2 ? [...pointers.values()] : null;
+  if (!pointers.size) svg.classList.remove('panning');
+}
+svg.addEventListener('pointermove', bgMove);
+svg.addEventListener('pointerup', bgEnd);
+svg.addEventListener('pointercancel', bgEnd);
+applyView();
+
 // ── Own-token drag ──────────────────────────────────────────────────────────
 function svgPt(e) {
   const pt = svg.createSVGPoint();
@@ -272,6 +333,11 @@ async function poll() {
   } catch (e) { /* transient network error — try again next tick */ }
 }
 redraw();
-ndPoll(poll, 4000);
+// Changes arrive over the live bus (a GM edit, a door, another player's move) and refresh the map at once; the slow
+// poll is only the safety net for a dropped connection.
+let pollBusy = false;
+async function pollNow() { if (pollBusy) return; pollBusy = true; try { await poll(); } finally { pollBusy = false; } }
+window.addEventListener('nd-live', () => { if (!document.hidden) pollNow(); });
+ndPoll(pollNow, 20000);
 </script>
 {% endblock %}

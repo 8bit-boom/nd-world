@@ -33,6 +33,7 @@ from . import deps
 from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
+from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
@@ -3356,6 +3357,7 @@ def schematic_pull_combat(slug: str, db: Session = Depends(get_db)):
                 new_count += 1
         s2.elements_json = json.dumps(elements)
         db.commit()
+        _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
         return {"elements": elements}
     except HTTPException:
         db.rollback()
@@ -3400,6 +3402,7 @@ def schematic_push_combat(slug: str, db: Session = Depends(get_db)):
             synced.append(c.get("name"))
         cs.combatants_json = json.dumps(combatants)
         db.commit()
+        _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
         return {"synced": synced}
     except HTTPException:
         db.rollback()
@@ -3419,11 +3422,7 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
     draggable-own-token feature) and the linked combat's active-turn
     combatant, if any."""
     elements = json.loads(s.elements_json or "[]")
-    visible = [
-        el for el in elements
-        if not el.get("hidden")
-        and (el.get("type") != "token" or el.get("visible_to_players", True))
-    ]
+    visible = _schematic_payload.player_visible(elements)
     own_pc_id, own_pc_currency, own_pc_ids = None, [], []
     if user and not user.is_gm:
         own_pcs = _own_pcs_for_schematic(db, s, user)
@@ -3575,6 +3574,7 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
         el["y"] = fy
         s2.elements_json = json.dumps(elements)
         db.commit()
+        _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
         return {"ok": True}
     except HTTPException:
         db.rollback()
@@ -3654,6 +3654,7 @@ async def schematic_pickup_item(slug: str, request: Request, db: Session = Depen
         elements = [e for e in elements if e.get("id") != token_id]
         s2.elements_json = json.dumps(elements)
         db.commit()
+        _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
         return {"ok": True, "name": name, "qty": qty}
     except HTTPException:
         db.rollback()
@@ -3717,6 +3718,7 @@ async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(
         _merge_equipment_item(pc, stock.get("name") or "Item", 1)
         s2.elements_json = json.dumps(elements)
         db.commit()
+        _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
         return {"ok": True, "item": {"name": stock.get("name"), "qty": 1}, "currency": {"abbr": entry.get("abbr"), "value": entry.get("value")}}
     except HTTPException:
         db.rollback()
@@ -3736,6 +3738,7 @@ async def schematic_save_grid(slug: str, request: Request, db: Session = Depends
     s.grid_type = grid_type
     s.grid_config_json = json.dumps(config)
     db.commit()
+    _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
     return {"ok": True}
 
 @app.get("/maps/schematic/{slug}/preview.svg")
@@ -3881,6 +3884,7 @@ async def schematic_save_elements(slug: str, request: Request, db: Session = Dep
         raise HTTPException(400, "elements must be a list of objects")
     s.elements_json = json.dumps(elements)
     db.commit()
+    _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
     return {"ok": True}
 
 
@@ -3903,6 +3907,7 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
     copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     s.image_url = f"/uploads/schematics/{slug}{ext}"
     db.commit()
+    _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
 
 @app.post("/maps/schematic/{slug}/embed-image")
