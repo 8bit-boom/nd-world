@@ -46,6 +46,18 @@
     if (!o.hasGrid) warnings.push('This map has no square grid, so squares of ' + (o.cell || 50) + ' px were assumed.');
   }
 
+  // lights worth exporting: finite, switched on or off kept as a flag where the format has one
+  function usableLights(lights) {
+    return (lights || []).filter(function (l) { return l && isNum(l.x) && isNum(l.y) && isNum(l.range) && l.range > 0; });
+  }
+  function hex8(color) { var c = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color.slice(1).toLowerCase() : 'ffd9a0'; return 'ff' + c; }
+  // how bright the map is where no light reaches, as the format's ambient colour (darkness 0.85 -> a dim grey)
+  function ambient(darkness) {
+    var d = isNum(darkness) ? Math.min(0.95, Math.max(0, darkness)) : 0;
+    var v = Math.round(255 * (1 - d)).toString(16); if (v.length < 2) v = '0' + v;
+    return 'ff' + v + v + v;
+  }
+
   // ── Universal VTT ───────────────────────────────────────────────────────────
   function toUvtt(o) {
     var warnings = [];
@@ -70,7 +82,11 @@
       format: 0.3,
       resolution: { map_origin: { x: 0, y: 0 }, map_size: { x: r6(sc.sx), y: r6(sc.sy) }, pixels_per_grid: sc.ppg },
       line_of_sight: los, objects_line_of_sight: [], portals: portals,
-      environment: { baked_lighting: false, ambient_light: 'ffffffff' }, lights: [], image: o.imageB64 || '',
+      environment: { baked_lighting: false, ambient_light: ambient(o.darkness) },
+      lights: usableLights(o.lights).filter(function (l) { return l.on !== false; }).map(function (l) {
+        return { position: { x: r6(l.x / sc.cell), y: r6(l.y / sc.cell) }, range: r6(l.range), intensity: isNum(l.intensity) ? l.intensity : 1, color: hex8(l.color), shadows: true };
+      }),
+      image: o.imageB64 || '',
     };
     return { file: file, warnings: warnings, ppg: sc.ppg, width: Math.round(sc.sx * sc.ppg), height: Math.round(sc.sy * sc.ppg) };
   }
@@ -102,15 +118,22 @@
       if (kind === 'window') { props = { sight: 0, light: 0 }; windows++; }     // see through and light through, but not walk through
       for (var i = 0; i + 1 < w.pts.length; i++) add(w.pts[i], w.pts[i + 1], props);
     });
+    var lights = usableLights(o.lights).map(function (l) {
+      var dim = Math.round(l.range * (o.gridDistance || 5) * 100) / 100;
+      return { x: Math.round(l.x * k), y: Math.round(l.y * k), rotation: 0, walls: true, vision: false, hidden: l.on === false,
+        config: { dim: dim, bright: Math.round(dim / 2 * 100) / 100, color: /^#[0-9a-fA-F]{6}$/.test(l.color || '') ? l.color : '#ffd9a0',
+                  alpha: Math.min(1, Math.max(0, 0.5 * (isNum(l.intensity) ? l.intensity : 1))), angle: 360, luminosity: 0.5, shadows: 0.5 } };
+    });
     var scene = {
       name: o.name || 'Imported map', background: { src: o.imageSrc || null }, width: width, height: height, padding: 0,
       initial: { x: Math.round(width / 2), y: Math.round(height / 2), scale: 1 }, backgroundColor: '#999999',
       grid: { type: 1, size: sc.ppg, color: '#000000', alpha: 0.2, distance: o.gridDistance || 5, units: o.gridUnits || 'ft' },
       tokenVision: true, fog: { exploration: true }, environment: { darknessLevel: 0, globalLight: { enabled: false } },
-      navigation: true, active: false, ownership: { default: 2 }, walls: walls, lights: [],
+      navigation: true, active: false, ownership: { default: 2 }, walls: walls, lights: lights,
     };
-    warnings.push('Lights, props and tokens are not part of the scene; the picture is the map.');
-    return { scene: scene, warnings: warnings, stats: { walls: walls.length - doors - secrets, doors: doors, secretDoors: secrets, windows: windows, width: width, height: height, gridSize: sc.ppg } };
+    scene.environment.darknessLevel = isNum(o.darkness) ? Math.round(Math.min(0.95, Math.max(0, o.darkness)) * 100) / 100 : 0;
+    warnings.push('Props and tokens are not part of the scene; the picture is the map.');
+    return { scene: scene, warnings: warnings, stats: { walls: walls.length - doors - secrets, lights: lights.length, doors: doors, secretDoors: secrets, windows: windows, width: width, height: height, gridSize: sc.ppg } };
   }
 
   // the field rules of Foundry v13's schema that matter here, as a checker (empty list = valid as far as these rules go)
@@ -122,6 +145,12 @@
     if ([0, 1, 2, 3, 4, 5].indexOf(g.type) < 0) bad.push('grid.type must be 0-5');
     if (!(g.distance > 0)) bad.push('grid.distance must be positive');
     if (!int(scene.width) || scene.width <= 0 || !int(scene.height) || scene.height <= 0) bad.push('width/height must be positive integers');
+    (scene.lights || []).forEach(function (l, i) {
+      if (!int(l.x) || !int(l.y)) bad.push('lights[' + i + '] x/y must be integers');
+      var c = l.config || {};
+      if (!(c.dim >= 0) || !(c.bright >= 0)) bad.push('lights[' + i + '].config dim/bright must be >= 0');
+      if (c.shadows !== undefined && !(typeof c.shadows === 'number' && c.shadows >= 0 && c.shadows <= 1)) bad.push('lights[' + i + '].config.shadows must be a number 0..1');
+    });
     (scene.walls || []).forEach(function (w, i) {
       if (!Array.isArray(w.c) || w.c.length !== 4 || !w.c.every(int)) bad.push('walls[' + i + '].c must be 4 integers');
       [['move', [0, 20]], ['light', [0, 10, 20, 30, 40]], ['sight', [0, 10, 20, 30, 40]], ['sound', [0, 10, 20, 30, 40]],

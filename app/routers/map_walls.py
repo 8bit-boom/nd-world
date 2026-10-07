@@ -44,12 +44,14 @@ async def _json_body(request: Request):
 
 
 def _state(s: Schematic) -> dict:
-    return {"walls": _load(s.walls_json, []), "fog": map_walls.clean_fog(_load(s.fog_json, {}))}
+    lights, _w = map_walls.clean_lights(_load(s.lights_json, []), s.canvas_width, s.canvas_height)
+    return {"walls": _load(s.walls_json, []), "fog": map_walls.clean_fog(_load(s.fog_json, {})), "lights": lights}
 
 
 @router.get("/maps/schematic/{slug}/walls.json")
 def walls_get(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    """Everything the editor needs: ALL walls (secret doors included, the GM knows) and the fog settings."""
+    """Everything the editor needs: ALL walls (secret doors included, the GM knows), the fog and lighting settings, and ALL
+    lights (switched-off ones too)."""
     return _state(_map_for_edit(request, db, slug, active_world))
 
 
@@ -72,8 +74,9 @@ async def walls_save(slug: str, request: Request, db: Session = Depends(get_db),
 
 @router.post("/maps/schematic/{slug}/fog")
 async def fog_save(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    """Fog settings. Body: {"enabled"?: bool, "range"?: cells (0 = to the nearest wall), "reset"?: true}. `reset` raises the
-    epoch, so every browser forgets what it had explored."""
+    """Fog and lighting settings. Body: {"enabled"?: bool, "range"?: squares (0 = to the nearest wall), "darkness"?: 0..0.95 (how
+    dark it is where no light reaches), "personal"?: squares (the light every character carries), "reset"?: true}. `reset`
+    raises the epoch, so every browser forgets what it had explored."""
     s = _map_for_edit(request, db, slug, active_world)
     body = await _json_body(request)
     if not isinstance(body, dict):
@@ -86,6 +89,11 @@ async def fog_save(slug: str, request: Request, db: Session = Depends(get_db), a
         new["enabled"] = body["enabled"]
     if "range" in body:
         new["range"] = map_walls.clean_fog({"range": body["range"]})["range"]
+    for key in ("darkness", "personal"):
+        if key in body:
+            if isinstance(body[key], bool) or not isinstance(body[key], (int, float)):
+                raise HTTPException(400, f"{key} must be a number")
+            new[key] = body[key]
     if body.get("reset") is True:
         new["epoch"] = cur["epoch"] + 1
     new = map_walls.clean_fog(new)
@@ -138,3 +146,39 @@ async def rooms_save(slug: str, request: Request, db: Session = Depends(get_db),
     s.rooms_json = json.dumps(state)
     db.commit()
     return {"rooms": state, "warnings": warnings}
+
+
+@router.post("/maps/schematic/{slug}/lights")
+async def lights_save(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Replace the map's lights. Body: {"lights": [{id?, x, y, range (squares), color?: "#rrggbb", intensity?: 0.1..1, on?: bool,
+    label?}]}. Finite numbers only, kept on the canvas, at most 60. Returns what was stored plus warnings."""
+    s = _map_for_edit(request, db, slug, active_world)
+    body = await _json_body(request)
+    raw = body.get("lights") if isinstance(body, dict) else None
+    try:
+        lights, warnings = map_walls.clean_lights(raw, s.canvas_width, s.canvas_height)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    s.lights_json = json.dumps(lights)
+    db.commit()
+    live.touch(s.world_id)
+    return {"lights": lights, "warnings": warnings}
+
+
+@router.post("/maps/schematic/{slug}/light")
+async def light_toggle(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Switch one light on or off, live for players and the table screen. Body: {"id", "on"?: bool} (flips it when `on` is left out)."""
+    s = _map_for_edit(request, db, slug, active_world)
+    body = await _json_body(request)
+    lid = body.get("id") if isinstance(body, dict) else None
+    if not isinstance(lid, str):
+        raise HTTPException(400, "id required")
+    lights, _w = map_walls.clean_lights(_load(s.lights_json, []), s.canvas_width, s.canvas_height)
+    for l in lights:
+        if l["id"] == lid:
+            l["on"] = body["on"] if isinstance(body.get("on"), bool) else not l["on"]
+            s.lights_json = json.dumps(lights)
+            db.commit()
+            live.touch(s.world_id)
+            return {"id": lid, "on": l["on"]}
+    raise HTTPException(404, "No such light")

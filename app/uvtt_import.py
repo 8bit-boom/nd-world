@@ -11,7 +11,8 @@ docs/map-creator-research/FORMATS.md (read off a real Dungeondraft 1.0.1.3 expor
   line_of_sight                      polylines of {x, y} (walls); a closed ring repeats its first point
   objects_line_of_sight              outlines of objects that block light (pillars, furniture) - walls here, simplified
   portals                            doors (windows are portals too in this format): position, bounds [a, b], closed
-  lights                             not imported yet (the number is reported)
+  lights                             position, range (squares), colour "aarrggbb", intensity -> map lights
+  environment.ambient_light          how bright the map is where no light reaches -> the map's darkness
 """
 import base64
 import binascii
@@ -188,16 +189,40 @@ def parse_uvtt(raw: bytes) -> dict:
         n_doors += 1
     if n_doors:
         warnings.append("Windows are doors in this format, so any window in the file is now a door you can open.")
-    lights = d.get("lights")
-    if isinstance(lights, list) and lights:
-        warnings.append(f"{len(lights)} light(s) in the file were not imported (lights are not supported yet).")
+    lights = []
+    raw_lights = d.get("lights") if isinstance(d.get("lights"), list) else []
+    for l in raw_lights[:60]:
+        if not isinstance(l, dict):
+            continue
+        pos, rng, k = _pt(l.get("position")), _num(l.get("range")), _num(l.get("intensity"))
+        if not pos or not rng or rng <= 0:
+            continue
+        c = l.get("color")
+        colour = "#" + c[2:].lower() if isinstance(c, str) and len(c) == 8 and all(ch in "0123456789abcdefABCDEF" for ch in c) else "#ffd9a0"
+        x, y = px(pos)
+        lights.append({"id": f"u{len(lights) + 1}", "x": x, "y": y, "range": min(rng, 60.0), "color": colour,
+                       "intensity": 1.0 if k is None else min(1.0, max(0.1, k)), "on": True})
+    if len(raw_lights) > 60:
+        warnings.append("Only the first 60 lights were imported.")
+    # the map's darkness: how dim "no light" is. A file with baked lighting already has it in the picture, so none is added.
+    darkness = 0.0
+    env = d.get("environment") if isinstance(d.get("environment"), dict) else {}
+    amb = env.get("ambient_light")
+    if isinstance(amb, str) and len(amb) == 8 and all(ch in "0123456789abcdefABCDEF" for ch in amb) and not env.get("baked_lighting"):
+        r_, g_, b_ = (int(amb[i:i + 2], 16) for i in (2, 4, 6))
+        darkness = round(min(0.95, max(0.0, 1 - (r_ + g_ + b_) / 765)), 2)
+    if lights and env.get("baked_lighting"):
+        warnings.append("The picture already has its lighting painted in; the file's lights were imported but add on top of it.")
+    elif lights and darkness == 0:
+        warnings.append(f"The file has {len(lights)} light(s); they show once you raise Darkness in Walls & fog.")
     if dropped:
         warnings.append(f"{dropped} wall line(s) were skipped because the limits ({MAX_POLYLINES} lines / {MAX_POINTS} points) were reached.")
     if not walls:
         warnings.append("The file has no walls, so fog of war has nothing to work with.")
 
     return {"image": im, "width": iw, "height": ih, "cell": round(cell, 2), "walls": walls, "warnings": warnings,
-            "stats": {"walls": n_walls, "object_outlines": n_objects, "doors": n_doors, "lights_skipped": len(lights) if isinstance(lights, list) else 0,
+            "lights": lights, "darkness": darkness,
+            "stats": {"walls": n_walls, "object_outlines": n_objects, "doors": n_doors, "lights": len(lights),
                       "squares": [size[0], size[1]]}}
 
 

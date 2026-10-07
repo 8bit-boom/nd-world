@@ -252,5 +252,5 @@
     }).catch(function () { bindFog(); msg('Could not load the walls.'); });
   }
 
-  root.ndWalls = { cut: cutWalls, replaceByPrefix: replaceByPrefix, stateMap: stateMap, init: init, pointerDown: pointerDown, pointerMove: pointerMove, finish: finish, cancel: cancel, deleteSelected: deleteSelected, render: render };
+  root.ndWalls = { getWalls: function () { return walls; }, cut: cutWalls, replaceByPrefix: replaceByPrefix, stateMap: stateMap, init: init, pointerDown: pointerDown, pointerMove: pointerMove, finish: finish, cancel: cancel, deleteSelected: deleteSelected, render: render };
 })(window);

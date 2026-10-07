@@ -25,10 +25,11 @@ BG_COLORS = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e",
 
 
 def fog_payload(schematic) -> dict:
-    """The fog part of what a player (or the table's TV) is sent: {"fog": settings, "walls": [...]}.
+    """The fog and lighting part of what a player (or the table's TV) is sent: {"fog": settings, "walls": [...], "lights": [...]}.
 
-    The walls are sent ONLY while fog is switched on - they exist for the browser to compute what a token can see - and
-    pass through map_walls.for_player, so a secret door reaches players as an ordinary wall."""
+    The walls are sent ONLY while fog or darkness is switched on - they exist for the browser to compute what a token can see
+    and where shadows fall - and pass through map_walls.for_player, so a secret door reaches players as an ordinary wall.
+    Lights are sent only while darkness is above zero, and only the ones that are on."""
     def load(raw, default):
         try:
             v = json.loads(raw or "")
@@ -36,5 +37,10 @@ def fog_payload(schematic) -> dict:
         except ValueError:
             return default
     fog = map_walls.clean_fog(load(getattr(schematic, "fog_json", None), {}))
-    walls = map_walls.for_player(load(getattr(schematic, "walls_json", None), [])) if fog["enabled"] else []
-    return {"fog": fog, "walls": walls}
+    active = fog["enabled"] or fog["darkness"] > 0
+    walls = map_walls.for_player(load(getattr(schematic, "walls_json", None), [])) if active else []
+    lights = []
+    if fog["darkness"] > 0:
+        stored, _w = map_walls.clean_lights(load(getattr(schematic, "lights_json", None), []), schematic.canvas_width, schematic.canvas_height)
+        lights = [{k: l[k] for k in ("id", "x", "y", "range", "color", "intensity")} for l in stored if l["on"]]
+    return {"fog": fog, "walls": walls, "lights": lights}

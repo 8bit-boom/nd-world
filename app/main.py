@@ -3259,8 +3259,8 @@ async def schematic_import_uvtt(
     active_world: str = Cookie(None),
 ):
     """Make a new schematic from a Universal VTT file (.dd2vtt / .uvtt / .df2vtt): the map picture becomes the background, the
-    grid is set to the file's squares, walls, object outlines and doors become wall data (fog of war works at once). Lights are
-    not imported yet. Returns {"slug", "url", "warnings", "stats"}."""
+    grid is set to the file's squares, walls, object outlines and doors become wall data (fog of war works at once), and lights and
+    the ambient brightness become map lights and the darkness level. Returns {"slug", "url", "warnings", "stats"}."""
     world = get_active_world(request, db, active_world)
     if not world:
         raise HTTPException(400, "No world selected")
@@ -3281,14 +3281,16 @@ async def schematic_import_uvtt(
     sch_dir.mkdir(parents=True, exist_ok=True)
     (sch_dir / f"{slug}.webp").write_bytes(webp)
     walls, wwarn = _map_walls_mod.clean_walls(parsed["walls"], parsed["width"], parsed["height"])
+    lights, lwarn = _map_walls_mod.clean_lights(parsed["lights"], parsed["width"], parsed["height"])
     s = Schematic(world_id=world.id, name=title, slug=slug, is_html=False, canvas_width=parsed["width"], canvas_height=parsed["height"],
                   canvas_bg="dark", elements_json="[]", image_url=f"/uploads/schematics/{slug}.webp",
                   grid_type="square", grid_config_json=json.dumps({"cell_size": parsed["cell"], "offset_x": 0, "offset_y": 0,
                                                                      "unit_per_cell": 5, "unit_label": "ft"}),
-                  walls_json=json.dumps(walls), fog_json=json.dumps(_map_walls_mod.clean_fog({})))
+                  walls_json=json.dumps(walls), lights_json=json.dumps(lights),
+                  fog_json=json.dumps(_map_walls_mod.clean_fog({"darkness": parsed["darkness"]})))
     db.add(s); db.commit()
     _live_module.touch(world.id)
-    return {"slug": slug, "url": f"/maps/schematic/{slug}", "warnings": parsed["warnings"] + wwarn, "stats": {**parsed["stats"], "wall_lines": len(walls)}}
+    return {"slug": slug, "url": f"/maps/schematic/{slug}", "warnings": parsed["warnings"] + wwarn + lwarn, "stats": {**parsed["stats"], "wall_lines": len(walls)}}
 
 
 @app.get("/maps/schematic/{slug}", response_class=HTMLResponse)

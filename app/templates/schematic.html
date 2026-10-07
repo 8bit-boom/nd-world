@@ -26,6 +26,7 @@
     <button class="tb"    id="t-token"   onclick="setTool('token')"   title="Token (PC/creature/NPC) · G">🧙</button>
     <button class="tb"    id="t-rooms"   onclick="setTool('rooms')"   title="Draw rooms · D  (paint floor on the grid; walls appear around it, then mark doors and windows)">🏠▦</button>
     <button class="tb"    id="t-wall"    onclick="setTool('wall')"    title="Walls, doors and windows for fog of war · W  (click points; Enter or double-click finishes)">🧱</button>
+    <button class="tb"    id="t-light"   onclick="setTool('light')"   title="Lights for dark maps · B  (click to place, drag to move; set the darkness in Walls &amp; fog)">💡</button>
     <button class="tb"    id="t-pencil"  onclick="setTool('pencil')"  title="Pencil · K">✏</button>
     <button class="tb"    id="t-measure" onclick="setTool('measure')" title="Measure · M">📏</button>
     <button class="tb"    id="t-image"   onclick="pickImage()"        title="Embed image · I">🖼</button>
@@ -227,6 +228,15 @@
           <label title="How far characters see, in squares. Empty = as far as the walls allow.">sight <input type="number" id="walls-fog-range" min="0" max="100" step="1" placeholder="∞"/> sq</label>
           <button type="button" class="props-mini" id="walls-fog-reset" title="Everyone forgets what they have explored">Reset fog</button>
         </div>
+        <div class="props-row" style="border-top:1px solid #2a2a2a;padding-top:.4rem">
+          <label title="How dark it is where no light reaches. 0 = daylight: lights do nothing.">Darkness <input type="range" id="lights-dark" min="0" max="95" step="5" style="width:90px"/> <span id="lights-dark-val">0%</span></label>
+        </div>
+        <div class="props-row">
+          <label title="The light every character carries, in squares (0 = none)">Lantern <input type="number" id="lights-personal" min="0" max="20" step="0.5" style="width:3.4rem"/> sq</label>
+          <label title="Show the lighting in this editor (a lighter darkness so you can still work)"><input type="checkbox" id="lights-preview"/> preview</label>
+          <button type="button" class="props-mini" onclick="setTool('light')" title="Click the map to place a light">💡 Add</button>
+        </div>
+        <div id="lights-list"></div>
         <div style="font-size:.68rem;opacity:.6;line-height:1.35">Table-trust fog: it keeps honest players honest. A secret door looks like a wall to players. Characters (tokens linked to a character) are the ones who see.</div>
         <div id="walls-msg" role="status"></div>
       </div>
@@ -872,6 +882,8 @@ function setTool(t) {
   if (t !== 'stamp') stampSpec = null;
   redraw(); cancelDraw();
   hit.style.cursor = t === 'select' ? 'default' : 'crosshair';
+  // tokens sit above the click layer; the wall, room and light tools must be able to click through them
+  tokenLayer.style.pointerEvents = (t === 'wall' || t === 'rooms' || t === 'light') ? 'none' : '';
   if (window.ndRooms) {
     ndRooms.draw();
     if (t === 'rooms') {
@@ -879,6 +891,10 @@ function setTool(t) {
       if (rb && !rb.classList.contains('open')) toggleRoomsPanel();
       ndRooms.activate();
     }
+  }
+  if (window.ndLights) {
+    ndLights.render();
+    if (t === 'light') { const wb = document.getElementById('walls-body'); if (wb && !wb.classList.contains('open')) toggleWallsPanel(); }
   }
   if (window.ndWalls) {
     ndWalls.render();
@@ -1434,6 +1450,7 @@ hit.addEventListener('pointerdown', e => {
   }
   if (tool === 'wall')   { ndWalls.pointerDown(svgXYRaw(e), e.shiftKey); return; }
   if (tool === 'rooms')  { ndRooms.pointerDown(svgXYRaw(e)); return; }
+  if (tool === 'light')  { ndLights.pointerDown(svgXYRaw(e)); return; }
   if (tool === 'text')   { pendingTextPt=pt; openTextDlg(); return; }
   if (tool === 'pin')    { addPin(pt); return; }
   if (tool === 'party')  { pendingPartyPt=pt; openPartyDlg(); return; }
@@ -1454,8 +1471,8 @@ hit.addEventListener('pointerdown', e => {
   drawing=true; drawStart=pt;
 });
 
-hit.addEventListener('pointermove', e => { if (tool === 'wall') ndWalls.pointerMove(svgXYRaw(e)); else if (tool === 'rooms') ndRooms.pointerMove(svgXYRaw(e)); });
-hit.addEventListener('pointerup', e => { if (tool === 'rooms') ndRooms.pointerUp(svgXYRaw(e)); });
+hit.addEventListener('pointermove', e => { if (tool === 'wall') ndWalls.pointerMove(svgXYRaw(e)); else if (tool === 'rooms') ndRooms.pointerMove(svgXYRaw(e)); else if (tool === 'light') ndLights.pointerMove(svgXYRaw(e)); });
+hit.addEventListener('pointerup', e => { if (tool === 'rooms') ndRooms.pointerUp(svgXYRaw(e)); else if (tool === 'light') ndLights.pointerUp(); });
 hit.addEventListener('dblclick', e => {
   if (tool === 'wall') { ndWalls.finish(); return; }
   if (tool==='poly' && polyPts.length>=3) { finishPoly(); return; }
@@ -2427,7 +2444,7 @@ async function vttExport(kind) {
   if (!(ppg >= 20 && ppg <= 280)) { alert('Enter a number between 20 and 280.'); return; }
   try {
     const wd = await (await fetch(`/maps/schematic/${SLUG}/walls.json`)).json();
-    const ctx = { slug: SLUG, name: {{ schematic.name | tojson }}, elements, walls: wd.walls || [], canvasW: CW, canvasH: CH,
+    const ctx = { slug: SLUG, name: {{ schematic.name | tojson }}, elements, walls: wd.walls || [], lights: wd.lights || [], darkness: (wd.fog || {}).darkness || 0, canvasW: CW, canvasH: CH,
       bg: {{ canvas_bg_color | tojson }}, imageUrl: {{ (schematic.image_url or '') | tojson }},
       cell: (gridType === 'square' && gridConfig.cell_size) ? gridConfig.cell_size : 50, hasGrid: gridType === 'square' && !!gridConfig.cell_size,
       offsetX: gridConfig.offset_x || 0, offsetY: gridConfig.offset_y || 0, ppg,
@@ -2542,7 +2559,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.key === 'Enter' && tool === 'wall') { ndWalls.finish(); return; }
-  const map={v:'select',r:'rect',c:'circle',l:'line',a:'arrow',p:'poly',t:'text',n:'pin',k:'pencil',m:'measure',g:'token',w:'wall',d:'rooms'};
+  const map={v:'select',r:'rect',c:'circle',l:'line',a:'arrow',p:'poly',t:'text',n:'pin',k:'pencil',m:'measure',g:'token',w:'wall',d:'rooms',b:'light'};
   if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
   if (e.key==='o'||e.key==='O') {
     octilinear=!octilinear;
@@ -2567,6 +2584,7 @@ document.addEventListener('keydown', e => {
       activeWpHandle=null;
     }
     if (tool === 'wall' && ndWalls.deleteSelected()) return;
+    if (tool === 'light' && ndLights.deleteSelected()) return;
     delSelected();
     return;
   }
@@ -2604,6 +2622,11 @@ window.addEventListener('beforeunload', e => {
 </script>
 <script src="/static/js/map-export.js?v={{ asset_v('js/map-export.js') }}"></script>
 <script src="/static/js/schematic-walls.js?v={{ asset_v('js/schematic-walls.js') }}"></script>
+<script src="/static/js/map-vision.js?v={{ asset_v('js/map-vision.js') }}"></script>
+<script src="/static/js/map-geom.js?v={{ asset_v('js/map-geom.js') }}"></script>
+<script src="/static/js/map-light.js?v={{ asset_v('js/map-light.js') }}"></script>
+<script src="/static/js/map-fog-glue.js?v={{ asset_v('js/map-fog-glue.js') }}"></script>
+<script src="/static/js/schematic-lights.js?v={{ asset_v('js/schematic-lights.js') }}"></script>
 <script src="/static/js/map-rooms.js?v={{ asset_v('js/map-rooms.js') }}"></script>
 <script src="/static/js/schematic-rooms.js?v={{ asset_v('js/schematic-rooms.js') }}"></script>
 <script>
@@ -2620,6 +2643,13 @@ ndRooms.init({
     await fetch(`/maps/schematic/${SLUG}/grid`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grid_type: gridType, config: gridConfig }) });
     redraw(); ndRooms.activate();
   },
+});
+ndLights.init({
+  svg, prevLayer, slug: SLUG, getTool: () => tool, getZoom: () => zoom,
+  snapOn: () => document.getElementById('cb-snap').checked,
+  getGrid: () => ({ square: gridType === 'square' && !!gridConfig.cell_size, cell: gridConfig.cell_size || 50, ox: gridConfig.offset_x || 0, oy: gridConfig.offset_y || 0 }),
+  getCanvas: () => ({ w: CW, h: CH }),
+  getWalls: () => ndWalls.getWalls(),
 });
 ndWalls.init({
   svg, prevLayer, slug: SLUG,

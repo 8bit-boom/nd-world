@@ -18,6 +18,8 @@ MAX_WALLS = 5000            # polylines
 MAX_POINTS_PER_WALL = 200
 MAX_POINTS_TOTAL = 20000
 MAX_FOG_RANGE_CELLS = 100
+MAX_LIGHTS = 60
+MAX_LIGHT_RANGE_SQUARES = 60
 
 _ID = re.compile(r"[^A-Za-z0-9_.:-]")
 
@@ -106,13 +108,60 @@ def toggle_door(walls, wall_id):
 
 
 def clean_fog(data):
-    """The fog settings: {"enabled": bool, "range": cells (0 = as far as the walls allow), "epoch": int}. The epoch goes up
-    when the GM resets the fog; browsers that remember what they explored forget it when the epoch changes."""
+    """The fog and lighting settings:
+    {"enabled": bool,        fog of war on/off
+     "range": squares,       how far characters see (0 = as far as the walls allow)
+     "epoch": int,           raised by the GM's reset; browsers that remember what they explored forget it when it changes
+     "darkness": 0..0.95,    how dark the map is where no light reaches (0 = no lighting effect at all)
+     "personal": squares}    the light every character carries (a lantern); 0 = none"""
     d = data if isinstance(data, dict) else {}
     rng = _num(d.get("range"))
     ep = d.get("epoch")
+    dark = _num(d.get("darkness"))
+    pers = _num(d.get("personal"))
     return {
         "enabled": bool(d.get("enabled")) if isinstance(d.get("enabled"), bool) else False,
         "range": 0 if rng is None else int(min(max(rng, 0), MAX_FOG_RANGE_CELLS)),
         "epoch": ep if isinstance(ep, int) and not isinstance(ep, bool) and 0 <= ep < 10 ** 9 else 0,
+        "darkness": 0.0 if dark is None else round(min(max(dark, 0.0), 0.95), 2),
+        "personal": 2.0 if "personal" not in d else (0.0 if pers is None else round(min(max(pers, 0.0), 20.0), 1)),
     }
+
+
+_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def clean_lights(data, canvas_w=2000, canvas_h=1500):
+    """(lights, warnings): [{"id", "x", "y", "range" (squares), "color" "#rrggbb", "intensity" 0.1..1, "on": bool, "label"}].
+    Finite numbers only, kept on the canvas, at most MAX_LIGHTS. ValueError when `data` is not a list."""
+    if not isinstance(data, list):
+        raise ValueError("lights must be a list")
+    cw, ch = max(1.0, float(canvas_w or 2000)), max(1.0, float(canvas_h or 1500))
+    out, warnings, seen, dropped = [], [], set(), 0
+    for i, l in enumerate(data):
+        if len(out) >= MAX_LIGHTS:
+            warnings.append(f"Only the first {MAX_LIGHTS} lights were kept.")
+            break
+        if not isinstance(l, dict):
+            dropped += 1
+            continue
+        x, y, r = _num(l.get("x")), _num(l.get("y")), _num(l.get("range"))
+        if x is None or y is None or r is None or r <= 0:
+            dropped += 1
+            continue
+        k = _num(l.get("intensity"))
+        lid = _ID.sub("", str(l.get("id") or ""))[:40] or f"l{i + 1}"
+        while lid in seen:
+            lid += "x"
+        seen.add(lid)
+        out.append({
+            "id": lid, "x": round(min(max(x, 0.0), cw), 2), "y": round(min(max(y, 0.0), ch), 2),
+            "range": round(min(max(r, 0.5), MAX_LIGHT_RANGE_SQUARES), 2),
+            "color": l["color"] if isinstance(l.get("color"), str) and _COLOUR.match(l["color"]) else "#ffd9a0",
+            "intensity": 1.0 if k is None else round(min(max(k, 0.1), 1.0), 2),
+            "on": l.get("on") is not False,
+            "label": " ".join(str(l.get("label") or "").split())[:60],
+        })
+    if dropped:
+        warnings.append(f"{dropped} light(s) were skipped because they were not usable.")
+    return out, warnings

@@ -136,3 +136,38 @@ def test_the_checker_catches_what_foundry_would_refuse():
     text = " ".join(bad)
     assert "grid.size" in text and "grid.type" in text and "grid.distance" in text and "width" in text
     assert "4 integers" in text and "move = 10" in text and "door = 5" in text
+
+
+# ── lights ───────────────────────────────────────────────────────────────────
+
+LIGHTS = [{"id": "t", "x": 250, "y": 150, "range": 4, "color": "#ff9933", "intensity": 0.8, "on": True},
+          {"id": "off", "x": 50, "y": 50, "range": 2, "on": False}, {"id": "bad", "x": None, "y": 1, "range": 3}]
+
+
+@needs_node
+def test_universal_vtt_carries_the_lights_that_are_on_and_the_darkness():
+    f = _js("E.toUvtt(Object.assign({}, ctx, {imageB64: ''})).file", **BASE, lights=LIGHTS, darkness=0.85)
+    assert f["lights"] == [{"position": {"x": 5, "y": 3}, "range": 4, "intensity": 0.8, "color": "ffff9933", "shadows": True}]
+    assert f["environment"]["ambient_light"] == "ff262626"                                       # 15% of full brightness
+    plain = _js("E.toUvtt(Object.assign({}, ctx, {imageB64: ''})).file", **BASE)
+    assert plain["lights"] == [] and plain["environment"]["ambient_light"] == "ffffffff"
+
+
+@needs_node
+def test_foundry_gets_every_light_with_integer_positions_and_the_darkness_level():
+    r = _js("(()=>{const s = E.toFoundryScene(Object.assign({}, ctx, {imageSrc: 'x.png'})); return {s, bad: E.validateScene(s.scene)}})()", **BASE, lights=LIGHTS, darkness=0.6)
+    sc = r["s"]["scene"]
+    assert r["bad"] == [] and len(sc["lights"]) == 2 and sc["environment"]["darknessLevel"] == 0.6
+    torch = sc["lights"][0]
+    assert (torch["x"], torch["y"]) == (350, 210) and torch["hidden"] is False and torch["config"]["dim"] == 20 and torch["config"]["bright"] == 10   # 4 squares * 5 ft
+    assert torch["config"]["color"] == "#ff9933" and isinstance(torch["config"]["shadows"], (int, float))
+    assert sc["lights"][1]["hidden"] is True                                                    # a light that is off stays in the scene, hidden
+    assert r["s"]["stats"]["lights"] == 2
+
+
+@needs_node
+def test_the_round_trip_keeps_lights_visible_to_the_importer():
+    r = _js("E.toUvtt(Object.assign({}, ctx, {imageB64: ctx.img}))", **BASE, lights=LIGHTS, darkness=0.5, img=_png(700, 630))
+    back = U.parse_uvtt(json.dumps(r["file"]).encode())
+    assert back["lights"] and back["lights"][0]["color"] == "#ff9933" and back["lights"][0]["x"] == 350 and back["lights"][0]["range"] == 4
+    assert back["darkness"] == pytest.approx(0.5, abs=0.01)

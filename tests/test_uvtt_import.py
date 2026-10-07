@@ -50,8 +50,22 @@ def test_a_real_dungeondraft_file_becomes_walls_doors_and_a_grid():
     assert door["pts"] == [[(7 - 2) * 64, (2.5 - 1) * 64], [(7 - 2) * 64, (3.5 - 1) * 64]] and door["state"] == "closed"
     first = r["walls"][0]
     assert first["pts"][0] == [(7 - 2) * 64, (2 - 1) * 64]
-    assert any("light" in w for w in r["warnings"]) and any("Windows are doors" in w for w in r["warnings"])
-    assert r["stats"]["lights_skipped"] == 2 and r["stats"]["doors"] == 2
+    assert any("Windows are doors" in w for w in r["warnings"]) and any("raise Darkness" in w for w in r["warnings"])        # the sample has lights but full ambient light
+    assert r["stats"]["lights"] == 2 and r["stats"]["doors"] == 2 and r["darkness"] == 0.0
+    light = r["lights"][0]
+    assert light["color"] == "#eccd8b" and light["range"] == 5 and light["on"] is True
+    assert (light["x"], light["y"]) == pytest.approx(((8.570312 - 2) * 64, (9 - 1) * 64), abs=0.01)                          # origin removed, squares -> pixels
+
+
+def test_ambient_light_becomes_darkness_unless_the_picture_has_its_lighting_baked_in():
+    dim = U.parse_uvtt(_raw(_sample(environment={"baked_lighting": False, "ambient_light": "ff262626"})))
+    assert dim["darkness"] == pytest.approx(0.85, abs=0.01) and not any("raise Darkness" in w for w in dim["warnings"])
+    baked = U.parse_uvtt(_raw(_sample(environment={"baked_lighting": True, "ambient_light": "ff000000"})))
+    assert baked["darkness"] == 0.0 and any("painted in" in w for w in baked["warnings"])
+    junk = U.parse_uvtt(_raw(_sample(environment={"ambient_light": "zzzzzzzz"}, lights=[None, {"position": {"x": 1}}, {"position": {"x": 3, "y": 3}, "range": -2},
+                                                                                   {"position": {"x": 3, "y": 3}, "range": 1e9, "color": "red", "intensity": 9}])))
+    assert junk["darkness"] == 0.0 and len(junk["lights"]) == 1 and junk["lights"][0]["range"] == 60.0 and junk["lights"][0]["color"] == "#ffd9a0"
+    assert junk["lights"][0]["intensity"] == 1.0
 
 
 def test_everything_stays_on_the_picture():
@@ -149,6 +163,7 @@ def test_import_creates_a_playable_schematic(client, seed):
         assert json.loads(s.grid_config_json)["cell_size"] == 64.0
         walls = json.loads(s.walls_json)
         assert {w["kind"] for w in walls} == {"wall", "door"} and json.loads(s.fog_json)["enabled"] is False
+        assert len(json.loads(s.lights_json)) == 2
     finally:
         db.close()
     assert client.get("/uploads/schematics/cave-of-echoes.webp").status_code == 200

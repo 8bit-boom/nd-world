@@ -55,9 +55,11 @@ def test_players_never_learn_a_door_is_secret():
 
 
 def test_fog_settings_are_normalised():
-    assert W.clean_fog(None) == {"enabled": False, "range": 0, "epoch": 0}
-    assert W.clean_fog({"enabled": "yes", "range": 1e9, "epoch": -3}) == {"enabled": False, "range": 100, "epoch": 0}
-    assert W.clean_fog({"enabled": True, "range": float("nan"), "epoch": 4}) == {"enabled": True, "range": 0, "epoch": 4}
+    assert W.clean_fog(None) == {"enabled": False, "range": 0, "epoch": 0, "darkness": 0.0, "personal": 2.0}
+    assert W.clean_fog({"enabled": "yes", "range": 1e9, "epoch": -3}) == {"enabled": False, "range": 100, "epoch": 0, "darkness": 0.0, "personal": 2.0}
+    assert W.clean_fog({"enabled": True, "range": float("nan"), "epoch": 4}) == {"enabled": True, "range": 0, "epoch": 4, "darkness": 0.0, "personal": 2.0}
+    assert W.clean_fog({"darkness": 5, "personal": 99})["darkness"] == 0.95 and W.clean_fog({"darkness": 5, "personal": 99})["personal"] == 20.0
+    assert W.clean_fog({"darkness": "x", "personal": None}) ["darkness"] == 0.0 and W.clean_fog({"personal": 0})["personal"] == 0.0
 
 
 # ── the routes ───────────────────────────────────────────────────────────────
@@ -120,7 +122,7 @@ def test_another_worlds_map_is_404(client, seed):
 def test_fog_settings_and_reset(client, seed):
     slug = _map(seed)
     _gm(client, seed)
-    assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": True, "range": 12}).json() == {"enabled": True, "range": 12, "epoch": 0}
+    assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": True, "range": 12}).json() == {"enabled": True, "range": 12, "epoch": 0, "darkness": 0.0, "personal": 2.0}
     assert client.post(f"/maps/schematic/{slug}/fog", json={"reset": True}).json()["epoch"] == 1
     assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": "yes"}).status_code == 400
     assert client.post(f"/maps/schematic/{slug}/fog", json=[]).status_code == 400
@@ -168,3 +170,79 @@ def test_the_secret_door_never_reaches_players_or_the_tv(client, seed):
     assert page.status_code == 200 and "s1" in page.text                          # the wall is in the page (as embedded JSON)...
     assert "secret" not in page.text.replace("secrecy", "").replace("secret-", "") or '\\"secret\\"' not in page.text   # ...but never as a secret door
     assert '\\"kind\\": \\"secret' not in page.text and "kind&#34;: &#34;secret" not in page.text
+
+
+# ── lights and darkness ──────────────────────────────────────────────────────
+
+LIGHTS = [{"id": "torch", "x": 300, "y": 200, "range": 6, "color": "#ff9933", "intensity": 0.9, "on": True, "label": "Torch"},
+          {"id": "lamp", "x": 500, "y": 300, "range": 4, "on": False}]
+
+
+def test_lights_are_cleaned_clamped_and_capped():
+    lights, warns = W.clean_lights([
+        {"id": "a b!", "x": 5000, "y": -4, "range": 9999, "color": "red", "intensity": 7, "on": "no"},
+        {"x": 1, "y": 1, "range": 0}, {"x": "a", "y": 1, "range": 2}, {"x": 1, "y": 1}, "junk", None,
+        {"x": float("nan"), "y": 1, "range": 2}, {"x": 1, "y": 2, "range": True},
+    ], 1000, 800)
+    assert len(lights) == 1 and any("skipped" in w for w in warns)
+    l = lights[0]
+    assert l["id"] == "ab" and (l["x"], l["y"]) == (1000.0, 0.0) and l["range"] == 60 and l["color"] == "#ffd9a0" and l["intensity"] == 1.0 and l["on"] is True
+    many, warns = W.clean_lights([{"x": 1, "y": 1, "range": 2}] * (W.MAX_LIGHTS + 20))
+    assert len(many) == W.MAX_LIGHTS and any("first" in w for w in warns) and len({m["id"] for m in many}) == W.MAX_LIGHTS
+    with pytest.raises(ValueError):
+        W.clean_lights({"x": 1})
+
+
+def test_lights_round_trip_toggle_and_permissions(client, seed):
+    slug = _map(seed)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post(f"/maps/schematic/{slug}/lights", json={"lights": LIGHTS}).status_code == 403
+    assert client.post(f"/maps/schematic/{slug}/light", json={"id": "torch"}).status_code == 403
+    _gm(client, seed)
+    before = live.version(seed.world_a.id)
+    r = client.post(f"/maps/schematic/{slug}/lights", json={"lights": LIGHTS})
+    assert r.status_code == 200 and [l["id"] for l in r.json()["lights"]] == ["torch", "lamp"] and live.version(seed.world_a.id) > before
+    assert [l["on"] for l in client.get(f"/maps/schematic/{slug}/walls.json").json()["lights"]] == [True, False]       # the GM sees every light
+    assert client.post(f"/maps/schematic/{slug}/light", json={"id": "lamp"}).json() == {"id": "lamp", "on": True}
+    assert client.post(f"/maps/schematic/{slug}/light", json={"id": "lamp", "on": False}).json()["on"] is False
+    assert client.post(f"/maps/schematic/{slug}/light", json={"id": "nope"}).status_code == 404
+    assert client.post(f"/maps/schematic/{slug}/light", json={"id": 5}).status_code == 400
+    assert client.post(f"/maps/schematic/{slug}/lights", json={"lights": "x"}).status_code == 400
+    assert client.post(f"/maps/schematic/{slug}/lights", content='{"lights":[{"x":NaN,"y":1,"range":2},{"x":5,"y":5,"range":3}]}', headers={"Content-Type": "application/json"}).json()["lights"][0]["x"] == 5.0
+    other = _map(seed, slug="theirs", world=seed.world_b)
+    assert client.post(f"/maps/schematic/{other}/lights", json={"lights": []}).status_code == 404
+
+
+def test_darkness_settings_are_validated(client, seed):
+    slug = _map(seed)
+    _gm(client, seed)
+    d = client.post(f"/maps/schematic/{slug}/fog", json={"darkness": 0.7, "personal": 3}).json()
+    assert d["darkness"] == 0.7 and d["personal"] == 3.0 and d["enabled"] is False
+    assert client.post(f"/maps/schematic/{slug}/fog", json={"darkness": 5}).json()["darkness"] == 0.95
+    assert client.post(f"/maps/schematic/{slug}/fog", json={"darkness": "dark"}).status_code == 400
+    assert client.post(f"/maps/schematic/{slug}/fog", json={"personal": True}).status_code == 400
+    assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": True}).json()["darkness"] == 0.95          # other settings are kept
+
+
+def test_players_get_lights_only_while_it_is_dark_and_only_the_ones_that_are_on(client, seed):
+    slug = _map(seed)
+    _gm(client, seed)
+    client.post(f"/maps/schematic/{slug}/walls", json={"walls": WALLS})
+    client.post(f"/maps/schematic/{slug}/lights", json={"lights": [{**LIGHTS[0], "label": "Torch of the GM's secret lair"}, {**LIGHTS[1], "on": True}, {"id": "off", "x": 1, "y": 1, "range": 3, "on": False}]})
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    d = client.get(f"/maps/schematic/{slug}/view.json").json()
+    assert d["lights"] == [] and d["walls"] == []                                  # daylight and no fog: nothing about geometry or lights
+    _gm(client, seed)
+    client.post(f"/maps/schematic/{slug}/fog", json={"darkness": 0.8})
+    tv = client.get(f"/display/map/{slug}/data.json").json()
+    assert [l["id"] for l in tv["lights"]] == ["torch", "lamp"] and "off" not in json.dumps(tv)
+    assert set(tv["lights"][0]) == {"id", "x", "y", "range", "color", "intensity"}                              # no label, no 'on'
+    assert len(tv["walls"]) == 3                                                   # darkness alone sends the walls (shadows need them) - secret door as a wall
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    j = client.get(f"/maps/schematic/{slug}/view.json")
+    assert [l["id"] for l in j.json()["lights"]] == ["torch", "lamp"] and "secret" not in j.text and "GM's secret lair" not in j.text
+    page = client.get(f"/maps/schematic/{slug}/view")
+    assert "GM" not in page.text.split("FOG_STATE")[1][:600]

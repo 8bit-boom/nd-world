@@ -12,7 +12,8 @@
 // "reset fog" bumps an epoch that makes every browser forget it.
 //
 //   ndMapFog.create(svg, {width, height, cell, walls, tokenLayer})  -> api
-//   api.update(sources, tokens)   sources: [{x, y, range}]  (range Infinity = to the nearest wall)
+//   api.update(sources, tokens, canMark?)   sources: [{x, y, range}]  (range Infinity = to the nearest wall)
+//                                 canMark(x, y): only squares it accepts are remembered as explored (the dark ones are not)
 //                                 tokens:  [{x, y, node, always}]  nodes outside every view are hidden
 //   api.setWalls(walls)           api.runs() / api.loadRuns(runs)   api.clear()   api.destroy()
 (function (root) {
@@ -92,9 +93,9 @@
     if (tokenLayer && tokenLayer.parentNode === svg) svg.insertBefore(g, tokenLayer); else svg.appendChild(g);
 
     var api = {
-      cols: cols, rows: rows, cell: cell, explored: explored, lastPolys: [],
+      node: g, cols: cols, rows: rows, cell: cell, explored: explored, lastPolys: [],
       setWalls: function (w) { walls = w || []; },
-      update: function (sources, tokens) {
+      update: function (sources, tokens, canMark) {
         var polys = (sources || []).map(function (s) {
           return vision.visibilityPolygon([s.x, s.y], walls, { range: s.range, bounds: { x0: 0, y0: 0, x1: W, y1: H } });
         });
@@ -107,7 +108,7 @@
           var cx0 = Math.max(0, Math.floor(bb.x0 / cell)), cx1 = Math.min(cols - 1, Math.floor(bb.x1 / cell));
           var cy0 = Math.max(0, Math.floor(bb.y0 / cell)), cy1 = Math.min(rows - 1, Math.floor(bb.y1 / cell));
           for (var cy = cy0; cy <= cy1; cy++) for (var cx = cx0; cx <= cx1; cx++) {
-            if (!explored[cy * cols + cx] && geom.pointInPolygon([(cx + 0.5) * cell, (cy + 0.5) * cell], poly)) { explored[cy * cols + cx] = 1; marked++; }
+            if (!explored[cy * cols + cx] && geom.pointInPolygon([(cx + 0.5) * cell, (cy + 0.5) * cell], poly) && (!canMark || canMark((cx + 0.5) * cell, (cy + 0.5) * cell))) { explored[cy * cols + cx] = 1; marked++; }
           }
         });
         expHole.setAttribute('d', exploredPath(explored, cols, rows, cell));

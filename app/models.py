@@ -2008,6 +2008,9 @@ class Schematic(Base):
     # The room-drawing tool's own state (app/map_rooms.py): which cells are floor, which room, which edges are doors. The
     # floors and walls on the map are generated from it, so it only exists to make the drawing editable again.
     rooms_json = Column(Text, default="{}")
+    # Lights (app/map_walls.py clean_lights): [{id, x, y, range, color, intensity, on, label}]; darkness and the party's own
+    # light are in fog_json. Players are sent them only while darkness is above zero.
+    lights_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
