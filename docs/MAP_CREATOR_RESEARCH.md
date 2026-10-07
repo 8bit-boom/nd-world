@@ -1,491 +1,245 @@
-# From schematic editor to a full TTRPG map creator — research
+# From schematic editor to a full TTRPG map creator — research, round two
 
 Question: *how do we turn the schematic maps into a full-blown TTRPG map creator?*
 
-This is a research document, not a plan that has been started. Nothing in the app changed. It says what the schematic
-editor is today, what a "full" map creator actually contains (from how the established tools work), what technology it
-would take, what could be measured here, and a phased route with the decisions that need a human.
+**Status: researched and prototyped; nothing in the application was changed.** Round one (the previous version of this file) described the landscape from search summaries and measured one thing. Round two went to the primary
+sources, **built and tested** the parts that decide the strategy (≈ 1,500 lines of prototype modules, 64 tests, [`map-creator-research/prototypes/`](map-creator-research/prototypes/)), ran the fog inside the **real player view**
+of the running app, audited the whole map stack in the code, and found — and verified a patch for — a real defect. The evidence for each claim is in four appendices:
 
-**How to read the evidence tags.**
-**[measured]** = run in this repository's environment while writing this (numbers and caveats given);
-**[source]** = taken from a web page or package named in [Sources](#sources) (secondary summaries are marked);
-**[inferred]** = my reasoning from the code or the sources, worth checking before relying on it.
-Several sites (Arkenforge, Foundry's docs, Roll20's help centre, Red Blob Games, Dungeon Scrawl's blog) could not be
-opened from the research sandbox, so what is said about them rests on search-result summaries and on one third-party
-package's documentation. **Verify the interchange formats against their own specs before writing import/export code.**
-
----
-
-## 1. Short answer
-
-1. **Today's editor is a drawing tool with live tokens, not a map-making tool.** It has shapes, a snap grid, nine stamps, a
-   hex/square overlay, tokens linked to characters and combat, and a player view. It has no scale (a cell is not "5 ft"),
-   no walls/doors/lights as objects, no textures or asset library, no fog or vision, no generators and no import/export
-   with the rest of the ecosystem. [source: code, §2]
-2. **A "full-blown" creator is six capabilities that every serious tool shares:** (1) a grid- and scale-first canvas;
-   (2) walls with doors/windows as *smart objects*; (3) floors/terrain with textures plus an asset library with scatter
-   brushes; (4) lights, vision and fog of war; (5) generators; (6) export to the VTT ecosystem (Universal VTT, Foundry
-   scenes, print). [source, §3]
-3. **Do not try to out-art Dungeondraft.** Build around what only nd-world has: maps that are **linked to the lore**
-   (rooms ↔ entities, pins ↔ locations), **connected to live play** (tokens, combat tracker, player view), **self-hosted
-   and offline**, **AI-assisted from the world's own lore**, and **controllable through MCP**. Import/export of
-   Universal VTT gives access to the existing ecosystem without rebuilding every feature. [inferred]
-4. **The renderer has to change before features are added.** The current SVG editor rebuilds every node on every change;
-   in this sandbox one redraw took ~0.2–0.7 s at 1,000 objects and ~1–4 s at 12,000, and zooming fell from 53 fps (200
-   objects) to 3 fps (12,000). A real dungeon with walls, props and scatter easily has thousands of objects.
-   [measured, caveats in §5.1] Recommended: a **PixiJS (WebGL)** renderer for the new editor and player view, SVG kept
-   for legacy maps and for export. The sandbox has no GPU, so WebGL speed could **not** be measured here; a ready-made
-   benchmark to run on real hardware is in `docs/map-creator-research/render-bench.html`.
-5. **The hard algorithms are cheap.** Vision polygons for 6 tokens over 500 wall segments took ~11 ms, over 2,000
-   segments ~51 ms; merging 800 overlapping rooms into one outline took ~340 ms [measured, Node, CPU only]. Fog of war and
-   "draw rooms, walls appear" are feasible in the browser without special infrastructure.
-6. **Let the AI plan, not draw.** The current AI Build asks the model for raw coordinates (`SYSTEM_TEMPLATE`,
-   `app/main.py:7235`), which models are poor at. Better: the model returns a *spec* (rooms, sizes, connections, contents,
-   linked lore entities) and deterministic code lays it out. [inferred]
-7. **First shippable value (Phase 1–3 in §7):** scale-aware canvas, walls + doors, floors, an asset library, then
-   Universal VTT export — a map made here runs in Foundry/Roll20 — and live fog in nd-world's own player view.
-8. **Decisions needed from you** are listed in §8 (battle maps vs world maps first, art direction, whether live
-   fog/vision inside nd-world matters, asset sourcing, collaboration, mobile).
-
----
-
-## 2. Where nd-world is today
-
-Two map systems plus a legacy one, all GM-edited and player-viewed:
-
-| | Maps (`/maps`) | Schematics (`/maps/schematic/{slug}`) | Legacy HTML schematics |
-|---|---|---|---|
-| Content | a background image + markers + region overlays; Leaflet | vector elements on a canvas; SVG | static `.html` files in `static/schematics/` |
-| Editing | markers/regions in the viewer | full editor, 2,356-line `app/templates/schematic.html` (inline JS) | none |
-| Live play | read-only viewer | tokens, combat link, player view that polls every 4 s | none |
-
-What the schematic editor has (verified in `schematic.html`, `schematic-render.js`, `AI_SCHEMATIC_GUIDE.md`):
-
-- Tools: rect, circle, line, arrow, polygon, freehand path, text, pin, image, measure, token, area-of-effect
-  (`ICONS`, `schematic.html:771`). Align/distribute/rotate/flip, z-order, copy/paste, undo/redo, snap + alignment guides
-  (`SNAP = 20`, `:653`), minimap, SVG/PNG export.
-- Battle-map layer: square or hex grid overlay with configurable cell size/offset; tokens with size categories, HP,
-  conditions; **pull from / push to the Combat Tracker**; merchant tokens, item pick-up; party pins.
-- Player view (`schematic_view.html`): hidden elements are dropped **server-side** (`_schematic_player_payload`,
-  `app/main.py:3411`) — a good secrecy rule to keep. Players move only their own token.
-- AI Build: lore-grounded (RAG) background job returning elements as JSON; the general importer (`/import`, `/api/import/execute`) can also add elements through the API.
-- Interchange: SVG/PNG export, the JSON element importer. Nothing else.
-
-What is missing for a map *creator*, and what limits growth:
-
-| Gap | Evidence |
+| Appendix | Contents |
 |---|---|
-| **No scale.** Everything is canvas pixels; the grid is an overlay "purely a rendering/snapping aid" (`models.py`, `Schematic.grid_type`). A 5 ft square means nothing to the data. | `AI_SCHEMATIC_GUIDE.md` "Coordinate system" |
-| **Walls, doors, windows, lights are just rects/lines.** Nothing knows a door blocks movement or sight. | element schema |
-| **Four fixed layer names** (`Background, Tracks, Stations, Labels` — metro-map leftovers) and four solid backgrounds. | `schematic.html:1897`, `canvas_bg` |
-| **Nine hand-written stamps**, no asset library, no textures or patterns, no upload-and-place. | `SYMBOLS`, `schematic.html:1851` |
-| **Whole map rebuilt on every change** (`redraw()` clears and recreates all nodes, then the element list, minimap and layer panel). | `schematic.html:773` — see §5.1 for the cost |
-| **Whole map re-downloaded every 4 s by every player**, and every token move read-modify-writes the entire `elements_json`. At 12,000 objects the JSON is ~2 MB raw / ~190 KB gzipped *per poll per player*. | `schematic_view.html:275`, `move-token` handler, [measured] sizes |
-| **Last-writer-wins saving**: `POST …/elements` replaces the whole array; two editors overwrite each other. | `AI_SCHEMATIC_GUIDE.md` |
-| **No fog, vision, lighting.** Players see every non-hidden element. | `_schematic_player_payload` |
-| **No import/export** to Universal VTT, Foundry, print-at-scale. | — |
-| **Editor is one inline script**, hard to test; pure geometry is only partly in `schematic-render.js`. | `app/templates/schematic.html` |
-| **The image-map viewer loads Leaflet from `unpkg.com`**, which breaks the app's own "must work with no internet" rule (the dice tray, for instance, vendors its libraries). | `app/templates/map_viewer.html:4-5` |
-| **Unused fields**: `Schematic.image_url` and `markers_json` exist but the editor does not use them. | `AI_SCHEMATIC_GUIDE.md` |
+| [CURRENT_STACK_AUDIT.md](map-creator-research/CURRENT_STACK_AUDIT.md) | how the app is used, what exists, **defects with reproductions**, what to keep |
+| [FORMATS.md](map-creator-research/FORMATS.md) | Universal VTT, Foundry v13 and Owlbear read from a real file, working converters and type definitions; conversion matrix; export cost |
+| [COMPETITORS.md](map-creator-research/COMPETITORS.md) | tools, community needs, Foundry performance data, licences — each line graded A/B/C |
+| [PROTOTYPES.md](map-creator-research/PROTOTYPES.md) | what was built, how to run it, every measurement, pictures, limits |
 
-The conclusion for design: keep what works (tokens ↔ characters ↔ combat, the player-view secrecy rule, background AI
-jobs, the importer) and replace the *drawing core* underneath it.
+**Evidence tags used below:** **[measured]** run here, numbers given · **[tested]** a prototype does it and a test pins it · **[primary]** read from a real file, type definition, licence or README ·
+**[secondary]** a search summary or a page the sandbox could not open · **[inferred]** my reasoning, worth checking. The sandbox has **no GPU**, so rendering speed on real hardware is the main thing still unmeasured.
 
 ---
 
-## 3. What a "full-blown" map creator is — the landscape
+## 1. The answer
 
-Three scales of map, with different tools. nd-world already has a foot in each:
+1. **Do not start with a new editor or a new renderer.** What the evidence supports is a different order: first make maps *playable* — scale, walls, doors, light, fog, on the second screen and on phones, plus Universal VTT
+   in and out — on the SVG stack you already have; *then* add a grid-based creator on top of the same stack; WebGL only if measurements ask for it.
+2. **The renderer rewrite is not a prerequisite.** Fog of war, line-of-sight and coloured lights with shadows work **inside the existing SVG player view**: ≈ 2–10 ms of JavaScript per update, invisible inside a frame up to
+   ~1,300 elements, and the cost does not grow with the number of props **[measured]**. Round one's claim that "the renderer has to change before features are added" is withdrawn. (The *editor's* rebuild-everything
+   `redraw()` is a real problem; it can be fixed incrementally.)
+3. **A realistic map is small.** A generated 100 × 70-cell dungeon (78 rooms) has **749 wall segments**; a 200 × 140 one has 2,878 **[measured]**. Round one's stress numbers (2,000–5,000 random walls) were not representative.
+4. **Walls should follow from rooms.** On a grid, "an edge between two different spaces is a wall" is exact, integer, instantly recomputable and testable; doors, windows and openings are marks on edges **[tested]**.
+5. **Interchange is cheap and buys the whole ecosystem.** I read a real Dungeondraft export and two independent converters: a UVTT file can be read, written and turned into a valid Foundry v13 scene
+   **[tested]**; the walls are ~5 KB, the PNG is the cost (≈ 1 s to encode a 6.5-megapixel map in the browser) **[measured]**. A Dungeondraft map can then be *run* here — you do not have to out-draw Dungeondraft.
+6. **Let the AI plan and the code build.** From a room graph or a seed, deterministic generators produce *furnished, editable* dungeons, caves and buildings in milliseconds; props and textures drawn in code mean **no third-party art
+   and no licence to track**. See the pictures in §3. Naive wall detection on a picture, by contrast, marks every wall but only **26–43%** of what it marks is a wall **[measured]** — picture → map needs *assisted tracing*.
+7. **Fix what is broken first.** One request from a player can brick a map for everyone (§2, D1); players cannot zoom or pan the map; maps poll instead of using the live bus; the second screen cannot show a map; the map viewer
+   loads Leaflet from unpkg. A verified patch for the first is in `map-creator-research/patches/` (not applied).
+8. **Decisions that need you** are in §7 — chiefly *where your players look at the map* (a TV on the table, phones, or Foundry), because that decides what gets built first.
 
-| Scale | Typical tools | Typical content |
+![a furnished dungeon generated from a seed](map-creator-research/images/furnished-dungeon.png)
+*Seed 5, 44 × 30 cells, 14 rooms, 76 props, 131 wall segments — generated and furnished in code, one 64 KB SVG. Props and textures are first-party; the only inputs are a seed and room kinds.*
+
+### What changed since round one (corrections)
+
+| Round one said | Round two found |
+|---|---|
+| the editor has **no scale** | wrong: the grid dialog has units per cell + a unit label, a 📐 Calibrate tool, and `pxToUnits` feeds measure/AoE/circle labels; what is missing is geometry in cells, walls, and any use of the scale beyond labels |
+| the renderer has to change first; zoom fell to 3 fps at 12,000 objects | that measures the *editor's* redraw design; fog/vision/lights add ≈ 0 on top of it (§1.2); a realistic map has hundreds to ~3,000 objects |
+| Foundry wall restriction values are 0/10/20/30/40 for `move`, `light`, `sight`, `sound` | `move` accepts **only 0 and 20**; wall coordinates and light positions must be **integers**; light `shadows` is a number, not a boolean; grid size ≥ 20 [primary, types] |
+| UVTT: `map_origin` is just a field | real exports have a **non-zero origin and absolute coordinates**; a window is just a portal; `objects_line_of_sight` is real and a single round prop is 59 wall segments |
+| union rooms with `polygon-clipping` to get walls | unnecessary on a grid (edges between different spaces); only free-form polygons need it |
+| roadmap: authoring core (Phase 1) before live play (Phase 2) | evidence points the other way: playable maps first (§5), creator second |
+| `preview.svg` / docs drift | no leak (`preview.svg` is GM/assistant-only); `AI_SCHEMATIC_GUIDE.md` is outdated; freehand strokes never show in previews |
+
+---
+
+## 2. Where nd-world is today (short; full audit in [CURRENT_STACK_AUDIT.md](map-creator-research/CURRENT_STACK_AUDIT.md))
+
+Two map systems and a legacy one. **Image maps** (`/maps`) are a picture with markers and regions in Leaflet — and Leaflet is the *only* external script left in the templates (unpkg), which breaks the app's own offline rule.
+**Schematics** (`/maps/schematic/{slug}`) are a 2,356-line inline-script SVG editor with tokens linked to characters, entities and the combat tracker, a player live view that polls every 4 s, merchants and item pickup, an AI Build
+that asks a model for raw coordinates, an importer, and a scale dialog. The **second screen** (`/display`) shows an image or a text card — never a map. There is **no map tool in the MCP server**.
+
+**Defects found (each reproduced against the real app):**
+
+- **D1 — a player can brick a map with one request.** `move-token` accepts `NaN`/`Infinity` (Python's `json` does); the value is stored, then `view.json` returns 500, the player page's `JSON.parse` throws, **and the GM editor's own
+  `JSON.parse` throws** — the GM cannot repair it in the UI. Also accepts a token at 1e300. Patch (+ regression test, 19 + 224 related tests green): [`map-creator-research/patches/move-token-finite-numbers.patch`](map-creator-research/patches/move-token-finite-numbers.patch).
+- **D2** — the player view has no zoom, pan or pinch; a 3000 × 2000 map on a phone is unreadable; dragging a token rebuilds every node on every pointer move.
+- **D3** — no map route calls `live.touch`; every player downloads the full element list every 4 s: wasteful rather than broken (the app gzips: ≈ 10–40 KB per poll for a realistic 1,000–4,000-element map, ≈ 190 KB at 12,000).
+- **D4** — documentation drift (AI_SCHEMATIC_GUIDE says "GM-only"; API_REFERENCE says `preview.svg` is player-reachable); `preview.svg` is a second, Python renderer that draws a subset of the element types.
+
+---
+
+## 3. What was built and what it showed
+
+(Details, numbers and caveats: [PROTOTYPES.md](map-creator-research/PROTOTYPES.md).)
+
+**Walls from a grid of spaces** — `ids[y*w+x]` and one rule. Merged into long segments (cuts the list to well under 60%), chained into UVTT polylines, caves as marching-squares outlines. A pitfall the tests caught:
+simplified cave outlines run *through the middle of floor cells*, putting a token on a wall; chamfered outlines stay ≥ 0.35 cells away.
+
+**Generators** — seeded dungeon, cave, and building-from-a-room-graph. Same seed → same map; every room reachable (75 maps); doors only between room and corridor; links between rooms that do not touch are *reported*, never guessed.
+
+**Vision** — angular sweep, **0 disagreements with an independent line-of-sight oracle in 202,500 points**; one rule for walls, doors, secret doors and windows so fog and movement cannot disagree. Per 6 viewers: range-limited
+(≤ 16 cells) ≈ 2–5 ms at any realistic size; unlimited needs the 5.5 KB `visibility-polygon` (MIT) sweep (≈ 1–4 ms per viewer at 2,900 segments) — a naive version is fine only below ~200 segments. Server-side Python:
+0.4–1.8 ms per viewer with numpy, 4–17 ms plain at range 16 (numpy is not a dependency today).
+
+**Fog and light in the real player view** — see the table in PROTOTYPES §4. A mid-range-phone stand-in (CPU ×4–×6): one viewer ≈ 10 ms of JS and 60–70 ms to the next frame; 30 lights is too many (cap ≈ 10 on phones).
+
+| GM sees everything | Player sees what the party has seen | Light and shadow |
 |---|---|---|
-| **World / region** | Inkarnate, Wonderdraft, Azgaar's Fantasy Map Generator | terrain painting, biomes, rivers, roads, settlement icons, labels |
-| **Town / building** | Watabou's generators, Dungeondraft, Inkarnate city maps | street/plot layouts, building interiors, furniture |
-| **Battle map / dungeon** | Dungeondraft, Dungeon Scrawl, Dungeon Alchemist, Foundry/Roll20 scene tools | rooms, walls, doors, props, lighting, tokens, fog |
+| ![](map-creator-research/images/fog-gm-view.png) | ![](map-creator-research/images/fog-player-step3.png) | ![](map-creator-research/images/lights-and-shadows.png) |
 
-Facts about the established tools (secondary sources, see [Sources](#sources)):
+**Props, textures, "populate this room"** — 24 props and 9 textures drawn in code; nine room kinds furnished by rules with no overlaps, clear doorways, deterministic seeds (10 tests). Rooms from a spec:
 
-- **Dungeondraft** — loadable art packs of terrain, objects, walls, paths, lights; "smart" tools that place walls and
-  floors, scatter props, and an integrated lighting engine; exports walls and lights in **Universal VTT** files for
-  Foundry, Roll20 and Fantasy Grounds. [source]
-- **Dungeon Scrawl** — free, in the browser; polygon and cave/tunnel brushes, layers with opacity/blend, copy/mirror,
-  square/hex/isometric grids, built-in styles, a random dungeon tool (imports Donjon TSV), asset import scaled by
-  pixels-per-cell, export to PNG/WebP/PDF (true scale across pages) and **UVTT**, direct Roll20 connection. [source]
-- **Dungeon Alchemist** — "procedural AI" (not generative) that fills rooms with props from a drawn layout, 3D preview,
-  exports images/video and VTT packages for Foundry, Roll20, Fantasy Grounds and UVTT; $44.99 on Steam per the review
-  page. [source]
-- **Inkarnate / Wonderdraft** — world and regional maps; Inkarnate in the browser (pro ≈ $25/year per a comparison page),
-  Wonderdraft a desktop app (≈ $29.99 one-off); both asset-library driven with random generation. Prices change — check
-  before quoting. [source]
-- **Foundry VTT** — WebGL (PixiJS) canvas; walls with separate movement/sight/light/sound restrictions, doors with
-  states, ambient lights, vision and an explored-area fog; an event-driven visibility layer recomputes only what a change
-  affects. [source]
-- **Owlbear Rodeo** — static fog since the start (GMs draw and cut away hidden shapes); dynamic fog (walls, doors,
-  lights; the map is revealed by what tokens can see) through extensions, faster since its "Warp Core" update. [source]
-- **Open-source references**: Azgaar's Fantasy Map Generator (**MIT**, verified from its `LICENSE`), Red Blob Games'
-  mapgen4 (**Apache-2.0** per search summaries), Dungeon Revealer (an open-source self-hosted fog-of-war table app;
-  licence not verified).
+![](map-creator-research/images/building.png)
 
-### Feature taxonomy and where nd-world stands
-
-| Capability | Dungeondraft | Dungeon Scrawl | Foundry scene | nd-world today |
-|---|---|---|---|---|
-| Grid + real scale (px per cell, ft per cell) | ✔ | ✔ | ✔ | overlay only, no units |
-| Walls / doors / windows as objects | ✔ | UVTT export (what it contains was not verified) | ✔ (restriction types, door states) | ✗ |
-| Floors, terrain, textures, patterns | ✔ | ✔ (brushes, styles) | tiles | solid fills |
-| Asset library + scatter | ✔ (packs) | ✔ (image library) | tiles/tokens | 9 stamps |
-| Layers (user-defined, opacity, lock) | ✔ | ✔ | limited | 4 fixed names |
-| Lights, vision, fog of war | lights authored; export to VTT | export only | ✔ | ✗ (manual "hidden" flag) |
-| Tokens, combat link | – | – | ✔ | ✔ (a real strength) |
-| Generators | – | random dungeon import | – | AI Build (coordinates) |
-| Import / export (UVTT, Foundry, print) | UVTT export | PNG/PDF/UVTT | UVTT import | SVG/PNG only |
-| Links to world lore | – | – | journals | tokens ↔ entities/characters |
+**Picture → walls** — see §1.6. **Export** — see §1.5 and FORMATS §7.
 
 ---
 
-## 4. Where nd-world can win (positioning)
+## 4. Strategy options
 
-Competing on art would be a losing, endless race. The leverage is connection:
+The question of *which first* depends on how the maps are used, so the options are compared against each use (✔ strong, ~ partial, ✘ none):
 
-1. **Lore-linked maps**: a room, building or pin *is* an entity (location/organization) with notes; opening it from the
-   map opens the lore, and the lore page shows its map. Nothing in the standalone tools does this. [inferred]
-2. **One place for the whole table**: tokens ↔ player characters ↔ combat tracker ↔ session notes already exist.
-3. **Self-hosted, offline-first**: vendored libraries, no CDN, works at a table with no internet.
-4. **AI that knows the world**: generation grounded in the world's lore (the app's RAG), with the model producing a
-   *design spec*, not pixels.
-5. **MCP/API-controllable**: the app already exposes MCP tools; map tools ("add room", "place asset", "run generator")
-   make maps scriptable by an AI assistant. The Dungeondraft ecosystem is already exploring exactly this (an
-   MCP server that edits `.dungeondraft_map` files and converts `.dd2vtt` to Foundry scenes exists as an npm
-   package). [source]
-6. **Interchange instead of lock-in**: import UVTT from Dungeondraft/Dungeon Scrawl and *run* it with nd-world's tokens
-   and combat link; export UVTT to use elsewhere.
+| | **A. Runtime-first** | **B. Creator-first** (round one's order) | **C. Hybrid — recommended** | **D. Interchange only** |
+|---|---|---|---|---|
+| What it is | scale + walls + doors + lights + fog on the existing SVG stack, second-screen map, UVTT in/out | new editor and WebGL renderer, assets, generators, then live play | **A first, then a grid-based creator on the same stack**, generators + AI spec, WebGL only if measured | export/import UVTT and Foundry scenes, nothing else |
+| TV on the table | ✔ (fog, scale, one fog for the party) | ~ (late) | ✔ | ✘ |
+| Players on phones | ✔ (with zoom/pan) | ~ | ✔ | ✘ |
+| Foundry/Roll20 users | ✔ (export) | ✔ (later) | ✔ | ✔ |
+| Make a new map in-app | ~ (walls tool, import) | ✔ | ✔ (rooms, generators, AI) | ✘ |
+| Differentiation (lore + combat link + AI + offline) | ✔ | ✔ | ✔✔ | ✘ |
+| Effort / risk | **low–medium**, no rewrite | **high**, rewrite + art | medium, staged | very low |
+| Rewrites the editor first? | no | yes | no (adds a mode) | no |
+| Evidence it works | prototypes in the real page | none yet | prototypes of both halves | converters tested |
+
+**Why C.**
+1. The fog works in the page that exists — so "runtime" is the cheapest big step and serves in-person *and* remote play **[measured]**.
+2. UVTT in/out means good-looking maps can come from tools whose art you cannot match; nd-world runs them with tokens, combat link and lore.
+3. What nd-world can offer that those tools cannot is *speed and lore*: a furnished, editable map from a seed or a spec, linked to entities — not hand-painted art. The generating logic for that exists as tested prototypes; the editor, persistence and permissions around it do not.
+4. A WebGL rewrite buys what the data says is not the bottleneck (Foundry itself needed *batching* of wall and token display objects, not a different renderer **[primary: Codas performance README]**).
+5. Staged delivery keeps legacy schematics working: the new data (walls, runtime state) sits *beside* `elements_json`.
+
+**What would change the recommendation:** *most of your maps are pictures* (AI or purchased) → bring "picture → playable" (calibration + assisted tracing, WP8) forward; *you want hand-painted art inside nd-world* → option B grows a painting layer;
+*remote play with players you do not fully trust* → bring strict secrecy (WP9) forward; *the table is on Foundry* → export first.
 
 ---
 
-## 5. Technology options
+## 5. Design and roadmap for option C
 
-### 5.1 Rendering
+### 5.1 Data
 
-Measured on the existing editor with generated maps (rects, circles, lines, polygons) in headless Chromium **with software
-rendering and no GPU** [measured]. Treat the absolute values as pessimistic; the *growth* is the finding.
+Keep `elements_json` (legacy decoration, tokens). Add **beside** it (all columns need `_heal_table` entries):
 
-| Objects | One `redraw()` (5 runs, ms) | SVG nodes | Zoom toggle (fps) |
-|---|---|---|---|
-| 200 | 39–259 | 200 | 53 |
-| 1,000 | 191–675 | 1,000 | 33 |
-| 3,000 | 292–1,255 | 3,000 | 9 |
-| 6,000 | 562–2,429 | 6,000 | 4 |
-| 12,000 | 1,120–3,845 | 12,000 | 3 |
-
-`redraw()` includes rebuilding the element list, minimap and layer panel, so it is more than SVG painting — which is the
-point: the editor's structure (rebuild everything) is as much the problem as SVG itself.
-
-| Option | Size (min) | Licence | Fits because | Costs |
-|---|---|---|---|---|
-| **Keep SVG, make it incremental** | 0 | – | crisp, styleable, trivially exported, no new dependency | DOM cost still grows with objects; no shaders for lighting/fog; ceiling ≈ 2–3k visible objects |
-| **Canvas 2D (+ Konva)** | Konva 194 KB | MIT | retained scene graph, hit-testing, layers, caching; viewport culling is easy | CPU raster; lighting/fog via compositing tricks; fine to a few thousand objects |
-| **WebGL (PixiJS 8)** | 841 KB min bundle (tree-shakeable via ESM) | MIT | GPU sprites/batching, filters (blur, colour, masks) for light and fog, thousands of textured objects; **what Foundry uses** | bundle weight; needs WebGL (software fallback is slow — see the sandbox); text and accessibility need care; one more renderer to maintain |
-| Fabric.js / Paper.js / two.js | 21 MB / 12 MB / 2 MB unpacked | MIT | editor-style object models | heavier or less suited to many-object, shader-driven maps |
-
-Sizes from `npm pack` of each package's published minified bundle; licences from the npm registry. [measured]
-
-**Recommendation [inferred]:** PixiJS for the new editor and the player view; keep `schematic-render.js` SVG for legacy
-schematics and for SVG export. WebGL has precedent in the app now (the dice tray uses three.js), so a no-WebGL fallback
-message pattern already exists. **Do a one-day spike on real hardware first** with `docs/map-creator-research/render-bench.html`
-(Canvas 2D vs Konva vs Pixi; open it with `?n=1000`, `?n=5000`, `?n=12000`, `?n=30000`, on a laptop and a mid-range phone) — the sandbox could only prove the
-page runs, not how fast it is.
-
-### 5.2 Data model
-
-Replace "one flat array of pixel shapes" with a versioned document in **grid units** (so scale is built in), separate from
-runtime state. Sketch [inferred]:
-
-```jsonc
-{
-  "version": 2,
-  "scale": { "px_per_cell": 70, "unit": "ft", "units_per_cell": 5, "grid": "square|hex-pointy|hex-flat|none" },
-  "size": { "w": 40, "h": 30 },                      // cells
-  "levels": [{                                        // floors of a building / dungeon depth
-    "id": "l1", "name": "Ground floor",
-    "background": { "color": "#111", "image": null },
-    "floors":  [{ "id": "f1", "polygon": [[x,y],...], "texture": "stone", "tint": "#888" }],
-    "walls":   [{ "id": "w1", "points": [[x,y],...], "type": "stone|wood|fence|cave", "blocks": {"move":1,"sight":1,"light":1,"sound":1} }],
-    "portals": [{ "id": "p1", "wall": "w1", "t": 0.4, "kind": "door|window|secret|gate", "state": "closed|open|locked" }],
-    "objects": [{ "id": "o1", "asset": "pack/table_round", "x": 12.5, "y": 8, "rot": 30, "scale": 1, "layer": "furniture", "shadow": true }],
-    "paths":   [{ "id": "r1", "asset": "road_dirt", "points": [[x,y],...], "width": 1.2 }],
-    "lights":  [{ "id": "t1", "x": 10, "y": 6, "range": 6, "color": "#ffaa55", "intensity": 0.8, "shadows": true }],
-    "labels":  [{ "id": "n1", "text": "Armoury", "x": 5, "y": 4, "link": { "entity": 123 } }]
-  }],
-  "layers": [{ "id": "furniture", "name": "Furniture", "visible": true, "locked": false, "opacity": 1, "gm_only": false }],
-  "environment": { "ambient": "#222233", "darkness": 0.4 },
-  "legacy": [ /* the old elements, rendered by the SVG renderer in a layer, so no schematic is lost */ ]
-}
-```
-
-Runtime state lives apart from geometry: `tokens`, `door states`, `fog exploration`, `revealed regions`. That fixes two
-problems at once: a token move no longer rewrites megabytes, and static geometry can be cached by the player's browser
-with a **revision/ETag** instead of being re-sent every 4 s. [inferred] The app already has a change bus
-(`app/live.py`, SSE counter → `nd-live` event) that can replace the 4-second poll. A migration reads old
-`elements_json` into `legacy` and keeps working. New columns need `database._heal_table` entries (see AGENTS.md).
-
-Optimistic concurrency (`updated_at`/revision on save, 409 on conflict) is a cheap upgrade over today's last-writer-wins
-and a prerequisite for assistants editing too.
-
-### 5.3 Walls, vision and fog
-
-**Algorithms** [source: Red Blob Games' visibility article via search summary; library from npm]: a visibility polygon is
-found by sweeping a ray around the observer's position over the sorted wall endpoints while tracking the nearest wall —
-O(n log n) per source. `visibility-polygon` (MIT, 5.5 KB min) implements it.
-
-**Measured** (Node, CPU only, random walls — worse than real maps, which mostly meet at endpoints) [measured]:
-
-| Wall segments | `breakIntersections` (once per edit) | 1 source | 6 sources (one move of 6 tokens) |
-|---|---|---|---|
-| 100 | 8 ms | 2 ms | 5 ms |
-| 500 | 14 ms | 4 ms | 11 ms |
-| 2,000 | 155 ms | 16 ms | 51 ms |
-| 5,000 | 927 ms | 95 ms | 519 ms |
-
-Up to ~2,000 segments is comfortable on token moves (throttle to once per frame); 5,000+ wants spatial culling
-(`rbush`/`flatbush`, both tiny and MIT/ISC) to consider only walls within a source's range.
-
-`polygon-clipping` (MIT, 29 KB min) unions floors into outlines: **50 rooms 10 ms, 200 rooms 34 ms, 800 rooms 337 ms**
-[measured] — enough for "draw rooms, the walls appear around them" and for merging reveal regions.
-
-**Secrecy design — the important decision.** The app's player view already filters server-side. Fog has three tiers:
-
-1. **Static fog (GM-drawn)**: the GM paints/erases hidden regions; the server sends players only elements outside hidden
-   regions. No vision math. *Cheapest and most useful first step* (Owlbear and Dungeon Revealer started here).
-2. **Dynamic vision, GM-authoritative**: the GM's browser (open anyway during play) computes the union of visible regions
-   for the player tokens and posts reveal deltas; players get the revealed area. Secure from players, simple.
-   Player-initiated moves are applied when the GM page recomputes.
-3. **Dynamic vision, server-authoritative**: the server holds walls and computes visibility itself (needs a Python port of
-   the algorithm, tested against the JS one). Players need nothing from the GM page. Most work.
-
-**Caveat for imported images [inferred]:** a map that is one raster image (e.g. a Universal VTT import) is entirely
-visible to a browser that receives it; Foundry itself trusts clients with this. For native vector maps the server can omit
-unseen geometry (true secrecy). For image maps, either accept "table-trust fog" (client mask) or have the server cut the
-image into tiles and send only revealed ones. Decide per use case and say so in the UI.
-
-### 5.4 Assets and licences
-
-An asset library is what makes maps look finished. Options [source, secondary]:
-
-| Source | Licence | Use |
+| Column | Holds | Written |
 |---|---|---|
-| **Kenney** packs | CC0 (no attribution) | bundle a small core set |
-| **game-icons.net** | CC BY 3.0 (credit required) | token/pin/symbol icons; show an attribution list in the app |
-| **2-Minute Tabletop** tiles | CC BY-NC 4.0 | **do not bundle** — non-commercial terms muddy an MIT repo and a published Docker image |
-| **Dungeondraft packs** | creator's own terms; `pack.json` has an `allow_3rd_party_mapping_software_to_read` flag | possible importer, **only** for packs that opt in |
-| **GM-uploaded assets** | the GM's responsibility | the practical default: per-world packs (image + category + footprint in cells + anchor + shadow) |
-| **AI-generated textures/tokens** | depends on the model | the app already has Image Studio (SwarmUI); "generate a cobblestone floor" is a natural, differentiating feature |
+| `walls_json` | walls, doors, windows, secret doors, light-blocking objects: `{id, pts, kind}` in the map's own pixels (the unit existing elements use; `cell_size` from the grid gives cells) | when the GM edits geometry |
+| `runtime_json` | door states, light switches, **explored cells per viewer** (run lengths), static fog regions | small, often (a door toggle, a move) |
+| `revision` | integer; `409` on a stale save; also the ETag of the geometry | every save |
 
-Watabou's generators export JSON/SVG, but their licence terms were not found; treat them as inspiration and as an
-*import* path only after checking.
+New element types in `elements_json`: `light` (x, y, range, colour, intensity), `prop` (asset id, x, y, rotation) — old schematics open unchanged. Hex grids: walls are free segments (UVTT and Foundry have no hex walls).
 
-### 5.5 Generators
+### 5.2 Secrecy — choose a tier consciously
 
-All deterministic and seedable (a seed makes a map reproducible and testable) [inferred]:
+| Tier | What players receive | Cost | Use |
+|---|---|---|---|
+| **S0** (today) | everything except `hidden` elements and non-visible tokens | – | |
+| **S1 table-trust fog** (what the prototype is) | all geometry; the browser masks it | low | in-person, trusted players. A player with dev tools can read the whole map — **say so in the UI** |
+| **S2 strict** | only the geometry/props the viewer has seen, plus the explored mask | server vision per move (plain Python ≈ 4–17 ms at range 16; unlimited vision needs numpy or the browser), a Python port tested against the JS vectors | remote play, secret levels |
 
-- **Dungeon**: BSP or random room placement + corridors (minimum spanning tree over room centres, plus a few extra loops).
-- **Caves**: cellular automata, smoothed, then walls from the outline (`polygon-clipping`).
-- **Buildings**: from a **room graph** (rooms with sizes and adjacency) — treemap/BSP layout, doors on shared walls.
-- **Town / region**: Voronoi/Delaunay (`d3-delaunay` ISC 19 KB, `delaunator` ISC 8 KB) for districts and plots;
-  `simplex-noise` (MIT) for terrain; rivers/biomes as in mapgen4 (Apache-2.0, a design reference) or by importing
-  Azgaar's exports (MIT).
+Build S1; shape the payload (`walls_for_viewer(...)`) so S2 slots in. **Every server-side renderer and export must go through the same filter** (today `preview.svg` and `view.json` are separate code paths).
 
-**LLM role:** return the *spec* ("a smuggler's den: bar, two storerooms, hidden back door; rooms linked to entities X and
-Y") through the Studio structured-output path the app already uses (`format=` in `generate_chat`), and let the layout code
-place it. The model never produces coordinates. That also lets the result be *edited* afterwards, since it is real walls
-and objects, not a picture.
+### 5.3 Second screen ("TV mode")
 
-### 5.6 Interchange formats
+`/display` gains a map item: the player view without chrome, **one fog for the party** (union of the player characters' vision), SSE-driven (`live.touch`), with a **calibration** step so one grid square is one inch (screen
+diagonal + resolution, or a ruler). One-inch squares visible on a 16:9 screen: 32″ ≈ 27 × 15 · **43″ ≈ 37 × 21** (102 px/in at 4K) · 50″ ≈ 43 × 24 · **55″ ≈ 47 × 26** (80 px/in) · 65″ ≈ 56 × 31 — so a 30 × 20 dungeon fits a 43″ TV
+whole and bigger ones scroll or zoom [inferred arithmetic; calibration practice **[secondary]**]. The GM keeps the full view and token control on the laptop.
 
-**Universal VTT (`.dd2vtt`, `.uvtt`, `.df2vtt`)** — JSON with the map image embedded as base64. As documented by a
-third-party package that verified it against Dungeondraft samples [source]:
+### 5.4 Interchange, AI, MCP
 
-```
-format                 0.2 (Dungeondraft); the Arkenforge spec also documents 0.3
-resolution             { map_origin{x,y}, map_size{x,y} in SQUARES, pixels_per_grid }
-line_of_sight          [[{x,y},{x,y},…], …]   wall polylines, in squares
-objects_line_of_sight  [[…]]                  light-blocking objects (newer exports)
-portals                [{ position{x,y}, bounds[{x,y},{x,y}], rotation (rad), closed, freestanding }]
-environment            { baked_lighting, ambient_light (ARGB) }
-lights                 [{ position{x,y}, range (squares), intensity, color (ARGB), shadows }]
-image                  base64 PNG/WEBP
-```
+- **Import** UVTT as a new importer kind (`.dd2vtt/.uvtt`): picture (converted by the existing image pipeline) + walls + doors + lights + scale; a report of what was dropped (secret doors, locked state, window semantics).
+- **Export** UVTT + PNG and a Foundry scene JSON, built in the browser from the SVG (FORMATS §7); import the result into a real Foundry and Roll20 once before shipping.
+- **AI** — `POST …/generate` as a background job (listed in `TASK_PATH_PATTERNS`), the model returns a *spec* (room kinds, sizes, links, lore entity ids) through the structured-output path, a `clean_map_spec` validator (the `template_draft.py`
+  pattern) rejects anything else, the generators lay it out, the GM accepts a *draft*.
+- **MCP** — `list_maps`, `get_map`, `create_map_from_spec`, `set_door_state`, `place_prop`, `add_light` (GM-only; tests in `tests/test_mcp.py`'s module as AGENTS.md requires).
 
-Everything is in squares (× `pixels_per_grid` = image pixels); colours are ARGB hex. Roll20 documents importing walls,
-doors, windows and lights from these files, with ~70 px per grid as the standard. [source]
-**Windows are not distinguished from doors** in the format.
+### 5.5 Work packages
 
-**Foundry wall document** [source: Foundry API]: `c: [x0,y0,x1,y1]`, `move`/`sight`/`light`/`sound` restriction
-(0 none, 10 limited, 20 normal, 30 proximity, 40 distance), `dir`, `door` (type), `ds` (door state), `threshold`. A
-conversion of UVTT → Foundry is: one wall per `line_of_sight` segment with `move/sight/light/sound = 20`, doors from
-`portals` with `door: 1`, lights → ambient lights (dim = range × unit distance; colours ARGB → drop the alpha pair). [source]
+Sizes are **estimates**: one developer with AI assistance, focused days, ±50%, derived from the prototype (≈ 1,500 module lines + 780 test lines for the logic; production adds UI, persistence, permissions, docs and review, a factor of ~3–5).
 
-Export needs a **rendered image** of the map at `pixels_per_grid` — with a PixiJS renderer that is
-`renderer.extract` of the scene, with the image-size ceilings of browsers in mind (the Dungeondraft tooling notes a
-16,384 px export cap). Print export (1 inch per square, tiled across pages) is a separate, simpler path from the same
-scale data.
+| WP | What | Days | Main new code | Done when |
+|---|---|---|---|---|
+| **0** | No-regret fixes: **apply the D1 patch**; zoom/pan/pinch for the player view (a pure `viewport.js`, Node-tested); `live.touch` on map writes + SSE in the views; vendor Leaflet; fix doc drift | 2–3 | ~300 lines | a NaN token is refused; a phone can zoom the map; no unpkg; players stop polling |
+| **1** | Walls/doors/windows/lights as data with scale: columns, validation (`clean_walls`: finite, bounded, ≤ 5,000), `revision`/409, editor tools "wall, door, window, light" snapping to the cell lattice | 4–6 | ~700 | a drawn room has walls; old schematics unchanged; tests for limits and permissions |
+| **2** | Fog/vision/lights in the player view: productionise `vision.js`, `fog-svg.js`, `light-svg.js` (+ vendored `visibility-polygon`), per-viewer explored memory, GM controls (reveal/hide/reset, door toggle, light on/off), **static fog first** | 5–7 | ~800 | the three screenshots above, in the real page, with a *player payload test* stating what S1 does and does not hide |
+| **3** | Second-screen TV mode + calibration | 2–3 | ~300 | a map on `/display` at one inch per square, following the GM live |
+| **4** | UVTT import/export + Foundry scene, warnings report | 4–6 | ~700 | round trip nd-world → UVTT → nd-world intact; the real-sample fixture imports and plays; one manual import into Foundry and Roll20 |
+| **5** | Grid-based creator mode: paint rooms/corridors, auto walls, door/window tool, prop palette (first-party + GM uploads), floors/textures, patch-based undo, **incremental redraw** | 10–15 | ~2,500 | the §3 picture can be drawn by hand; budgets below met |
+| **6** | Generators + AI spec + MCP tools + importer kind | 5–8 | ~900 (≈ 500 are the existing prototypes) | same seed → same map (tested); a spec produces an editable map; MCP can create one |
+| **7** | Lore links: room/prop ↔ entity, "open lore from the map", the map on the entity page, room text in the AI context | 3–4 | ~400 | clicking a room opens its entity; the entity page shows its map |
+| **8** | Picture → playable: calibration wizard, **assisted tracing** (snap to edges found in the browser), grid/scale detection | 4–6 | ~600 | an AI battlemap becomes a playable map in minutes |
+| **9** | *(if needed)* strict secrecy S2: Python vision (range-limited), per-viewer payload filter | 4–6 | ~600 | a player's network payload contains no unseen geometry (tested) |
+| **10** | *(only if measured)* renderer upgrade: run `render-bench.html` on real laptop and phone first | 1 to decide, then 15+ | – | numbers on real hardware justify it |
 
----
+**Core of the recommendation (WP 0–4): about 17–25 days. The creator (WP 5–8): about 22–33 more.**
 
-## 6. Proposed architecture
+Budgets to make "done" testable **[inferred, informed by the measurements]**: vision update for 6 viewers < 10 ms at 750 walls (range-limited) or < 30 ms (unlimited, library); fog update ≤ 1 frame up to 1,300
+elements; initial load of a 3,000-element map < 2 s; unchanged geometry costs a `304`; the player payload for a 100 × 70 dungeon with 3,000 props stays under 50 KB gzipped (the existing element format measures 44 KB: 573 KB elements + 51 KB walls raw).
 
-```
- Map v2 document (grid units, versioned)  ──►  validator + migration (Python + JS, shared test vectors)
-        │                                          ▲
-        ├─ geometry modules (pure JS, Node-tested): grid/hex math, walls, snapping, polygon ops,
-        │      visibility, generators (seeded), UVTT import/export
-        ├─ renderer: PixiJS scene (editor + player view);  legacy SVG renderer for old schematics + SVG export
-        ├─ runtime state (tokens, door states, fog)  ── separate rows/JSON, small, frequently written
-        ├─ server: save with revision (409 on conflict), view payload = static geometry (ETag) + state;
-        │      secrecy filter (no hidden/unseen geometry in player payloads); nd-live bus replaces the 4 s poll
-        └─ AI/MCP: spec → generator → editable map; MCP tools for maps
-```
+### 5.6 Threat model for the new surface
 
-Cross-cutting rules that already exist in this repo and should carry over: pure logic in `static/js/*.js` modules tested under
-Node (as `dice-geometry.js`, `live-health.js`); vendored libraries with their licences in `static/vendor/` and no CDN
-(`tests/test_dice_tray_page.py` pattern); a new HTTP route gets a row in `docs/API_REFERENCE.md`; background AI jobs for
-anything over ~100 s; inline scripts must parse (`tests/test_template_scripts.py`).
-
-Suggested performance budgets (to make "done" testable) [inferred]: 5,000 objects at 60 fps on a mid-range laptop iGPU;
-2,000 on a mid-range phone; initial load of a 3,000-object map under 2 s; vision update for 6 tokens under 50 ms at 2,000
-wall segments (measured feasible above); player payload for an unchanged map ≈ a `304`.
+| Risk | Control |
+|---|---|
+| a player-writable number poisons the document (D1) | every such field is validated: finite, typed, bounded; tests with `NaN`, `1e999`, strings, booleans |
+| hidden geometry reaches a player | one `walls_for_viewer` / filter function used by `view.json`, the page, `preview.svg`, exports and the second screen; a test that diffs payloads |
+| script in labels or imported names | existing `esc()`/`tojson` discipline; imported text never inserted as HTML; props are **first-party SVG strings or `<img>` of an upload**, never inlined user SVG |
+| import bombs: huge JSON, thousands of polylines, 100 MB base64 images | caps on bytes, polylines, points, walls (≤ 5,000), image pixels (Pillow's limit), reject non-finite numbers |
+| races | door toggles and explored-memory writes use the existing `BEGIN IMMEDIATE` read-modify-write pattern; `revision` 409 for editors |
+| permissions | new player routes in `_is_player_safe`, editor routes in `_is_assistant_safe`, every route a row in `API_REFERENCE.md` (a test enforces it) |
+| accessibility | SVG keeps text selectable; door state by icon *and* colour; keyboard movement for own token; honour `prefers-reduced-motion` for fog fades |
 
 ---
 
-## 7. Phased roadmap
-
-Sizes are relative (S ≈ a few days, M ≈ 1–3 weeks, L ≈ 3–6 weeks, XL longer) for one developer with AI assistance. They are
-estimates, not commitments; Phase 0's spike should recalibrate them.
-
-### Phase 0 — Groundwork (M)
-- Vendor Leaflet (no `unpkg`), and any library the next phases need, with licences.
-- Extract the pure parts of `schematic.html` (geometry, grid, element model, undo) into Node-tested modules.
-- Define Map v2 (§5.2): schema, validator, migration that keeps old schematics alive in `legacy`.
-- Save with a revision (409 on conflict); gzip/ETag for the view payload.
-- **Renderer spike on real hardware** (`render-bench.html`) → decide Pixi vs Konva vs incremental SVG.
-- *Done when:* old schematics open unchanged; schema + migration have round-trip tests; renderer decision recorded here.
-
-### Phase 1 — Authoring core (L)
-Scale/grid-first canvas (cells, ft per cell, scale bar, measure in ft) → **wall tool** (polylines/closed rooms, snaps to
-grid and endpoints) → **doors/windows/secret doors** on walls → **floor polygons** with textures/patterns, auto-outline
-from rooms (`polygon-clipping`) → **asset library** (small CC0 core + GM uploads, categories, footprint in cells, rotate/
-scale/mirror, scatter brush) → user-defined **layers** → patch-based undo/redo, copy/paste, align, keyboard shortcuts →
-PNG/SVG export at scale and **print-to-scale**.
-- *Done when:* a 30×30 dungeon with ~2,000 objects is drawn, saved, reloaded and exported; budgets from §6 met on the
-  target devices; old tools still available via the legacy layer.
-
-### Phase 2 — Live play (L)
-Split runtime state from geometry; tokens gain vision/light radii; **lights**; **static fog first** (2a), then **dynamic
-vision** (2b, GM-authoritative, §5.3); door toggling; player payload = geometry (ETag) + state, updated by the existing
-`nd-live` bus instead of polling; per-player explored memory.
-- *Done when:* a player's network payload contains no geometry they cannot see (**tested**), and a 6-token move updates
-  fog in < 50 ms at 2,000 segments.
-
-### Phase 3 — Interchange (M)
-**Universal VTT export** (image + walls + portals + lights) and **import** (so a Dungeondraft/Dungeon Scrawl map can be run
-with nd-world's tokens, combat link and fog); Foundry scene JSON; print tiles. Verify against real `.dd2vtt` samples
-before coding (see the caveat at the top).
-- *Done when:* a map round-trips nd-world → UVTT → nd-world with walls/doors/lights intact, and a UVTT sample from another
-  tool imports and plays.
-
-### Phase 4 — Generators and AI (L)
-Seeded dungeon/cave/building/town generators; **"describe it" → spec → layout** with lore RAG and room↔entity links;
-"populate this room" (props from the library); MCP map tools; regenerate-a-region.
-- *Done when:* the same seed gives the same map (**tested**); an AI-built map is fully editable walls and objects, not
-  an opaque drawing.
-
-### Phase 5 — World and region maps (L–XL)
-Terrain/biome painting, rivers/roads, settlement icons and curved labels; pins ↔ entities ↔ battle maps ("zoom in");
-decide whether to retire Leaflet for a Pixi world view (tile pyramid for very large images) or keep both; optional
-import of Azgaar exports (MIT).
-
-### Phase 6 — Polish and collaboration (M–L)
-Visual styles/themes (blueprint, ink, colour), lighting FX, touch/tablet editing, multi-editor (locking first; a CRDT
-such as Yjs only if real simultaneous editing is wanted), version history, asset-pack importer for opt-in packs.
-
-### No-regret quick wins (each independent, S–M)
-1. Vendor Leaflet — removes the offline hole today.
-2. Units on schematics (ft per cell) and a measure tool that shows feet.
-3. User-defined layers instead of the four fixed names.
-4. ETag + gzip on `view.json`, and use `nd-live` instead of polling every 4 s.
-5. Replace AI Build's "coordinates" prompt with a spec + layout step (a mini Phase 4).
-6. More stamps and an upload-and-place image asset tool.
-
----
-
-## 8. Risks and decisions needed
-
-**Decisions (my default in brackets):**
-1. **Which scale first?** Battle maps/dungeons, or world/region maps too? [battle maps; regions in Phase 5]
-2. **Art direction?** Keep the neon/blueprint vector look (cheapest, consistent with the app) or textured
-   Dungeondraft-style (needs assets and shadows)? [vector first, textures as an option per map]
-3. **Is live fog/vision inside nd-world a goal**, or is "make maps and export to Foundry/Roll20" enough? This swings
-   Phase 2 between essential and optional. [fog yes, static first]
-4. **Is ~1 MB extra JavaScript (Pixi) acceptable**, loaded only on map pages? [yes, lazy-loaded]
-5. **Who edits?** GM only, or assistants/players too (needs revisions/locking)? [GM + assistants, locking]
-6. **Tablet/phone editing?** [view and token play on phones; editing desktop-first]
-7. **Assets:** a small CC0 core + GM uploads, with game-icons.net for symbols? [yes; no NC assets bundled]
-8. **How important is AI generation**, given local models are weak at geometry? [valuable, but spec-based]
-
-**Risks and mitigations:**
+## 6. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Scope creep — "full-blown" has no end | the phases each have a *done when*; Phase 3 interchange buys features without building them |
-| Renderer rewrite breaks live play | legacy layer + old renderer stay until the new one passes the same player-view tests |
-| WebGL missing/slow (low-end devices, software rendering — as in the sandbox) | feature-detect, message, and keep the SVG view as a fallback for players |
-| Asset licensing | CC0/CC BY only in the repo; GM-supplied assets are the GM's; attribution page generated from a manifest |
-| Fog secrecy expectations | say plainly which tier each map has (§5.3); tests that a player payload lacks hidden geometry |
-| Vision cost on big maps | spatial index, per-source range culling, throttle to once per frame; budgets in §6 |
-| Interchange format drift (UVTT versions, Foundry v13/v14) | sample-file tests; treat as best-effort import with a report of what was ignored |
-| Single-process, SQLite server | state rows small and write-light; no per-frame writes; ETag for geometry |
+| "full-blown" has no end | every WP has a *done when*; interchange buys features without building them; no art competition |
+| table-trust fog mistaken for secrecy | say so in the UI; S2 designed in; payload tests |
+| SVG hits its ceiling (≳ 6,000 visible objects, many textured sprites) | WP10 with real-device numbers; incremental redraw (WP5) first |
+| phone performance | cap lights (~10), range-limited vision, cull to the viewport, measure on a real phone |
+| UVTT/Foundry dialect drift (Foundry v14 data model) | sample-file fixtures; best-effort import with a report; re-check against a live Foundry before each release |
+| asset licensing | first-party MIT art only in the repo; GM uploads are the GM's; no community pack is bundled (COMPETITORS §4) |
+| single-process SQLite server | runtime writes are tiny; geometry is cached by ETag; no per-frame writes |
+| generators look repetitive | seeds + room kinds + GM edits; grow the prop/recipe set; AI chooses kinds, not coordinates |
 
-**Not measured here and worth measuring next:** WebGL/Canvas frame rates on real devices (the bench page); memory
-for large textures on phones; Python-side visibility cost if server-authoritative vision is chosen; real UVTT files from
-two or three tools.
+## 7. Decisions needed (my default in brackets)
 
----
+1. **Where do players look at the map** — a TV on the table, their own phones/laptops, Foundry? [all three; TV + phones first, Foundry export next]
+2. **Secrecy standard** — table-trust (S1) or strict (S2)? [S1 now, S2 designed in]
+3. **First scale** — battle maps and dungeons; world/region maps (Leaflet + terrain) later? [battle maps]
+4. **Assets** — first-party MIT art + GM uploads, nothing bundled from community packs? [yes; note `static/maps` and `static/schematics` are CC BY-NC-ND content — new art should live under a clearly MIT path]
+5. **Creator ambition** — grid rooms + props + generators (fast, editable), or hand-painted art (Dungeondraft-class)? [grid + generators; import for painted art]
+6. **Who edits** — GM and assistants with revision conflicts, or locking? [revision/409]
+7. **AI** — spec-based generation with lore entity links as a background job? [yes]
+8. **Apply the D1 patch now?** [yes — it is a verified fix for a one-request outage]
+
+## 8. Not measured, and how to measure it
+
+| Unknown | How |
+|---|---|
+| frame rates of SVG, Canvas, Konva and Pixi with thousands of objects on **real GPUs** and a mid-range phone | run `docs/map-creator-research/render-bench.html` (`?n=1000/5000/12000/30000`) on a laptop and a phone; repeat the fog harness with `--throttle` on the phone itself |
+| whether the exported files import into Foundry, Roll20, Owlbear | import `prototypes` output once into each |
+| how AI-drawn pictures behave under wall detection | needs a GPU image model; try 20 pictures through `wall_detect_experiment.py`-style scoring with hand-traced truth |
+| Safari/Firefox behaviour of SVG masks and blend modes | run the harness pages there |
+| what your table actually does | §7.1 |
 
 ## Sources
 
-Web pages (read through search summaries unless marked *fetched*):
+Graded in [COMPETITORS.md](map-creator-research/COMPETITORS.md) and [FORMATS.md](map-creator-research/FORMATS.md). **Opened in this research (primary):** `exampleMaps/sampleMap.dd2vtt` and `sampleMap.dungeondraft_map`
+([Imagix/uvtt2fgu](https://github.com/Imagix/uvtt2fgu), BSD-3-Clause); `dungeondraft-mcp` 0.1.0 (npm, MIT); [shadowfray/donjon2uvtt](https://github.com/shadowfray/donjon2uvtt);
+`@league-of-foundry-developers/foundry-vtt-types` 13.346.0-beta; `@owlbear-rodeo/sdk` 3.1.0 (MIT); [Codas/foundryvtt-performance-hacks](https://github.com/Codas/foundryvtt-performance-hacks);
+[ThreeHats/auto-wall](https://github.com/ThreeHats/auto-wall) (MIT); [dungeon-revealer](https://github.com/dungeon-revealer/dungeon-revealer) (ISC); [Azgaar's Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator) (MIT);
+`familiar-vtt` (npm README); the nd-world source at `1774216`. **Summarised by the search tool only (secondary):** Arkenforge, Dungeon Alchemist, Dungeon Scrawl, Roll20 UVTT support, Forgotten Adventures licensing, Watabou, Kenney, game-icons.net,
+2-Minute Tabletop, TV-table guides, the Foundry optimisation guides, the Owlbear Scene Importer and Dynamic Fog pages. Library facts (sizes, licences) from the npm registry: pixi.js 8.22.0 (MIT, 841 KB min), konva 10.7.1 (MIT, 194 KB),
+visibility-polygon 1.1.0 (MIT, 5.5 KB), polygon-clipping 0.15.7 (MIT, 29 KB), rbush 4.0.1 (MIT), delaunator 5.1.0 (ISC), d3-delaunay 6.0.4 (ISC).
 
-- Roll20 — [Universal Virtual Tabletop (UVTT) Support](https://help.roll20.net/hc/en-us/articles/41643201127831-Universal-Virtual-Tabletop-UVTT-Support)
-- Dungeon Scrawl — [UVTT export](https://blog.dungeonscrawl.com/uvtt-export), [itch.io page](https://probabletrain.itch.io/dungeon-scrawl), [Pro features (Roll20 help)](https://help.roll20.net/hc/articles/16981022708247)
-- Foundry VTT API — [WallData](https://foundryvtt.com/api/interfaces/foundry.documents.types.WallData.html), [CanvasVisibility](https://foundryvtt.com/api/classes/foundry.canvas.groups.CanvasVisibility.html)
-- Owlbear Rodeo — [Realtime Dynamic Fog (2.3 launch)](https://blog.owlbear.rodeo/owlbear-rodeo-2-3-release-week-day-3/)
-- Dungeondraft — [What is Dungeondraft?](https://dndungeon.com/blogs/faq/what-is-dungeondraft-the-rpg-map-editor-explained)
-- Dungeon Alchemist — [review](https://www.keengamer.com/articles/reviews/software-reviews/dungeon-alchemist-review-bringing-your-campaign-to-life-pc/), [GamingOnLinux](https://gamingonlinux.com/2022/04/ai-powered-map-creator-dungeon-alchemist-is-now-on-steam)
-- Inkarnate vs Wonderdraft — [comparison list](https://arcaneeye.com/dm-tools-5e/dnd-map-makers/)
-- Azgaar's Fantasy Map Generator — [LICENSE (MIT), *fetched*](https://raw.githubusercontent.com/Azgaar/Fantasy-Map-Generator/master/LICENSE)
-- mapgen4 — [redblobgames/mapgen4](https://github.com/redblobgames/mapgen4) (Apache-2.0 per search summaries)
-- Red Blob Games — [2D visibility](https://www.redblobgames.com/articles/visibility/)
-- Assets — [Kenney (CC0) and game-icons.net (CC BY 3.0), summary](https://app.cinevva.com/guides/free-2d-sprites-tilesets); [2-Minute Tabletop (CC BY-NC 4.0)](https://2minutetabletop.com/?p=18889)
-- Watabou — [forum thread](https://forum.profantasy.com/discussion/comment/85704) (licence terms not found)
-- Dungeon Revealer — [AlternativeTo](https://alternativeto.net/software/dungeon-revealer/about) (licence not verified)
-
-Package documentation: the npm package `dungeondraft-mcp@0.1.0` (`docs/research.md`, `docs/foundry-import.md`) — a third-party
-description of the Universal VTT structure, Dungeondraft's map/pack formats and the UVTT → Foundry conversion, verified by its
-author against Dungeondraft samples. It also cites the Arkenforge spec (arkenforge.com/universal-vtt-files/), which could not be
-opened from here.
-
-Library facts (licence, published bundle sizes) — npm registry and `npm pack`, **[measured]**: pixi.js 8.22.0 (MIT, 841 KB
-min), konva 10.7.1 (MIT, 194 KB), visibility-polygon 1.1.0 (MIT, 5.5 KB), polygon-clipping 0.15.7 (MIT, 29 KB), delaunator
-5.1.0 (ISC, 8 KB), d3-delaunay 6.0.4 (ISC, 19 KB), earcut 3.2.4 (ISC, 10 KB), rbush 4.0.1 (MIT, 6 KB), flatbush 4.6.2 (ISC),
-simplex-noise 4.0.3 (MIT), roughjs 4.6.6 (MIT), js-angusj-clipper 1.3.1 (MIT); clipper-lib 6.4.2 and clipper2-wasm 0.4.0 carry
-Boost-style licences.
-
-## Appendix: how the measurements were made
-
-- **SVG editor** — `/maps/schematic/{slug}` loaded in headless Chromium (software rendering, 1400×900) with N generated
-  elements saved through `POST …/elements`; `redraw()` timed five times with `performance.now()`; "zoom toggle" is
-  `doZoom()` alternated for 1.5 s counting animation frames. CPU-only sandbox: absolute values are pessimistic.
-- **Canvas 2D / Konva / PixiJS** — the same scene was run, but under software WebGL even 1,000 objects ran at single-digit fps
-  in every renderer, so **no renderer comparison is claimed**. Use `docs/map-creator-research/render-bench.html` on real hardware.
-- **Visibility and clipping** — Node 22, `visibility-polygon` and `polygon-clipping` from `npm pack`; random axis-aligned wall
-  segments 40–200 units long in a 4000×3000 area (more crossings than a real map), median of 3–5 runs.
-- **Payload sizes** — the same generated elements, `json.dumps` and gzip.
+Round one's measurements (SVG redraw 200 → 12,000 objects, random-wall vision, union cost, payload sizes) were taken in the same sandbox and are unchanged; the interpretation of the first is what §1.2 revises.
