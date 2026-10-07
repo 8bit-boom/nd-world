@@ -157,7 +157,14 @@ function getBounds(el) {
     }
     case 'text':  return {x:el.x, y:el.y-(el.size||20), w:180, h:(el.size||20)+4};
     case 'pin':   return {x:el.x-12, y:el.y-22, w:130, h:34};
-    case 'image': return {x:el.x, y:el.y, w:el.w, h:el.h};
+    case 'image': {
+      const rot = ((+el.rot || 0) % 360 + 360) % 360;
+      if (!rot) return {x:el.x, y:el.y, w:el.w, h:el.h};
+      // the box around the rotated picture, so selection and hit tests cover what is drawn
+      const a = rot * Math.PI / 180, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a));
+      const bw = el.w*c + el.h*sn, bh = el.w*sn + el.h*c;
+      return {x:el.x + el.w/2 - bw/2, y:el.y + el.h/2 - bh/2, w:bw, h:bh};
+    }
     case 'token': { const r=el.r||20; return {x:el.x-r, y:el.y-r, w:r*2, h:r*2}; }
   }
   return null;
@@ -247,6 +254,7 @@ function makeElSVG(el) {
       break;
     case 'image':
       main = svgEl('image', { x:el.x, y:el.y, width:el.w, height:el.h, href:el.href, preserveAspectRatio:'none' });
+      if (isFinite(+el.rot) && +el.rot % 360) main.setAttribute('transform', `rotate(${+el.rot} ${el.x + el.w/2} ${el.y + el.h/2})`);
       g.appendChild(main); return g;
     case 'measure': {
       const ln = svgEl('line', { x1:el.x1, y1:el.y1, x2:el.x2, y2:el.y2,

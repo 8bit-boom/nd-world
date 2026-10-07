@@ -66,6 +66,8 @@ _GENERICALLY_HEALED_TABLES = (
     "session_plans", "session_plan_slots", "session_plan_votes",
     # media_titles / media_rename_log (app.models - the AI media renamer): brand new, same reasoning as above.
     "media_titles", "media_rename_log", "media_rename_runs",
+    # map_props (app.models.MapProp - the map-object library): brand new, same reasoning as above.
+    "map_props",
 )
 
 

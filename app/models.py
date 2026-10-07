@@ -1955,6 +1955,27 @@ class MediaRenameRun(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MapProp(Base):
+    """A picture of a map object (a bed, a barrel, a wall section) in a world's prop library - see app/routers/map_props.py
+    and app/prop_images.py. The stored file was re-encoded (raster -> trimmed WebP) or rebuilt from an allow-list (SVG)
+    on the way in, so it is safe to show every player. cells_w/cells_h is the footprint the object takes on a grid, in
+    squares; placing it on a map multiplies by that map's cell size. Placed copies reference `file_url` from the map's
+    elements, so a file still used by a map is kept when the library entry is removed."""
+    __tablename__ = "map_props"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    tags = Column(String(256), default="")
+    file_url = Column(String(512), nullable=False)       # "/uploads/props/<file>.webp|.svg"
+    kind = Column(String(8), default="raster")           # "raster" | "svg"
+    px_w = Column(Integer, default=0)
+    px_h = Column(Integer, default=0)
+    cells_w = Column(Float, default=1.0)
+    cells_h = Column(Float, default=1.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Schematic(Base):
     __tablename__ = "schematics"
 

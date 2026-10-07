@@ -44,7 +44,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from . import ai_background as _ai_background
@@ -53,6 +53,7 @@ from .routers.characters import router as characters_router
 from .routers.character_ai import router as character_ai_router
 from .routers.template_ai import router as template_ai_router
 from .routers.session_audio import router as session_audio_router
+from .routers.map_props import delete_prop_file as _delete_prop_file, router as map_props_router
 from .routers.session_media import router as session_media_router
 from .routers.character_hub import router as character_hub_router
 from .routers.characters import _pc_to_foundry_journal
@@ -175,6 +176,7 @@ app.include_router(quests_router)
 app.include_router(sessions_router)
 app.include_router(session_audio_router)
 app.include_router(session_media_router)
+app.include_router(map_props_router)
 app.include_router(calendar_router)
 app.include_router(schedule_router)
 app.include_router(media_rename_router)
@@ -843,6 +845,9 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         # The GM schematic editor canvas itself — editing is its purpose.
         return True
     if method == "POST" and path.startswith("/maps/schematic/"):
+        return True
+    # The map-object library (the editor's Props palette); each handler checks the Maps section's edit level.
+    if path == "/api/maps/props" or path.startswith("/api/maps/props/"):
         return True
     # Gallery (images) — albums, uploads, spotlight broadcast; content end to
     # end per the plan (unlike Audio/Video/Pages it has no player tier, so
@@ -1620,7 +1625,7 @@ _WORLD_DELETE_MODELS = (
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
     EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, CharacterJournalEntry,
-    SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun,
+    SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp,
 )
 
 
@@ -1666,6 +1671,10 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     # delete helper rather than duplicating its containment/extension logic.
     for clip in db.query(VideoClip).filter(VideoClip.world_id == world_id).all():
         _delete_video_clip_file(clip)
+
+    # Library objects own one file each (re-encoded at upload), so they go with the world.
+    for prop in db.query(MapProp).filter(MapProp.world_id == world_id).all():
+        _delete_prop_file(prop.file_url)
 
     # Same ownership shape as AudioClip/VideoClip — each PageDoc row owns
     # exactly one file — reuses pages.py's own delete helper rather than

@@ -596,6 +596,10 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | GET | `/maps/schematic/{slug}/ai-build/{job_id}` | GM* | Polls an AI build job: `running`, `done` (with the new elements and totals), or `error` (with Studio's message). |
 | POST | `/maps/schematic/{slug}/upload` | GM / Assistant | Uploads a background image. |
 | POST | `/maps/schematic/{slug}/embed-image` | GM / Assistant | Embeds a picked image file directly into an element (data-URI, no separate upload round trip) — backs the editor's 🖼 Embed Image tool. |
+| GET | `/api/maps/props` | GM / Assistant (Maps edit) | The world's map-object library for the editor's Props palette: `{props:[{id,name,tags,url,kind,px_w,px_h,cells_w,cells_h}], limit}`. |
+| POST | `/api/maps/props/upload` | GM / Assistant (Maps edit) | Several pictures of map objects at once (multipart `files`, optional `cells_w` = width in squares for the batch). PNG, JPG, WebP, GIF (first frame), AVIF, BMP, TIFF are decoded, trimmed of transparent margins, shrunk to 1024 px and stored as WebP; SVG is rebuilt from an allow-list (no script, no external references, no entities) and refused whole if anything is off. Up to 25 files and 12 MB each, 500 objects per world. Returns `{added[], refused[{file,reason}]}` - one bad file never loses the others. |
+| POST | `/api/maps/props/{id}/update` | GM / Assistant (Maps edit) | Rename an object, set its tags or its footprint in squares (`name`, `tags`, `cells_w`, `cells_h`; quarter-square steps, 0.25-40). Another world's object is 404. |
+| POST | `/api/maps/props/{id}/delete` | GM / Assistant (Maps edit) | Removes the library entry; the file is kept while any map of the world still uses it (`file_kept`). |
 | POST | `/maps/schematic/{slug}/rename` | GM / Assistant | Renames a schematic. |
 | POST | `/maps/schematic/{slug}/delete` | GM / Assistant | Deletes a schematic. |
 

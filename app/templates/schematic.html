@@ -158,6 +158,26 @@
         Symbols <span id="stamp-toggle">▸</span>
       </div>
       <div id="stamp-grid"></div>
+      <div class="panel-hdr panel-hdr-toggle" onclick="toggleProps()">
+        Props <span id="props-toggle">▸</span>
+      </div>
+      <div id="props-body">
+        <div id="props-drop" tabindex="0" role="button" aria-label="Add pictures of map objects"
+             title="Drop pictures of beds, barrels, wall sections... here, or click to choose. PNG, JPG, WebP, GIF, AVIF, BMP, TIFF or SVG.">
+          ➕ Add objects <small>(drop pictures here)</small>
+        </div>
+        <input type="file" id="props-input" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.avif,.bmp,.tif,.tiff,.svg,image/*" style="display:none"/>
+        <label class="props-row" title="Width of the new objects in squares. Leave empty to guess from the picture's size.">
+          Width in squares <input type="number" id="props-cells" min="0.25" max="40" step="0.25" placeholder="auto"/>
+        </label>
+        <div id="props-msg" role="status"></div>
+        <div id="props-grid"></div>
+        <div class="props-row">
+          <button type="button" class="props-mini" onclick="rotateSelectedImages(-15)" title="Turn the selected object left 15° ( [ )">↺ 15°</button>
+          <button type="button" class="props-mini" onclick="rotateSelectedImages(15)" title="Turn the selected object right 15° ( ] )">↻ 15°</button>
+          <button type="button" class="props-mini" onclick="rotateSelectedImages(90)" title="Turn the selected object a quarter turn (Shift + ] )">↻ 90°</button>
+        </div>
+      </div>
       <div id="layers-panel" style="border-top:1px solid #2a2a2a;padding:.5rem">
         <div style="font-size:.7rem;color:#777;margin-bottom:.3rem">LAYERS</div>
         <div id="layers-list"></div>
@@ -485,6 +505,22 @@
   display:flex; align-items:center; justify-content:center; aspect-ratio:1;
 }
 .stamp-btn:hover { border-color:var(--neon); background:rgba(0,240,255,.06); }
+#props-body { display:none; padding:.4rem .5rem; border-bottom:1px solid rgba(255,255,255,.07); }
+#props-body.open { display:block; }
+#props-drop { border:1px dashed rgba(255,255,255,.3); border-radius:6px; padding:.55rem; text-align:center; cursor:pointer; font-size:.78rem; }
+#props-drop:hover, #props-drop.over, #props-drop:focus { border-color:var(--neon); background:rgba(0,240,255,.07); outline:none; }
+.props-row { display:flex; align-items:center; gap:.4rem; font-size:.72rem; margin:.4rem 0; flex-wrap:wrap; }
+.props-row input[type=number] { width:4.2rem; }
+.props-mini { background:var(--bg3,#222); color:inherit; border:1px solid var(--border,#444); border-radius:4px; padding:.25rem .45rem; cursor:pointer; font-size:.74rem; min-height:28px; }
+.props-mini:hover { border-color:var(--neon); }
+#props-msg { font-size:.72rem; color:#ffb066; white-space:pre-line; }
+#props-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:.35rem; max-height:260px; overflow:auto; }
+.prop-item { position:relative; background:#14141a; border:1px solid #2a2a2a; border-radius:5px; padding:3px; cursor:pointer; text-align:center; }
+.prop-item:hover { border-color:var(--neon); }
+.prop-item img { width:100%; height:48px; object-fit:contain; display:block; }
+.prop-item span { display:block; font-size:.62rem; line-height:1.15; max-height:2.3em; overflow:hidden; opacity:.8; }
+.prop-item .prop-x { position:absolute; top:0; right:0; border:none; background:rgba(0,0,0,.6); color:#f88; cursor:pointer; font-size:.7rem; border-radius:0 4px 0 4px; padding:0 .25rem; display:none; }
+.prop-item:hover .prop-x, .prop-item:focus-within .prop-x { display:block; }
 .stamp-btn.on { border-color:var(--neon); background:rgba(0,240,255,.12); }
 .stamp-btn svg { width:32px; height:32px; }
 
@@ -860,7 +896,7 @@ function drawSel() {
   // Single-element resize handles only
   if (sel.length === 1) {
     const el = sel[0];
-    const canResize = el.type === 'rect' || el.type === 'circle' || el.type === 'image';
+    const canResize = el.type === 'rect' || el.type === 'circle' || (el.type === 'image' && !((+el.rot || 0) % 360));   // a rotated picture is turned back ([ and ] keys) before it is resized
     const isLineLike = ['line','arrow','measure','aoe'].includes(el.type);
     if (canResize) {
       const HH = [
@@ -1930,6 +1966,95 @@ function buildStamps() {
     grid.appendChild(btn);
   });
 }
+// ── Props: the world's library of map objects (pictures of beds, barrels, wall sections...) ──────────────
+let propsLoaded = false, propsList = [];
+function propsMsg(t) { document.getElementById('props-msg').textContent = t || ''; }
+function toggleProps() {
+  const body = document.getElementById('props-body'), tog = document.getElementById('props-toggle');
+  body.classList.toggle('open');
+  tog.textContent = body.classList.contains('open') ? '▾' : '▸';
+  if (body.classList.contains('open') && !propsLoaded) loadProps();
+}
+async function loadProps() {
+  try {
+    const r = await fetch('/api/maps/props');
+    if (!r.ok) { propsMsg(r.status === 403 ? 'You cannot edit maps in this world.' : 'Could not load the objects.'); return; }
+    propsList = (await r.json()).props; propsLoaded = true; renderProps();
+  } catch (e) { propsMsg('Could not load the objects (network).'); }
+}
+function renderProps() {
+  const grid = document.getElementById('props-grid'); grid.textContent = '';
+  if (!propsList.length) { const d = document.createElement('div'); d.style.cssText = 'grid-column:1/-1;opacity:.55;font-size:.72rem'; d.textContent = 'No objects yet.'; grid.appendChild(d); return; }
+  propsList.forEach(p => {
+    const b = document.createElement('div'); b.className = 'prop-item'; b.tabIndex = 0; b.setAttribute('role', 'button');
+    b.title = `${p.name} — ${p.cells_w} × ${p.cells_h} squares. Click to place; double-click to rename or resize.`;
+    const img = document.createElement('img'); img.src = p.url; img.alt = ''; img.loading = 'lazy'; img.draggable = false;
+    const nm = document.createElement('span'); nm.textContent = p.name;
+    const x = document.createElement('button'); x.type = 'button'; x.className = 'prop-x'; x.textContent = '✕'; x.title = 'Remove from the library';
+    x.onclick = ev => { ev.stopPropagation(); deleteProp(p); };
+    b.append(img, nm, x);
+    b.onclick = () => placeProp(p);
+    b.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); placeProp(p); } };
+    b.ondblclick = ev => { ev.preventDefault(); editProp(p); };
+    grid.appendChild(b);
+  });
+}
+function placeProp(p) {
+  const cs = (gridType !== 'none' && gridConfig.cell_size) ? gridConfig.cell_size : 50;
+  const w = Math.max(4, p.cells_w * cs), h = Math.max(4, p.cells_h * cs);
+  const el = {id:uid(), type:'image', x:CW/2 - w/2, y:CH/2 - h/2, w, h, rot:0, prop_id:p.id,
+    href:p.url, opacity:1, fill:'none', stroke:'none', strokeW:0, label:'', dash:'', layer:activeLayer};
+  elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
+}
+async function uploadProps(files) {
+  files = [...files]; if (!files.length) return;
+  const cells = document.getElementById('props-cells').value;
+  let added = 0; const problems = [];
+  for (let i = 0; i < files.length; i += 25) {              // the server takes 25 pictures per request
+    const fd = new FormData(); files.slice(i, i + 25).forEach(f => fd.append('files', f));
+    if (cells) fd.append('cells_w', cells);
+    propsMsg(`Uploading ${Math.min(i + 25, files.length)} of ${files.length}…`);
+    try {
+      const r = await fetch('/api/maps/props/upload', { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { problems.push(d.detail || ('Upload failed (' + r.status + ')')); continue; }
+      added += d.added.length; (d.refused || []).forEach(x => problems.push(`${x.file}: ${x.reason}`));
+    } catch (e) { problems.push('Upload failed — network error'); }
+  }
+  propsMsg((added ? `Added ${added} object${added === 1 ? '' : 's'}.` : '') + (problems.length ? '\n' + problems.join('\n') : ''));
+  await loadProps();
+}
+async function editProp(p) {
+  const name = prompt('Name of this object:', p.name); if (name === null) return;
+  const w = prompt('Width in squares (0.25 – 40):', p.cells_w); if (w === null) return;
+  const h = prompt('Height in squares (0.25 – 40):', p.cells_h); if (h === null) return;
+  const r = await fetch(`/api/maps/props/${p.id}/update`, { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name, cells_w: parseFloat(w), cells_h: parseFloat(h) }) });
+  if (!r.ok) propsMsg('Could not save the change.');
+  await loadProps();
+}
+async function deleteProp(p) {
+  if (!confirm(`Remove “${p.name}” from the library? Copies already on maps stay.`)) return;
+  const r = await fetch(`/api/maps/props/${p.id}/delete`, { method: 'POST' });
+  if (!r.ok) propsMsg('Could not remove it.');
+  await loadProps();
+}
+function rotateSelectedImages(deg) {
+  const imgs = selectedEls().filter(e => e.type === 'image');
+  if (!imgs.length) { propsMsg('Select a picture on the map first.'); return; }
+  imgs.forEach(e => { e.rot = (((+e.rot || 0) + deg) % 360 + 360) % 360; });
+  redraw(); snapshot();
+}
+(function wireProps() {
+  const drop = document.getElementById('props-drop'), input = document.getElementById('props-input');
+  drop.onclick = () => input.click();
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } };
+  input.onchange = () => { const f = [...input.files]; input.value = ''; uploadProps(f); };
+  ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => uploadProps(e.dataTransfer.files));
+})();
+
 function toggleStamps() {
   const grid = document.getElementById('stamp-grid');
   const tog = document.getElementById('stamp-toggle');
@@ -2306,6 +2431,8 @@ document.addEventListener('keydown', e => {
     if(ob){ ob.classList.toggle('active',octilinear); ob.classList.toggle('on',octilinear); }
     return;
   }
+  if (e.key==='[' || e.key==='{') { rotateSelectedImages(e.shiftKey ? -90 : -15); return; }
+  if (e.key===']' || e.key==='}') { rotateSelectedImages(e.shiftKey ? 90 : 15); return; }
   if (e.key==='i') pickImage();
   if (e.key==='s' || e.key==='S') toggleStamps();
   if (e.key==='Delete'||e.key==='Backspace') {
