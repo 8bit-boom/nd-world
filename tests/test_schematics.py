@@ -449,3 +449,23 @@ def test_schematic_editor_creature_tokens_default_visible_to_players(client, see
     idx = r.text.index("} else if (tokenTab === 'entity') {")
     next_branch = r.text.index("} else if (tokenTab === 'item') {", idx)
     assert "visible_to_players:false" not in r.text[idx:next_branch]
+
+
+def test_move_token_refuses_nan_infinity_and_junk_and_keeps_tokens_on_the_canvas(client, seed):
+    """One request with NaN (Python's json accepts it) used to make the editor, the player view and view.json fail for everyone
+    (the number is stored, then re-serialised into every page and into JSON.parse). Only finite numbers are taken, kept on the canvas."""
+    pc = _make_pc(seed.world_a.id, seed.player_a.id)
+    elements = [{"id": "tok1", "type": "token", "pc_id": pc.id, "x": 100, "y": 100, "visible_to_players": True}]
+    s = _make_schematic(seed.world_a.id, "nan-token", elements=elements)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    url = f"/api/maps/schematic/{s.slug}/move-token"
+    for raw in ('{"token_id":"tok1","x":NaN,"y":5}', '{"token_id":"tok1","x":1e999,"y":5}', '{"token_id":"tok1","x":5,"y":-Infinity}',
+                '{"token_id":"tok1","x":"abc","y":5}', '{"token_id":"tok1","x":true,"y":5}', '{"token_id":"tok1","x":[1],"y":5}'):
+        r = client.post(url, content=raw, headers={"Content-Type": "application/json"})
+        assert r.status_code == 400, raw
+    # nothing was written: the map still loads for everyone and the token has not moved
+    assert client.get(f"/maps/schematic/{s.slug}/view.json").json()["elements"][0]["x"] == 100
+    # a far-off but finite position is pulled back onto the 2000 x 1500 canvas
+    assert client.post(url, json={"token_id": "tok1", "x": 1e300, "y": -99999}).status_code == 200
+    el = client.get(f"/maps/schematic/{s.slug}/view.json").json()["elements"][0]
+    assert (el["x"], el["y"]) == (2000.0, 0.0)

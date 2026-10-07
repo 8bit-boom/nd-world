@@ -22,6 +22,7 @@ import uuid
 import shutil
 import threading
 import json
+import math
 import base64
 import io
 from pathlib import Path
@@ -3541,6 +3542,19 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
     x, y = body.get("x"), body.get("y")
     if token_id is None or x is None or y is None:
         raise HTTPException(400)
+    # The position is stored in elements_json and re-serialised for every viewer. Python's json module accepts NaN and
+    # Infinity (and 1e999), which would make the editor, the player view and view.json fail for everyone, so only a finite
+    # number is taken, and it is kept on the canvas.
+    if isinstance(x, bool) or isinstance(y, bool):
+        raise HTTPException(400, "x and y must be numbers")
+    try:
+        fx, fy = float(x), float(y)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "x and y must be numbers")
+    if not (math.isfinite(fx) and math.isfinite(fy)):
+        raise HTTPException(400, "x and y must be finite numbers")
+    fx = min(max(fx, 0.0), float(s.canvas_width or 2000))
+    fy = min(max(fy, 0.0), float(s.canvas_height or 1500))
     try:
         db.rollback()
         db.execute(text("BEGIN IMMEDIATE"))
@@ -3557,8 +3571,8 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
                 raise HTTPException(403)
             if el.get("locked"):
                 raise HTTPException(403, "This token is locked")
-        el["x"] = float(x)
-        el["y"] = float(y)
+        el["x"] = fx
+        el["y"] = fy
         s2.elements_json = json.dumps(elements)
         db.commit()
         return {"ok": True}
