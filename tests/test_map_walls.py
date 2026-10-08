@@ -45,13 +45,24 @@ def test_ids_stay_unique():
 
 
 def test_players_never_learn_a_door_is_secret():
-    walls = [{"id": "s", "pts": [[0, 0], [10, 0]], "kind": "secret", "state": "open"}, {"id": "d", "pts": [[0, 0], [0, 10]], "kind": "door", "state": "closed"}]
+    walls = [{"id": "s", "pts": [[0, 0], [10, 0]], "kind": "secret", "state": "closed"}, {"id": "d", "pts": [[0, 0], [0, 10]], "kind": "door", "state": "closed"}]
     pw = W.for_player(walls)
     assert pw[0] == {"id": "s", "pts": [[0, 0], [10, 0]], "kind": "wall"}          # no kind, no state, nothing to find
     assert pw[1]["kind"] == "door"
     assert "secret" not in json.dumps(pw)
     segs = W.segments(walls)
     assert segs[0]["kind"] == "wall"                                              # and it blocks sight like a wall
+
+
+def test_a_secret_door_the_gm_opens_lets_the_party_through():
+    walls = [{"id": "s", "pts": [[0, 0], [10, 0]], "kind": "secret", "state": "open"}]
+    assert W.for_player(walls) == [{"id": "s", "pts": [[0, 0], [10, 0]], "kind": "door", "state": "open"}]     # found: an open door
+    assert "secret" not in json.dumps(W.for_player(walls))
+    seg = W.segments(walls)[0]
+    from app import map_strict
+    assert seg["kind"] == "door" and seg["state"] == "open" and not map_strict.blocks_sight(seg)
+    closed_again = W.segments([{**walls[0], "state": "closed"}])[0]
+    assert closed_again["kind"] == "wall" and map_strict.blocks_sight(closed_again)
 
 
 def test_fog_settings_are_normalised():

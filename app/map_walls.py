@@ -8,7 +8,8 @@ A wall is {"id", "pts": [[x, y], ...], "kind": "wall" | "door" | "window" | "sec
   door    blocks both while closed ("state": "open" lets both through)
   window  blocks movement, not sight
   secret  looks and acts like a wall to everyone; the GM knows it is a door. Players are NEVER sent the word:
-          for_player() turns it into a plain wall, so it cannot be found in the page source.
+          for_player() turns it into a plain wall, so it cannot be found in the page source. When the GM opens it (the party
+          found it) it becomes an ordinary open door for players, and sight and movement pass.
 """
 import math
 import re
@@ -81,7 +82,11 @@ def for_player(walls):
         if not isinstance(w, dict):
             continue
         if w.get("kind") == "secret":
-            out.append({"id": w.get("id"), "pts": w.get("pts"), "kind": "wall"})
+            # closed: an ordinary wall, nothing to find. Opened by the GM (the party found it): an open door, which lets sight through
+            if w.get("state") == "open":
+                out.append({"id": w.get("id"), "pts": w.get("pts"), "kind": "door", "state": "open"})
+            else:
+                out.append({"id": w.get("id"), "pts": w.get("pts"), "kind": "wall"})
         else:
             out.append({k: w[k] for k in ("id", "pts", "kind", "state") if k in w})
     return out
@@ -92,7 +97,9 @@ def segments(walls):
     segs = []
     for w in walls or []:
         pts = w.get("pts") or []
-        kind = "wall" if w.get("kind") == "secret" else w.get("kind", "wall")
+        kind = w.get("kind", "wall")
+        if kind == "secret":                                   # a closed secret door is a wall; once the GM opens it, a door that is open
+            kind = "door" if w.get("state") == "open" else "wall"
         for a, b in zip(pts, pts[1:]):
             segs.append({"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1], "kind": kind, "state": w.get("state", "closed"), "id": w.get("id")})
     return segs

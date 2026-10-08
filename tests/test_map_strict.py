@@ -26,8 +26,10 @@ def test_a_wall_stops_what_a_character_sees():
     # an open door lets it through, a closed one and a window-less secret door do not
     door = [{"id": "d", "pts": [[300, 0], [300, 1000]], "kind": "door", "state": "open"}]
     assert max(i % v.cols for i in S.compute(els, door, {"range": 0, "epoch": 0}, None, 1000, 1000, 50).visible) > 8
-    secret = [{"id": "s", "pts": [[300, 0], [300, 1000]], "kind": "secret", "state": "open"}]
+    secret = [{"id": "s", "pts": [[300, 0], [300, 1000]], "kind": "secret", "state": "closed"}]
     assert max(i % v.cols for i in S.compute(els, secret, {"range": 0, "epoch": 0}, None, 1000, 1000, 50).visible) < 6
+    found = [{**secret[0], "state": "open"}]                                      # the GM opened it: the party sees through
+    assert max(i % v.cols for i in S.compute(els, found, {"range": 0, "epoch": 0}, None, 1000, 1000, 50).visible) > 8
 
 
 def test_range_limits_sight_and_the_default_is_bounded():
