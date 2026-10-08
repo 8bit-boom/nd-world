@@ -41,7 +41,7 @@
 
   function create(o) {
     var fogLayer = null, lightLayer = null, saveTimer = null;
-    var st = { fog: { enabled: false, range: 0, epoch: 0, darkness: 0, personal: 2 }, walls: [], lights: [] };
+    var st = { fog: { enabled: false, range: 0, epoch: 0, darkness: 0, personal: 2 }, walls: [], lights: [], explored: null };
     var memKey = 'nd_fog_' + o.key;
 
     function showAllTokens() {
@@ -100,6 +100,9 @@
           load();
         }
         fogLayer.setWalls(segs);
+        // strict maps: the server's record of what the party has explored (shared by every phone and the TV)
+        var ex = st.explored;
+        if (ex && ex.cell === fogLayer.cell && ex.cols === fogLayer.cols && ex.rows === fogLayer.rows && fogLayer.addRuns) fogLayer.addRuns(ex.runs);
         var range = f.range > 0 ? f.range * grid.cell : Infinity;
         var sources = pcs.map(function (e) { return { x: e.x, y: e.y, range: range }; });
         var inDark = dark && f.darkness >= 0.5 && lightLayer;
@@ -120,7 +123,7 @@
       exploredRuns: function () { return fogLayer ? fogLayer.runs() : []; },
       setState: function (s) {
         var prev = st.fog;
-        st = { fog: s && s.fog ? Object.assign({ darkness: 0, personal: 2 }, s.fog) : prev, walls: (s && s.walls) || [], lights: (s && s.lights) || [] };
+        st = { fog: s && s.fog ? Object.assign({ darkness: 0, personal: 2 }, s.fog) : prev, walls: (s && s.walls) || [], lights: (s && s.lights) || [], explored: (s && s.explored) || null };
         if (st.fog.epoch !== prev.epoch) { if (fogLayer) fogLayer.clear(); forget(); }
         apply();
       },

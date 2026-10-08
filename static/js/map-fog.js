@@ -122,6 +122,7 @@
       },
       runs: function () { return toRuns(explored); },
       loadRuns: function (runs) { explored.set(fromRuns(runs, explored.length)); },
+      addRuns: function (runs) { var add = fromRuns(runs, explored.length); for (var i = 0; i < add.length; i++) if (add[i]) explored[i] = 1; expHole.setAttribute('d', exploredPath(explored, cols, rows, cell)); },
       clear: function () { explored.fill(0); expHole.setAttribute('d', ''); },
       destroy: function () {
         g.remove();

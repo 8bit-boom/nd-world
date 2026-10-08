@@ -36,6 +36,7 @@ from . import retrieval as _retrieval
 from . import map_layout as _map_layout
 from . import map_walls as _map_walls_mod
 from . import map_rooms as _map_rooms_mod
+from . import map_strict as _map_strict
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
@@ -723,7 +724,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path.startswith("/maps/") and not (path == "/maps/schematic" or path.startswith("/maps/schematic/")) and path != "/maps/new":
         return True
-    if re.match(r"^/maps/schematic/[^/]+/view(\.json)?$", path):
+    if re.match(r"^/maps/schematic/[^/]+/(view(\.json)?|bg\.webp)$", path):
         return True
     if path.startswith("/worlds/switch/"):
         return True
@@ -1404,8 +1405,23 @@ def _visible_worlds(request: Request, db: Session):
 
 # ── Uploads ───────────────────────────────────────────────────────────────────
 
+def _guard_strict_map_picture(request: Request, url: str) -> None:
+    """The original picture of a strict map (app/map_strict.py) goes to the people who edit the map, never to players: they are
+    served the masked copy at /maps/schematic/<slug>/bg.webp instead."""
+    db = SessionLocal()
+    try:
+        for sch in db.query(Schematic).filter(Schematic.image_url == url).all():
+            if not _schematic_payload.map_is_strict(sch):
+                continue
+            world = db.get(World, sch.world_id)
+            if not world or not world_can_edit_section(request, world, "maps"):
+                raise HTTPException(404)
+    finally:
+        db.close()
+
+
 @app.get("/uploads/{filepath:path}")
-def serve_upload(filepath: str):
+def serve_upload(filepath: str, request: Request):
     # Containment check: without it, `filepath="../world.db"` escapes UPLOADS_DIR
     # (/data/uploads) and serves the SQLite database one level up — every password
     # hash and all GM-only content — to any logged-in account, since _is_player_safe
@@ -1425,6 +1441,8 @@ def serve_upload(filepath: str):
     # a path (it is listed to editors) could pull a recording from any world.
     if path.relative_to(root).parts[:1] == ("live",):
         raise HTTPException(404)
+    if path.relative_to(root).parts[:1] == ("schematics",):
+        _guard_strict_map_picture(request, "/uploads/" + path.relative_to(root).as_posix())
     headers = {"X-Content-Type-Options": "nosniff"}
     # SVG can carry <script>, and it's served from this app's own origin. New SVG
     # uploads are rejected outright (see ALLOWED_EXTS), but files uploaded before
@@ -3483,7 +3501,7 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
     draggable-own-token feature) and the linked combat's active-turn
     combatant, if any."""
     elements = json.loads(s.elements_json or "[]")
-    visible = _schematic_payload.player_visible(elements)
+    visible, image_url, fog_part = _schematic_payload.player_scene(db, s, elements)
     own_pc_id, own_pc_currency, own_pc_ids = None, [], []
     if user and not user.is_gm:
         own_pcs = _own_pcs_for_schematic(db, s, user)
@@ -3501,7 +3519,7 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
             if ordered and 0 <= cs.active_idx < len(ordered):
                 active_combatant_id = ordered[cs.active_idx].get("id")
             combat_round = cs.round_num
-    return elements, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids
+    return elements, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids, image_url, fog_part
 
 
 @app.get("/maps/schematic/{slug}/view", response_class=HTMLResponse)
@@ -3514,7 +3532,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         raise HTTPException(404)
     worlds = _visible_worlds(request, db)
     user = getattr(request.state, "user", None)
-    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids = _schematic_player_payload(db, s, user)
+    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids, _img, fog_part = _schematic_player_payload(db, s, user)
     _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
     return templates.TemplateResponse("schematic_view.html", {
         "request": request, "world": world, "worlds": worlds,
@@ -3528,7 +3546,8 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         "own_pc_currency_json": json.dumps(own_pc_currency),
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
-        "fog_json": json.dumps(_schematic_payload.fog_payload(s)),
+        "fog_json": json.dumps(fog_part),
+        "bg_image_url": _img,
     })
 
 
@@ -3541,17 +3560,17 @@ def schematic_player_view_json(slug: str, request: Request, db: Session = Depend
     if not world or s.world_id != world.id:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
-    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids = _schematic_player_payload(db, s, user)
+    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids, image_url, fog_part = _schematic_player_payload(db, s, user)
     return {
         "elements": visible,
-        "image_url": s.image_url,
+        "image_url": image_url,
         "party_pins": _party_pins_for(db, s.world_id, "schematic", slug, request),
         "own_pc_id": own_pc_id,
         "own_pc_ids": own_pc_ids,
         "own_pc_currency": own_pc_currency,
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
-        **_schematic_payload.fog_payload(s),
+        **fog_part,
     }
 
 
@@ -3804,6 +3823,44 @@ async def schematic_save_grid(slug: str, request: Request, db: Session = Depends
     _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
     return {"ok": True}
 
+_MASKED_BG_CACHE: dict = {}
+
+
+@app.get("/maps/schematic/{slug}/bg.webp")
+def schematic_masked_background(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The map picture of a STRICT map, with everything the party has not seen painted over (app/map_strict.py). Players never get
+    the original file; this is the only form of the picture they can fetch."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s or (s.is_html and s.html_file) or not s.image_url:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or s.world_id != world.id or not world_can_view_section(request, world, "maps"):
+        raise HTTPException(404)
+    view, _fog = _schematic_payload.strict_view(db, s)
+    if view is None:
+        raise HTTPException(404)
+    src = (UPLOADS_DIR / s.image_url.split("/uploads/", 1)[-1]).resolve()
+    try:
+        ok = src.is_relative_to(UPLOADS_DIR.resolve()) and src.is_file()
+    except OSError:
+        ok = False
+    if not ok:
+        raise HTTPException(404)
+    runs = tuple(_map_strict.to_runs(view.known()))
+    key = (s.id, src.stat().st_mtime_ns, s.canvas_width, s.canvas_height, s.canvas_bg, hash(runs))
+    data = _MASKED_BG_CACHE.get(key)
+    if data is None:
+        try:
+            data = _map_strict.mask_image(src, view, s.canvas_width or 2000, s.canvas_height or 1500,
+                                          _schematic_payload.BG_COLORS.get(s.canvas_bg or "dark", "#111111"))
+        except Exception:
+            raise HTTPException(404)
+        if len(_MASKED_BG_CACHE) >= 8:
+            _MASKED_BG_CACHE.pop(next(iter(_MASKED_BG_CACHE)))
+        _MASKED_BG_CACHE[key] = data
+    return Response(data, media_type="image/webp", headers={"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"})
+
+
 @app.get("/maps/schematic/{slug}/preview.svg")
 def schematic_preview_svg(slug: str, request: Request, db: Session = Depends(get_db),
                           active_world: str = Cookie(None)):
@@ -3821,6 +3878,10 @@ def schematic_preview_svg(slug: str, request: Request, db: Session = Depends(get
 
     canvas_w = sch.canvas_width or 2000
     canvas_h = sch.canvas_height or 1500
+    if not world_can_edit_section(request, world, "maps") and _schematic_payload.map_is_strict(sch):
+        # a strict map's list card shows nothing of the map to players: the preview would carry all of it
+        return Response(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {canvas_w} {canvas_h}"><rect width="100%" height="100%" fill="#16161d"/></svg>',
+                        media_type="image/svg+xml", headers={"Cache-Control": "private, no-cache"})
     bg_color = {"dark": "#16161d", "grid-dark": "#16161d"}.get(sch.canvas_bg or "dark", "#f5f2ea")
 
     parts: list[str] = []

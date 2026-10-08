@@ -21,7 +21,7 @@
     <svg id="sch-svg" viewBox="0 0 {{ schematic.canvas_width or 2000 }} {{ schematic.canvas_height or 1500 }}" xmlns="http://www.w3.org/2000/svg">
       <rect id="bg" width="100%" height="100%" fill="{{ canvas_bg_color }}"/>
       {% if schematic.image_url %}
-      <image id="bg-image" href="{{ schematic.image_url }}"
+      <image id="bg-image" href="{{ bg_image_url or schematic.image_url }}"
              x="0" y="0" width="{{ schematic.canvas_width or 2000 }}" height="{{ schematic.canvas_height or 1500 }}"
              preserveAspectRatio="none" pointer-events="none"/>
       {% endif %}
@@ -344,7 +344,9 @@ async function poll() {
     ownPcCurrency = data.own_pc_currency || [];
     activeCombatantId = data.combat_active_combatant_id;
     combatRound = data.combat_round;
-    fog.setState({ fog: data.fog, walls: data.walls, lights: data.lights });      // applies the fog; redraw() below applies it again to the rebuilt tokens
+    const bgImg = document.getElementById('bg-image');
+    if (bgImg && data.image_url && bgImg.getAttribute('href') !== data.image_url) bgImg.setAttribute('href', data.image_url);   // strict maps: a new masked copy as the party explores
+    fog.setState({ fog: data.fog, walls: data.walls, lights: data.lights, explored: data.explored });      // applies the fog; redraw() below applies it again to the rebuilt tokens
     redraw();
   } catch (e) { /* transient network error — try again next tick */ }
 }

@@ -890,7 +890,7 @@ def _migrate():
 
         # Add new Schematic columns if missing
         sch_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(schematics)")).fetchall()] if conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='schematics'")).fetchone() else []
-        for col, defn in [("canvas_width", "INTEGER DEFAULT 2000"), ("canvas_height", "INTEGER DEFAULT 1500"), ("canvas_bg", "VARCHAR(32) DEFAULT 'dark'"), ("elements_json", "TEXT DEFAULT '[]'"), ("grid_type", "VARCHAR(16) DEFAULT 'none'"), ("grid_config_json", "TEXT DEFAULT '{}'"), ("combat_session_id", "INTEGER REFERENCES combat_sessions(id)"), ("walls_json", "TEXT DEFAULT '[]'"), ("fog_json", "TEXT DEFAULT '{}'"), ("rooms_json", "TEXT DEFAULT '{}'"), ("lights_json", "TEXT DEFAULT '[]'")]:
+        for col, defn in [("canvas_width", "INTEGER DEFAULT 2000"), ("canvas_height", "INTEGER DEFAULT 1500"), ("canvas_bg", "VARCHAR(32) DEFAULT 'dark'"), ("elements_json", "TEXT DEFAULT '[]'"), ("grid_type", "VARCHAR(16) DEFAULT 'none'"), ("grid_config_json", "TEXT DEFAULT '{}'"), ("combat_session_id", "INTEGER REFERENCES combat_sessions(id)"), ("walls_json", "TEXT DEFAULT '[]'"), ("fog_json", "TEXT DEFAULT '{}'"), ("rooms_json", "TEXT DEFAULT '{}'"), ("lights_json", "TEXT DEFAULT '[]'"), ("explored_json", "TEXT DEFAULT '{}'")]:
             if sch_cols and col not in sch_cols:
                 conn.execute(text(f"ALTER TABLE schematics ADD COLUMN {col} {defn}"))
         # app_settings: the original convert_images_avif/convert_animated_avif

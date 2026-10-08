@@ -2011,6 +2011,7 @@ class Schematic(Base):
     # Lights (app/map_walls.py clean_lights): [{id, x, y, range, color, intensity, on, label}]; darkness and the party's own
     # light are in fog_json. Players are sent them only while darkness is above zero.
     lights_json = Column(Text, default="[]")
+    explored_json = Column(Text, default="{}")      # strict secrecy: what the party has seen (app/map_strict.py)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -55,9 +55,9 @@ def test_players_never_learn_a_door_is_secret():
 
 
 def test_fog_settings_are_normalised():
-    assert W.clean_fog(None) == {"enabled": False, "range": 0, "epoch": 0, "darkness": 0.0, "personal": 2.0}
-    assert W.clean_fog({"enabled": "yes", "range": 1e9, "epoch": -3}) == {"enabled": False, "range": 100, "epoch": 0, "darkness": 0.0, "personal": 2.0}
-    assert W.clean_fog({"enabled": True, "range": float("nan"), "epoch": 4}) == {"enabled": True, "range": 0, "epoch": 4, "darkness": 0.0, "personal": 2.0}
+    assert W.clean_fog(None) == {"enabled": False, "range": 0, "epoch": 0, "darkness": 0.0, "personal": 2.0, "strict": False}
+    assert W.clean_fog({"enabled": "yes", "range": 1e9, "epoch": -3}) == {"enabled": False, "range": 100, "epoch": 0, "darkness": 0.0, "personal": 2.0, "strict": False}
+    assert W.clean_fog({"enabled": True, "range": float("nan"), "epoch": 4}) == {"enabled": True, "range": 0, "epoch": 4, "darkness": 0.0, "personal": 2.0, "strict": False}
     assert W.clean_fog({"darkness": 5, "personal": 99})["darkness"] == 0.95 and W.clean_fog({"darkness": 5, "personal": 99})["personal"] == 20.0
     assert W.clean_fog({"darkness": "x", "personal": None}) ["darkness"] == 0.0 and W.clean_fog({"personal": 0})["personal"] == 0.0
 
@@ -122,7 +122,7 @@ def test_another_worlds_map_is_404(client, seed):
 def test_fog_settings_and_reset(client, seed):
     slug = _map(seed)
     _gm(client, seed)
-    assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": True, "range": 12}).json() == {"enabled": True, "range": 12, "epoch": 0, "darkness": 0.0, "personal": 2.0}
+    assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": True, "range": 12}).json() == {"enabled": True, "range": 12, "epoch": 0, "darkness": 0.0, "personal": 2.0, "strict": False}
     assert client.post(f"/maps/schematic/{slug}/fog", json={"reset": True}).json()["epoch"] == 1
     assert client.post(f"/maps/schematic/{slug}/fog", json={"enabled": "yes"}).status_code == 400
     assert client.post(f"/maps/schematic/{slug}/fog", json=[]).status_code == 400

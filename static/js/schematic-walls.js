@@ -224,6 +224,14 @@
     if (en) { en.checked = !!fog.enabled; en.onchange = function () { post('/fog', { enabled: en.checked }).then(function (d) { fog = d; msg(d.enabled ? 'Fog of war is ON for players and the table screen.' : 'Fog of war is off.'); }).catch(function (e) { en.checked = !en.checked; msg(e.message); }); }; }
     if (rg) { rg.value = fog.range || ''; rg.onchange = function () { post('/fog', { range: parseFloat(rg.value) || 0 }).then(function (d) { fog = d; msg(d.range ? 'Characters see ' + d.range + ' squares.' : 'Characters see as far as the walls allow.'); }).catch(function (e) { msg(e.message); }); }; }
     if (rs) rs.onclick = function () { if (!confirm('Hide everything again? Every player and the table screen forgets what they have explored.')) return; post('/fog', { reset: true }).then(function (d) { fog = d; msg('Fog reset: nobody remembers the map any more.'); }).catch(function (e) { msg(e.message); }); };
+    var st = $('walls-fog-strict');
+    if (st) {
+      st.checked = !!fog.strict;
+      st.onchange = function () {
+        post('/fog', { strict: st.checked }).then(function (d) { fog = d; msg(d.strict ? (d.enabled ? 'Strict secrecy is ON: players are sent only what their characters have seen.' : 'Strict secrecy is set, but it only works while Fog of war is on.') : 'Strict secrecy is off: the fog hides the map in the browser only.'); })
+          .catch(function (e) { st.checked = !st.checked; msg(e.message); });
+      };
+    }
     var fr = $('walls-from-rects'); if (fr) fr.onclick = fromRects;
     var clr = $('walls-clear'); if (clr) clr.onclick = function () { if (walls.length && confirm('Delete all ' + walls.length + ' walls?')) { walls = []; selected = null; save(); render(); list(); } };
     var sh = $('walls-show'); if (sh) sh.onchange = render;

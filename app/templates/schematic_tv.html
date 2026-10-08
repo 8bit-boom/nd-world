@@ -80,7 +80,7 @@
     if (d.image_url) { img.setAttribute('href', d.image_url); img.setAttribute('width', d.canvas.w); img.setAttribute('height', d.canvas.h); img.setAttribute('display', 'inline'); }
     else img.setAttribute('display', 'none');
     elements = d.elements || [];
-    fog.setState({ fog: d.fog, walls: d.walls, lights: d.lights });
+    fog.setState({ fog: d.fog, walls: d.walls, lights: d.lights, explored: d.explored });
     redraw(); render();
   }
 

@@ -113,7 +113,8 @@ def clean_fog(data):
      "range": squares,       how far characters see (0 = as far as the walls allow)
      "epoch": int,           raised by the GM's reset; browsers that remember what they explored forget it when it changes
      "darkness": 0..0.95,    how dark the map is where no light reaches (0 = no lighting effect at all)
-     "personal": squares}    the light every character carries (a lantern); 0 = none"""
+     "personal": squares,    the light every character carries (a lantern); 0 = none
+     "strict": bool}         with fog on: the SERVER withholds what the party has not seen (app/map_strict.py)"""
     d = data if isinstance(data, dict) else {}
     rng = _num(d.get("range"))
     ep = d.get("epoch")
@@ -125,6 +126,7 @@ def clean_fog(data):
         "epoch": ep if isinstance(ep, int) and not isinstance(ep, bool) and 0 <= ep < 10 ** 9 else 0,
         "darkness": 0.0 if dark is None else round(min(max(dark, 0.0), 0.95), 2),
         "personal": 2.0 if "personal" not in d else (0.0 if pers is None else round(min(max(pers, 0.0), 20.0), 1)),
+        "strict": d.get("strict") is True,
     }
 
 

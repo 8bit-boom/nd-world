@@ -229,6 +229,9 @@
           <label title="How far characters see, in squares. Empty = as far as the walls allow.">sight <input type="number" id="walls-fog-range" min="0" max="100" step="1" placeholder="∞"/> sq</label>
           <button type="button" class="props-mini" id="walls-fog-reset" title="Everyone forgets what they have explored">Reset fog</button>
         </div>
+        <div class="props-row">
+          <label title="Ordinary fog hides the map in the player's browser, but the browser still holds all of it: someone who opens the developer tools can read it. Strict secrecy makes the server send players only what the characters have seen, and a masked copy of the picture. Use it for remote play or secrets that matter. Sight with no number then means 30 squares. Needs fog of war."><input type="checkbox" id="walls-fog-strict"/> <b>Strict secrecy</b> <span style="opacity:.6;font-size:.7rem">(the server withholds what is unseen)</span></label>
+        </div>
         <div class="props-row" style="border-top:1px solid #2a2a2a;padding-top:.4rem">
           <label title="How dark it is where no light reaches. 0 = daylight: lights do nothing.">Darkness <input type="range" id="lights-dark" min="0" max="95" step="5" style="width:90px"/> <span id="lights-dark-val">0%</span></label>
         </div>

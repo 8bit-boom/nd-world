@@ -75,7 +75,8 @@ async def walls_save(slug: str, request: Request, db: Session = Depends(get_db),
 @router.post("/maps/schematic/{slug}/fog")
 async def fog_save(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Fog and lighting settings. Body: {"enabled"?: bool, "range"?: squares (0 = to the nearest wall), "darkness"?: 0..0.95 (how
-    dark it is where no light reaches), "personal"?: squares (the light every character carries), "reset"?: true}. `reset`
+    dark it is where no light reaches), "personal"?: squares (the light every character carries), "strict"?: bool (with fog on, the server sends players only what
+    the party has seen - app/map_strict.py), "reset"?: true}. `reset`
     raises the epoch, so every browser forgets what it had explored."""
     s = _map_for_edit(request, db, slug, active_world)
     body = await _json_body(request)
@@ -87,6 +88,10 @@ async def fog_save(slug: str, request: Request, db: Session = Depends(get_db), a
         if not isinstance(body["enabled"], bool):
             raise HTTPException(400, "enabled must be true or false")
         new["enabled"] = body["enabled"]
+    if "strict" in body:
+        if not isinstance(body["strict"], bool):
+            raise HTTPException(400, "strict must be true or false")
+        new["strict"] = body["strict"]
     if "range" in body:
         new["range"] = map_walls.clean_fog({"range": body["range"]})["range"]
     for key in ("darkness", "personal"):
