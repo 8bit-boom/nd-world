@@ -106,7 +106,8 @@
 .mr-tab { background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); padding: .35rem .9rem; border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: .85rem; min-height: 34px; }
 .mr-tab[aria-selected="true"] { border-color: var(--neon); color: var(--neon); }
 .mr-filters, .mr-bulk, .mr-how, .mr-run { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .55rem; }
-.mr-how label { display: flex; flex-direction: column; gap: .2rem; font-size: .78rem; color: var(--text-dim); flex: 1 1 14rem; }
+.mr-how label { display: flex; flex-direction: column; gap: .2rem; font-size: .78rem; color: var(--text-dim); flex: 1 1 14rem; min-width: 0; }
+.mr-how select { min-width: 0; max-width: 100%; }
 .mr input[type=search], .mr input[type=text], .mr input:not([type]), .mr select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .4rem .55rem; font-family: var(--font); font-size: .85rem; border-radius: 4px; min-height: 34px; box-sizing: border-box; }
 .mr-filters input[type=search] { flex: 1 1 12rem; }
 .mr-check { display: flex; gap: .4rem; align-items: center; font-size: .82rem; color: var(--text-dim); margin: .25rem 0; }

@@ -457,6 +457,8 @@
 }
 .ai-model-bar select {
   flex: 1;
+  min-width: 0;                 /* a long model name must not push the status dot off the screen */
+  text-overflow: ellipsis;
   background: var(--bg3);
   border: 1px solid var(--border);
   border-radius: 4px;

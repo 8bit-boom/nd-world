@@ -164,8 +164,8 @@
     <p style="font-size:.82rem;color:var(--text-dim)">No tokens yet.</p>
     {% endif %}
 
-    <form method="post" action="/account/tokens/new" style="display:flex;gap:.5rem">
-      <input name="label" placeholder="Label (e.g. My Phone)" style="flex:1" maxlength="256">
+    <form method="post" action="/account/tokens/new" style="display:flex;gap:.5rem;flex-wrap:wrap">
+      <input name="label" placeholder="Label (e.g. My Phone)" style="flex:1;min-width:0" maxlength="256">
       <button type="submit" class="btn-primary">+ Generate token</button>
     </form>
   </div>

@@ -544,6 +544,13 @@
   #sch-bar2.open { display:flex; }
 }
 
+/* Phone width: the panel moves under the canvas instead of eating half the screen beside it, and the page scrolls past the toolbar. */
+@media (max-width:700px) {
+  #sch-wrap { height:auto; min-height:calc(100vh - 56px); }
+  #sch-main { flex-direction:column; overflow:visible; }
+  #sch-canvas-wrap { flex:none; height:58vh; min-height:260px; }
+  #sch-panel { width:100% !important; max-height:42vh; border-left:none; border-top:1px solid rgba(255,255,255,.1); }
+}
 #sch-panel {
   width:178px; flex-shrink:0; background:rgba(0,0,0,.7);
   border-left:1px solid rgba(255,255,255,.1); display:flex; flex-direction:column; overflow:hidden;

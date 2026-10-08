@@ -2,7 +2,7 @@
 {% block title %}Handouts — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="padding:1.5rem 2rem;max-width:940px">
-  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.2rem">
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.2rem;flex-wrap:wrap">
     <h1 style="margin:0">🖨 HANDOUTS</h1>
     <button onclick="printSelected()" class="btn-save">🖨 Print Selected</button>
     <span id="sel-count" style="font-size:.82rem;color:#666">0 selected</span>

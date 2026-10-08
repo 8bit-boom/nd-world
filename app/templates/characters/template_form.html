@@ -21,7 +21,7 @@
     <!-- Name & description -->
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Template Info</h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.75rem">
         <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim)">
           Name
           <input name="name" value="{{ tpl.name if tpl else '' }}" placeholder="My Custom Template"
