@@ -4,6 +4,16 @@ Welcome to Asterion, the City of Nine Thousand Shrines. In this system, you play
 
 This document combines the core rules, character creation, progression, and Domain Reclamation with the roleplaying, Reputation, and Followers subsystems.
 
+### The Examples in This Book
+
+Every worked example uses the same small cast, so you can follow them from one chapter to the next:
+
+- **Kaidros** — a *Bronze Minotaur* (Lineage) who wields the Spark of **Storms**, known for *Breaking the Sky-Gate* (Deed). A frontliner: Spark Shield 4 (his Lineage adds 1), Flesh 5, Ichor 5, no Armor.
+- **Selene** — an *Ascended Mortal* (Origin) who wields the Spark of **the Hunt**, known for *The Moonless Vigil* (Deed). A ranged hunter: Spark Shield 3, Flesh 5, Ichor 5, no Armor.
+- **Briar-Hide, the Pit Stalker** — an Arena Mythborn (see Quick Enemy Templates).
+
+Dice are shown the way you would read them off the table: **6, 9, 10 (+7)** means three dice came up 6, 9 and 10, and the 10 exploded into an extra die showing 7.
+
 ---
 
 ## Core Mechanic
@@ -20,6 +30,10 @@ Every action with a chance of failure uses a d10 dice pool.
 - **Domain Pool:** Roll 3d10 if the action directly connects to your Divine Spark, Mythological Lineage, or Epic Deed.
 - **Pushing Your Limits:** Before rolling, you may spend 1 Ichor to add +1d10 to your pool. You can do this multiple times if you have the Ichor to spend.
 
+> **Example — counting successes.** Selene looses an arrow from a rooftop. The hunt is her Spark, so she rolls her Domain Pool: **3d10** and gets **6, 9, 10**. The 6 and the 9 are successes; the 10 is a success *and* explodes — she rolls an extra die, which shows **7**, another success. That is **4 successes** from three dice. Had the extra die been a 10 as well, it would have exploded again.
+
+> **Example — which pool?** A Mortal city guard rolls **1d10** to hit anyone. Kaidros shoves a stuck door: that is a standard action, **2d10**. Kaidros hurling lightning at the same door is Spark of Storms — a Domain action — so **3d10**. Kaidros *also* needs the door open before the guard returns, so he spends **1 Ichor** to push his limits: **4d10**, and his Ichor drops from 5 to 4.
+
 ---
 
 ## Combat Flow
@@ -32,12 +46,16 @@ Asterion uses a fluid, narrative-driven initiative system.
 - **Passing the Turn:** After a character finishes their turn, they choose who goes next. They can pass the turn to an ally to set up a combo, or pass it to an enemy if all allies have acted.
 - **The Round Ends:** Once every character (player and NPC) has taken a turn, the round ends. The last person to act in the current round chooses who takes the first turn in the next round.
 
+> **Example — fluid initiative.** Selene ambushes three arena fighters from the stands, so **Selene acts first**. When her turn ends she passes to **Kaidros** — he is best placed to exploit the arrow she just landed. Kaidros acts, and because both heroes have now gone, he must pass to an enemy; he picks the **Pit Stalker**. The Stalker passes to **Guard A**, Guard A to **Guard B**. Guard B is the *last* to act, so Guard B chooses who opens Round 2 — and he picks the wounded Pit Stalker, hoping it can still finish what it started. Initiative is a weapon: whoever is last decides who strikes first next round.
+
 ### Anatomy of a Turn
 
 On your turn, you may take one Movement and one Main Action. You may also take any number of Free Actions such as speaking or dropping an item.
 
 - **Movement:** Move up to your standard movement speed, usually 30 feet / 9 meters / 6 hexes.
 - **Splitting Movement:** You can break up your movement, move partway, take your main action, then continue moving.
+
+> **Example — one turn, piece by piece.** Kaidros's turn: he **moves** 15 feet (3 hexes) to put himself between Selene and the Stalker. His **Main Action** is *Static Lash* on the Stalker. He **moves** the remaining 15 feet to step behind a pillar, and as a **Free Action** shouts a warning to Selene. A Free Action costs nothing and never replaces his Main Action; the pillar he stopped behind is a place he reached with *split movement*, not a second action.
 
 ### Main Action Options
 
@@ -54,6 +72,10 @@ You get one Reaction per round, which refreshes at the start of a new round.
 
 - **Opportunity Attack:** If an enemy moves out of your melee range, use your Reaction to make a Basic Attack.
 - **Ability-Specific Reactions:** Use evasive teleports, counterspells, or defensive buffs.
+
+> **Example — an opportunity attack.** The Pit Stalker, down to its last Flesh, bolts out of Kaidros's melee range toward the arena gate. Kaidros spends his **Reaction** on a Basic Attack as it leaves. That is his one Reaction for the round: if Guard A also runs past him before his next turn, he can do nothing about it.
+
+> **Example — Defend / Brace.** Selene is pinned and expects two attacks before her next turn. She spends her **Main Action** to Brace: until the start of her next turn *every* Defender pool she rolls gets **+1d10** — her usual 2d10 becomes 3d10 against each attacker.
 
 ---
 
@@ -74,13 +96,25 @@ Whenever two entities clash, Asterion uses an opposed roll system. Both the Atta
 - **Damage Dealt =** Attacker Successes minus Defender Successes, plus ability base damage.
 - **Defender Successes > Attacker Successes:** The attack is completely dodged, parried, or absorbed. No damage is taken.
 - **Tie:** Both combatants take 1 damage, and the attacker's action is resolved. This tie damage bypasses Armor and Resistances but is absorbed by Spark Shield as normal. It is not reduced by any mitigation.
+- **Nobody scores:** If *both* sides roll **zero** successes, nothing happens — a whiff, with no tie damage. A tie requires at least 1 success on each side.
+- **Basic Attacks:** A Basic Attack has **base damage 0**: it deals only the net successes (always at least 1 on a hit). Abilities add their listed base damage on top. This is why fists and mundane blades matter far less than Sparks.
 
 ### Damage Mitigation
 
-After calculating incoming damage, apply mitigations.
+Work through an attack in this order:
 
-- **Resistances:** If the Defender has Resistance to the damage type, the Attacker automatically loses 1 Success from their total before damage is calculated.
-- **Armor:** If the damage is physical, subtract the Defender's Armor value from the final damage taken.
+1. **Roll** both pools and count successes.
+2. **Resistances:** If the Defender has Resistance to the damage type, the Attacker loses 1 Success (2 for Greater Resistance) *from their total, before the comparison*.
+3. **Compare** successes. The higher side wins; the difference is the net successes.
+4. **Damage** = net successes + the ability's base damage.
+5. **Armor:** If the damage is physical, subtract the Defender's Armor from it (never below 0).
+6. **Spark Shield** absorbs what is left; anything beyond spills into **Flesh**.
+
+**Armor cap:** Armor from *all* sources (passive abilities, equipment, effects) can never total more than **3**. Armor does nothing against tie damage, Burning, or Bleeding.
+
+> **Example — the whole chain, with Armor and Resistance.** Selene's arrow (physical, Spark of the Hunt, base damage 1) strikes the Pit Stalker, who has Resistance to physical attacks (*Feral Resilience*). Selene rolls **6, 9, 10 (+7)** = **4 successes**. Resistance removes 1 → **3**. The Stalker defends with 2d10: **4, 8** = **1 success**. Net **2**; damage = 2 + base 1 = **3**. The Stalker has no Armor. Its Spark Shield (2) absorbs 2; the last **1** spills into Flesh: Flesh 4 → **3**. If the Stalker had worn Mundane Armor (+1), step 5 would have cut the damage to 2 and the Shield would have eaten all of it — Armor is subtracted *before* the Shield, so it protects the Shield too.
+
+> **Example — a tie and a whiff.** A guard swings at Selene (1d10) and rolls a 7: **1 success**. Selene defends (2d10): **2, 9** — **1 success**. A **tie**: both take 1 damage that ignores Armor. Selene's Spark Shield 3 → 2; the guard (no Shield, Flesh 2) drops to Flesh 1. The next guard rolls a 3 — **0 successes** — and Selene rolls **6, 8** (2): the attack simply fails. Had Selene *also* rolled zero, it would have been a **whiff**: nothing happens to either side.
 
 ---
 
@@ -98,12 +132,16 @@ Every god and mythborn tracks three vital resources during combat.
 
 - **Base Value:** 5
 - **Mechanic:** Your physical body. Once your Spark Shield drops to 0, damage spills over into your Flesh.
-- **Shattering and Death:** If Flesh drops to 0, you are Shattered and lose the bout or fight. If an enemy executes you while Shattered, or if you fail Death Saves, your physical form is destroyed.
+- **Shattered:** If Flesh drops to 0, you are **Shattered**: you fall, cannot act, and lose the bout or fight. In an arena bout that is the end — the winner usually spares you.
+- **Execution:** An enemy (or the GM, for a hostile environment) may deliberately **execute** a Shattered character with a Main Action; no roll is needed. An executed god's physical form is destroyed — the player's character is gone unless the story or a Domain feature (for example a resurrection shrine) says otherwise. There are **no Death Saves**; a Shattered character is saved only by an ally who reaches them in time (a **Golden Apple** or **Restoration Draught** restores Flesh above 0 at once) or by the enemy's mercy.
+- **Recovery:** A Shattered character who survives wakes after the fight with Flesh 1, and returns to full Flesh at the next Long Rest.
 
 ### Ichor
 
 - **Base Value:** 5
 - **Mechanic:** Spent to use Active Abilities or added to a dice pool at a rate of +1d10 per 1 Ichor spent.
+
+> **Example — a bout's resource ledger.** Kaidros starts with **Shield 4 / Flesh 5 / Ichor 5**. The Stalker's *Dash Strike* deals 2: **Shield 4 → 2**. Later he pushes his limits once (1 Ichor): **Ichor 5 → 4**. The fight never touches his Flesh. After the bout a **Short Rest** restores his Shield to 4 and gives him 2 Ichor — he is already at 4, so he returns to **5** (the extra 1 is wasted; Ichor never exceeds its maximum). Selene ends at Shield 2 / Flesh 5 / Ichor 4, and recovers the same way.
 
 ---
 
@@ -118,16 +156,23 @@ Every god and mythborn tracks three vital resources during combat.
 
 AoE abilities force all targets in the area to roll a Defender pool against the Attacker's single roll.
 
+> **Example — an area attack.** Kaidros brings down a storm cell on three arena fighters standing within 15 feet of each other. He rolls **once**: **3d10** (his Spark) = **6, 8, 2** → **2 successes**. Each fighter then rolls its own Defender pool against that same 2: the first rolls **7** (1 success) and takes net 1; the second rolls **3, 4** (0) and takes net 2; the third rolls **6, 9** (2 successes) — a tie of 2 against 2, so that fighter takes only the 1 tie damage. One roll from the attacker, one resolution per target.
+
 ### Grappling and Throwing
 
 - **Grappling:** Make an opposed physical roll. If the Attacker wins, the target is Restrained (0 Movement). You can move at half speed while dragging them.
 - **Throwing:** If you have an enemy grappled, use your Main Action to throw them. Make a new Opposed Roll. If you win, you throw them 5 feet / 1.5 meters per net success. Collision causes physical damage equal to the net successes.
+
+> **Example — grapple, then throw.** Kaidros grapples a guard (2d10 vs 2d10: **7, 9** = 2 successes against **4, 5** = 0 — he wins; the guard is **Restrained**). He drags the guard at half speed to the arena's edge. Next turn he uses his **Main Action** to throw: **8, 10 (+7)** = 3 successes against the guard's **6** = 1. He wins by **2 net successes**: the guard flies **10 feet** and hits the stone wall for **2 physical damage** (the net successes), reduced by Armor like any physical damage.
 
 ### Cover and Elevation
 
 - **Half Cover:** Grants the Defender +1d10 to their Defender pool against ranged attacks.
 - **Total Cover:** You cannot be targeted by direct ranged attacks.
 - **High Ground:** Grants the Attacker +1d10 to their Attacker pool.
+- **One situational bonus per side:** Cover, high ground and similar positional dice do not stack. Apply at most **one** such modifier to each side of a roll — creative positioning is rewarded, but it should not pile three bonuses onto one pool. (Brace, Quality Weapon dice, Ichor pushes and Domain Rank dice are separate and always apply.)
+
+> **Example — positioning.** A guard crouches behind an altar (half cover): against Selene's arrow he defends with **3d10** instead of 2d10. Selene fires from the gallery stairs (high ground): she rolls **+1d10** — **4d10** instead of 3d10. Both bonuses apply, because they are on *different sides*. Had Selene *also* been flanking the guard, that second positional die would not have counted.
 
 ### Divine Resonance
 
@@ -139,6 +184,8 @@ As a deity or mythborn, your physical form and divine magic are naturally intert
   - *Example:* Combining an Active Spark (2 Ichor) with an Active Lineage (1 Ichor): **3 Ichor total**.
 - Because you are acting in perfect alignment with your mythic self, you roll your full Domain Pool (3d10).
 - The GM grants a logical advantage based on your description, such as bypassing Armor or Resistance, inflicting a hard Status Condition, or turning a single-target strike into an Area of Effect.
+
+> **Example — Divine Resonance at the table.** Kaidros wants one fluid move: his passive *Bronze Hide* (Tier 1, 0 Ichor) plus *Static Lash* (Tier 1 active, 0 Ichor). The highest cost of the pair is 0, plus the **+1 synergy tax** — **1 Ichor**. He describes the bronze plates on his arm drinking in the storm and discharging as he strikes. He rolls his full Domain Pool, **3d10**: **5, 7, 9** → **2 successes**. The GM grants one logical advantage for the description: the discharge **ignores the Stalker's Resistance** this once. Had he wanted to include his Deed, the answer would have been no — Deeds and Curses never synergize.
 
 **Synergy Examples**
 
@@ -164,6 +211,27 @@ Spending this Ichor allows you to flare your combined passives, creating a power
 - **Stunned:** Cannot take a Main Action or Movement. You roll 1 fewer die in your Defender pool.
 - **Weakened:** Roll 1 fewer die in your Attacker pool.
 - **Vulnerable:** Your Armor is reduced to 0, and you lose any Resistances.
+
+> **Example — conditions in a bout.** A Burning guard takes **1 damage at the start of each of his turns**; he has no Spark Shield, so it goes straight to Flesh (and ignores his Armor). Selene is **Stunned** by a Stun Spike: on her turn she loses her Main Action *and* Movement, and her Defender pool drops from 2d10 to **1d10** until it passes. Kaidros, **Blinded** by smoke, cannot hit anything at range at all, and a standard 2d10 melee attack becomes **0 dice** (he loses 2) — which is why a Blinded fighter retreats rather than swings. A **Vulnerable** foe with Armor 2 and Resistance to fire loses both for as long as the condition lasts.
+
+### Worked Example — an Arena Bout, Round by Round
+
+Kaidros (Shield 4, Flesh 5, Ichor 5) and Selene (Shield 3, Flesh 5, Ichor 5) are matched in the Pit against **Briar-Hide, the Pit Stalker** (Attack 2d10, Defense 2d10, Spark Shield 2, Flesh 4, Ichor 2; *Feral Resilience* gives Resistance to physical attacks) and two **Mortal Guards** (Attack 1d10, fixed Defense 1, Flesh 2, 1 damage). Selene has been waiting in the stands — she is the **instigator**.
+
+**Round 1.**
+
+- **Selene** (acts first) fires *Silver Arrow* (Tier 2: 100-foot range + 1 base damage; **1 Ichor**, 5 → 4) at the Stalker: Domain Pool **3d10**: **6, 9, 10 (+7)** = 4 successes. Feral Resilience removes 1 → **3**. The Stalker defends 2d10: **4, 8** = **1**. Net 2, damage 2 + 1 = **3**: its Shield (2) breaks and **1** spills into Flesh (4 → 3). She passes to Kaidros.
+- **Kaidros** moves 30 feet into melee and uses *Static Lash* (Tier 1, free; **Storms**, so Domain 3d10), **pushing his limits** for 1 Ichor (5 → 4) to roll **4d10**: **2, 6, 8, 10 (+3)** = 3 successes. Lightning is not physical, so Feral Resilience does not apply. The Stalker defends **7, 9** = 2. Net 1, damage 1 + 1 = **2**: the Stalker's Shield is already gone, so Flesh 3 → **1**. Both heroes have acted, so Kaidros must pass to an enemy: he passes to the Stalker.
+- The **Pit Stalker** *Dash Strikes* Kaidros (1 damage + net successes): **8, 10 (+4)** = 2 successes against his 2d10 **3, 7** = 1. Net 1, damage 1 + 1 = **2** → Kaidros's Spark Shield 4 → **2**. It passes to Guard A.
+- **Guard A** rushes Selene: 1d10 rolls **7** (1 success); Selene defends **2, 9** (1). **Tie** — both take 1, ignoring Armor: Selene's Shield 3 → **2**, Guard A's Flesh 2 → **1**. Guard A passes to Guard B.
+- **Guard B** swings and rolls **3** — 0 successes; Selene defends **6, 8**. No damage. Guard B is the last to act, so **he chooses who opens Round 2** — and he picks the Stalker.
+
+**Round 2.**
+
+- The **Pit Stalker** (Flesh 1) bolts for the gate, leaving Kaidros's melee range. Kaidros spends his **Reaction** on an opportunity attack — a plain gore with his horns, not his Spark, so **2d10**: **7, 9** = 2 successes; the Stalker defends **2, 4** = 0. Feral Resilience (the gore is physical) → **1** success. Net 1. A Basic Attack has base damage 0, so the damage is **1** — exactly the Stalker's last Flesh. It is **Shattered**, and the bout is lost for it.
+- **Guard A** and **Guard B**, seeing their champion fall, drop their spears and yield. Mortals are allowed to quit.
+
+**Aftermath.** Kaidros: Shield 2/4, Flesh 5/5, Ichor 4/5. Selene: Shield 2/3, Flesh 5/5, Ichor 4/5. A **Short Rest** returns both Shields to full and gives each +2 Ichor (capped at 5). The GM rules this was an Apex Bout and awards **+2 Glory** to each hero. Notice what won it: a ranged opener that stripped the Shield, one **pushed** die for a Domain strike, the **Resistance-dodging** choice of a lightning strike against a creature that shrugged off blades, and a **Reaction** that denied the escape. The Guards never mattered — they were fodder, as designed.
 
 ---
 
@@ -206,6 +274,26 @@ This represents the echo of your greatest mythic triumph or darkest tragedy.
 - **Passive Curse (One Burden):** If built as a Passive, the once-per-session limit is replaced by a permanent severe narrative drawback (e.g., you gain Tier 3 Greater Resistance, but allies can never physically touch or heal you).
   - *Multiple Passive Curses:* If you invent multiple Passive Curses, you can only bear the weight of **one at a time**. You must take a Short Rest to shift your mythic resonance and swap which Passive Curse is currently active.
 
+### Worked Example — Creating Two Characters
+
+**Kaidros (the optional exception: one Tier 3 instead of a Tier 2).**
+
+> "I am a **Bronze Minotaur** who wields the Spark of **Storms**, known for *Breaking the Sky-Gate*."
+
+- **Lineage — *Bronze Hide* (Passive, Tier 1):** +1 Max Spark Shield, taking his Shield from 3 to **4**.
+- **Spark — *Static Lash* (Active, Tier 1, 0 Ichor):** Base Damage 1, touch range — a short, ugly lightning strike.
+- **Deed — *Breaking the Sky-Gate* (Active, Tier 3, 3 Ichor, once per session):** Tier 3 Base Damage 4, Tier 2 Area of Effect (15-foot radius), Tier 1 Range (30 feet). Because the Deed is an Active ability it can only be used **once per session**, and that restriction already counts as the Trade-Off needed to start with a Tier 3. He starts with two Tier 1 abilities and one Tier 3 — legal under the optional exception.
+
+**Selene (the standard build: two Tier 1 abilities and one Tier 2).**
+
+> "I am an **Ascended Mortal** who wields the Spark of **the Hunt**, known for *The Moonless Vigil*."
+
+- **Origin — *Moonlit Eyes* (Passive, Tier 1):** one Superhuman Sense (darkvision).
+- **Spark — *Silver Arrow* (Active, Tier 2, 1 Ichor):** Tier 2 Range (100 feet) + Tier 1 Base Damage (1).
+- **Deed — *The Moonless Vigil* (Passive Curse, Tier 1):** Mundane Immunity (cold, exposure, a night without sleep); the **burden** is that Selene can never benefit from a Long Rest indoors — only under open sky. The permanent drawback is what makes a "Curse" a Curse.
+
+Both characters begin with **Spark Shield (3, or 4 for Kaidros), Flesh 5, Ichor 5**, no Armor, and no Glory to spend.
+
 ---
 
 ## Ability Construction
@@ -231,6 +319,10 @@ The baseline default is: Base Damage 0, Melee or Touch Range, Single Target, Ins
 
 **Example — Building a Tier 2 Ability (*Hurl Fireball*):**
 Pick **Tier 2 Range** (100 feet) and **Tier 1 Base Damage** (1 Damage). That fills both slots for a Tier 2 ability. If you also want a 15-foot AoE blast at 100 feet, that is two Tier 2 properties on one Tier 2 ability — apply a Trade-Off to allow it.
+
+**Example — Building a Tier 2 Passive (*Thunderhide*).** Pick **Tier 2 Armor** (+1) and **Tier 1 Spark Shield** (+1 Max Shield). That fills both slots of a Tier 2 passive: it costs no Ichor, is always on, and gives Kaidros Armor 1 and a Shield of 5. It could *not* also give him Resistance — that would be a third property.
+
+**Example — Using a Trade-Off to Exceed a Tier.** Kaidros wants *Heaven-Piercing Charge*: a Tier 3 melee strike with **both** Tier 3 Base Damage (4) *and* a Tier 3 Area of Effect (60-foot radius). Two Tier 3 properties on one ability is beyond the table, so he takes **Charge-Up**: the strike needs a full turn of concentration, and he rolls one fewer die for Defense while charging. The GM approves — the extra scope is paid for with exposure, not a bigger number.
 
 ### Restorative Abilities — The Infinite Loop Rule
 
@@ -283,15 +375,21 @@ Glory is this game's only advancement currency. Costs listed as "XP" anywhere in
 
 Players can spend Glory at any time to upgrade their character.
 
-- **Cost 3 Glory:** Upgrade an existing ability by adding a new property from its permitted Tiers.
+- **Cost 3 Glory:** Upgrade an existing ability by adding a new property from its permitted Tiers. Adding a property from a **higher Tier** than the ability's current Tier raises the whole ability to that Tier (and its Ichor cost to match).
 - **Cost Scaling:** If you upgrade an ability so that it has more than one property from its highest Tier, its Ichor cost permanently increases by +1 for each additional highest-tier property.
 - **Cost 4 / 7 / 10 Glory:** Invent a brand-new Tier 1 / Tier 2 / Tier 3 ability. *(The math aligns with the upgrade cost: a Tier 1 base costs 4 Glory; adding a Tier 2 property is +3 Glory = 7 Glory total for a full Tier 2 ability.)*
 - **Cost 10 Glory:** Broaden your Domain by adding a new word to your Spark (e.g., Spark of *Fire and Ash*), expanding what you can roll 3d10 for.
 
 ### Stat and Resource Upgrades
 
-- **Cost 1 Glory:** Increase Maximum Flesh by +1. Each purchase scales up by +1 Glory.
-- **Cost 1 Glory:** Increase Maximum Ichor by +1. Each purchase scales up by +1 Glory.
+- **Maximum Flesh +1:** The first purchase costs **1 Glory**, the second **2**, the third **3**, and so on.
+- **Maximum Ichor +1:** Tracked separately, with the same scale: **1**, then **2**, then **3**…
+
+> **Example — a Glory ledger, three sessions.** *Session 1:* Kaidros survives and advances the plot (+1), wins an Apex Bout (+2), and the GM checks off *In-Character Presence* (+1) and *Domain-True Roleplay* (+1): **5 Glory**. He spends **4** to invent a new Tier 1 ability, *Storm-Hooves* (passive, climb speed); **1 Glory banked**.
+>
+> *Session 2:* +1 (survived), +1 (a public miracle), plus *Memorable Moment* (+1) and *Table Spotlight* (+1) = **4**; the bank is **5**. He spends **3** to upgrade *Static Lash* by adding a Tier 2 property (Soft Crowd Control: slow). Because the new property is a *higher* Tier than the ability, it becomes a **Tier 2** ability and its cost rises from 0 to **1 Ichor**. **2 banked.** He buys **+1 Max Flesh** (1 Glory: Flesh max 5 → 6) and **+1 Max Ichor** (1 Glory: Ichor max 5 → 6). **0 banked.**
+>
+> *Session 3:* he banks **4** again. His next Max Flesh purchase now costs **2** (the *second* one) and the next Max Ichor purchase also costs **2**. He decides instead to add a *second* Tier 2 property to *Static Lash* — 100-foot range — for **3 Glory**. It now has two properties of its highest Tier, so its Ichor cost goes up by +1 again: **2 Ichor**. The extra reach is real, and the price is permanent.
 
 ---
 
@@ -301,6 +399,8 @@ Players can spend Glory at any time to upgrade their character.
 - **Long Rest:** Fully restores all Flesh and all Ichor.
 - **Ambrosia:** Instantly restores 5 Ichor.
 - **Golden Apple:** Instantly restores 10 Flesh.
+
+> **Example — a night in the Pit.** After the bout Kaidros has Shield 2/4, Flesh 5/6, Ichor 3/6 (after Session 2's upgrades). A **Short Rest** brings his Shield to 4 and Ichor to 5 — he does *not* heal Flesh, because a Short Rest never does. Selene, who took a real beating, is at Flesh 2/5; she needs a **Long Rest** — and because of her Curse, that means sleeping under open sky, not in the barracks. If she cannot, a **Golden Apple** (80 drachma, restores 10 Flesh) would bring her to full instantly.
 
 ---
 
@@ -329,15 +429,19 @@ You do not start as an omnipotent ruler. You must invest Glory and undertake exp
 #### Rank Benefits
 
 - **Rank 1:** The PC gains 1 bonus die on all rolls while inside their own domain.
-- **Rank 2:** All rolls inside the domain use 5+ difficulty.
-- **Rank 3:** The PC gains another bonus die on all rolls inside their own domain, for a total of 3 bonus dice, and keeps the 5+ difficulty.
+- **Rank 2:** All rolls inside the domain count a die as a success on **5 or higher** (instead of 6 or higher). 10s still explode.
+- **Rank 3:** The PC gains another bonus die on all rolls inside their own domain, for a total of **2 bonus dice**, and keeps the 5+ success threshold.
+
+> **Example — Rank in dice.** Selene at **Rank 0** shooting inside her Grove rolls her usual **3d10** (Domain). At **Rank 1** she rolls **4d10**. At **Rank 2** she rolls 4d10 and a **5** now counts: **4, 5, 7, 9** is **3 successes**, where at Rank 1 it would have been 2. At **Rank 3** she rolls **5d10** (3 + 2 bonus dice) with the 5+ threshold — formidable, but only inside her Domain.
 
 #### Upgrading Rank
 
 - It costs 20 Glory to reach Rank 1, 30 Glory for Rank 2, and 40 Glory for Rank 3.
 - You must spend the required Glory.
 - You must complete a narrative milestone in the world.
-- You must have at least two Domain Features constructed at the target Rank.
+- You must have at least two Domain Features, at least one of which is of **Tier equal to or higher than the Rank you are reaching** (Rank 1 needs a Tier 1+ feature, Rank 2 a Tier 2+ feature, Rank 3 a Tier 3 feature).
+
+> **Example — claiming a Domain.** The High Gods grant Selene the **Moonless Grove**. **Concept:** a sacred hunting wood once tended by a Huntress-Titan. **Decay:** the trees bleed black sap and the Titan's corpse still lies in the heartwood, poisoning the roots. She starts at **Rank 0** — feral, hostile, no bonus. Over four sessions she clears the central clearing (the *narrative milestone*), builds **Silver Spring** (Tier 1 Yield feature, **6 Glory**: a clean pool where the party may take a Short Rest even mid-expedition) and **Warding Stones** (Tier 1 Defense feature, **6 Glory**: alarm wards that wake her if anything crosses the tree line), and pays **20 Glory** to reach **Rank 1**: total **32 Glory**. From now on she rolls +1 die inside the Grove.
 
 > **Long-Term Investment:** Domain Reclamation is a campaign-length arc. Reaching Rank 3 is a mythic milestone measured in dozens of sessions, not a mid-campaign checkbox. Set expectations with your table accordingly.
 
@@ -359,15 +463,21 @@ Instead of a fixed list of buildings, you invent and repair your own Domain Feat
 - **Travel / Portals:** Fixed portals, fast travel across Asterion, or the Empyrean Gate.
 - **Metaphysical / Law:** Weather and architecture control, avatar tethering, or absolute law.
 
+> **Example — one feature at each Tier.** A Tier 1 feature does one small, reliable thing: Selene's **Silver Spring** (Yield) is a clean pool for Short Rests. A Tier 2 feature changes how a scene plays: **The Hunter's Gauntlet** (Defense) fields two spirit sentries — treat each as a Mortal Guard — that defend the Grove and answer to her. A Tier 3 feature bends the realm itself: **Eternal Dusk** (Law) lets her choose the hour of the day inside the Grove, which matters to every night-bound enemy that enters. Upgrading the Spring to Tier 2 later costs **6 Glory** and adds one Tier 2 property — for example, *clean water that restores 1 Ichor to anyone who drinks* (a Yield effect, so it needs the Infinite Loop Rule's condition: once per person per rest).
+
 ### Custom Domain Feature Trade-Offs
 
 If you want a Domain Feature to slightly exceed its limits, you can apply a Domain Trade-Off such as Blood Sacrifice, Corrupted Yield, or Unstable.
+
+> **Example.** Selene wants the Spring to restore **1 Ichor** (a Tier 2 Restoration) while the feature is only Tier 1. She takes **Corrupted Yield**: the water works, but each drinker must succeed on a Domain Pool roll or gain a lingering black-sap taint (a narrative complication the GM chooses). The extra power is paid for with a real cost, not a free upgrade.
 
 ### Domain Downtime Actions
 
 Between sessions, instead of resting in Asterion, you may spend your time managing your growing realm.
 
 - **Clear the Blight:** Roll your Domain Pool. On a success, uncover a lost relic, raw materials, or a trapped soul.
+
+> **Example — downtime.** Between sessions Selene works the Grove at Rank 1: Domain Pool **3d10 + 1 bonus die = 4d10**: **4, 6, 9, 3** = **2 successes**. The GM rules that two successes uncovers *raw materials worth 40 drachma* — exactly what a Quality item's crafting costs — and a rumor about the Titan's corpse. Had she rolled none, the sap would have claimed a day and nothing else.
 - **Shape the Land:** Rearrange the geography of your secured zones to prepare for an incoming invasion.
 - **Listen to the Void:** Use your Domain's isolation to scry on Asterion. Ask the GM one question about a rival faction's plans.
 
@@ -382,9 +492,10 @@ A Great Wonder is a major divine project tied to the domain, such as a holy engi
 ### Great Wonder Rules
 
 - **Unlock:** Only available after the domain reaches Rank 3.
-- **Cost:** The PC must spend Glory, plus complete a special quest defined by the GM.
+- **Cost:** The PC must spend Glory (see *Glory Cost* below), plus complete a special quest defined by the GM.
 - **Construction:** The Great Wonder takes time, effort, and story commitment to create.
 - **Reward:** Once finished, it grants a permanent special bonus, buff, ability, or mechanic.
+- **Glory Cost:** **30 Glory** by default (the GM may set it higher for a grander project), on top of the quest.
 - **Scope:** The Great Wonder's benefit works even outside the domain.
 
 ### Great Wonder Examples
@@ -419,12 +530,18 @@ An Expression is something your god or mythborn does constantly, without thought
 
 1. Is this something your god/bloodline does constantly, without conscious effort, because of their fundamental nature?
 2. Does it change nothing about the scene's mechanical outcome? (No combat advantage, no bypassing obstacles, no restoring resources.)
-3. Would a skilled mortal with the right tools struggle to replicate it?
+3. Does it stay small — your own body, a touch, or your immediate surroundings — and fade the moment you stop paying attention to it?
 
 If all three are YES → **Expression.** Free. No roll unless the GM calls for it.
 If any are NO → **Stunt** (1 Ichor) or **Feat** (formal ability).
 
 **GM tiebreaker:** When in doubt, call it a Stunt. The 1 Ichor spend keeps it meaningful and prevents abuse.
+
+> **Example — sorting four requests.** Kaidros, a god of Storms, asks the GM:
+> 1. *"Static crackles in my mane while I'm angry."* All three questions are YES — it is his nature, changes nothing, and stays small. **Expression.** Free.
+> 2. *"I make thunder roll in the distance to quiet the mob."* It reshapes the scene and gives social leverage: **Stunt**, **1 Ichor**.
+> 3. *"I do it again to quiet a second mob in the same scene."* Stunt Fatigue: the same effect twice in a scene costs **+1** — **2 Ichor**. A third time: **3 Ichor**.
+> 4. *"I call a bolt down on the guard captain."* That deals damage, so it is a **Feat** — it needs a formal ability, and *Static Lash* already covers it. Domain Expression is never a shortcut around the ability system.
 
 ---
 
@@ -465,7 +582,7 @@ The table below shows what the tiers look like for common divine archetypes. Use
 | :--- | :--- | :--- | :--- |
 | **Fire / Sun** | Touch ignites kindling; body always radiates warmth; dim glow in darkness | Melt a mundane lock; create a 5-ft flame wall that blocks movement but deals no damage (1 scene); send a smoke signal visible for miles | Fireball; immolation; melt armor mid-combat |
 | **War / Strength** | Weapons never rust in your hands; you sense when nearby creatures are armed; your stance projects menace | Snap chains or bars; unbar a reinforced door; your war-shout freezes a brawl in place | Battle-cry AoE; unstoppable charge; weapon enchantment |
-| **Secrets / Night** | Whispers carry only to your intended listener; footsteps are always silent; you know when someone lies your name | Locate a hidden compartment by touch (1 min); speak in perfect privacy across a room; confirm whether a spoken name is true | Scrying; memory extraction; magical silence field |
+| **Secrets / Night** | Whispers carry only to your intended listener; footsteps are always silent; you know when someone speaks your name | Locate a hidden compartment by touch (1 min); speak in perfect privacy across a room; confirm whether a spoken name is true | Scrying; memory extraction; magical silence field |
 | **Ice / Winter** | Breath is always visible; surfaces you touch briefly frost over; cold never harms you | Chill or freeze food and drink perfectly; create a slick ice patch (10 sq ft, lasts 1 scene); preserve a body indefinitely | Ice storm; freeze a target solid; ice armor formation |
 | **Death / Fate** | You see wounds clearly through clothing; sense how long a creature has left; ghosts and undead acknowledge you | Ease a dying creature (remove Burning/Bleeding); keep animals from approaching; read the cause of death from a corpse | Death gaze; soul extraction; raise undead |
 | **Storm / Sky** | Hair and cloak move in unfelt wind; small sparks jump between your fingers; birds land on you willingly | Clear fog in a small area; create a sudden downdraft that extinguishes torches; cause distant thunder without lightning | Lightning bolt; hurricane winds; call a storm |
@@ -479,6 +596,8 @@ The table below shows what the tiers look like for common divine archetypes. Use
 The standard unit of exchange in Asterion is the **Drachma**. Gods and mythborn earn it through arena victories, faction contracts, Domain Yield features, and selling salvaged divine materials.
 
 **Carry Limit:** You may carry up to **3 consumable items** at any time. Equipment (weapons, armor) has no carry limit but you can only benefit from one weapon and one armor set at once.
+
+> **Example — shopping.** After a victory Selene has **180 drachma**. She buys a **Quality Armor** (35 dr: +1 Armor and Mundane Immunity to cold) and, because she is allowed three consumables, an **Ichor Draught** (15 dr), a **Spark Salve** (25 dr) and an **Antidote Wrap** (15 dr) — 90 dr in all, **90 dr left over**. A fourth consumable would have to wait: she is carrying three already, and only using one frees a slot. In the arena she can drink the Draught as a **Free Action** (most consumables are), so a single turn can both heal and strike.
 
 ---
 
@@ -555,7 +674,7 @@ Purchase or salvage raw materials before rolling. If you fail the roll, material
 
 Roll your **Domain Pool (3d10)** if the item connects to your Spark or Lineage. Roll your **Base Pool (2d10)** for general items outside your domain.
 
-| Net Successes | Result |
+| Successes | Result |
 | :--- | :--- |
 | **0** | Failure. Materials are lost. Item is not created. |
 | **1** | Tier 1 item or basic consumable (Ichor Draught, Antidote Wrap, Mundane weapon upgrade, etc.) |
@@ -563,6 +682,10 @@ Roll your **Domain Pool (3d10)** if the item connects to your Spark or Lineage. 
 | **3+** | Tier 3 / Masterwork item or maximum-effect consumable (Masterwork Divine Weapon/Armor, full-power artifact equivalent) |
 
 Crafting always takes **one full downtime period** (between sessions, or a full day of in-fiction time).
+
+> **Example — three attempts.** Selene wants **Quality Armor** (a Tier 2 item; materials **40 dr**). It is a moon-silk cloak, so it connects to her Spark of the Hunt: she rolls her Domain Pool **3d10**. *Attempt 1:* **7, 8, 3** = 2 successes → a Tier 2 item: the Quality Armor is made. *Attempt 2 (a bad night):* **2, 4, 5** = 0 → failure, the 40 dr of materials are lost. *Attempt 3 (in a hurry, a Short Rest):* **Fast Crafting** drops her to **2d10**: **6, 9** = 2 successes → success again, in an hour instead of a night.
+>
+> *Trade-Off Crafting:* if she had rolled only **1** success but wanted the Tier 2 armor anyway, she could take **Unstable** — roll 1d10 whenever the armor's property triggers, and on a **1** it breaks forever — and produce the Tier 2 item from a 1-success roll. The Trade-Off is a real flaw built into the cloak, not a footnote.
 
 #### Fast Crafting
 
@@ -594,16 +717,18 @@ Enemies exist to create tension and move the story forward, not to mirror player
 | Stat | Value |
 | :--- | :--- |
 | Attack Pool | 1d10 |
-| Defense | 1 fixed success (no roll) |
+| Defense | **Guard:** 1 fixed success (no roll) · **Minion:** none |
 | Spark Shield | None |
-| Flesh | 1–2 |
+| Flesh | **Guard:** 2 · **Minion:** 1 (not tracked) |
 | Ichor | None |
 
-One melee strike, 1 damage. No special abilities. Mortals are dangerous through numbers, not individual power.
+One melee strike, 1 damage. No special abilities. Mortals are dangerous through numbers, not individual power. A **Mortal Guard** is a trained fighter (Flesh 2, fixed Defense 1); a **Minion** is the rank-and-file (Flesh 1, no defense at all).
 
-**Minion Rule:** If an attacker rolls at least 1 success against a Minion, the Minion is instantly defeated. Skip the damage calculation entirely — Minions do not track Flesh. One hit ends them.
+**Minion Rule:** If an attacker rolls at least 1 success against a Minion, the Minion is instantly defeated. Skip the damage calculation entirely — Minions have no Defense and do not track Flesh. One hit ends them.
 
 **Group Attack Rule:** When 3 or more mortals or minions attack the same target, combine them into a single roll using 1d10 per attacker (maximum 5d10). One roll, one resolution — no turn-by-turn crawl.
+
+> **Example — a mob.** Five arena Minions rush Kaidros together. The GM rolls **one** group attack, **5d10**: **3, 6, 7, 9, 10 (+2)** = **4 successes** (the 10 exploded into a 2, which fails). Kaidros has spent his turn on **Brace**, so he defends with 2d10 + 1d10 = **3d10**: **8, 4, 6** = **2 successes**. Net 2; each mob hit deals 1 damage + net successes, so the whole group deals **1 + 2 = 3** damage — his Shield drops from 4 to **1**. On his own turn a single *Static Lash* roll with even **one success** defeats any one Minion outright; with *Breaking the Sky-Gate* (a 15-foot area) a single roll that scores any success defeats **every** Minion caught in it, since none of them can defend.
 
 #### Mythborn / Minor Threat (Standard)
 
@@ -648,7 +773,7 @@ Three to four abilities, up to Tier 3. A boss has two phases and a Legendary Act
 
 ### Keeping Combat Fast
 
-**Fixed Defense for Low-Tier Enemies:** Instead of rolling a defense pool, mortals and minor threats use a fixed defense value — typically 1 automatic success. The GM never rolls for them; the player simply needs more than 1 net success for full damage. This cuts resolution time roughly in half for common fights.
+**Fixed Defense for Low-Tier Enemies:** Instead of rolling a defense pool, Mortal Guards and minor threats use a fixed defense value — typically 1 automatic success (Minions have none). The GM never rolls for them; the player simply needs more than 1 net success for full damage. This cuts resolution time roughly in half for common fights.
 
 **No Ichor Tracking for Fodder:** Mortals and minor threats never track Ichor. Elites and bosses do.
 
@@ -671,6 +796,10 @@ Enemies use the same Tier system as players but with stripped-down property coun
 
 ### Quick Enemy Templates
 
+**Minion** (Arena Rabble)
+Attack 1d10 | No Defense | Flesh 1 (defeated by any hit) | No Spark Shield | No Ichor
+- *Strike:* 1 damage, melee.
+
 **Mortal Guard**
 Attack 1d10 | Defense 1 fixed success | Flesh 2 | No Spark Shield | No Ichor
 - *Strike:* 1 damage, melee.
@@ -682,7 +811,7 @@ Attack 2d10 | Defense 2d10 | Spark Shield 2 | Flesh 4 | Ichor 2
 
 **Temple Warden** (Elite)
 Attack 2d10 / 3d10 divine | Defense 2d10 | Spark Shield 4 | Flesh 8 | Ichor 4
-- *Divine Smite:* 2 damage, 100 ft range. Costs 1 Ichor.
+- *Divine Smite:* 2 damage, 30 ft range (Tier 2 damage + Tier 1 range — one Tier 2 property, as an Elite's signature move should be). Costs 1 Ichor.
 - *Stone Skin (Passive):* +1 Armor.
 - *Ward Reaction:* Once per round, negate 1 incoming Soft CC as a free reaction (costs 0 Ichor).
 
@@ -692,6 +821,8 @@ Attack 3d10 | Defense 3d10 | Spark Shield 6 | Flesh 16 | Ichor 8
 - *Rend (Phase 1):* 2 damage, 15-ft AoE burst around the beast. Costs 2 Ichor. Telegraphed one turn in advance.
 - *Primal Roar (Phase 2 — unlocks below 8 Flesh):* Stunned on all characters within 30 ft for 1 turn. Costs 3 Ichor. Spark Shield refreshes when Phase 2 begins.
 - *Legendary Action:* Once per round, makes a free melee strike against any character who deals damage to it.
+
+> **Example — a boss, phase by phase.** The **Primordial Beast** (Flesh 16, Shield 6, Ichor 8) opens with *Crush* on Kaidros: 3d10 vs his 2d10, net 2 → 2 damage + 2 = **4**, and he is **Restrained**. In Round 2 the GM **telegraphs** the next move: *"the arena floor cracks and a corona of heat builds around the beast"* — it will use **Rend** (15-foot AoE, 2 Ichor) next turn, so the party has a full turn to scatter. When Selene's arrow drops its Flesh from 9 to **7** (below half of 16), the **Phase Break** triggers immediately: its Spark Shield refreshes to 6 and it unlocks **Primal Roar** (Stunned on every character within 30 feet). Whenever someone hurts it, its **Legendary Action** punishes them with a free strike — so the party stops trading blows in melee and leans on Selene's arrows.
 
 ---
 
@@ -740,6 +871,8 @@ At character creation, or any time after with GM approval, every player writes o
 
 Once an Ambition is resolved (achieved or permanently failed), the player writes a new one before or during the next session. A character may only have **one active Divine Ambition at a time**, keeping their personal arc focused.
 
+> **Example — three outcomes.** Kaidros's Ambition: *"Break the iron gate of the Hollow Bastion in front of the rival who mocked my Deed."* **Achieved:** he does it in Session 6 — **+8 Glory**, and **+1 Reputation**. **At Great Cost:** if he breaks the gate but *the explosion maims him* — the player agrees to a permanent scar that costs him **1 Max Flesh** — the GM adds **+2 Glory**: **10 Glory total**. **Failed Dramatically:** if he charges and *the gate throws him back before the whole arena, his rival sneering*, he earns **3 Glory** and a new plot thread (the rival's trophy hall is now his enemy). Retreating quietly earns nothing at all. After any of these he writes a **new** Ambition before the next session.
+
 ---
 
 ## Reputation
@@ -786,6 +919,8 @@ Negative Reputation effects stack with any Passive Curse or Trade-Off drawbacks 
 
 Reputation is shared knowledge at the table. GMs should let Reputation shift visibly and narrate rumors, gossip, and reactions as it changes in either direction.
 
+> **Example — a reputation arc.** Selene starts at **0 (Unknown)**. She wins a public arena bout (**+1**) and completes a faction contract (**+1**): **2**, still Unknown. Fulfilling her Ambition adds **+1**: **3 — Recognized** (+1d10 on social rolls with factions that share the Hunt's values). Then she breaks a public truce to ambush a rival (**−2**) and is seen executing a yielding fighter (**−2**, GM's discretion for cruelty): **−1 — Distrusted**. Merchants now charge her double and she rolls **−1d10** against hunting-guild contacts. Another betrayal drops her to **−3 — Notorious**: bounty hunters may come for her between sessions. Only winning back goodwill — and, if she ever falls to −9, a full narrative arc of redemption — will lift her out.
+
 ---
 
 ## Followers
@@ -807,6 +942,10 @@ Followers are recruited three ways:
 | **Tier 3 — Champion** | 15 Glory | A named, distinct mythborn or minor god with 2d10 pool (3d10 if acting in your Domain) and one Tier 2 ability drawn from your Divine Spark. |
 
 You may have a number of Followers active at once equal to your **Domain Rank + 1** (minimum 1, even at Rank 0). Followers beyond this limit remain at your Domain or shrine, unavailable for the current session.
+
+**Follower stat lines.** Use the Quick Enemy Templates: a **Devotee** is a **Minion** (Flesh 1, 1d10); a **Disciple** is an **Arena Mythborn** (Shield 2, Flesh 4, 2d10) whose single Tier 1 ability replaces its listed abilities; a **Champion** is an Arena Mythborn with **Spark Shield 3, Flesh 5, Ichor 2** (3d10 when acting in your Domain) and one Tier 2 ability. A Follower never has more than the stats of its Tier.
+
+> **Example — recruiting.** At **Rank 1** Selene may have **2 Followers**. She spends **7 Glory** on a **Disciple**, *Wren*, a scout from the Grove, with one Tier 1 ability drawn from the Hunt: *Wren's Lantern* (Tier 1 Special Effect: a minor narrative effect — she lights a target so every ally can see it in the dark). The same session she spends **3 Glory** on a **Devotee** to guard the Spring. That fills both slots. In a fight, Wren acts as an extension of Selene's Main Action: when Selene fires, Wren whistles to mark the target. If Wren is Shattered, she is removed from play, and bringing her back costs the full **7 Glory** again — a reason to be careful.
 
 ### Using Followers
 
