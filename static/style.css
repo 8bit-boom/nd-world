@@ -457,7 +457,8 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   flex-wrap: wrap;
 }
 .list-header h1 { font-size: 1.4rem; letter-spacing: .12em; color: var(--neon); flex: 1; }
-.list-actions { display: flex; gap: .6rem; align-items: center; }
+.list-actions { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.list-actions a { white-space: nowrap; }
 .filter-form { display: flex; gap: .3rem; }
 
 /* ── Empty ── */
@@ -1542,7 +1543,12 @@ input[type="file"]:hover { border-color: var(--neon); }
 
   /* List header wraps */
   .list-header { gap: .6rem; }
-  .list-header h1 { font-size: 1.1rem; }
+  .list-header h1 { font-size: 1.1rem; flex-basis: 100%; }
+  /* the filter takes a row of its own and the buttons wrap beneath it, so "+ New" is never pushed off the screen */
+  .list-actions { width: 100%; }
+  .list-actions .filter-form { flex: 1 1 100%; }
+  .list-actions .filter-form input { flex: 1; min-width: 0; }
+  .list-actions .btn-new { order: -1; margin: 0; width: 100%; box-sizing: border-box; padding: .55rem 1rem; }
 
   /* Root folder cards — 2-up */
   .root-folders-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .5rem; }
