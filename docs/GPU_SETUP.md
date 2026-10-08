@@ -203,6 +203,16 @@ driver app on any current TrueNAS — 25.10 "Goldeye" included — supports your
 card** (its open kernel modules cover Turing and newer). Skip the following
 block entirely and go straight to the deployment steps.
 
+**⚠️ Do NOT put the GPU in "Isolated GPU PCI Ids"** (System → Advanced Settings,
+the dialog that lists e.g. `NVIDIA Corporation TU102GL [Tesla T10 16GB …]`).
+Isolating hands the card to the VM passthrough driver (vfio) and hides it from
+the host, so the NVIDIA driver and every container (Unsloth Studio, Ollama,
+SwarmUI) can no longer see it. Isolation is only for giving the whole card to a
+virtual machine. For apps: leave the list empty (a display GPU such as a
+GT 1030 should stay out of it too), install the driver under **Apps → Settings
+→ Install NVIDIA Drivers**, reboot, and check `nvidia-smi` on the TrueNAS shell
+lists the T10. If you already isolated it, remove it from that list and reboot.
+
 **⚠️ V100 only: TrueNAS 25.10 "Goldeye" and later dropped Volta support from
 the official *Nvidia Driver* app** — it now ships NVIDIA's open-source
 kernel modules, which only support Turing-and-newer GPUs. On 25.10+ you
