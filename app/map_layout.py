@@ -45,6 +45,9 @@ _FLOOR = {"hall": "#3a3a4a", "tavern": "#4a3a2a", "bedroom": "#3a3a52", "kitchen
           "cave": "#3a342a", "other": "#34363f"}
 
 
+_ROOM_KINDS = ("hall", "tavern", "bedroom", "kitchen", "storage", "corridor", "cell", "shrine", "library", "armory", "cave", "outdoor", "other")
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")[:30] or "room"
 
@@ -499,10 +502,15 @@ def layout(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, o
     return els, warnings
 
 
-def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, origin=(0, 0)):
+def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=None, origin=(0, 0), state_out=None):
     """(elements, walls, warnings): like layout(), plus the same walls and doors as DATA (app/map_walls.py format) - what fog
     of war and line of sight are computed from. A secret door is a wall to everyone but the GM's editor; an `open` link is a
-    gap; every other door is closed."""
+    gap; every other door is closed.
+
+    `state_out` (a dict) asks for the result to be EDITABLE AS ROOMS: when the plan fits the room tool's grid, the dict is filled
+    with the tool's stored state (app/map_rooms.py format) plus `grid` (the square grid it needs), floors, walls and doors get
+    the tool's id prefix "rm-" (it regenerates exactly those) and furniture "rf-<room>-<n>" (its ✨ replaces those). When the plan
+    is too big for the tool the dict stays empty and the ids are the plain "ai-" ones."""
     rng = random.Random(_seed_of(spec, seed))
     warnings = []
     cell = max(8, int(cell or 50))
@@ -527,10 +535,18 @@ def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=No
 
     by_id = {r["id"]: r for r in spec["rooms"]}
     els = []
+    pre, cols, rows, shx, shy, oxm, oym = "ai-", 0, 0, 0, 0, ox % cell, oy % cell
+    if state_out is not None:
+        cols, rows = int((canvas_w - oxm) // cell), int((canvas_h - oym) // cell)
+        shx, shy = int((ox - oxm) // cell), int((oy - oym) // cell)
+        fits = (1 <= cols <= 400 and 1 <= rows <= 400 and cols * rows <= 40000 and shx >= 0 and shy >= 0
+                and all(shx + r[0] >= 0 and shx + r[0] + r[2] <= cols and shy + r[1] >= 0 and shy + r[1] + r[3] <= rows for r in placed.values()))
+        if fits:
+            pre = "rm-"
     # floors
     for rid, (x, y, w, h) in placed.items():
         room = by_id[rid]
-        el = {"id": "ai-" + uuid.uuid4().hex[:10], "type": "rect", "x": ox + x * cell, "y": oy + y * cell, "w": w * cell, "h": h * cell,
+        el = {"id": pre + uuid.uuid4().hex[:10], "type": "rect", "x": ox + x * cell, "y": oy + y * cell, "w": w * cell, "h": h * cell,
               "fill": _FLOOR.get(room["kind"], _FLOOR["other"]), "stroke": "none", "strokeW": 0, "label": room["name"], "layer": "Background"}
         if room.get("entity"):
             el["entity_name"] = room["entity"]
@@ -568,15 +584,15 @@ def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=No
     plain_edges = [e for e in wall_edges if door_cells.get(e) != "secret"]      # the secret door's cell is a wall segment of its own
     for kind, fixed, a, b in _merge(plain_edges):
         if kind == "h":
-            walls.append({"id": "ai-w" + uuid.uuid4().hex[:8], "pts": [[ox + a * cell, oy + fixed * cell], [ox + b * cell, oy + fixed * cell]], "kind": "wall"})
+            walls.append({"id": pre + "w" + uuid.uuid4().hex[:8], "pts": [[ox + a * cell, oy + fixed * cell], [ox + b * cell, oy + fixed * cell]], "kind": "wall"})
         else:
-            walls.append({"id": "ai-w" + uuid.uuid4().hex[:8], "pts": [[ox + fixed * cell, oy + a * cell], [ox + fixed * cell, oy + b * cell]], "kind": "wall"})
+            walls.append({"id": pre + "w" + uuid.uuid4().hex[:8], "pts": [[ox + fixed * cell, oy + a * cell], [ox + fixed * cell, oy + b * cell]], "kind": "wall"})
     for kind, fixed, a, b in _merge(wall_edges):
         if kind == "h":
             x1, y1, x2, y2 = ox + a * cell, oy + fixed * cell, ox + b * cell, oy + fixed * cell
         else:
             x1, y1, x2, y2 = ox + fixed * cell, oy + a * cell, ox + fixed * cell, oy + b * cell
-        els.append({"id": "ai-" + uuid.uuid4().hex[:10], "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+        els.append({"id": pre + uuid.uuid4().hex[:10], "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                     "stroke": "#cfd6e6", "strokeW": stroke_w, "layer": "Tracks"})
     colours = {"door": "#c98a3d", "locked": "#d94b4b", "secret": "#c98a3d"}
     for (kind, fixed, pos), t in sorted(door_cells.items(), key=lambda kv: kv[0]):
@@ -587,8 +603,8 @@ def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=No
             x1, y1, x2, y2 = ox + pos * cell + pad, oy + fixed * cell, ox + (pos + 1) * cell - pad, oy + fixed * cell
         else:
             x1, y1, x2, y2 = ox + fixed * cell, oy + pos * cell + pad, ox + fixed * cell, oy + (pos + 1) * cell - pad
-        walls.append({"id": "ai-d" + uuid.uuid4().hex[:8], "pts": [[x1, y1], [x2, y2]], "kind": "secret" if t == "secret" else "door", "state": "closed"})
-        d = {"id": "ai-" + uuid.uuid4().hex[:10], "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+        walls.append({"id": pre + "d" + uuid.uuid4().hex[:8], "pts": [[x1, y1], [x2, y2]], "kind": "secret" if t == "secret" else "door", "state": "closed"})
+        d = {"id": pre + uuid.uuid4().hex[:10], "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
              "stroke": colours[t], "strokeW": stroke_w + 2, "layer": "Tracks"}
         if t == "secret":
             d["hidden"] = True                                       # the GM sees it; players see an unbroken wall
@@ -596,6 +612,33 @@ def layout_full(spec, cell=50, canvas_w=2000, canvas_h=1500, props=None, seed=No
         els.append(d)
 
     # furniture
+    space_id = {rid: i + 1 for i, rid in enumerate(placed)}
     for rid, rect in placed.items():
-        els.extend(_furnish_room(by_id[rid], rect, doors_of_room[rid], rng, props, cell, ox, oy))
+        made = _furnish_room(by_id[rid], rect, doors_of_room[rid], rng, props, cell, ox, oy)
+        if pre == "rm-":
+            for n, e in enumerate(made):
+                e["id"] = f"rf-{space_id[rid]}-{n}"
+        els.extend(made)
+    if pre == "rm-":
+        ids = [0] * (cols * rows)
+        for rid, (x, y, w, h) in placed.items():
+            for j in range(h):
+                for i in range(w):
+                    ids[(shy + y + j) * cols + shx + x + i] = space_id[rid]
+        runs = []
+        for v in ids:
+            if runs and runs[-2] == v:
+                runs[-1] += 1
+            else:
+                runs += [v, 1]
+        mark_of = {"door": "door", "locked": "door", "secret": "secret", "open": "open"}
+        marks = []
+        for (kind, fixed, pos), t in sorted(door_cells.items()):
+            marks.append([shx + pos, shy + fixed, "h", mark_of.get(t, "door")] if kind == "h"
+                         else [shx + fixed, shy + pos, "v", mark_of.get(t, "door")])
+        state_out.update({
+            "cell": cell, "ox": oxm, "oy": oym, "cols": cols, "rows": rows, "cells": runs, "marks": marks,
+            "spaces": [{"id": space_id[rid], "name": by_id[rid]["name"], "kind": by_id[rid]["kind"] if by_id[rid]["kind"] in _ROOM_KINDS else "other"}
+                       for rid in placed],
+            "grid": {"cell_size": cell, "offset_x": oxm, "offset_y": oym}})
     return els, walls, warnings

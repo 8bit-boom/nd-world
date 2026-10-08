@@ -267,3 +267,52 @@ def test_forty_rooms_build_quickly():
     t = time.time()
     _build({"rooms": rooms, "links": links}, canvas_w=6000, canvas_h=6000)
     assert time.time() - t < 5
+
+
+# ── editable as rooms (state_out) ───────────────────────────────────────────────────────────────
+
+def _edge_set(st):
+    cols, rows, ids = st["cols"], st["rows"], []
+    for i in range(0, len(st["cells"]), 2):
+        ids += [st["cells"][i]] * st["cells"][i + 1]
+    at = lambda x, y: 0 if x < 0 or y < 0 or x >= cols or y >= rows else ids[y * cols + x]
+    e = set()
+    for y in range(rows):
+        for x in range(cols):
+            v = at(x, y)
+            if not v:
+                continue
+            if at(x, y - 1) != v: e.add((x, y, "h"))
+            if at(x, y + 1) != v: e.add((x, y + 1, "h"))
+            if at(x - 1, y) != v: e.add((x, y, "v"))
+            if at(x + 1, y) != v: e.add((x + 1, y, "v"))
+    return e, ids
+
+
+def test_plan_comes_with_editable_room_state():
+    from app import map_rooms
+    spec, _ = M.clean_map_spec(_plan())
+    state = {}
+    els, walls, _w = M.layout_full(spec, 50, 2000, 1500, state_out=state)
+    assert state, "a normal plan fits the room tool"
+    clean, _ = map_rooms.clean_rooms({k: v for k, v in state.items() if k != "grid"})
+    assert len(clean["spaces"]) == len(spec["rooms"]) and clean["marks"]
+    edges, ids = _edge_set(clean)
+    assert all((x, y, a) in edges for x, y, a, _k in clean["marks"]), "every door sits on a wall edge"
+    assert state["grid"]["cell_size"] == 50 and 0 <= state["grid"]["offset_x"] < 50
+    # what the room tool regenerates is exactly what it replaces
+    assert all(str(e["id"]).startswith(("rm-", "rf-")) for e in els if e["type"] != "rect" or e.get("layer") != "Tracks")
+    assert all(w["id"].startswith("rm-") for w in walls)
+    assert any(e["id"].startswith("rf-") for e in els)
+    # the floors cover the squares of the rooms: area of floor rects == painted squares
+    area = sum(e["w"] * e["h"] for e in els if e["id"].startswith("rm-") and e["type"] == "rect") / 2500
+    assert area == sum(1 for v in ids if v)
+
+
+def test_without_state_out_ids_are_unchanged_and_oversize_plans_fall_back():
+    spec, _ = M.clean_map_spec(_plan())
+    els, walls, _ = M.layout_full(spec, 50, 2000, 1500)
+    assert all(e["id"].startswith("ai-") for e in els) and all(w["id"].startswith("ai-") for w in walls)
+    state = {}
+    els, walls, _ = M.layout_full(spec, 50, 20000, 20000, state_out=state)      # 400x400 = too many squares for the tool
+    assert state == {} and all(e["id"].startswith("ai-") for e in els)

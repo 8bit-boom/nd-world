@@ -35,6 +35,7 @@ from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import map_layout as _map_layout
 from . import map_walls as _map_walls_mod
+from . import map_rooms as _map_rooms_mod
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
@@ -7584,6 +7585,12 @@ async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
         square = (sch.grid_type or "none") == "square" and (gcfg.get("cell_size") or 0) > 0
         cell = float(gcfg["cell_size"]) if square else 50.0
         origin = (float(gcfg.get("offset_x") or 0), float(gcfg.get("offset_y") or 0)) if square else (0.0, 0.0)
+        # a plan on an empty map (or one that replaces everything) becomes editable as rooms in the 🏠 tool
+        try:
+            had_elements = bool(json.loads(sch.elements_json or "[]"))
+        except ValueError:
+            had_elements = False
+        rooms_state = {} if (replace_flag or (not had_elements and not (sch.rooms_json or "").strip("{} "))) else None
         props = [{"id": p.id, "name": p.name, "tags": p.tags or "", "url": p.file_url, "cells_w": p.cells_w, "cells_h": p.cells_h}
                  for p in db.query(MapProp).filter(MapProp.world_id == world_id).all()]
         entity_ids = {(e.name or "").strip().lower(): e.id
@@ -7632,7 +7639,7 @@ async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
     except ValueError as exc:
         _AI_BUILD_JOBS[job_id].update(status="error", error=f"The model's plan could not be used ({exc}) — try again or rephrase.")
         return
-    new_elements, new_walls, more = _map_layout.layout_full(spec, cell, canvas_w, canvas_h, props=props, origin=origin)
+    new_elements, new_walls, more = _map_layout.layout_full(spec, cell, canvas_w, canvas_h, props=props, origin=origin, state_out=rooms_state)
     warnings = warnings + more
     for el in new_elements:                                   # a room that names a lore entity keeps the link
         name = el.pop("entity_name", None)
@@ -7654,6 +7661,22 @@ async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
             elements = []
         elements = new_elements if replace_flag else (elements if isinstance(elements, list) else []) + new_elements
         sch.elements_json = json.dumps(elements)
+        if rooms_state and not replace_flag and (sch.rooms_json or "").strip("{} "):
+            rooms_state = {}                                      # someone drew rooms while the model was thinking: leave theirs be
+        if rooms_state:
+            grid = rooms_state.pop("grid")
+            state, _rw = _map_rooms_mod.clean_rooms(rooms_state)
+            sch.rooms_json = json.dumps(state)
+            sch.grid_type = "square"
+            try:
+                gc = json.loads(sch.grid_config_json or "{}")
+            except ValueError:
+                gc = {}
+            gc = gc if isinstance(gc, dict) else {}
+            gc.update(grid)
+            sch.grid_config_json = json.dumps(gc)
+        elif rooms_state is not None and replace_flag:
+            sch.rooms_json = "{}"                                 # the old rooms' floors were just replaced
         # the walls and doors of the plan, as data, so fog of war works on the result straight away (switch it on in Walls & fog)
         try:
             old_walls = [] if replace_flag else json.loads(sch.walls_json or "[]")

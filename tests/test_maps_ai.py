@@ -309,6 +309,15 @@ def test_plan_mode_replace_uses_the_grid_and_rejects_nonsense(client, seed, monk
     assert data["status"] == "done" and not any(e["id"] == "old" for e in data["elements"])
     floors = [e for e in data["elements"] if e.get("layer") == "Background"]
     assert all((f["x"] - 10) % 40 == 0 and (f["y"] - 20) % 40 == 0 and f["w"] % 40 == 0 for f in floors)   # on the map's own grid
+    # ...and the plan is editable as rooms: the room tool's state and a matching grid were stored
+    db = SessionLocal()
+    try:
+        row = db.query(Schematic).filter(Schematic.slug == "plan-grid").first()
+        rooms, grid = json.loads(row.rooms_json), json.loads(row.grid_config_json)
+        assert rooms["spaces"] and rooms["cell"] == 40 and (rooms["ox"], rooms["oy"]) == (10, 20)
+        assert grid["cell_size"] == 40 and (grid["offset_x"], grid["offset_y"]) == (10, 20) and row.grid_type == "square"
+    finally:
+        db.close()
     _plan_fake(monkeypatch, "I'm sorry, I can't plan that.")
     bad = _start(client, "plan-grid", mode="plan")
     assert bad["status"] == "error" and "plan could not be used" in bad["error"]
