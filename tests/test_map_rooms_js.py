@@ -137,3 +137,12 @@ console.log(JSON.stringify({ cols: st.cols, rows: st.rows, cell: M.cellAt(st, 70
     assert (r["cols"], r["rows"]) == (10, 8) and r["cell"] == {"x": 1, "y": 1} and r["off"] is None
     assert r["edge"] == "1,1,v" and r["edge2"] == "1,1,h"                                  # nearest side of the square under the pointer
     assert r["tooBig"] is None and r["tiny"] is None
+
+
+@needs_node
+def test_rooms_found_on_a_picture_map_add_only_faint_floors():
+    r = _js("""const st = M.create(50, 0, 0, 600, 400); const a = M.addSpace(st, 'Hall', 'hall'); M.paintRect(st, 2, 2, 5, 4, a); st.clear = true;
+    const els = M.elements(st, M.generate(st, {})); const back = M.unpack(M.pack(st));
+    console.log(JSON.stringify({kinds: els.map(e => e.type + ':' + e.opacity), clearKept: back.clear, normal: M.unpack(M.pack(M.create(50,0,0,600,400))).clear}))""")
+    assert r["clearKept"] is True and r["normal"] is False
+    assert r["kinds"] == ["rect:0.12"]                                              # one floor, no wall lines, no door leaves

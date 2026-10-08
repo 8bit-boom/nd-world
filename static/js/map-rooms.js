@@ -155,10 +155,11 @@
     gen.floors.forEach(function (r, i) {
       var p = px(st, r.x, r.y);
       var el = { id: 'rm-f' + i, type: 'rect', x: p[0], y: p[1], w: r.w * st.cell, h: r.h * st.cell, fill: FLOOR[r.space.kind] || FLOOR.other,
-                 stroke: 'none', strokeW: 0, layer: 'Background', opacity: 1 };
+                 stroke: 'none', strokeW: 0, layer: 'Background', opacity: st.clear ? 0.12 : 1 };
       if (r.label) el.label = r.space.name;
       els.push(el);
     });
+    if (st.clear) return els;                                  // a picture draws the walls and doors: only faint floors and names are added
     var COL = { door: '#c98a3d', secret: '#c98a3d', window: '#6bd6ff' };
     gen.walls.forEach(function (w, i) {
       var a = w.pts[0], b = w.pts[1];
@@ -192,11 +193,11 @@
     var cells = [], i = 0;
     while (i < st.ids.length) { var id = st.ids[i], n = 0; while (i < st.ids.length && st.ids[i] === id) { i++; n++; } cells.push(id, n); }
     var marks = Object.keys(st.marks).map(function (k) { var e = parseKey(k); return [e.x, e.y, e.a, st.marks[k]]; });
-    return { cell: st.cell, ox: st.ox, oy: st.oy, cols: st.cols, rows: st.rows, cells: cells, spaces: st.spaces.map(function (s) { return { id: s.id, name: s.name, kind: s.kind }; }), marks: marks };
+    return { cell: st.cell, ox: st.ox, oy: st.oy, cols: st.cols, rows: st.rows, cells: cells, spaces: st.spaces.map(function (s) { return { id: s.id, name: s.name, kind: s.kind }; }), marks: marks, clear: st.clear === true };
   }
   function unpack(d) {
     if (!d || !d.cols || !d.rows || !Array.isArray(d.cells)) return null;
-    var st = { cell: d.cell, ox: d.ox || 0, oy: d.oy || 0, cols: d.cols, rows: d.rows, ids: new Uint16Array(d.cols * d.rows), spaces: (d.spaces || []).map(function (s) { return { id: s.id, name: s.name, kind: s.kind }; }), marks: {} };
+    var st = { cell: d.cell, ox: d.ox || 0, oy: d.oy || 0, cols: d.cols, rows: d.rows, ids: new Uint16Array(d.cols * d.rows), spaces: (d.spaces || []).map(function (s) { return { id: s.id, name: s.name, kind: s.kind }; }), marks: {}, clear: d.clear === true };
     var i = 0;
     for (var k = 0; k + 1 < d.cells.length; k += 2) for (var n = 0; n < d.cells[k + 1] && i < st.ids.length; n++) st.ids[i++] = d.cells[k];
     (d.marks || []).forEach(function (m) { st.marks[m[0] + ',' + m[1] + ',' + m[2]] = m[3]; });

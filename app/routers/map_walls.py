@@ -8,7 +8,7 @@ import json
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .. import live, map_rooms, map_walls
+from .. import live, map_rooms, map_walls, rooms_from_walls
 from ..database import get_db
 from ..deps import get_world_ctx, world_can_edit_section
 from ..models import Schematic
@@ -151,6 +151,25 @@ async def rooms_save(slug: str, request: Request, db: Session = Depends(get_db),
     s.rooms_json = json.dumps(state)
     db.commit()
     return {"rooms": state, "warnings": warnings}
+
+
+@router.post("/maps/schematic/{slug}/rooms/detect")
+def rooms_detect(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Find the enclosed rooms in the map's stored walls (see app/rooms_from_walls.py) and return them as room-tool state, marked
+    `clear` (the picture already draws the floors and walls). Nothing is stored: the editor shows it and saves it once confirmed.
+    Needs a square grid. Returns {"state", "info"}."""
+    s = _map_for_edit(request, db, slug, active_world)
+    cfg = _load(s.grid_config_json, {})
+    cell = cfg.get("cell_size") if isinstance(cfg, dict) else None
+    if (s.grid_type or "none") != "square" or not isinstance(cell, (int, float)) or cell <= 0:
+        raise HTTPException(400, "Finding rooms needs a square grid: switch the map to a square grid first.")
+    walls, _w = map_walls.clean_walls(_load(s.walls_json, []), s.canvas_width, s.canvas_height)
+    state, info = rooms_from_walls.detect(walls, s.canvas_width or 2000, s.canvas_height or 1500, cell,
+                                          cfg.get("offset_x") or 0, cfg.get("offset_y") or 0)
+    if state is None:
+        raise HTTPException(422, info)
+    state, _warn = map_rooms.clean_rooms(state)
+    return {"state": state, "info": info}
 
 
 @router.post("/maps/schematic/{slug}/lights")

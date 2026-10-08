@@ -98,5 +98,5 @@ def clean_rooms(data):
         marks.append([x, y, axis, kind])
     used = set(runs[0::2]) - {0}
     spaces = [s for s in spaces if s["id"] in used]                 # a room with no floor left is gone
-    return {"cell": round(cell, 2), "ox": round(ox, 2), "oy": round(oy, 2), "cols": cols, "rows": rows,
+    return {"cell": round(cell, 2), "ox": round(ox, 2), "oy": round(oy, 2), "cols": cols, "rows": rows, **({"clear": True} if data.get("clear") is True else {}),
             "cells": runs, "spaces": spaces, "marks": marks}, warnings

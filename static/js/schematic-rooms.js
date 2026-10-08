@@ -44,7 +44,7 @@
     var gen = M.generate(st, o.ndWalls.stateMap());
     var rest = o.getElements().filter(function (e) { return String(e.id).indexOf('rm-') !== 0; });
     o.setElements(M.elements(st, gen).concat(rest));          // floors and walls sit under everything else
-    o.ndWalls.replaceByPrefix('rm-', gen.walls);
+    if (!st.clear) o.ndWalls.replaceByPrefix('rm-', gen.walls);   // rooms found on a picture map leave its walls alone
     o.redraw();
     o.save();
     saveState();
@@ -179,6 +179,24 @@
     });
   }
 
+  function detectRooms() {
+    if (!(o.getGrid().square)) { msg('Finding rooms needs a square grid.'); showGridOffer(true); return; }
+    var had = st && st.spaces.length;
+    if (!confirm((had ? 'This replaces the rooms you have drawn. ' : '') + 'Find the rooms enclosed by this map\'s walls? They become named rooms with a faint floor tint that you can rename and furnish (✨); the walls and the picture are not changed.')) return;
+    msg('Looking for rooms…');
+    fetch('/maps/schematic/' + encodeURIComponent(o.slug) + '/rooms/detect', { method: 'POST' })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok) { msg(x.d.detail || 'No rooms found.'); return; }
+        if (st) snapshotState(); else st = M.create(x.d.state.cell, x.d.state.ox, x.d.state.oy, o.getCanvas().w, o.getCanvas().h);
+        st = M.unpack(x.d.state); current = st.spaces.length ? st.spaces[0].id : 0;
+        regenerate(true); panel();
+        var i = x.d.info;
+        msg('Found ' + i.rooms + ' room' + (i.rooms === 1 ? '' : 's') + ' with ' + i.doors + ' door' + (i.doors === 1 ? '' : 's') + ' and ' + i.windows + ' window' + (i.windows === 1 ? '' : 's') + '. Rename them and pick a kind, then ✨ Furnish.' + (i.notes && i.notes.length ? ' ' + i.notes.join(' ') : ''));
+      })
+      .catch(function () { msg('Could not look for rooms (network).'); });
+  }
+
   function newRoom() {
     if (!ensureState()) return;
     var name = prompt('Name of the new room:', 'Room ' + (st.spaces.length + 1));
@@ -195,6 +213,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-rooms-mode]'), function (b) { b.onclick = function () { mode = b.dataset.roomsMode; hoverEdge = null; panel(); draw(); if (o.getTool() !== 'rooms') o.setTool('rooms'); }; });
     var sel = $('rooms-space'); if (sel) sel.onchange = function () { current = +sel.value; panel(); };
     var fa = $('rooms-furnish-all'); if (fa) fa.onclick = function () { if (st) furnishRooms(st.spaces.map(function (x) { return x.id; })); };
+    var dt = $('rooms-detect'); if (dt) dt.onclick = detectRooms;
     var nw = $('rooms-new'); if (nw) nw.onclick = newRoom;
     var go = $('rooms-grid-offer'); if (go) go.onclick = function () { o.useSquareGrid(); };
     var kd = $('rooms-kind'); if (kd) { kd.textContent = ''; M.KINDS.forEach(function (k) { var op = document.createElement('option'); op.value = k; op.textContent = k; kd.appendChild(op); }); }
