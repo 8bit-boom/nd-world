@@ -27,10 +27,16 @@
   }
   function showGridOffer(on) { var b = $('rooms-grid-offer'); if (b) b.style.display = on ? '' : 'none'; }
 
-  function snapshotState() { undoStack.push(JSON.stringify(M.pack(st))); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
-  function restore(json) { st = M.unpack(JSON.parse(json)); if (!st.spaces.some(function (s) { return s.id === current; })) current = st.spaces.length ? st.spaces[0].id : 0; regenerate(false); panel(); }
-  function undo() { if (!undoStack.length || !st) return false; redoStack.push(JSON.stringify(M.pack(st))); restore(undoStack.pop()); return true; }
-  function redo() { if (!redoStack.length || !st) return false; undoStack.push(JSON.stringify(M.pack(st))); restore(redoStack.pop()); return true; }
+  // furniture (ids "rf-<room id>-...", static/js/map-furnish.js) is part of what undo restores
+  function furniture() { return o.getElements().filter(function (e) { return String(e.id).indexOf('rf-') === 0; }); }
+  function snap() { return JSON.stringify({ st: M.pack(st), rf: furniture() }); }
+  function snapshotState() { undoStack.push(snap()); if (undoStack.length > 60) undoStack.shift(); redoStack = []; }
+  function restore(json) {
+    var d = JSON.parse(json), keep = o.getElements().filter(function (e) { return String(e.id).indexOf('rf-') !== 0; });
+    o.setElements(keep.concat(d.rf || []));
+    st = M.unpack(d.st); if (!st.spaces.some(function (s) { return s.id === current; })) current = st.spaces.length ? st.spaces[0].id : 0; regenerate(false); panel(); }
+  function undo() { if (!undoStack.length || !st) return false; redoStack.push(snap()); restore(undoStack.pop()); return true; }
+  function redo() { if (!redoStack.length || !st) return false; undoStack.push(snap()); restore(redoStack.pop()); return true; }
 
   // ── writing the map ─────────────────────────────────────────────────────────
   function regenerate(record) {
@@ -135,18 +141,42 @@
       k.onchange = function () { snapshotState(); s.kind = k.value; regenerate(true); panel(); };
       row.appendChild(k);
       row.appendChild(btn('✎', 'Rename', function () { var n = prompt('Room name:', s.name); if (n && n.trim()) { snapshotState(); s.name = n.trim().slice(0, 60); regenerate(true); panel(); } }));
+      row.appendChild(btn('✨', 'Furnish this room to suit its kind (again for a new arrangement)', function () { furnishRooms([s.id]); }));
       row.appendChild(btn('✕', 'Remove this room and its floor', function () {
         if (!confirm('Remove “' + s.name + '” and its floor?')) return;
         snapshotState();
         for (var i = 0; i < st.ids.length; i++) if (st.ids[i] === s.id) st.ids[i] = 0;
         st.spaces = st.spaces.filter(function (x) { return x.id !== s.id; });
         if (current === s.id) current = st.spaces.length ? st.spaces[0].id : 0;
+        dropFurniture(s.id);
         M.prune(st); regenerate(true); panel();
       }));
       list.appendChild(row);
     });
     if (!st || !st.spaces.length) { var d = document.createElement('div'); d.style.cssText = 'opacity:.55;font-size:.72rem'; d.textContent = 'No rooms yet: ＋ New room, then paint on the map.'; list.appendChild(d); }
     Array.prototype.forEach.call(document.querySelectorAll('[data-rooms-mode]'), function (b) { b.classList.toggle('on', b.dataset.roomsMode === mode); });
+  }
+
+  function dropFurniture(id) {
+    var pre = 'rf-' + id + '-';
+    o.setElements(o.getElements().filter(function (e) { return String(e.id).indexOf(pre) !== 0; }));
+  }
+  function furnishRooms(ids) {
+    if (!st || !root.ndMapFurnish) return;
+    msg('Furnishing…');
+    fetch('/api/maps/props').then(function (r) { return r.ok ? r.json() : []; }).catch(function () { return []; }).then(function (props) {
+      if (!Array.isArray(props)) props = props && props.props || [];
+      snapshotState();
+      var seed = String(Date.now()), made = 0, rooms = 0;
+      ids.forEach(function (id) {
+        dropFurniture(id);
+        var els = root.ndMapFurnish.furnish(st, id, props, seed + ':' + id);
+        if (els.length) { o.setElements(o.getElements().concat(els)); made += els.length; rooms++; }
+      });
+      if (!made) { undoStack.pop(); msg('Nothing to place: closets, corridors and outdoor areas stay bare, and so do rooms under 6 squares.'); return; }
+      regenerate(true);
+      msg('Placed ' + made + ' pieces in ' + rooms + ' room' + (rooms === 1 ? '' : 's') + '. ✨ again for a different arrangement; Ctrl+Z undoes it.');
+    });
   }
 
   function newRoom() {
@@ -164,6 +194,7 @@
   function bind() {
     Array.prototype.forEach.call(document.querySelectorAll('[data-rooms-mode]'), function (b) { b.onclick = function () { mode = b.dataset.roomsMode; hoverEdge = null; panel(); draw(); if (o.getTool() !== 'rooms') o.setTool('rooms'); }; });
     var sel = $('rooms-space'); if (sel) sel.onchange = function () { current = +sel.value; panel(); };
+    var fa = $('rooms-furnish-all'); if (fa) fa.onclick = function () { if (st) furnishRooms(st.spaces.map(function (x) { return x.id; })); };
     var nw = $('rooms-new'); if (nw) nw.onclick = newRoom;
     var go = $('rooms-grid-offer'); if (go) go.onclick = function () { o.useSquareGrid(); };
     var kd = $('rooms-kind'); if (kd) { kd.textContent = ''; M.KINDS.forEach(function (k) { var op = document.createElement('option'); op.value = k; op.textContent = k; kd.appendChild(op); }); }

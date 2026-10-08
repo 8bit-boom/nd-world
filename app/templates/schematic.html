@@ -191,6 +191,7 @@
           <select id="rooms-space" title="The room you are painting" style="max-width:130px"></select>
           <select id="rooms-kind" title="What kind of room a new one is (sets its floor colour)" style="max-width:80px"></select>
           <button type="button" class="props-mini" id="rooms-new">＋ New room</button>
+          <button type="button" class="props-mini" id="rooms-furnish-all" title="Fill every room with furniture to suit its kind">✨ Furnish all</button>
         </div>
         <div class="props-row">
           <button type="button" class="props-mini" data-rooms-mode="paint" title="Paint floor: drag a rectangle">▦ Paint</button>
@@ -2628,6 +2629,7 @@ window.addEventListener('beforeunload', e => {
 <script src="/static/js/map-fog-glue.js?v={{ asset_v('js/map-fog-glue.js') }}"></script>
 <script src="/static/js/schematic-lights.js?v={{ asset_v('js/schematic-lights.js') }}"></script>
 <script src="/static/js/map-rooms.js?v={{ asset_v('js/map-rooms.js') }}"></script>
+<script src="/static/js/map-furnish.js?v={{ asset_v('js/map-furnish.js') }}"></script>
 <script src="/static/js/schematic-rooms.js?v={{ asset_v('js/schematic-rooms.js') }}"></script>
 <script>
 // Walls, doors and the fog-of-war settings (static/js/schematic-walls.js)
