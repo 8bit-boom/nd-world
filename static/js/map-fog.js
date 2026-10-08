@@ -75,6 +75,7 @@
     var W = opts.width, H = opts.height, cell = memoryCell(W, H, opts.cell), cols = Math.ceil(W / cell), rows = Math.ceil(H / cell);
     var explored = new Uint8Array(cols * rows), walls = opts.walls || [];
     var shroudOpacity = opts.shroudOpacity === undefined ? 0.55 : opts.shroudOpacity;
+    var done = new WeakSet();
     var uid = 'ndfog' + Math.floor(Math.random() * 1e9), tokenLayer = opts.tokenLayer;
 
     var defs = svg.querySelector('defs') || svg.insertBefore(el('defs', {}), svg.firstChild);
@@ -104,12 +105,11 @@
         var marked = 0;
         polys.forEach(function (poly) {
           if (poly.length < 3) return;
-          var bb = geom.bbox(poly);
-          var cx0 = Math.max(0, Math.floor(bb.x0 / cell)), cx1 = Math.min(cols - 1, Math.floor(bb.x1 / cell));
-          var cy0 = Math.max(0, Math.floor(bb.y0 / cell)), cy1 = Math.min(rows - 1, Math.floor(bb.y1 / cell));
-          for (var cy = cy0; cy <= cy1; cy++) for (var cx = cx0; cx <= cx1; cx++) {
-            if (!explored[cy * cols + cx] && geom.pointInPolygon([(cx + 0.5) * cell, (cy + 0.5) * cell], poly) && (!canMark || canMark((cx + 0.5) * cell, (cy + 0.5) * cell))) { explored[cy * cols + cx] = 1; marked++; }
-          }
+          if (!canMark && done.has(poly)) return;            // the same polygon object (the vision code reuses it) was marked already
+          geom.eachCellInPolygon(poly, cell, cols, rows, function (cx, cy) {
+            if (!explored[cy * cols + cx] && (!canMark || canMark((cx + 0.5) * cell, (cy + 0.5) * cell))) { explored[cy * cols + cx] = 1; marked++; }
+          });
+          if (!canMark) done.add(poly);
         });
         expHole.setAttribute('d', exploredPath(explored, cols, rows, cell));
         var hidden = 0;
@@ -123,7 +123,7 @@
       runs: function () { return toRuns(explored); },
       loadRuns: function (runs) { explored.set(fromRuns(runs, explored.length)); },
       addRuns: function (runs) { var add = fromRuns(runs, explored.length); for (var i = 0; i < add.length; i++) if (add[i]) explored[i] = 1; expHole.setAttribute('d', exploredPath(explored, cols, rows, cell)); },
-      clear: function () { explored.fill(0); expHole.setAttribute('d', ''); },
+      clear: function () { done = new WeakSet(); explored.fill(0); expHole.setAttribute('d', ''); },
       destroy: function () {
         g.remove();
         defs.querySelectorAll('mask[id^="' + uid + '"]').forEach(function (m) { m.remove(); });

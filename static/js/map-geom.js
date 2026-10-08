@@ -46,6 +46,28 @@
     return inside;
   }
 
+  // The grid cells whose centre is inside the polygon, by scanline (one pass over the edges per row instead of one per cell):
+  // calls fn(col, row) for each. Same inside/outside rule as pointInPolygon.
+  function eachCellInPolygon(poly, cell, cols, rows, fn) {
+    var n = poly.length;
+    if (n < 3) return;
+    var y0 = Infinity, y1 = -Infinity, i, j;
+    for (i = 0; i < n; i++) { if (poly[i][1] < y0) y0 = poly[i][1]; if (poly[i][1] > y1) y1 = poly[i][1]; }
+    var r0 = Math.max(0, Math.floor(y0 / cell)), r1 = Math.min(rows - 1, Math.floor(y1 / cell));
+    for (var r = r0; r <= r1; r++) {
+      var cy = (r + 0.5) * cell, xs = [];
+      for (i = 0, j = n - 1; i < n; j = i++) {
+        var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+        if ((yi > cy) !== (yj > cy)) xs.push((xj - xi) * (cy - yi) / (yj - yi) + xi);
+      }
+      xs.sort(function (a, b) { return a - b; });
+      for (var k = 0; k + 1 < xs.length; k += 2) {
+        var c0 = Math.max(0, Math.ceil(xs[k] / cell - 0.5)), c1 = Math.min(cols - 1, Math.ceil(xs[k + 1] / cell - 0.5) - 1);
+        for (var c = c0; c <= c1; c++) fn(c, r);
+      }
+    }
+  }
+
   // Intersection of the ray o + t*d (t >= 0) with the segment a-b: the ray parameter t, or null.
   function rayHit(o, d, a, b) {
     var ex = b[0] - a[0], ey = b[1] - a[1];
@@ -63,6 +85,6 @@
     return { x0: x0, y0: y0, x1: x1, y1: y1 };
   }
 
-  root.ndMapGeom = { dist: dist, lineDist: lineDist, simplify: simplify, signedArea: signedArea, pointInPolygon: pointInPolygon, rayHit: rayHit, bbox: bbox };
+  root.ndMapGeom = { dist: dist, lineDist: lineDist, simplify: simplify, signedArea: signedArea, pointInPolygon: pointInPolygon, eachCellInPolygon: eachCellInPolygon, rayHit: rayHit, bbox: bbox };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.ndMapGeom;
 })(typeof window !== 'undefined' ? window : globalThis);

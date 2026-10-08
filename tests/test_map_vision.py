@@ -182,3 +182,21 @@ def test_cutting_works_whichever_way_the_wall_was_drawn():
         out = _cut([{"id": "w", "kind": "wall", "pts": pts}], [200, 100], [300, 100])
         spans = sorted((min(w["pts"][0][0], w["pts"][-1][0]), max(w["pts"][0][0], w["pts"][-1][0])) for w in out)
         assert spans == [(100, 200), (300, 400)], pts
+
+
+# ── speed: the scanline fill and the polygon memory (what makes a phone keep up) ─────────────
+
+@needs_node
+def test_scanline_cells_equal_the_point_in_polygon_cells():
+    r = _js("(()=>{const poly=[[10,10],[200,20],[180,150],[30,170],[90,90]];const a=[];G.eachCellInPolygon(poly,20,20,20,(c,r)=>a.push(r*20+c));"
+            "const b=[];for(let r=0;r<20;r++)for(let c=0;c<20;c++)if(G.pointInPolygon([(c+.5)*20,(r+.5)*20],poly))b.push(r*20+c);"
+            "return {a:a.sort((x,y)=>x-y),b:b.sort((x,y)=>x-y)}})()")
+    assert r["a"] == r["b"] and len(r["a"]) > 30
+
+
+@needs_node
+def test_a_polygon_is_reused_for_the_same_walls_and_recomputed_for_new_ones():
+    r = _js("(()=>{const w=[{x1:100,y1:0,x2:100,y2:200,kind:'wall'}];const a=V.visibilityPolygon([10,10],w,{range:300});"
+            "const b=V.visibilityPolygon([10,10],w,{range:300});const c=V.visibilityPolygon([10,10],w.slice(),{range:300});"
+            "const d=V.visibilityPolygon([11,10],w,{range:300});return {same:a===b,newList:a===c,equalNew:JSON.stringify(a)===JSON.stringify(c),moved:a===d}})()")
+    assert r == {"same": True, "newList": False, "equalNew": True, "moved": False}

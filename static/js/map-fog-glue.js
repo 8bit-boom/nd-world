@@ -26,6 +26,10 @@
     return out;
   }
 
+  // The wall list as segments, the SAME array for as long as the walls are the same (their text), so the vision code's per-wall-list
+  // memory (ndMapVision) survives a refetch that changed nothing about the walls - another player's step, a token the GM moved.
+  function wallsKey(walls) { try { return JSON.stringify(walls || []); } catch (e) { return String(Math.random()); } }
+
   // which lights to draw when there are more than MAX_LIGHTS: the personal lights first, then the map's lights nearest a character
   function pickLights(personal, mapLights, pcs, centre) {
     var room = Math.max(4, MAX_LIGHTS - personal.length);
@@ -40,10 +44,15 @@
   }
 
   function create(o) {
-    var fogLayer = null, lightLayer = null, saveTimer = null;
+    var fogLayer = null, lightLayer = null, saveTimer = null, segCache = { key: null, segs: [] };
     var st = { fog: { enabled: false, range: 0, epoch: 0, darkness: 0, personal: 2 }, walls: [], lights: [], explored: null };
     var memKey = 'nd_fog_' + o.key;
 
+    function cachedSegs() {
+      var k = wallsKey(st.walls);
+      if (segCache.key !== k) segCache = { key: k, segs: segmentsOf(st.walls) };
+      return segCache.segs;
+    }
     function showAllTokens() {
       Array.prototype.forEach.call(o.tokenLayer.children, function (n) { n.style.display = ''; });
     }
@@ -71,7 +80,7 @@
       showAllTokens();
       if (!f.enabled && !dark) return null;
 
-      var c = o.getCanvas(), grid = o.getGrid(), segs = segmentsOf(st.walls);
+      var c = o.getCanvas(), grid = o.getGrid(), segs = cachedSegs();
       var els = o.getElements(), byId = {};
       els.forEach(function (e) { byId[e.id] = e; });
       var pcs = els.filter(function (e) { return e.type === 'token' && e.pc_id; });

@@ -33,8 +33,28 @@
 
   var EPS = 1e-6;
 
+  // A polygon depends only on the origin, the range, the bounds and the walls, so it is remembered per wall list (the SAME array,
+  // see ndFogGlue's cache): when one character steps, the others' (and every light's) polygons are reused, not swept again.
+  // Callers must treat the returned polygon as read-only. At most MEMO_MAX per wall list, so a wandering token cannot grow it.
+  var MEMO_MAX = 80, memos = typeof WeakMap === 'function' ? new WeakMap() : null;
+
   function visibilityPolygon(origin, segs, opts) {
     opts = opts || {};
+    var m = memos && segs && typeof segs === 'object' ? memos.get(segs) : null, key = null;
+    if (memos && segs && typeof segs === 'object') {
+      var bb = opts.bounds;
+      key = origin[0] + ',' + origin[1] + ',' + opts.range + ',' + (opts.arcSteps || '') + ',' + (bb ? bb.x0 + ',' + bb.y0 + ',' + bb.x1 + ',' + bb.y1 : '');
+      if (!m) { m = new Map(); memos.set(segs, m); }
+      var hit0 = m.get(key);
+      if (hit0) return hit0;
+      if (m.size >= MEMO_MAX) m.clear();
+    }
+    var poly = sweep(origin, segs, opts);
+    if (m) m.set(key, poly);
+    return poly;
+  }
+
+  function sweep(origin, segs, opts) {
     var ox = origin[0], oy = origin[1], range = opts.range === undefined ? Infinity : opts.range, b = opts.bounds;
     var x0, y0, x1, y1;
     if (b) { x0 = b.x0; y0 = b.y0; x1 = b.x1; y1 = b.y1; }
