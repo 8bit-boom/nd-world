@@ -90,7 +90,7 @@ def test_rendered_pages_have_parseable_inline_scripts(client, seed):
         "gm": ["/maps", "/maps/schematic/tv-check", "/maps/schematic/tv-check/view", "/display/map/tv-check", "/", "/parties", f"/parties/{party}", f"/parties/{party}/summary", "/characters",
                f"/characters/{pc}", f"/characters/{custom_pc}", "/quests", "/calendar", "/calendar/year", "/calendar/config", "/worlds", "/schedule", "/media-rename", "/combat",
                "/cockpit", "/player-cockpit", "/sessions", "/tables", "/settings", "/npc-talk",
-               "/new", f"/entity/{npc}/edit", "/races", "/professions", "/dice", f"/sessions/{session}"],
+               "/system", "/new", f"/entity/{npc}/edit", "/races", "/professions", "/dice", f"/sessions/{session}"],
         "player": ["/maps/schematic/tv-check/view", f"/characters/{pc}", f"/characters/{custom_pc}", f"/parties/{party}", "/player-cockpit", "/npc-talk", "/dice"],
     }
     scripts, checked = [], []

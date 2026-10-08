@@ -794,3 +794,40 @@ been removed.)
 
 Back to [README](../README.md) · nd-world docs: [API reference](API_REFERENCE.md)
 · [AI entity guide](AI_ENTITY_GUIDE.md) · [AI-everywhere audit](AI_EVERYWHERE_AUDIT.md)
+
+
+## System Monitor (GPU, CPU, RAM) inside nd-world
+
+The GM menu has **AI Tools → 🖥 System Monitor** (`/system`): live VRAM use, temperature, power draw, GPU load, which programs hold VRAM,
+plus CPU load / per-core / temperature and RAM (with the ZFS cache shown separately on TrueNAS). It refreshes every 1-5 s while the tab
+is visible.
+
+CPU and RAM need nothing. The **GPU** part runs `nvidia-smi`, which is not in nd-world's image - the NVIDIA container runtime adds it
+to any container that is given the GPU. Add this to the `world` service in your compose file (TrueNAS: edit the Custom App YAML):
+
+```yaml
+  world:
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: utility      # only nvidia-smi is mounted - nd-world never runs CUDA
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+Sharing the card with Unsloth Studio like this is fine: a reservation does not lock the GPU, both containers can use it. If the page says
+"nvidia-smi is not available inside this container", the block is missing or the container was not redeployed.
+
+### Power limit (keeping a passively cooled card cool)
+
+Each GPU card on the monitor has a **Power limit** slider (inside the card's own minimum-maximum range, e.g. 60-150 W for a Tesla T10)
+with **Apply** and **Default**. A lower limit makes the card draw less power and run cooler at the cost of speed - useful while a
+passive card has no fan of its own yet (try 90-110 W and watch the temperature). It lasts until the driver reloads or the machine reboots.
+
+Changing it needs more permission than reading it. If the app answers "Insufficient Permissions", either set it from the TrueNAS shell
+(`sudo nvidia-smi -i 0 -pl 100`) and make it permanent with **System → Advanced → Init/Shutdown Scripts → Add → Command, When: Post Init**
+using the same command, or - less safe - give the `world` service `cap_add: [SYS_ADMIN]`, which grants the whole container a broad privilege
+and is not recommended just for this.

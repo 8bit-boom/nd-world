@@ -54,6 +54,7 @@ STATIC_CATALOG = [
     {"id": "images", "label": "Images", "icon": "🖼", "href": "/images", "gm_only": True, "player_section": "images"},
     {"id": "import", "label": "Import", "icon": "📥", "href": "/import", "gm_only": True, "player_section": "import"},
     {"id": "bulk_edit", "label": "Find & Replace (AI)", "icon": "🔎", "href": "/tools/bulk-edit", "exact": True, "gm_only": True, "player_section": "bulk_edit"},
+    {"id": "system_monitor", "label": "System Monitor", "icon": "🖥", "href": "/system", "exact": True, "gm_only": True},
     {"id": "background_jobs", "label": "Background Jobs", "icon": "⏳", "href": "/background-jobs", "exact": True, "gm_only": True, "player_section": "background_jobs"},
     {"id": "export", "label": "Export & Backup", "icon": "📦", "href": "/export", "exact": True, "gm_only": True, "player_section": "export"},
     {"id": "dreamlands", "label": "Dreamlands", "icon": "🌙", "href": "/dreamlands",
@@ -123,7 +124,7 @@ DEFAULT_NAV_MENUS = [
      "item_ids": ["kind_note", "chronicler", "session_log", "rules", "pages",
                   "character_sheets"]},
     {"id": "menu_ai_tools", "label": "AI Tools", "icon": "🤖",
-     "item_ids": ["ai", "imagestudio", "editor", "background_jobs", "code_assist",
+     "item_ids": ["ai", "imagestudio", "editor", "background_jobs", "system_monitor", "code_assist",
                   "ai_chat_player", "image_gen_player", "bulk_edit",
                   "npc_talk", "npc_talk_player", "studio_console"]},
 ]

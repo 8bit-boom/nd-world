@@ -112,6 +112,7 @@ from .routers.cockpit import router as cockpit_router
 from .routers.backups import router as backups_router
 from .routers.knowledge import router as knowledge_router
 from .routers.ai_instructions import router as ai_instructions_router
+from .routers.system_monitor import router as system_monitor_router
 from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
@@ -215,6 +216,7 @@ app.include_router(cockpit_router)
 app.include_router(backups_router)
 app.include_router(knowledge_router)
 app.include_router(ai_instructions_router)
+app.include_router(system_monitor_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 

@@ -59,6 +59,18 @@ services:
       net.ix-portals.nd-world.port: "8087"
       net.ix-portals.nd-world.path: "/"
       net.ix-portals.nd-world.host: ""
+    # System Monitor (the GM's 🖥 System Monitor page: GPU VRAM / temperature / power, CPU, RAM). CPU and RAM work as they are. For the
+    # GPU numbers nd-world needs `nvidia-smi` inside ITS container: uncomment these two blocks (no CUDA is used - the "utility"
+    # capability only mounts nvidia-smi), then redeploy. Without them the page says so and shows CPU / RAM only.
+    # environment:
+    #   NVIDIA_DRIVER_CAPABILITIES: utility
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     # No depends_on on swarmui/ollama — both are optional (see profiles below) and
     # the app already degrades gracefully (AI features just show as unavailable)
     # when they aren't running.

@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}System Monitor — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>🖥 System Monitor</h1>
+  <div class="list-actions">
+    <span id="sm-status" class="sm-status" role="status">connecting…</span>
+    <label class="sm-every" title="How often the numbers refresh">refresh
+      <select id="sm-interval">
+        <option value="1000">1 s</option><option value="2000" selected>2 s</option><option value="5000">5 s</option><option value="0">paused</option>
+      </select>
+    </label>
+  </div>
+</div>
+<p class="sm-note">Live readings from the machine nd-world runs on. They refresh while this tab is visible and stop when it is hidden.</p>
+
+<section id="sm-gpu-section">
+  <h2 class="sm-h">GPU</h2>
+  <div id="sm-gpu-missing" class="sm-warn" hidden></div>
+  <div id="sm-gpus"></div>
+</section>
+
+<div class="sm-grid">
+  <section class="sm-card" id="sm-cpu">
+    <h2 class="sm-h">CPU <span id="sm-cpu-model" class="sm-dim"></span></h2>
+    <div class="sm-big"><span id="sm-cpu-pct">–</span><small>%</small></div>
+    <div class="sm-bar"><div id="sm-cpu-bar" class="sm-fill"></div></div>
+    <svg id="sm-cpu-spark" class="sm-spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-label="CPU load history"></svg>
+    <div class="sm-rows">
+      <div><span>Temperature</span><b id="sm-cpu-temp">–</b></div>
+      <div><span>Load average (1 / 5 / 15 min)</span><b id="sm-cpu-load">–</b></div>
+      <div><span>Cores</span><b id="sm-cpu-cores">–</b></div>
+    </div>
+    <details class="sm-cores"><summary>Per-core load</summary><div id="sm-cores"></div></details>
+  </section>
+
+  <section class="sm-card" id="sm-ram">
+    <h2 class="sm-h">RAM</h2>
+    <div class="sm-big"><span id="sm-ram-pct">–</span><small>%</small></div>
+    <div class="sm-bar"><div id="sm-ram-bar" class="sm-fill"></div></div>
+    <svg id="sm-ram-spark" class="sm-spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-label="RAM use history"></svg>
+    <div class="sm-rows">
+      <div><span>Used / total</span><b id="sm-ram-used">–</b></div>
+      <div><span>Available</span><b id="sm-ram-avail">–</b></div>
+      <div id="sm-arc-row" hidden><span title="ZFS caches files in RAM and gives it back when programs need it, so this is not really 'used'">ZFS cache (ARC)</span><b id="sm-arc">–</b></div>
+      <div id="sm-arc-pct-row" hidden><span>Used without the ZFS cache</span><b id="sm-ram-pct2">–</b></div>
+      <div><span>Swap</span><b id="sm-swap">–</b></div>
+    </div>
+  </section>
+</div>
+
+<style>
+.sm-rows > [hidden], .sm-warn[hidden], .sm-limit[hidden] { display:none !important; }
+.sm-note { color:var(--text-dim); font-size:.85rem; margin:-.5rem 0 1rem; }
+.sm-status { font-size:.78rem; color:var(--text-dim); }
+.sm-status.live::before { content:"● "; color:#3ddc84; }
+.sm-status.stale::before { content:"● "; color:#e0a030; }
+.sm-status.off::before { content:"● "; color:#e04444; }
+.sm-every { font-size:.78rem; color:var(--text-dim); display:inline-flex; align-items:center; gap:.3rem; }
+.sm-every select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.2rem .35rem; font-size:.78rem; border-radius:3px; max-width:100%; }
+.sm-h { font-size:.95rem; letter-spacing:.08em; color:var(--neon); margin:0 0 .6rem; text-transform:uppercase; }
+.sm-dim { color:var(--text-dim); font-size:.7rem; text-transform:none; letter-spacing:0; font-weight:normal; margin-left:.4rem; }
+.sm-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap:1rem; margin-top:1rem; }
+.sm-card { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1rem; min-width:0; }
+.sm-big { font-size:2.2rem; font-weight:bold; line-height:1.1; margin-bottom:.35rem; }
+.sm-big small { font-size:1rem; font-weight:normal; color:var(--text-dim); margin-left:.1rem; }
+.sm-bar { height:10px; border-radius:5px; background:var(--bg3); overflow:hidden; }
+.sm-fill { height:100%; width:0; background:#3ddc84; transition:width .4s, background .4s; }
+.sm-fill.warn { background:#e0a030; } .sm-fill.hot { background:#e04444; }
+.sm-spark { width:100%; height:44px; margin:.5rem 0 .3rem; display:block; background:var(--bg3); border-radius:3px; }
+.sm-spark path { fill:none; stroke:var(--neon); stroke-width:1.6; vector-effect:non-scaling-stroke; }
+.sm-rows > div { display:flex; justify-content:space-between; gap:.8rem; font-size:.82rem; padding:.22rem 0; border-bottom:1px solid var(--border); }
+.sm-rows > div:last-child { border-bottom:none; }
+.sm-rows span { color:var(--text-dim); } .sm-rows b { text-align:right; overflow-wrap:anywhere; }
+.sm-warn { background:var(--bg2); border:1px solid #a63; border-radius:6px; padding:.9rem 1rem; font-size:.85rem; line-height:1.5; }
+.sm-warn pre { background:var(--bg3); padding:.6rem .8rem; border-radius:4px; overflow-x:auto; font-size:.78rem; margin:.6rem 0 0; }
+.sm-gpu { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1rem; margin-bottom:1rem; }
+.sm-gpu-head { display:flex; justify-content:space-between; align-items:baseline; gap:.8rem; flex-wrap:wrap; margin-bottom:.7rem; }
+.sm-gpu-name { font-weight:bold; overflow-wrap:anywhere; }
+.sm-gpu-meta { font-size:.75rem; color:var(--text-dim); }
+.sm-gpu-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap:.9rem; }
+.sm-metric { min-width:0; }
+.sm-metric-label { font-size:.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.06em; }
+.sm-metric-val { font-size:1.5rem; font-weight:bold; margin:.1rem 0 .3rem; overflow-wrap:anywhere; }
+.sm-metric-val small { font-size:.75rem; font-weight:normal; color:var(--text-dim); }
+.sm-limit { margin-top:.9rem; padding-top:.8rem; border-top:1px solid var(--border); display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; font-size:.82rem; }
+.sm-limit > label { color:var(--text-dim); }
+.sm-limit input[type=range] { flex:1 1 160px; min-width:0; accent-color:var(--neon); }
+.sm-limit output { min-width:3.2rem; font-weight:bold; }
+.sm-limit button { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .7rem; border-radius:3px; font-size:.78rem; cursor:pointer; }
+.sm-limit button:hover { border-color:var(--neon); color:var(--neon); }
+.sm-limit-msg { flex-basis:100%; font-size:.76rem; color:var(--text-dim); overflow-wrap:anywhere; }
+.sm-limit-msg.bad { color:#e07070; }
+.sm-procs { margin-top:.8rem; font-size:.78rem; color:var(--text-dim); }
+.sm-cores > summary { cursor:pointer; font-size:.8rem; color:var(--text-dim); margin-top:.5rem; }
+#sm-cores { display:grid; grid-template-columns:repeat(auto-fill, minmax(70px, 1fr)); gap:.35rem; margin-top:.5rem; }
+.sm-core { font-size:.68rem; color:var(--text-dim); }
+.sm-core .sm-bar { height:6px; margin-top:.15rem; }
+</style>
+
+<script>
+"use strict";
+(function () {
+  var HISTORY = 120, hist = {}, timer = null, inflight = false, lastOk = 0;
+  function $(id) { return document.getElementById(id); }
+  function txt(id, v) { var e = $(id); if (e) e.textContent = v; }
+  function num(v, d) { return typeof v === 'number' && isFinite(v) ? v.toFixed(d === undefined ? 0 : d) : '–'; }
+  function gb(bytes) { return typeof bytes === 'number' ? (bytes / 1073741824).toFixed(bytes >= 10 * 1073741824 ? 1 : 2) + ' GB' : '–'; }
+  function mib(v) { return typeof v === 'number' ? (v >= 1024 ? (v / 1024).toFixed(1) + ' GiB' : Math.round(v) + ' MiB') : '–'; }
+  function level(pct, warn, hot) { return pct >= hot ? 'hot' : pct >= warn ? 'warn' : ''; }
+  function setBar(el, pct, warn, hot) {
+    if (!el) return;
+    var p = typeof pct === 'number' && isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
+    el.style.width = p + '%';
+    el.className = 'sm-fill ' + level(p, warn === undefined ? 75 : warn, hot === undefined ? 90 : hot);
+  }
+  function push(key, v) {
+    var a = hist[key] || (hist[key] = []);
+    a.push(typeof v === 'number' && isFinite(v) ? v : null);
+    if (a.length > HISTORY) a.shift();
+  }
+  function spark(svg, key, max) {
+    var a = hist[key] || [];
+    if (!svg) return;
+    var top = max || Math.max.apply(null, a.filter(function (x) { return x !== null; }).concat([1])), d = '', pen = false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] === null) { pen = false; continue; }
+      var x = (i / (HISTORY - 1)) * 120, y = 28 - Math.min(1, a[i] / top) * 26;
+      d += (pen ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1); pen = true;
+    }
+    var path = svg.querySelector('path');
+    if (!path) { path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); svg.appendChild(path); }
+    path.setAttribute('d', d);
+  }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+
+  // one GPU card, built once per device and updated in place
+  var cards = {};
+  function gpuCard(i) {
+    if (cards[i]) return cards[i];
+    var root = el('div', 'sm-gpu'), head = el('div', 'sm-gpu-head'), name = el('span', 'sm-gpu-name'), meta = el('span', 'sm-gpu-meta');
+    head.appendChild(name); head.appendChild(meta); root.appendChild(head);
+    var grid = el('div', 'sm-gpu-grid'), m = {};
+    [['util', 'GPU load'], ['vram', 'VRAM'], ['temp', 'Temperature'], ['power', 'Power']].forEach(function (k) {
+      var box = el('div', 'sm-metric'), val = el('div', 'sm-metric-val'), bar = el('div', 'sm-bar'), fill = el('div', 'sm-fill');
+      box.appendChild(el('div', 'sm-metric-label', k[1])); box.appendChild(val); bar.appendChild(fill); box.appendChild(bar);
+      var sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      sv.setAttribute('viewBox', '0 0 120 30'); sv.setAttribute('preserveAspectRatio', 'none'); sv.setAttribute('class', 'sm-spark'); sv.setAttribute('aria-label', k[1] + ' history');
+      box.appendChild(sv); grid.appendChild(box); m[k[0]] = { val: val, fill: fill, svg: sv };
+    });
+    root.appendChild(grid);
+    var procs = el('div', 'sm-procs'); root.appendChild(procs);
+    // power limit: a slider inside the card's own min..max range; nothing changes until Apply is pressed and confirmed
+    var lim = el('div', 'sm-limit'), lab = el('label', '', 'Power limit'), rng = el('input'), out = el('output'), apply = el('button', '', 'Apply'), def = el('button', '', 'Default'), msg = el('div', 'sm-limit-msg');
+    rng.type = 'range'; rng.step = '5'; rng.setAttribute('aria-label', 'GPU power limit in watts'); apply.type = 'button'; def.type = 'button';
+    lim.hidden = true; lim.appendChild(lab); lim.appendChild(rng); lim.appendChild(out); lim.appendChild(apply); lim.appendChild(def); lim.appendChild(msg); root.appendChild(lim);
+    var card = { name: name, meta: meta, m: m, procs: procs, lim: lim, rng: rng, out: out, msg: msg, dirty: false, index: i, dflt: null };
+    rng.addEventListener('input', function () { card.dirty = true; out.textContent = rng.value + ' W'; });
+    function send(watts) {
+      card.msg.className = 'sm-limit-msg'; card.msg.textContent = 'Setting the limit…';
+      fetch('/api/system/gpu-power', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index: card.index, watts: watts }) })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (x) { card.msg.className = 'sm-limit-msg' + (x.ok ? '' : ' bad'); card.msg.textContent = (x.j && x.j.message) || (x.ok ? 'Done.' : 'That did not work.'); if (x.ok) { card.dirty = false; tick(true); } })
+        .catch(function () { card.msg.className = 'sm-limit-msg bad'; card.msg.textContent = 'Could not reach the server.'; });
+    }
+    apply.addEventListener('click', function () {
+      var w = parseInt(rng.value, 10);
+      if (window.confirm('Set ' + (card.name.textContent || 'this GPU') + ' to a ' + w + ' W power limit?\nA lower limit makes the card run cooler and slower. It lasts until the driver reloads or the machine restarts.')) send(w);
+    });
+    def.addEventListener('click', function () { if (card.dflt != null) { rng.value = card.dflt; out.textContent = Math.round(card.dflt) + ' W'; send(Math.round(card.dflt)); } });
+    $('sm-gpus').appendChild(root);
+    return (cards[i] = card);
+  }
+  function renderGpu(g) {
+    var missing = $('sm-gpu-missing'), wrap = $('sm-gpus');
+    if (!g || !g.available) {
+      missing.hidden = false; missing.textContent = '';
+      missing.appendChild(el('b', '', 'No GPU readings. '));
+      missing.appendChild(document.createTextNode((g && g.reason) || 'The server did not report a GPU.'));
+      var pre = el('pre', '', "# in the nd-world service of your compose file\n    environment:\n      NVIDIA_DRIVER_CAPABILITIES: utility\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: 1\n              capabilities: [gpu]");
+      missing.appendChild(pre);
+      wrap.textContent = ''; cards = {};
+      return;
+    }
+    missing.hidden = true;
+    (g.devices || []).forEach(function (d) {
+      var c = gpuCard(d.index), key = 'g' + d.index;
+      var vp = d.mem_total_mib ? 100 * d.mem_used_mib / d.mem_total_mib : null;
+      var pp = d.power_limit_w ? 100 * d.power_w / d.power_limit_w : null;
+      c.name.textContent = d.name || ('GPU ' + d.index);
+      c.meta.textContent = [d.pstate, d.clock_mhz != null ? Math.round(d.clock_mhz) + (d.clock_max_mhz ? ' / ' + Math.round(d.clock_max_mhz) : '') + ' MHz' : null, d.fan_percent != null ? 'fan ' + Math.round(d.fan_percent) + '%' : null].filter(Boolean).join(' · ');
+      c.m.util.val.textContent = num(d.util_percent) + ' %'; setBar(c.m.util.fill, d.util_percent, 80, 95);
+      c.m.vram.val.innerHTML = ''; c.m.vram.val.appendChild(document.createTextNode(mib(d.mem_used_mib))); c.m.vram.val.appendChild(el('small', '', ' / ' + mib(d.mem_total_mib)));
+      setBar(c.m.vram.fill, vp, 80, 95);
+      c.m.temp.val.textContent = num(d.temp_c) + ' °C'; setBar(c.m.temp.fill, d.temp_c, 70, 85);     // a temperature "percentage" is just degrees on a 0-100 scale
+      c.m.power.val.innerHTML = ''; c.m.power.val.appendChild(document.createTextNode(num(d.power_w, 0) + ' W')); c.m.power.val.appendChild(el('small', '', d.power_limit_w ? ' / ' + num(d.power_limit_w, 0) + ' W' : ''));
+      setBar(c.m.power.fill, pp, 80, 95);
+      push(key + 'u', d.util_percent); push(key + 'v', vp); push(key + 't', d.temp_c); push(key + 'p', d.power_w);
+      spark(c.m.util.svg, key + 'u', 100); spark(c.m.vram.svg, key + 'v', 100); spark(c.m.temp.svg, key + 't', 100); spark(c.m.power.svg, key + 'p', d.power_limit_w || null);
+      if (typeof d.power_min_w === 'number' && typeof d.power_max_w === 'number') {
+        c.lim.hidden = false; c.rng.min = Math.ceil(d.power_min_w); c.rng.max = Math.floor(d.power_max_w); c.dflt = typeof d.power_default_w === 'number' ? d.power_default_w : null;
+        if (!c.dirty && document.activeElement !== c.rng) { c.rng.value = d.power_limit_w != null ? d.power_limit_w : c.rng.max; c.out.textContent = Math.round(c.rng.value) + ' W'; }
+      } else { c.lim.hidden = true; }
+      c.procs.textContent = (d.processes && d.processes.length)
+        ? 'Using VRAM: ' + d.processes.map(function (p) { return p.name + ' (' + mib(p.mem_mib) + ')'; }).join(', ')
+        : 'No programs are using this GPU right now.';
+    });
+  }
+  function renderCpu(c) {
+    c = c || {};
+    txt('sm-cpu-pct', num(c.percent, 0)); setBar($('sm-cpu-bar'), c.percent, 70, 90);
+    push('cpu', c.percent); spark($('sm-cpu-spark'), 'cpu', 100);
+    txt('sm-cpu-model', c.model || '');
+    txt('sm-cpu-temp', c.temp_c != null ? num(c.temp_c, 0) + ' °C' : 'not reported by this machine');
+    txt('sm-cpu-load', (c.load && c.load.length) ? c.load.map(function (x) { return num(x, 2); }).join(' / ') : '–');
+    txt('sm-cpu-cores', c.cores ? String(c.cores) : '–');
+    var box = $('sm-cores'), pc = c.per_core || [];
+    while (box.children.length > pc.length) box.removeChild(box.lastChild);
+    pc.forEach(function (v, i) {
+      var cell = box.children[i];
+      if (!cell) { cell = el('div', 'sm-core'); cell.appendChild(el('span')); var b = el('div', 'sm-bar'); b.appendChild(el('div', 'sm-fill')); cell.appendChild(b); box.appendChild(cell); }
+      cell.firstChild.textContent = 'core ' + i + ' · ' + num(v, 0) + '%'; setBar(cell.querySelector('.sm-fill'), v, 70, 90);
+    });
+  }
+  function renderRam(m) {
+    m = m || {};
+    txt('sm-ram-pct', num(m.percent, 0)); setBar($('sm-ram-bar'), m.percent, 80, 92);
+    push('ram', m.percent); spark($('sm-ram-spark'), 'ram', 100);
+    txt('sm-ram-used', gb(m.used) + ' / ' + gb(m.total)); txt('sm-ram-avail', gb(m.available));
+    var arc = typeof m.zfs_arc === 'number';
+    $('sm-arc-row').hidden = !arc; $('sm-arc-pct-row').hidden = !arc;
+    if (arc) { txt('sm-arc', gb(m.zfs_arc)); txt('sm-ram-pct2', num(m.percent_without_arc, 0) + ' %'); }
+    txt('sm-swap', m.swap_total ? gb(m.swap_used) + ' / ' + gb(m.swap_total) : 'none');
+  }
+  function status(kind, text) { var s = $('sm-status'); s.className = 'sm-status ' + kind; s.textContent = text; }
+  function tick(force) {
+    if ((inflight && !force) || document.hidden) return;
+    inflight = true;
+    fetch('/api/system/stats', { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (d) { lastOk = Date.now(); renderCpu(d.cpu); renderRam(d.memory); renderGpu(d.gpu); status('live', 'live · ' + new Date().toLocaleTimeString()); })
+      .catch(function () { status(Date.now() - lastOk > 15000 ? 'off' : 'stale', 'no connection'); })
+      .then(function () { inflight = false; });
+  }
+  function schedule() {
+    clearInterval(timer); timer = null;
+    var ms = parseInt($('sm-interval').value, 10);
+    try { localStorage.setItem('nd_sysmon_interval', String(ms)); } catch (e) {}
+    if (ms > 0) { timer = setInterval(tick, ms); tick(); } else status('stale', 'paused');
+  }
+  try { var saved = localStorage.getItem('nd_sysmon_interval'); if (saved !== null && $('sm-interval').querySelector('option[value="' + saved + '"]')) $('sm-interval').value = saved; } catch (e) {}
+  $('sm-interval').addEventListener('change', schedule);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
+  schedule();
+})();
+</script>
+{% endblock %}
