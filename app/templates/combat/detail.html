@@ -64,7 +64,7 @@
         <button type="submit" style="background:none;border:none;color:var(--text-dim);cursor:pointer;text-decoration:underline;font-size:.8rem">unlink</button>
       </form>
     {% else %}
-      <form method="post" action="/combat/{{ combat.id }}/link-session" style="display:flex;gap:.4rem;align-items:center">
+      <form method="post" action="/combat/{{ combat.id }}/link-session" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
         <select name="game_session_id" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
           <option value="">— none —</option>
           {% for gs in game_sessions %}<option value="{{ gs.id }}">#{{ gs.session_num }} {{ gs.title }}</option>{% endfor %}
@@ -110,7 +110,7 @@
 .stat-bar-fill { height:100%; }
 .stat-bar-fill.hp { background:#e04444; }
 .stat-bar-fill.shock { background:#4488ff; }
-.stat-bar-val { width:64px; text-align:right; color:var(--text-dim); }
+.stat-bar-val { min-width:64px; white-space:nowrap; text-align:right; color:var(--text-dim); }
 .stat-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:.72rem; padding:.15rem .4rem; border-radius:3px; cursor:pointer; }
 .stat-btn:hover { border-color:var(--neon); color:var(--neon); }
 .cond-chips { display:flex; gap:.3rem; flex-wrap:wrap; margin-top:.5rem; align-items:center; }

@@ -442,6 +442,8 @@ footer {
   border: 1px solid var(--border);
   border-radius: 2px;
   color: var(--neon3);
+  max-width: 100%;
+  overflow-wrap: anywhere;      /* a long unbroken tag wraps inside its chip instead of being cut off */
 }
 
 /* ── Section headings ── */
@@ -1504,7 +1506,9 @@ input[type="file"]:hover { border-color: var(--neon); }
   /* Entity list — stack folder sidebar above content */
   .list-layout { flex-direction: column; gap: .75rem; align-items: stretch; }
   .list-main { max-width: 100%; }
-  select { max-width: 100%; }
+  select { max-width: 100%; min-width: 0; }
+  form { min-width: 0; max-width: 100%; }
+  form > select, form > input[type="search"], form > input[type="text"] { min-width: 0; max-width: 100%; }
   .folder-sidebar {
     width: 100%;
     position: static;
