@@ -123,6 +123,18 @@
 .cs-cyber-table td { padding:.3rem .4rem;border-bottom:1px solid var(--border); }
 .cs-cyber-table tr:last-child td { border-bottom:none; }
 .cs-cyber-ca { color:var(--neon3,#a855f7);font-weight:bold; }
+/* Phone width: each implant is a small card (name and CA cost on one line, the notes below at full width) instead of a three-column
+   table that leaves the notes a sliver. */
+@media (max-width:600px) {
+  .cs-cyber-table, .cs-cyber-table tbody { display:block; }
+  .cs-cyber-table thead { display:none; }
+  .cs-cyber-table tr { display:grid; grid-template-columns:1fr auto; gap:.15rem .6rem; padding:.45rem 0; border-bottom:1px solid var(--border); }
+  .cs-cyber-table tr:last-child { border-bottom:none; }
+  .cs-cyber-table td { padding:0; border:none; min-width:0; overflow-wrap:anywhere; }
+  .cs-cyber-table td.cs-cyber-ca::before { content:"CA "; font-weight:normal; font-size:.7rem; opacity:.7; }
+  .cs-cyber-table td:nth-child(3) { grid-column:1 / -1; font-size:.76rem; }
+  .cs-cyber-table td:nth-child(3):empty { display:none; }
+}
 
 /* ── Currency ── */
 .cs-currency-row { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem 1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem; }
