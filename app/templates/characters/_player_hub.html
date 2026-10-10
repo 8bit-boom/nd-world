@@ -142,6 +142,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="notes"><span class="pch-ic">📓</span><span class="pch-lb">Notes</span></button>{% endif %}
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="world"><span class="pch-ic">🌍</span><span class="pch-lb">World</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="schedule"><span class="pch-ic">🗓</span><span class="pch-lb">Schedule</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="log"><span class="pch-ic">📋</span><span class="pch-lb">Log</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="places"><span class="pch-ic">🧭</span><span class="pch-lb">Pages</span></button>
     <button type="button" class="pch-tab pch-tab-more" id="pch-more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="pch-more"><span class="pch-ic">☰</span><span class="pch-lb">More</span></button>
   </div>
@@ -227,6 +228,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   {% if own %}<section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>{% endif %}
   <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="log" hidden><div data-body="log" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="places" hidden>
     <h2 class="pch-h">🧭 Pages</h2>
     <p class="pch-muted" style="margin-top:0">Everything you can open in this world. They open right here over your character, so you never lose your place — press Back to return.</p>
@@ -244,8 +246,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
-  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'places']
-                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'places'];
+  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'log', 'places']
+                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'log', 'places'];
   const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
@@ -538,6 +540,34 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     });
   }
 
+  // ── Change log: who changed what, with one-tap Undo for the newest change to each number ─────────────────────
+  async function loadLog() {
+    const el = body('log');
+    try {
+      const d = await api('log');
+      const parts = [h('div', { class: 'pch-sub', text: '\ud83d\udccb What changed on ' + PC_NAME })];
+      if (!d.entries.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing yet \u2014 HP, XP, coins, conditions, rests and spent points show up here as they change.' }));
+      d.entries.forEach(e => {
+        const row = h('div', { class: 'pch-row' },
+          h('span', { class: 'pch-title', text: e.text, style: e.undone ? 'text-decoration:line-through;opacity:.6' : '' }),
+          h('span', { class: 'pch-chip', text: e.actor }),
+          h('span', { class: 'pch-chip', text: when(e.at) }),
+          e.undone ? h('span', { class: 'pch-chip', text: '\u21b6 undone' }) : null);
+        if (e.can_undo) row.append(h('button', { type: 'button', class: 'pch-btn', style: 'margin-left:.5rem', text: '\u21b6 Undo', onclick: async () => {
+          try { await send('log/' + e.id + '/undo'); location.reload(); } catch (x) { alert(x.message); loadLog(); } } }));
+        parts.push(row);
+      });
+      el.replaceChildren(...parts);
+    } catch (e) { fail(el, e, loadLog); }
+  }
+  function when(iso) {
+    const t = new Date(iso), mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + ' min ago';
+    if (mins < 1440) return Math.round(mins / 60) + ' h ago';
+    return t.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  }
+
   // ── Pages: everything the player may open, without leaving the character ──────────────────────────────
   function openPage(href, title) {
     if (window.ndPcViewer && ndPcViewer.open(href, title)) return;
@@ -785,7 +815,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   document.addEventListener('click', ev => { if (!moreSheet.hidden && !moreSheet.contains(ev.target)) closeMore(); });
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
-  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces };
+  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog };
   if (OWNER) loaders.notes = loadNotes;
   // The embedded Player Cockpit only starts loading once its tab is opened. The loader (cockpit-frames.js) also gives
   // its page back - the cockpit AND its windows - after a minute on another tab, and loads it again when you return:

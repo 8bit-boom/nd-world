@@ -100,3 +100,90 @@ def carry_info(db: Session, pc) -> dict:
     limit = int(custom) if isinstance(custom, (int, float)) and custom > 0 else auto
     return {"used": round(used, 1), "limit": limit, "default": not (isinstance(custom, (int, float)) and custom > 0),
             "over": limit > 0 and used > limit}
+
+
+# ── undo ─────────────────────────────────────────────────────────────────────
+
+def _undo_key(spec: dict) -> str:
+    op = str(spec.get("op") or "")
+    if op == "currency":
+        return "currency:" + str(spec.get("abbr") or "").lower()
+    if op == "cf":
+        return "cf:" + ",".join(sorted((spec.get("values") or {}).keys()))
+    return op
+
+
+def undo_spec(entry) -> dict:
+    try:
+        spec = json.loads(entry.undo_json or "{}")
+    except ValueError:
+        return {}
+    return spec if isinstance(spec, dict) and spec.get("op") else {}
+
+
+def can_undo(db: Session, entry) -> bool:
+    """An entry can be undone while nothing later has changed the same thing: undoing "HP 12 -> 8" after "HP 8 -> 3" would
+    wipe out the later change, so only the newest change to each number is undoable."""
+    spec = undo_spec(entry)
+    if not spec or entry.undone:
+        return False
+    key = _undo_key(spec)
+    later = (db.query(CharacterLog).filter(CharacterLog.character_id == entry.character_id, CharacterLog.id > entry.id,
+                                           CharacterLog.undone == False).all())  # noqa: E712
+    return not any(_undo_key(undo_spec(e)) == key for e in later if undo_spec(e))
+
+
+_NUM_COLUMNS = {"hp": "current_hp", "shock": "shock_current", "pp": "pp_current", "mp": "mp_current", "xp": "xp", "level": "level"}
+
+
+def undo(db: Session, pc, entry) -> Optional[str]:
+    """Put a logged change back. Returns an error message, or None when it worked (the caller commits)."""
+    if entry.character_id != pc.id:
+        return "Not this character's entry"
+    if not can_undo(db, entry):
+        return "A later change touched this too - undo that one first (or it was already undone)"
+    spec = undo_spec(entry)
+    op, value = spec["op"], spec.get("value")
+    if op in _NUM_COLUMNS:
+        if not isinstance(value, int) or value < 0:
+            return "Nothing to restore"
+        setattr(pc, _NUM_COLUMNS[op], value)
+    elif op == "currency":
+        try:
+            coins = json.loads(pc.currency_json or "[]")
+        except ValueError:
+            coins = []
+        key = str(spec.get("abbr") or "").lower()
+        coin = next((c for c in coins if isinstance(c, dict) and key in ((c.get("abbr") or "").lower(), (c.get("label") or "").lower())), None)
+        if coin is None or not isinstance(value, int):
+            return "That currency is gone"
+        coin["value"] = value
+        pc.currency_json = json.dumps(coins)
+    elif op == "conditions":
+        if not isinstance(value, list):
+            return "Nothing to restore"
+        pc.conditions_json = json.dumps([str(c)[:40] for c in value][:12])
+    elif op == "equipment":
+        if not isinstance(value, str):
+            return "Nothing to restore"
+        try:
+            json.loads(value)
+        except ValueError:
+            return "Nothing to restore"
+        pc.equipment_json = value
+    elif op == "cf":
+        values = spec.get("values")
+        if not isinstance(values, dict):
+            return "Nothing to restore"
+        try:
+            cf = json.loads(pc.custom_fields_json or "{}")
+        except ValueError:
+            cf = {}
+        for k, v in values.items():
+            if isinstance(v, (int, float)) or (isinstance(v, str) and len(v) <= 100):
+                cf[str(k)] = v
+        pc.custom_fields_json = json.dumps(cf)
+    else:
+        return "This change cannot be undone"
+    entry.undone = True
+    return None

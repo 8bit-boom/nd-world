@@ -1656,6 +1656,13 @@ def _body_int(body: dict, key: str, default: int = 0) -> int:
 
 # ── AJAX: HP ──────────────────────────────────────────────────────────────────
 
+def _log_num(db, pc, request, op, label, before, after) -> None:
+    """Record a numeric change in the character's log (with how to undo it) - nothing when the number did not move."""
+    if before != after:
+        char_extras.log(db, pc, char_extras.actor_name(_current_user(request)), op, f"{label} {before} \u2192 {after}",
+                        {"op": op, "value": before})
+
+
 @router.post("/api/characters/{pc_id}/hp-async")
 async def character_hp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
     body = await _json_dict(request)
@@ -1666,6 +1673,7 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(403)
     action = body.get("action", "set")
     val = _body_int(body, "value")
+    _before = pc.current_hp or 0
     # Effective HP max (0 stored = auto-derived from physical stats)
     eff_max_hp = pc_maxima(pc)["hp"]
     temp_hp = getattr(pc, "temp_hp", 0) or 0
@@ -1679,6 +1687,7 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
         pc.current_hp = min(pc.current_hp or 0, new_max) if new_max else (pc.current_hp or 0)
     else:
         pc.current_hp = max(0, min(eff_max_hp + temp_hp, val))
+    _log_num(db, pc, request, "hp", "HP", _before, pc.current_hp or 0)
     db.commit()
     live.touch(pc.world_id)
     return {
@@ -1703,6 +1712,7 @@ async def character_shock_async(pc_id: int, request: Request, db: Session = Depe
         raise HTTPException(403)
     action = body.get("action", "set")
     val = _body_int(body, "value")
+    _before = getattr(pc, 'shock_current', 0) or 0
     shock_max = pc_maxima(pc)["shock"]
     shock_current = getattr(pc, "shock_current", 0) or 0
     if action == "delta":
@@ -1710,6 +1720,7 @@ async def character_shock_async(pc_id: int, request: Request, db: Session = Depe
     elif action == "set":
         shock_current = max(0, min(shock_max, val))
     pc.shock_current = shock_current
+    _log_num(db, pc, request, "shock", "Shock", _before, pc.shock_current or 0)
     db.commit()
     live.touch(pc.world_id)
     return {"shock_current": pc.shock_current, "shock_max": shock_max}
@@ -1727,6 +1738,7 @@ async def character_pp_async(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(403)
     action = body.get("action", "set")
     val = _body_int(body, "value")
+    _before = getattr(pc, 'pp_current', 0) or 0
     pp_max = pc_maxima(pc)["pp"]  # PP max = sum of physical stats
     pp_current = getattr(pc, "pp_current", 0) or 0
     if action == "delta":
@@ -1736,6 +1748,7 @@ async def character_pp_async(pc_id: int, request: Request, db: Session = Depends
     elif action == "rest":
         pp_current = min(pp_max, pp_current + pp_max // 2)
     pc.pp_current = pp_current
+    _log_num(db, pc, request, "pp", "PP", _before, pc.pp_current or 0)
     db.commit()
     live.touch(pc.world_id)
     return {"pp_current": pc.pp_current, "pp_max": pp_max}
@@ -1753,6 +1766,7 @@ async def character_mp_async(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(403)
     action = body.get("action", "set")
     val = _body_int(body, "value")
+    _before = getattr(pc, 'mp_current', 0) or 0
     mp_max = pc_maxima(pc)["mp"]  # MP max = sum of mental stats
     mp_current = getattr(pc, "mp_current", 0) or 0
     if action == "delta":
@@ -1762,6 +1776,7 @@ async def character_mp_async(pc_id: int, request: Request, db: Session = Depends
     elif action == "rest":
         mp_current = min(mp_max, mp_current + mp_max // 2)
     pc.mp_current = mp_current
+    _log_num(db, pc, request, "mp", "MP", _before, pc.mp_current or 0)
     db.commit()
     live.touch(pc.world_id)
     return {"mp_current": pc.mp_current, "mp_max": mp_max}
@@ -1807,6 +1822,11 @@ async def character_conditions_async(pc_id: int, request: Request, db: Session =
             new = current + [name]
     else:
         raise HTTPException(400, "action must be add, remove, toggle or set")
+    if new != current:
+        gained, lost = [c for c in new if c not in current], [c for c in current if c not in new]
+        char_extras.log(db, pc, char_extras.actor_name(_current_user(request)), "condition",
+                        ", ".join([f"+{c}" for c in gained] + [f"\u2212{c}" for c in lost]),
+                        {"op": "conditions", "value": current})
     pc.conditions_json = json.dumps(new)
     db.commit()
     live.touch(pc.world_id)
@@ -1839,6 +1859,9 @@ async def character_resource_async(pc_id: int, request: Request, db: Session = D
     new = max(0, int(cur + val) if body.get("action", "set") == "delta" else val)
     if track["max"]:
         new = min(new, int(track["max"]))
+    if new != cur:
+        char_extras.log(db, pc, char_extras.actor_name(_current_user(request)), "resource", f"{track['label']} {int(cur)} \u2192 {new}",
+                        {"op": "cf", "values": {f"{fid}_current": cf.get(f"{fid}_current", cur)}})
     cf[f"{fid}_current"] = new
     pc.custom_fields_json = json.dumps(cf)
     db.commit()
@@ -1883,7 +1906,9 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
     delta = _body_int(body, "delta")
+    _before = pc.xp or 0
     pc.xp = max(0, (pc.xp or 0) + delta)
+    _log_num(db, pc, request, "xp", "XP", _before, pc.xp or 0)
     db.commit()
     live.touch(pc.world_id)
     lvl = min(pc.level, 20)
@@ -1909,7 +1934,9 @@ async def character_level_up(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(403)
     if not _levelup_ready(pc):
         raise HTTPException(400, f"Not enough XP to reach level {pc.level + 1} yet.")
+    _before = pc.level
     pc.level += 1
+    _log_num(db, pc, request, "level", "Level", _before, pc.level)
     db.commit()
     live.touch(pc.world_id)
     return {"level": pc.level, "name": pc.name}
@@ -1924,6 +1951,7 @@ async def character_equipment_async(pc_id: int, request: Request, db: Session = 
         raise HTTPException(403)
     body = await request.json()
     equipment = json.loads(pc.equipment_json or "[]")
+    _before_equipment = pc.equipment_json or "[]"
     action = body.get("action", "add")
     if action == "add":
         item = body.get("item") or {}
@@ -1956,6 +1984,10 @@ async def character_equipment_async(pc_id: int, request: Request, db: Session = 
     else:
         raise HTTPException(400, "Unknown action")
     pc.equipment_json = json.dumps(equipment)
+    if (pc.equipment_json != _before_equipment):
+        what = {"add": "added " + str((body.get("item") or {}).get("name", "an item")), "remove": "removed an item"}.get(action, "changed a quantity / weight")
+        char_extras.log(db, pc, char_extras.actor_name(_current_user(request)), "equipment", f"Equipment: {what}",
+                        {"op": "equipment", "value": _before_equipment} if len(_before_equipment) <= 20000 else None)
     db.commit()
     live.touch(pc.world_id)
     total_weight = sum(_num(it.get("weight"), 0) * _num(it.get("qty"), 1) for it in equipment if isinstance(it, dict))

@@ -574,6 +574,7 @@ async def hub_rest(pc_id: int, request: Request, db: Session = Depends(get_db)):
     done = apply_pc_rest(db, pc, kind)
     if done is None:
         raise HTTPException(400, "This system has no Rest rules")
+    char_extras.log(db, pc, char_extras.actor_name(_user), "rest", "Took a " + ("short rest" if kind == "short" else "rest"))
     db.commit()
     live.touch(pc.world_id)
     return {"kind": kind, "result": done[0], "snapshot": done[1]}
@@ -592,6 +593,35 @@ async def hub_rest_undo(pc_id: int, request: Request, db: Session = Depends(get_
     if not isinstance(snap, dict) or snap.get("id") != pc.id:
         raise HTTPException(400, "snapshot must be the one this character's Rest returned")
     restore_pc_snapshot(db, pc, snap)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"ok": True}
+
+
+@router.get("/api/characters/{pc_id}/hub/log")
+def hub_log(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """The character's change log, newest first (who changed what, HP / XP / coins / conditions / rests / spent points), with
+    which entries can still be undone. Owner, or a GM looking in (read-only)."""
+    from ..models import CharacterLog
+    _user, pc, _world, is_owner = _hub_pc(request, db, pc_id)
+    rows = db.query(CharacterLog).filter(CharacterLog.character_id == pc.id).order_by(CharacterLog.id.desc()).limit(60).all()
+    return {"can_edit": is_owner, "entries": [{
+        "id": e.id, "actor": e.actor, "kind": e.kind, "text": e.text, "undone": bool(e.undone),
+        "at": e.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if e.created_at else None,
+        "can_undo": is_owner and char_extras.can_undo(db, e)} for e in rows]}
+
+
+@router.post("/api/characters/{pc_id}/hub/log/{entry_id}/undo")
+def hub_log_undo(pc_id: int, entry_id: int, request: Request, db: Session = Depends(get_db)):
+    """Take one logged change back (owner only; only the newest change to each number can be undone)."""
+    from ..models import CharacterLog
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    entry = db.get(CharacterLog, entry_id)
+    if not entry or entry.character_id != pc.id:
+        raise HTTPException(404)
+    err = char_extras.undo(db, pc, entry)
+    if err:
+        raise HTTPException(409, err)
     db.commit()
     live.touch(pc.world_id)
     return {"ok": True}
