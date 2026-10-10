@@ -1,0 +1,99 @@
+{# Ability cards: the character's feats with their rules text, a suggested cost and a Use button (spends PP / MP / Shock /
+   Health, remembers "once per Rest / session"). The cost is read from the feat's text, so the player can adjust it before using. #}
+<style>
+.ab { position:fixed; inset:0; z-index:1100; display:flex; align-items:flex-end; justify-content:center; background:rgba(0,0,0,.6); }
+.ab[hidden] { display:none; }
+.ab-card { position:relative; width:min(560px,100%); max-height:92dvh; display:flex; flex-direction:column; background:var(--bg2); border:1px solid var(--neon); border-radius:14px 14px 0 0; padding:1rem 1.1rem calc(.8rem + env(safe-area-inset-bottom)); box-shadow:0 -10px 40px rgba(0,0,0,.6); }
+@media (min-width:600px) { .ab { align-items:center; } .ab-card { border-radius:14px; } }
+.ab-x { position:absolute; top:.4rem; right:.5rem; width:44px; height:44px; background:none; border:0; color:var(--text-dim); font-size:1.2rem; cursor:pointer; }
+.ab-title { color:var(--neon); font-size:1rem; margin:0 2.5rem .1rem 0; }
+.ab-sub { color:var(--text-dim); font-size:.8rem; margin-bottom:.5rem; }
+.ab-list { overflow-y:auto; flex:1 1 auto; min-height:8rem; }
+.ab-item { border:1px solid var(--border); border-radius:10px; padding:.6rem .7rem; margin-bottom:.5rem; background:var(--bg3); }
+.ab-item.used { opacity:.65; }
+.ab-head { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+.ab-name { color:var(--text); font-size:.95rem; flex:1 1 9rem; min-width:0; }
+.ab-chip { font-size:.66rem; padding:.1rem .45rem; border-radius:999px; border:1px solid var(--border); color:var(--text-dim); }
+.ab-desc { color:var(--text-dim); font-size:.78rem; margin:.4rem 0; white-space:pre-wrap; }
+.ab-pay { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; }
+.ab-pay label { display:inline-flex; align-items:center; gap:.25rem; font-size:.75rem; color:var(--text-dim); }
+.ab-pay input { width:3.2rem; min-height:44px; font-size:16px; background:var(--bg2); color:var(--text); border:1px solid var(--border); border-radius:8px; text-align:center; font-family:var(--font); }
+.ab-use { min-height:44px; padding:0 1rem; background:var(--bg2); border:1px solid var(--neon); color:var(--neon); border-radius:8px; font-family:var(--font); cursor:pointer; margin-left:auto; }
+.ab-use:disabled { opacity:.35; border-color:var(--border); color:var(--text-dim); }
+.ab-err { color:var(--neon2); font-size:.85rem; min-height:1.2rem; }
+</style>
+<div id="ab" class="ab" hidden role="dialog" aria-modal="true" aria-labelledby="ab-title">
+  <div class="ab-card">
+    <button type="button" class="ab-x" id="ab-x" aria-label="Close">&#10005;</button>
+    <div class="ab-title" id="ab-title">&#127183; Abilities</div>
+    <div class="ab-sub" id="ab-sub"></div>
+    <input type="search" id="ab-q" placeholder="Search your abilities&hellip;" aria-label="Search abilities" style="min-height:44px;font-size:16px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0 .6rem;margin-bottom:.5rem;font-family:var(--font)">
+    <div class="ab-list" id="ab-list"></div>
+    <div class="ab-err" id="ab-err" role="alert"></div>
+  </div>
+</div>
+<script>
+(function () {
+  const PC = {{ pc.id }}, root = document.getElementById('ab'), list = document.getElementById('ab-list'), err = document.getElementById('ab-err');
+  let data = null, q = '', pay = {}, lastFocus = null;
+  const LABEL = { pp: 'PP', mp: 'MP', shock: 'Shock', hp: 'Health' };
+  const el = (tag, attrs, ...kids) => {
+    const e = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v === true) e.setAttribute(k, ''); else if (v !== false && v != null) e.setAttribute(k, v); });
+    kids.flat().forEach(k => { if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k))); });
+    return e;
+  };
+  async function call(path, payload) {
+    const r = await fetch('/api/characters/' + PC + '/' + path, { method: payload ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' }, body: payload ? JSON.stringify(payload) : undefined });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    return d;
+  }
+  function draw() {
+    if (!data) return;
+    const p = data.pools;
+    document.getElementById('ab-sub').textContent = 'PP ' + p.pp + ' · MP ' + p.mp + ' · Shock ' + p.shock + ' · Health ' + p.hp + ' — the cost is read from each feat’s text; change it if your GM rules otherwise.';
+    const needle = q.trim().toLowerCase();
+    const cards = data.cards.filter(c => !needle || (c.name + ' ' + c.description).toLowerCase().includes(needle));
+    if (!cards.length) { list.replaceChildren(el('p', { class: 'ab-sub' }, data.cards.length ? 'No ability matches.' : 'This character has no feats yet — add some on the sheet or with Advance.')); return; }
+    list.replaceChildren(...cards.map(c => {
+      const mine = pay[c.index] || (pay[c.index] = Object.assign({ pp: 0, mp: 0, shock: 0, hp: 0 }, c.cost));
+      const used = !!c.used;
+      const row = el('div', { class: 'ab-item' + (used ? ' used' : '') },
+        el('div', { class: 'ab-head' }, el('div', { class: 'ab-name' }, c.name),
+          c.rank ? el('span', { class: 'ab-chip' }, c.rank) : null, c.type ? el('span', { class: 'ab-chip' }, c.type) : null,
+          c.limit ? el('span', { class: 'ab-chip' }, 'once per ' + c.limit) : null),
+        c.description ? el('details', null, el('summary', { class: 'ab-chip', style: 'cursor:pointer;display:inline-block;margin-top:.3rem' }, 'Rules'), el('div', { class: 'ab-desc' }, c.description)) : null);
+      if (used) {
+        row.append(el('div', { class: 'ab-pay' }, el('span', { class: 'ab-chip' }, 'Used — back after a ' + (c.used === 'rest' ? 'Rest' : 'session')),
+          el('button', { type: 'button', class: 'ab-use', onclick: async () => { try { data.cards = (await call('ability-ready', { index: c.index })).cards; err.textContent = ''; } catch (e) { err.textContent = e.message; } draw(); } }, 'Ready again')));
+      } else {
+        const inputs = Object.keys(LABEL).filter(k => mine[k] > 0 || k === 'pp' || k === 'mp').map(k =>
+          el('label', null, LABEL[k], el('input', { type: 'number', inputmode: 'numeric', min: 0, max: 10, value: mine[k], 'aria-label': LABEL[k] + ' to spend', onchange: e => { mine[k] = Math.max(0, Math.min(10, parseInt(e.target.value, 10) || 0)); } })));
+        row.append(el('div', { class: 'ab-pay' }, ...inputs, el('button', { type: 'button', class: 'ab-use', onclick: async () => {
+          try { const d = await call('ability-use', Object.assign({ index: c.index }, mine)); data.cards = d.cards; data.pools = d.pools; err.textContent = ''; delete pay[c.index]; syncSheet(d.pools); }
+          catch (e) { err.textContent = e.message; }
+          draw(); } }, 'Use')));
+      }
+      return row;
+    }));
+  }
+  function syncSheet(p) {                                  // the sheet's own boxes follow what was spent
+    const set = (id, v) => { const x = document.getElementById(id); if (x) x.textContent = v; };
+    set('pp-current', p.pp); set('mp-current', p.mp); set('shock-current', p.shock); set('hp-current', p.hp);
+  }
+  async function open() {
+    lastFocus = document.activeElement; err.textContent = ''; pay = {};
+    root.hidden = false; document.documentElement.style.overflow = 'hidden';
+    list.textContent = 'Loading…';
+    try { data = await call('ability-cards'); draw(); } catch (e) { list.textContent = ''; err.textContent = e.message; }
+    document.getElementById('ab-x').focus();
+  }
+  function close() { root.hidden = true; document.documentElement.style.overflow = ''; if (lastFocus && lastFocus.focus) lastFocus.focus(); }
+  document.getElementById('ab-q').addEventListener('input', e => { q = e.target.value; draw(); });
+  document.getElementById('ab-x').addEventListener('click', close);
+  root.addEventListener('mousedown', ev => { if (ev.target === root) close(); });
+  document.addEventListener('keydown', ev => { if (!root.hidden && ev.key === 'Escape') close(); });
+  window.ndOpenAbilities = open;
+})();
+</script>

@@ -701,6 +701,14 @@ async def party_member_toggle(party_id: int, request: Request, db: Session = Dep
 # same formulas across the roster and returns a snapshot the client holds
 # for one-click Undo.
 
+def _refresh_feats_after_rest(db: Session, pc: PlayerCharacter) -> None:
+    """A Rest brings back the feats that were once-per-Rest (once-per-session ones wait for the next session)."""
+    from .. import char_extras
+    used = char_extras.prefs(db, pc.id).get("feat_used") or {}
+    if any(v == "rest" for v in used.values()):
+        char_extras.set_prefs(db, pc, feat_used={k: v for k, v in used.items() if v != "rest"} or None)
+
+
 def apply_pc_rest(db: Session, pc: PlayerCharacter, kind: str, tpl_cache: dict = None):
     """Apply a Rest to ONE character by its own system's rules -> (result, snapshot entry), or None when its system has
     no Rest rules. Does NOT commit (callers do)."""
@@ -714,6 +722,7 @@ def apply_pc_rest(db: Session, pc: PlayerCharacter, kind: str, tpl_cache: dict =
         return None  # a custom system without Rest rules tracks its own resources; nothing to apply
     entry = {"id": pc.id, "name": pc.name}
     result = {"id": pc.id, "name": pc.name}
+    _refresh_feats_after_rest(db, pc)
     if m["native"]:
         entry.update(pp_current=pc.pp_current or 0, mp_current=pc.mp_current or 0,
                      shock_current=pc.shock_current or 0)

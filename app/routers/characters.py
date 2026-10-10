@@ -2118,6 +2118,104 @@ async def character_carry_limit_async(pc_id: int, request: Request, db: Session 
     return {"carry": char_extras.carry_info(db, pc)}
 
 
+# ── Ability cards: use a feat (spend what it costs, remember "once per Rest / session") ────────────────────
+
+def _ability_cards(db, pc):
+    from .. import feat_use
+    catalog = {str(x.get("id")): x for x in game_catalog.catalog_payload()["feats"]}
+    by_name = {str(x.get("name", "")).lower(): x for x in catalog.values()}
+    used = char_extras.prefs(db, pc.id).get("feat_used") or {}
+    cards = []
+    for i, feat in enumerate(json.loads(pc.feats_json or "[]")):
+        if not isinstance(feat, dict):
+            continue
+        cat = catalog.get(str(feat.get("id"))) or by_name.get(str(feat.get("name", "")).lower()) or {}
+        desc = str(cat.get("description") or feat.get("notes") or "").replace("\n---", "").strip()
+        key = feat_use.feat_key(feat)
+        cards.append({"index": i, "name": feat.get("name") or "Feat", "type": feat.get("type") or cat.get("category") or "",
+                      "rank": feat.get("rank") or cat.get("rank") or "", "description": desc[:900],
+                      "cost": feat_use.parse_cost(desc), "limit": feat_use.parse_limit(desc), "used": used.get(key)})
+    return cards
+
+
+@router.get("/api/characters/{pc_id}/ability-cards")
+def character_ability_cards(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """The character's feats as cards: rules text, the suggested cost (PP / MP / Shock / Health) and how often it can be used."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    m = pc_maxima(pc)
+    return {"cards": _ability_cards(db, pc),
+            "pools": {"pp": pc.pp_current or 0, "mp": pc.mp_current or 0, "shock": pc.shock_current or 0, "hp": pc.current_hp or 0}, "native": m["native"]}
+
+
+@router.post("/api/characters/{pc_id}/ability-use")
+async def character_ability_use(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Use a feat: {index, pp, mp, shock, hp} = what to spend (the suggested cost, adjusted by the player). Shock and Health
+    can only be spent down to 0, PP / MP must be on hand. A feat limited to once per Rest / session is marked used until
+    a Rest (or "Ready again")."""
+    from .. import feat_use
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_manage_character(user, pc):
+        raise HTTPException(403)
+    cards = _ability_cards(db, pc)
+    card = next((c for c in cards if c["index"] == body.get("index")), None)
+    if card is None:
+        raise HTTPException(404, "No such feat on this character")
+    if card["used"]:
+        raise HTTPException(409, "Already used - it comes back after a " + ("Rest" if card["used"] == "rest" else "session") + " (or press Ready again)")
+    cols = {"pp": "pp_current", "mp": "mp_current", "shock": "shock_current", "hp": "current_hp"}
+    spend = {k: max(0, min(10, _body_int(body, k))) for k in cols}
+    before = {cols[k]: int(getattr(pc, cols[k]) or 0) for k in cols if spend[k]}
+    for k, amount in spend.items():
+        if amount and amount > before[cols[k]]:
+            raise HTTPException(400, f"Not enough {k.upper() if k != 'hp' else 'Health'}: have {before[cols[k]]}, need {amount}")
+    for k, amount in spend.items():
+        if amount:
+            setattr(pc, cols[k], before[cols[k]] - amount)
+    prefs = char_extras.prefs(db, pc.id)
+    used = dict(prefs.get("feat_used") or {})
+    feats = json.loads(pc.feats_json or "[]")
+    key = feat_use.feat_key(feats[card["index"]])
+    if card["limit"]:
+        used[key] = card["limit"]
+        char_extras.set_prefs(db, pc, feat_used=used)
+    paid = ", ".join(f"{a} {k.upper() if k != 'hp' else 'Health'}" for k, a in spend.items() if a)
+    char_extras.log(db, pc, char_extras.actor_name(user), "ability", f"Used {card['name']}" + (f" ({paid})" if paid else ""),
+                    {"op": "cols", "values": before, "unuse": key if card["limit"] else None})
+    db.commit()
+    live.touch(pc.world_id)
+    return {"ok": True, "cards": _ability_cards(db, pc),
+            "pools": {"pp": pc.pp_current or 0, "mp": pc.mp_current or 0, "shock": pc.shock_current or 0, "hp": pc.current_hp or 0}}
+
+
+@router.post("/api/characters/{pc_id}/ability-ready")
+async def character_ability_ready(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Mark a once-per-Rest / once-per-session feat ready again ({index})."""
+    from .. import feat_use
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    feats = json.loads(pc.feats_json or "[]")
+    i = body.get("index")
+    if not isinstance(i, int) or not (0 <= i < len(feats)) or not isinstance(feats[i], dict):
+        raise HTTPException(400, "Invalid index")
+    used = dict(char_extras.prefs(db, pc.id).get("feat_used") or {})
+    used.pop(feat_use.feat_key(feats[i]), None)
+    char_extras.set_prefs(db, pc, feat_used=used or None)
+    db.commit()
+    return {"ok": True, "cards": _ability_cards(db, pc)}
+
+
 @router.post("/api/characters/{pc_id}/feats")
 async def character_feats_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()

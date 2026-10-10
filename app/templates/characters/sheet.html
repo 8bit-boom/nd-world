@@ -430,7 +430,7 @@
   <div class="cs-body">
     <!-- Feats -->
     <div class="cs-panel">
-      <div class="cs-panel-title">Feats</div>
+      <div class="cs-panel-title">Feats{% if can_manage %} <button type="button" class="cs-hp-inline-btn" style="margin-left:.5rem" onclick="ndOpenAbilities()" title="Use your abilities: spends what they cost">&#127183; Use abilities</button>{% endif %}</div>
       <div id="feats-list"></div>
       {% if can_manage %}
       <div class="cs-quick-add">
@@ -611,7 +611,7 @@
 </div>
 
 {% include 'characters/_roll_sheet.html' %}
-{% if can_manage %}{% include 'characters/_advance_sheet.html' %}{% endif %}
+{% if can_manage %}{% include 'characters/_advance_sheet.html' %}{% include 'characters/_ability_cards.html' %}{% endif %}
 
 <script>
 const PC_ID = {{ pc.id }};

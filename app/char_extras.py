@@ -108,8 +108,8 @@ def _undo_key(spec: dict) -> str:
     op = str(spec.get("op") or "")
     if op == "currency":
         return "currency:" + str(spec.get("abbr") or "").lower()
-    if op == "cf":
-        return "cf:" + ",".join(sorted((spec.get("values") or {}).keys()))
+    if op in ("cf", "cols"):
+        return op + ":" + ",".join(sorted((spec.get("values") or {}).keys()))
     return op
 
 
@@ -180,6 +180,18 @@ def undo(db: Session, pc, entry) -> Optional[str]:
             return "Nothing to restore"
         pc.stats_json, pc.feats_json = spec["stats_json"], spec["feats_json"]
         set_prefs(db, pc, xp_spent=int(spec.get("spent") or 0) or None)
+    elif op == "cols":
+        values = spec.get("values")
+        allowed = {"pp_current", "mp_current", "shock_current", "current_hp"}
+        if not isinstance(values, dict) or not set(values) <= allowed:
+            return "Nothing to restore"
+        for col, v in values.items():
+            if isinstance(v, int) and v >= 0:
+                setattr(pc, col, v)
+        if spec.get("unuse"):
+            used = dict(prefs(db, pc.id).get("feat_used") or {})
+            used.pop(str(spec["unuse"]), None)
+            set_prefs(db, pc, feat_used=used or None)
     elif op == "cf":
         values = spec.get("values")
         if not isinstance(values, dict):
