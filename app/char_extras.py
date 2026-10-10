@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from .models import CharacterLog, CharacterPref, CharacterShare
+from .models import CharacterCompanion, CharacterLog, CharacterPref, CharacterShare
 
 LOG_KEEP = 200            # entries kept per character (oldest dropped)
 PINS_MAX = 8
@@ -69,7 +69,7 @@ def new_share(db: Session, pc) -> CharacterShare:
 
 def delete_for_character(db: Session, pc_id: int) -> None:
     """Drop everything this module keeps for a character being deleted (SQLite's foreign_keys pragma is off here)."""
-    for model in (CharacterPref, CharacterLog, CharacterShare):
+    for model in (CharacterPref, CharacterLog, CharacterShare, CharacterCompanion):
         db.query(model).filter(model.character_id == pc_id).delete(synchronize_session=False)
 
 

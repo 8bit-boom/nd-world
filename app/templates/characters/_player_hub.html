@@ -143,6 +143,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="world"><span class="pch-ic">🌍</span><span class="pch-lb">World</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="schedule"><span class="pch-ic">🗓</span><span class="pch-lb">Schedule</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="handouts"><span class="pch-ic">📬</span><span class="pch-lb">Handouts</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="companions"><span class="pch-ic">🐾</span><span class="pch-lb">Allies</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="log"><span class="pch-ic">📋</span><span class="pch-lb">Log</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="places"><span class="pch-ic">🧭</span><span class="pch-lb">Pages</span></button>
     <button type="button" class="pch-tab pch-tab-more" id="pch-more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="pch-more"><span class="pch-ic">☰</span><span class="pch-lb">More</span></button>
@@ -230,6 +231,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="handouts" hidden><div data-body="handouts" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="companions" hidden><div data-body="companions" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="log" hidden><div data-body="log" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="places" hidden>
     <h2 class="pch-h">🧭 Pages</h2>
@@ -252,8 +254,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
-  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'handouts', 'log', 'places']
-                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'handouts', 'log', 'places'];
+  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'handouts', 'companions', 'log', 'places']
+                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'handouts', 'companions', 'log', 'places'];
   const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
@@ -547,6 +549,50 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   }
 
   // ── Change log: who changed what, with one-tap Undo for the newest change to each number ─────────────────────
+  // ── Allies: familiars, hirelings, mounts and vehicles that travel with the character ──────────────────────
+  async function loadCompanions() {
+    const el = body('companions');
+    try {
+      const d = await api('companions');
+      const call = async (method, path, payload) => {
+        const r = await fetch(BASE + 'companions' + path, { method, headers: { 'Content-Type': 'application/json' }, body: payload ? JSON.stringify(payload) : undefined });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+        return j;
+      };
+      const parts = [h('div', { class: 'pch-sub', text: '\ud83d\udc3e Allies travelling with ' + PC_NAME })];
+      if (!d.companions.length) parts.push(h('p', { class: 'pch-muted', text: OWNER ? 'None yet \u2014 add a familiar, hireling, mount or vehicle below.' : 'No allies.' }));
+      d.companions.forEach(c => {
+        const row = h('div', { class: 'pch-row', style: 'flex-wrap:wrap;gap:.4rem' },
+          h('span', { class: 'pch-title', text: c.name }), h('span', { class: 'pch-chip', text: c.kind }));
+        if (c.hp_max > 0 || c.hp > 0) {
+          row.append(h('span', { class: 'pch-chip', text: 'HP ' + c.hp + (c.hp_max ? ' / ' + c.hp_max : '') }));
+          if (OWNER) [[-1, '\u2212'], [1, '+']].forEach(([dl, sym]) => row.append(h('button', { type: 'button', class: 'pch-btn', 'aria-label': (dl < 0 ? 'Lower ' : 'Raise ') + c.name + ' HP', style: 'min-width:44px;min-height:44px', text: sym,
+            onclick: async () => { try { await call('PATCH', '/' + c.id, { hp_delta: dl }); loadCompanions(); refreshNow(); } catch (e) { alert(e.message); } } })));
+        }
+        if (c.notes) row.append(h('div', { class: 'pch-muted', style: 'flex-basis:100%', text: c.notes }));
+        if (OWNER) row.append(h('button', { type: 'button', class: 'pch-btn', text: 'Remove', style: 'min-height:44px', onclick: async () => {
+          if (!confirm('Remove ' + c.name + '?')) return;
+          try { await call('DELETE', '/' + c.id); loadCompanions(); refreshNow(); } catch (e) { alert(e.message); } } }));
+        parts.push(row);
+      });
+      if (OWNER) {
+        const f = h('form', { class: 'pch-row', style: 'flex-wrap:wrap;gap:.4rem;margin-top:.8rem' });
+        const name = h('input', { type: 'text', placeholder: 'Name', maxlength: 80, required: 'required', 'aria-label': 'Name', style: 'min-height:44px;font-size:16px;flex:1 1 9rem' });
+        const kind = h('select', { 'aria-label': 'Kind', style: 'min-height:44px;font-size:16px' }, d.kinds.map(k => h('option', { value: k, text: k })));
+        const hp = h('input', { type: 'number', min: 0, max: 9999, placeholder: 'HP', 'aria-label': 'Max HP', style: 'min-height:44px;font-size:16px;width:5rem' });
+        const notes = h('input', { type: 'text', placeholder: 'Notes (optional)', maxlength: 600, 'aria-label': 'Notes', style: 'min-height:44px;font-size:16px;flex:1 1 100%' });
+        f.append(name, kind, hp, notes, h('button', { type: 'submit', class: 'pch-btn', style: 'min-height:44px', text: '+ Add' }));
+        f.addEventListener('submit', async ev => {
+          ev.preventDefault();
+          const v = parseInt(hp.value, 10) || 0;
+          try { await call('POST', '', { name: name.value, kind: kind.value, hp: v, hp_max: v, notes: notes.value }); loadCompanions(); refreshNow(); } catch (e) { alert(e.message); }
+        });
+        parts.push(f);
+      }
+      el.replaceChildren(...parts);
+    } catch (e) { fail(el, e, loadCompanions); }
+  }
   async function loadLog() {
     const el = body('log');
     try {
@@ -816,6 +862,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     if (ed && window.ndNotify && ndNotify.supported && ndNotify.state() !== 'denied') tags.push(h('button', { type: 'button', class: 'pch-btn', 'aria-pressed': String(ndNotify.state() === 'on'), title: 'Tell me when it is my turn (while this page is open)',
       text: ndNotify.state() === 'on' ? '\ud83d\udd14 Alerts on' : '\ud83d\udd15 Alerts', onclick: async () => { await ndNotify.toggle(); renderNow(); } }));
     if (ed) tags.push(h('button', { type: 'button', class: 'pch-btn', title: 'A read-only link to this sheet that anyone can open', text: '\ud83d\udd17 Share', onclick: shareFlow }));
+    (d.companions || []).forEach(c => tags.push(h('button', { type: 'button', class: 'pch-pill', style: 'cursor:pointer', title: c.kind, onclick: () => show('companions'),
+      text: '\ud83d\udc3e ' + c.name + (c.hp_max ? ' ' + c.hp + '/' + c.hp_max : '') })));
     (d.pins || []).forEach(pg => tags.push(h('a', { class: 'pch-btn', href: pg.href, title: pg.label, text: pg.icon + ' ' + pg.label })));
     if (ed && window.ndOpenRoll) tags.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll', onclick: () => window.ndOpenRoll() }));
     if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
@@ -882,7 +930,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   document.addEventListener('click', ev => { if (!moreSheet.hidden && !moreSheet.contains(ev.target)) closeMore(); });
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
-  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog, handouts: loadHandouts };
+  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog, handouts: loadHandouts, companions: loadCompanions };
   if (OWNER) loaders.notes = loadNotes;
   // The embedded Player Cockpit only starts loading once its tab is opened. The loader (cockpit-frames.js) also gives
   // its page back - the cockpit AND its windows - after a minute on another tab, and loads it again when you return:

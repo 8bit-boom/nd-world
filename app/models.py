@@ -686,6 +686,22 @@ class CharacterLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class CharacterCompanion(Base):
+    """A familiar, hireling, mount or vehicle that travels with ONE character: a name, a kind, a small HP track and a few notes.
+    The owner keeps it on their character page; it is not a player character of its own (no party seat, no sheet template)."""
+    __tablename__ = "character_companions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=False, index=True)
+    name = Column(String(80), nullable=False)
+    kind = Column(String(24), default="familiar")
+    hp = Column(Integer, default=0)
+    hp_max = Column(Integer, default=0)
+    notes = Column(String(600), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class CharacterShare(Base):
     """A read-only link to ONE character's sheet that anyone holding the token can open without an account; the owner (or a
     GM) can revoke it. The token is the only secret and is never logged."""

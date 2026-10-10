@@ -49,7 +49,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from .routers.live_jobs import router as live_jobs_router
@@ -1671,7 +1671,7 @@ _WORLD_DELETE_MODELS = (
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
     EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, CharacterJournalEntry,
-    CharacterPref, CharacterLog, CharacterShare, WorldHandout,
+    CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion,
     SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp,
 )
 

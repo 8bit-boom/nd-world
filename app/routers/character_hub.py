@@ -689,6 +689,7 @@ def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
             "rest_kinds": _rest_kinds(db, pc) if is_owner else [],
             "handouts_new": _handouts_new(db, pc) if is_owner else 0,
             "pins": _pinned_places(db, pc, world),
+            "companions": _companions(db, pc),
             "polls_waiting": polls_waiting(db, world.id, asker),
             "schedule_href": with_world("/schedule", world)}
 
@@ -760,6 +761,97 @@ async def hub_pin_toggle(pc_id: int, request: Request, db: Session = Depends(get
     char_extras.set_prefs(db, pc, pins=pins or None)
     db.commit()
     return {"pins": pins}
+
+
+# ── Companions: a familiar, hireling, mount or vehicle that travels with the character ─────────────────────
+
+COMPANION_KINDS = ("familiar", "hireling", "mount", "vehicle", "other")
+COMPANION_MAX = 12
+
+
+def _companion_out(c) -> dict:
+    return {"id": c.id, "name": c.name, "kind": c.kind, "hp": c.hp or 0, "hp_max": c.hp_max or 0, "notes": c.notes or ""}
+
+
+def _companions(db: Session, pc: PlayerCharacter) -> list:
+    from ..models import CharacterCompanion
+    rows = db.query(CharacterCompanion).filter(CharacterCompanion.character_id == pc.id).order_by(CharacterCompanion.id).all()
+    return [_companion_out(c) for c in rows]
+
+
+def _companion_int(body: dict, key: str, low: int, high: int) -> int:
+    try:
+        v = int(body.get(key))
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{key} must be a whole number")
+    return max(low, min(high, v))
+
+
+def _apply_companion(c, body: dict) -> None:
+    if "name" in body:
+        name = " ".join(str(body.get("name") or "").split())[:80]
+        if not name:
+            raise HTTPException(400, "A companion needs a name")
+        c.name = name
+    if "kind" in body:
+        c.kind = body["kind"] if body.get("kind") in COMPANION_KINDS else "other"
+    if "notes" in body:
+        c.notes = str(body.get("notes") or "").strip()[:600]
+    if "hp_max" in body:
+        c.hp_max = _companion_int(body, "hp_max", 0, 9999)
+    if "hp" in body:
+        c.hp = _companion_int(body, "hp", 0, 9999)
+    if "hp_delta" in body:
+        c.hp = _companion_int({"v": (c.hp or 0) + _companion_int(body, "hp_delta", -9999, 9999)}, "v", 0, 9999)
+    if c.hp_max and (c.hp or 0) > c.hp_max:
+        c.hp = c.hp_max
+
+
+@router.get("/api/characters/{pc_id}/hub/companions")
+def hub_companions(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    _user, pc, _world, _own = _hub_pc(request, db, pc_id)
+    return {"companions": _companions(db, pc), "kinds": list(COMPANION_KINDS)}
+
+
+@router.post("/api/characters/{pc_id}/hub/companions")
+async def hub_companion_add(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    from ..models import CharacterCompanion
+    _user, pc, world = _owned_pc(request, db, pc_id)
+    body = await _json_body(request)
+    if db.query(CharacterCompanion).filter(CharacterCompanion.character_id == pc.id).count() >= COMPANION_MAX:
+        raise HTTPException(400, f"At most {COMPANION_MAX} companions per character")
+    c = CharacterCompanion(world_id=world.id, character_id=pc.id, name="x")
+    _apply_companion(c, {"kind": "familiar", **body})
+    if "name" not in body:
+        raise HTTPException(400, "A companion needs a name")
+    db.add(c)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"companions": _companions(db, pc)}
+
+
+@router.patch("/api/characters/{pc_id}/hub/companions/{cid}")
+async def hub_companion_edit(pc_id: int, cid: int, request: Request, db: Session = Depends(get_db)):
+    from ..models import CharacterCompanion
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    c = db.get(CharacterCompanion, cid)
+    if not c or c.character_id != pc.id:
+        raise HTTPException(404)
+    _apply_companion(c, await _json_body(request))
+    db.commit()
+    return {"companions": _companions(db, pc)}
+
+
+@router.delete("/api/characters/{pc_id}/hub/companions/{cid}")
+def hub_companion_remove(pc_id: int, cid: int, request: Request, db: Session = Depends(get_db)):
+    from ..models import CharacterCompanion
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    c = db.get(CharacterCompanion, cid)
+    if not c or c.character_id != pc.id:
+        raise HTTPException(404)
+    db.delete(c)
+    db.commit()
+    return {"companions": _companions(db, pc)}
 
 
 # ── Journal / goals writes ───────────────────────────────────────────────────
