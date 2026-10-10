@@ -70,7 +70,8 @@
     if (tab === 'stats') {
       bodyEl.replaceChildren(...data.stats.map(s => el('div', { class: 'adv-row' },
         el('div', { class: 'adv-main' }, el('div', { class: 'adv-name' }, s.label + ' ' + s.value + ' → ' + (s.value + 1)),
-          el('div', { class: 'adv-why' }, 'New rank ' + (s.value + 1) + ' × 2 = ' + s.cost + ' XP' + (s.can ? '' : (s.cost > data.available ? ' · needs ' + (s.cost - data.available) + ' more' : ' · at the maximum')))),
+          el('div', { class: 'adv-why' }, 'New rank ' + (s.value + 1) + ' × 2 = ' + s.cost + ' XP' + (s.can ? '' : (s.cost > data.available ? ' · needs ' + (s.cost - data.available) + ' more' : ' · at the maximum'))),
+          s.effect ? el('div', { class: 'adv-desc' }, 'You would get: ' + s.effect + (s.can ? ' · ' + s.left + ' XP left' : '')) : null),
         buyButton('stat:' + s.id, s.cost, s.can, { kind: 'stat', stat: s.id }))));
     } else {
       const needle = q.trim().toLowerCase();
@@ -79,7 +80,8 @@
         el('input', { class: 'adv-search', type: 'search', placeholder: 'Search feats…', value: q, 'aria-label': 'Search feats', oninput: e => { q = e.target.value; const pos = e.target.selectionStart; draw(); const i = bodyEl.querySelector('input'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } } }),
         ...(rows.length ? rows.map(f => el('div', { class: 'adv-row' },
           el('div', { class: 'adv-main' }, el('div', { class: 'adv-name' }, f.name + ' · ' + f.category + ' Rank ' + f.rank),
-            f.description ? el('div', { class: 'adv-desc' }, f.description) : null, f.why ? el('div', { class: 'adv-why' }, f.why) : null),
+            f.description ? el('div', { class: 'adv-desc' }, f.description) : null, f.why ? el('div', { class: 'adv-why' }, f.why) : null,
+            f.can ? el('div', { class: 'adv-why' }, 'After: ' + f.left + ' XP left' + (f.effect ? ' · ' + f.effect : '')) : null),
           buyButton('feat:' + f.id, f.cost, f.can, { kind: 'feat', id: f.id }))) : [el('p', { class: 'adv-why' }, 'No feats match' + (data.feats.length ? '.' : ' — your race and profession have none left to buy.'))]));
     }
     const foot = document.getElementById('adv-foot');

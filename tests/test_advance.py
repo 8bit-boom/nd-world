@@ -94,3 +94,33 @@ def test_advancement_is_the_managers_and_native_only(client, seed):
     _as(client, seed.player_a)
     html = client.get(f"/characters/{pc}").text
     assert "ndOpenAdvance()" in html and 'id="adv"' in html
+
+
+def test_preview_shows_what_a_purchase_changes(client, seed):
+    pc = _hero(seed, xp=100)
+    db = SessionLocal()
+    try:
+        db.get(PlayerCharacter, pc).max_hp = 0
+        db.commit()
+    finally:
+        db.close()
+    _as(client, seed.player_a)
+    st = {r["id"]: r for r in client.get(f"/api/characters/{pc}/advance").json()["stats"]}
+    assert "PP 4→5" in st["str"]["effect"] and "HP 14→15" in st["str"]["effect"]       # auto HP follows PP
+    assert "MP 0→1" in st["wil"]["effect"] and "Shock 0→1" in st["wil"]["effect"]
+    assert "Speed 0→1" in st["dex"]["effect"] and st["str"]["left"] == 90
+    db = SessionLocal()
+    try:
+        db.get(PlayerCharacter, pc).max_hp = 30
+        db.commit()
+    finally:
+        db.close()
+    st = {r["id"]: r for r in client.get(f"/api/characters/{pc}/advance").json()["stats"]}
+    assert "HP" not in st["str"]["effect"]                                                         # a stored HP max is not derived
+
+
+def test_feat_hint_when_it_opens_the_next_rank():
+    assert advance.unlock_hint([{"rank": "Rank 1"}], 1) == "unlocks Rank 2 feats"
+    assert advance.unlock_hint([], 1) == ""
+    assert advance.unlock_hint([{"rank": "Rank 1"}, {"rank": "Rank 1"}], 1) == ""
+    assert advance.unlock_hint([{"rank": "Rank 3"}], 3) == ""
