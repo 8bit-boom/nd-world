@@ -32,7 +32,7 @@ is comfortable on a phone held in one hand.
 9. ~~Offline at the table~~ — **done: service worker keeps the last sheet readable; HP/Shock changes made offline are queued and replayed in order.**
 10. ~~Notifications~~ — **done as in-page alerts (Notification API through the service worker) while the page is open - no Web Push server, so nothing arrives with the app closed.**
 11. ~~Build compare / what-if~~ — **done: Advance shows what each stat or feat changes (PP/MP/HP/Shock/Speed, XP left, Rank unlock) before the confirm tap.**
-12. ~~Shareable read-only link** for a co-player or a Discord post (token-scoped, GM can revoke).~~ — **done: Share button makes a token link (`/share/<token>`); new link replaces the old, empty box stops sharing; no notes, journal, quests or portrait.**
+12. ~~Shareable read-only link~~ — **done: Share button makes a token link (`/share/<token>`); new link replaces the old, empty box stops sharing; no notes, journal, quests or portrait.**
 13. ~~Per-character quick links~~ — **done: pin up to 8 pages; they show under the vitals.**
 14. ~~Companion sheets~~ — **done: Allies tab (name, kind, HP, notes) with pills in the strip; not full sub-sheets.**
 15. ~~Voice journal~~ — **done: Dictate button on the journal form (browser speech recognition; hidden where the browser has none).**
