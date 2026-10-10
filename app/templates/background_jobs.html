@@ -8,6 +8,16 @@
   Every durable job started from a "🔒 Process in Background" button — 🎙 audio (Session recap, Speech test, AI Chat/Ask AI attachments), 💬 chat, and 🎨 image generation alike — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one. An audio job interrupted by a server restart resumes automatically from its last checkpoint on the next boot — "⏸ Interrupted" just means it's between attempts (or, past a few auto-retries, needs a manual ▶ Resume click here); chat/image jobs restart from the same saved request instead, with no checkpoint to resume from.
 </p>
 
+<section id="live-jobs" style="display:none;margin:0 0 1.5rem">
+  <h2 style="font-size:1rem;margin:0 0 .25rem">⚙ Tasks, drafts &amp; bulk renames</h2>
+  <p style="color:var(--text-dim);font-size:.8rem;margin:0 0 .6rem">
+    Everything else that runs on its own: the ✨ AI buttons, map and character drafts, auto-tagging, bulk renames…
+    Cancel one that is stuck or no longer needed, or ▶ Restart one that failed or was cancelled. These live in the server's
+    memory (a bulk rename is saved), so a server restart clears them.
+  </p>
+  <div id="live-jobs-list"></div>
+</section>
+
 <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:0 0 1rem">
   <label for="bg-filter-purpose" style="font-size:.8rem;color:var(--text-dim)">Purpose</label>
   <select id="bg-filter-purpose" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-size:.8rem;border-radius:3px">
@@ -824,5 +834,103 @@ document.getElementById('bg-filter-purpose').addEventListener('change', bgRefres
 document.getElementById('bg-filter-status').addEventListener('change', bgRefresh);
 bgLoadModels();
 bgRefresh();
+</script>
+<script>
+// The non-durable half of this page: GET /api/live-jobs lists AI-button tasks, in-memory AI jobs and bulk renames, each
+// with Cancel / Restart / Remove (POST .../cancel, POST .../restart, DELETE). Built with textContent only.
+(function () {
+  const box = document.getElementById('live-jobs');
+  const list = document.getElementById('live-jobs-list');
+  const ICON = { task: '✨', memory: '🧩', rename: '🏷' };
+  const LABEL = { queued: '⏳ Waiting its turn', running: '⚙ Running…', done: '✓ Done', error: '✗ Failed',
+                  cancelled: '○ Cancelled', interrupted: '⏸ Interrupted' };
+  let timer = null, busy = false;
+
+  function fmt(sec) {
+    sec = Math.max(0, sec | 0);
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return (m ? m + 'm ' : '') + s + 's';
+  }
+
+  async function act(key, verb) {
+    const opts = verb === 'remove' ? { method: 'DELETE' } : { method: 'POST' };
+    const url = '/api/live-jobs/' + encodeURIComponent(key) + (verb === 'remove' ? '' : '/' + verb);
+    try {
+      const r = await fetch(url, opts);
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(d.detail || ('HTTP ' + r.status));
+      }
+    } catch (e) { alert('Could not reach the server.'); }
+    refresh();
+  }
+
+  function button(text, cls, handler) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'bg-job-btn ' + cls;
+    b.textContent = text;
+    b.addEventListener('click', handler);
+    return b;
+  }
+
+  function card(j) {
+    const c = document.createElement('div');
+    c.className = 'bg-job-card' + (j.status === 'error' ? ' bg-job-card--error' : '')
+      + (j.status === 'cancelled' ? ' bg-job-card--cancelled' : '') + (j.status === 'interrupted' ? ' bg-job-card--interrupted' : '');
+    const head = document.createElement('div');
+    head.className = 'bg-job-head';
+    const ic = document.createElement('span');
+    ic.textContent = ICON[j.source] || '⚙';
+    head.appendChild(ic);
+    const name = document.createElement('span');
+    name.className = 'bg-job-filename';
+    name.textContent = j.label + (j.detail ? ' · ' + j.detail : '');
+    head.appendChild(name);
+    const st = document.createElement('span');
+    st.className = 'bg-job-status-label bg-job-status-label--' + j.status;
+    let text = LABEL[j.status] || j.status;
+    if (j.status === 'queued' && j.position) text += ' (#' + j.position + ' in line)';
+    if (j.progress && (j.status === 'running' || j.status === 'queued')) text += ' ' + j.progress;
+    st.textContent = text + ' · ' + fmt(j.elapsed);
+    head.appendChild(st);
+    c.appendChild(head);
+    if (j.error && j.status !== 'done') {
+      const e = document.createElement('div');
+      e.className = 'bg-job-error-text';
+      e.textContent = j.error;
+      c.appendChild(e);
+    }
+    if (j.can_cancel || j.can_restart || j.can_remove) {
+      const row = document.createElement('div');
+      row.className = 'bg-job-actions';
+      if (j.can_cancel) row.appendChild(button('✕ Cancel', 'bg-job-btn--cancel', () => act(j.key, 'cancel')));
+      if (j.can_restart) row.appendChild(button('▶ Restart', 'bg-job-btn--resume', () => act(j.key, 'restart')));
+      if (j.can_remove) row.appendChild(button('🗑 Remove', 'bg-job-btn--cancel', () => act(j.key, 'remove')));
+      c.appendChild(row);
+    }
+    return c;
+  }
+
+  async function refresh() {
+    if (busy) return;
+    busy = true;
+    clearTimeout(timer);
+    let jobs = [];
+    try {
+      const r = await fetch('/api/live-jobs');
+      if (r.ok) jobs = (await r.json()).jobs || [];
+    } catch (e) { /* keep what is shown; try again below */ }
+    busy = false;
+    list.textContent = '';
+    jobs.forEach(j => list.appendChild(card(j)));
+    box.style.display = jobs.length ? '' : 'none';
+    const active = jobs.some(j => j.status === 'running' || j.status === 'queued');
+    timer = setTimeout(() => { if (document.hidden) { timer = setTimeout(refresh, 10000); } else { refresh(); } }, active ? 3000 : 10000);
+  }
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  refresh();
+})();
 </script>
 {% endblock %}

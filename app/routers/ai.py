@@ -3751,7 +3751,7 @@ async def auto_tag_poll(job_id: int):
             "total": job["total"], "tagged": job["tagged"]}
 
 
-@_ai_queue.serialized("auto-tag", "job")
+@_ai_queue.serialized("auto-tag", "job", store=_AUTO_TAG_JOBS)
 async def _auto_tag_task(job_id: int, world_id: int, entity_ids: list,
                          overwrite: bool, think: bool):
     """The tagging worker: batches of _AUTO_TAG_BATCH entities per local-

@@ -167,13 +167,28 @@ queue = AiQueue()
 slot = queue.slot
 
 
-def serialized(label: str = "", kind: str = ""):
-    """Decorator: the async function takes its turn in the AI queue for its whole run."""
+def serialized(label: str = "", kind: str = "", store: Optional[dict] = None):
+    """Decorator: the async function takes its turn in the AI queue for its whole run.
+
+    `store` is the module's job-status dict ({job_id: {"status": ..}}, the function's FIRST argument being the job id):
+    when given, each run is recorded in app/live_jobs.py so the Background Jobs page can list, cancel and restart it."""
     def deco(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            async with queue.slot(label or fn.__name__, kind):
-                return await fn(*args, **kwargs)
+            from . import live_jobs
+            rec = live_jobs.begin(label or fn.__name__, store, wrapper, args, kwargs)
+            try:
+                async with queue.slot(label or fn.__name__, kind):
+                    live_jobs.running(rec)
+                    result = await fn(*args, **kwargs)
+            except asyncio.CancelledError:
+                live_jobs.cancelled(rec)
+                raise
+            except Exception as exc:
+                live_jobs.failed(rec, exc)
+                raise
+            live_jobs.done(rec)
+            return result
         wrapper._ai_serialized = True
         return wrapper
     return deco

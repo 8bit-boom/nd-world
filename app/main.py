@@ -52,6 +52,7 @@ from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded,
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
+from .routers.live_jobs import router as live_jobs_router
 from . import ai_background as _ai_background
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -167,6 +168,7 @@ _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
 app.include_router(ai_tasks_router)
+app.include_router(live_jobs_router)
 app.include_router(account_router)
 # character_ai BEFORE characters: its /characters/ai-new and /api/characters/ai/*
 # paths would otherwise be swallowed by characters.py's /characters/{pc_id}
@@ -908,6 +910,10 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if path == "/api/audio-jobs" and method == "GET":
         return True
     if path.startswith("/api/audio-jobs/"):
+        return True
+    # The rest of that page's list (AI buttons, in-memory AI jobs, bulk renames) with Cancel / Restart / Remove - each
+    # handler checks the Background Jobs section matrix itself.
+    if path == "/api/live-jobs" or path.startswith("/api/live-jobs/"):
         return True
     # Bulk-content import tools — the /import page and every /api/import*
     # endpoint (JSON bulk import, image matching, AVIF/WebP re-encode).
@@ -2883,7 +2889,7 @@ async def map_ai_markers_poll(slug: str, job_id: int, request: Request):
     return {"status": "done", "markers": job["markers"]}
 
 
-@_ai_queue.serialized("map markers", "job")
+@_ai_queue.serialized("map markers", "job", store=_MAP_AI_JOBS)
 async def _map_ai_markers_task(job_id: int, slug: str, world_id: int, prompt: str,
                                count: int, model: str, think: bool, use_rag: bool):
     db = SessionLocal()
@@ -7756,7 +7762,7 @@ async def _schematic_ai_plan_task_inner(job_id: int, slug: str, world_id: int,
                                   warnings=warnings[:12], title=spec.get("title") or "")
 
 
-@_ai_queue.serialized("map build", "job")
+@_ai_queue.serialized("map build", "job", store=_AI_BUILD_JOBS)
 async def _schematic_ai_build_task(job_id: int, slug: str, world_id: int,
                                    desc: str, replace_flag: bool, image_b64s: list, mode: str = "draw"):
     """Thin crash-capture wrapper: any exception in the build task lands in

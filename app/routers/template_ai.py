@@ -92,7 +92,7 @@ def _is_gm(request: Request) -> bool:
     return bool(user and user.is_gm)
 
 
-@_ai_queue.serialized("system draft", "job")
+@_ai_queue.serialized("system draft", "job", store=_TPL_AI_JOBS)
 async def _draft_task(job_id: int, source: str, system_name: str, wishes: str, think: bool):
     job = _TPL_AI_JOBS[job_id]
     try:

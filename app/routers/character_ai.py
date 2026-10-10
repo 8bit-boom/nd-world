@@ -294,7 +294,7 @@ def _usable_template(db, world_id, template_id):
     return tpl
 
 
-@_ai_queue.serialized("character draft", "job")
+@_ai_queue.serialized("character draft", "job", store=_PC_AI_JOBS)
 async def _pc_ai_task(job_id: int, world_id: int, prompt: str,
                       source_text: str, think: bool, use_rag: bool, template_id: int = 0,
                       source_limit: int = 0, part_chars: int = 0):
@@ -584,7 +584,7 @@ def rules_for_character(db, world, pc, viewer_is_gm: bool, limit: int = 7000):
     return "\n\n".join(parts)[:limit], label, native
 
 
-@_ai_queue.serialized("sheet review", "job")
+@_ai_queue.serialized("sheet review", "job", store=_ANALYSIS_JOBS)
 async def _analysis_task(job_id: int, pc_id: int, viewer_is_gm: bool,
                          focus: str, think: bool, use_rag: bool):
     db = SessionLocal()

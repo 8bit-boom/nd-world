@@ -92,7 +92,7 @@ def label_for(path: str) -> str:
 
 class Task:
     __slots__ = ("id", "user_id", "path", "label", "status", "started", "finished", "http_status",
-                 "content_type", "location", "body", "task", "ticket")
+                 "content_type", "location", "body", "task", "ticket", "rerun")
 
     def __init__(self, user_id, path, label):
         self.id = secrets.token_urlsafe(12)
@@ -108,6 +108,7 @@ class Task:
         self.body = b""
         self.task: Optional[asyncio.Task] = None
         self.ticket = None                 # its place in the one-at-a-time AI queue (app/ai_queue.py)
+        self.rerun = None                  # starts the same request again (the Background Jobs page's Restart)
 
     def view(self, with_body=False) -> dict:
         end = self.finished or time.time()
@@ -158,6 +159,20 @@ def get_task(task_id: str, user) -> Optional[Task]:
     if user is None or (t.user_id != user.id and not getattr(user, "is_gm", False)):
         return None
     return t
+
+
+def all_tasks() -> list:
+    """Every user's tasks, newest first - for the GM's Background Jobs page."""
+    _sweep()
+    return sorted(_TASKS.values(), key=lambda t: -t.started)
+
+
+def restart(task: Task) -> Optional[Task]:
+    """Run a finished / cancelled task's request again as a new task (the old entry goes). None while it still runs."""
+    if task.status in ("queued", "running") or task.rerun is None:
+        return None
+    _TASKS.pop(task.id, None)
+    return task.rerun()
 
 
 def tasks_for(user_id: int) -> list:
@@ -260,6 +275,12 @@ class AiBackgroundMiddleware:
         if body is None:
             return
         label = next((v.decode("latin-1")[:60] for k, v in scope["headers"] if k == LABEL_HEADER), "") or label_for(scope["path"])
+        task = self._launch(scope, body, user_id, label)
+        await JSONResponse({"task_id": task.id, "status": "running", "label": label}, status_code=202,
+                           headers={"X-ND-Task": task.id})(scope, receive, send)
+
+    def _launch(self, scope, body: bytes, user_id, label: str) -> Task:
+        """Register the request as a task and start it (also what a Restart does with the saved request)."""
         task = Task(user_id, scope["path"], label)
         _TASKS[task.id] = task
         # Join the one-at-a-time AI queue NOW, so the position is known the moment the task is accepted. The ticket is
@@ -267,9 +288,15 @@ class AiBackgroundMiddleware:
         task.ticket = _ai_queue.queue.enter(label, "task")
         task.status = "queued" if _ai_queue.queue.position(task.ticket) > 0 else "running"
         task.task = asyncio.create_task(self._run(task, scope, body))
-        task.task.add_done_callback(lambda _t, tk=task.ticket: _ai_queue.queue.leave(tk))
-        await JSONResponse({"task_id": task.id, "status": "running", "label": label}, status_code=202,
-                           headers={"X-ND-Task": task.id})(scope, receive, send)
+        task.task.add_done_callback(lambda t, tk=task.ticket, tr=task: self._settled(t, tk, tr))
+        task.rerun = lambda: self._launch(scope, body, user_id, label)
+        return task
+
+    @staticmethod
+    def _settled(aio_task, ticket, task: Task) -> None:
+        _ai_queue.queue.leave(ticket)
+        if aio_task.cancelled() and task.status in ("queued", "running"):    # cancelled before its first step ran
+            task.status, task.finished = "cancelled", time.time()
 
     async def _run(self, task: Task, scope, body: bytes):
         status, headers, buf = [0], [], bytearray()

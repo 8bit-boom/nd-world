@@ -427,7 +427,7 @@ async def quests_suggest_poll(job_id: int):
     return {"status": "done", "suggestions": job["suggestions"]}
 
 
-@_ai_queue.serialized("quest sync", "job")
+@_ai_queue.serialized("quest sync", "job", store=_QUEST_SUGGEST_JOBS)
 async def _quests_suggest_task(job_id: int, world_id: int,
                                session_id: Optional[int], text: str, model: str,
                                use_rag: bool, think: bool = True):

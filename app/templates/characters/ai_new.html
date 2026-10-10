@@ -214,9 +214,22 @@ const WORLD_SLUG = {{ world.slug | tojson }};
       } else if (d.status === 'error') {
         jobStore.clear();
         status.textContent = '⚠ ' + d.error;
+      } else if (d.status === 'done' && d.draft) {
+        // Not inside the fetch chain's catch: a failure while filling the form must be SHOWN, not retried forever.
+        try {
+          fillDraft(d.draft);
+          status.textContent = '✓ Draft ready — review below.';
+        } catch (e) {
+          console.error('character draft could not be shown', e, d.draft);
+          status.textContent = '⚠ The draft arrived but the page could not show it (' + (e && e.message ? e.message : e) + ') — press Generate again.';
+        }
+      } else if (d.status === 'done') {
+        jobStore.clear();
+        status.textContent = '⚠ The server finished without a draft — press Generate again.';
       } else {
-        status.textContent = '✓ Draft ready — review below.';
-        fillDraft(d.draft);
+        // Any other answer (a busy server, a logged-out session...) is not a draft: say so and keep asking.
+        status.textContent = '⚠ ' + (d.detail || 'Unexpected answer from the server') + ' — retrying…';
+        setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
       }
     }).catch(() => setTimeout(() => poll(jobId, (tries || 0) + 1), 3000));
   }

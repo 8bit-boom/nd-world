@@ -173,6 +173,11 @@ tools that require GM access still check `is_gm` at call time.)
   first-come queue for its whole run — decorate a new job runner with `@ai_queue.serialized("label")` (the 202+poll tasks and
   all four job engines already are; `tests/test_ai_queue.py` lists them and fails for one that is missing). Never take the slot
   from code already running inside a queued task (it would wait for itself), and don't queue live streams.
+  **The Background Jobs page lists them all with Cancel / Restart / Remove** (`GET /api/live-jobs`, `app/routers/live_jobs.py`): the
+  AI-button tasks (`ai_background`, restartable from their saved request), the bulk renames, and every in-memory job runner - which
+  must pass its status dict, `@_ai_queue.serialized("label", "job", store=_MY_JOBS)` (first argument = the job id; `app/live_jobs.py`
+  records the arguments for a restart and marks the dict `error`/"Cancelled." so pollers stop). `tests/test_live_jobs.py` fails for a
+  runner that leaves `store=` out.
 - **The AI character creator reads an imported sheet in one go if it fits, else in parts** (`routers/character_ai.py`:
   `sheet_budgets` sizes it from the model's context window — what rides along comes off first — and `plan_sheet` /
   `_condense_sheet` turn a longer sheet into notes part by part, up to `MAX_SHEET_PARTS`). Settings → System

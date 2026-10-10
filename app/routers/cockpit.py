@@ -324,7 +324,7 @@ async def cockpit_ai_find_poll(job_id: int, request: Request):
     return {"status": "done", "results": job["results"]}
 
 
-@_ai_queue.serialized("cockpit find", "job")
+@_ai_queue.serialized("cockpit find", "job", store=_COCKPIT_FIND_JOBS)
 async def _cockpit_find_task(job_id: int, world_id: int, query: str,
                              entity_id: Optional[int]):
     """The find worker: RAG retrieves world excerpts (always on), the model

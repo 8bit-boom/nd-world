@@ -175,6 +175,25 @@ def cancel_run(run_id: int) -> bool:
     return True
 
 
+def restart_run(run_id: int) -> bool:
+    """Carry on a cancelled / failed / interrupted run from its last saved chunk (what is done is kept). False when it
+    is already running, finished, or unknown."""
+    task = _running_tasks.get(run_id)
+    if task and not task.done():
+        return False
+    db = SessionLocal()
+    try:
+        run = db.get(MediaRenameRun, run_id)
+        if not run or run.status not in ("cancelled", "error", "interrupted"):
+            return False
+        run.status, run.error = "pending", ""
+        db.commit()
+    finally:
+        db.close()
+    _start(run_id)
+    return True
+
+
 def delete_run(run_id: int) -> bool:
     """Remove a finished run. False (a no-op) while it is in progress, or for an unknown id."""
     db = SessionLocal()
