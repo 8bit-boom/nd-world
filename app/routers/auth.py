@@ -307,7 +307,9 @@ async def api_login(request: Request, db: Session = Depends(get_db)):
 @router.get("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    # empties the offline copies of character sheets (service worker caches) and queued edits kept in this browser, so the next
+    # person on a shared device finds none of them
+    return RedirectResponse("/login", status_code=303, headers={"Clear-Site-Data": '"cache", "storage"'})
 
 
 @router.get("/join/{code}", response_class=HTMLResponse)

@@ -220,6 +220,15 @@ app.include_router(knowledge_router)
 app.include_router(ai_instructions_router)
 app.include_router(system_monitor_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    """The offline service worker (static/sw.js). It has to be served from the site root to control /characters/..., so it gets
+    its own route; never cached by the browser, or a fixed worker would not reach anyone."""
+    from fastapi.responses import FileResponse
+    return FileResponse(BASE_DIR / "static" / "sw.js", media_type="text/javascript",
+                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
 # KINDS, SUBTYPES, KIND_ICONS imported from .constants
@@ -411,7 +420,7 @@ def health():
 # own character(s). Anything not allowlisted is GM-only. New routes are therefore
 # GM-only by default unless deliberately added to _is_player_safe.
 
-_PUBLIC_PATHS = {"/login", "/login/2fa", "/api/login", "/logout", "/health", "/favicon.ico"}
+_PUBLIC_PATHS = {"/login", "/login/2fa", "/api/login", "/logout", "/health", "/favicon.ico", "/sw.js"}
 _PUBLIC_PREFIXES = ("/join/", "/static/")
 
 
