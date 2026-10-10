@@ -465,7 +465,7 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/dice` | Player | Dice roller page: notation form, quick-pick buttons, and the world's latest 50 rolls. |
 | POST | `/dice` | Player | Rolls from the page form and redirects back (POST-redirect-GET; invalid notation round-trips as `?error=`). |
-| POST | `/api/dice/roll` | Player | Rolls a notation string and appends the result to the world's roll log; returns the stored roll (per-die breakdown included). |
+| POST | `/api/dice/roll` | Player | Rolls a notation string and appends the result to the world's roll log; returns the stored roll (per-die breakdown included). Optional `label` (<= 80 printable chars) says what the roll was for - set by tap-to-roll on a character sheet ("Intellect check — Mirabel") and shown in the log. |
 | POST | `/api/dice/record` | Player | Logs a roll thrown on the 3D physics tray: `{notation, values}` where `values` are the faces the dice showed, in notation order (a d100 is one value, 1-100). Checked against the notation (right number of dice, each within its range) and stored exactly like a server roll; 400 otherwise. |
 | GET | `/api/dice/history` | Player | The world's latest 50 rolls as JSON (newest first). |
 

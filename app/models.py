@@ -686,6 +686,8 @@ class DiceRoll(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     user_name = Column(String(120), nullable=False, default="")
     notation = Column(String(120), nullable=False)
+    # What the roll was FOR ("Strength check - Mirabel"), set by a tap-to-roll on a character sheet; "" for a plain roll.
+    label = Column(String(80), nullable=False, default="", server_default="")
     # JSON array of per-term results, e.g. [{"term":"2d6","rolls":[3,5],"sum":8},{"term":"+1","sum":1}]
     breakdown = Column(Text, nullable=False, default="[]")
     total = Column(Integer, nullable=False, default=0)

@@ -57,6 +57,7 @@
       {% for r in rolls %}
       <div class="dice-row" data-id="{{ r.id }}" style="display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;padding:.45rem .6rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px">
         <span style="font-size:.78rem;color:var(--text-dim);min-width:8ch">{{ r.user_name }}</span>
+        {% if r.label %}<span style="font-size:.8rem;color:var(--text)">{{ r.label }}</span>{% endif %}
         <span style="font-family:monospace;font-size:.85rem">{{ r.notation }}</span>
         <span style="font-size:.75rem;color:var(--text-dim)">
           {% for t in r.breakdown %}{{ t.term }}{% if t.rolls %} [{{ t.rolls|join(', ') }}]{% endif %} {% endfor %}
@@ -90,6 +91,7 @@
       }).join(' ');
       return '<div class="dice-row" data-id="' + r.id + '" style="display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;padding:.45rem .6rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px">' +
         '<span style="font-size:.78rem;color:var(--text-dim);min-width:8ch">' + esc(r.user_name) + '</span>' +
+        (r.label ? '<span style="font-size:.8rem;color:var(--text)">' + esc(r.label) + '</span>' : '') +
         '<span style="font-family:monospace;font-size:.85rem">' + esc(r.notation) + '</span>' +
         '<span style="font-size:.75rem;color:var(--text-dim)">' + bd + '</span>' +
         '<span style="margin-left:auto;font-weight:bold;color:var(--neon);font-size:1rem">= ' + esc(r.total) + '</span>' +

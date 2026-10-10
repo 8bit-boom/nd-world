@@ -120,13 +120,20 @@ def _roll_response(roll: DiceRoll) -> dict:
         "id": roll.id,
         "user_name": roll.user_name,
         "notation": roll.notation,
+        "label": roll.label or "",
         "breakdown": json.loads(roll.breakdown or "[]"),
         "total": roll.total,
         "created_at": roll.created_at.isoformat() + "Z" if roll.created_at else None,
     }
 
 
-def _store_roll(db: Session, request: Request, world, notation: str, values=None) -> DiceRoll:
+def _clean_label(label) -> str:
+    """What a roll was for: one short printable line (it is shown to the whole table)."""
+    text = "".join(ch for ch in str(label or "") if ch.isprintable()).strip()
+    return text[:80]
+
+
+def _store_roll(db: Session, request: Request, world, notation: str, values=None, label: str = "") -> DiceRoll:
     """Roll ``notation`` and store it; with ``values`` (a physics throw's faces) store those instead of random ones."""
     breakdown, total = parse_and_roll(notation) if values is None else parse_recorded(notation, values)
     user = getattr(request.state, "user", None)
@@ -135,6 +142,7 @@ def _store_roll(db: Session, request: Request, world, notation: str, values=None
         user_id=user.id if user else None,
         user_name=(user.display_name if user and user.display_name else "Someone"),
         notation=(notation or "").strip(),
+        label=_clean_label(label),
         breakdown=json.dumps(breakdown),
         total=total,
     )
@@ -185,6 +193,7 @@ async def dice_roll_form(request: Request, db: Session = Depends(get_db), active
 
 class RollBody(BaseModel):
     notation: str
+    label: str = ""
 
 
 @router.post("/api/dice/roll")
@@ -195,7 +204,7 @@ async def api_dice_roll(body: RollBody, request: Request, db: Session = Depends(
     if not world_can_view_section(request, world, "dice"):
         raise HTTPException(403)
     try:
-        roll = _store_roll(db, request, world, body.notation)
+        roll = _store_roll(db, request, world, body.notation, label=body.label)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _roll_response(roll)
