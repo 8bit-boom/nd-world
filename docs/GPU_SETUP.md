@@ -863,9 +863,16 @@ What it needs, in this order (the page tells you which step is missing):
 
 Safety built in: a fan is never set below 20 %; with "follow the GPU" on, an unreadable GPU temperature or one at 85 C or more sends the
 fans to 100 %; a curve that would slow a fan as the GPU gets hotter is refused. The speed is held by nd-world - **if nd-world is stopped
-or crashes, the header stays at the last value written** (use the *BIOS* button on a fan before shutting the app down for long).
+or crashes, the header stays at the last value written** (use the *BIOS* button on a fan before shutting the app down for long: it puts back the exact mode and duty the BIOS had set, which the app wrote down when it first took the header over. A reboot also gives every header back to the BIOS).
 Settings are kept in `fan_control.json` beside the database.
 
 No driver, or no way to mount `/sys`? Two fallbacks that need no software: in the BIOS (Smart Fan 5) set that header to a fixed
 speed that is enough for your worst case, or to the "System" / "VRM" source with a steep curve; or run the fan from a PWM-capable
 fan controller powered separately with its own temperature probe taped to the card's heatsink.
+
+**What was found on an X570 Aorus Master (TrueNAS 6.18 kernel, stock in-tree `it87`):** the driver detects an IT8792E/IT8795E at 0xa60 and
+exposes `pwm1`-`pwm3` on it. The board's *other* fan chip (the one that drives most headers, I believe an IT8688E) is not supported by that
+driver, so a header wired to it - SYS_FAN4 here - cannot be reached from software; the three visible outputs were CPU_FAN (a pump), CPU_OPT
+and one with nothing connected. The BIOS keeps these in manual mode at a fixed duty, which is why "put back what the BIOS had" is the right
+way to hand a fan back (writing `2`, the chip's own automatic mode, is not the BIOS curve). The driver does not survive a reboot unless a
+post-init command loads it: `modprobe it87 ignore_resource_conflict=1`.

@@ -24,6 +24,7 @@ def hwmon(tmp_path, monkeypatch):
     (other / "name").write_text("k10temp\n")                           # a chip with no fans
     monkeypatch.setattr(fc, "HWMON_ROOT", str(tmp_path))
     monkeypatch.setattr(fc, "_config_path", lambda: tmp_path / "fan_control.json")
+    monkeypatch.setattr(fc, "_boot_id", lambda: "boot-1")
     return tmp_path
 
 
@@ -53,9 +54,32 @@ def test_refuses_unknown_fans_and_junk(hwmon):
     assert not fc.set_percent("hwmon3/pwm4", True)["ok"]
 
 
-def test_give_back_restores_the_chips_own_curve(hwmon):
-    fc.set_percent("hwmon3/pwm4", 70)
-    assert fc.give_back("hwmon3/pwm4")["ok"] and (hwmon / "hwmon3/pwm4_enable").read_text() == "2"
+def test_give_back_puts_the_bios_values_back_not_a_guess(hwmon):
+    (hwmon / "hwmon3/pwm4_enable").write_text("1\n")                    # this board: the BIOS holds a fixed duty in manual mode
+    (hwmon / "hwmon3/pwm4").write_text("128\n")
+    fc.set_percent("hwmon3/pwm4", 90)
+    fc.set_percent("hwmon3/pwm4", 70)                                    # a second change must not overwrite the remembered original
+    assert (hwmon / "hwmon3/pwm4").read_text() == str(round(70 * 255 / 100))
+    assert fc.give_back("hwmon3/pwm4")["ok"]
+    assert (hwmon / "hwmon3/pwm4").read_text() == "128" and (hwmon / "hwmon3/pwm4_enable").read_text() == "1"
+    again = fc.give_back("hwmon3/pwm4")                                  # nothing held now: leaves it alone
+    assert again["ok"] and "not held" in again["message"] and (hwmon / "hwmon3/pwm4").read_text() == "128"
+
+
+def test_a_note_from_before_a_reboot_is_not_used(hwmon, monkeypatch):
+    fc.set_percent("hwmon3/pwm4", 90)                                    # remembers enable=2, pwm=128 under boot-1
+    monkeypatch.setattr(fc, "_boot_id", lambda: "boot-2")
+    (hwmon / "hwmon3/pwm4").write_text("77\n")
+    assert "not held" in fc.give_back("hwmon3/pwm4")["message"] and (hwmon / "hwmon3/pwm4").read_text().strip() == "77"
+
+
+def test_set_percent_warns_when_the_chip_does_not_keep_the_value(hwmon, monkeypatch):
+    real = fc._write
+    def sticky(path, value):                                              # a BIOS that rewrites the duty straight away
+        real(path, 128 if path.endswith("/pwm4") else value)
+    monkeypatch.setattr(fc, "_write", sticky)
+    r = fc.set_percent("hwmon3/pwm4", 90)
+    assert r["ok"] and r.get("warning") and "BIOS may be rewriting" in r["message"]
 
 
 def test_curve_validation():
@@ -92,7 +116,7 @@ def test_routes_are_gm_only_and_work(client, seed, hwmon, monkeypatch):
     assert d["fans"][0]["id"] == "hwmon3/pwm4" and d["min_percent"] == 20 and d["follow_gpu"] is False
     assert client.post("/api/system/fans", json={"fan": "hwmon3/pwm4", "percent": 55}).json()["ok"] is True
     assert client.post("/api/system/fans", json={"fan": "nope", "percent": 55}).status_code == 400
-    assert client.post("/api/system/fans", json={"fan": "hwmon3/pwm4", "auto": True}).json()["ok"] is True
+    assert client.post("/api/system/fans", json={"fan": "hwmon3/pwm4", "auto": True}).json()["ok"] is True      # puts the BIOS values back
     # follow the GPU: validated, saved, applied once now
     assert client.post("/api/system/fans", json={"follow_gpu": True, "fans": []}).status_code == 400
     assert client.post("/api/system/fans", json={"follow_gpu": True, "fans": ["zzz"]}).status_code == 400

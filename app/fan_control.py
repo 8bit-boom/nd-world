@@ -98,8 +98,36 @@ def _find(fan_id, root=None):
     return None
 
 
+def _orig_path():
+    return _config_path().with_name("fan_control_orig.json")
+
+
+def _boot_id():
+    return _read("/proc/sys/kernel/random/boot_id") or "unknown"
+
+
+def _load_orig():
+    """{fan id: {"enable": n|None, "pwm": raw}} remembered since the BIOS last set the fans - and only for this boot: after a
+    reboot the BIOS has set everything again, so an older note would put back a stale value."""
+    try:
+        data = json.loads(_orig_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("boot") != _boot_id() or not isinstance(data.get("fans"), dict):
+        return {}
+    return data["fans"]
+
+
+def _save_orig(fans):
+    path = _orig_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"boot": _boot_id(), "fans": fans}))
+    os.replace(tmp, path)
+
+
 def set_percent(fan_id, percent, root=None):
-    """Hold one fan at `percent` (MIN_PERCENT..100) - switches the header to manual mode. Returns {"ok", "message"}."""
+    """Hold one fan at `percent` (MIN_PERCENT..100) - switches the header to manual mode. The first time, what the BIOS had set
+    (mode and duty) is written down so give_back can put exactly that back. Returns {"ok", "message"}."""
     if isinstance(percent, bool) or not isinstance(percent, (int, float)) or percent != percent:
         return {"ok": False, "message": "percent must be a number."}
     percent = max(MIN_PERCENT, min(100, int(round(percent))))
@@ -109,28 +137,47 @@ def set_percent(fan_id, percent, root=None):
     base, n, info = hit
     if not info["writable"]:
         return {"ok": False, "message": "This fan is read-only here - the container needs the host's /sys mounted (see docs/GPU_SETUP.md, fan control)."}
+    raw_target = round(percent * 255 / 100)
     try:
+        saved = _load_orig()
+        if fan_id not in saved:
+            saved[fan_id] = {"enable": _int(_read(f"{base}/pwm{n}_enable")), "pwm": _int(_read(f"{base}/pwm{n}"))}
+            _save_orig(saved)
         if os.path.exists(f"{base}/pwm{n}_enable"):
             _write(f"{base}/pwm{n}_enable", 1)
-        _write(f"{base}/pwm{n}", round(percent * 255 / 100))
+        _write(f"{base}/pwm{n}", raw_target)
     except OSError as e:
         return {"ok": False, "message": "The fan chip refused the change: " + re.sub(r"\s+", " ", str(e))[:120]}
+    got = _int(_read(f"{base}/pwm{n}"))
+    if got is not None and abs(got - raw_target) > 8:
+        return {"ok": True, "message": f"Asked for {percent} % but the chip reads {round(got * 100 / 255)} % - the BIOS may be rewriting this header.",
+                "percent": percent, "warning": True}
     return {"ok": True, "message": f"Fan held at {percent} %.", "percent": percent}
 
 
 def give_back(fan_id, root=None):
-    """Hand one header back to the motherboard's own (BIOS) curve."""
+    """Put one header back as the BIOS had set it (mode and duty, remembered when this app first took it over). A fan this app never
+    changed is left alone; after a reboot the BIOS has it again anyway."""
     hit = _find(fan_id, root)
     if hit is None:
         return {"ok": False, "message": "There is no such fan."}
     base, n, info = hit
     if not info["writable"]:
         return {"ok": False, "message": "This fan is read-only here."}
+    saved = _load_orig()
+    note = saved.get(fan_id)
+    if note is None:
+        return {"ok": True, "message": "This fan is not held by nd-world; it is on whatever the BIOS set. (If you changed it by hand, a reboot gives it back.)"}
     try:
-        _write(f"{base}/pwm{n}_enable", 2)             # 2 = "automatic" in the hwmon ABI (the chip's own curve)
+        if note.get("pwm") is not None:
+            _write(f"{base}/pwm{n}", note["pwm"])
+        if note.get("enable") is not None and os.path.exists(f"{base}/pwm{n}_enable"):
+            _write(f"{base}/pwm{n}_enable", note["enable"])
     except OSError as e:
         return {"ok": False, "message": "The fan chip refused the change: " + re.sub(r"\s+", " ", str(e))[:120]}
-    return {"ok": True, "message": "Handed back to the BIOS fan curve."}
+    saved.pop(fan_id, None)
+    _save_orig(saved)
+    return {"ok": True, "message": "Put back as the BIOS had it."}
 
 
 # ── the curve ────────────────────────────────────────────────────────────────
