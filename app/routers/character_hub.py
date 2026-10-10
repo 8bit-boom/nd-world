@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import auth, combat_turns, live
+from .. import auth, char_extras, combat_turns, live
 from ..database import get_db
 from ..deps import filter_visible_entities, with_world, world_can_view_section, world_section_access
 from ..models import (
@@ -128,6 +128,7 @@ def delete_character_journal(db: Session, pc_id: int) -> None:
     db.query(CharacterJournalEntry).filter(
         CharacterJournalEntry.character_id == pc_id
     ).delete(synchronize_session=False)
+    char_extras.delete_for_character(db, pc_id)
 
 
 # ── Journey tab (server-rendered) + in-place loot claiming ───────────────────
@@ -612,7 +613,7 @@ def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
         "id": pc.id, "name": pc.name, "native": v["native"], "system": v["system"],
         "hp": v["hp"], "max_hp": v["max_hp"], "hp_label": v["hp_label"], "temp_hp": v["temp_hp"], "down": v["down"],
         "shock": (pc.shock_current or 0) if v["native"] else None, "shock_max": m["shock"] if v["native"] else None,
-        "conditions": conds, "hp_id": v["hp_id"], "levelup": bool(v["levelup"]),
+        "conditions": conds, "carry": char_extras.carry_info(db, pc) if v["native"] else None, "hp_id": v["hp_id"], "levelup": bool(v["levelup"]),
         # a custom system's other tracks (Stamina, Hunger...), without the vital shown separately as HP
         "resources": [r for r in v["resources"] if r["id"] != v["hp_id"]],
     }

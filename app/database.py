@@ -59,6 +59,9 @@ _GENERICALLY_HEALED_TABLES = (
     # player's private journal/goals per character, the personal half of the
     # character hub): brand new, same reasoning as ai_instructions above.
     "character_journal_entries",
+    # character_prefs / character_log / character_shares (app.models - per-character page settings, the change log, share
+    # links): brand new, same reasoning as character_journal_entries above.
+    "character_prefs", "character_log", "character_shares",
     # session_plans/session_plan_slots/session_plan_votes (app.models — the
     # session planner): brand new, same reasoning as character_journal_entries
     # above. The vote table's (slot, user) uniqueness is a table constraint,

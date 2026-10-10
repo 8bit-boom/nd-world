@@ -726,6 +726,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
     (me.native ? [] : me.resources || []).forEach(r => tags.push(vit(r.label, 'res:' + r.id, r.current, r.max, ed, false)));
     me.conditions.forEach(x => tags.push(h('span', { class: 'pch-pill', text: x })));
+    if (me.carry && me.carry.over) tags.push(h('span', { class: 'pch-pill', title: 'Carrying ' + me.carry.used + ' of ' + me.carry.limit, text: '\u2696 Overloaded' }));
     if (me.levelup) tags.push(h('span', { class: 'pch-pill soon', text: '⬆ Level up ready' }));
     if (d.next_session) {
       const ans = { yes: ' ✔', maybe: ' ?', no: ' ✖' }[d.next_session.my] || ' • answer?';

@@ -262,6 +262,8 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/characters/{pc_id}/export.pdf` | Player | Downloads a printable PDF character sheet. |
 | POST | `/api/characters/{pc_id}/hp-async` | Player | Live HP update (character sheet's +/- controls, no page reload). The quick-edit routes (hp-async, shock, pp, mp, xp, conditions) answer 400 — never 500 — to a malformed body or non-numeric value. |
 | POST | `/api/characters/{pc_id}/shock` | Player | Live Shock update. |
+| POST | `/api/characters/{pc_id}/currency` | Player (own character) / GM | Coin purse: `{abbr, action: "delta"\|"set", value}` on one currency (matched by abbreviation or label), never below 0; logged in the character's change log. |
+| POST | `/api/characters/{pc_id}/carry-limit` | Player (own character) / GM | Set how much the character can carry (`{value}`; 0 = the default 5 x (STR + BOD), a table default - the core rules have no limit). Returns `{carry: {used, limit, default, over}}`. |
 | POST | `/api/characters/{pc_id}/resource` | Player (own character) / GM | Quick-adjust one resource track of a character on a custom sheet system: body `{field_id, action: "delta"\|"set", value}`, clamped to 0..max; the custom-system twin of the HP / Shock steppers. 400 for a character without a custom template, 404 for an unknown track. |
 | POST | `/api/characters/{pc_id}/pp` | Player | Live Power Points update. |
 | POST | `/api/characters/{pc_id}/mp` | Player | Live Mana Points update. |
@@ -269,7 +271,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/characters/{pc_id}/conditions` | Player | Persists conditions: body `{action: "add"\|"remove"\|"toggle", name}` or `{action: "set", conditions: [...]}`. Labels are cleaned (printable, ≤40 chars), de-duplicated case-insensitively, max 12; 400 on bad input. Owner or GM only. |
 | GET | `/api/characters/{pc_id}/vitals` | Player | Live HP / Shock / PP / MP / XP / conditions JSON with the sheet's effective maxima (a stored max of 0 = stat-derived) — what an open sheet re-fetches on a live-sync event. Same view access as the sheet itself. |
 | POST | `/api/characters/{pc_id}/level-up` | GM / Owner | One-click level application when the PC's XP has crossed the next-level threshold (the "⬆ Level-up" prompt on the sheet, list, and party vitals). Refuses with 400 when the XP doesn't justify a level yet, so a stale banner can't double-level a character. |
-| POST | `/api/characters/{pc_id}/equipment` | Player | Updates the equipment list. |
+| POST | `/api/characters/{pc_id}/equipment` | Player | Updates the equipment list: `action` add \| remove \| `qty` (`{index, delta}`: use one / pick one up, never below 0) \| `weight` (`{index, value}`). Returns the list, `total_weight` and the `carry` summary. |
 | POST | `/api/characters/{pc_id}/feats` | Player | Updates the selected feats list. |
 | GET | `/api/characters/{pc_id}/sync` | Player | Full character JSON for the NeonDragonsApp sync flow (pull). |
 | PUT | `/api/characters/{pc_id}/sync` | Player | Overwrites the character from a NeonDragonsApp sync payload (push). |

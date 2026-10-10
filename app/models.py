@@ -646,6 +646,46 @@ class CharacterJournalEntry(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CharacterPref(Base):
+    """Small per-character settings that belong to the character page, not to the sheet itself (a JSON object):
+    `carry_limit` (0/absent = automatic), `pins` (pinned Pages, in order)... One row per character; deleted with it."""
+    __tablename__ = "character_prefs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=False, unique=True, index=True)
+    prefs_json = Column(Text, default="{}")
+
+
+class CharacterLog(Base):
+    """What changed on a character, and who changed it ("HP 12 -> 8", "XP +250"): shown on the character page, newest first,
+    with one-tap Undo for the numeric changes (`undo_json` says how: {"route": ..., "args": ...}; empty = not undoable)."""
+    __tablename__ = "character_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=False, index=True)
+    actor = Column(String(120), default="")
+    kind = Column(String(24), default="")
+    text = Column(String(300), default="")
+    undo_json = Column(Text, default="{}")
+    undone = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CharacterShare(Base):
+    """A read-only link to ONE character's sheet that anyone holding the token can open without an account; the owner (or a
+    GM) can revoke it. The token is the only secret and is never logged."""
+    __tablename__ = "character_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=False, index=True)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EntityNote(Base):
     """A discrete note attached to an entity, separate from its main body —
     the GM can jot several of these and hide/un-hide each independently of

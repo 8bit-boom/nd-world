@@ -30,6 +30,7 @@ from ..sheet_systems import (
 )
 from ..pc_stats import MAX_CONDITIONS, clean_condition, clean_conditions, int_field, pc_maxima
 from ..party_refs import detach_pc, member_ids as _member_ids
+from .. import char_extras
 from .character_hub import delete_character_journal, journey_context
 from pydantic import BaseModel
 
@@ -811,6 +812,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "feats_catalog": catalog["feats"],
         "linked_sheets": linked_sheets,
         "levelup_ready": levelup_ready,
+        "carry": char_extras.carry_info(db, pc),
         "hub_enabled": hub_enabled,
         "hub_mode": hub_mode,
         "hub_owner_name": hub_owner_name,
@@ -1908,13 +1910,67 @@ async def character_equipment_async(pc_id: int, request: Request, db: Session = 
         if not isinstance(index, int) or not (0 <= index < len(equipment)):
             raise HTTPException(400, "Invalid index")
         equipment.pop(index)
+    elif action in ("qty", "weight"):
+        # use one / pick one up (qty +-1, never below 0 - a used-up stim stays on the list as x0), or set what it weighs
+        index = body.get("index")
+        if not isinstance(index, int) or not (0 <= index < len(equipment)) or not isinstance(equipment[index], dict):
+            raise HTTPException(400, "Invalid index")
+        if action == "qty":
+            equipment[index]["qty"] = max(0, min(9999, int(_num(equipment[index].get("qty"), 1)) + _body_int(body, "delta")))
+        else:
+            equipment[index]["weight"] = max(0, min(9999, _num(body.get("value"), 0)))
     else:
         raise HTTPException(400, "Unknown action")
     pc.equipment_json = json.dumps(equipment)
     db.commit()
     live.touch(pc.world_id)
     total_weight = sum(_num(it.get("weight"), 0) * _num(it.get("qty"), 1) for it in equipment if isinstance(it, dict))
-    return {"equipment": equipment, "total_weight": total_weight}
+    return {"equipment": equipment, "total_weight": total_weight, "carry": char_extras.carry_info(db, pc)}
+
+
+@router.post("/api/characters/{pc_id}/currency")
+async def character_currency_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Coin purse: {abbr, action: "delta"|"set", value} on one currency of the character (matched by abbreviation or label,
+    case-insensitively). Never below 0. Owner-or-GM like the other quick edits."""
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_manage_character(user, pc):
+        raise HTTPException(403)
+    coins = json.loads(pc.currency_json or "[]")
+    key = str(body.get("abbr") or "").strip().lower()
+    coin = next((c for c in coins if isinstance(c, dict) and key and key in ((c.get("abbr") or "").lower(), (c.get("label") or "").lower())), None)
+    if coin is None:
+        raise HTTPException(404, "No such currency on this character")
+    before = int(_num(coin.get("value"), 0))
+    val = _body_int(body, "value")
+    after = max(0, before + val) if body.get("action", "set") == "delta" else max(0, val)
+    coin["value"] = after
+    pc.currency_json = json.dumps(coins)
+    if after != before:
+        label = coin.get("abbr") or coin.get("label") or "coins"
+        char_extras.log(db, pc, char_extras.actor_name(user), "currency", f"{label} {before} \u2192 {after}",
+                        {"op": "currency", "abbr": coin.get("abbr") or coin.get("label"), "value": before})
+    db.commit()
+    live.touch(pc.world_id)
+    return {"abbr": coin.get("abbr") or coin.get("label"), "value": after}
+
+
+@router.post("/api/characters/{pc_id}/carry-limit")
+async def character_carry_limit_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Set how much the character can carry ({value}; 0 = back to the default of 5 x (STR + BOD))."""
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    val = max(0, min(99999, _body_int(body, "value")))
+    char_extras.set_prefs(db, pc, carry_limit=val or None)
+    db.commit()
+    return {"carry": char_extras.carry_info(db, pc)}
 
 
 @router.post("/api/characters/{pc_id}/feats")

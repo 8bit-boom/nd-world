@@ -56,6 +56,18 @@
 .cs-stats-panel-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.6rem;border-bottom:1px solid var(--border);padding-bottom:.3rem; }
 .cs-stat-grid { display:grid;grid-template-columns:1fr 1fr;gap:.4rem; }
 .cs-attr-box { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.45rem .5rem;text-align:center; }
+.cs-qty { display:inline-flex; align-items:center; gap:.25rem; }
+.cs-qty-btn { width:32px; height:32px; border-radius:6px; border:1px solid var(--border); background:var(--bg3); color:var(--text); cursor:pointer; font-size:1rem; line-height:1; padding:0; font-family:var(--font); touch-action:manipulation; }
+.cs-qty-btn:hover { border-color:var(--neon); color:var(--neon); }
+.cs-wt-btn { background:none; border:0; border-bottom:1px dashed var(--border); color:var(--text); cursor:pointer; font:inherit; padding:.2rem .1rem; min-width:2ch; }
+.cs-carry { margin-top:.5rem; }
+.cs-carry-bar { height:8px; background:var(--bg3); border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+.cs-carry-fill { height:100%; width:0; background:var(--neon); transition:width .25s; }
+.cs-carry-fill.over { background:var(--neon2); }
+.cs-carry-txt { font-size:.72rem; color:var(--text-dim); margin-top:.25rem; }
+.cs-carry-txt button { background:none; border:0; color:var(--neon); cursor:pointer; font:inherit; padding:.2rem; text-decoration:underline; }
+.cs-coin-row { display:flex; align-items:center; gap:.2rem; }
+.cs-coin-num { background:none; border:0; border-bottom:1px dashed var(--border); cursor:pointer; font-family:var(--font); padding:.2rem .1rem; }
 .cs-rollable { cursor:pointer; position:relative; touch-action:manipulation; transition:border-color .12s, transform .08s; }
 .cs-rollable::after { content:"\1F3B2"; position:absolute; top:.15rem; right:.25rem; font-size:.62rem; opacity:.45; }
 .cs-rollable:hover, .cs-rollable:focus-visible { border-color:var(--neon); outline:none; }
@@ -462,6 +474,10 @@
         <tbody id="equipment-list"></tbody>
       </table>
       <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">Total weight: <span id="equipment-total-weight">{{ total_weight|int }}</span></div>
+      <div class="cs-carry" id="carry-box" data-used="{{ carry.used }}" data-limit="{{ carry.limit }}" data-default="{{ 'true' if carry.default else 'false' }}">
+        <div class="cs-carry-bar"><div class="cs-carry-fill" id="carry-fill"></div></div>
+        <div class="cs-carry-txt" id="carry-txt"></div>
+      </div>
       {% if can_manage %}
       <div class="cs-quick-add">
         <input id="qa-item-name" list="equipment-catalog-options" placeholder="Item name…"/>
@@ -512,9 +528,10 @@
   <div class="cs-currency-row">
     <span class="cs-currency-title">Currency</span>
     {% for c in currency %}
-    <div class="cs-coin">
-      <span class="cs-coin-val">{{ c.value }}</span>
+    <div class="cs-coin" data-coin="{{ c.abbr or c.label }}">
       <span class="cs-coin-lbl">{{ c.abbr or c.label }}</span>
+      {% if can_manage %}<div class="cs-coin-row"><button type="button" class="cs-qty-btn" onclick="coinDelta(this, -1)" aria-label="Spend 1 {{ c.abbr or c.label }}">&minus;</button><button type="button" class="cs-coin-val cs-coin-num" onclick="coinAmount(this)" title="Tap to add or spend an amount">{{ c.value }}</button><button type="button" class="cs-qty-btn" onclick="coinDelta(this, 1)" aria-label="Gain 1 {{ c.abbr or c.label }}">+</button></div>
+      {% else %}<span class="cs-coin-val">{{ c.value }}</span>{% endif %}
     </div>
     {% endfor %}
   </div>
@@ -678,8 +695,8 @@ function renderEquipmentList() {
   box.innerHTML = EQUIPMENT.map((item, i) => `
     <tr>
       <td>${escHtml(item.name)}${item.notes ? ` <span style="color:var(--text-dim);font-size:.75rem;">(${escHtml(item.notes)})</span>` : ''}</td>
-      <td>${item.qty || 1}</td>
-      <td>${item.weight || 0}</td>
+      <td>${CAN_MANAGE ? `<span class="cs-qty"><button type="button" class="cs-qty-btn" onclick="eqQty(${i}, -1)" aria-label="One fewer ${escHtml(item.name)}">\u2212</button><b>${item.qty ?? 1}</b><button type="button" class="cs-qty-btn" onclick="eqQty(${i}, 1)" aria-label="One more ${escHtml(item.name)}">+</button></span>` : (item.qty ?? 1)}</td>
+      <td>${CAN_MANAGE ? `<button type="button" class="cs-wt-btn" onclick="eqWeight(${i})" title="Tap to set the weight">${item.weight || 0}</button>` : (item.weight || 0)}</td>
       <td>${item.equipped ? '<span class="cs-equipped-dot">●</span>' : '<span style="color:var(--text-dim);">○</span>'}</td>
       ${CAN_MANAGE ? `<td><button type="button" class="cs-remove-btn" onclick="removeEquipmentQuick(${i})" title="Remove">✕</button></td>` : ''}
     </tr>
@@ -1000,6 +1017,54 @@ async function rollExpr(expr) {
   sheet.addEventListener('mousedown', ev => { if (ev.target === sheet) close(); });
   document.getElementById('rs-x').addEventListener('click', close);
 })();
+
+
+// ── Inventory: use one / pick one up, weights, carry limit, coin purse ───────────────────────────────────────────
+function renderCarry(c) {
+  const box = document.getElementById('carry-box');
+  if (!box || !c) return;
+  const pct = c.limit > 0 ? Math.min(100, Math.round(c.used * 100 / c.limit)) : 0;
+  const fill = document.getElementById('carry-fill');
+  fill.style.width = pct + '%';
+  fill.classList.toggle('over', !!c.over);
+  const txt = document.getElementById('carry-txt');
+  txt.replaceChildren(document.createTextNode((c.over ? '\u26a0 Over the limit: ' : 'Carrying ') + c.used + ' of ' + c.limit + (c.default ? ' (default: 5 \u00d7 STR+BOD) ' : ' ')));
+  if (CAN_MANAGE) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = 'change limit'; b.onclick = setCarryLimit;
+    txt.append(b);
+  }
+}
+async function equipmentAction(body) {
+  const d = await quickPost(`/api/characters/${PC_ID}/equipment`, body);
+  if (!d) return;
+  EQUIPMENT = d.equipment;
+  renderEquipmentList();
+  document.getElementById('equipment-total-weight').textContent = Math.trunc(d.total_weight);
+  renderCarry(d.carry);
+}
+function eqQty(index, delta) { equipmentAction({action:'qty', index, delta}); }
+function eqWeight(index) {
+  const v = prompt('Weight of one ' + (EQUIPMENT[index]?.name || 'item') + ':', EQUIPMENT[index]?.weight || 0);
+  if (v !== null && !isNaN(parseFloat(v))) equipmentAction({action:'weight', index, value: parseFloat(v)});
+}
+async function setCarryLimit() {
+  const v = prompt('How much can this character carry? (0 = the default, 5 \u00d7 STR+BOD)', '0');
+  if (v === null || isNaN(parseInt(v))) return;
+  const d = await quickPost(`/api/characters/${PC_ID}/carry-limit`, {value: parseInt(v)});
+  if (d) renderCarry(d.carry);
+}
+(function () { const b = document.getElementById('carry-box'); if (b) renderCarry({used: parseFloat(b.dataset.used), limit: parseInt(b.dataset.limit), default: b.dataset.default === 'true', over: parseFloat(b.dataset.used) > parseInt(b.dataset.limit) && parseInt(b.dataset.limit) > 0}); })();
+
+async function coinPost(coinEl, body) {
+  const d = await quickPost(`/api/characters/${PC_ID}/currency`, Object.assign({abbr: coinEl.dataset.coin}, body));
+  if (d) coinEl.querySelector('.cs-coin-num').textContent = d.value;
+}
+function coinDelta(btn, delta) { coinPost(btn.closest('.cs-coin'), {action:'delta', value: delta}); }
+function coinAmount(btn) {
+  const v = prompt('Add or spend (e.g. 50 or -20):');
+  if (v !== null && !isNaN(parseInt(v))) coinPost(btn.closest('.cs-coin'), {action:'delta', value: parseInt(v)});
+}
 
 function quickRoll(die) { rollExpr('1' + die); }
 function doRoll() {
