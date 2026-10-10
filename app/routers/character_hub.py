@@ -688,6 +688,7 @@ def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
     return {"me": me, "can_edit": is_owner, "combat": _combat_now(db, pc), "next_session": next_session,
             "rest_kinds": _rest_kinds(db, pc) if is_owner else [],
             "handouts_new": _handouts_new(db, pc) if is_owner else 0,
+            "pins": _pinned_places(db, pc, world),
             "polls_waiting": polls_waiting(db, world.id, asker),
             "schedule_href": with_world("/schedule", world)}
 
@@ -696,13 +697,9 @@ def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
 _PLACES_SKIP = {"characters", "cockpit", "schedule", "androidapp", "character_sheets", "editor", "studio_console"}
 
 
-@router.get("/api/characters/{pc_id}/hub/places")
-def hub_places(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    """Every page this player may open, so they never have to leave their character page: the same visibility the
-    navigation bar uses, evaluated as the PLAYER role (a GM looking in sees the player's list). The page opens each one
-    inside the hub (an in-page viewer), not in a new window."""
-    _user, _pc, world, _own = _hub_pc(request, db, pc_id)
-    tools, kinds = [], []
+def _place_rows(world) -> list:
+    """[(group, row)] for every page this world offers players (the navigation bar's visibility, as the PLAYER role)."""
+    out = []
     for item in build_catalog(world):
         if item["id"] in _PLACES_SKIP or item.get("condition") in ("dreamlands_enabled", "king_in_yellow_enabled"):
             continue
@@ -716,13 +713,53 @@ def hub_places(pc_id: int, request: Request, db: Session = Depends(get_db)):
         if cond and not getattr(world, cond, False):
             continue
         row = {"id": item["id"], "label": item["label"], "icon": item["icon"], "href": with_world(item["href"], world)}
-        (kinds if item["id"].startswith("kind_") else tools).append(row)
+        out.append(("kinds" if item["id"].startswith("kind_") else "tools", row))
+    return out
+
+
+def _pinned_places(db: Session, pc: PlayerCharacter, world) -> list:
+    """The pages this character pinned, in the order pinned; a page that is no longer open to players drops out."""
+    ids = char_extras.prefs(db, pc.id).get("pins") or []
+    by_id = {row["id"]: row for _g, row in _place_rows(world)}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+@router.get("/api/characters/{pc_id}/hub/places")
+def hub_places(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Every page this player may open, so they never have to leave their character page: the same visibility the
+    navigation bar uses, evaluated as the PLAYER role (a GM looking in sees the player's list). The page opens each one
+    inside the hub (an in-page viewer), not in a new window. `pins` are the ones the character keeps one tap away."""
+    _user, pc, world, _own = _hub_pc(request, db, pc_id)
+    rows = _place_rows(world)
+    tools = [r for g, r in rows if g == "tools"]
+    kinds = [r for g, r in rows if g == "kinds"]
     groups = []
     if tools:
         groups.append({"label": "Tools & logs", "items": tools})
     if kinds:
         groups.append({"label": "The world", "items": kinds})
-    return {"groups": groups}
+    return {"groups": groups, "pins": [r["id"] for r in _pinned_places(db, pc, world)]}
+
+
+@router.post("/api/characters/{pc_id}/hub/pins")
+async def hub_pin_toggle(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Pin or unpin one page ({id}): at most PINS_MAX, only pages that are open to players. Owner only."""
+    _user, pc, world = _owned_pc(request, db, pc_id)
+    body = await _json_body(request)
+    page = str(body.get("id") or "")
+    valid = {row["id"] for _g, row in _place_rows(world)}
+    pins = [i for i in (char_extras.prefs(db, pc.id).get("pins") or []) if i in valid]
+    if page in pins:
+        pins.remove(page)
+    else:
+        if page not in valid:
+            raise HTTPException(400, "That page is not open to players")
+        if len(pins) >= char_extras.PINS_MAX:
+            raise HTTPException(400, f"You can pin up to {char_extras.PINS_MAX} pages; unpin one first")
+        pins.append(page)
+    char_extras.set_prefs(db, pc, pins=pins or None)
+    db.commit()
+    return {"pins": pins}
 
 
 # ── Journal / goals writes ───────────────────────────────────────────────────

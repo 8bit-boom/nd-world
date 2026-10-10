@@ -309,3 +309,30 @@ def test_rest_needs_rules_and_ownership(client, seed):
     client.cookies.clear()
     _as(client, seed.player_b)
     assert client.post(f"/api/characters/{pc}/hub/rest", json={"kind": "long"}).status_code == 404
+
+
+def test_pinned_pages_toggle_cap_and_show_in_now(client, seed):
+    pc = _pc(seed.player_a, seed.world_a)
+    _set_world(seed.world_a.id, section_access_json=json.dumps({"maps": {"player": "read", "assistant": "edit"}}))
+    _as(client, seed.player_a)
+    assert client.get(f"/api/characters/{pc}/hub/places").json()["pins"] == []
+    assert client.post(f"/api/characters/{pc}/hub/pins", json={"id": "maps"}).json()["pins"] == ["maps"]
+    assert client.get(f"/api/characters/{pc}/hub/places").json()["pins"] == ["maps"]
+    now = client.get(f"/api/characters/{pc}/hub/now").json()
+    assert [p["id"] for p in now["pins"]] == ["maps"] and now["pins"][0]["href"].endswith("w=" + seed.world_a.slug)
+    assert client.post(f"/api/characters/{pc}/hub/pins", json={"id": "import"}).status_code == 400      # not a player page
+    assert client.post(f"/api/characters/{pc}/hub/pins", json={"id": "maps"}).json()["pins"] == []      # toggles off
+    assert client.get(f"/api/characters/{pc}/hub/now").json()["pins"] == []
+    _as(client, seed.player_b)
+    assert client.post(f"/api/characters/{pc}/hub/pins", json={"id": "maps"}).status_code == 404
+
+
+def test_pin_limit(client, seed):
+    from app import char_extras
+    pc = _pc(seed.player_a, seed.world_a)
+    _as(client, seed.player_a)
+    ids = [i["id"] for g in client.get(f"/api/characters/{pc}/hub/places").json()["groups"] for i in g["items"]]
+    for i in ids[:char_extras.PINS_MAX]:
+        assert client.post(f"/api/characters/{pc}/hub/pins", json={"id": i}).status_code == 200
+    if len(ids) > char_extras.PINS_MAX:
+        assert client.post(f"/api/characters/{pc}/hub/pins", json={"id": ids[char_extras.PINS_MAX]}).status_code == 400

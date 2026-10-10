@@ -615,13 +615,31 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     try {
       const d = await api('places');
       if (!d.groups.length) { el.replaceChildren(h('p', { class: 'pch-muted', text: 'Nothing else is open to players in this world yet.' })); return; }
+      const pins = new Set(d.pins || []);
+      const all = {};
+      d.groups.forEach(g => g.items.forEach(it => { all[it.id] = it; }));
+      const toggle = async id => {
+        try { const r = await send('pins', { id }); (r.pins || []).length; loadPlaces(); refreshNow(); }
+        catch (e) { alert(e.message || 'Could not change the pins'); }
+      };
+      const tile = it => h('div', { class: 'pch-placewrap', style: 'position:relative' },
+        h('a', { class: 'pch-place', href: it.href, title: it.icon + ' ' + it.label, style: 'width:100%' },
+          h('span', { class: 'pch-pi', text: it.icon }), h('span', { text: it.label })),
+        OWNER ? h('button', { type: 'button', class: 'pch-pinbtn', 'aria-pressed': String(pins.has(it.id)),
+          'aria-label': (pins.has(it.id) ? 'Unpin ' : 'Pin ') + it.label, title: pins.has(it.id) ? 'Unpin' : 'Pin to the top of your page',
+          style: 'position:absolute;top:0;right:0;min-width:44px;min-height:44px;background:none;border:0;cursor:pointer;font-size:1rem;opacity:' + (pins.has(it.id) ? '1' : '.45'),
+          text: '\ud83d\udccc', onclick: () => toggle(it.id) }) : null);
       const parts = [];
+      const pinned = (d.pins || []).map(i => all[i]).filter(Boolean);
+      if (pinned.length) {
+        parts.push(h('div', { class: 'pch-sub', text: '\ud83d\udccc Pinned' }));
+        parts.push(h('div', { class: 'pch-places' }, pinned.map(tile)));
+      }
       d.groups.forEach(g => {
         parts.push(h('div', { class: 'pch-sub', text: g.label }));
-        parts.push(h('div', { class: 'pch-places' }, g.items.map(it =>
-          h('a', { class: 'pch-place', href: it.href, title: it.icon + ' ' + it.label },
-            h('span', { class: 'pch-pi', text: it.icon }), h('span', { text: it.label })))));
+        parts.push(h('div', { class: 'pch-places' }, g.items.map(tile)));
       });
+      if (OWNER) parts.push(h('p', { class: 'pch-muted', text: 'Tap \ud83d\udccc to keep a page one tap away under your vitals (up to 8).' }));
       el.replaceChildren(...parts);
     } catch (e) { fail(el, e, loadPlaces); }
   }
@@ -798,6 +816,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     if (ed && window.ndNotify && ndNotify.supported && ndNotify.state() !== 'denied') tags.push(h('button', { type: 'button', class: 'pch-btn', 'aria-pressed': String(ndNotify.state() === 'on'), title: 'Tell me when it is my turn (while this page is open)',
       text: ndNotify.state() === 'on' ? '\ud83d\udd14 Alerts on' : '\ud83d\udd15 Alerts', onclick: async () => { await ndNotify.toggle(); renderNow(); } }));
     if (ed) tags.push(h('button', { type: 'button', class: 'pch-btn', title: 'A read-only link to this sheet that anyone can open', text: '\ud83d\udd17 Share', onclick: shareFlow }));
+    (d.pins || []).forEach(pg => tags.push(h('a', { class: 'pch-btn', href: pg.href, title: pg.label, text: pg.icon + ' ' + pg.label })));
     if (ed && window.ndOpenRoll) tags.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll', onclick: () => window.ndOpenRoll() }));
     if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
     (me.native ? [] : me.resources || []).forEach(r => tags.push(vit(r.label, 'res:' + r.id, r.current, r.max, ed, false)));
