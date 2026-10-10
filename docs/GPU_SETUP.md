@@ -831,3 +831,41 @@ Changing it needs more permission than reading it. If the app answers "Insuffici
 (`sudo nvidia-smi -i 0 -pl 100`) and make it permanent with **System → Advanced → Init/Shutdown Scripts → Add → Command, When: Post Init**
 using the same command, or - less safe - give the `world` service `cap_add: [SYS_ADMIN]`, which grants the whole container a broad privilege
 and is not recommended just for this.
+
+
+## Fan control (a passive GPU cooled by a motherboard fan header)
+
+A passive datacenter card (Tesla T10, V100, A16 ...) has no fan of its own, so `nvidia-smi` cannot speed one up. If its air comes from
+a fan on a motherboard 4-pin header, the speed is set by the board's fan chip. The BIOS fan curve (Smart Fan) can only follow the
+board's own temperatures (CPU / system / VRM / chipset) - it cannot follow the GPU. The System Monitor's **Fans** section can:
+hold a header at a fixed speed, hand it back to the BIOS, or **follow the GPU temperature** along a curve you set.
+
+What it needs, in this order (the page tells you which step is missing):
+
+1. **A kernel driver for the board's fan chip.** Linux must show the chip as `/sys/class/hwmon/hwmonN/pwm1…`. Check on the host:
+   `ls /sys/class/hwmon/*/pwm*` - if that prints nothing, no driver controls the chip. Gigabyte AM4 boards such as the X570 Aorus Master
+   use an ITE IT87xx chip (I believe an IT8688E - check yours with `sensors-detect` or the board's spec sheet). The stock Linux `it87`
+   driver does not always support the newest ITE chips; the community out-of-tree `it87` driver does, and usually also needs the
+   kernel option `acpi_enforce_resources=lax`. **TrueNAS is an appliance** (read-only system, no compiler), so loading an out-of-tree
+   driver there is the hard part and is not something this app can do for you. I have not tested this on TrueNAS.
+2. **The host's `/sys` visible inside the container.** Docker's own `/sys` is read-only. Bind-mount the host's and point the app at it
+   (a bind mount of `/sys` is writable without `privileged`):
+
+   ```yaml
+   world:
+     environment:
+       FAN_HWMON_ROOT: /host-sys/class/hwmon
+     volumes:
+       - /sys:/host-sys
+       - /mnt/DeadPool/apps/nd-world:/data
+   ```
+3. **A temperature to follow.** "Follow the GPU" reads the GPU through `nvidia-smi` (the same reading as the GPU panel above).
+
+Safety built in: a fan is never set below 20 %; with "follow the GPU" on, an unreadable GPU temperature or one at 85 C or more sends the
+fans to 100 %; a curve that would slow a fan as the GPU gets hotter is refused. The speed is held by nd-world - **if nd-world is stopped
+or crashes, the header stays at the last value written** (use the *BIOS* button on a fan before shutting the app down for long).
+Settings are kept in `fan_control.json` beside the database.
+
+No driver, or no way to mount `/sys`? Two fallbacks that need no software: in the BIOS (Smart Fan 5) set that header to a fixed
+speed that is enough for your worst case, or to the "System" / "VRM" source with a steep curve; or run the fan from a PWM-capable
+fan controller powered separately with its own temperature probe taped to the card's heatsink.

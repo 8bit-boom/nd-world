@@ -126,6 +126,7 @@ from . import image_jobs as _image_jobs
 from . import video_jobs as _video_jobs
 from . import job_shutdown as _job_shutdown
 from . import backups as _backups
+from . import fan_control as _fan_control
 from . import diagnostics as _diagnostics
 from . import auth as _auth
 from .constants import (KINDS, SUBTYPES, KIND_ICONS, MAX_CHARACTERS_PER_PLAYER,
@@ -359,6 +360,7 @@ def _startup_tasks():
     # Optional scheduled DB snapshots — no-op unless ND_BACKUP_DIR is set,
     # so the test suite (which never sets it) never grows a thread.
     _backups.start()
+    _fan_control.start()          # only runs when 'follow the GPU temperature' was saved as on
     # Event-loop stall / pool-pressure watchdog + restart journal — writes
     # to <DB dir>/diagnostics (ND_DIAG_* env knobs, see app/diagnostics.py).
     # Always on: it exists precisely for the incidents nothing else logs.
@@ -382,6 +384,7 @@ async def _shutdown_tasks():
     _video_jobs.mark_stragglers_interrupted()
     _media_rename_jobs.mark_stragglers_interrupted()
     _backups.stop()
+    _fan_control.stop()
     # Await, not just cancel, the diagnostics heartbeat so it reaps cleanly
     # inside this still-running loop (see its docstring for the TestClient
     # pending-task warning this avoids) — and journals the shutdown.
