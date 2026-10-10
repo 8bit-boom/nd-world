@@ -1167,6 +1167,19 @@ def characters_context(db: Session, world_id: int, query: str, user=None) -> str
     return "Player characters (live state):\n" + "\n".join(lines)
 
 
+def _has_matching_heading(body: str, words: list) -> bool:
+    """True when `body` is long enough to need an excerpt AND one of its markdown headings names EVERY query word
+    ("Blackwood Hound" for the question "tell me about Blackwood Hound"): the entity holds a section about exactly that
+    thing, wherever in the document it sits. Looks at the headings only, so it is cheap on a big body."""
+    if not words or not body or len(body) <= EXCERPT_CHARS:
+        return False
+    for m in _MD_HEADING_RE.finditer(body):
+        heading = m.group(2).lower()
+        if all(re.search(r'\b' + re.escape(_stem(w)) + r's?\b', heading) for w in words):
+            return True
+    return False
+
+
 def smart_world_context(
     db: Session, world_id: int, query: str,
     entity_limit: int = 25, notes_limit: int = 5, user=None, rules_limit: int = RULES_SECTION_LIMIT,
@@ -1272,6 +1285,20 @@ def smart_world_context(
         + [e for e in non_notes if e.id not in matched_ids]
         + [e for e in notes if e.id not in matched_ids]
     )
+    # Excerpt slots go in list order, and a note always came after every matched non-note - so five look-alike creature
+    # entities ("Blackwood Strangler", "Blackwood Golem" ...) used up all of them and a long dossier note with a section
+    # titled exactly "Blackwood Hound" was shown as a bare name line. An entity whose own body has a heading naming every
+    # query word is the best possible source for the question: it goes first, whatever its kind.
+    q_words = _query_words(query)
+    def _named(e) -> bool:
+        name = (e.name or "").lower()
+        # most of the question IS the title ("search <Title>" - the verb is not part of it)
+        hit = sum(1 for w in q_words if re.search(r'\b' + re.escape(_stem(w)) + r's?\b', name))
+        return hit >= 2 and hit >= 0.75 * len(q_words)
+    exact = [e for e in display_order if e.id in matched_ids and (_named(e) or _has_matching_heading(e.body or "", q_words))]
+    if exact:
+        exact_ids = {e.id for e in exact}
+        display_order = exact + [e for e in display_order if e.id not in exact_ids]
     context = format_context_from_entities(
         display_order, strip_gm_only=strip_secrets, query=query, excerpt_ids=matched_ids, db=db,
     )

@@ -537,3 +537,42 @@ def test_entity_detail_page_wires_per_question_context_fetch(client, seed):
     assert "async function epFetchEntityContext(query)" in page
     assert "/api/ai/entity-context" in page
     assert "const bodyExcerpt = await epFetchEntityContext(text);" in page
+
+
+def test_a_long_note_with_the_exact_heading_beats_five_look_alike_entities(client, seed):
+    """Reported: "tell me about Blackwood Hound" answered from five 'Blackwood X' creature entities and said the encounter
+    dossier note 'contains: None', because every matched non-note took an excerpt slot before any note was reached."""
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        for i, nm in enumerate(["Blackwood Strangler", "Blackwood Golem", "Blackwood Warden", "Blackwood Stag",
+                                "Blackwood Witch", "Blackwood Raven", "Blackwood Cutter"]):
+            db.add(Entity(world_id=w, kind="creature", name=nm, summary=f"{nm} lurks in the Blackwood",
+                          body=f"{nm} haunts the Blackwood and its hounds. " * 30))
+        filler = "\n\n".join(f"## Encounter {i}\n\n" + ("Unrelated prose about axes and stumps. " * 40) for i in range(12))
+        dossier = Entity(world_id=w, kind="note", name="Hunt Blackwood Blackmere Encounter Dossier", summary="None",
+                         body=filler + "\n\n### Blackwood Hound\n\nA root-monitor response shaped like a lean dog of bark. "
+                                       "Type: Lesser Minion. 4 Health; 2d10. Bite and bind: 1 damage.\n\n"
+                              + "## Scaling\n\nTune the numbers.")
+        db.add(dossier)
+        db.commit()
+        context, _a, _b = smart_world_context(db, w, "tell me about Blackwood Hound", entity_limit=25, notes_limit=5)
+        assert "4 Health; 2d10" in context
+    finally:
+        db.close()
+
+
+def test_a_note_named_by_the_whole_question_gets_its_text_not_just_its_name(client, seed):
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        for i in range(7):
+            db.add(Entity(world_id=w, kind="creature", name=f"Moonlight Hunter {i}", summary="x",
+                          body=f"Moonlight Hunter {i} blackmere dossier encounter. " * 40))
+        db.add(Entity(world_id=w, kind="note", name="Blackmere Encounter Dossier", summary="None",
+                      body="## Overview\n\nThe real dossier text: forester alarm rises by one.\n\n" + "More text. " * 200))
+        db.commit()
+        context, _a, _b = smart_world_context(db, w, "search Blackmere Encounter Dossier", entity_limit=25, notes_limit=5)
+        assert "forester alarm rises" in context
+    finally:
+        db.close()
