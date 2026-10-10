@@ -643,6 +643,14 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       h('button', { type: 'button', class: 'pch-btn', text: hp ? '💚 Heal' : '+ Recover', onclick: go(1) }),
       h('button', { type: 'button', class: 'pch-btn', text: 'Cancel', onclick: () => { popOpen = null; renderNow(); } }));
   }
+  async function combatAct(what) {
+    if (nowBusy) return;
+    nowBusy = true;
+    try { await send(what); nowData.err = ''; } catch (e) { nowData.err = e.message; }
+    nowBusy = false;
+    await refreshNow();
+    renderNow();
+  }
   function whenLabel(iso) {
     return new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
@@ -657,6 +665,10 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       const lead = c.turn === 'me' ? '⚔ YOUR TURN' : c.next_is_me ? '⚔ You’re up next'
         : '⚔ ' + (c.turn === 'pc' ? c.name + '’s turn' : 'Enemy turn');
       top.push(h('span', { class: 'pch-pill ' + kind, role: 'status' }, lead, rnd));
+    }
+    if (c && ed) {
+      if (c.can_roll_initiative && me.native) top.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll initiative', onclick: () => combatAct('initiative') }));
+      if (c.turn === 'me') top.push(h('button', { type: 'button', class: 'pch-btn', text: '\u2705 End turn', onclick: () => combatAct('end-turn') }));
     }
     if (me.max_hp > 0 || me.hp != null) top.push(vit(me.hp_label || 'HP', me.native ? 'hp' : 'res:' + me.hp_id, me.hp || 0, me.max_hp || 0, ed && (me.native || !!me.hp_id), me.down, true));
     if (me.native && me.shock_max > 0) top.push(vit('Shock', 'shock', me.shock || 0, me.shock_max, ed, false, true));

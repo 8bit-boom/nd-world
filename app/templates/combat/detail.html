@@ -324,6 +324,25 @@ document.getElementById('delete-btn').addEventListener('click', () => {
 });
 
 let saveTimer = null;
+
+// A player rolling their initiative or ending their turn (from their character page) changes this encounter on the
+// server: pick it up here, unless a save of ours is pending or the GM is typing in a field.
+let _liveTimer = null;
+window.addEventListener('nd-live', () => {
+  clearTimeout(_liveTimer);
+  _liveTimer = setTimeout(async () => {
+    const ae = document.activeElement;
+    if (saveTimer || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
+    try {
+      const r = await fetch('/api/combat/' + COMBAT_ID + '/state');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (JSON.stringify(d.combatants) === JSON.stringify(combatants) && d.round_num === roundNum && d.active_idx === activeIdx) return;
+      combatants = d.combatants; roundNum = d.round_num; activeIdx = d.active_idx;
+      render();
+    } catch (e) { /* the next change tries again */ }
+  }, 500);
+});
 function save() {
   clearTimeout(saveTimer);
   return new Promise(resolve => {

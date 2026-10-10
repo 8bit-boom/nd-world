@@ -187,3 +187,86 @@ def test_the_viewer_script_parses():
         pytest.skip("node is not installed")
     out = subprocess.run([node, "--check", "static/js/pc-viewer.js"], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
+
+
+# ── initiative + end turn, and the turn order itself ────────────────────────
+
+def test_turn_order_follows_initiative_not_the_order_added(client, seed):
+    """active_idx is a position in the initiative-sorted order (the tracker page's own rule)."""
+    pc = _pc(seed.player_a, seed.world_a, "Hero")
+    slow = {"id": "a", "name": "Slowpoke", "source": "pc", "pc_id": pc, "initiative": 3}
+    fast = {"id": "b", "name": "Boss", "source": "entity", "entity_id": 9, "initiative": 20}
+    _combat(seed.world_a, [slow, fast], active_idx=0)          # position 0 = the highest initiative = Boss
+    _as(client, seed.player_a)
+    c = client.get(f"/api/characters/{pc}/hub/now").json()["combat"]
+    assert c["turn"] == "enemy" and c["next_is_me"] is True
+
+
+def _stats(pc_id, **vals):
+    db = SessionLocal()
+    try:
+        db.get(PlayerCharacter, pc_id).stats_json = json.dumps([{"id": k, "value": v} for k, v in vals.items()])
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_roll_initiative_once_into_the_encounter_and_the_log(client, seed):
+    pc = _pc(seed.player_a, seed.world_a, "Hero")
+    _stats(pc, dex=4, itu=3)
+    boss = {"id": "b", "name": "Boss", "source": "entity", "entity_id": 9, "initiative": 9}
+    mine = {"id": "a", "name": "Hero", "source": "pc", "pc_id": pc, "initiative": 0}
+    cid = _combat(seed.world_a, [mine, boss], active_idx=0)     # Boss (9) has the turn
+    _as(client, seed.player_a)
+    assert client.get(f"/api/characters/{pc}/hub/now").json()["combat"]["can_roll_initiative"] is True
+    r = client.post(f"/api/characters/{pc}/hub/initiative")
+    assert r.status_code == 200 and 8 <= r.json()["initiative"] <= 17            # d10 + (4 + 3)
+    db = SessionLocal()
+    try:
+        cs = db.get(CombatSession, cid)
+        saved = json.loads(cs.combatants_json)
+        assert saved[0]["initiative"] == r.json()["initiative"]
+        from app import combat_turns
+        assert saved[combat_turns.current_index(cs, saved)]["name"] == "Boss"     # the Boss keeps the turn after the re-sort
+    finally:
+        db.close()
+    assert client.post(f"/api/characters/{pc}/hub/initiative").status_code == 409
+    assert client.get("/api/dice/history").json()["rolls"][0]["label"].startswith("Initiative")
+
+
+def test_end_turn_only_on_your_turn_and_wraps_the_round(client, seed):
+    pc = _pc(seed.player_a, seed.world_a, "Hero")
+    mine = {"id": "a", "name": "Hero", "source": "pc", "pc_id": pc, "initiative": 12}
+    boss = {"id": "b", "name": "Boss", "source": "entity", "entity_id": 9, "initiative": 5}
+    cid = _combat(seed.world_a, [boss, mine], active_idx=1, round_num=4)   # Hero (12) first, so position 1 is the Boss
+    _as(client, seed.player_a)
+    assert client.post(f"/api/characters/{pc}/hub/end-turn").status_code == 409      # the Boss has the turn
+    _set_combat(cid, active_idx=0)
+    r = client.post(f"/api/characters/{pc}/hub/end-turn")
+    assert r.status_code == 200 and r.json()["combat"]["turn"] == "enemy"
+    _set_combat(cid, active_idx=1)
+    boss_turn = client.post(f"/api/characters/{pc}/hub/end-turn")
+    assert boss_turn.status_code == 409                                              # still not Hero's turn
+    db = SessionLocal()
+    try:
+        assert db.get(CombatSession, cid).round_num == 4
+    finally:
+        db.close()
+
+
+def test_initiative_and_end_turn_are_owner_only(client, seed):
+    pc = _pc(seed.player_a, seed.world_a)
+    _combat(seed.world_a, [{"id": "a", "name": "H", "source": "pc", "pc_id": pc, "initiative": 0}])
+    _as(client, seed.player_b)
+    assert client.post(f"/api/characters/{pc}/hub/initiative").status_code == 404
+    assert client.post(f"/api/characters/{pc}/hub/end-turn").status_code == 404
+
+
+def test_advance_wraps_to_a_new_round():
+    from types import SimpleNamespace
+    from app import combat_turns
+    cs = SimpleNamespace(active_idx=1, round_num=2)
+    combat_turns.advance(cs, [{"initiative": 1}, {"initiative": 2}])
+    assert (cs.active_idx, cs.round_num) == (0, 3)
+    combat_turns.advance(cs, [{"initiative": 1}, {"initiative": 2}])
+    assert (cs.active_idx, cs.round_num) == (1, 3)

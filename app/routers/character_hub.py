@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import auth, live
+from .. import auth, combat_turns, live
 from ..database import get_db
 from ..deps import filter_visible_entities, with_world, world_can_view_section, world_section_access
 from ..models import (
@@ -462,32 +462,87 @@ def hub_schedule(pc_id: int, request: Request, db: Session = Depends(get_db)):
 _COMBAT_FRESH = timedelta(hours=12)      # an encounter untouched for longer than this is not "now"
 
 
-def _combat_now(db: Session, pc: PlayerCharacter):
-    """Where this character stands in a live encounter, or None. Deliberately minimal: the round, and whether the turn is
-    this character's, another player character's (named), or "the enemy" (never named - a GM-run combatant's name can be
-    a spoiler)."""
+def _pc_encounter(db: Session, pc: PlayerCharacter):
+    """(CombatSession, combatants, index of this character) of the freshest live encounter that includes it, else None."""
     since = datetime.utcnow() - _COMBAT_FRESH
     rows = (db.query(CombatSession).filter(CombatSession.world_id == pc.world_id, CombatSession.updated_at >= since)
             .order_by(CombatSession.updated_at.desc()).limit(8).all())
     for cs in rows:
-        try:
-            combatants = json.loads(cs.combatants_json or "[]")
-        except ValueError:
-            continue
-        if not isinstance(combatants, list) or not any(isinstance(c, dict) and c.get("pc_id") == pc.id for c in combatants):
-            continue
-        n = len(combatants)
-        idx = (cs.active_idx or 0) % n
-        cur = combatants[idx] if isinstance(combatants[idx], dict) else {}
-        nxt = combatants[(idx + 1) % n] if isinstance(combatants[(idx + 1) % n], dict) else {}
-        if cur.get("pc_id") == pc.id:
-            turn, name = "me", None
-        elif cur.get("source") == "pc":
-            turn, name = "pc", str(cur.get("name") or "")[:60]
-        else:
-            turn, name = "enemy", None
-        return {"round": cs.round_num or 1, "turn": turn, "name": name, "next_is_me": nxt.get("pc_id") == pc.id}
+        combatants = combat_turns.load(cs)
+        mine = combat_turns.find_pc(combatants, pc.id)
+        if mine is not None:
+            return cs, combatants, mine
     return None
+
+
+def _combat_now(db: Session, pc: PlayerCharacter):
+    """Where this character stands in a live encounter, or None. Deliberately minimal: the round, and whether the turn is
+    this character's, another player character's (named), or "the enemy" (never named - a GM-run combatant's name can be
+    a spoiler)."""
+    found = _pc_encounter(db, pc)
+    if not found:
+        return None
+    cs, combatants, mine = found
+    turn_order = combat_turns.order(combatants)
+    n = len(combatants)
+    pos = (cs.active_idx or 0) % n
+    cur = combatants[turn_order[pos]]
+    nxt = combatants[turn_order[(pos + 1) % n]]
+    if cur.get("pc_id") == pc.id:
+        turn, name = "me", None
+    elif cur.get("source") == "pc":
+        turn, name = "pc", str(cur.get("name") or "")[:60]
+    else:
+        turn, name = "enemy", None
+    return {"round": cs.round_num or 1, "turn": turn, "name": name, "next_is_me": nxt.get("pc_id") == pc.id and turn != "me",
+            "my_initiative": combat_turns._init(combatants[mine]), "can_roll_initiative": combat_turns._init(combatants[mine]) == 0}
+
+
+def _speed(pc: PlayerCharacter) -> int:
+    """Initiative = Speed (core rules): Dexterity + Intuition."""
+    try:
+        stats = {str(s.get("id")): int(s.get("value") or 0) for s in json.loads(pc.stats_json or "[]") if isinstance(s, dict)}
+    except (ValueError, TypeError):
+        stats = {}
+    return stats.get("dex", 0) + stats.get("itu", 0)
+
+
+@router.post("/api/characters/{pc_id}/hub/initiative")
+def hub_roll_initiative(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Roll this character's initiative (Speed + d10) into the live encounter and the shared dice log. Owner only, once:
+    after that the GM edits it."""
+    from . import dice as _dice
+    user, pc, world = _owned_pc(request, db, pc_id)
+    if not pc_maxima(pc)["native"]:
+        raise HTTPException(400, "Initiative is rolled from the sheet's own rules for this system")
+    found = _pc_encounter(db, pc)
+    if not found:
+        raise HTTPException(409, "No encounter is running for this character")
+    cs, combatants, mine = found
+    if combat_turns._init(combatants[mine]):
+        raise HTTPException(409, "Initiative is already rolled - ask your GM to change it")
+    speed = _speed(pc)
+    roll = _dice._store_roll(db, request, world, "1d10" + (f"+{speed}" if speed else ""), label=f"Initiative \u2014 {pc.name}")
+    combat_turns.set_initiative(cs, combatants, mine, max(1, roll.total))
+    db.commit()
+    live.touch(pc.world_id)
+    return {"initiative": roll.total, "roll": _dice._roll_response(roll)}
+
+
+@router.post("/api/characters/{pc_id}/hub/end-turn")
+def hub_end_turn(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Pass the turn on - only while it is this character's turn."""
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    found = _pc_encounter(db, pc)
+    if not found:
+        raise HTTPException(409, "No encounter is running for this character")
+    cs, combatants, _mine = found
+    if combat_turns.current_index(cs, combatants) != combat_turns.find_pc(combatants, pc.id):
+        raise HTTPException(409, "It is not this character's turn")
+    combat_turns.advance(cs, combatants)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"ok": True, "round": cs.round_num, "combat": _combat_now(db, pc)}
 
 
 @router.get("/api/characters/{pc_id}/hub/now")
