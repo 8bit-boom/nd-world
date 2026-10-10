@@ -646,6 +646,19 @@ class CharacterJournalEntry(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class WorldHandout(Base):
+    """An image the GM showed the players ("Send to players" / the spotlight) - kept so a player who missed the pop-up, or
+    joined later, finds it on their character page (Handouts tab) instead of losing it. World-scoped; every member of the world
+    may see it (it was shown to all of them)."""
+    __tablename__ = "world_handouts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    url = Column(String(512), nullable=False)
+    label = Column(String(256), default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class CharacterPref(Base):
     """Small per-character settings that belong to the character page, not to the sheet itself (a JSON object):
     `carry_limit` (0/absent = automatic), `pins` (pinned Pages, in order)... One row per character; deleted with it."""

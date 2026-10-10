@@ -627,6 +627,36 @@ def hub_log_undo(pc_id: int, entry_id: int, request: Request, db: Session = Depe
     return {"ok": True}
 
 
+@router.get("/api/characters/{pc_id}/hub/handouts")
+def hub_handouts(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Pictures the GM showed the table ("Send to players"), newest first - so a pop-up that was missed is not lost. Marks
+    nothing as seen (POST hub/handouts/seen does, when the owner opens the tab)."""
+    from ..models import WorldHandout
+    _user, pc, _world, is_owner = _hub_pc(request, db, pc_id)
+    seen = int(char_extras.prefs(db, pc.id).get("handouts_seen") or 0)
+    rows = db.query(WorldHandout).filter(WorldHandout.world_id == pc.world_id).order_by(WorldHandout.id.desc()).limit(40).all()
+    return {"can_edit": is_owner, "handouts": [{
+        "id": h.id, "url": h.url, "label": h.label or "", "new": h.id > seen,
+        "at": h.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if h.created_at else None} for h in rows]}
+
+
+@router.post("/api/characters/{pc_id}/hub/handouts/seen")
+def hub_handouts_seen(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """The owner has looked at the handouts: nothing is 'new' until the GM shows another."""
+    from ..models import WorldHandout
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    newest = db.query(WorldHandout.id).filter(WorldHandout.world_id == pc.world_id).order_by(WorldHandout.id.desc()).first()
+    char_extras.set_prefs(db, pc, handouts_seen=newest[0] if newest else None)
+    db.commit()
+    return {"ok": True}
+
+
+def _handouts_new(db: Session, pc: PlayerCharacter) -> int:
+    from ..models import WorldHandout
+    seen = int(char_extras.prefs(db, pc.id).get("handouts_seen") or 0)
+    return db.query(WorldHandout).filter(WorldHandout.world_id == pc.world_id, WorldHandout.id > seen).count()
+
+
 @router.get("/api/characters/{pc_id}/hub/now")
 def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
     """The strip that stays on screen over every tab: this character's live vitals (HP / Shock / conditions - read-only
@@ -657,6 +687,7 @@ def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
                         "starts_at": slot.starts_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "my": mine.choice if mine else None}
     return {"me": me, "can_edit": is_owner, "combat": _combat_now(db, pc), "next_session": next_session,
             "rest_kinds": _rest_kinds(db, pc) if is_owner else [],
+            "handouts_new": _handouts_new(db, pc) if is_owner else 0,
             "polls_waiting": polls_waiting(db, world.id, asker),
             "schedule_href": with_world("/schedule", world)}
 

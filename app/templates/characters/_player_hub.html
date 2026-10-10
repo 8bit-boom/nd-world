@@ -142,6 +142,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="notes"><span class="pch-ic">📓</span><span class="pch-lb">Notes</span></button>{% endif %}
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="world"><span class="pch-ic">🌍</span><span class="pch-lb">World</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="schedule"><span class="pch-ic">🗓</span><span class="pch-lb">Schedule</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="handouts"><span class="pch-ic">📬</span><span class="pch-lb">Handouts</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="log"><span class="pch-ic">📋</span><span class="pch-lb">Log</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="places"><span class="pch-ic">🧭</span><span class="pch-lb">Pages</span></button>
     <button type="button" class="pch-tab pch-tab-more" id="pch-more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="pch-more"><span class="pch-ic">☰</span><span class="pch-lb">More</span></button>
@@ -228,6 +229,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   {% if own %}<section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>{% endif %}
   <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="handouts" hidden><div data-body="handouts" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="log" hidden><div data-body="log" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="places" hidden>
     <h2 class="pch-h">🧭 Pages</h2>
@@ -246,8 +248,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
-  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'log', 'places']
-                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'log', 'places'];
+  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'handouts', 'log', 'places']
+                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'handouts', 'log', 'places'];
   const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
@@ -568,6 +570,27 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     return t.toLocaleDateString([], { day: 'numeric', month: 'short' });
   }
 
+  // ── Handouts: pictures the GM showed the table, kept for whoever missed the pop-up ─────────────────────────
+  async function loadHandouts() {
+    const el = body('handouts');
+    try {
+      const d = await api('handouts');
+      const parts = [h('div', { class: 'pch-sub', text: '\ud83d\udcec Shown to the table' })];
+      if (!d.handouts.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing yet \u2014 when your GM sends a picture to the players it is kept here.' }));
+      const grid = h('div', { class: 'pch-places' });
+      d.handouts.forEach(x => {
+        const img = h('img', { src: x.url, alt: x.label || 'Handout', loading: 'lazy', style: 'width:100%;height:9rem;object-fit:cover;border-radius:6px;display:block' });
+        const card = h('button', { type: 'button', class: 'pch-place', style: 'padding:.4rem;align-items:stretch', title: x.label || 'Handout',
+          onclick: () => { if (window.openLightbox) openLightbox(x.url, x.label || 'Handout'); else window.open(x.url, '_blank'); } },
+          img, h('span', { text: (x.new ? '\ud83c\udd95 ' : '') + (x.label || 'Handout') }), h('span', { class: 'pch-muted', text: when(x.at) }));
+        grid.append(card);
+      });
+      parts.push(grid);
+      el.replaceChildren(...parts);
+      if (OWNER && d.handouts.some(x => x.new)) { try { await send('handouts/seen'); refreshNow(); } catch (e) { /* the badge just stays */ } }
+    } catch (e) { fail(el, e, loadHandouts); }
+  }
+
   // ── Pages: everything the player may open, without leaving the character ──────────────────────────────
   function openPage(href, title) {
     if (window.ndPcViewer && ndPcViewer.open(href, title)) return;
@@ -757,6 +780,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
     (me.native ? [] : me.resources || []).forEach(r => tags.push(vit(r.label, 'res:' + r.id, r.current, r.max, ed, false)));
     me.conditions.forEach(x => tags.push(h('span', { class: 'pch-pill', text: x })));
+    if (d.handouts_new) tags.push(h('button', { type: 'button', class: 'pch-pill soon', style: 'cursor:pointer', onclick: () => show('handouts'), text: '\ud83d\udcec ' + d.handouts_new + ' new handout' + (d.handouts_new === 1 ? '' : 's') }));
     if (me.carry && me.carry.over) tags.push(h('span', { class: 'pch-pill', title: 'Carrying ' + me.carry.used + ' of ' + me.carry.limit, text: '\u2696 Overloaded' }));
     if (me.levelup) tags.push(h('span', { class: 'pch-pill soon', text: '⬆ Level up ready' }));
     if (d.next_session) {
@@ -815,7 +839,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   document.addEventListener('click', ev => { if (!moreSheet.hidden && !moreSheet.contains(ev.target)) closeMore(); });
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
-  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog };
+  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog, handouts: loadHandouts };
   if (OWNER) loaders.notes = loadNotes;
   // The embedded Player Cockpit only starts loading once its tab is opened. The loader (cockpit-frames.js) also gives
   // its page back - the cockpit AND its windows - after a minute on another tab, and loads it again when you return:
