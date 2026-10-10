@@ -34,7 +34,9 @@ def hwmon(tmp_path, monkeypatch):
     monkeypatch.setattr(fc, "HWMON_ROOT", str(tmp_path))
     monkeypatch.setattr(fc, "_config_path", lambda: tmp_path / "fan_control.json")
     monkeypatch.setattr(fc, "_boot_id", lambda: "boot-1")
+    monkeypatch.setattr(fc, "HOLD_SETTLE", 0)                              # route holds re-read after a pause; not in tests
     fc._checked.clear()
+    fc._written.clear()
     fc._state["v"] = None
     return tmp_path
 
@@ -125,7 +127,17 @@ def test_set_percent_warns_when_the_chip_does_not_keep_the_value(hwmon, monkeypa
         real(path, 128 if path.endswith("/pwm4") else value)
     monkeypatch.setattr(fc, "_write", sticky)
     r = fc.set_percent(FAN, 90)
-    assert r["ok"] and r.get("warning") and "BIOS may be rewriting" in r["message"]
+    assert r["ok"] and r.get("warning") and "will not hold" in r["message"]
+
+
+def test_a_hold_is_read_back_after_a_pause_to_catch_firmware_putting_its_value_back(hwmon, monkeypatch):
+    def firmware(_s):                                                    # the chip accepted the write, then firmware reset it
+        (hwmon / "hwmon3/pwm4").write_text("128\n")
+    monkeypatch.setattr(fc.time, "sleep", firmware)
+    r = fc.set_percent(FAN, 90, settle=1.0)
+    assert r["ok"] and r["warning"] and "1 s later" in r["message"] and "will not hold" in r["message"]
+    monkeypatch.setattr(fc.time, "sleep", lambda s: None)
+    assert "warning" not in fc.set_percent(FAN, 90, settle=1.0)           # it stuck this time
 
 
 def test_a_failed_note_means_the_fan_is_not_touched(hwmon, monkeypatch):
@@ -204,6 +216,18 @@ def test_a_steady_gpu_does_not_keep_rewriting_the_chip(hwmon, monkeypatch):
     assert writes == []
 
 
+def test_the_loop_notices_when_something_else_changes_what_it_set(hwmon):
+    fc.apply_once(50, CFG)
+    assert fc._state["v"]["warnings"] == []
+    (hwmon / "hwmon3/pwm4").write_text("200\n")                          # firmware / the BIOS overwrote the output
+    fc.apply_once(50, CFG)
+    w = fc._state["v"]["warnings"]
+    assert len(w) == 1 and "something else" in w[0] and FAN in w[0]
+    (hwmon / "hwmon3/pwm4_enable").write_text("2\n")                     # or put it back in automatic mode
+    fc.apply_once(50, CFG)
+    assert fc._state["v"]["warnings"]
+
+
 def test_an_unreadable_temperature_means_full_speed(hwmon):
     fc.apply_once(None, CFG)
     assert _pwm(hwmon) == 255
@@ -237,6 +261,22 @@ def test_check_flags_an_inverted_output(hwmon):
     r = fc.check_fan(FAN, sleep=_fake_fan(hwmon, 0.6))
     assert r["verdict"] == "inverted" and "INVERTED" not in r["message"] and "inverted" in r["message"]
     assert fc.verdict(FAN) == "inverted"
+
+
+def test_check_catches_firmware_that_puts_its_value_back_even_when_the_rpm_looks_fine(hwmon):
+    """The reported behaviour of the IT8792E on Gigabyte X570 boards: the write is accepted, then reverted within a second."""
+    (hwmon / "hwmon3/pwm4").write_text("100\n")
+    state = {"n": 0}
+    def sleep(_s):
+        state["n"] += 1
+        if state["n"] == 1:
+            (hwmon / "hwmon3/fan4_input").write_text("3000\n")           # the fan did spin up at first ...
+        else:
+            (hwmon / "hwmon3/pwm4").write_text("100\n")                  # ... then firmware wrote its own duty back
+    r = fc.check_fan(FAN, sleep=sleep, seconds=3)
+    assert r["ok"] and r["verdict"] == "not_held" and "firmware" in r["message"]
+    assert fc.verdict(FAN) == "not_held" and fc.unusable(FAN)
+    assert _pwm(hwmon) == 100
 
 
 def test_check_says_when_nothing_changed_or_there_is_no_signal(hwmon):
@@ -352,6 +392,22 @@ def test_a_refused_hold_leaves_the_fan_following(client, seed, hwmon, monkeypatc
     r = client.post("/api/system/fans", json={"fan": FAN, "percent": 90})
     assert r.status_code == 400 and fc.load_config()["follow_gpu"] is True and fc.load_config()["fan_ids"] == [FAN]
     fc.stop()
+
+
+def test_an_output_the_firmware_overwrites_may_not_follow_the_gpu(client, seed, hwmon):
+    _gm(client, seed)
+    fc._checked[FAN] = {"verdict": "not_held", "t": 0}
+    r = client.post("/api/system/fans", json={"follow_gpu": True, "fans": [FAN]})
+    assert r.status_code == 400 and "unusable" in r.json()["detail"]
+    assert client.get("/api/system/fans").json()["checked"] == {FAN: "not_held"}
+
+
+def test_a_hold_through_the_route_reports_a_value_that_does_not_stick(client, seed, hwmon, monkeypatch):
+    monkeypatch.setattr(fc, "HOLD_SETTLE", 0.5)
+    monkeypatch.setattr(fc.time, "sleep", lambda _s: (hwmon / "hwmon3/pwm4").write_text("128\n"))
+    _gm(client, seed)
+    r = client.post("/api/system/fans", json={"fan": FAN, "percent": 90})
+    assert r.status_code == 200 and r.json()["warning"] is True and "will not hold" in r.json()["message"]
 
 
 def test_check_route(client, seed, hwmon, monkeypatch):

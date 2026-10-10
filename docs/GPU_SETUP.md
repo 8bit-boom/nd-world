@@ -840,10 +840,25 @@ fan on a motherboard 4-pin header, that header's speed is set by the board's fan
 own sensors - never the GPU die. The System Monitor's **Fans** section can hold a header at a speed, put it back as the BIOS had it, check
 that an output really speeds a fan up, or **follow the GPU temperature** along a curve.
 
-### 0. Measure before you control anything
+### 0. Two checks before you build anything
 
-Fan control only helps if the card actually runs too hot. Nothing below is worth doing until you have these numbers (run the load in one
-shell, the readings in another):
+**a) Does a write even stick? (30 seconds, nothing at risk.)** Reports from other Gigabyte X570 boards (Unraid forum, 2021, X570S Aorus
+Master; LibreHardwareMonitor issues #235 and #383 - I could only read them as search summaries, not open the pages) say the secondary
+chip, the IT8792E that the stock driver finds, accepts a PWM write and the board's firmware puts the old value back within a second,
+while the main chip's headers hold. If that is true here, nothing the app does can hold a fan on these outputs. Test on an output with no
+fan (here `pwm1`: `fan1` reads 0 rpm) - the numbers only ever go up from the BIOS value, so it is safe even if something is plugged in:
+
+```
+echo 200 | sudo tee /sys/class/hwmon/hwmon8/pwm1
+for i in $(seq 1 12); do cat /sys/class/hwmon/hwmon8/pwm1; sleep 0.25; done
+echo 128 | sudo tee /sys/class/hwmon/hwmon8/pwm1        # the BIOS value read earlier; a reboot restores it anyway
+```
+
+Still 200 after three seconds: writes hold. Back to 128 (or jumping around): the firmware owns this chip on this board, and the only
+software route left is a different driver for the main chip, which TrueNAS cannot load. The app's **Check** button repeats this on any
+output and reports `not_held`.
+
+**b) Does the card actually run too hot?** Fan control only helps if it does. Run the load in one shell, the readings in another:
 
 ```
 nvidia-smi -q -d TEMPERATURE | grep -iE "current|shutdown|slowdown|max operating"     # the card's own limits
@@ -879,6 +894,9 @@ Verified from the machine's own output:
 * The fan on SYS_FAN4 did not respond to full speed on any of the three outputs.
 * One output got slower at a higher duty (2848 rpm at the BIOS's 128, 2142 at 150) - an inverted or self-regulating output cannot be
   trusted to cool anything. Use **Check** (below) on an output before letting it follow the GPU.
+
+Not yet measured on this machine: whether writes hold (section 0a), and the card's temperature under load (section 0b) - **the whole fan
+effort so far rests on idle readings (40-44 C)**.
 
 Inferred, not verified: the board's main fan chip (most likely an IT8688E, the one the stock driver does not support) drives the other
 headers, SYS_FAN4 among them; and which of the three visible outputs is which header (CPU_FAN was said to be a pump, CPU_OPT a fan).
@@ -916,24 +934,32 @@ headers, SYS_FAN4 among them; and which of the three visible outputs is which he
   the air moving is refused. Above the last point the fan stays at the last point's value; at the panic temperature, or if the GPU
   temperature cannot be read, the fans go to 100 %.
 * Fans speed up at once and slow down 5 points per tick (every 5 s), so they do not hunt.
-* **Check** runs one fan at 100 % for about six seconds, compares the rpm, and puts it back exactly as it was. It never slows a fan. An
-  output whose rpm falls is refused for following; one with no rpm signal cannot be verified here - listen to it.
+* **Check** runs one fan at 100 % for about six seconds, compares the rpm, watches whether the duty stays where it was set, and puts it
+  back exactly as it was. It never slows a fan. An output whose rpm falls (`inverted`) or whose value the firmware changes back
+  (`not_held`) is refused for following; one with no rpm signal cannot be verified here - listen to it.
 * Turning "follow the GPU" off, or taking a fan out of it, puts that fan back as the BIOS had it (remembered per boot).
 * When nd-world stops cleanly, any fan it holds below 60 % is raised to 60 % (never lowered). **If it is killed outright, the fan stays
   at its last value** - another container may still be loading the GPU. Set that header's BIOS speed to something safe for a loaded
   card, so a reboot or a missing app lands somewhere safe.
 * Manual mode on this board is also how the BIOS holds a fan, so "held by nd-world" is shown only for fans the app took over.
-* Not known: whether the BIOS rewrites these registers later (it did not within the few seconds tested). If a hold drifts, the page
-  warns "the BIOS may be rewriting this header"; the follow loop re-applies every 5 s.
+* Not known on this machine: whether the board's firmware rewrites these registers (section 0a). If it does, a manual hold reports "the
+  BIOS / the board's firmware is changing this header, so it will not hold", and the follow loop shows a warning on the page each tick it
+  finds an output changed from outside - treat that as "software control does not work here".
 
 ### 4. Alternatives that need no software on the host
 
-* **A fixed BIOS speed** on that header (Smart Fan 5, manual or "full speed") chosen from the measurements in section 0.
-* **A thermistor on the heatsink.** Many Gigabyte boards have a T_SENSOR header (check the manual). An unconnected thermistor input
-  reads about -55 C - the `it8792` `temp2` did on this board, so it may be exactly that. Taped to the card's heatsink or backplate, it
-  can be the temperature source for the header's Smart Fan curve, which then follows the card instead of the board.
-* **Moving the fan** to a header the visible chip controls (confirm which with **Check**; mind the header's current limit against the
-  fan's rating, and never move a pump).
+* **A fixed BIOS speed** on that header (Smart Fan 5, manual or "full speed") chosen from the measurements in section 0. While you are
+  in the BIOS: make sure **Fan Stop** is off for that header (Smart Fan 5 can stop a fan completely below a temperature - on a passive
+  GPU that is the worst case), and set the header's **Fan Control Mode** to PWM for a 4-pin fan (the headers are "hybrid" and Auto picks
+  voltage or PWM by detecting the fan; Gigabyte's manuals recommend PWM for 4-pin fans). Smart Fan 5 lets any header follow any
+  temperature source except the CPU fan's own; "PCIE16" is a board sensor near the slot, not the GPU die, so it reads cool while the
+  card is hot.
+* **A thermistor on the heatsink.** Some Gigabyte boards have a T_SENSOR header (I could not confirm yours does - check the manual). An
+  unconnected thermistor input reads about -55 C - the `it8792` `temp2` did on this board, so it may be exactly that. Taped to the
+  card's heatsink or backplate, it can be the temperature source for the header's Smart Fan curve, which then follows the card instead
+  of the board - and the BIOS, not this app, does the controlling.
+* **Moving the fan** to a header the visible chip controls (confirm which with **Check**, and that it is not `not_held`; reviews give each
+  header on this board 2 A / 24 W - compare with the fan's rating - and never move a pump).
 * **A stand-alone fan controller** with its own temperature probe on the heatsink.
 * **A host-side script** (a loop run by TrueNAS at boot) is the sturdier home for a thermal loop if the GPU is shared by several apps: it
   keeps running when nd-world restarts and needs no container access to `/sys`. Not built here.

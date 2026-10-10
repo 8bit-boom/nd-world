@@ -101,9 +101,9 @@ async def system_fans_set(request: Request):
                                 % (fan_control.TOP_PERCENT, fan_control.PANIC_TEMP - fan_control.TOP_MARGIN))
         if on and not ids:
             raise HTTPException(400, "Pick at least one fan to follow the GPU.")
-        bad = [i for i in ids if on and fan_control.verdict(i) == "inverted"]
+        bad = [i for i in ids if on and fan_control.unusable(i)]
         if bad:
-            raise HTTPException(400, "The check found that output inverted (a higher duty makes it slower) - it must not follow the GPU.")
+            raise HTTPException(400, "The check found that output unusable (its rpm falls at a higher duty, or the board's firmware changes the value back) - it must not follow the GPU.")
         fan_control.save_config({"follow_gpu": on, "fan_ids": ids, "curve": curve})
         notes = []
         if prev["follow_gpu"]:                                  # fans the loop was driving and no longer is: back to the BIOS
@@ -111,7 +111,7 @@ async def system_fans_set(request: Request):
                 if (not on) or fid not in ids:
                     notes.append(fan_control.give_back(fid)["message"])
         if on:
-            fan_control.apply_once(fan_control.gpu_temperature())
+            await run_in_threadpool(lambda: fan_control.apply_once(fan_control.gpu_temperature()))     # nvidia-smi: not on the event loop
             fan_control.start()
             msg = "Following the GPU temperature."
         else:
@@ -126,7 +126,7 @@ async def system_fans_set(request: Request):
     if body.get("auto"):
         result = fan_control.give_back(fan)
     else:
-        result = fan_control.set_percent(fan, body.get("percent"))
+        result = await run_in_threadpool(fan_control.set_percent, fan, body.get("percent"), None, fan_control.HOLD_SETTLE)
         if result["ok"] and was_following:
             result["message"] += " It no longer follows the GPU."
     if not result["ok"] and was_following:                # nothing was changed: it keeps following

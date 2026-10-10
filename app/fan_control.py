@@ -14,7 +14,8 @@ What is and is not known about the hardware is kept honest here, because a GPU w
   * in "follow the GPU" mode an unreadable GPU temperature, or one at/above PANIC_TEMP, drives the fan to 100 %; the fan speeds up at
     once but slows down gently (RAMP_DOWN points per tick), so it does not hunt;
   * `check_fan` runs a fan briefly at 100 % and reports whether its rpm really rose - an output whose rpm FALLS with a higher duty is
-    inverted, and "100 % when hot" would then stop that fan;
+    inverted, and "100 % when hot" would then stop that fan - and whether the value STUCK: reports on Gigabyte X570 boards say the
+    secondary IT8792E accepts a write and the board's firmware puts the old value back within a second ("not_held");
   * when this app stops it raises every fan it holds to at least SHUTDOWN_PERCENT (never lowers one): another container may still be
     loading the GPU. If the app is killed outright nothing can run - the page and docs say so;
   * "BIOS" puts back exactly the mode and duty the BIOS had set when this app first took the header over (remembered per boot).
@@ -37,6 +38,8 @@ LOOP_SECONDS = 5.0
 RAMP_DOWN = 5                    # percentage points a followed fan may slow per tick
 SHUTDOWN_PERCENT = 60
 CHECK_SECONDS = 6
+HOLD_SETTLE = 1.2                # a manual hold is re-read this long after it is written, to see whether it stuck
+UNUSABLE = ("inverted", "not_held")   # check verdicts that must never follow the GPU
 DEFAULT_CURVE = [[45, 35], [55, 55], [65, 80], [72, 100]]       # [GPU C, fan %] - linear between points
 MAX_POINTS = 8
 
@@ -45,6 +48,7 @@ _lock = threading.Lock()
 _thread = {"t": None, "stop": threading.Event()}
 _state = {"v": None}             # what the last follow tick did, for the page
 _checked = {}                    # fan id -> {"verdict", "t"}: the result of check_fan this run
+_written = {}                    # fan id -> raw duty this app last wrote, to notice something else changing the output
 
 
 def _config_path():
@@ -165,9 +169,10 @@ def _apply(base, n, raw):
     _write(f"{base}/pwm{n}", raw)
 
 
-def set_percent(fan_id, percent, root=None):
+def set_percent(fan_id, percent, root=None, settle=0.0):
     """Hold one fan at `percent` (MIN_PERCENT..100) - switches the header to manual mode. The first time, what the BIOS had set
-    (mode and duty) is written down so give_back can put exactly that back. Returns {"ok", "message"}."""
+    (mode and duty) is written down so give_back can put exactly that back. With `settle` seconds the value is read back after that
+    long, to catch firmware that puts its own value back. Returns {"ok", "message"}."""
     if isinstance(percent, bool) or not isinstance(percent, (int, float)) or percent != percent:
         return {"ok": False, "message": "percent must be a number."}
     percent = max(MIN_PERCENT, min(100, int(round(percent))))
@@ -189,10 +194,14 @@ def set_percent(fan_id, percent, root=None):
         _apply(base, n, raw_target)
     except OSError as e:
         return {"ok": False, "message": "The fan chip refused the change: " + _oserr(e)}
+    _written[fan_id] = raw_target
+    if settle:
+        time.sleep(settle)
     got = _int(_read(f"{base}/pwm{n}"))
     if got is not None and abs(got - raw_target) > 8:
-        return {"ok": True, "message": f"Asked for {percent} % but the chip reads {round(got * 100 / 255)} % - the BIOS may be rewriting this header.",
-                "percent": percent, "warning": True}
+        later = f" {settle:g} s later" if settle else ""
+        return {"ok": True, "warning": True, "percent": percent,
+                "message": f"Asked for {percent} % but the chip reads {round(got * 100 / 255)} %{later} - the BIOS / the board's firmware is changing this header, so it will not hold."}
     return {"ok": True, "message": f"Fan held at {percent} %.", "percent": percent}
 
 
@@ -217,6 +226,7 @@ def give_back(fan_id, root=None):
     except OSError as e:
         return {"ok": False, "message": "The fan chip refused the change: " + _oserr(e)}
     saved.pop(fan_id, None)
+    _written.pop(fan_id, None)
     try:
         _save_orig(saved)
     except OSError:
@@ -229,7 +239,9 @@ def give_back(fan_id, root=None):
 def check_fan(fan_id, root=None, sleep=time.sleep, seconds=None):
     """Run one fan at 100 % for a few seconds and compare its rpm, then put it back EXACTLY as it was (a hold stays a hold).
     Never slows a fan: it only goes up. verdict: "speeds_up" | "inverted" (rpm fell - higher duty = slower: do not use) |
-    "no_change" (a fan that ignores PWM, or a pump with a narrow range) | "no_signal" (no rpm reading - listen to it instead)."""
+    "not_held" (the duty was changed back while watching - the board's firmware owns this output) |
+    "no_change" (a fan that ignores PWM, or a pump with a narrow range) | "no_signal" (no rpm reading - listen to it instead).
+    The duty is sampled about once a second, so firmware that puts its value back is caught even when the rpm looks fine."""
     hit = _find(fan_id, root)
     if hit is None:
         return {"ok": False, "verdict": "", "message": "There is no such fan (the driver may not be loaded)."}
@@ -247,12 +259,19 @@ def check_fan(fan_id, root=None, sleep=time.sleep, seconds=None):
     if info["percent"] >= 95:
         return {"ok": False, "verdict": "", "message": "It is already at full speed, so a speed-up cannot be seen. Lower it first (not a pump!) or check it when it is slower."}
     prev_enable, prev_raw = info["enable"], info["raw"]
+    total = CHECK_SECONDS if seconds is None else seconds
+    steps = max(1, int(round(total)))
+    drifted = None
     try:
         _apply(base, n, 255)
     except OSError as e:
         return {"ok": False, "verdict": "", "message": "The fan chip refused the change: " + _oserr(e)}
     try:
-        sleep(CHECK_SECONDS if seconds is None else seconds)
+        for _ in range(steps):
+            sleep(total / steps)
+            now = _int(_read(f"{base}/pwm{n}"))
+            if now is not None and abs(now - 255) > 8:
+                drifted = now
         after = _int(_read(f"{base}/fan{n}_input"))
     finally:
         try:                                                    # always put it back, even if the request is cancelled
@@ -261,6 +280,11 @@ def check_fan(fan_id, root=None, sleep=time.sleep, seconds=None):
                 _write(f"{base}/pwm{n}_enable", prev_enable)
         except OSError:
             pass
+    if drifted is not None:
+        _checked[fan_id] = {"verdict": "not_held", "t": time.time()}
+        return {"ok": True, "verdict": "not_held", "rpm_before": before, "rpm_after": after,
+                "message": f"I set 100 % but the chip read {round(drifted * 100 / 255)} % while I watched: the board's firmware is changing this output, "
+                           "so software cannot hold it. Do not use it to cool anything."}
     if after is None:
         return {"ok": False, "verdict": "no_signal", "message": "The speed signal disappeared during the check."}
     ratio = after / before
@@ -276,6 +300,11 @@ def check_fan(fan_id, root=None, sleep=time.sleep, seconds=None):
 
 def verdict(fan_id):
     return (_checked.get(fan_id) or {}).get("verdict", "")
+
+
+def unusable(fan_id):
+    """True when this run's check found the output inverted, or overwritten by the board's firmware."""
+    return verdict(fan_id) in UNUSABLE
 
 
 # ── the curve ────────────────────────────────────────────────────────────────
@@ -350,12 +379,16 @@ def apply_once(gpu_temp, cfg=None, root=None):
         return None
     target = percent_for(gpu_temp, cfg["curve"])
     by_id = {f["id"]: f for f in list_fans(root)}
-    applied, errors = {}, []
+    applied, errors, warnings = {}, [], []
     for fid in cfg["fan_ids"]:
         f = by_id.get(fid)
         if f is None:
             errors.append(f"{fid}: not found (is the fan-chip driver loaded?)")
             continue
+        last = _written.get(fid)
+        if last is not None and (not f["manual"] or abs(f["raw"] - last) > 8):
+            warnings.append(f"{fid}: the chip reads {f['percent']} % but nd-world set {round(last * 100 / 255)} % a moment ago - something else "
+                            "(the BIOS / the board's firmware) is changing this output, so it may not be holding")
         current = f["percent"] if f["manual"] else None
         want = smooth(current, target)
         if current is not None and abs(want - current) <= 1:
@@ -366,7 +399,7 @@ def apply_once(gpu_temp, cfg=None, root=None):
             applied[fid] = want
         else:
             errors.append(f"{fid}: {r['message']}")
-    _state["v"] = {"t": time.time(), "gpu_temp": gpu_temp, "target": target, "applied": applied, "errors": errors}
+    _state["v"] = {"t": time.time(), "gpu_temp": gpu_temp, "target": target, "applied": applied, "errors": errors, "warnings": warnings}
     return target
 
 

@@ -295,7 +295,8 @@
   function readCurve() {
     return Array.prototype.map.call($('sm-curve').children, function (c) { var i = c.querySelectorAll('input'); return [parseFloat(i[0].value), parseFloat(i[1].value)]; });
   }
-  var VERDICT = { speeds_up: '✔ speeds up when asked', inverted: '✖ INVERTED - do not use', no_change: '? no clear change', no_signal: '? no speed signal' };
+  var VERDICT = { speeds_up: '✔ speeds up when asked', inverted: '✖ INVERTED - do not use', not_held: '✖ the board firmware overwrites it - cannot be held', no_change: '? no clear change', no_signal: '? no speed signal' };
+  function bad(v) { return v === 'inverted' || v === 'not_held'; }
   function speedText(f) {
     var rpm = f.rpm == null ? 'no speed signal' : f.rpm === 0 ? '0 rpm (nothing spinning, or no speed wire)' : f.rpm + ' rpm';
     return rpm + ' · ' + f.percent + ' %' + (f.held ? ' (held by nd-world)' : ' (as the BIOS set it)');
@@ -310,6 +311,7 @@
         (top !== null && top > s.target ? ', fan at ' + top + ' % and easing down' : '') +
         (age > 20 ? ' - NOT updating (last tick ' + age + ' s ago, is the loop running?)' : ' (updated ' + age + ' s ago)');
       if (s.errors && s.errors.length) line += ' · ' + s.errors.join('; ');
+      if (s.warnings && s.warnings.length) line += ' · ⚠ ' + s.warnings.join('; ');
     } else if (d.follow_gpu) { line = 'Following is on; waiting for the first tick.'; }
     if (d.missing && d.missing.length) line += (line ? ' · ' : '') + 'Saved fan(s) not found right now: ' + d.missing.join(', ') + ' (driver not loaded?)';
     $('sm-fan-state').textContent = line;
@@ -347,7 +349,7 @@
       });
       var bios = el('button', '', 'BIOS'); bios.type = 'button'; bios.disabled = !f.writable; bios.title = 'Put this fan back exactly as the BIOS had it';
       bios.addEventListener('click', function () { post('/api/system/fans', { fan: f.id, auto: true }).then(function (r) { say(r.message); dirty = false; load(); }).catch(function (e) { say(e.message); }); });
-      var pick = el('label', 'sm-every'); var cb = el('input'); cb.type = 'checkbox'; cb.value = f.id; cb.checked = d.fan_ids.indexOf(f.id) >= 0; cb.disabled = !f.writable || d.checked[f.id] === 'inverted';
+      var pick = el('label', 'sm-every'); var cb = el('input'); cb.type = 'checkbox'; cb.value = f.id; cb.checked = d.fan_ids.indexOf(f.id) >= 0; cb.disabled = !f.writable || bad(d.checked[f.id]);
       cb.setAttribute('aria-label', 'Let ' + f.label + ' follow the GPU'); pick.append(cb, document.createTextNode(' follows GPU'));
       var verdict = d.checked[f.id] ? el('span', 'sm-dim', VERDICT[d.checked[f.id]] || '') : null;
       row.append(name, rpm, rng, out, set, chk, bios, pick); if (verdict) row.appendChild(verdict);
