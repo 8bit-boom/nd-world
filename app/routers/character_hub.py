@@ -26,7 +26,7 @@ request's active world), since this is "what the player sees".
 """
 import json
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -37,9 +37,10 @@ from .. import auth, live
 from ..database import get_db
 from ..deps import filter_visible_entities, with_world, world_can_view_section, world_section_access
 from ..models import (
-    CalendarEvent, CharacterJournalEntry, Entity, GameSession, Party, PlayerCharacter,
+    CalendarEvent, CharacterJournalEntry, CombatSession, Entity, GameSession, Party, PlayerCharacter,
     PrivateNote, Quest, SessionPlanVote, World, WorldCalendar, entity_player_access,
 )
+from ..nav_menus import build_catalog
 from ..party_refs import load_loot, parties_for_pc
 from ..pc_stats import pc_maxima
 from ..rendering import strip_gm_only, strip_md
@@ -454,6 +455,105 @@ def hub_schedule(pc_id: int, request: Request, db: Session = Depends(get_db)):
             "href": with_world(f"/sessions/{s.id}", world),
         } for when, s in upcoming[:3]],
     }
+
+
+# ── Always-visible strip + the places launcher ───────────────────────────────
+
+_COMBAT_FRESH = timedelta(hours=12)      # an encounter untouched for longer than this is not "now"
+
+
+def _combat_now(db: Session, pc: PlayerCharacter):
+    """Where this character stands in a live encounter, or None. Deliberately minimal: the round, and whether the turn is
+    this character's, another player character's (named), or "the enemy" (never named - a GM-run combatant's name can be
+    a spoiler)."""
+    since = datetime.utcnow() - _COMBAT_FRESH
+    rows = (db.query(CombatSession).filter(CombatSession.world_id == pc.world_id, CombatSession.updated_at >= since)
+            .order_by(CombatSession.updated_at.desc()).limit(8).all())
+    for cs in rows:
+        try:
+            combatants = json.loads(cs.combatants_json or "[]")
+        except ValueError:
+            continue
+        if not isinstance(combatants, list) or not any(isinstance(c, dict) and c.get("pc_id") == pc.id for c in combatants):
+            continue
+        n = len(combatants)
+        idx = (cs.active_idx or 0) % n
+        cur = combatants[idx] if isinstance(combatants[idx], dict) else {}
+        nxt = combatants[(idx + 1) % n] if isinstance(combatants[(idx + 1) % n], dict) else {}
+        if cur.get("pc_id") == pc.id:
+            turn, name = "me", None
+        elif cur.get("source") == "pc":
+            turn, name = "pc", str(cur.get("name") or "")[:60]
+        else:
+            turn, name = "enemy", None
+        return {"round": cs.round_num or 1, "turn": turn, "name": name, "next_is_me": nxt.get("pc_id") == pc.id}
+    return None
+
+
+@router.get("/api/characters/{pc_id}/hub/now")
+def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """The strip that stays on screen over every tab: this character's live vitals (HP / Shock / conditions - read-only
+    for a GM looking in), whose turn it is in a live encounter, and the next game night."""
+    from .parties import _member_vitals          # the one system-aware vitals rule (N&D columns vs a custom template's track)
+    user, pc, world, is_owner = _hub_pc(request, db, pc_id)
+    v = _member_vitals(db, [pc], resource_limit=None)[0]
+    m = pc_maxima(pc)
+    try:
+        conds = [c for c in json.loads(pc.conditions_json or "[]") if isinstance(c, str)][:12]
+    except ValueError:
+        conds = []
+    me = {
+        "id": pc.id, "name": pc.name, "native": v["native"], "system": v["system"],
+        "hp": v["hp"], "max_hp": v["max_hp"], "hp_label": v["hp_label"], "temp_hp": v["temp_hp"], "down": v["down"],
+        "shock": (pc.shock_current or 0) if v["native"] else None, "shock_max": m["shock"] if v["native"] else None,
+        "conditions": conds, "hp_id": v["hp_id"], "levelup": bool(v["levelup"]),
+        # a custom system's other tracks (Stamina, Hunger...), without the vital shown separately as HP
+        "resources": [r for r in v["resources"] if r["id"] != v["hp_id"]],
+    }
+    asker = pc.owner_user_id or user.id
+    nxt = next_confirmed(db, world.id)
+    next_session = None
+    if nxt:
+        plan, slot = nxt
+        mine = db.query(SessionPlanVote).filter(SessionPlanVote.slot_id == slot.id, SessionPlanVote.user_id == asker).first()
+        next_session = {"title": plan.title, "location": plan.location or "",
+                        "starts_at": slot.starts_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "my": mine.choice if mine else None}
+    return {"me": me, "can_edit": is_owner, "combat": _combat_now(db, pc), "next_session": next_session,
+            "polls_waiting": polls_waiting(db, world.id, asker),
+            "schedule_href": with_world("/schedule", world)}
+
+
+# Sections that are the character page itself (or need a desktop / admin) - not offered as "places".
+_PLACES_SKIP = {"characters", "cockpit", "schedule", "androidapp", "character_sheets", "editor", "studio_console"}
+
+
+@router.get("/api/characters/{pc_id}/hub/places")
+def hub_places(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Every page this player may open, so they never have to leave their character page: the same visibility the
+    navigation bar uses, evaluated as the PLAYER role (a GM looking in sees the player's list). The page opens each one
+    inside the hub (an in-page viewer), not in a new window."""
+    _user, _pc, world, _own = _hub_pc(request, db, pc_id)
+    tools, kinds = [], []
+    for item in build_catalog(world):
+        if item["id"] in _PLACES_SKIP or item.get("condition") in ("dreamlands_enabled", "king_in_yellow_enabled"):
+            continue
+        section = item.get("player_section")
+        if section:
+            if _player_level(world, section) == "none":
+                continue
+        elif item.get("gm_only"):
+            continue
+        cond = item.get("condition")
+        if cond and not getattr(world, cond, False):
+            continue
+        row = {"id": item["id"], "label": item["label"], "icon": item["icon"], "href": with_world(item["href"], world)}
+        (kinds if item["id"].startswith("kind_") else tools).append(row)
+    groups = []
+    if tools:
+        groups.append({"label": "Tools & logs", "items": tools})
+    if kinds:
+        groups.append({"label": "The world", "items": kinds})
+    return {"groups": groups}
 
 
 # ── Journal / goals writes ───────────────────────────────────────────────────

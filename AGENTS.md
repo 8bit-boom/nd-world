@@ -123,6 +123,15 @@ tools that require GM access still check `is_gm` at call time.)
   (`clean_template_draft`: safe unique ids with system references remapped, known types, one HP track…) and the
   rulebook chunker; it backs the "Draft with AI" page (`app/routers/template_ai.py`) and the MCP tools
   `create_sheet_template` / `update_sheet_template`, so never store a model-written template without it.
+- **The character page is the player's home - nothing in it should send them away.** The hub include (`characters/_player_hub.html`)
+  has a sticky live strip (`hub/now`: vitals with ± buttons - N&D through `hp-async` / `shock`, a custom system through
+  `/api/characters/{id}/resource`, whose steppers also update the custom sheet's own `[data-cf-id=<id>_current]` input so its next Save
+  cannot write the old number back - plus the combat turn, which never names a GM-run combatant) and a **Pages** launcher
+  (`hub/places`: the PLAYER role's visible sections). Every in-app link inside the hub opens in `static/js/pc-viewer.js` (an
+  `?embed=1` iframe over the character; a FRESH iframe per open with `src` set before insertion, because changing the `src` of a frame
+  already in the page adds session-history entries and breaks Back); use `ndPcViewer.open(href, title)` for new links, never
+  `target=_blank`. On a phone (<=720px) the tab strip is a bottom bar, secondary tabs (`pch-tab--minor`) live under More - keep new
+  tabs short-labelled. `docs/PLAYER_CHARACTER_IDEAS.md` has the backlog.
 - **Small image boxes use the thumbnail**: `{{ url|thumb }}` for `src` and `data-full="{{ url }}"` for the original
   (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
 - **The Player Cockpit lives inside Player Characters** (no nav item of its own — `nav_menus.py` has none; saved menus that still name `player_cockpit` just drop it): the hub's owner-only 🎛 Cockpit tab lazily loads

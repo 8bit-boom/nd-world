@@ -1777,6 +1777,39 @@ async def character_conditions_async(pc_id: int, request: Request, db: Session =
     return {"conditions": new}
 
 
+@router.post("/api/characters/{pc_id}/resource")
+async def character_resource_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Quick-adjust ONE resource track (Health, Stamina, Hunger, ...) of a character on a custom sheet system - the
+    custom-sheet equivalent of the N&D HP / Shock steppers, so a phone never has to open the edit form for a point of
+    damage. Body: {field_id, action: "delta"|"set", value}. Clamped to 0..max (no upper bound when the track has no
+    max). Owner-or-GM like every other quick-edit route (this prefix is player-reachable, so it self-gates)."""
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    tpl = db.get(SheetTemplate, pc.sheet_template_id) if getattr(pc, "sheet_template_id", None) else None
+    if tpl is None or tpl.sheet_mode != "custom":
+        raise HTTPException(400, "This character has no custom resource tracks")
+    cf = parse_custom_fields(pc.custom_fields_json)
+    tracks = resource_tracks(template_fields(tpl), cf, system_meta(tpl))
+    fid = str(body.get("field_id") or "")
+    track = next((t for t in tracks if t["id"] == fid), None)
+    if track is None:
+        raise HTTPException(404, "No such resource")
+    val = _body_int(body, "value")
+    cur = track["current"] if isinstance(track["current"], (int, float)) else 0
+    new = max(0, int(cur + val) if body.get("action", "set") == "delta" else val)
+    if track["max"]:
+        new = min(new, int(track["max"]))
+    cf[f"{fid}_current"] = new
+    pc.custom_fields_json = json.dumps(cf)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"field_id": fid, "current": new, "max": track["max"]}
+
+
 # ── Live vitals (sheet live-sync source) ──────────────────────────────────────
 
 @router.get("/api/characters/{pc_id}/vitals")

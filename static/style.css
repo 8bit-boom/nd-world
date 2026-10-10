@@ -1890,7 +1890,10 @@ textarea[data-fmt].fmt-drag-over {
 
   /* Character hub tabs + panels */
   .mp .pch-tabs { gap: .4rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
-  .mp .pch-tab { min-height: 44px; padding: .5rem .95rem; font-size: .88rem; scroll-snap-align: start; }
+  /* up to 720px the tabs are a bottom bar (characters/_player_hub.html), so this scrolling-strip size is for 721-768px only */
+  @media (min-width: 721px) { .mp .pch-tab { min-height: 44px; padding: .5rem .95rem; font-size: .88rem; scroll-snap-align: start; } }
+  .mp .pch-step { min-height: 40px; }
+  .mp .pch-more button { min-height: 48px; }
   .mp .pch-btn { min-height: 44px; padding: .5rem .95rem; font-size: .88rem; }
   .mp .pch-loot-row { flex-wrap: wrap; }
   .mp .pch-loot-row .pch-btn { margin-left: 0; flex: 1 1 100%; }

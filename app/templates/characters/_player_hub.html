@@ -42,20 +42,110 @@ a.pch-title:hover { color:var(--neon); }
 .pch-search { width:100%; box-sizing:border-box; margin-bottom:.6rem; }
 .pch-panel.pch-cockpit { padding:.6rem; }
 .pch-cockpit-bar { display:flex; gap:.6rem; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:.5rem; }
+/* tab labels: icon over label on a phone (see the bottom bar below) */
+.pch-tab .pch-ic { margin-right:.3rem; }
+.pch-tab-more { display:none; }
+.pch-more { position:fixed; left:.6rem; right:.6rem; bottom:calc(4.2rem + env(safe-area-inset-bottom)); z-index:95; background:var(--bg2); border:1px solid var(--neon); border-radius:10px; padding:.5rem; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.4rem; box-shadow:0 -8px 28px rgba(0,0,0,.55); }
+.pch-more[hidden] { display:none; }
+.pch-more button { background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:.7rem .5rem; min-height:48px; font-family:var(--font); font-size:.9rem; cursor:pointer; }
+.pch-more button[aria-current="true"] { border-color:var(--neon); color:var(--neon); }
+
+/* the always-visible strip: vitals, turn, next game night */
+.pch-now { position:sticky; top:var(--pch-top, 0px); z-index:80; max-width:1100px; margin:0 auto .6rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:.35rem .6rem; display:flex; flex-wrap:wrap; align-items:center; gap:.25rem .8rem; box-shadow:0 4px 14px rgba(0,0,0,.35); }
+.pch-now[hidden] { display:none; }
+body.nd-embed .pch-now { display:none; }
+.pch-tags { max-width:1100px; margin:0 auto .7rem; display:flex; flex-wrap:wrap; gap:.3rem .4rem; align-items:center; }
+.pch-tags[hidden] { display:none; }
+body.nd-embed .pch-tags { display:none; }
+.pch-long { display:inline; } .pch-short { display:none; }
+.pch-now-name { font-size:.8rem; color:var(--text-dim); max-width:9rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pch-vit { display:inline-flex; align-items:center; gap:.2rem; font-size:.85rem; }
+.pch-vit b { font-weight:600; min-width:3.1rem; text-align:center; }
+.pch-vit .pch-num { background:none; border:0; color:var(--text); font:inherit; font-weight:600; padding:.3rem .2rem; min-width:3.1rem; cursor:pointer; border-bottom:1px dashed var(--border); }
+.pch-vit.low .pch-num, .pch-vit.low b { color:var(--neon2); }
+.pch-vit-l { color:var(--text-dim); font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; margin-right:.1rem; }
+.pch-step { width:36px; height:40px; border-radius:8px; border:1px solid var(--border); background:var(--bg3); color:var(--text); font-size:1.15rem; line-height:1; cursor:pointer; font-family:var(--font); padding:0; touch-action:manipulation; }
+.pch-step:hover { border-color:var(--neon); color:var(--neon); }
+.pch-step:disabled { opacity:.45; }
+.pch-pill { font-size:.72rem; padding:.2rem .55rem; border-radius:999px; border:1px solid var(--border); color:var(--text-dim); background:var(--bg3); white-space:nowrap; cursor:default; }
+.pch-pill.turn { border-color:var(--neon); color:var(--bg); background:var(--neon); font-weight:700; animation:pch-pulse 1.6s ease-in-out infinite; }
+.pch-pill.soon { border-color:var(--neon); color:var(--neon); }
+.pch-pill.link { cursor:pointer; }
+.pch-pill.link:hover { border-color:var(--neon); color:var(--neon); }
+.pch-now-err { color:var(--neon2); font-size:.75rem; flex-basis:100%; }
+.pch-pop { flex-basis:100%; display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; padding:.3rem 0; }
+.pch-pop[hidden] { display:none; }
+.pch-pop input { width:6rem; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:.45rem .5rem; font-size:16px; font-family:var(--font); }
+@keyframes pch-pulse { 50% { box-shadow:0 0 0 4px rgba(0,255,200,.18); } }
+@media (prefers-reduced-motion: reduce) { .pch-pill.turn { animation:none; } }
+
+/* places launcher */
+.pch-places { display:grid; grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr)); gap:.5rem; margin-bottom:.4rem; }
+.pch-place { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.2rem; min-height:4.2rem; padding:.55rem .4rem; border:1px solid var(--border); border-radius:8px; background:var(--bg3); color:var(--text); font-family:var(--font); font-size:.85rem; text-align:center; cursor:pointer; text-decoration:none; }
+.pch-place:hover { border-color:var(--neon); color:var(--neon); }
+.pch-place .pch-pi { font-size:1.4rem; line-height:1; }
+
+/* the in-page viewer (static/js/pc-viewer.js): a page on top of the character */
+html.pcv-open, html.pcv-open body { overflow:hidden; }
+.pcv { position:fixed; inset:0; z-index:1000; display:flex; flex-direction:column; background:var(--bg); }
+.pcv[hidden] { display:none; }
+.pcv-bar { display:flex; align-items:center; gap:.6rem; padding:calc(.45rem + env(safe-area-inset-top)) .7rem .45rem; background:var(--bg2); border-bottom:1px solid var(--border); flex:0 0 auto; }
+.pcv-x { background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:8px; min-height:40px; padding:0 .9rem; font-family:var(--font); font-size:.9rem; cursor:pointer; }
+.pcv-x:hover { border-color:var(--neon); color:var(--neon); }
+.pcv-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; color:var(--text); }
+.pcv-pop { color:var(--text-dim); text-decoration:none; font-size:1.2rem; padding:.3rem .5rem; }
+.pcv-pop:hover { color:var(--neon); }
+.pcv-body { position:relative; flex:1 1 auto; min-height:0; }
+.pcv-frame { position:absolute; inset:0; width:100%; height:100%; border:0; background:var(--bg); }
+.pcv-load { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--text-dim); font-size:.9rem; pointer-events:none; }
+.pcv-load[hidden] { display:none; }
+@media (min-width: 900px) {
+  .pcv { background:rgba(0,0,0,.6); align-items:center; justify-content:center; }
+  .pcv > .pcv-bar, .pcv > .pcv-body { width:min(1000px, 92vw); }
+  .pcv > .pcv-bar { border-radius:10px 10px 0 0; flex:0 0 auto; }
+  .pcv > .pcv-body { flex:0 0 auto; height:min(82vh, 900px); background:var(--bg); border:1px solid var(--border); border-top:0; border-radius:0 0 10px 10px; overflow:hidden; }
+}
+
+/* phone: the tab strip becomes a bottom bar (thumb reach), the rest moves into "More" */
+@media (max-width: 720px) {
+  body.pch-hub-page { padding-bottom:calc(4.4rem + env(safe-area-inset-bottom)); --nd-fab-bottom:5rem; }
+  .pch-tabs { position:fixed; left:0; right:0; bottom:0; z-index:90; margin:0; padding:.3rem .2rem calc(.3rem + env(safe-area-inset-bottom)); gap:.15rem; background:var(--bg2); border-top:1px solid var(--border); border-bottom:0; overflow:visible; justify-content:space-around; box-shadow:0 -6px 20px rgba(0,0,0,.45); }
+  .pch-tab { flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:.1rem; padding:.35rem .1rem; min-height:50px; border-radius:8px; border-color:transparent; background:none; font-size:.66rem; }
+  .pch-tab .pch-ic { margin:0; font-size:1.25rem; line-height:1.1; }
+  .pch-tab .pch-lb { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+  .pch-tab--minor { display:none; }
+  .pch-tab-more { display:flex; }
+  .pch-panel { padding:.8rem .75rem; }
+  .pch-now { top:var(--pch-top, 0px); margin:0 0 .5rem; border-radius:0 0 8px 8px; gap:.2rem .5rem; }
+  .pch-now-name { display:none; }
+  .pch-vit b, .pch-vit .pch-num { min-width:2.5rem; }
+  .pch-vit-l { font-size:.66rem; }
+  .pch-step { width:34px; }
+  .pch-long { display:none; } .pch-short { display:inline; }
+  .pch-tab .pch-lb { font-size:.66rem; }
+  .pch-btn { min-height:40px; padding:.4rem .8rem; }
+  .pch-row { padding:.65rem 0; }
+  #pch-cockpit-frame { height:calc(100dvh - 17rem); min-height:420px; }
+}
 #pch-cockpit-frame { display:block; width:100%; height:calc(100vh - 15rem); height:calc(100dvh - 15rem); min-height:520px; border:1px solid var(--border); border-radius:6px; background:var(--bg); }
 </style>
 
 {% set own = (hub_mode == 'owner') %}
+<div class="pch-now" id="pch-now" role="region" aria-label="Live status" hidden></div>
+<div class="pch-tags" id="pch-tags" hidden></div>
 <div id="pc-hub" data-pc-id="{{ pc.id }}" data-mode="{{ hub_mode }}">
   <div class="pch-tabs" role="tablist" aria-label="Character hub">
-    <button type="button" class="pch-tab" role="tab" data-tab="sheet">📄 Sheet</button>
-    <button type="button" class="pch-tab" role="tab" data-tab="cockpit">🎛 Cockpit</button>
-    <button type="button" class="pch-tab" role="tab" data-tab="journey">🧑‍🤝‍🧑 Journey</button>
-    <button type="button" class="pch-tab" role="tab" data-tab="quests">📜 Quests &amp; goals</button>
-    {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="notes">📓 Notes &amp; journal</button>{% endif %}
-    <button type="button" class="pch-tab" role="tab" data-tab="world">🌍 Known world</button>
-    <button type="button" class="pch-tab" role="tab" data-tab="schedule">🗓 Schedule</button>
+    <button type="button" class="pch-tab" role="tab" data-tab="sheet"><span class="pch-ic">📄</span><span class="pch-lb">Sheet</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="cockpit"><span class="pch-ic">🎛</span><span class="pch-lb">Cockpit</span></button>
+    <button type="button" class="pch-tab" role="tab" data-tab="journey"><span class="pch-ic">🧑‍🤝‍🧑</span><span class="pch-lb">Journey</span></button>
+    <button type="button" class="pch-tab" role="tab" data-tab="quests"><span class="pch-ic">📜</span><span class="pch-lb">Quests</span></button>
+    {% if own %}<button type="button" class="pch-tab" role="tab" data-tab="notes"><span class="pch-ic">📓</span><span class="pch-lb">Notes</span></button>{% endif %}
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="world"><span class="pch-ic">🌍</span><span class="pch-lb">World</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="schedule"><span class="pch-ic">🗓</span><span class="pch-lb">Schedule</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="places"><span class="pch-ic">🧭</span><span class="pch-lb">Pages</span></button>
+    <button type="button" class="pch-tab pch-tab-more" id="pch-more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="pch-more"><span class="pch-ic">☰</span><span class="pch-lb">More</span></button>
   </div>
+  <div class="pch-more" id="pch-more" hidden></div>
 
   {% if not own %}
   {# A GM looking in: same shared tabs, the player's point of view, read-only. The
@@ -137,9 +227,15 @@ a.pch-title:hover { color:var(--neon); }
   {% if own %}<section class="pch-panel" data-panel="notes" hidden><div data-body="notes" class="pch-muted">Loading…</div></section>{% endif %}
   <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="places" hidden>
+    <h2 class="pch-h">🧭 Pages</h2>
+    <p class="pch-muted" style="margin-top:0">Everything you can open in this world. They open right here over your character, so you never lose your place — press Back to return.</p>
+    <div data-body="places" class="pch-muted">Loading…</div>
+  </section>
 </div>
 
 <script src="/static/js/cockpit-frames.js?v={{ asset_v('js/cockpit-frames.js') }}"></script>
+<script src="/static/js/pc-viewer.js?v={{ asset_v('js/pc-viewer.js') }}"></script>
 <script>
 (function () {
   const hub = document.getElementById('pc-hub');
@@ -148,8 +244,8 @@ a.pch-title:hover { color:var(--neon); }
   const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
-  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule']
-                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule'];
+  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'places']
+                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'places'];
   const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
@@ -442,8 +538,195 @@ a.pch-title:hover { color:var(--neon); }
     });
   }
 
+  // ── Pages: everything the player may open, without leaving the character ──────────────────────────────
+  function openPage(href, title) {
+    if (window.ndPcViewer && ndPcViewer.open(href, title)) return;
+    location.href = href;                                   // not viewable in place (a file, a login): normal navigation
+  }
+  // Every in-app link inside the hub (quests, party, sessions, entities, the full quest log...) opens over the character.
+  hub.addEventListener('click', ev => {
+    const a = ev.target.closest && ev.target.closest('a[href]');
+    if (!a || ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    if (a.closest('.pch-cockpit-bar')) return;              // "Full screen" really leaves
+    if (window.ndPcViewer && ndPcViewer.wants(a)) {
+      ev.preventDefault();
+      openPage(a.getAttribute('href'), (a.getAttribute('title') || a.textContent || '').trim().slice(0, 80));
+    }
+  });
+  async function loadPlaces() {
+    const el = body('places');
+    try {
+      const d = await api('places');
+      if (!d.groups.length) { el.replaceChildren(h('p', { class: 'pch-muted', text: 'Nothing else is open to players in this world yet.' })); return; }
+      const parts = [];
+      d.groups.forEach(g => {
+        parts.push(h('div', { class: 'pch-sub', text: g.label }));
+        parts.push(h('div', { class: 'pch-places' }, g.items.map(it =>
+          h('a', { class: 'pch-place', href: it.href, title: it.icon + ' ' + it.label },
+            h('span', { class: 'pch-pi', text: it.icon }), h('span', { text: it.label })))));
+      });
+      el.replaceChildren(...parts);
+    } catch (e) { fail(el, e, loadPlaces); }
+  }
+
+  // ── The strip that stays over every tab: vitals, turn, next game night ──────────────────────────────────
+  const nowEl = document.getElementById('pch-now');
+  const tagsEl = document.getElementById('pch-tags');
+  let nowData = null, nowBusy = false, nowTimer = null, popOpen = null;
+  function topbarOffset() {
+    const tb = document.querySelector('.topbar');
+    const pos = tb ? getComputedStyle(tb).position : '';
+    document.documentElement.style.setProperty('--pch-top', (pos === 'sticky' || pos === 'fixed') ? Math.round(tb.getBoundingClientRect().height) + 'px' : '0px');
+  }
+  function announce(detail) { window.dispatchEvent(new CustomEvent('pc-vitals', { detail })); }    // the sheet's own HP/Shock boxes follow
+  async function post(path, payload) {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    let d = {};
+    try { d = await r.json(); } catch (e) { /* no body */ }
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    return d;
+  }
+  // key: 'hp' | 'shock' (N&D columns) or 'res:<field id>' (a custom system's track, incl. its Health)
+  async function adjust(key, delta) {
+    if (nowBusy) return;
+    nowBusy = true;
+    try {
+      const me = nowData.me;
+      if (key === 'hp') {
+        const d = await post('/api/characters/' + PC_ID + '/hp-async', { action: 'delta', value: delta });
+        me.hp = d.current_hp; me.max_hp = d.max_hp; me.temp_hp = d.temp_hp;
+        announce({ hp: d.current_hp, max_hp: d.max_hp });
+      } else if (key === 'shock') {
+        const d = await post('/api/characters/' + PC_ID + '/shock', { action: 'delta', value: delta });
+        me.shock = d.shock_current; me.shock_max = d.shock_max;
+        announce({ shock: d.shock_current, shock_max: d.shock_max });
+      } else {
+        const fid = key.slice(4);
+        const d = await post('/api/characters/' + PC_ID + '/resource', { field_id: fid, action: 'delta', value: delta });
+        if (fid === me.hp_id) { me.hp = d.current; me.down = me.max_hp > 0 && d.current <= 0; }
+        const r = (me.resources || []).find(x => x.id === fid);
+        if (r) r.current = d.current;
+        // keep the custom sheet's own form in step, or its next Save would write the old number back
+        const box = document.querySelector('[data-cf-id="' + fid + '_current"]');
+        if (box) box.value = d.current;
+      }
+      nowData.err = '';
+    } catch (e) { nowData.err = e.message; }
+    nowBusy = false;
+    renderNow();
+  }
+  function vit(label, key, cur, max, editable, down, warn) {
+    const low = !!warn && max > 0 && cur / max <= 0.25;      // only HP-like tracks turn red when low (Hunger 0/10 is fine)
+    const wrap = h('span', { class: 'pch-vit' + (low || down ? ' low' : '') }, h('span', { class: 'pch-vit-l', text: label }));
+    const shown = max ? cur + '/' + max : String(cur);
+    if (editable) {
+      wrap.append(h('button', { type: 'button', class: 'pch-step', 'aria-label': 'Lose 1 ' + label, text: '−', onclick: () => adjust(key, -1) }));
+      wrap.append(h('button', { type: 'button', class: 'pch-num', 'aria-label': 'Change ' + label + ' by an amount', title: 'Tap to change by an amount',
+                                text: shown, onclick: () => { popOpen = popOpen === key ? null : key; renderNow(); } }));
+      wrap.append(h('button', { type: 'button', class: 'pch-step', 'aria-label': 'Gain 1 ' + label, text: '+', onclick: () => adjust(key, 1) }));
+    } else {
+      wrap.append(h('b', { text: shown }));
+    }
+    return wrap;
+  }
+  function amountPop(key) {
+    const hp = key === 'hp';
+    const input = h('input', { type: 'number', inputmode: 'numeric', min: 1, max: 999, placeholder: 'Amount', 'aria-label': 'Amount' });
+    const go = sign => () => {
+      const n = parseInt(input.value, 10);
+      if (!(n > 0)) { input.focus(); return; }
+      popOpen = null;
+      adjust(key, sign * n);
+    };
+    return h('div', { class: 'pch-pop' }, input,
+      h('button', { type: 'button', class: 'pch-btn danger', text: hp ? '💥 Damage' : '− Spend', onclick: go(-1) }),
+      h('button', { type: 'button', class: 'pch-btn', text: hp ? '💚 Heal' : '+ Recover', onclick: go(1) }),
+      h('button', { type: 'button', class: 'pch-btn', text: 'Cancel', onclick: () => { popOpen = null; renderNow(); } }));
+  }
+  function whenLabel(iso) {
+    return new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function renderNow() {
+    if (!nowEl || !nowData) return;
+    const d = nowData, me = d.me, ed = d.can_edit;
+    const top = [h('span', { class: 'pch-now-name', text: (ed ? '' : '👁 ') + me.name })];
+    const c = d.combat;
+    if (c) {
+      const rnd = [h('span', { class: 'pch-long', text: ' · round ' + c.round }), h('span', { class: 'pch-short', text: ' · R' + c.round })];
+      const kind = c.turn === 'me' ? 'turn' : c.next_is_me ? 'soon' : '';
+      const lead = c.turn === 'me' ? '⚔ YOUR TURN' : c.next_is_me ? '⚔ You’re up next'
+        : '⚔ ' + (c.turn === 'pc' ? c.name + '’s turn' : 'Enemy turn');
+      top.push(h('span', { class: 'pch-pill ' + kind, role: 'status' }, lead, rnd));
+    }
+    if (me.max_hp > 0 || me.hp != null) top.push(vit(me.hp_label || 'HP', me.native ? 'hp' : 'res:' + me.hp_id, me.hp || 0, me.max_hp || 0, ed && (me.native || !!me.hp_id), me.down, true));
+    if (me.native && me.shock_max > 0) top.push(vit('Shock', 'shock', me.shock || 0, me.shock_max, ed, false, true));
+    if (popOpen && ed && (popOpen === 'hp' || popOpen === 'shock' || popOpen === 'res:' + me.hp_id)) top.push(amountPop(popOpen));
+    if (d.err) top.push(h('div', { class: 'pch-now-err', role: 'alert', text: d.err }));
+    nowEl.replaceChildren(...top);
+    nowEl.hidden = false;
+
+    // below the sticky row, in normal flow: what is on the character, and the next game night
+    const tags = [];
+    if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
+    (me.native ? [] : me.resources || []).forEach(r => tags.push(vit(r.label, 'res:' + r.id, r.current, r.max, ed, false)));
+    me.conditions.forEach(x => tags.push(h('span', { class: 'pch-pill', text: x })));
+    if (me.levelup) tags.push(h('span', { class: 'pch-pill soon', text: '⬆ Level up ready' }));
+    if (d.next_session) {
+      const ans = { yes: ' ✔', maybe: ' ?', no: ' ✖' }[d.next_session.my] || ' • answer?';
+      tags.push(h('a', { class: 'pch-pill link', href: d.schedule_href, title: d.next_session.title, text: '📅 ' + whenLabel(d.next_session.starts_at) + ans }));
+    } else if (d.polls_waiting) {
+      tags.push(h('a', { class: 'pch-pill link', href: d.schedule_href, text: '📅 ' + d.polls_waiting + ' poll' + (d.polls_waiting === 1 ? '' : 's') + ' waiting' }));
+    }
+    if (popOpen && popOpen.indexOf('res:') === 0 && ed && popOpen !== 'res:' + me.hp_id) tags.push(amountPop(popOpen));
+    tagsEl.replaceChildren(...tags);
+    tagsEl.hidden = !tags.length;
+  }
+  async function refreshNow() {
+    if (nowBusy || !nowEl) return;
+    try {
+      nowData = await api('now');
+      renderNow();
+    } catch (e) { /* the strip just keeps what it has */ }
+  }
+  if (nowEl) {
+    topbarOffset();
+    window.addEventListener('resize', topbarOffset);
+    refreshNow();
+    nowTimer = setInterval(() => { if (!document.hidden) refreshNow(); }, 30000);
+    let liveT = null;
+    window.addEventListener('nd-live', () => { clearTimeout(liveT); liveT = setTimeout(refreshNow, 400); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshNow(); });
+    tagsEl.addEventListener('click', ev => {                 // the next-game-night chip opens the schedule over the character
+      const a = ev.target.closest && ev.target.closest('a[href]');
+      if (a && window.ndPcViewer && ndPcViewer.wants(a)) { ev.preventDefault(); openPage(a.getAttribute('href'), 'Session schedule'); }
+    });
+  }
+  document.body.classList.add('pch-hub-page');
+
+  // ── Phone: the secondary tabs live behind "More" ─────────────────────────────────────────────────────────
+  const moreBtn = document.getElementById('pch-more-btn');
+  const moreSheet = document.getElementById('pch-more');
+  const MINOR = Array.from(hub.querySelectorAll('.pch-tab--minor'));
+  function closeMore() { moreSheet.hidden = true; moreBtn.setAttribute('aria-expanded', 'false'); }
+  function fillMore(active) {
+    moreSheet.replaceChildren(...MINOR.map(b => {
+      const t = b.dataset.tab;
+      const el = h('button', { type: 'button', text: b.textContent.trim().replace(/\s+/, ' '), 'aria-current': String(t === active),
+                               onclick: () => { closeMore(); show(t); } });
+      return el;
+    }));
+  }
+  moreBtn.addEventListener('click', ev => {
+    ev.stopPropagation();
+    if (!moreSheet.hidden) { closeMore(); return; }
+    fillMore(hub.querySelector('.pch-tab[aria-selected="true"]') && hub.querySelector('.pch-tab[aria-selected="true"]').dataset.tab);
+    moreSheet.hidden = false;
+    moreBtn.setAttribute('aria-expanded', 'true');
+  });
+  document.addEventListener('click', ev => { if (!moreSheet.hidden && !moreSheet.contains(ev.target)) closeMore(); });
+
   // ── Tabs ───────────────────────────────────────────────────────────────────
-  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule };
+  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces };
   if (OWNER) loaders.notes = loadNotes;
   // The embedded Player Cockpit only starts loading once its tab is opened. The loader (cockpit-frames.js) also gives
   // its page back - the cockpit AND its windows - after a minute on another tab, and loads it again when you return:
@@ -466,7 +749,10 @@ a.pch-title:hover { color:var(--neon); }
 
   function show(tab) {
     if (TABS.indexOf(tab) < 0) tab = 'sheet';
-    hub.querySelectorAll('.pch-tab').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+    hub.querySelectorAll('.pch-tab[data-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+    moreBtn.setAttribute('aria-selected', String(MINOR.some(b => b.dataset.tab === tab)));
+    closeMore();
+    window.scrollTo(0, 0);
     hub.querySelectorAll('.pch-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
     sheetNodes().forEach(n => n.classList.toggle('away-from-sheet', tab !== 'sheet'));
     if (gmNote) gmNote.hidden = tab === 'sheet';
@@ -474,7 +760,7 @@ a.pch-title:hover { color:var(--neon); }
     try { history.replaceState(null, '', tab === 'sheet' ? location.pathname + location.search : '#hub-' + tab); } catch (e) { /* ignore */ }
   }
 
-  hub.querySelectorAll('.pch-tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
+  hub.querySelectorAll('.pch-tab[data-tab]').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
   // The sheet markup follows this include, so on first load it isn't parsed yet:
   // wait for the DOM before the initial show() or a deep link (#hub-quests) or a
   // reload on another tab would leave the sheet visible under the panel.
