@@ -63,6 +63,7 @@ from .routers.map_props import delete_prop_file as _delete_prop_file, router as 
 from .routers.map_walls import router as map_walls_router
 from .routers.session_media import router as session_media_router
 from .routers.character_hub import router as character_hub_router
+from .routers.character_share import router as character_share_router
 from .routers.characters import _pc_to_foundry_journal
 from .routers.auth import router as auth_router
 from .routers.tables import router as tables_router
@@ -177,6 +178,7 @@ app.include_router(character_ai_router)
 app.include_router(template_ai_router)
 app.include_router(characters_router)
 app.include_router(character_hub_router)
+app.include_router(character_share_router)
 app.include_router(auth_router)
 app.include_router(tables_router)
 app.include_router(combat_router)
@@ -421,7 +423,7 @@ def health():
 # GM-only by default unless deliberately added to _is_player_safe.
 
 _PUBLIC_PATHS = {"/login", "/login/2fa", "/api/login", "/logout", "/health", "/favicon.ico", "/sw.js"}
-_PUBLIC_PREFIXES = ("/join/", "/static/")
+_PUBLIC_PREFIXES = ("/join/", "/static/", "/share/")
 
 
 def _is_player_safe(method: str, path: str) -> bool:

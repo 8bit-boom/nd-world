@@ -629,6 +629,23 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   // ── The strip that stays over every tab: vitals, turn, next game night ──────────────────────────────────
   const nowEl = document.getElementById('pch-now');
   const tagsEl = document.getElementById('pch-tags');
+  // Read-only share link: show it (copy), make a new one (the old stops working) or stop sharing.
+  async function shareFlow() {
+    const url = '/api/characters/' + PC_ID + '/share';
+    try {
+      let r = await fetch(url), st = await r.json();
+      if (!st.active) {
+        if (!confirm('Make a read-only link to this sheet? Anyone who has it can see your name, stats, vitals, feats and gear - not your notes, journal or quests.')) return;
+        r = await fetch(url, { method: 'POST' }); st = await r.json();
+      }
+      if (!st.active) throw new Error('no link');
+      try { await navigator.clipboard.writeText(st.url); } catch (e) { /* the prompt below still shows it */ }
+      const again = prompt('Read-only link (copied if your browser allows).\nTo stop sharing, clear the box and press OK. To make a NEW link (the old one stops working), type "new".', st.url);
+      if (again === null) return;
+      if (again.trim().toLowerCase() === 'new') { await fetch(url, { method: 'POST' }); alert('New link made - open Share again to copy it.'); }
+      else if (again.trim() === '') { await fetch(url, { method: 'DELETE' }); alert('Sharing stopped.'); }
+    } catch (e) { alert('Could not change the share link.'); }
+  }
   let nowData = null, nowBusy = false, nowTimer = null, popOpen = null;
   function topbarOffset() {
     const tb = document.querySelector('.topbar');
@@ -780,6 +797,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     if (ed && c && c.can_roll_initiative && me.native) tags.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Initiative', onclick: () => combatAct('initiative') }));
     if (ed && window.ndNotify && ndNotify.supported && ndNotify.state() !== 'denied') tags.push(h('button', { type: 'button', class: 'pch-btn', 'aria-pressed': String(ndNotify.state() === 'on'), title: 'Tell me when it is my turn (while this page is open)',
       text: ndNotify.state() === 'on' ? '\ud83d\udd14 Alerts on' : '\ud83d\udd15 Alerts', onclick: async () => { await ndNotify.toggle(); renderNow(); } }));
+    if (ed) tags.push(h('button', { type: 'button', class: 'pch-btn', title: 'A read-only link to this sheet that anyone can open', text: '\ud83d\udd17 Share', onclick: shareFlow }));
     if (ed && window.ndOpenRoll) tags.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll', onclick: () => window.ndOpenRoll() }));
     if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
     (me.native ? [] : me.resources || []).forEach(r => tags.push(vit(r.label, 'res:' + r.id, r.current, r.max, ed, false)));

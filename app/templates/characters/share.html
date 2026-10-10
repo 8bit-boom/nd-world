@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="robots" content="noindex,nofollow"/>
+<title>{{ v.name }} — character</title>
+<style>
+:root { color-scheme: dark light; --bg:#0d0f14; --card:#161a22; --text:#e6e9ef; --dim:#8b93a4; --neon:#27e0c3; --line:#262c38; }
+@media (prefers-color-scheme: light) { :root { --bg:#f4f5f8; --card:#fff; --text:#161a22; --dim:#5b6475; --neon:#0b8f7b; --line:#d9dde6; } }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif; line-height:1.45; padding:1rem 16px 2rem; }
+main { max-width:640px; margin:0 auto; }
+h1 { font-size:1.5rem; color:var(--neon); }
+.line { color:var(--dim); margin-bottom:1rem; }
+section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:.8rem 1rem; margin-bottom:.8rem; }
+h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-bottom:.4rem; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:.5rem; }
+.box { border:1px solid var(--line); border-radius:8px; padding:.4rem .6rem; }
+.box b { display:block; font-size:1.2rem; }
+.box span { color:var(--dim); font-size:.8rem; }
+ul { list-style:none; } li { padding:.2rem 0; border-bottom:1px solid var(--line); } li:last-child { border:0; }
+.tag { display:inline-block; border:1px solid var(--neon); color:var(--neon); border-radius:99px; padding:.1rem .6rem; font-size:.8rem; margin:0 .3rem .3rem 0; }
+.dim { color:var(--dim); } footer { color:var(--dim); font-size:.75rem; text-align:center; margin-top:1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>{{ v.name }}</h1>
+  <div class="line">{% if v.line %}{{ v.line }} · {% endif %}Level {{ v.level }}</div>
+  {% if v.vitals %}<section><h2>Vitals</h2><div class="grid">{% for x in v.vitals %}<div class="box"><b>{{ x.text }}</b><span>{{ x.label }}</span></div>{% endfor %}</div></section>{% endif %}
+  {% if v.stats %}<section><h2>Stats</h2><div class="grid">{% for s in v.stats %}<div class="box"><b>{{ s.value }}</b><span>{{ s.label }}</span></div>{% endfor %}</div></section>{% endif %}
+  {% for g in v.groups %}<section><h2>{{ g.title }}</h2><div class="grid">{% for r in g.rows %}<div class="box"><b>{{ r.text }}</b><span>{{ r.label }}</span></div>{% endfor %}</div></section>{% endfor %}
+  {% if v.conditions %}<section><h2>Conditions</h2>{% for c in v.conditions %}<span class="tag">{{ c }}</span>{% endfor %}</section>{% endif %}
+  {% if v.feats %}<section><h2>Feats</h2><ul>{% for f in v.feats %}<li>{{ f.name }}{% if f.rank %} <span class="dim">· {{ f.rank }}</span>{% endif %}</li>{% endfor %}</ul></section>{% endif %}
+  {% if v.gear %}<section><h2>Gear</h2><ul>{% for g in v.gear %}<li>{{ g.name }}{% if g.qty and g.qty != 1 %} <span class="dim">×{{ g.qty }}</span>{% endif %}{% if g.equipped %} <span class="dim">· equipped</span>{% endif %}</li>{% endfor %}</ul></section>{% endif %}
+  <footer>A read-only view shared by the player. It shows the sheet as it is right now.</footer>
+</main>
+</body>
+</html>

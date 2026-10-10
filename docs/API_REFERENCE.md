@@ -294,6 +294,11 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/characters/{pc_id}/hub/log` | Owner / GM (read-only) | The character's change log, newest first (HP / Shock / PP / MP / XP / level / conditions / coins / equipment / custom tracks / rests): `{actor, kind, text, at, undone, can_undo}`. Kept: the newest 200. |
 | GET | `/api/characters/{pc_id}/hub/handouts` | Owner / GM (read-only) | Pictures the GM showed the table with "Send to players" (kept in `world_handouts` when `/images/spotlight` runs), newest first, with which are new to this character. |
 | POST | `/api/characters/{pc_id}/hub/handouts/seen` | Owner | Mark every handout so far as seen (the strip's "new handouts" chip clears). |
+| GET | `/api/characters/{pc_id}/share` | Owner / GM | Whether the character has an active read-only share link, and its URL. |
+| POST | `/api/characters/{pc_id}/share` | Owner / GM | Make a new read-only share link; any earlier one stops working. |
+| DELETE | `/api/characters/{pc_id}/share` | Owner / GM | Stop sharing (revoke every link). |
+| GET | `/share/{token}` | **Public** (the token is the secret) | Read-only character page: name, race/profession, level, stats, vitals, conditions, feats, gear. No notes, journal, quests or portrait; `no-store`, `noindex`; revoked/unknown token = 404. |
+| GET | `/sw.js` | Public | The site-wide service worker (served from the root so its scope covers the app): keeps the last character sheet readable offline and shows alerts; logout clears its copies. |
 | POST | `/api/characters/{pc_id}/hub/log/{entry_id}/undo` | Owner | Take one logged change back. 409 unless it is the newest change to that number (undoing an older one would wipe a later change). |
 | POST | `/api/characters/{pc_id}/hub/entries` | Owner | Creates a private journal entry or goal for this character. JSON `{kind: "journal"\|"goal", title, body, status?(goal: active/achieved/failed/dropped), session_id?(journal; must be one of the character's party's sessions)}`. 400 on an empty entry, oversize text (title 200 / body 20000), or bad kind/status/session. Journal and goals are visible to the owner only — no GM-facing read path. |
 | POST | `/api/characters/{pc_id}/hub/entries/{entry_id}` | Owner | Edits an entry (only the fields present change; `kind` can't change; `status` is goals-only, `session_id` journal-only). |
