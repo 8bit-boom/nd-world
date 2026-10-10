@@ -241,6 +241,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
 <script src="/static/js/cockpit-frames.js?v={{ asset_v('js/cockpit-frames.js') }}"></script>
 <script src="/static/js/pc-viewer.js?v={{ asset_v('js/pc-viewer.js') }}"></script>
 <script src="/static/js/nd-offline-core.js?v={{ asset_v('js/nd-offline-core.js') }}"></script>
+<script src="/static/js/nd-notify-core.js?v={{ asset_v('js/nd-notify-core.js') }}"></script>
+<script src="/static/js/nd-notify.js?v={{ asset_v('js/nd-notify.js') }}"></script>
 <script src="/static/js/nd-offline.js?v={{ asset_v('js/nd-offline.js') }}"></script>
 <script>
 (function () {
@@ -776,6 +778,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     // below the sticky row, in normal flow: what is on the character, and the next game night
     const tags = [];
     if (ed && c && c.can_roll_initiative && me.native) tags.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Initiative', onclick: () => combatAct('initiative') }));
+    if (ed && window.ndNotify && ndNotify.supported && ndNotify.state() !== 'denied') tags.push(h('button', { type: 'button', class: 'pch-btn', 'aria-pressed': String(ndNotify.state() === 'on'), title: 'Tell me when it is my turn (while this page is open)',
+      text: ndNotify.state() === 'on' ? '\ud83d\udd14 Alerts on' : '\ud83d\udd15 Alerts', onclick: async () => { await ndNotify.toggle(); renderNow(); } }));
     if (ed && window.ndOpenRoll) tags.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll', onclick: () => window.ndOpenRoll() }));
     if (me.native && me.temp_hp > 0) tags.push(h('span', { class: 'pch-pill', text: '+' + me.temp_hp + ' temp HP' }));
     (me.native ? [] : me.resources || []).forEach(r => tags.push(vit(r.label, 'res:' + r.id, r.current, r.max, ed, false)));
@@ -797,7 +801,9 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   async function refreshNow() {
     if (nowBusy || !nowEl) return;
     try {
+      const prevData = nowData;
       nowData = await api('now');
+      if (window.ndNotify && OWNER) ndNotify.check(prevData, nowData);
       renderNow();
     } catch (e) { /* the strip just keeps what it has */ }
   }
