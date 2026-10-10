@@ -14,6 +14,7 @@
 .ab-head { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
 .ab-name { color:var(--text); font-size:.95rem; flex:1 1 9rem; min-width:0; }
 .ab-chip { font-size:.66rem; padding:.1rem .45rem; border-radius:999px; border:1px solid var(--border); color:var(--text-dim); }
+.ab-rules { cursor:pointer; display:inline-block; margin-top:.35rem; padding:.3rem .8rem; border:1px solid var(--border); border-radius:999px; color:var(--text-dim); font-size:.75rem; min-height:0; }
 .ab-desc { color:var(--text-dim); font-size:.78rem; margin:.4rem 0; white-space:pre-wrap; }
 .ab-pay { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; }
 .ab-pay label { display:inline-flex; align-items:center; gap:.25rem; font-size:.75rem; color:var(--text-dim); }
@@ -63,7 +64,7 @@
         el('div', { class: 'ab-head' }, el('div', { class: 'ab-name' }, c.name),
           c.rank ? el('span', { class: 'ab-chip' }, c.rank) : null, c.type ? el('span', { class: 'ab-chip' }, c.type) : null,
           c.limit ? el('span', { class: 'ab-chip' }, 'once per ' + c.limit) : null),
-        c.description ? el('details', null, el('summary', { class: 'ab-chip', style: 'cursor:pointer;display:inline-block;margin-top:.3rem' }, 'Rules'), el('div', { class: 'ab-desc' }, c.description)) : null);
+        c.description ? el('details', null, el('summary', { class: 'ab-rules' }, 'Rules'), el('div', { class: 'ab-desc' }, c.description)) : null);
       if (used) {
         row.append(el('div', { class: 'ab-pay' }, el('span', { class: 'ab-chip' }, 'Used — back after a ' + (c.used === 'rest' ? 'Rest' : 'session')),
           el('button', { type: 'button', class: 'ab-use', onclick: async () => { try { data.cards = (await call('ability-ready', { index: c.index })).cards; err.textContent = ''; } catch (e) { err.textContent = e.message; } draw(); } }, 'Ready again')));
