@@ -643,6 +643,50 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       h('button', { type: 'button', class: 'pch-btn', text: hp ? '💚 Heal' : '+ Recover', onclick: go(1) }),
       h('button', { type: 'button', class: 'pch-btn', text: 'Cancel', onclick: () => { popOpen = null; renderNow(); } }));
   }
+  // Rest: N&D has one; a custom system lists its own (short / long). Undo stays for 12 seconds.
+  let restUndo = null, restTimer = null, restOpen = false;
+  function restControl(kinds) {
+    const wrap = h('span', { class: 'pch-vit' });
+    if (restUndo) {
+      wrap.append(h('span', { class: 'pch-pill soon', text: '\ud83d\ude34 Rested' }),
+        h('button', { type: 'button', class: 'pch-btn', text: '\u21b6 Undo', onclick: undoRest }));
+      return wrap;
+    }
+    const label = k => kinds.length === 1 ? '\ud83d\ude34 Rest' : (k === 'short' ? 'Short rest' : 'Long rest');
+    if (kinds.length === 1) { wrap.append(h('button', { type: 'button', class: 'pch-btn', text: label(kinds[0]), onclick: () => takeRest(kinds[0]) })); return wrap; }
+    wrap.append(h('button', { type: 'button', class: 'pch-btn', text: '\ud83d\ude34 Rest\u2026', 'aria-expanded': String(restOpen), onclick: () => { restOpen = !restOpen; renderNow(); } }));
+    if (restOpen) kinds.forEach(k => wrap.append(h('button', { type: 'button', class: 'pch-btn', text: label(k), onclick: () => takeRest(k) })));
+    return wrap;
+  }
+  function syncFromRest(res) {
+    // the sheet's own boxes and (custom system) form inputs follow, so its next Save cannot write the old numbers back
+    const detail = {};
+    if (res.pp_current !== undefined) { detail.pp = res.pp_current; detail.pp_max = res.pp_max; detail.mp = res.mp_current; detail.mp_max = res.mp_max; }
+    if (res.shock_current !== undefined) detail.shock = res.shock_current;
+    if (Object.keys(detail).length) announce(detail);
+    (res.tracks || []).forEach(t => { const box = document.querySelector('[data-cf-id="' + t.id + '_current"]'); if (box) box.value = t.current; });
+  }
+  async function takeRest(kind) {
+    if (nowBusy) return;
+    nowBusy = true; restOpen = false;
+    try {
+      const d = await send('rest', { kind });
+      restUndo = d.snapshot; syncFromRest(d.result);
+      clearTimeout(restTimer); restTimer = setTimeout(() => { restUndo = null; renderNow(); }, 12000);
+      nowData.err = '';
+    } catch (e) { nowData.err = e.message; }
+    nowBusy = false;
+    await refreshNow();
+    renderNow();
+  }
+  async function undoRest() {
+    if (!restUndo || nowBusy) return;
+    nowBusy = true;
+    try { await send('rest/undo', { snapshot: restUndo }); restUndo = null; clearTimeout(restTimer); nowData.err = ''; location.reload(); return; }
+    catch (e) { nowData.err = e.message; }
+    nowBusy = false;
+    renderNow();
+  }
   async function combatAct(what) {
     if (nowBusy) return;
     nowBusy = true;
@@ -690,6 +734,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       tags.push(h('a', { class: 'pch-pill link', href: d.schedule_href, text: '📅 ' + d.polls_waiting + ' poll' + (d.polls_waiting === 1 ? '' : 's') + ' waiting' }));
     }
     if (popOpen && popOpen.indexOf('res:') === 0 && ed && popOpen !== 'res:' + me.hp_id) tags.push(amountPop(popOpen));
+    if (ed && (d.rest_kinds || []).length) tags.push(restControl(d.rest_kinds));
     tagsEl.replaceChildren(...tags);
     tagsEl.hidden = !tags.length;
   }

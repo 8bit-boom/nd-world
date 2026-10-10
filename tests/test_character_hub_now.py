@@ -270,3 +270,42 @@ def test_advance_wraps_to_a_new_round():
     assert (cs.active_idx, cs.round_num) == (0, 3)
     combat_turns.advance(cs, [{"initiative": 1}, {"initiative": 2}])
     assert (cs.active_idx, cs.round_num) == (1, 3)
+
+
+# ── Rest from the character page ────────────────────────────────────────────
+
+def test_rest_for_an_nd_character_and_undo(client, seed):
+    pc = _pc(seed.player_a, seed.world_a, "Hero")
+    _stats(pc, str=4, dex=4, bod=4, per=4, wil=4, int=4, cha=4, itu=4)
+    db = SessionLocal()
+    try:
+        row = db.get(PlayerCharacter, pc)
+        row.pp_current, row.mp_current, row.shock_current = 0, 0, 0
+        db.commit()
+    finally:
+        db.close()
+    _as(client, seed.player_a)
+    assert client.get(f"/api/characters/{pc}/hub/now").json()["rest_kinds"] == ["long"]
+    r = client.post(f"/api/characters/{pc}/hub/rest", json={"kind": "long"})
+    assert r.status_code == 200
+    res = r.json()["result"]
+    assert res["pp_current"] == 8 and res["mp_current"] == 8 and res["shock_current"] > 0       # half of 16, all Shock
+    assert client.post(f"/api/characters/{pc}/hub/rest", json={"kind": "short"}).status_code == 400
+    assert client.post(f"/api/characters/{pc}/hub/rest/undo", json={"snapshot": r.json()["snapshot"]}).status_code == 200
+    db = SessionLocal()
+    try:
+        row = db.get(PlayerCharacter, pc)
+        assert (row.pp_current, row.mp_current, row.shock_current) == (0, 0, 0)
+    finally:
+        db.close()
+
+
+def test_rest_needs_rules_and_ownership(client, seed):
+    pc = _custom_pc(seed)                                         # a custom template with no Rest rules
+    _as(client, seed.player_a)
+    assert client.get(f"/api/characters/{pc}/hub/now").json()["rest_kinds"] == []
+    assert client.post(f"/api/characters/{pc}/hub/rest", json={"kind": "long"}).status_code == 400
+    assert client.post(f"/api/characters/{pc}/hub/rest/undo", json={"snapshot": {"id": pc + 5}}).status_code == 400
+    client.cookies.clear()
+    _as(client, seed.player_b)
+    assert client.post(f"/api/characters/{pc}/hub/rest", json={"kind": "long"}).status_code == 404

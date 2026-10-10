@@ -545,6 +545,57 @@ def hub_end_turn(pc_id: int, request: Request, db: Session = Depends(get_db)):
     return {"ok": True, "round": cs.round_num, "combat": _combat_now(db, pc)}
 
 
+def _rest_kinds(db: Session, pc: PlayerCharacter) -> list:
+    """Which Rests this character's system has: N&D has one (shown as "Rest"); a custom system lists the ones it defines."""
+    from ..models import SheetTemplate
+    from ..sheet_systems import rest_ops
+    if pc_maxima(pc)["native"]:
+        return ["long"]
+    tpl = db.get(SheetTemplate, pc.sheet_template_id) if pc.sheet_template_id else None
+    return [k for k in ("short", "long") if tpl is not None and rest_ops(tpl, k)]
+
+
+@router.post("/api/characters/{pc_id}/hub/rest")
+async def hub_rest(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Take a Rest on the character's own system's rules (what the party Rest does for everyone, for one character):
+    N&D = +half PP/MP and all Shock; a custom system = its Rest rules. Returns the snapshot for one-tap Undo."""
+    from .parties import apply_pc_rest
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    kind = body.get("kind", "long") if isinstance(body, dict) else "long"
+    if kind not in ("short", "long"):
+        raise HTTPException(400, "kind must be short or long")
+    if kind not in _rest_kinds(db, pc):
+        raise HTTPException(400, "This system has no such Rest")
+    done = apply_pc_rest(db, pc, kind)
+    if done is None:
+        raise HTTPException(400, "This system has no Rest rules")
+    db.commit()
+    live.touch(pc.world_id)
+    return {"kind": kind, "result": done[0], "snapshot": done[1]}
+
+
+@router.post("/api/characters/{pc_id}/hub/rest/undo")
+async def hub_rest_undo(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Undo that Rest: the client posts back the snapshot /hub/rest returned (only for this character)."""
+    from .parties import restore_pc_snapshot
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+    snap = body.get("snapshot") if isinstance(body, dict) else None
+    if not isinstance(snap, dict) or snap.get("id") != pc.id:
+        raise HTTPException(400, "snapshot must be the one this character's Rest returned")
+    restore_pc_snapshot(db, pc, snap)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"ok": True}
+
+
 @router.get("/api/characters/{pc_id}/hub/now")
 def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
     """The strip that stays on screen over every tab: this character's live vitals (HP / Shock / conditions - read-only
@@ -574,6 +625,7 @@ def hub_now(pc_id: int, request: Request, db: Session = Depends(get_db)):
         next_session = {"title": plan.title, "location": plan.location or "",
                         "starts_at": slot.starts_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "my": mine.choice if mine else None}
     return {"me": me, "can_edit": is_owner, "combat": _combat_now(db, pc), "next_session": next_session,
+            "rest_kinds": _rest_kinds(db, pc) if is_owner else [],
             "polls_waiting": polls_waiting(db, world.id, asker),
             "schedule_href": with_world("/schedule", world)}
 
