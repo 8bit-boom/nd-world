@@ -171,6 +171,15 @@ def undo(db: Session, pc, entry) -> Optional[str]:
         except ValueError:
             return "Nothing to restore"
         pc.equipment_json = value
+    elif op == "advance":
+        if not isinstance(spec.get("stats_json"), str) or not isinstance(spec.get("feats_json"), str):
+            return "Nothing to restore"
+        try:
+            json.loads(spec["stats_json"]); json.loads(spec["feats_json"])
+        except ValueError:
+            return "Nothing to restore"
+        pc.stats_json, pc.feats_json = spec["stats_json"], spec["feats_json"]
+        set_prefs(db, pc, xp_spent=int(spec.get("spent") or 0) or None)
     elif op == "cf":
         values = spec.get("values")
         if not isinstance(values, dict):

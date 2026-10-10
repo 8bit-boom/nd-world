@@ -261,7 +261,7 @@
         <span class="cs-xp-label" id="xp-label">
           {{ pc.xp }} XP{% if xp_hi %} / {{ xp_hi }}{% endif %}
         </span>
-        {% if can_manage %}<button type="button" class="cs-hp-inline-btn" onclick="xpDialog()">+ XP</button>{% endif %}
+        {% if can_manage %}<button type="button" class="cs-hp-inline-btn" onclick="xpDialog()">+ XP</button><button type="button" class="cs-hp-inline-btn" onclick="ndOpenAdvance()" title="Spend XP on stats and feats">&#11014; Advance</button>{% endif %}
       </div>
     </div>
   </div>
@@ -611,6 +611,7 @@
 </div>
 
 {% include 'characters/_roll_sheet.html' %}
+{% if can_manage %}{% include 'characters/_advance_sheet.html' %}{% endif %}
 
 <script>
 const PC_ID = {{ pc.id }};

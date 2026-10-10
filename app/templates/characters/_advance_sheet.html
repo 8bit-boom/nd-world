@@ -1,0 +1,111 @@
+{# "Advance": spend XP on stats and feats by the Player's Guide's costs. Included by the N&D sheet only (the owner's). The server
+   (GET/POST /api/characters/{id}/advance) decides what is allowed; this only shows it. #}
+<style>
+.adv { position:fixed; inset:0; z-index:1100; display:flex; align-items:flex-end; justify-content:center; background:rgba(0,0,0,.6); }
+.adv[hidden] { display:none; }
+.adv-card { position:relative; width:min(560px,100%); max-height:92dvh; display:flex; flex-direction:column; background:var(--bg2); border:1px solid var(--neon); border-radius:14px 14px 0 0; padding:1rem 1.1rem calc(.8rem + env(safe-area-inset-bottom)); box-shadow:0 -10px 40px rgba(0,0,0,.6); }
+@media (min-width:600px) { .adv { align-items:center; } .adv-card { border-radius:14px; } }
+.adv-x { position:absolute; top:.4rem; right:.5rem; width:44px; height:44px; background:none; border:0; color:var(--text-dim); font-size:1.2rem; cursor:pointer; }
+.adv-title { color:var(--neon); font-size:1rem; margin:0 2.5rem .1rem 0; }
+.adv-sub { color:var(--text-dim); font-size:.8rem; margin-bottom:.6rem; }
+.adv-tabs { display:flex; gap:.4rem; margin-bottom:.6rem; }
+.adv-tabs button { flex:1; min-height:44px; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:8px; font-family:var(--font); cursor:pointer; }
+.adv-tabs button[aria-selected="true"] { border-color:var(--neon); color:var(--neon); }
+.adv-body { overflow-y:auto; flex:1 1 auto; min-height:8rem; }
+.adv-row { display:flex; gap:.6rem; align-items:center; padding:.55rem 0; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+.adv-row:last-child { border-bottom:0; }
+.adv-main { flex:1 1 12rem; min-width:0; }
+.adv-name { color:var(--text); font-size:.9rem; }
+.adv-desc { color:var(--text-dim); font-size:.75rem; margin-top:.15rem; }
+.adv-why { color:var(--text-dim); font-size:.72rem; }
+.adv-buy { min-height:44px; min-width:84px; background:var(--bg3); border:1px solid var(--neon); color:var(--neon); border-radius:8px; font-family:var(--font); cursor:pointer; }
+.adv-buy:disabled { opacity:.35; border-color:var(--border); color:var(--text-dim); cursor:default; }
+.adv-buy.sure { background:var(--neon); color:#000; }
+.adv-search { width:100%; min-height:44px; font-size:16px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:0 .6rem; margin-bottom:.4rem; font-family:var(--font); box-sizing:border-box; }
+.adv-foot { color:var(--text-dim); font-size:.72rem; margin-top:.5rem; }
+.adv-foot button { background:none; border:0; color:var(--neon); text-decoration:underline; cursor:pointer; font:inherit; padding:.3rem; }
+.adv-err { color:var(--neon2); font-size:.85rem; margin:.3rem 0; }
+</style>
+<div id="adv" class="adv" hidden role="dialog" aria-modal="true" aria-labelledby="adv-title">
+  <div class="adv-card">
+    <button type="button" class="adv-x" id="adv-x" aria-label="Close">&#10005;</button>
+    <div class="adv-title" id="adv-title">Advance</div>
+    <div class="adv-sub" id="adv-sub"></div>
+    <div class="adv-tabs" role="tablist"><button type="button" role="tab" data-t="stats" aria-selected="true">Stats</button><button type="button" role="tab" data-t="feats" aria-selected="false">Feats</button></div>
+    <div class="adv-body" id="adv-body"></div>
+    <div class="adv-err" id="adv-err" role="alert"></div>
+    <div class="adv-foot" id="adv-foot"></div>
+  </div>
+</div>
+<script>
+(function () {
+  const PC = {{ pc.id }}, root = document.getElementById('adv'), bodyEl = document.getElementById('adv-body');
+  const err = document.getElementById('adv-err');
+  let data = null, tab = 'stats', bought = false, q = '', armed = null, lastFocus = null;
+  const el = (tag, attrs, ...kids) => {
+    const e = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v === true) e.setAttribute(k, ''); else if (v !== false && v != null) e.setAttribute(k, v); });
+    kids.flat().forEach(k => { if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k))); });
+    return e;
+  };
+  async function call(method, payload) {
+    const r = await fetch('/api/characters/' + PC + '/advance', { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify(payload) : undefined });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    return d;
+  }
+  function buyButton(key, cost, can, payload) {
+    const sure = armed === key;
+    return el('button', { type: 'button', class: 'adv-buy' + (sure ? ' sure' : ''), disabled: !can,
+      onclick: async () => {
+        if (!sure) { armed = key; draw(); return; }                    // second tap confirms: costs are real
+        try { data = await call('POST', payload); bought = true; err.textContent = ''; } catch (e) { err.textContent = e.message; }
+        armed = null; draw();
+      } }, sure ? 'Confirm ' + cost + ' XP' : 'Buy · ' + cost + ' XP');
+  }
+  function draw() {
+    if (!data) return;
+    document.getElementById('adv-sub').textContent = data.available + ' XP to spend (' + data.earned + ' earned, ' + data.spent + ' spent) · feats unlocked up to Rank ' + data.unlocked_rank;
+    root.querySelectorAll('.adv-tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.t === tab)));
+    if (tab === 'stats') {
+      bodyEl.replaceChildren(...data.stats.map(s => el('div', { class: 'adv-row' },
+        el('div', { class: 'adv-main' }, el('div', { class: 'adv-name' }, s.label + ' ' + s.value + ' → ' + (s.value + 1)),
+          el('div', { class: 'adv-why' }, 'New rank ' + (s.value + 1) + ' × 2 = ' + s.cost + ' XP' + (s.can ? '' : (s.cost > data.available ? ' · needs ' + (s.cost - data.available) + ' more' : ' · at the maximum')))),
+        buyButton('stat:' + s.id, s.cost, s.can, { kind: 'stat', stat: s.id }))));
+    } else {
+      const needle = q.trim().toLowerCase();
+      const rows = data.feats.filter(f => !needle || (f.name + ' ' + f.category + ' ' + f.description).toLowerCase().includes(needle)).slice(0, 60);
+      bodyEl.replaceChildren(
+        el('input', { class: 'adv-search', type: 'search', placeholder: 'Search feats…', value: q, 'aria-label': 'Search feats', oninput: e => { q = e.target.value; const pos = e.target.selectionStart; draw(); const i = bodyEl.querySelector('input'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } } }),
+        ...(rows.length ? rows.map(f => el('div', { class: 'adv-row' },
+          el('div', { class: 'adv-main' }, el('div', { class: 'adv-name' }, f.name + ' · ' + f.category + ' Rank ' + f.rank),
+            f.description ? el('div', { class: 'adv-desc' }, f.description) : null, f.why ? el('div', { class: 'adv-why' }, f.why) : null),
+          buyButton('feat:' + f.id, f.cost, f.can, { kind: 'feat', id: f.id }))) : [el('p', { class: 'adv-why' }, 'No feats match' + (data.feats.length ? '.' : ' — your race and profession have none left to buy.'))]));
+    }
+    const foot = document.getElementById('adv-foot');
+    foot.replaceChildren('Already spent XP before using this? ', el('button', { type: 'button', onclick: async () => {
+      const v = prompt('How much XP has this character already spent (stats and feats bought)?', data.spent);
+      if (v === null || isNaN(parseInt(v))) return;
+      try { data = await call('POST', { kind: 'spent', value: parseInt(v) }); err.textContent = ''; } catch (e) { err.textContent = e.message; }
+      draw();
+    } }, 'set it'));
+  }
+  async function open() {
+    lastFocus = document.activeElement; armed = null; err.textContent = ''; bought = false;
+    root.hidden = false; document.documentElement.style.overflow = 'hidden';
+    bodyEl.textContent = 'Loading…';
+    try { data = await call('GET'); draw(); } catch (e) { bodyEl.textContent = ''; err.textContent = e.message; }
+    document.getElementById('adv-x').focus();
+  }
+  function close() {
+    root.hidden = true; document.documentElement.style.overflow = '';
+    if (bought) { location.reload(); return; }                          // the sheet shows the new numbers and feats
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+  root.querySelectorAll('.adv-tabs button').forEach(b => b.addEventListener('click', () => { tab = b.dataset.t; armed = null; draw(); }));
+  document.getElementById('adv-x').addEventListener('click', close);
+  root.addEventListener('mousedown', ev => { if (ev.target === root) close(); });
+  document.addEventListener('keydown', ev => { if (!root.hidden && ev.key === 'Escape') close(); });
+  window.ndOpenAdvance = open;
+})();
+</script>

@@ -1920,6 +1920,85 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
 
 # ── AJAX: Equipment / Feats (inline sheet quick-add) ───────────────────────────
 
+# ── Advancement: spend XP (stats and feats, by the Player's Guide's costs) ───────────────────────────────────
+
+def _advance_state(db, pc):
+    from .. import advance
+    prefs = char_extras.prefs(db, pc.id)
+    return advance.options(pc, game_catalog.catalog_payload()["feats"], int(pc.xp or 0), int(prefs.get("xp_spent") or 0))
+
+
+@router.get("/api/characters/{pc_id}/advance")
+def character_advance_options(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """What this N&D character could buy with its unspent XP, with costs and what blocks the rest."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    if not pc_maxima(pc)["native"]:
+        raise HTTPException(400, "Advancement here follows the Neon & Dragons costs; this system spends XP on its own sheet")
+    return _advance_state(db, pc)
+
+
+@router.post("/api/characters/{pc_id}/advance")
+async def character_advance(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Spend XP: {kind: "stat", stat} (new rank x 2), {kind: "feat", id} (Race / Profession rank x 4, Common rank x 3, only Ranks
+    unlocked by owning two feats of the one below, only your own race / profession), or {kind: "spent", value} to tell the sheet
+    how much XP was already spent before this tool existed. Undoable from the change log."""
+    from .. import advance
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_manage_character(user, pc):
+        raise HTTPException(403)
+    if not pc_maxima(pc)["native"]:
+        raise HTTPException(400, "Advancement here follows the Neon & Dragons costs")
+    state = _advance_state(db, pc)
+    kind = body.get("kind")
+    if kind == "spent":
+        value = max(0, min(int(pc.xp or 0), _body_int(body, "value")))
+        char_extras.set_prefs(db, pc, xp_spent=value or None)
+        db.commit()
+        return _advance_state(db, pc)
+    before = {"op": "advance", "stats_json": pc.stats_json or "[]", "feats_json": pc.feats_json or "[]", "spent": state["spent"]}
+    if kind == "stat":
+        row = next((r for r in state["stats"] if r["id"] == str(body.get("stat") or "")), None)
+        if row is None:
+            raise HTTPException(400, "Unknown stat")
+        if row["value"] >= advance.MAX_STAT:
+            raise HTTPException(400, "That stat is already at the table maximum")
+        if row["cost"] > state["available"]:
+            raise HTTPException(400, f"{row['label']} {row['value']} \u2192 {row['value'] + 1} costs {row['cost']} XP; you have {state['available']}")
+        stats = json.loads(pc.stats_json or "[]")
+        entry = next((x for x in stats if isinstance(x, dict) and x.get("id") == row["id"]), None)
+        if entry is None:
+            stats.append({"id": row["id"], "label": row["label"], "abbr": row["id"].upper(), "value": row["value"] + 1})
+        else:
+            entry["value"] = row["value"] + 1
+        pc.stats_json = json.dumps(stats)
+        spent, text = state["spent"] + row["cost"], f"Bought {row['label']} {row['value']} \u2192 {row['value'] + 1} for {row['cost']} XP"
+    elif kind == "feat":
+        row = next((r for r in state["feats"] if str(r["id"]) == str(body.get("id"))), None)
+        if row is None:
+            raise HTTPException(400, "That feat is not available to this character")
+        if not row["can"]:
+            raise HTTPException(400, row["why"] or "Not available yet")
+        feats = json.loads(pc.feats_json or "[]")
+        feats.append({"name": row["name"], "id": row["id"], "type": row["category"], "rank": f"Rank {row['rank']}", "notes": ""})
+        pc.feats_json = json.dumps(feats)
+        spent, text = state["spent"] + row["cost"], f"Bought the {row['category']} feat {row['name']} (Rank {row['rank']}) for {row['cost']} XP"
+    else:
+        raise HTTPException(400, "kind must be stat, feat or spent")
+    char_extras.set_prefs(db, pc, xp_spent=spent)
+    char_extras.log(db, pc, char_extras.actor_name(user), "advance", text, before if len(before["feats_json"]) <= 30000 else None)
+    db.commit()
+    live.touch(pc.world_id)
+    return _advance_state(db, pc)
+
+
 @router.post("/api/characters/{pc_id}/level-up")
 async def character_level_up(pc_id: int, request: Request, db: Session = Depends(get_db)):
     """One-click level application when XP has already crossed the threshold
