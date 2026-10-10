@@ -789,6 +789,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "world_members": world_members,
             "linked_sheets": linked_sheets,
             "levelup_ready": levelup_ready,
+            "roll_cfg": _roll_cfg(pc, chosen_tpl, can_manage),
             "hub_enabled": hub_enabled,
             "hub_mode": hub_mode,
             "hub_owner_name": hub_owner_name,
@@ -813,11 +814,44 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "linked_sheets": linked_sheets,
         "levelup_ready": levelup_ready,
         "carry": char_extras.carry_info(db, pc),
+        "roll_cfg": _roll_cfg(pc, chosen_tpl, can_manage),
         "hub_enabled": hub_enabled,
         "hub_mode": hub_mode,
         "hub_owner_name": hub_owner_name,
         **hub_ctx,
     })
+
+
+_STAT_NAMES = {"str": "Strength", "dex": "Dexterity", "bod": "Body", "per": "Perception",
+               "wil": "Willpower", "int": "Intellect", "cha": "Charisma", "itu": "Intuition"}
+
+
+def _roll_cfg(pc: PlayerCharacter, tpl, can_manage: bool):
+    """What the character page's roll sheet needs, or None (not the owner, or nothing rollable): a native N&D sheet rolls
+    Stat + d10; a custom system with `dice` rules rolls its success pool."""
+    from ..sheet_systems import dice_spec, pool_dice
+    if not can_manage:
+        return None
+    if pc_maxima(pc)["native"]:
+        try:
+            stats = {str(x.get("id")): int(_num(x.get("value"), 0)) for x in json.loads(pc.stats_json or "[]") if isinstance(x, dict)}
+        except (ValueError, TypeError):
+            stats = {}
+        return {"mode": "stat", "pc_id": pc.id, "pc_name": pc.name,
+                "stats": [{"id": k, "label": v, "value": stats.get(k, 0), "pool": "pp" if k in ("str", "dex", "bod", "per") else "mp"}
+                          for k, v in _STAT_NAMES.items()]}
+    spec = dice_spec(tpl)
+    if spec is None:
+        return None
+    cf = parse_custom_fields(pc.custom_fields_json)
+    pools = []
+    for p in spec["pools"]:
+        _p, dice = pool_dice(spec, p["id"], cf)
+        pools.append({"id": p["id"], "label": p["label"], "dice": dice})
+    sp = spec.get("spend")
+    return {"mode": "pool", "pc_id": pc.id, "pc_name": pc.name, "pools": pools, "threshold": spec.get("threshold", 6),
+            "explode": spec.get("explode", True),
+            "spend": {"field": sp["field"], "label": sp["label"], "per": sp.get("per", 1)} if sp else None}
 
 
 def _assignable_members(db: Session, world_id: int):
@@ -2181,6 +2215,132 @@ def api_me(request: Request, db: Session = Depends(get_db)):
 
 
 # ── AJAX: Dice roll ───────────────────────────────────────────────────────────
+
+# ── Tap-to-roll ───────────────────────────────────────────────────────────────
+# Stat checks (N&D, Chronicles of the Worm) and success pools (Hunt in the Moonlight, Asterion): the server rolls (the player
+# cannot pick a number), pays what was spent, writes the roll to the table's shared log and the character's change log.
+
+def _roll_log(db, request, world, pc, notation, breakdown, total, label):
+    """Log to the shared dice log when the player may use it; (response dict or None, shared?)."""
+    from . import dice as _dice
+    if not world_can_view_section(request, world, "dice"):
+        return None, False
+    return _dice._roll_response(_dice._save_roll(db, request, world, notation, breakdown, total, label)), True
+
+
+@router.post("/api/characters/{pc_id}/roll")
+async def character_roll(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Roll for a character. Body, one of:
+    * {"kind": "stat", "stat": "int", "boost": 0-2, "mode": "normal"|"adv"|"dis"} - Stat + d10 + points spent from the matching
+      pool (PP for physical stats, MP for mental); natural 10 = critical, natural 1 = automatic failure.
+    * {"kind": "pool", "pool": id, "spend": n, "mod": -3..3, "need": 0-6} - a d10 success pool by the template's `dice` rules
+      (6+ succeeds, 10 explodes); `spend` pays Stamina / Ichor for +1d10 each, `mod` is the GM's situational dice, `need` the
+      successes the GM asked for (0 = none). Owner-or-GM."""
+    from .. import pool_roll
+    from ..sheet_systems import dice_spec, pool_dice
+    body = await _json_dict(request)
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_manage_character(user, pc):
+        raise HTTPException(403)
+    world = db.get(World, pc.world_id)
+    actor = char_extras.actor_name(user)
+    kind = body.get("kind", "stat")
+
+    if kind == "stat":
+        if not pc_maxima(pc)["native"]:
+            raise HTTPException(400, "This character's system rolls a dice pool, not Stat + d10")
+        stat = str(body.get("stat") or "").lower()
+        pool = pool_roll.stat_pool(stat)
+        if pool is None:
+            raise HTTPException(400, "Unknown stat")
+        stats = {str(s.get("id")): int(_num(s.get("value"), 0)) for s in json.loads(pc.stats_json or "[]") if isinstance(s, dict)}
+        value = stats.get(stat, 0)
+        boost = max(0, min(pool_roll.MAX_BOOST, _body_int(body, "boost")))
+        mode = body.get("mode") if body.get("mode") in ("adv", "dis") else "normal"
+        col = f"{pool}_current"
+        have = int(getattr(pc, col, 0) or 0)
+        if boost > have:
+            raise HTTPException(400, f"Not enough {pool.upper()} to spend {boost}")
+        res = pool_roll.roll_check(value, boost, mode)
+        label_stat = {"str": "Strength", "dex": "Dexterity", "bod": "Body", "per": "Perception",
+                      "wil": "Willpower", "int": "Intellect", "cha": "Charisma", "itu": "Intuition"}[stat]
+        if boost:
+            setattr(pc, col, have - boost)
+            char_extras.log(db, pc, actor, "resource", f"{pool.upper()} {have} \u2192 {have - boost} (boosted a {label_stat} roll)",
+                            {"op": pool, "value": have})
+        die_term = {"term": ("2d10 keep higher" if mode == "adv" else "2d10 keep lower" if mode == "dis" else "1d10"),
+                    "rolls": res["rolls"], "sum": res["die"]}
+        parts = [die_term, {"term": f"+{value} {stat.upper()}", "sum": value}]
+        if boost:
+            parts.append({"term": f"+{boost} {pool.upper()}", "sum": boost})
+        notation = ("2d10kh1" if mode == "adv" else "2d10kl1" if mode == "dis" else "1d10") + f"+{value}" + (f"+{boost}" if boost else "")
+        logged, shared = _roll_log(db, request, world, pc, notation, parts, res["total"], f"{label_stat} check \u2014 {pc.name}")
+        db.commit()
+        live.touch(pc.world_id)
+        return {"kind": "stat", "total": res["total"], "die": res["die"], "rolls": res["rolls"], "mode": mode, "crit": res["crit"],
+                "fail": res["fail"], "shared": shared, "notation": notation, "roll": logged,
+                "spent": {"pool": pool, "amount": boost, "current": have - boost, "max": pc_maxima(pc)[pool]} if boost else None}
+
+    if kind != "pool":
+        raise HTTPException(400, "kind must be stat or pool")
+    tpl = db.get(SheetTemplate, pc.sheet_template_id) if getattr(pc, "sheet_template_id", None) else None
+    spec = dice_spec(tpl)
+    if spec is None:
+        raise HTTPException(400, "This system has no dice-pool rules")
+    cf = parse_custom_fields(pc.custom_fields_json)
+    pool, base = pool_dice(spec, str(body.get("pool") or ""), cf)
+    if pool is None:
+        raise HTTPException(400, "Unknown pool")
+    spend_spec = spec.get("spend")
+    spend = max(0, min(10, _body_int(body, "spend"))) if spend_spec else 0
+    mod = max(-3, min(3, _body_int(body, "mod")))
+    need = max(0, min(6, _body_int(body, "need")))
+    before, after = {}, {}
+    if spend:
+        fid = spend_spec["field"]
+        tracks = {t["id"]: t for t in resource_tracks(template_fields(tpl), cf, system_meta(tpl))}
+        have = int(tracks[fid]["current"]) if fid in tracks else 0
+        if spend > have:
+            raise HTTPException(400, f"Not enough {spend_spec['label']} to spend {spend}")
+        before[f"{fid}_current"] = cf.get(f"{fid}_current", have)
+        cf[f"{fid}_current"] = have - spend
+        after[f"{fid}_current"] = have - spend
+        tally = spend_spec.get("tally")
+        if tally:
+            spent_before = int(_num(cf.get(tally), 0))
+            before[tally] = cf.get(tally, spent_before)
+            cf[tally] = spent_before + spend
+            after[tally] = cf[tally]
+            into, every = spend_spec.get("into"), int(spend_spec.get("every") or 0)
+            if into and every:
+                fld = next((f for f in template_fields(tpl) if f.get("id") == into), {})
+                top = max([int(_num(o, 0)) for o in fld.get("options") or []] or [3])
+                cur = int(_num(cf.get(into), _num(fld.get("default_value"), 0)))
+                want = min(top, cur if cur > (cf[tally] // every) else cf[tally] // every)
+                if want != cur:
+                    before[into] = cf.get(into, str(cur))
+                    cf[into] = str(want)
+                    after[into] = cf[into]
+    dice = max(1, min(pool_roll.MAX_POOL, base + spend * int(spend_spec.get("per") or 1 if spend_spec else 0) + mod))
+    res = pool_roll.roll_pool(dice, int(spec.get("threshold") or 6), bool(spec.get("explode", True)))
+    ok = (res["successes"] >= need) if need else None
+    if before:
+        pc.custom_fields_json = json.dumps(cf)
+        char_extras.log(db, pc, actor, "resource",
+                        f"{spend_spec['label']} \u2212{spend} (dice pool)" , {"op": "cf", "values": before})
+    parts = [{"term": f"{res['n']}d10 pool (6+ succeeds, 10 explodes)" if spec.get("explode", True) else f"{res['n']}d10 pool",
+              "rolls": [d["v"] for d in res["dice"]], "sum": res["successes"]}]
+    notation = f"{res['n']}d10 \u00b7 {int(spec.get('threshold') or 6)}+ \u00b7 {res['successes']} success{'es' if res['successes'] != 1 else ''}"
+    logged, shared = _roll_log(db, request, world, pc, notation, parts, res["successes"], f"{pool['label']} \u2014 {pc.name}")
+    db.commit()
+    live.touch(pc.world_id)
+    return {"kind": "pool", "dice": res["dice"], "n": res["n"], "base": base, "spend": spend, "mod": mod, "successes": res["successes"],
+            "need": need, "ok": ok, "shared": shared, "roll": logged, "fields": after, "label": pool["label"],
+            "spend_label": spend_spec["label"] if spend_spec else ""}
+
 
 @router.post("/api/characters/roll")
 async def dice_roll(request: Request):

@@ -710,6 +710,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
         : '⚔ ' + (c.turn === 'pc' ? c.name + '’s turn' : 'Enemy turn');
       top.push(h('span', { class: 'pch-pill ' + kind, role: 'status' }, lead, rnd));
     }
+    if (ed && window.ndOpenRoll) top.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll', onclick: () => window.ndOpenRoll() }));
     if (c && ed) {
       if (c.can_roll_initiative && me.native) top.push(h('button', { type: 'button', class: 'pch-btn', text: '\ud83c\udfb2 Roll initiative', onclick: () => combatAct('initiative') }));
       if (c.turn === 'me') top.push(h('button', { type: 'button', class: 'pch-btn', text: '\u2705 End turn', onclick: () => combatAct('end-turn') }));

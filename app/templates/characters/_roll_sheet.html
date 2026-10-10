@@ -1,0 +1,194 @@
+{# Tap-to-roll sheet, shared by the N&D sheet and the custom-system sheets. Context: `roll_cfg` (see characters._roll_cfg) -
+   mode "stat": Stat + d10 + PP/MP spent (advantage / disadvantage); mode "pool": a d10 success pool (6+ succeeds, 10 explodes).
+   Opened by tapping a stat box (.cs-rollable) or by window.ndOpenRoll(), which the hub's strip button uses. The server rolls. #}
+{% if roll_cfg %}
+<style>
+.cs-rollable { cursor:pointer; position:relative; touch-action:manipulation; transition:border-color .12s, transform .08s; }
+.cs-rollable::after { content:"\1F3B2"; position:absolute; top:.15rem; right:.25rem; font-size:.62rem; opacity:.45; }
+.cs-rollable:hover, .cs-rollable:focus-visible { border-color:var(--neon); outline:none; }
+.cs-rollable:active { transform:scale(.97); }
+.rs { position:fixed; inset:0; z-index:1100; display:flex; align-items:flex-end; justify-content:center; background:rgba(0,0,0,.6); }
+.rs[hidden] { display:none; }
+.rs-card { position:relative; width:min(480px,100%); max-height:92dvh; overflow-y:auto; background:var(--bg2); border:1px solid var(--neon); border-radius:14px 14px 0 0; padding:1rem 1.1rem calc(1rem + env(safe-area-inset-bottom)); box-shadow:0 -10px 40px rgba(0,0,0,.6); }
+@media (min-width:600px) { .rs { align-items:center; } .rs-card { border-radius:14px; } }
+.rs-x { position:absolute; top:.4rem; right:.5rem; width:44px; height:44px; background:none; border:0; color:var(--text-dim); font-size:1.2rem; cursor:pointer; }
+.rs-title { color:var(--neon); font-size:1rem; margin:0 2.5rem .1rem 0; }
+.rs-formula { color:var(--text-dim); font-size:.85rem; margin-bottom:.8rem; }
+.rs-box { border:1px solid var(--border); border-radius:8px; padding:.5rem .6rem .6rem; margin:0 0 .7rem; }
+.rs-box legend { font-size:.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; padding:0 .3rem; }
+.rs-seg { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+.rs-seg button { min-width:48px; min-height:44px; padding:0 .7rem; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:8px; font-family:var(--font); cursor:pointer; }
+.rs-seg button[aria-checked="true"], .rs-seg button.on { border-color:var(--neon); color:var(--neon); }
+.rs-seg button:disabled { opacity:.35; }
+.rs-seg select, .rs-stat { min-height:44px; font-size:16px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:0 .5rem; font-family:var(--font); }
+.cs-qty-btn { width:44px; height:44px; border-radius:8px; border:1px solid var(--border); background:var(--bg3); color:var(--text); cursor:pointer; font-size:1.1rem; padding:0; font-family:var(--font); touch-action:manipulation; }
+.cs-qty-btn:hover { border-color:var(--neon); color:var(--neon); }
+.rs-step { display:inline-flex; align-items:center; gap:.5rem; }
+.rs-step b { min-width:2ch; text-align:center; font-size:1.1rem; }
+.rs-go { width:100%; min-height:48px; font-size:1rem; }
+.rs-out { text-align:center; margin-top:.8rem; min-height:4.5rem; }
+.rs-total { font-size:2.6rem; font-weight:700; color:var(--neon); line-height:1.1; }
+.rs-total.crit { color:#ffd54a; } .rs-total.fail { color:var(--neon2); }
+.rs-total.tumble { animation:rs-tumble .35s ease-out; }
+@keyframes rs-tumble { from { transform:translateY(-14px) rotate(-12deg); opacity:.2; } to { transform:none; opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .rs-total.tumble { animation:none; } }
+.rs-dice { display:flex; gap:.35rem; flex-wrap:wrap; justify-content:center; margin:.5rem 0; }
+.rs-die { min-width:2.1rem; height:2.1rem; display:inline-flex; align-items:center; justify-content:center; border-radius:7px; border:1px solid var(--border); color:var(--text-dim); font-weight:600; }
+.rs-die.ok { border-color:var(--neon); color:var(--neon); background:rgba(0,255,200,.08); }
+.rs-die.extra { border-style:dashed; }
+.rs-note { font-size:.8rem; color:var(--text-dim); margin-top:.2rem; }
+.rs-err { color:var(--neon2); font-size:.85rem; }
+</style>
+
+<div id="rs" class="rs" hidden role="dialog" aria-modal="true" aria-labelledby="rs-title">
+  <div class="rs-card">
+    <button type="button" class="rs-x" id="rs-x" aria-label="Close">&#10005;</button>
+    <div class="rs-title" id="rs-title"></div>
+    <div class="rs-formula" id="rs-formula"></div>
+    <div id="rs-body"></div>
+    <button type="button" class="btn-primary rs-go" id="rs-go">&#127922; Roll</button>
+    <div class="rs-out" id="rs-out" aria-live="polite"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const CFG = {{ roll_cfg | tojson }};
+  const sheet = document.getElementById('rs');
+  const body = document.getElementById('rs-body'), out = document.getElementById('rs-out');
+  const go = document.getElementById('rs-go'), formulaEl = document.getElementById('rs-formula');
+  const st = { stat: 'str', boost: 0, mode: 'normal', pool: null, spend: 0, mod: 0, need: 0 };
+  let lastFocus = null;
+  const sign = n => (n >= 0 ? '+' : '−') + Math.abs(n);
+  const el = (tag, attrs, ...kids) => {
+    const e = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v === true) e.setAttribute(k, ''); else if (v !== false && v != null) e.setAttribute(k, v); });
+    kids.flat().forEach(k => { if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k))); });
+    return e;
+  };
+  const fieldVal = id => { const i = document.querySelector('[data-cf-id="' + id + '"]'); return i ? parseInt(i.value, 10) || 0 : 0; };
+  const poolHave = p => parseInt((document.getElementById(p + '-current') || {}).textContent, 10) || 0;
+  const stat = () => CFG.stats.find(s => s.id === st.stat) || CFG.stats[0];
+  const pool = () => CFG.pools.find(p => p.id === st.pool) || CFG.pools[0];
+  const seg = (items, isOn, onPick, label) =>
+    el('div', { class: 'rs-seg', role: 'radiogroup', 'aria-label': label }, items.map(it =>
+      el('button', { type: 'button', role: 'radio', 'aria-checked': String(isOn(it)), disabled: !!it.disabled, onclick: () => { onPick(it); draw(); } }, it.text)));
+  const stepper = (get, set, lo, hi, label) =>
+    el('div', { class: 'rs-step', role: 'group', 'aria-label': label },
+      el('button', { type: 'button', class: 'cs-qty-btn', 'aria-label': 'Fewer', onclick: () => { set(Math.max(lo, get() - 1)); draw(); } }, '−'),
+      el('b', null, get() > 0 && lo < 0 ? '+' + get() : get()),
+      el('button', { type: 'button', class: 'cs-qty-btn', 'aria-label': 'More', onclick: () => { set(Math.min(hi(), get() + 1)); draw(); } }, '+'));
+
+  function draw() {
+    out.replaceChildren();
+    if (CFG.mode === 'stat') {
+      const s = stat(), have = poolHave(s.pool);
+      if (st.boost > have) st.boost = have;
+      document.getElementById('rs-title').textContent = s.label + ' check';
+      formulaEl.textContent = (st.mode === 'adv' ? '2d10 keep higher ' : st.mode === 'dis' ? '2d10 keep lower ' : '1d10 ') + sign(s.value) + ' ' + s.label + (st.boost ? ' ' + sign(st.boost) + ' ' + s.pool.toUpperCase() : '');
+      body.replaceChildren(
+        el('fieldset', { class: 'rs-box' }, el('legend', null, 'Stat'),
+          el('select', { class: 'rs-stat', 'aria-label': 'Stat', onchange: e => { st.stat = e.target.value; draw(); } },
+            CFG.stats.map(x => el('option', { value: x.id, selected: x.id === st.stat }, x.label + ' (' + x.value + ')')))),
+        el('fieldset', { class: 'rs-box' }, el('legend', null, 'Advantage'),
+          seg([{ id: 'normal', text: 'None' }, { id: 'adv', text: 'Advantage' }, { id: 'dis', text: 'Disadvantage' }], i => st.mode === i.id, i => { st.mode = i.id; }, 'Advantage or disadvantage')),
+        el('fieldset', { class: 'rs-box' }, el('legend', null, 'Boost: spend ' + s.pool.toUpperCase() + ' (' + have + ' left, max 2)'),
+          seg([0, 1, 2].map(n => ({ id: n, text: n ? '+' + n : 'None', disabled: n > have })), i => st.boost === i.id, i => { st.boost = i.id; }, 'Points to spend')));
+    } else {
+      const p = pool(), sp = CFG.spend;
+      const have = sp ? fieldVal(sp.field + '_current') : 0;
+      if (sp && st.spend > have) st.spend = have;
+      const dice = Math.max(1, Math.min(20, p.dice + (sp ? st.spend * sp.per : 0) + st.mod));
+      document.getElementById('rs-title').textContent = 'Roll — ' + CFG.pc_name;
+      formulaEl.textContent = dice + 'd10 · ' + CFG.threshold + '+ succeeds' + (CFG.explode ? ' · a 10 explodes' : '')
+        + ' · ' + p.dice + ' base' + (sp && st.spend ? ' +' + st.spend * sp.per + ' ' + sp.label : '') + (st.mod ? ' ' + sign(st.mod) + ' situation' : '');
+      const parts = [el('fieldset', { class: 'rs-box' }, el('legend', null, 'Pool'),
+        seg(CFG.pools.map(x => ({ id: x.id, text: x.label + ' (' + x.dice + 'd10)' })), i => (st.pool || CFG.pools[0].id) === i.id, i => { st.pool = i.id; }, 'Dice pool'))];
+      if (sp) parts.push(el('fieldset', { class: 'rs-box' }, el('legend', null, 'Spend ' + sp.label + ' (' + have + ' left, +' + sp.per + 'd10 each)'),
+        stepper(() => st.spend, v => { st.spend = v; }, 0, () => Math.min(10, have), 'Points to spend')));
+      parts.push(el('fieldset', { class: 'rs-box' }, el('legend', null, 'Situation (dice the GM adds or removes)'),
+        stepper(() => st.mod, v => { st.mod = v; }, -3, () => 3, 'Situation dice')));
+      parts.push(el('fieldset', { class: 'rs-box' }, el('legend', null, 'Successes needed (if the GM set a difficulty)'),
+        seg([0, 1, 2, 3, 4].map(n => ({ id: n, text: n ? String(n) : 'No target' })), i => st.need === i.id, i => { st.need = i.id; }, 'Successes needed')));
+      body.replaceChildren(...parts);
+    }
+  }
+
+  function open(statId) {
+    lastFocus = document.activeElement;
+    if (CFG.mode === 'stat' && statId && CFG.stats.some(s => s.id === statId)) st.stat = statId;
+    st.boost = 0; st.spend = 0; st.mod = 0; st.mode = 'normal';
+    if (CFG.mode === 'pool' && !st.pool) st.pool = CFG.pools[0].id;
+    draw();
+    sheet.hidden = false;
+    document.documentElement.style.overflow = 'hidden';
+    go.focus();
+  }
+  function close() {
+    sheet.hidden = true;
+    document.documentElement.style.overflow = '';
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+  const fail = msg => { out.replaceChildren(el('div', { class: 'rs-err', role: 'alert' }, msg)); };
+  const buzz = pat => { try { if (navigator.vibrate) navigator.vibrate(pat); } catch (e) { /* no haptics */ } };
+
+  function applyFields(fields) {            // a custom sheet's inputs follow, or its next Save would write the old numbers back
+    Object.entries(fields || {}).forEach(([k, v]) => { const i = document.querySelector('[data-cf-id="' + k + '"]'); if (i) i.value = v; });
+  }
+  function showStat(d) {
+    const kind = d.crit ? 'crit' : d.fail ? 'fail' : '';
+    out.replaceChildren(
+      el('div', { class: 'rs-total tumble ' + kind }, d.total),
+      el('div', { class: 'rs-note' }, (d.crit ? 'CRITICAL SUCCESS · ' : d.fail ? 'AUTOMATIC FAILURE · ' : '')
+        + (d.rolls.length > 1 ? 'd10s ' + d.rolls.join(' & ') + ' → ' + d.die : 'd10 showed ' + d.die)
+        + (d.spent ? ' · spent ' + d.spent.amount + ' ' + d.spent.pool.toUpperCase() : '')
+        + (d.shared ? ' · logged for the table' : ' · not shared (dice log closed to players)')));
+    if (d.spent) { const t = document.getElementById(d.spent.pool + '-current'); if (t) t.textContent = d.spent.current; }
+    buzz(d.crit ? [20, 40, 20] : 15);
+    draw2();
+  }
+  function showPool(d) {
+    const verdict = d.ok === null ? '' : d.ok ? ' — SUCCESS' : ' — not enough (needed ' + d.need + ')';
+    out.replaceChildren(
+      el('div', { class: 'rs-total tumble ' + (d.ok === false ? 'fail' : '') }, d.successes + (d.successes === 1 ? ' success' : ' successes')),
+      el('div', { class: 'rs-dice', 'aria-label': 'Dice' }, d.dice.map(x => el('span', { class: 'rs-die' + (x.ok ? ' ok' : '') + (x.extra ? ' extra' : ''), title: x.extra ? 'exploded die' : '' }, x.v))),
+      el('div', { class: 'rs-note' }, d.n + 'd10' + verdict + (d.spend ? ' · spent ' + d.spend + ' ' + d.spend_label : '')
+        + (d.fields && Object.keys(d.fields).some(k => /strain/i.test(k)) ? ' · Strain is now ' + d.fields[Object.keys(d.fields).find(k => /strain/i.test(k))] : '')
+        + (d.shared ? ' · logged for the table' : ' · not shared (dice log closed to players)')));
+    applyFields(d.fields);
+    st.spend = 0;
+    draw2();
+    buzz(d.ok === false ? 40 : 15);
+  }
+  const draw2 = () => { /* keep the controls (boost availability) in step after points were spent */ const keep = out.cloneNode(true); draw(); out.replaceChildren(...keep.childNodes); };
+
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    const payload = CFG.mode === 'stat'
+      ? { kind: 'stat', stat: st.stat, boost: st.boost, mode: st.mode }
+      : { kind: 'pool', pool: st.pool || CFG.pools[0].id, spend: st.spend, mod: st.mod, need: st.need };
+    try {
+      const r = await fetch('/api/characters/' + CFG.pc_id + '/roll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) fail(d.detail || 'Could not roll.');
+      else if (d.kind === 'stat') showStat(d);
+      else showPool(d);
+    } catch (e) { fail('Could not roll: network error.'); }
+    go.disabled = false;
+  });
+
+  document.addEventListener('click', ev => {
+    const box = ev.target.closest && ev.target.closest('.cs-rollable');
+    if (box) open(box.dataset.rollStat);
+  });
+  document.addEventListener('keydown', ev => {
+    if (!sheet.hidden && ev.key === 'Escape') { close(); return; }
+    const box = ev.target.closest && ev.target.closest('.cs-rollable');
+    if (box && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); open(box.dataset.rollStat); }
+  });
+  sheet.addEventListener('mousedown', ev => { if (ev.target === sheet) close(); });
+  document.getElementById('rs-x').addEventListener('click', close);
+  window.ndOpenRoll = open;
+})();
+</script>
+{% endif %}

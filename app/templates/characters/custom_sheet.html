@@ -4,6 +4,7 @@
 {% block content %}
 {% include 'characters/_player_hub.html' %}
 {% include 'characters/_sheet_ai.html' %}
+{% include 'characters/_roll_sheet.html' %}
 <style>
 .cx { max-width:900px; margin:0 auto; }
 .cx-actions { display:flex;gap:.5rem;justify-content:flex-end;margin-bottom:1rem;flex-wrap:wrap; }
@@ -37,6 +38,7 @@
 <div class="cx">
   <div class="cx-actions">
     <a href="{{ '/characters'|wq }}" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
+    {% if pc and roll_cfg %}<button type="button" class="btn-primary" onclick="ndOpenRoll()">&#127922; Roll dice</button>{% endif %}
     {% if pc %}
     <div class="cs-more" id="cs-more">
     <button type="button" class="cs-more-toggle" aria-controls="cs-more-body">⋯ Export &amp; more</button>

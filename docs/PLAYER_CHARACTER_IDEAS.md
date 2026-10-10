@@ -21,7 +21,7 @@ is comfortable on a phone held in one hand.
 ## Ideas, roughly by value for effort
 
 1. ~~Tap-to-roll from the sheet~~ — **done for N&D stats**: tap a stat, optionally spend 1-2 PP/MP, roll Stat + d10 into the shared log with a label.
-   Still open: custom systems' own dice (each rulebook differs), attacks / feats as one-tap rolls.
+   Also done for the other three rulebooks (see docs / `app/pool_roll.py`): Chronicles of the Worm (same engine, advantage/disadvantage, boost from the matching pool), Hunt in the Moonlight and Game of Gods / Asterion (d10 success pools: 6+ succeeds, 10 explodes, spend Stamina / Ichor, Strain tally). Still open: attacks / feats as one-tap rolls.
 2. **Initiative and turn actions** — "Roll initiative" button in the strip when an encounter starts; "End my turn" that nudges the GM's tracker.
 3. **Rest buttons for the player** — short / long rest from the sheet (the party Rest rules exist per system; expose them for one character).
 4. **Inventory that knows weight and money** — encumbrance bar, coin purse with ± per currency, "give to party / to a companion" in one tap.

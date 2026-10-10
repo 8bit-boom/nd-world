@@ -133,15 +133,14 @@ def _clean_label(label) -> str:
     return text[:80]
 
 
-def _store_roll(db: Session, request: Request, world, notation: str, values=None, label: str = "") -> DiceRoll:
-    """Roll ``notation`` and store it; with ``values`` (a physics throw's faces) store those instead of random ones."""
-    breakdown, total = parse_and_roll(notation) if values is None else parse_recorded(notation, values)
+def _save_roll(db: Session, request: Request, world, notation: str, breakdown: list, total: int, label: str = "") -> DiceRoll:
+    """Store one finished roll in the table's shared log (used by every roller: the dice page, the 3D tray, a character sheet)."""
     user = getattr(request.state, "user", None)
     roll = DiceRoll(
         world_id=world.id,
         user_id=user.id if user else None,
         user_name=(user.display_name if user and user.display_name else "Someone"),
-        notation=(notation or "").strip(),
+        notation=(notation or "").strip()[:120],
         label=_clean_label(label),
         breakdown=json.dumps(breakdown),
         total=total,
@@ -149,6 +148,12 @@ def _store_roll(db: Session, request: Request, world, notation: str, values=None
     db.add(roll)
     db.commit()
     return roll
+
+
+def _store_roll(db: Session, request: Request, world, notation: str, values=None, label: str = "") -> DiceRoll:
+    """Roll ``notation`` and store it; with ``values`` (a physics throw's faces) store those instead of random ones."""
+    breakdown, total = parse_and_roll(notation) if values is None else parse_recorded(notation, values)
+    return _save_roll(db, request, world, notation, breakdown, total, label)
 
 
 @router.get("/dice", response_class=HTMLResponse)

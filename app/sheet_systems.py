@@ -38,6 +38,13 @@ BUILTIN_SYSTEMS = {
         "xp": ["xpCurrent", "xpLifetime"],
         "conditions": ["Bleeding", "Burning", "Blinded", "Marked", "Prone", "Restrained", "Stunned", "Weakened", "Vulnerable"],
         "rest": {"long": [("full", "stamina"), ("set", "strain", "0"), ("set", "staminaSpent", 0)]},
+        # Core Roll (ch. 1): a pool of d10s, 6+ is a success, a 10 explodes. 2d10 for a dangerous action, 3d10 when it uses a
+        # defined ability / modification / the Hunter Tool; spend Stamina for +1d10 each; every 3 Stamina spent since the last
+        # Rest = 1 Strain (max 3).
+        "dice": {"threshold": 6, "explode": True,
+                 "pools": [{"id": "normal", "label": "Dangerous action", "dice": 2},
+                           {"id": "ability", "label": "Defined ability / tool", "dice": 3}],
+                 "spend": {"field": "stamina", "label": "Stamina", "per": 1, "tally": "staminaSpent", "every": 3, "into": "strain"}},
         # what a side-by-side comparison of hunters should show beyond the resource tracks
         "roster": [("Identity", ["race"]),
                    ("Core", ["armor", "movement", "alteration", "overcharge", "strain"]),
@@ -65,6 +72,13 @@ BUILTIN_SYSTEMS = {
             "short": [("full", "sparkShield"), ("add", "ichor", 2)],
             "long": [("full", "sparkShield"), ("full", "flesh"), ("full", "ichor")],
         },
+        # Core Mechanic: d10 pool, 6+ succeeds, 10 explodes. Mortals 1d10, Gods and Mythborn 2d10, Domain pool 3d10; each
+        # Ichor spent adds +1d10.
+        "dice": {"threshold": 6, "explode": True,
+                 "pools": [{"id": "normal", "label": "Standard action", "dice": 2,
+                            "override": {"field": "kind", "equals": "Mortal", "dice": 1}},
+                           {"id": "domain", "label": "Domain (Spark / Lineage / Deed)", "dice": 3}],
+                 "spend": {"field": "ichor", "label": "Ichor", "per": 1}},
         "roster": [("Identity", ["kind"]), ("Core", ["armor"]),
                    ("Progress", ["glory", "repScore", "domainRank", "drachma"])],
         "pages": [
@@ -154,6 +168,67 @@ def system_meta(tpl) -> dict:
         if not meta["xp"]:
             meta["xp"] = [fid for fid in (builtin.get("xp") or []) if fid in ids]
     return meta
+
+
+def dice_spec(tpl):
+    """The success-pool dice rules of this template's system ({threshold, explode, pools, spend}), or None - a built-in
+    system's table entry, or what a GM's own template declares in its `system_json`."""
+    spec = system_spec(tpl).get("dice") if tpl is not None else None
+    return spec if isinstance(spec, dict) and spec.get("pools") else None
+
+
+def pool_dice(spec: dict, pool_id: str, custom_fields: dict):
+    """(pool entry, base dice) for `pool_id`: the pool's `dice`, or its `override` when the character's field matches
+    (Asterion: a Mortal rolls 1d10 where a God rolls 2d10). (None, 0) for an unknown pool."""
+    pool = next((p for p in spec.get("pools", []) if p.get("id") == pool_id), None)
+    if pool is None:
+        return None, 0
+    dice = int(pool.get("dice") or 1)
+    ov = pool.get("override")
+    if isinstance(ov, dict) and str((custom_fields or {}).get(ov.get("field"), "")).split(" (")[0].strip().lower() == str(ov.get("equals", "")).lower():
+        dice = int(ov.get("dice") or dice)
+    return pool, max(1, dice)
+
+
+def _clean_dice_spec(raw, by_id, warnings):
+    if not isinstance(raw, dict):
+        return None
+    pools = []
+    for p in (raw.get("pools") or [])[:6]:
+        if not isinstance(p, dict):
+            continue
+        label = " ".join(str(p.get("label") or "").split())[:40]
+        dice = _num(p.get("dice"))
+        if not label or dice is None or not (1 <= dice <= 10):
+            continue
+        entry = {"id": f"p{len(pools)}", "label": label, "dice": int(dice)}
+        ov = p.get("override")
+        if isinstance(ov, dict) and by_id.get(ov.get("field"), {}).get("type") == "select" and _num(ov.get("dice")) is not None:
+            entry["override"] = {"field": ov["field"], "equals": str(ov.get("equals", ""))[:40], "dice": max(1, min(10, int(_num(ov["dice"]))))}
+        pools.append(entry)
+    if not pools:
+        return None
+    spec = {"pools": pools, "threshold": 6, "explode": True}
+    thr = _num(raw.get("threshold"))
+    if thr is not None and 2 <= thr <= 10:
+        spec["threshold"] = int(thr)
+    if raw.get("explode") is False:
+        spec["explode"] = False
+    sp = raw.get("spend")
+    if isinstance(sp, dict) and by_id.get(sp.get("field"), {}).get("type") == "resource":
+        out = {"field": sp["field"], "label": " ".join(str(sp.get("label") or sp["field"]).split())[:30], "per": 1}
+        per = _num(sp.get("per"))
+        if per is not None and 1 <= per <= 3:
+            out["per"] = int(per)
+        if by_id.get(sp.get("tally"), {}).get("type") == "number":
+            out["tally"] = sp["tally"]
+            ev = _num(sp.get("every"))
+            if ev is not None and ev >= 1 and by_id.get(sp.get("into"), {}).get("type") in ("select", "number"):
+                out["every"], out["into"] = int(ev), sp["into"]
+        spec["spend"] = out
+    elif sp is not None:
+        warnings.append("dice: the spend field is not a resource of this template; ignored")
+    return spec
 
 
 # A custom template with at least this many sections gets a page per section when its
@@ -365,6 +440,9 @@ def clean_system_spec(raw, fields) -> tuple:
         ids = [i for i in xp if isinstance(i, str) and by_id.get(i, {}).get("type") == "number"]
         if ids:
             spec["xp"] = ids
+    dice = _clean_dice_spec(raw.get("dice"), by_id, warnings)
+    if dice:
+        spec["dice"] = dice
     binds = raw.get("binds")
     if isinstance(binds, dict):
         ok = {k: v for k, v in binds.items() if by_id.get(k, {}).get("type") == "text" and v in BIND_COLUMNS}

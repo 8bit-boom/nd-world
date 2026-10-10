@@ -72,29 +72,6 @@
 .cs-rollable::after { content:"\1F3B2"; position:absolute; top:.15rem; right:.25rem; font-size:.62rem; opacity:.45; }
 .cs-rollable:hover, .cs-rollable:focus-visible { border-color:var(--neon); outline:none; }
 .cs-rollable:active { transform:scale(.97); }
-.rs { position:fixed; inset:0; z-index:1100; display:flex; align-items:flex-end; justify-content:center; background:rgba(0,0,0,.6); }
-.rs[hidden] { display:none; }
-.rs-card { position:relative; width:min(460px,100%); background:var(--bg2); border:1px solid var(--neon); border-radius:14px 14px 0 0; padding:1rem 1.1rem calc(1rem + env(safe-area-inset-bottom)); box-shadow:0 -10px 40px rgba(0,0,0,.6); }
-@media (min-width:600px) { .rs { align-items:center; } .rs-card { border-radius:14px; } }
-.rs-x { position:absolute; top:.4rem; right:.5rem; width:44px; height:44px; background:none; border:0; color:var(--text-dim); font-size:1.2rem; cursor:pointer; }
-.rs-title { color:var(--neon); font-size:1rem; margin:0 2.5rem .1rem 0; }
-.rs-formula { color:var(--text-dim); font-size:.85rem; margin-bottom:.8rem; }
-.rs-boost { border:1px solid var(--border); border-radius:8px; padding:.5rem .6rem .6rem; margin:0 0 .8rem; }
-.rs-boost legend { font-size:.72rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; padding:0 .3rem; }
-.rs-seg { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
-.rs-seg button { min-width:48px; min-height:44px; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:8px; font-family:var(--font); cursor:pointer; }
-.rs-seg button[aria-checked="true"] { border-color:var(--neon); color:var(--neon); }
-.rs-seg button:disabled { opacity:.35; }
-.rs-seg select { min-height:44px; font-size:16px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:0 .5rem; font-family:var(--font); }
-.rs-go { width:100%; min-height:48px; font-size:1rem; }
-.rs-out { text-align:center; margin-top:.8rem; min-height:4.5rem; }
-.rs-total { font-size:2.6rem; font-weight:700; color:var(--neon); line-height:1.1; }
-.rs-total.crit { color:#ffd54a; } .rs-total.fail { color:var(--neon2); }
-.rs-total.tumble { animation:rs-tumble .35s ease-out; }
-@keyframes rs-tumble { from { transform:translateY(-14px) rotate(-12deg); opacity:.2; } to { transform:none; opacity:1; } }
-@media (prefers-reduced-motion: reduce) { .rs-total.tumble { animation:none; } }
-.rs-note { font-size:.8rem; color:var(--text-dim); margin-top:.2rem; }
-.rs-err { color:var(--neon2); font-size:.85rem; }
 .cs-attr-abbr { font-size:.6rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
 .cs-attr-val  { font-size:1.5rem;font-weight:bold;color:var(--neon); }
 .cs-attr-label{ font-size:.6rem;color:var(--text-dim); }
@@ -307,7 +284,7 @@
       <div class="cs-stats-panel-title">Physical</div>
       <div class="cs-stat-grid">
         {% for s in stats if s.id in ['str','dex','bod','per'] %}
-        {% set _sl = s.label or _stat_names.get(s.id, s.id) %}<div class="cs-attr-box{% if can_manage %} cs-rollable{% endif %}"{% if can_manage %} role="button" tabindex="0" data-roll-label="{{ _sl }}" data-roll-val="{{ s.value }}" title="Tap to roll {{ _sl }}" aria-label="Roll {{ _sl }} ({{ s.value }})"{% endif %}>
+        {% set _sl = s.label or _stat_names.get(s.id, s.id) %}<div class="cs-attr-box{% if can_manage %} cs-rollable{% endif %}"{% if can_manage %} role="button" tabindex="0" data-roll-stat="{{ s.id }}" data-roll-label="{{ _sl }}" data-roll-val="{{ s.value }}" title="Tap to roll {{ _sl }}" aria-label="Roll {{ _sl }} ({{ s.value }})"{% endif %}>
           <div class="cs-attr-abbr">{{ s.abbr or s.id|upper }}</div>
           <div class="cs-attr-val">{{ s.value }}</div>
           <div class="cs-attr-label">{{ _sl }}</div>
@@ -327,7 +304,7 @@
       <div class="cs-stats-panel-title">Mental</div>
       <div class="cs-stat-grid">
         {% for s in stats if s.id in ['wil','int','cha','itu'] %}
-        {% set _sl = s.label or _stat_names.get(s.id, s.id) %}<div class="cs-attr-box{% if can_manage %} cs-rollable{% endif %}"{% if can_manage %} role="button" tabindex="0" data-roll-label="{{ _sl }}" data-roll-val="{{ s.value }}" title="Tap to roll {{ _sl }}" aria-label="Roll {{ _sl }} ({{ s.value }})"{% endif %}>
+        {% set _sl = s.label or _stat_names.get(s.id, s.id) %}<div class="cs-attr-box{% if can_manage %} cs-rollable{% endif %}"{% if can_manage %} role="button" tabindex="0" data-roll-stat="{{ s.id }}" data-roll-label="{{ _sl }}" data-roll-val="{{ s.value }}" title="Tap to roll {{ _sl }}" aria-label="Roll {{ _sl }} ({{ s.value }})"{% endif %}>
           <div class="cs-attr-abbr">{{ s.abbr or s.id|upper }}</div>
           <div class="cs-attr-val">{{ s.value }}</div>
           <div class="cs-attr-label">{{ _sl }}</div>
@@ -633,24 +610,7 @@
   </div><!-- /dice page -->
 </div>
 
-<div id="rs" class="rs" hidden role="dialog" aria-modal="true" aria-labelledby="rs-title">
-  <div class="rs-card">
-    <button type="button" class="rs-x" id="rs-x" aria-label="Close">&#10005;</button>
-    <div class="rs-title" id="rs-title"></div>
-    <div class="rs-formula" id="rs-formula"></div>
-    <fieldset class="rs-boost">
-      <legend>Boost (spend up to 2)</legend>
-      <div class="rs-seg" role="radiogroup" aria-label="Points to spend">
-        <button type="button" role="radio" aria-checked="true" data-boost="0">None</button>
-        <button type="button" role="radio" aria-checked="false" data-boost="1">+1</button>
-        <button type="button" role="radio" aria-checked="false" data-boost="2">+2</button>
-        <select id="rs-from" aria-label="Spend from"></select>
-      </div>
-    </fieldset>
-    <button type="button" class="btn-primary rs-go" id="rs-go">&#127922; Roll</button>
-    <div class="rs-out" id="rs-out" aria-live="polite"></div>
-  </div>
-</div>
+{% include 'characters/_roll_sheet.html' %}
 
 <script>
 const PC_ID = {{ pc.id }};
@@ -888,135 +848,6 @@ async function rollExpr(expr) {
   if (log.querySelector('p')) log.innerHTML = '';
   log.prepend(entry);
 }
-
-
-// ── Tap-to-roll: the core roll is Stat + d10 (+ up to 2 PP/MP spent); 10 = critical, 1 = automatic failure ──────────
-(function () {
-  const sheet = document.getElementById('rs');
-  if (!sheet) return;
-  const NAME = {{ pc.name | tojson }};
-  const out = document.getElementById('rs-out'), go = document.getElementById('rs-go'), from = document.getElementById('rs-from');
-  const segs = Array.from(sheet.querySelectorAll('[data-boost]'));
-  let stat = null, boost = 0, lastFocus = null;
-  const pool = id => parseInt((document.getElementById(id) || {}).textContent, 10) || 0;
-  const sign = n => (n >= 0 ? '+' : '\u2212') + Math.abs(n);
-
-  function formula() {
-    document.getElementById('rs-formula').textContent = '1d10 ' + sign(stat.val) + ' ' + stat.label + (boost ? ' ' + sign(boost) + ' boost' : '');
-  }
-  function refreshBoost() {
-    const pp = pool('pp-current'), mp = pool('mp-current');
-    from.replaceChildren(...[['pp', 'PP (' + pp + ')', pp], ['mp', 'MP (' + mp + ')', mp]].map(([v, t]) => {
-      const o = document.createElement('option'); o.value = v; o.textContent = t; return o;
-    }));
-    const best = Math.max(pp, mp);
-    segs.forEach(b => { b.disabled = Number(b.dataset.boost) > best; });
-    if (boost > best) setBoost(best);
-    from.hidden = boost === 0;
-  }
-  function setBoost(n) {
-    boost = n;
-    segs.forEach(b => b.setAttribute('aria-checked', String(Number(b.dataset.boost) === n)));
-    from.hidden = n === 0;
-    formula();
-  }
-  segs.forEach(b => b.addEventListener('click', () => setBoost(Number(b.dataset.boost))));
-
-  function open(label, val) {
-    stat = { label, val };
-    lastFocus = document.activeElement;
-    document.getElementById('rs-title').textContent = label + ' check';
-    out.textContent = '';
-    boost = 0; setBoost(0); refreshBoost();
-    sheet.hidden = false;
-    document.documentElement.style.overflow = 'hidden';
-    go.focus();
-  }
-  function close() {
-    sheet.hidden = true;
-    document.documentElement.style.overflow = '';
-    if (lastFocus && lastFocus.focus) lastFocus.focus();
-  }
-
-  function show(total, die, shared, spent) {
-    out.replaceChildren();
-    const t = document.createElement('div');
-    t.className = 'rs-total tumble' + (die === 10 ? ' crit' : die === 1 ? ' fail' : '');
-    t.textContent = total;
-    out.append(t);
-    const n = document.createElement('div');
-    n.className = 'rs-note';
-    n.textContent = (die === 10 ? 'CRITICAL SUCCESS \u00b7 ' : die === 1 ? 'AUTOMATIC FAILURE \u00b7 ' : '')
-      + 'd10 showed ' + die + (spent ? ' \u00b7 spent ' + spent : '') + (shared ? ' \u00b7 logged for the table' : ' \u00b7 not shared (dice log closed to players)');
-    out.append(n);
-    try { if (navigator.vibrate) navigator.vibrate(die === 10 ? [20, 40, 20] : 15); } catch (e) { /* no haptics */ }
-  }
-  function fail(msg) {
-    out.replaceChildren();
-    const e = document.createElement('div'); e.className = 'rs-err'; e.setAttribute('role', 'alert'); e.textContent = msg; out.append(e);
-  }
-  function logLocal(label, d) {
-    const log = document.getElementById('dice-log');
-    if (!log) return;
-    const row = document.createElement('div');
-    row.className = 'cs-roll-entry';
-    const a = document.createElement('span'); a.className = 'cs-roll-detail'; a.textContent = label + ' \u2014 ' + d.notation;
-    const b = document.createElement('span'); b.className = 'cs-roll-total'; b.textContent = d.total;
-    row.append(a, b);
-    if (log.querySelector('p')) log.replaceChildren();
-    log.prepend(row);
-  }
-
-  go.addEventListener('click', async () => {
-    go.disabled = true;
-    try {
-      const spendFrom = boost ? from.value : '';
-      if (boost) {                       // pay first: no points, no boost
-        const d = await quickPostSilent('/api/characters/' + PC_ID + '/' + spendFrom, { action: 'delta', value: -boost });
-        if (!d) { fail('Could not spend ' + boost + ' ' + spendFrom.toUpperCase() + '.'); go.disabled = false; return; }
-        const el = document.getElementById(spendFrom + '-current');
-        if (el) el.textContent = d[spendFrom + '_current'];
-        refreshBoost();
-      }
-      const notation = '1d10' + (stat.val ? sign(stat.val).replace('\u2212', '-') : '') + (boost ? '+' + boost : '');
-      const label = stat.label + ' check \u2014 ' + NAME;
-      let r = await fetch('/api/dice/roll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notation, label }) });
-      let shared = r.ok, total, die, data;
-      if (r.ok) {
-        data = await r.json();
-        total = data.total; die = data.breakdown[0].rolls[0];
-      } else {                           // the dice log is closed to players here: still roll, just not shared
-        const l = await fetch('/api/characters/roll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expr: notation }) });
-        data = await l.json();
-        if (!l.ok) { fail(data.error || 'Could not roll.'); go.disabled = false; return; }
-        total = data.total; die = data.rolls[0]; data.notation = notation;
-      }
-      show(total, die, shared, boost ? boost + ' ' + spendFrom.toUpperCase() : '');
-      logLocal(label, { notation, total });
-    } catch (e) { fail('Could not roll: network error.'); }
-    go.disabled = false;
-  });
-
-  // quickPost() alerts on failure; the roll sheet reports it inline instead.
-  async function quickPostSilent(path, body) {
-    try {
-      const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      return r.ok ? await r.json() : null;
-    } catch (e) { return null; }
-  }
-
-  document.addEventListener('click', ev => {
-    const box = ev.target.closest && ev.target.closest('.cs-rollable');
-    if (box) open(box.dataset.rollLabel, parseInt(box.dataset.rollVal, 10) || 0);
-  });
-  document.addEventListener('keydown', ev => {
-    if (!sheet.hidden && ev.key === 'Escape') { close(); return; }
-    const box = ev.target.closest && ev.target.closest('.cs-rollable');
-    if (box && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); open(box.dataset.rollLabel, parseInt(box.dataset.rollVal, 10) || 0); }
-  });
-  sheet.addEventListener('mousedown', ev => { if (ev.target === sheet) close(); });
-  document.getElementById('rs-x').addEventListener('click', close);
-})();
 
 
 // ── Inventory: use one / pick one up, weights, carry limit, coin purse ───────────────────────────────────────────
