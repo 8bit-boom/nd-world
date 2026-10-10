@@ -245,6 +245,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
 <script src="/static/js/nd-offline-core.js?v={{ asset_v('js/nd-offline-core.js') }}"></script>
 <script src="/static/js/nd-notify-core.js?v={{ asset_v('js/nd-notify-core.js') }}"></script>
 <script src="/static/js/nd-notify.js?v={{ asset_v('js/nd-notify.js') }}"></script>
+<script src="/static/js/nd-dictate.js?v={{ asset_v('js/nd-dictate.js') }}"></script>
 <script src="/static/js/nd-offline.js?v={{ asset_v('js/nd-offline.js') }}"></script>
 <script>
 (function () {
@@ -406,7 +407,9 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
         await done();
       } catch (e) { err.textContent = e.message; save.disabled = false; }
     });
-    const btns = h('div', { class: 'pch-btns' }, save,
+    const mic = (window.ndDictate && ndDictate.supported) ? h('button', { type: 'button', class: 'pch-btn', 'aria-pressed': 'false', title: 'Speak instead of typing (your browser does the listening)', text: '\ud83c\udfa4 Dictate' }) : null;
+    if (mic) ndDictate.attach(text, mic, { onError: m => { err.textContent = m; } });
+    const btns = h('div', { class: 'pch-btns' }, save, mic,
       cancel ? h('button', { type: 'button', class: 'pch-btn', text: 'Cancel', onclick: cancel }) : null);
     const wrap = h('div', { class: 'pch-form' }, title, sessions.length ? sess : null, text, btns, err);
     return wrap;

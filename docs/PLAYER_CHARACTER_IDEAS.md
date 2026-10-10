@@ -22,20 +22,20 @@ is comfortable on a phone held in one hand.
 
 1. ~~Tap-to-roll from the sheet~~ — **done for N&D stats**: tap a stat, optionally spend 1-2 PP/MP, roll Stat + d10 into the shared log with a label.
    Also done for the other three rulebooks (see docs / `app/pool_roll.py`): Chronicles of the Worm (same engine, advantage/disadvantage, boost from the matching pool), Hunt in the Moonlight and Game of Gods / Asterion (d10 success pools: 6+ succeeds, 10 explodes, spend Stamina / Ichor, Strain tally). Still open: attacks / feats as one-tap rolls.
-2. **Initiative and turn actions** — "Roll initiative" button in the strip when an encounter starts; "End my turn" that nudges the GM's tracker.
-3. **Rest buttons for the player** — short / long rest from the sheet (the party Rest rules exist per system; expose them for one character).
-4. **Inventory that knows weight and money** — encumbrance bar, coin purse with ± per currency, "give to party / to a companion" in one tap.
-5. **Level-up wizard** — walks through the new level (HP, feats, stat points) with the rules text beside it, instead of a bare button.
-6. **A change log with undo** — every HP / XP / item change timestamped ("GM: −4 HP · Pia: used Stim"); one-tap undo for a mis-tap.
-7. **Handout inbox** — things the GM "sent to players" collect on the character so a missed pop-up is never lost.
-8. **Ability / spell cards** — feats, spells and attacks as cards with cost, range, effect and a "use" button that spends the resource.
-9. **Offline at the table** — cache the sheet (service worker) so a bad connection never blocks reading it; queue HP changes and replay.
-10. **Notifications** — "it's your turn", "next game night changed" as a Web Push for installed home-screen users.
-11. **Build compare / what-if** — preview a feat or stat change before buying it.
-12. **Shareable read-only link** for a co-player or a Discord post (token-scoped, GM can revoke).
-13. **Per-character quick links** — pin the three pages this player opens most to the top of Pages.
-14. **Companion sheets** — familiars, hirelings and vehicles as small sub-sheets with their own strip.
-15. **Voice journal** — dictate a journal entry on the phone (browser speech-to-text), tagged to the session.
+2. ~~Initiative and turn actions~~ — **done: Initiative button in the strip when an encounter starts, End turn when it is yours (`hub/initiative`, `hub/end-turn`).**
+3. ~~Rest buttons for the player~~ — **done: Short / Long rest on the sheet, with undo (`hub/rest`).**
+4. ~~Inventory that knows weight and money~~ — **done: carry bar against a house-default limit (5 x (STR+BOD), changeable), quantity steppers, coin steppers.**
+5. ~~Level-up wizard~~ — **done: Advance - stats and feats at the Player's Guide costs and Rank rules.**
+6. ~~A change log with undo~~ — **done: Log tab with who/when and one-tap Undo for numeric changes.**
+7. ~~Handout inbox~~ — **done: Handouts tab and a new-handout chip.**
+8. ~~Ability / spell cards~~ — **done: Abilities cards with Use / Ready (N&D feats).**
+9. ~~Offline at the table~~ — **done: service worker keeps the last sheet readable; HP/Shock changes made offline are queued and replayed in order.**
+10. ~~Notifications~~ — **done as in-page alerts (Notification API through the service worker) while the page is open - no Web Push server, so nothing arrives with the app closed.**
+11. ~~Build compare / what-if~~ — **done: Advance shows what each stat or feat changes (PP/MP/HP/Shock/Speed, XP left, Rank unlock) before the confirm tap.**
+12. ~~Shareable read-only link** for a co-player or a Discord post (token-scoped, GM can revoke).~~ — **done: Share button makes a token link (`/share/<token>`); new link replaces the old, empty box stops sharing; no notes, journal, quests or portrait.**
+13. ~~Per-character quick links~~ — **done: pin up to 8 pages; they show under the vitals.**
+14. ~~Companion sheets~~ — **done: Allies tab (name, kind, HP, notes) with pills in the strip; not full sub-sheets.**
+15. ~~Voice journal~~ — **done: Dictate button on the journal form (browser speech recognition; hidden where the browser has none).**
 
 ## Rules the page keeps
 
