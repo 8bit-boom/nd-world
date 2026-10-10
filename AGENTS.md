@@ -132,6 +132,15 @@ tools that require GM access still check `is_gm` at call time.)
   already in the page adds session-history entries and breaks Back); use `ndPcViewer.open(href, title)` for new links, never
   `target=_blank`. On a phone (<=720px) the tab strip is a bottom bar, secondary tabs (`pch-tab--minor`) live under More - keep new
   tabs short-labelled. `docs/PLAYER_CHARACTER_IDEAS.md` has the backlog.
+- **Fan control is safety-relevant code** (`app/fan_control.py`, a leaf; System Monitor > Fans; `docs/GPU_SETUP.md` "Fan control"): a passive GPU
+  is cooled by a motherboard header, so a wrong write can stop its air. Keep these invariants: an output is identified by
+  `chip@device/pwmN`, never by `hwmonN` (the kernel renumbers it) and never by a path from a request; a speed is never under `MIN_PERCENT`;
+  a follow curve must pass `clean_curve` (reaches `TOP_PERCENT` before the panic temperature); an unreadable GPU temperature means 100 %;
+  fans speed up at once and slow down by `RAMP_DOWN`; turning following off or dropping a fan puts it back as the BIOS had it
+  (`give_back` restores the remembered mode + duty - it never writes the chip's own auto mode, which is not the BIOS curve on boards like
+  the X570 Aorus Master); an output `check_fan` found inverted never follows; `shutdown_safe` only ever raises. The sysfs root is a
+  parameter (`FAN_HWMON_ROOT`), and the container should get only the fan chip's folder, not a writable `/sys`. Tests use a fake hwmon tree
+  (`tests/test_fan_control.py`).
 - **Small image boxes use the thumbnail**: `{{ url|thumb }}` for `src` and `data-full="{{ url }}"` for the original
   (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
 - **The Player Cockpit lives inside Player Characters** (no nav item of its own — `nav_menus.py` has none; saved menus that still name `player_cockpit` just drop it): the hub's owner-only 🎛 Cockpit tab lazily loads

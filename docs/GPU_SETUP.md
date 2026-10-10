@@ -835,44 +835,105 @@ and is not recommended just for this.
 
 ## Fan control (a passive GPU cooled by a motherboard fan header)
 
-A passive datacenter card (Tesla T10, V100, A16 ...) has no fan of its own, so `nvidia-smi` cannot speed one up. If its air comes from
-a fan on a motherboard 4-pin header, the speed is set by the board's fan chip. The BIOS fan curve (Smart Fan) can only follow the
-board's own temperatures (CPU / system / VRM / chipset) - it cannot follow the GPU. The System Monitor's **Fans** section can:
-hold a header at a fixed speed, hand it back to the BIOS, or **follow the GPU temperature** along a curve you set.
+A passive datacenter card (Tesla T10, V100, A16 ...) has no fan of its own, so `nvidia-smi` cannot speed one up. If its air comes from a
+fan on a motherboard 4-pin header, that header's speed is set by the board's fan chip. The BIOS fan curve (Smart Fan) follows the board's
+own sensors - never the GPU die. The System Monitor's **Fans** section can hold a header at a speed, put it back as the BIOS had it, check
+that an output really speeds a fan up, or **follow the GPU temperature** along a curve.
 
-What it needs, in this order (the page tells you which step is missing):
+### 0. Measure before you control anything
 
-1. **A kernel driver for the board's fan chip.** Linux must show the chip as `/sys/class/hwmon/hwmonN/pwm1…`. Check on the host:
-   `ls /sys/class/hwmon/*/pwm*` - if that prints nothing, no driver controls the chip. Gigabyte AM4 boards such as the X570 Aorus Master
-   use an ITE IT87xx chip (I believe an IT8688E - check yours with `sensors-detect` or the board's spec sheet). The stock Linux `it87`
-   driver does not always support the newest ITE chips; the community out-of-tree `it87` driver does, and usually also needs the
-   kernel option `acpi_enforce_resources=lax`. **TrueNAS is an appliance** (read-only system, no compiler), so loading an out-of-tree
-   driver there is the hard part and is not something this app can do for you. I have not tested this on TrueNAS.
-2. **The host's `/sys` visible inside the container.** Docker's own `/sys` is read-only. Bind-mount the host's and point the app at it
-   (a bind mount of `/sys` is writable without `privileged`):
+Fan control only helps if the card actually runs too hot. Nothing below is worth doing until you have these numbers (run the load in one
+shell, the readings in another):
+
+```
+nvidia-smi -q -d TEMPERATURE | grep -iE "current|shutdown|slowdown|max operating"     # the card's own limits
+sudo docker exec -i nd-world-unsloth python3 - <<'PY'
+import torch, time
+a = torch.randn(8192, 8192, device="cuda", dtype=torch.half); b = torch.randn_like(a); c = torch.empty_like(a)
+end = time.time() + 240
+while time.time() < end:
+    torch.matmul(a, b, out=c)
+torch.cuda.synchronize()
+PY
+# meanwhile, in a second shell:
+nvidia-smi --query-gpu=timestamp,temperature.gpu,power.draw,clocks.sm --format=csv -l 5
+nvidia-smi -q -d PERFORMANCE | grep -iE "thermal|slowdown"                           # after ~3 minutes: any "Active"?
+```
+
+Do it twice: once with the fan the way it is, once with that header on **full speed** in the BIOS. Read the plateau temperature and whether
+a thermal slowdown shows "Active".
+
+* Plateau comfortably under the card's slowdown temperature at the current setting: you do not need fan control.
+* Fine at full speed but hot at the current setting: a fixed higher BIOS speed (or a thermistor on the heatsink, below) is enough.
+* Hot or throttling even at full speed: the fan is not the problem - an 80 mm fan may simply not push enough air through a dense passive
+  heatsink. Duct the air, use a fan made for static pressure, and/or cap the card's power (the GPU panel's power-limit slider).
+
+### 1. What was found on an X570 Aorus Master (TrueNAS, kernel 6.18, stock in-tree `it87`)
+
+Verified from the machine's own output:
+
+* `modinfo it87` is present (in-tree); `dmesg`: "it87: Found IT8792E/IT8795E chip at 0xa60"; `sensors` shows it as `it8792-isa-0a60`.
+* It exposes `pwm1`-`pwm3`: `fan1` reads 0 rpm (nothing on it), `fan2` and `fan3` are live (about 2.8-3.6 krpm).
+* Right after the driver loads all three read `MANUAL CONTROL` (raw 128, 128, 75): the BIOS holds a fixed duty in manual mode - it does not
+  use the chip's own automatic curve. So the way to hand a fan back is to restore the duty the BIOS had written down, not to write `2`.
+* The fan on SYS_FAN4 did not respond to full speed on any of the three outputs.
+* One output got slower at a higher duty (2848 rpm at the BIOS's 128, 2142 at 150) - an inverted or self-regulating output cannot be
+  trusted to cool anything. Use **Check** (below) on an output before letting it follow the GPU.
+
+Inferred, not verified: the board's main fan chip (most likely an IT8688E, the one the stock driver does not support) drives the other
+headers, SYS_FAN4 among them; and which of the three visible outputs is which header (CPU_FAN was said to be a pump, CPU_OPT a fan).
+**Never put a pump on "follow GPU"**, and never hold one below its BIOS value.
+
+### 2. Getting at the outputs
+
+1. **Load the driver.** Try `sudo modprobe it87` first. Only if `dmesg` then reports an ACPI resource conflict, add
+   `ignore_resource_conflict=1` - that lets the driver share the chip with the board's own ACPI firmware, which also uses it, so there is a
+   small risk of the two touching it at once (Gigabyte boards usually need it; do not add `force_id`). Make it survive reboots with a
+   TrueNAS *Init/Shutdown Script* (System, Advanced), type Command, **When: Pre Init**, so it is loaded before the apps start.
+2. **Give the container the fan chip's folder - and nothing wider.** Check the path: `ls -d /sys/devices/platform/it87*/hwmon`. Then, on
+   the `world` service:
 
    ```yaml
    world:
      environment:
-       FAN_HWMON_ROOT: /host-sys/class/hwmon
+       FAN_HWMON_ROOT: /host-hwmon
      volumes:
-       - /sys:/host-sys
+       - /sys/devices/platform/it87.2656/hwmon:/host-hwmon      # 2656 = 0xa60; use what the ls printed
        - /mnt/DeadPool/apps/nd-world:/data
    ```
-3. **A temperature to follow.** "Follow the GPU" reads the GPU through `nvidia-smi` (the same reading as the GPU panel above).
 
-Safety built in: a fan is never set below 20 %; with "follow the GPU" on, an unreadable GPU temperature or one at 85 C or more sends the
-fans to 100 %; a curve that would slow a fan as the GPU gets hotter is refused. The speed is held by nd-world - **if nd-world is stopped
-or crashes, the header stays at the last value written** (use the *BIOS* button on a fan before shutting the app down for long: it puts back the exact mode and duty the BIOS had set, which the app wrote down when it first took the header over. A reboot also gives every header back to the BIOS).
-Settings are kept in `fan_control.json` beside the database.
+   Do not mount all of `/sys` read-write: a writable host `/sys` lets anything running as root in that container detach disks, change
+   kernel and device settings and more, which is far beyond adjusting a fan. The narrow mount has one catch (not tested here): if that
+   folder does not exist when the container starts, Docker cannot start the container - so the driver must be loaded first (Pre Init),
+   and remove the mount line before ever removing the driver.
+3. A temperature to follow comes from `nvidia-smi` (the same reading as the GPU panel).
 
-No driver, or no way to mount `/sys`? Two fallbacks that need no software: in the BIOS (Smart Fan 5) set that header to a fixed
-speed that is enough for your worst case, or to the "System" / "VRM" source with a steep curve; or run the fan from a PWM-capable
-fan controller powered separately with its own temperature probe taped to the card's heatsink.
+### 3. How it behaves, and what it cannot do
 
-**What was found on an X570 Aorus Master (TrueNAS 6.18 kernel, stock in-tree `it87`):** the driver detects an IT8792E/IT8795E at 0xa60 and
-exposes `pwm1`-`pwm3` on it. The board's *other* fan chip (the one that drives most headers, I believe an IT8688E) is not supported by that
-driver, so a header wired to it - SYS_FAN4 here - cannot be reached from software; the three visible outputs were CPU_FAN (a pump), CPU_OPT
-and one with nothing connected. The BIOS keeps these in manual mode at a fixed duty, which is why "put back what the BIOS had" is the right
-way to hand a fan back (writing `2`, the chip's own automatic mode, is not the BIOS curve). The driver does not survive a reboot unless a
-post-init command loads it: `modprobe it87 ignore_resource_conflict=1`.
+* Outputs are identified by chip name + device + channel (`it8792@it87.2656/pwm3`), never by the `hwmonN` number, which the kernel can
+  hand out differently after a reboot.
+* A speed is never below 20 %. A follow curve must reach at least 80 % by 75 C (the panic temperature is 80 C): a curve that never gets
+  the air moving is refused. Above the last point the fan stays at the last point's value; at the panic temperature, or if the GPU
+  temperature cannot be read, the fans go to 100 %.
+* Fans speed up at once and slow down 5 points per tick (every 5 s), so they do not hunt.
+* **Check** runs one fan at 100 % for about six seconds, compares the rpm, and puts it back exactly as it was. It never slows a fan. An
+  output whose rpm falls is refused for following; one with no rpm signal cannot be verified here - listen to it.
+* Turning "follow the GPU" off, or taking a fan out of it, puts that fan back as the BIOS had it (remembered per boot).
+* When nd-world stops cleanly, any fan it holds below 60 % is raised to 60 % (never lowered). **If it is killed outright, the fan stays
+  at its last value** - another container may still be loading the GPU. Set that header's BIOS speed to something safe for a loaded
+  card, so a reboot or a missing app lands somewhere safe.
+* Manual mode on this board is also how the BIOS holds a fan, so "held by nd-world" is shown only for fans the app took over.
+* Not known: whether the BIOS rewrites these registers later (it did not within the few seconds tested). If a hold drifts, the page
+  warns "the BIOS may be rewriting this header"; the follow loop re-applies every 5 s.
+
+### 4. Alternatives that need no software on the host
+
+* **A fixed BIOS speed** on that header (Smart Fan 5, manual or "full speed") chosen from the measurements in section 0.
+* **A thermistor on the heatsink.** Many Gigabyte boards have a T_SENSOR header (check the manual). An unconnected thermistor input
+  reads about -55 C - the `it8792` `temp2` did on this board, so it may be exactly that. Taped to the card's heatsink or backplate, it
+  can be the temperature source for the header's Smart Fan curve, which then follows the card instead of the board.
+* **Moving the fan** to a header the visible chip controls (confirm which with **Check**; mind the header's current limit against the
+  fan's rating, and never move a pump).
+* **A stand-alone fan controller** with its own temperature probe on the heatsink.
+* **A host-side script** (a loop run by TrueNAS at boot) is the sturdier home for a thermal loop if the GPU is shared by several apps: it
+  keeps running when nd-world restarts and needs no container access to `/sys`. Not built here.

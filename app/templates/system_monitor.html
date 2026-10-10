@@ -53,15 +53,17 @@
   <h2 class="sm-h">Fans</h2>
   <div id="sm-fans-missing" class="sm-warn" hidden></div>
   <div id="sm-fans" class="sm-card" hidden>
+    <div id="sm-fan-ro" class="sm-warn" hidden style="margin-bottom:.8rem"></div>
     <div id="sm-fan-list"></div>
     <div class="sm-limit" id="sm-follow">
       <label><input type="checkbox" id="sm-follow-on"> Follow the GPU temperature</label>
-      <span class="sm-dim" style="font-size:.76rem">Chosen fans speed up as the GPU heats up (the BIOS curve cannot see the GPU). Under 20 % is never used; if the GPU temperature cannot be read the fans go to 100 %.</span>
+      <span class="sm-dim" style="font-size:.76rem">The ticked fans speed up as the GPU heats up (the BIOS curve cannot see the GPU die). They speed up at once and slow down gently. Never below 20 %; if the GPU temperature cannot be read, or it is at the panic temperature, they go to 100 %. Run <b>Check</b> on a fan first: an output whose rpm falls when asked for more must not be used.</span>
       <div id="sm-curve" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:.5rem"></div>
       <button type="button" id="sm-follow-save">Save</button>
       <span class="sm-limit-msg" id="sm-fan-msg" role="status"></span>
+      <span class="sm-limit-msg" id="sm-fan-state"></span>
     </div>
-    <p class="sm-limit-msg" style="margin:.6rem 0 0">These speeds are held by this app. If nd-world is stopped the fan stays at the last speed it was given - use <b>BIOS</b> on a fan to hand it back first.</p>
+    <p class="sm-limit-msg" style="margin:.6rem 0 0">Speeds are held by this app. If it stops cleanly, any fan it holds is raised to at least <span id="sm-shutdown-pct">60</span> % so a GPU used by another container is not left without air; if it is killed, the fan stays at its last value. <b>BIOS</b> puts a fan back exactly as the BIOS had it, and a reboot gives every fan back.</p>
   </div>
 </section>
 
@@ -275,9 +277,9 @@
 (function () {
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
-  var state = null, dirty = false;
-  function post(payload) {
-    return fetch('/api/system/fans', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  var state = null, dirty = false, dirtyAt = 0;
+  function post(url, payload) {
+    return fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) throw new Error(d.message || d.detail || ('HTTP ' + r.status)); return d; }); });
   }
   function say(t) { $('sm-fan-msg').textContent = t || ''; }
@@ -287,12 +289,30 @@
       var cell = el('label', 'sm-every'); cell.appendChild(document.createTextNode('GPU '));
       var t = el('input'); t.type = 'number'; t.min = 20; t.max = 110; t.value = p[0]; t.style.width = '4rem'; t.setAttribute('aria-label', 'Point ' + (i + 1) + ' GPU temperature');
       var f = el('input'); f.type = 'number'; f.min = state.min_percent; f.max = 100; f.value = p[1]; f.style.width = '4rem'; f.setAttribute('aria-label', 'Point ' + (i + 1) + ' fan percent');
-      [t, f].forEach(function (x) { x.addEventListener('input', function () { dirty = true; }); });
       cell.append(t, document.createTextNode(' °C → '), f, document.createTextNode(' %')); box.appendChild(cell);
     });
   }
   function readCurve() {
     return Array.prototype.map.call($('sm-curve').children, function (c) { var i = c.querySelectorAll('input'); return [parseFloat(i[0].value), parseFloat(i[1].value)]; });
+  }
+  var VERDICT = { speeds_up: '✔ speeds up when asked', inverted: '✖ INVERTED - do not use', no_change: '? no clear change', no_signal: '? no speed signal' };
+  function speedText(f) {
+    var rpm = f.rpm == null ? 'no speed signal' : f.rpm === 0 ? '0 rpm (nothing spinning, or no speed wire)' : f.rpm + ' rpm';
+    return rpm + ' · ' + f.percent + ' %' + (f.held ? ' (held by nd-world)' : ' (as the BIOS set it)');
+  }
+  function drawState(d) {
+    var s = d.state, line = '';
+    if (d.follow_gpu && s) {
+      var age = Math.max(0, Math.round(d.time - s.t));
+      var got = Object.keys(s.applied || {}).map(function (k) { return s.applied[k]; });
+      var top = got.length ? Math.max.apply(null, got) : null;
+      line = 'Following: GPU ' + (s.gpu_temp == null ? 'temperature unreadable' : Math.round(s.gpu_temp) + ' °C') + ' → target ' + s.target + ' %' +
+        (top !== null && top > s.target ? ', fan at ' + top + ' % and easing down' : '') +
+        (age > 20 ? ' - NOT updating (last tick ' + age + ' s ago, is the loop running?)' : ' (updated ' + age + ' s ago)');
+      if (s.errors && s.errors.length) line += ' · ' + s.errors.join('; ');
+    } else if (d.follow_gpu) { line = 'Following is on; waiting for the first tick.'; }
+    if (d.missing && d.missing.length) line += (line ? ' · ' : '') + 'Saved fan(s) not found right now: ' + d.missing.join(', ') + ' (driver not loaded?)';
+    $('sm-fan-state').textContent = line;
   }
   function draw(d) {
     state = d;
@@ -300,39 +320,54 @@
     if (!d.fans.length) {
       card.hidden = true; missing.hidden = false;
       missing.textContent = d.root_exists
-        ? 'No fan controls found. The motherboard fan chip has no driver loaded on this machine, so Linux cannot see its PWM outputs. See docs/GPU_SETUP.md, "Fan control".'
-        : 'The host\'s hardware sensors are not visible inside this container. Mount the host\'s /sys (see docs/GPU_SETUP.md, "Fan control") and set FAN_HWMON_ROOT=/host-sys/class/hwmon.';
+        ? 'No fan controls found. No driver is loaded for the motherboard fan chip, so Linux cannot see its PWM outputs (or this container cannot see them). See docs/GPU_SETUP.md, "Fan control".'
+        : 'The fan chip folder is not visible inside this container. See docs/GPU_SETUP.md, "Fan control", for the narrow mount and FAN_HWMON_ROOT.';
       return;
     }
     missing.hidden = true; card.hidden = false;
+    $('sm-shutdown-pct').textContent = d.shutdown_percent;
+    var ro = $('sm-fan-ro');
+    ro.hidden = d.any_writable;
+    if (!d.any_writable) ro.textContent = 'These fans are readable but not writable from this container, so the controls are off. To allow it, mount the fan chip\'s folder read-write (docs/GPU_SETUP.md, "Fan control").';
     var list = $('sm-fan-list'); list.replaceChildren();
     d.fans.forEach(function (f) {
       var row = el('div', 'sm-limit'); row.style.borderTop = '0'; row.style.paddingTop = '0';
-      var name = el('label', '', f.chip + ' · ' + f.label); name.style.minWidth = '9rem';
-      var rpm = el('span', 'sm-dim', (f.rpm != null ? f.rpm + ' rpm' : 'rpm n/a') + ' · ' + f.percent + ' %' + (f.manual ? ' (held)' : ' (BIOS)'));
+      var name = el('label', '', f.chip + ' · ' + f.label + ' (' + f.id.split('/').pop() + ')'); name.style.minWidth = '9rem'; name.title = f.id;
+      var rpm = el('span', 'sm-dim', speedText(f));
       var rng = el('input'); rng.type = 'range'; rng.min = d.min_percent; rng.max = 100; rng.step = 5; rng.value = Math.max(d.min_percent, f.percent); rng.disabled = !f.writable;
       rng.setAttribute('aria-label', 'Fan speed percent for ' + f.label);
-      var out = el('output', '', rng.value + ' %'); rng.addEventListener('input', function () { out.textContent = rng.value + ' %'; dirty = true; });
+      var out = el('output', '', rng.value + ' %'); rng.addEventListener('input', function () { out.textContent = rng.value + ' %'; });
       var set = el('button', '', 'Set'); set.type = 'button'; set.disabled = !f.writable;
-      set.addEventListener('click', function () { post({ fan: f.id, percent: parseInt(rng.value, 10) }).then(function (r) { say(r.message); dirty = false; load(); }).catch(function (e) { say(e.message); }); });
-      var bios = el('button', '', 'BIOS'); bios.type = 'button'; bios.disabled = !f.writable; bios.title = 'Hand this fan back to the motherboard curve';
-      bios.addEventListener('click', function () { post({ fan: f.id, auto: true }).then(function (r) { say(r.message); load(); }).catch(function (e) { say(e.message); }); });
-      var pick = el('label', 'sm-every'); var cb = el('input'); cb.type = 'checkbox'; cb.value = f.id; cb.checked = d.fan_ids.indexOf(f.id) >= 0; cb.disabled = !f.writable;
+      set.addEventListener('click', function () { post('/api/system/fans', { fan: f.id, percent: parseInt(rng.value, 10) }).then(function (r) { say(r.message); dirty = false; load(); }).catch(function (e) { say(e.message); }); });
+      var chk = el('button', '', 'Check'); chk.type = 'button'; chk.disabled = !f.writable;
+      chk.title = 'Runs this fan at 100 % for about 6 seconds and compares its rpm, then puts it back. It never slows a fan down.';
+      chk.addEventListener('click', function () {
+        chk.disabled = true; say('Checking ' + f.label + '… (about 6 seconds)');
+        post('/api/system/fans/check', { fan: f.id }).then(function (r) { say(r.message); }).catch(function (e) { say(e.message); }).then(function () { chk.disabled = !f.writable; load(); });
+      });
+      var bios = el('button', '', 'BIOS'); bios.type = 'button'; bios.disabled = !f.writable; bios.title = 'Put this fan back exactly as the BIOS had it';
+      bios.addEventListener('click', function () { post('/api/system/fans', { fan: f.id, auto: true }).then(function (r) { say(r.message); dirty = false; load(); }).catch(function (e) { say(e.message); }); });
+      var pick = el('label', 'sm-every'); var cb = el('input'); cb.type = 'checkbox'; cb.value = f.id; cb.checked = d.fan_ids.indexOf(f.id) >= 0; cb.disabled = !f.writable || d.checked[f.id] === 'inverted';
       cb.setAttribute('aria-label', 'Let ' + f.label + ' follow the GPU'); pick.append(cb, document.createTextNode(' follows GPU'));
-      row.append(name, rpm, rng, out, set, bios, pick); list.appendChild(row);
+      var verdict = d.checked[f.id] ? el('span', 'sm-dim', VERDICT[d.checked[f.id]] || '') : null;
+      row.append(name, rpm, rng, out, set, chk, bios, pick); if (verdict) row.appendChild(verdict);
+      list.appendChild(row);
     });
     $('sm-follow-on').checked = d.follow_gpu;
-    if (!dirty) drawCurve(d.curve);
+    drawCurve(d.curve);
+    drawState(d);
   }
   function load() {
     fetch('/api/system/fans', { credentials: 'same-origin' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(draw).catch(function () {});
   }
+  // Any edit inside the card (a tick, a slider, a curve number) freezes the 5-second refresh until it is saved, so it is never wiped.
+  ['input', 'change'].forEach(function (ev) { $('sm-fans').addEventListener(ev, function (e) { if (e.target.closest && e.target.closest('#sm-fan-list, #sm-follow')) { dirty = true; dirtyAt = Date.now(); } }); });
   $('sm-follow-save').addEventListener('click', function () {
     var ids = Array.prototype.filter.call($('sm-fan-list').querySelectorAll('input[type=checkbox]'), function (c) { return c.checked; }).map(function (c) { return c.value; });
-    post({ follow_gpu: $('sm-follow-on').checked, fans: ids, curve: readCurve() })
+    post('/api/system/fans', { follow_gpu: $('sm-follow-on').checked, fans: ids, curve: readCurve() })
       .then(function (r) { say(r.message); dirty = false; load(); }).catch(function (e) { say(e.message); });
   });
-  load(); setInterval(function () { if (!document.hidden && !dirty) load(); }, 5000);
+  load(); setInterval(function () { if (dirty && Date.now() - dirtyAt > 60000) dirty = false; if (!document.hidden && !dirty) load(); }, 5000);
 })();
 </script>
 {% endblock %}

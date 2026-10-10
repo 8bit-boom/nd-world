@@ -384,6 +384,7 @@ async def _shutdown_tasks():
     _video_jobs.mark_stragglers_interrupted()
     _media_rename_jobs.mark_stragglers_interrupted()
     _backups.stop()
+    _fan_control.shutdown_safe()      # a fan this app holds is never left slow while another container may load the GPU
     _fan_control.stop()
     # Await, not just cancel, the diagnostics heartbeat so it reaps cleanly
     # inside this still-running loop (see its docstring for the TestClient
