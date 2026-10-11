@@ -141,9 +141,9 @@
               — pictures, videos and audio (a folk song about the session, a read-aloud of the recap). Players see the items you tick “players can see” on the Session Log.</span>
             <span id="sm-count" style="white-space:nowrap" title="Pictures, videos and audio clips in all. The limit is in Settings > System."></span>
           </div>
-          <div id="sm-drop" tabindex="0" role="button" aria-label="Drop pictures, videos or audio here, or press to choose files"
+          <div id="sm-drop" tabindex="0" role="button" aria-label="Drop pictures, videos or audio here, press to choose files, or paste with Ctrl+V"
                style="border:2px dashed var(--border);border-radius:6px;padding:1rem;text-align:center;font-size:.85rem;color:var(--text-dim);cursor:pointer;transition:border-color .12s,background .12s">
-            ⬇ Drop pictures, videos or audio here — or click to choose files
+            ⬇ Drop pictures, videos or audio here — click to choose files — or press Ctrl+V to paste a copied picture or file
             <input type="file" id="sm-file" multiple style="display:none"
                    accept="image/*,video/*,audio/*,.jpg,.jpeg,.png,.gif,.webp,.avif,.mp4,.m4v,.webm,.ogv,.mov,.mkv,.avi,.mpg,.mpeg,.mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.aac">
           </div>
@@ -162,15 +162,8 @@
           </div>
 
           <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.6rem;padding-top:.6rem;border-top:1px solid var(--border)">
-            <button type="button" class="ai-recap-btn" onclick="smPickPicture()">🖼 Choose a picture from the gallery…</button>
-            <select id="sm-video-library" aria-label="Attach a video from the video library" style="max-width:240px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
-              <option value="">Attach from the video library…</option>
-            </select>
-            <button type="button" class="ai-recap-btn" onclick="smAttachVideo()">Attach</button>
-            <select id="ra-library" aria-label="Attach a clip from the audio library" style="max-width:240px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
-              <option value="">Attach from the audio library…</option>
-            </select>
-            <button type="button" class="ai-recap-btn" onclick="raAttach()">Attach</button>
+            <button type="button" class="ai-recap-btn" id="sm-choose" onclick="smpOpen('image')" style="min-height:44px">➕ Choose from this world…</button>
+            <span style="font-size:.76rem;color:var(--text-dim)">pictures, videos and audio already in the gallery and libraries — search, preview, pick several</span>
           </div>
           <div style="font-size:.74rem;color:var(--text-dim);margin-top:.45rem;line-height:1.45">
             Made a song somewhere else (Suno, Udio, a recording at the table)? Drop it in. Or write lyrics with
@@ -178,6 +171,7 @@
           </div>
         </div>
         {% if gallery_images is defined %}{% include "_gallery_picker_modal.html" %}{% endif %}
+        {% include "sessions/_media_picker.html" %}
         {% endif %}
 
         <details style="margin-top:.4rem">
@@ -996,56 +990,10 @@ function raRender(d) {
     none.textContent = 'Nothing attached yet.';
     list.appendChild(none);
   }
-
-  const fill = (id, items) => {
-    const sel = document.getElementById(id);
-    sel.length = 1;
-    (items || []).forEach(c => {
-      const o = document.createElement('option');
-      o.value = c.id; o.textContent = c.name + (c.visible_to_players ? '' : ' (GM only)');
-      sel.appendChild(o);
-    });
-  };
-  fill('ra-library', d.library);
-  fill('sm-video-library', d.video_library);
 }
 
 async function raLoad() {
   try { raRender(await raCall(SM_BASE)); } catch (e) { raStatus('Could not load: ' + e.message); }
-}
-
-async function raAttach() {
-  const id = document.getElementById('ra-library').value;
-  if (!id) { raStatus('Pick a clip from the library first.'); return; }
-  raStatus('Attaching…');
-  try {
-    raRender(await raCall(RA_BASE, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                     body: JSON.stringify({ clip_id: Number(id) }) }));
-    raStatus('Attached. Tick “players can hear this” to share it.');
-  } catch (e) { raStatus('Failed: ' + e.message); }
-}
-
-async function smAttachVideo() {
-  const id = document.getElementById('sm-video-library').value;
-  if (!id) { raStatus('Pick a video from the library first.'); return; }
-  raStatus('Attaching…');
-  try {
-    raRender(await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                                 body: JSON.stringify({ kind: 'video', id: Number(id) }) }));
-    raStatus('Attached. Tick “players can watch this” to share it.');
-  } catch (e) { raStatus('Failed: ' + e.message); }
-}
-
-function smPickPicture() {
-  if (typeof ndGalleryPickerOpen !== 'function') { raStatus('The gallery picker is not available on this page.'); return; }
-  ndGalleryPickerOpen(async entry => {
-    raStatus('Attaching…');
-    try {
-      raRender(await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                                   body: JSON.stringify({ kind: 'image', url: entry.url }) }));
-      raStatus('Attached. Tick “players can see” to share it.');
-    } catch (e) { raStatus('Failed: ' + e.message); }
-  });
 }
 
 // Dropped (or chosen) files, one after another: each goes to the server with its kind worked out here and checked there.
@@ -1107,6 +1055,40 @@ async function smDropFiles(fileList) {
   zone.addEventListener('click', () => input.click());
   zone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
   input.addEventListener('change', () => { smDropFiles(input.files); input.value = ''; });
+
+  // Ctrl+V: a copied picture (a screenshot, "Copy image" on a web page), copied files (from the file manager), or the copied ADDRESS of a
+  // picture that is already in this world ("Copy image address" in the gallery). Text going into a text box is left alone.
+  document.addEventListener('paste', async e => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const t = e.target, editable = !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    const text = (cd.getData && cd.getData('text/plain') || '').trim();
+    const files = Array.from(cd.files || []);
+    if (editable && text) return;                                  // ordinary text paste into a field
+    if (files.length) {
+      e.preventDefault();
+      const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '-');
+      const named = files.map((f, i) => {
+        const generic = !f.name || /^(image|blob|untitled)\.\w+$/i.test(f.name);       // a screenshot arrives as "image.png"
+        if (!generic) return f;
+        const ext = ((f.type || '').split('/')[1] || 'png').replace('jpeg', 'jpg').split(';')[0].split('+')[0];
+        return new File([f], 'Pasted ' + (f.type.startsWith('video/') ? 'video' : f.type.startsWith('audio/') ? 'audio' : 'picture') + ' ' + stamp + (files.length > 1 ? ' ' + (i + 1) : '') + '.' + ext, { type: f.type });
+      });
+      raStatus('Pasting ' + named.length + ' file' + (named.length === 1 ? '' : 's') + '…');
+      smDropFiles(named);
+      return;
+    }
+    const m = /^(?:https?:\/\/[^\/\s]+)?(\/uploads\/[^\s?#]+\.(?:jpe?g|png|gif|webp|avif))(?:[?#]\S*)?$/i.exec(text);
+    if (m && !editable) {
+      e.preventDefault();
+      raStatus('Attaching the pasted picture…');
+      try {
+        raRender(await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                     body: JSON.stringify({ kind: 'image', url: decodeURIComponent(m[1]) }) }));
+        raStatus('Attached. Tick “players can see” to share it.');
+      } catch (err) { raStatus('Could not attach it: ' + err.message); }
+    }
+  });
 })();
 
 async function aiPerformTale() {

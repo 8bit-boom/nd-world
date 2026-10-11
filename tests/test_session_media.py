@@ -253,6 +253,27 @@ def test_dropping_a_video_adds_it_to_the_library_and_the_session(client, seed):
         db.close()
 
 
+def test_the_library_lists_carry_what_a_preview_needs(client, seed):
+    """The picker plays an audio clip / shows a video's poster BEFORE it is added, so the library entries name their files."""
+    _gm(client, seed)
+    sid = _session(seed)
+    vid, aud = _video_clip(seed.world_a, "Cutscene"), _audio_clip(seed.world_a, "Ballad")
+    d = _panel(client, sid)
+    v = next(x for x in d["video_library"] if x["id"] == vid)
+    a = next(x for x in d["library"] if x["id"] == aud)
+    assert v["file_url"].startswith("/uploads/video/") and "poster_url" in v and v["visible_to_players"] is False
+    assert a["file_url"].startswith("/uploads/audio/") and a["name"] == "Ballad"
+    # picking several at once is just several attaches, and the room limit still applies
+    _set_limit(2)
+    try:
+        assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "video", "id": vid}).status_code == 200
+        assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "id": aud}).status_code == 200
+        extra = _video_clip(seed.world_a, "One too many")
+        assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "video", "id": extra}).status_code >= 400
+    finally:
+        _set_limit(10)
+
+
 def test_attach_toggle_and_detach_a_library_video(client, seed):
     _gm(client, seed)
     sid = _session(seed)
@@ -445,7 +466,7 @@ def test_the_gm_session_page_has_the_drop_zone_and_the_pickers(client, seed):
     _gm(client, seed)
     sid = _session(seed)
     page = client.get(f"/sessions/{sid}").text
-    for marker in ('id="session-media-panel"', 'id="sm-drop"', 'id="sm-file"', 'multiple', 'id="ra-library"', 'id="sm-video-library"',
+    for marker in ('id="session-media-panel"', 'id="sm-drop"', 'id="sm-file"', 'multiple', 'id="sm-choose"', 'id="smp"', 'smpOpen', 'addEventListener(\'paste\'',
                    f"/api/sessions/{sid}/media", "SM_BASE + '/upload'", "smDropFiles", "Session media", "addEventListener('drop'"):
         assert marker in page, marker
     assert "ndGalleryPickerOpen" in page and 'id="gallery-picker-overlay"' in page

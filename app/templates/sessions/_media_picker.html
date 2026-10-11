@@ -1,0 +1,170 @@
+{# "Choose from this world": one picker for the pictures, videos and audio that already exist in the world - search, previews, many at
+   once. Included by sessions/detail.html inside the session-media panel; it uses that page's smLast / raRender / raCall / raStatus /
+   SM_BASE. The server (POST /api/sessions/{id}/media/attach) decides what is allowed; this only shows it. #}
+<style>
+.smp { position:fixed; inset:0; z-index:1200; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.65); }
+.smp[hidden] { display:none; }
+.smp-card { width:min(900px,96vw); max-height:92dvh; display:flex; flex-direction:column; gap:.55rem; background:var(--bg2); border:1px solid var(--neon); border-radius:10px; padding:.8rem .9rem calc(.7rem + env(safe-area-inset-bottom)); box-shadow:0 10px 40px rgba(0,0,0,.6); }
+.smp-head { display:flex; justify-content:space-between; align-items:center; gap:.5rem; color:var(--neon); }
+.smp-x { min-width:44px; min-height:44px; background:none; border:0; color:var(--text-dim); font-size:1.1rem; cursor:pointer; }
+.smp-tabs { display:flex; gap:.4rem; }
+.smp-tabs button { flex:1; min-height:44px; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:6px; font-family:var(--font); cursor:pointer; }
+.smp-tabs button[aria-selected="true"] { border-color:var(--neon); color:var(--neon); }
+.smp-q { min-height:44px; font-size:16px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:0 .6rem; font-family:var(--font); box-sizing:border-box; width:100%; }
+.smp-body { overflow-y:auto; flex:1 1 auto; min-height:14rem; }
+.smp-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.5rem; }
+.smp-tile { position:relative; padding:.25rem; background:var(--bg3); border:2px solid var(--border); border-radius:6px; cursor:pointer; text-align:left; color:var(--text); font-family:var(--font); font-size:.74rem; }
+.smp-tile img { width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:4px; display:block; }
+.smp-tile span { display:block; margin-top:.2rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.smp-tile[aria-pressed="true"] { border-color:var(--neon); }
+.smp-tile[aria-pressed="true"]::after { content:"✓"; position:absolute; top:.3rem; right:.3rem; width:1.4rem; height:1.4rem; border-radius:50%; background:var(--neon); color:#000; text-align:center; line-height:1.4rem; font-weight:bold; }
+.smp-tile[disabled] { opacity:.4; cursor:default; }
+.smp-zoom { position:absolute; left:.3rem; top:.3rem; min-width:32px; min-height:32px; background:rgba(0,0,0,.6); border:0; border-radius:4px; color:#fff; cursor:zoom-in; }
+.smp-row { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; padding:.45rem .2rem; border-bottom:1px solid var(--border); font-size:.85rem; }
+.smp-row input[type=checkbox] { width:22px; height:22px; flex:0 0 auto; }
+.smp-row .smp-name { flex:1 1 12rem; min-width:0; overflow-wrap:anywhere; }
+.smp-row img { width:72px; height:48px; object-fit:cover; border-radius:4px; background:#000; }
+.smp-row audio, .smp-row video { width:100%; }
+.smp-tag { font-size:.68rem; color:var(--text-dim); border:1px solid var(--border); border-radius:99px; padding:0 .4rem; }
+.smp-foot { display:flex; gap:.7rem; align-items:center; flex-wrap:wrap; font-size:.8rem; color:var(--text-dim); }
+.smp-foot label { display:inline-flex; gap:.4rem; align-items:center; cursor:pointer; flex:1 1 14rem; min-width:0; }
+.smp-foot input[type=checkbox] { width:22px; height:22px; flex:0 0 auto; margin:0; }
+.smp-foot .smp-spacer { flex:0 0 0; }
+.smp-add { min-height:44px; padding:0 1rem; background:var(--neon); color:#000; border:0; border-radius:6px; font-family:var(--font); font-weight:bold; cursor:pointer; }
+.smp-add:disabled { opacity:.4; cursor:default; }
+.smp-msg { color:var(--text-dim); font-size:.82rem; padding:.6rem .2rem; }
+@media (max-width:720px) { .smp { align-items:stretch; } .smp-card { width:100vw; max-height:100dvh; border-radius:0; } .smp-foot { padding-right:3.4rem; } }   /* clear of the floating bug button */
+</style>
+<div id="smp" class="smp" hidden role="dialog" aria-modal="true" aria-labelledby="smp-title">
+  <div class="smp-card">
+    <div class="smp-head"><b id="smp-title">Choose from this world</b><button type="button" class="smp-x" id="smp-x" aria-label="Close">&#10005;</button></div>
+    <div class="smp-tabs" role="tablist">
+      <button type="button" role="tab" data-t="image" aria-selected="true">🖼 Pictures</button>
+      <button type="button" role="tab" data-t="video" aria-selected="false">🎬 Videos</button>
+      <button type="button" role="tab" data-t="audio" aria-selected="false">🎵 Audio</button>
+    </div>
+    <input type="search" id="smp-q" class="smp-q" placeholder="Search by name…" aria-label="Search">
+    <div class="smp-body" id="smp-body"></div>
+    <div class="smp-foot">
+      <label><input type="checkbox" id="smp-vis"> Players can see them straight away</label>
+      <span class="smp-spacer"></span>
+      <span id="smp-count" role="status"></span>
+      <button type="button" class="smp-add" id="smp-add" disabled>Add selected</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  const root = document.getElementById('smp'), bodyEl = document.getElementById('smp-body'), q = document.getElementById('smp-q');
+  const addBtn = document.getElementById('smp-add'), countEl = document.getElementById('smp-count');
+  const SHOW = 300;                                       // rows / tiles drawn at once; the search narrows the rest
+  const sel = { image: new Set(), video: new Set(), audio: new Set() };
+  let tab = 'image', lastFocus = null, busy = false;
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  const room = () => (smLast ? Math.max(0, (smLast.max || 0) - (smLast.used || 0)) : 0);
+  const total = () => sel.image.size + sel.video.size + sel.audio.size;
+  const thumb = u => u.replace(/\.[^./]+$/, '') + '_thumb.webp';
+  const matches = (text) => !q.value.trim() || String(text).toLowerCase().includes(q.value.trim().toLowerCase());
+  const attachedPictures = () => new Set(((smLast && smLast.images) || []).map(i => i.url));
+
+  function footer() {
+    const n = total(), left = room();
+    countEl.textContent = n ? n + ' selected · ' + left + ' place' + (left === 1 ? '' : 's') + ' left' : left + ' place' + (left === 1 ? '' : 's') + ' left';
+    countEl.style.color = n > left ? '#e0b050' : '';
+    addBtn.disabled = busy || !n;
+  }
+  function more(shown, all) {
+    return shown < all ? el('div', 'smp-msg', 'Showing the first ' + shown + ' of ' + all + ' - type in the search box to narrow it.') : null;
+  }
+  function drawImages() {
+    const all = (window.NDGalleryImages || []).filter(e => matches(e.name + ' ' + e.url)), have = attachedPictures();
+    if (!all.length) { bodyEl.replaceChildren(el('div', 'smp-msg', (window.NDGalleryImages || []).length ? 'No picture matches.' : 'This world has no pictures yet - drop some above, or add them in the gallery.')); return; }
+    const grid = el('div', 'smp-grid');
+    all.slice(0, SHOW).forEach(e => {
+      const t = el('button', 'smp-tile'); t.type = 'button'; t.title = e.name;
+      const on = have.has(e.url);
+      t.setAttribute('aria-pressed', String(sel.image.has(e.url))); t.disabled = on;
+      const img = el('img'); img.src = thumb(e.url); img.alt = ''; img.loading = 'lazy';
+      img.onerror = () => { img.onerror = null; img.src = e.url; };
+      t.append(img, el('span', '', (on ? '✓ on this session · ' : '') + e.name));
+      t.addEventListener('click', () => { if (sel.image.has(e.url)) sel.image.delete(e.url); else sel.image.add(e.url); t.setAttribute('aria-pressed', String(sel.image.has(e.url))); footer(); });
+      const z = el('button', 'smp-zoom', '🔍'); z.type = 'button'; z.title = 'Look at it larger'; z.setAttribute('aria-label', 'Look at ' + e.name + ' larger');
+      z.addEventListener('click', ev => { ev.stopPropagation(); if (window.openLightbox) openLightbox(e.url, e.name); });
+      const wrap = el('div'); wrap.style.position = 'relative'; wrap.append(t, z);
+      grid.appendChild(wrap);
+    });
+    const m = more(Math.min(SHOW, all.length), all.length);
+    bodyEl.replaceChildren(grid, ...(m ? [m] : []));
+  }
+  function drawClips(kind) {
+    const lib = ((kind === 'video' ? smLast && smLast.video_library : smLast && smLast.library) || []).filter(c => matches(c.name));
+    if (!lib.length) { bodyEl.replaceChildren(el('div', 'smp-msg', ((kind === 'video' ? smLast && smLast.video_library : smLast && smLast.library) || []).length
+      ? 'Nothing matches.' : 'Nothing left in the ' + (kind === 'video' ? 'video' : 'audio') + ' library that is not on this session already.')); return; }
+    const rows = lib.slice(0, SHOW).map(c => {
+      const row = el('div', 'smp-row');
+      const box = el('input'); box.type = 'checkbox'; box.checked = sel[kind].has(c.id); box.setAttribute('aria-label', 'Select ' + c.name);
+      box.addEventListener('change', () => { if (box.checked) sel[kind].add(c.id); else sel[kind].delete(c.id); footer(); });
+      row.appendChild(box);
+      if (kind === 'video' && c.poster_url) { const p = el('img'); p.src = c.poster_url; p.alt = ''; p.loading = 'lazy'; row.appendChild(p); }
+      const name = el('label', 'smp-name', (kind === 'video' ? '🎬 ' : '🎵 ') + c.name); name.style.cursor = 'pointer';
+      name.addEventListener('click', ev => { ev.preventDefault(); box.checked = !box.checked; box.dispatchEvent(new Event('change')); });
+      row.appendChild(name);
+      if (!c.visible_to_players) row.appendChild(el('span', 'smp-tag', 'GM only'));
+      const media = el(kind === 'video' ? 'video' : 'audio'); media.controls = true; media.preload = 'none'; media.src = c.file_url;
+      if (kind === 'video' && c.poster_url) media.poster = c.poster_url;
+      if (kind === 'video') media.style.maxHeight = '260px';
+      media.addEventListener('play', () => bodyEl.querySelectorAll('audio,video').forEach(m => { if (m !== media) m.pause(); }));
+      row.appendChild(media);
+      return row;
+    });
+    const m = more(Math.min(SHOW, lib.length), lib.length);
+    bodyEl.replaceChildren(...rows, ...(m ? [m] : []));
+  }
+  function draw() {
+    root.querySelectorAll('.smp-tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.t === tab)));
+    bodyEl.querySelectorAll('audio,video').forEach(m => m.pause());
+    if (tab === 'image') drawImages(); else drawClips(tab);
+    footer();
+  }
+  function open(which) {
+    if (!smLast) { raStatus('The media list has not loaded yet - try again in a moment.'); return; }
+    lastFocus = document.activeElement; tab = which || tab; q.value = '';
+    root.hidden = false; document.documentElement.style.overflow = 'hidden';
+    draw(); q.focus();
+  }
+  function close() {
+    if (root.hidden) return;
+    bodyEl.querySelectorAll('audio,video').forEach(m => { m.pause(); m.removeAttribute('src'); m.load(); });
+    root.hidden = true; document.documentElement.style.overflow = '';
+    if (lastFocus && lastFocus.focus) try { lastFocus.focus(); } catch (e) { /* gone */ }
+  }
+  async function addSelected() {
+    const n = total();
+    if (!n || busy) return;
+    if (n > room()) { countEl.textContent = 'Only ' + room() + ' more fit under the limit of ' + (smLast.max || 0) + ' - untick some, or raise the limit in Settings > System.'; countEl.style.color = '#e0b050'; return; }
+    busy = true; addBtn.disabled = true;
+    const visible = document.getElementById('smp-vis').checked;
+    const jobs = [...[...sel.image].map(u => ({ kind: 'image', url: u })), ...[...sel.video].map(i => ({ kind: 'video', id: i })), ...[...sel.audio].map(i => ({ kind: 'audio', id: i }))];
+    let done = 0; const failed = [];
+    for (const job of jobs) {
+      countEl.textContent = 'Adding ' + (done + failed.length + 1) + ' of ' + jobs.length + '…';
+      try {
+        const d = await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(visible ? Object.assign({ visible_to_players: true }, job) : job) });
+        raRender(d); done++;
+        (job.kind === 'image' ? sel.image : sel[job.kind]).delete(job.kind === 'image' ? job.url : job.id);
+      } catch (e) { failed.push(e.message); }
+    }
+    busy = false;
+    raStatus(done + ' added' + (visible ? ' - players can see them.' : ' - tick “players can see” on each to share it.') + (failed.length ? ' ' + failed.length + ' failed: ' + failed[0] : ''));
+    if (failed.length) { draw(); countEl.textContent = failed.length + ' could not be added: ' + failed[0]; countEl.style.color = '#e0b050'; }
+    else close();
+  }
+  root.querySelectorAll('.smp-tabs button').forEach(b => b.addEventListener('click', () => { tab = b.dataset.t; draw(); }));
+  q.addEventListener('input', draw);
+  addBtn.addEventListener('click', addSelected);
+  document.getElementById('smp-x').addEventListener('click', close);
+  root.addEventListener('mousedown', ev => { if (ev.target === root) close(); });
+  document.addEventListener('keydown', ev => { if (!root.hidden && ev.key === 'Escape') { ev.preventDefault(); close(); } });
+  window.smpOpen = open;
+})();
+</script>

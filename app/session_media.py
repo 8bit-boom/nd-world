@@ -199,11 +199,11 @@ def panel(db: Session, gs) -> dict:
     video_lib = (db.query(VideoClip).filter(VideoClip.world_id == gs.world_id).order_by(VideoClip.created_at.desc()).limit(200).all())
     return {
         "clips": attached_clips(db, gs, is_gm=True),
-        "library": [{"id": c.id, "name": c.name, "visible_to_players": bool(c.visible_to_players)}
+        "library": [{"id": c.id, "name": c.name, "visible_to_players": bool(c.visible_to_players), "file_url": c.file_url}
                     for c in audio_lib if c.id not in audio_ids],
         "videos": attached_videos(db, gs, is_gm=True),
-        "video_library": [{"id": c.id, "name": c.name, "visible_to_players": bool(c.visible_to_players)}
-                          for c in video_lib if c.id not in video_ids],
+        "video_library": [{"id": c.id, "name": c.name, "visible_to_players": bool(c.visible_to_players), "file_url": c.file_url,
+                           "poster_url": c.poster_url or ""} for c in video_lib if c.id not in video_ids],
         "images": attached_images(gs, is_gm=True),
         "max": limit(db),
         "used": used(gs),
