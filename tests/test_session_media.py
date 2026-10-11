@@ -493,3 +493,29 @@ def test_the_limit_can_be_changed_in_settings(client, seed):
         assert get_app_settings(db).session_media_max is None
     finally:
         db.close()
+
+
+def test_a_clip_can_be_attached_by_the_address_copied_from_the_library(client, seed):
+    _gm(client, seed)
+    sid = _session(seed)
+    aud, vid = _audio_clip(seed.world_a, "Ballad"), _video_clip(seed.world_a, "Cutscene")
+    db = SessionLocal()
+    try:
+        a_url, v_url = db.get(AudioClip, aud).file_url, db.get(VideoClip, vid).file_url
+    finally:
+        db.close()
+    d = client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "url": a_url}).json()
+    assert [c["id"] for c in d["clips"]] == [aud]
+    d = client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "video", "url": v_url}).json()
+    assert [v["id"] for v in d["videos"]] == [vid]
+    assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "url": "/uploads/audio/nope.mp3"}).status_code == 404
+    assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "url": v_url}).status_code == 404     # a video's address is not an audio clip
+    other = _session(seed, world=seed.world_b) if hasattr(seed, "world_b") else None
+    if other:                                                                                                       # another world's clip is refused
+        foreign = _audio_clip(seed.world_b, "Foreign")
+        db = SessionLocal()
+        try:
+            f_url = db.get(AudioClip, foreign).file_url
+        finally:
+            db.close()
+        assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "url": f_url}).status_code == 404

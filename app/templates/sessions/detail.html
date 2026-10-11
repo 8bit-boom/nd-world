@@ -1056,8 +1056,9 @@ async function smDropFiles(fileList) {
   zone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
   input.addEventListener('change', () => { smDropFiles(input.files); input.value = ''; });
 
-  // Ctrl+V: a copied picture (a screenshot, "Copy image" on a web page), copied files (from the file manager), or the copied ADDRESS of a
-  // picture that is already in this world ("Copy image address" in the gallery). Text going into a text box is left alone.
+  // Ctrl+V: the copied ADDRESS of a picture / audio / video that is already in this world ("Copy" with Ctrl+C on it in the gallery or a
+  // library) attaches that item - no second copy is uploaded; otherwise a copied picture, a screenshot or copied files are uploaded.
+  // Text going into a text box is left alone. (static/js/nd-clipboard.js does the same for every other page's upload field.)
   document.addEventListener('paste', async e => {
     const cd = e.clipboardData;
     if (!cd) return;
@@ -1065,28 +1066,23 @@ async function smDropFiles(fileList) {
     const text = (cd.getData && cd.getData('text/plain') || '').trim();
     const files = Array.from(cd.files || []);
     if (editable && text) return;                                  // ordinary text paste into a field
-    if (files.length) {
+    const addr = window.ndClipboard ? ndClipboard.addressOf(text, location.origin) : null;
+    if (addr) {
       e.preventDefault();
-      const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '-');
-      const named = files.map((f, i) => {
-        const generic = !f.name || /^(image|blob|untitled)\.\w+$/i.test(f.name);       // a screenshot arrives as "image.png"
-        if (!generic) return f;
-        const ext = ((f.type || '').split('/')[1] || 'png').replace('jpeg', 'jpg').split(';')[0].split('+')[0];
-        return new File([f], 'Pasted ' + (f.type.startsWith('video/') ? 'video' : f.type.startsWith('audio/') ? 'audio' : 'picture') + ' ' + stamp + (files.length > 1 ? ' ' + (i + 1) : '') + '.' + ext, { type: f.type });
-      });
-      raStatus('Pasting ' + named.length + ' file' + (named.length === 1 ? '' : 's') + '…');
-      smDropFiles(named);
-      return;
-    }
-    const m = /^(?:https?:\/\/[^\/\s]+)?(\/uploads\/[^\s?#]+\.(?:jpe?g|png|gif|webp|avif))(?:[?#]\S*)?$/i.exec(text);
-    if (m && !editable) {
-      e.preventDefault();
-      raStatus('Attaching the pasted picture…');
+      raStatus('Attaching the pasted ' + addr.kind + '…');
       try {
         raRender(await raCall(SM_BASE + '/attach', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                                     body: JSON.stringify({ kind: 'image', url: decodeURIComponent(m[1]) }) }));
-        raStatus('Attached. Tick “players can see” to share it.');
+                                                     body: JSON.stringify({ kind: addr.kind, url: addr.path }) }));
+        raStatus('Attached. Tick “players can ' + (addr.kind === 'image' ? 'see' : addr.kind === 'video' ? 'watch this' : 'hear this') + '” to share it.');
       } catch (err) { raStatus('Could not attach it: ' + err.message); }
+      return;
+    }
+    if (files.length) {
+      e.preventDefault();
+      const stamp = new Date();
+      const named = files.map((f, i) => new File([f], window.ndClipboard ? ndClipboard.pastedName(f.name, f.type, stamp, i, files.length) : (f.name || 'pasted'), { type: f.type }));
+      raStatus('Pasting ' + named.length + ' file' + (named.length === 1 ? '' : 's') + '…');
+      smDropFiles(named);
     }
   });
 })();

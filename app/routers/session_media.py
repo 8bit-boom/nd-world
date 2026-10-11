@@ -164,7 +164,8 @@ async def media_upload_complete(session_id: int, request: Request, upload_id: st
 
 @router.post("/api/sessions/{session_id}/media/attach")
 async def media_attach(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    """Attach something that is already in this world: {kind: "audio"|"video", id} or {kind: "image", url}."""
+    """Attach something that is already in this world: {kind: "audio"|"video", id | url} or {kind: "image", url} (a url is the file's
+    /uploads/... address, as copied from the library)."""
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     try:
         body = await request.json()
@@ -175,9 +176,15 @@ async def media_attach(session_id: int, request: Request, db: Session = Depends(
     vis = vis if isinstance(vis, bool) else None
     if kind in ("audio", "video"):
         cid = body.get("id")
-        if isinstance(cid, bool) or not isinstance(cid, int):
-            raise HTTPException(400, "id must be a clip id")
         model = AudioClip if kind == "audio" else VideoClip
+        if cid is None and isinstance(body.get("url"), str):
+            # a clip named by its address (pasted after "copy link" in the library): this world's clip with that file
+            clip = (db.query(model).filter(model.world_id == world.id, model.file_url == body["url"].strip()[:512]).first())
+            if not clip:
+                raise HTTPException(404, f"That address is not one of this world's {kind} clips")
+            cid = clip.id
+        if isinstance(cid, bool) or not isinstance(cid, int):
+            raise HTTPException(400, "id must be a clip id (or url its file address)")
         clip = db.get(model, cid)
         if not clip or clip.world_id != world.id:
             raise HTTPException(404, f"No such {kind} clip in this world")

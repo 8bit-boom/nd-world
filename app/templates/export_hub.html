@@ -64,7 +64,7 @@
     </p>
     <form action="/admin/backup/restore" method="post" enctype="multipart/form-data" class="import-form">
       <div class="form-dropzone" data-dropzone style="padding:.3rem .6rem;flex:1;min-width:200px">
-        <input type="file" name="file" accept=".zip" required/>
+        <input type="file" name="file" accept=".zip" required data-nd-paste="off"/>   {# a database restore is never prepared by a paste #}
       </div>
       <input type="text" name="confirm_name" placeholder='Type "{{ restore_confirm_name }}" to confirm' required
              style="flex:1;min-width:200px" />

@@ -141,6 +141,14 @@ tools that require GM access still check `is_gm` at call time.)
   the X570 Aorus Master); an output `check_fan` found inverted never follows; `shutdown_safe` only ever raises. The sysfs root is a
   parameter (`FAN_HWMON_ROOT`), and the container should get only the fan chip's folder, not a writable `/sys`. Tests use a fake hwmon tree
   (`tests/test_fan_control.py`).
+- **Copy / paste for media is one shared script** (`static/js/nd-clipboard.js`, loaded by `base.html` on every page; pure helpers tested under Node in
+  `tests/test_nd_clipboard.py`): **Ctrl+V** hands pasted files to the visible `<input type=file>` whose `accept` takes them (sets `.files`, fires
+  `change`, focuses the page's upload button) - so a new upload field needs NO code of its own; opt a field out with `data-nd-paste="off"`. It never acts
+  while typing in a text field, and a page with its own paste handler (the session media panel) keeps priority by calling `preventDefault()` - the shared
+  one defers a tick and checks. **Ctrl+C** with nothing selected copies the media under the pointer: a picture as a picture (plus its address in the same
+  clipboard item), audio / video / `/uploads/...` links as an address; mark a custom copy target with `data-nd-copy-url` (and `data-nd-copy-name`).
+  The session media panel prefers a pasted ADDRESS over pasted picture data (it attaches the existing item instead of uploading a copy), and
+  `POST /api/sessions/{id}/media/attach` takes `url` for audio / video as well as images. Never add a per-page paste listener for a plain upload field.
 - **Small image boxes use the thumbnail**: `{{ url|thumb }}` for `src` and `data-full="{{ url }}"` for the original
   (lightbox, "send to screen"); a 160px portrait that downloads a 1 MB PNG is the slow-page bug.
 - **The Player Cockpit lives inside Player Characters** (no nav item of its own — `nav_menus.py` has none; saved menus that still name `player_cockpit` just drop it): the hub's owner-only 🎛 Cockpit tab lazily loads

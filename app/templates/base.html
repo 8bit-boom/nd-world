@@ -32,6 +32,9 @@
   <script src="/static/js/nd-poll.js?v={{ asset_v('js/nd-poll.js') }}"></script>
   <script src="/static/js/nd-float.js?v={{ asset_v('js/nd-float.js') }}" defer></script>
   <script src="/static/js/nd-live.js?v={{ asset_v('js/nd-live.js') }}" defer></script>
+  {# Ctrl+C / Ctrl+V for media on every page: pasted files go to the page's own upload field, Ctrl+C copies the picture (or the link of an
+     audio / video clip) under the pointer. Same-origin only; see the header of the script. #}
+  <script src="/static/js/nd-clipboard.js?v={{ asset_v('js/nd-clipboard.js') }}" defer></script>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v('style.css') }}"/>
   <script src="/static/js/command-palette.js?v={{ asset_v('js/command-palette.js') }}" defer></script>
   {% if world %}
