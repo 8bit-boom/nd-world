@@ -511,7 +511,7 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, .88);
-  z-index: 1000;
+  z-index: 100010;   /* above a maximised cockpit window (.ck-win.maxed is 99999) and the cockpit's own overlays */
   align-items: center;
   justify-content: center;
   padding: 3rem 1.5rem;

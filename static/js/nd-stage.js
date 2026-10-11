@@ -48,7 +48,7 @@
     '.nd-stage-float{position:fixed;z-index:960;background:var(--neon,#0ff);color:#000;border:none;border-radius:4px;padding:.35rem .6rem;font:600 .78rem system-ui,sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.6);display:none}' +
     '#nd-stage-toast{position:fixed;left:14px;bottom:66px;z-index:970;background:#111;color:#eee;border:1px solid var(--neon,#0ff);border-radius:6px;padding:.45rem .75rem;font:.8rem system-ui,sans-serif;opacity:0;transition:opacity .25s;pointer-events:none;max-width:70vw}' +
     '#nd-stage-toast.on{opacity:1}' +
-    '#nd-lightbox-actions{position:fixed;top:14px;right:70px;z-index:10001;display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 90px)}' +
+    '#nd-lightbox-actions{position:fixed;top:14px;right:70px;z-index:100011;display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 90px)}' +
     '#nd-lightbox-actions .nd-stage-float{position:static;display:block;min-height:36px;padding:.4rem .75rem}' +
     '#nd-spot-lightbtn.on{background:#ff2d78;color:#fff}' });
   document.head.appendChild(css);

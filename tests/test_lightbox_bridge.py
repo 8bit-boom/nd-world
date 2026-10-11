@@ -261,3 +261,26 @@ def test_a_picture_from_outside_the_world_is_refused_with_a_404_the_button_can_e
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     assert client.post("/images/spotlight", json={"url": "/uploads/not-ours.png"}).status_code == 404
+
+
+# ── layering and who sees a broadcast ──────────────────────────────────────────────────────────
+
+def test_the_lightbox_sits_above_a_maximised_cockpit_window():
+    import re
+    css = (ROOT / "static/style.css").read_text()
+    cockpit = (ROOT / "app/templates/cockpit.html").read_text()
+    lightbox_z = int(re.search(r"\.lightbox-overlay \{[^}]*?z-index:\s*(\d+)", css, re.S).group(1))
+    maxed_z = int(re.search(r"\.ck-win\.maxed \{[^}]*?z-index:\s*(\d+)", cockpit).group(1))
+    bar_z = int(re.search(r"#nd-lightbox-actions\{[^}]*?z-index:(\d+)", STAGE).group(1))
+    assert lightbox_z > maxed_z, "a full-screen cockpit window would hide the picture that was clicked"
+    assert bar_z > lightbox_z
+
+
+def test_the_gms_own_tabs_do_not_pop_up_what_they_send_to_the_players(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert "const _ND_IS_GM = true;" in client.get("/").text
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert "const _ND_IS_GM = false;" in client.get("/player-cockpit").text

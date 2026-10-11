@@ -585,6 +585,7 @@ document.addEventListener('keydown', e => {
 // already needs _ND_NOW_PLAYING_DISMISSED_KEY before the rest of the "Now
 // Playing" code further down in this same script block has executed.
 const _ND_NOW_PLAYING_VOLUME_KEY = 'nd_now_playing_volume';
+const _ND_IS_GM = {{ 'true' if request.state.user.is_gm else 'false' }};
 const _ND_NOW_PLAYING_DISMISSED_KEY = 'nd_now_playing_dismissed_version';
 const _ND_NOW_PLAYING_POSITION_URL_KEY = 'nd_now_playing_position_url';
 const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
@@ -643,6 +644,8 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
     if (data.version !== seenVersion) {
       seenVersion = data.version;
       if (suppressOnce) { suppressOnce = false; }
+      // The GM is the one sending: their own tabs must not pop the picture up (or close what they are looking at).
+      else if (_ND_IS_GM) { /* players only */ }
       else if (data.image_url) { openLightbox(data.image_url, data.label || ''); }
       else { closeLightbox(); }
     }
