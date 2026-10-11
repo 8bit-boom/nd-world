@@ -132,7 +132,8 @@
     var out = panels.map(copy);
 
     var stage = -1;
-    for (var i = 0; i < n; i++) if (STAGE[panels[i].type]) { stage = i; break; }
+    if (opts && opts.stage != null && opts.stage >= 0 && opts.stage < n) stage = opts.stage;   // the caller names the main window
+    else for (var i = 0; i < n; i++) if (STAGE[panels[i].type]) { stage = i; break; }
 
     if (n === 1) { place(out[0], GAP, GAP, inner, innerH); return out; }
 
@@ -210,9 +211,214 @@
     };
   }
 
+  // ── the laptop layout ────────────────────────────────────────────────────────────────────────
+  //
+  // A laptop (a Vivobook is 1280-1536 CSS px wide) cannot show the nine windows a 4K monitor does: a layout arranged there
+  // and merely scaled down is a row of 240px slivers. So below LAPTOP_BELOW the cockpit shows a few windows at a time, big
+  // (a main window plus one or two beside it) and keeps the rest in a dock. A `parked` window is not on screen but is still
+  // a window - its page, notes and settings are kept - and one click on its chip brings it back.
+  //
+  // Both screen classes share the windows and keep their OWN geometry: a saved panel carries the big screen's geometry in
+  // x/y/w/h/z/collapsed (as it always did, so older code and saved layouts are untouched) and the laptop's in `lap`. A WORKING
+  // panel (what cockpit.js drags around) holds the geometry of the CURRENT class in those same fields and stashes the other
+  // one in _wide / _lap; toWorking / toSaved convert, so nothing else needs to know there are two.
+  var LAPTOP_BELOW = 1700, LAPTOP_ENTER = 1640, LAPTOP_LEAVE = 1760;   // window width in CSS px; the gap is hysteresis
+  var GEO = ['x', 'y', 'w', 'h', 'z', 'collapsed'];
+  var PRIVATE = ['_wide', '_lap', 'parked', 'lap', 'swapped'];
+
+  // 'laptop' or 'wide' for a window `width` CSS px wide. By WIDTH only: the browser's fullscreen (F11) changes the height,
+  // not the width, so it never flips the layout, and a window snapped to half a big monitor gets the laptop layout too.
+  // `prev` adds hysteresis so a sidebar opening does not flip it; `override` is the user's own choice ('laptop' / 'wide').
+  function screenClass(width, prev, override) {
+    if (override === 'laptop' || override === 'wide') return override;
+    if (!isFinite(width) || width <= 0) return prev === 'laptop' ? 'laptop' : 'wide';
+    if (prev === 'laptop') return width > LAPTOP_LEAVE ? 'wide' : 'laptop';
+    if (prev === 'wide') return width < LAPTOP_ENTER ? 'laptop' : 'wide';
+    return width < LAPTOP_BELOW ? 'laptop' : 'wide';
+  }
+
+  // How many windows are comfortable at once: one on a narrow screen, otherwise the main window with one beside it, and a
+  // second when the side column is tall enough to be split in two.
+  function laptopSlots(vp) {
+    if (!vpOk(vp)) return 2;
+    if (vp.w < 1000) return 1;
+    return vp.h >= 600 ? 3 : 2;
+  }
+
+  // The GM's choice ('auto', 1, 2, 3 or 'all') as a number ('all' is Infinity), never more than there are windows.
+  function resolveSlots(pref, vp, count) {
+    var n;
+    if (pref === 'all') n = Infinity;
+    else if (pref === 1 || pref === 2 || pref === 3 || pref === '1' || pref === '2' || pref === '3') n = +pref;
+    else n = laptopSlots(vp);
+    return Math.max(1, Math.min(n, Math.max(1, count || 1)));
+  }
+
+  function visibleOf(panels) { return panels.filter(function (p) { return !p.parked; }); }
+  function area(p) { return (p.w || 0) * (p.h || 0); }
+  function recent(a, b) { return (b.z || 0) - (a.z || 0); }               // most recently used first
+  function byPosition(a, b) { return (a.y - b.y) || (a.x - b.x); }
+  function pickGeo(p) { var g = {}; GEO.forEach(function (k) { g[k] = p[k]; }); return g; }
+  function putGeo(p, g) { GEO.forEach(function (k) { if (g && g[k] !== undefined) p[k] = g[k]; }); }
+  function putBox(to, from) { to.x = from.x; to.y = from.y; to.w = from.w; to.h = from.h; }
+
+  // The main window: the biggest one showing (a map / combat window wins a tie).
+  function mainOf(vis) {
+    var best = null;
+    vis.forEach(function (p) {
+      if (!best || area(p) > area(best) || (area(p) === area(best) && STAGE[p.type] && !STAGE[best.type])) best = p;
+    });
+    return best;
+  }
+
+  // Tile the windows that are showing: `main` big, the others beside it (`all`: the ordinary tiler, a map / combat window
+  // is the stage and more windows than fit simply scroll).
+  function layoutShowing(panels, vp, main, all, pref) {
+    var vis = visibleOf(panels);
+    if (!vis.length) return;
+    var ordered = all ? vis.slice().sort(byPosition) : [main].concat(vis.filter(function (p) { return p !== main; }).sort(byPosition));
+    var tiled = tilePanels(ordered, vp, { pref: pref, stage: all ? undefined : 0 });
+    ordered.forEach(function (p, i) { putBox(p, tiled[i]); p.collapsed = false; });
+  }
+
+  // Make what is showing fit `slots` (too many: the least recently used, never the main one, are parked; too few while some
+  // wait in the dock: the most recently used come back), then tile it.
+  function retileLaptop(panels, vp, slots, pref) {
+    if (!panels.length) return panels;
+    var all = slots === Infinity || slots >= panels.length;
+    if (all) panels.forEach(function (p) { p.parked = false; });
+    var vis = visibleOf(panels);
+    if (!all && vis.length > slots) {
+      var keep = mainOf(vis);
+      vis.filter(function (p) { return p !== keep; }).sort(recent).slice(slots - 1).forEach(function (p) { p.parked = true; });
+    } else if (!all && vis.length < slots) {
+      panels.filter(function (p) { return p.parked; }).sort(recent).slice(0, slots - vis.length).forEach(function (p) { p.parked = false; });
+    }
+    vis = visibleOf(panels);
+    if (!vis.length) { panels.slice().sort(recent)[0].parked = false; vis = visibleOf(panels); }
+    layoutShowing(panels, vp, mainOf(vis), all, pref);
+    return panels;
+  }
+
+  // Bring a window on screen. Already showing: just to the front. Room left: tile it in (nobody else comes out of the dock).
+  // Otherwise it takes the place and size of one window besides the main one, which goes to the dock: the window brought in
+  // LAST if there is one (so a slot of the screen rotates through the dock while the windows beside it stay - party vitals
+  // that are only glanced at are never the ones to go - and peeking at a window then bringing the other back restores
+  // exactly what was there), else the least recently used. Returns what happened: 'none' | 'front' | 'tiled' | 'swapped'.
+  function showLaptop(panels, id, vp, slots, pref) {
+    var p = null;
+    panels.forEach(function (q) { if (q.id === id) p = q; });
+    if (!p) return 'none';
+    p.z = panels.reduce(function (m, q) { return Math.max(m, q.z || 0); }, 0) + 1;
+    p.collapsed = false;
+    if (!p.parked) return 'front';
+    var vis = visibleOf(panels);
+    if (slots === Infinity || vis.length < slots) {
+      p.parked = false;
+      retileLaptop(panels, vp, slots === Infinity ? Infinity : vis.length + 1, pref);
+      return 'tiled';
+    }
+    var main = mainOf(vis);
+    var pool = vis.length > 1 ? vis.filter(function (q) { return q !== main; }) : vis;
+    var victim = pool.sort(function (a, b) { return ((b.swapped || 0) - (a.swapped || 0)) || ((a.z || 0) - (b.z || 0)); })[0];
+    putBox(p, victim);
+    p.swapped = panels.reduce(function (m, q) { return Math.max(m, q.swapped || 0); }, 0) + 1;
+    delete victim.swapped;
+    victim.parked = true;
+    p.parked = false;
+    return 'swapped';
+  }
+
+  // Send a window to the dock; the ones left fill the space. One window always stays on screen (returns false then).
+  function parkLaptop(panels, id, vp, pref) {
+    var vis = visibleOf(panels);
+    var p = vis.filter(function (q) { return q.id === id; })[0];
+    if (!p || vis.length < 2) return false;
+    p.parked = true;
+    retileLaptop(panels, vp, vis.length - 1, pref);
+    return true;
+  }
+
+  // Make `id` the main window: it swaps places (and size) with the one that is main now.
+  function makeMain(panels, id) {
+    var vis = visibleOf(panels);
+    var p = vis.filter(function (q) { return q.id === id; })[0];
+    var main = mainOf(vis);
+    if (!p || !main || p === main) return false;
+    var tmp = { x: p.x, y: p.y, w: p.w, h: p.h };
+    putBox(p, main);
+    putBox(main, tmp);
+    return true;
+  }
+
+  // A layout arranged for another screen, on this laptop for the first time: the same windows, the map / combat window (or
+  // else the one nearest the top-left) as main, the next ones beside it, everything else waiting in the dock.
+  function deriveLaptop(panels, vp, slots, pref) {
+    var ranked = panels.slice().sort(function (a, b) {
+      return (STAGE[b.type] ? 1 : 0) - (STAGE[a.type] ? 1 : 0) || byPosition(a, b);
+    });
+    var n = slots === Infinity ? ranked.length : Math.min(slots, ranked.length);
+    ranked.forEach(function (p, i) { p.parked = i >= n; p.z = ranked.length - i; });   // recency follows importance
+    if (!ranked.length) return panels;
+    layoutShowing(panels, vp, ranked[0], slots === Infinity, pref);
+    ranked.forEach(function (p) { if (p.parked) putBox(p, ranked[0]); });                // somewhere sane for when it is shown
+    return panels;
+  }
+
+  // Saved panels (the big screen's geometry on top, the laptop's in `lap`) → working panels for `opts.klass`
+  // ('wide' | 'laptop'; laptop also needs opts.vp, opts.slots, opts.pref). `derived`: the laptop had no arrangement yet and
+  // this one was made from the big screen's windows - the caller treats it as already in this screen's pixels.
+  function toWorking(saved, opts) {
+    var list = saved.map(function (s) {
+      var p = copy(s), lap = p.lap;
+      PRIVATE.forEach(function (k) { delete p[k]; });
+      p._wide = pickGeo(p);
+      p._lap = lap && typeof lap === 'object' ? copy(lap) : null;
+      return p;
+    });
+    var derived = false;
+    if (opts.klass === 'laptop' && list.length) {
+      if (!list.some(function (p) { return p._lap; })) {
+        deriveLaptop(list, opts.vp, opts.slots, opts.pref);
+        derived = true;
+      } else {
+        list.forEach(function (p) {
+          if (p._lap) { putGeo(p, p._lap); p.parked = !!p._lap.parked; } else p.parked = true;   // added on the big screen since: waits in the dock
+        });
+        if (!visibleOf(list).length) list.slice().sort(recent)[0].parked = false;
+        var main = mainOf(visibleOf(list));
+        list.forEach(function (p) { if (!p._lap) putBox(p, main); });
+      }
+    }
+    return { panels: list, derived: derived };
+  }
+
+  // Working panels → what is saved: the current class's geometry goes where it belongs, the stashed one is kept as it was.
+  function toSaved(list, klass) {
+    return list.map(function (p) {
+      var out = copy(p);
+      PRIVATE.forEach(function (k) { delete out[k]; });
+      var wide, lap;
+      if (klass === 'laptop') {
+        lap = pickGeo(p);
+        lap.parked = !!p.parked;
+        wide = p._wide || pickGeo(p);
+      } else {
+        wide = pickGeo(p);
+        lap = p._lap || null;
+      }
+      putGeo(out, wide);
+      if (lap) out.lap = lap;
+      return out;
+    });
+  }
+
   root.ndCockpitLayout = {
-    MIN_W: MIN_W, MIN_H: MIN_H, GRID: GRID, GAP: GAP,
+    MIN_W: MIN_W, MIN_H: MIN_H, GRID: GRID, GAP: GAP, LAPTOP_BELOW: LAPTOP_BELOW,
     vpOk: vpOk, needsScale: needsScale, fitPanels: fitPanels, scalePanels: scalePanels,
     tilePanels: tilePanels, sizeFor: sizeFor, cascade: cascade,
+    screenClass: screenClass, laptopSlots: laptopSlots, resolveSlots: resolveSlots, visibleOf: visibleOf, mainOf: mainOf,
+    retileLaptop: retileLaptop, showLaptop: showLaptop, parkLaptop: parkLaptop, makeMain: makeMain,
+    deriveLaptop: deriveLaptop, toWorking: toWorking, toSaved: toSaved,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -82,7 +82,27 @@ def _sanitize_layout(raw) -> dict:
     vp = _sanitize_vp(raw.get("vp"))
     if vp:
         out["vp"] = vp
+    lvp = _sanitize_vp(raw.get("lvp"))     # the laptop layout's own reference screen (see `lap` on a panel)
+    if lvp:
+        out["lvp"] = lvp
     return out
+
+
+def _sanitize_laptop_geometry(raw) -> Optional[dict]:
+    """A window's place on a laptop-sized screen. The saved x/y/w/h/z/collapsed of a panel are the big screen's; the laptop
+    shows a few windows at a time and keeps the rest `parked` in a dock, so it needs its own numbers. Absent = the laptop has
+    not arranged this window yet (it waits in the dock)."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "x": _clamp_int(raw.get("x"), 0, 8000),
+        "y": _clamp_int(raw.get("y"), 0, 8000),
+        "w": _clamp_int(raw.get("w"), 160, 8000, default=420),
+        "h": _clamp_int(raw.get("h"), 120, 8000, default=300),
+        "z": _clamp_int(raw.get("z"), 0, 100000),
+        "collapsed": bool(raw.get("collapsed")),
+        "parked": bool(raw.get("parked")),
+    }
 
 
 def _sanitize_panels(raw_panels) -> list:
@@ -99,7 +119,7 @@ def _sanitize_panels(raw_panels) -> list:
             continue
         data = p.get("data")
         accent = str(p.get("accent") or "")
-        out.append({
+        entry = {
             "id": str(p.get("id") or "")[:40],
             "type": p["type"],
             "ref": str(p.get("ref") or "")[:120],
@@ -113,7 +133,11 @@ def _sanitize_panels(raw_panels) -> list:
             "accent": accent if _ACCENT_RE.match(accent) else "",
             "data": {"text": str((data or {}).get("text") or "")[:8000]}
             if isinstance(data, dict) else {},
-        })
+        }
+        lap = _sanitize_laptop_geometry(p.get("lap"))
+        if lap:
+            entry["lap"] = lap
+        out.append(entry)
     return out
 
 

@@ -169,6 +169,17 @@ tools that require GM access still check `is_gm` at call time.)
   window resizes or goes fullscreen (cockpit.js `scheduleAdapt`, no iframe reload, nothing saved until the user changes
   something). The default layout and 📌 Auto-arrange are `tilePanels` (a map/combat *stage* plus tiles, columns chosen from
   the width); a window added later is `sizeFor`/`cascade`. Never hard-code window pixels in cockpit.js again.
+  **Below ~1700px of window width the cockpit is a different layout, not a smaller one** (a Vivobook is 1280-1536 wide; scaled from a
+  4K arrangement every window was a 240px sliver): `screenClass` (by WIDTH only, with hysteresis, so F11 never flips it) picks
+  `'laptop'` or `'wide'`; the laptop shows 1-3 windows tiled big and keeps the rest `parked` in a dock of chips (`showLaptop` swaps a
+  window in for the one brought in last, `parkLaptop`, `retileLaptop`, `makeMain`, `deriveLaptop` for a first visit). The windows are
+  SHARED between the classes but each class has its OWN geometry: a saved panel's x/y/w/h/z/collapsed are the big screen's and are
+  never written by the laptop, the laptop's travel as `lap` (+ `lvp`, its reference screen); working panels hold the current class's
+  geometry in those same fields and stash the other in `_wide` / `_lap`, so only `toWorking` / `toSaved` know there are two - save
+  through `savedLayout()`, never `panels` directly, and never put layout state (`parked`, `swapped`, `_wide`, `_lap`) anywhere else.
+  The class, the slot count and the site-bar toggle are per-browser (`nd_cockpit_mode|slots|site` in `localStorage`), not world data.
+  A change of class only restyles in place (no re-render: pages stay loaded, chats keep their text). `tests/test_cockpit_laptop.py`
+  drives the maths under Node across laptop sizes and the server keeps/validates `lap` / `lvp`.
 - **Images in cockpit / floated windows open full screen in the MAIN window** (`static/js/nd-lightbox-bridge.js`, tested under
   Node in `tests/test_lightbox_bridge.py`): an embedded page's `openLightbox()` posts the image up to the window above (same
   origin, image addresses only, passed up again through nested frames), because an iframe's lightbox is confined to its

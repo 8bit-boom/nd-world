@@ -3,9 +3,21 @@
 {% block content %}
 <div id="ck-wrap">
   <header id="ck-head">
-    <span id="ck-title">🎛 {{ 'Player Cockpit' if player_mode else 'GM Cockpit' }}</span>
+    <span id="ck-title">🎛<span class="ck-title-text"> {{ 'Player Cockpit' if player_mode else 'GM Cockpit' }}</span></span>
     <span id="ck-world">{{ world.name }}</span>
+    {# Laptop layout (cockpit.js, window narrower than ~1700px): a few windows show at a time, the rest wait here as chips. #}
+    <div id="ck-dock" role="region" aria-label="Windows">
+      <div id="ck-dock-chips"></div>
+      <div id="ck-dock-slots" role="group" aria-label="Windows on screen at once" title="How many windows show at once">
+        <button type="button" data-n="1" title="One big window">1</button>
+        <button type="button" data-n="2" title="A main window and one beside it">2</button>
+        <button type="button" data-n="3" title="A main window and two beside it">3</button>
+        <button type="button" data-n="all" title="Every window (the workspace scrolls)">All</button>
+      </div>
+    </div>
     <div id="ck-head-actions">
+      <button type="button" class="ck-btn" id="ck-site-btn" aria-pressed="false" title="Show / hide the site menu (Entities, Tools, Settings…) above the cockpit">☰</button>
+      <button type="button" class="ck-btn" id="ck-mode-btn" title="Laptop or desktop layout">💻</button>
       <select id="ck-preset-select" title="Saved layouts" style="display:none"></select>
       <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
       <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows">🗂<span class="ck-bl"> Windows</span></button>
@@ -412,6 +424,39 @@ body.ck-mobile .topbar + .skip-link, body.ck-mobile footer { display: none !impo
   #ck-head { padding: .5rem 1rem; }
   #ck-status { padding: .35rem 1rem; }
 }
+
+/* ── the laptop layout (window narrower than ~1700px, cockpit.js): a few windows at a time, the rest in the dock ──
+   A Vivobook 14/15 is 1280-1536 CSS px wide and 600-700 tall, so height is what is spent carefully: the site's top bar is
+   hidden (☰ brings it back), the toolbar loses its labels, and the dock sits in the header row instead of under it. */
+#ck-dock, .ck-dockbtn, #ck-site-btn { display: none; }
+body.ck-laptop #ck-dock { display: flex; flex: 1; min-width: 0; align-items: center; gap: .5rem; }
+body.ck-laptop .ck-dockbtn { display: inline; }
+body.ck-laptop #ck-site-btn { display: inline-block; }
+body.ck-laptop:not(.ck-showsite) .topbar { display: none; }
+body.ck-laptop #ck-head { flex-wrap: nowrap; padding: .25rem .6rem; gap: .5rem; }
+body.ck-laptop #ck-world, body.ck-laptop .ck-title-text, body.ck-laptop .ck-bl { display: none; }
+body.ck-laptop #ck-head-actions { flex-wrap: nowrap; gap: .25rem; margin-left: 0; flex: none; }
+body.ck-laptop .ck-btn { padding: .2rem .5rem; }
+#ck-dock-chips { flex: 1; min-width: 0; display: flex; gap: .3rem; overflow-x: auto; padding: 2px 0; scrollbar-width: thin; }
+.ck-chip { flex: none; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); border-radius: 999px;
+  font-family: inherit; font-size: .76rem; padding: .2rem .7rem; cursor: pointer; }
+.ck-chip:hover { color: var(--neon); border-color: var(--neon); }
+.ck-chip.on { color: var(--text); border-color: var(--neon); background: rgba(0, 240, 255, .08); }
+#ck-dock-slots { flex: none; display: flex; align-items: stretch; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+#ck-dock-slots::before { content: 'Show'; display: flex; align-items: center; padding: 0 .45rem; font-size: .68rem; color: var(--text-dim); }
+#ck-dock-slots button { background: var(--bg2); border: 0; border-left: 1px solid var(--border); color: var(--text-dim);
+  font-family: inherit; font-size: .76rem; padding: .2rem .55rem; cursor: pointer; }
+#ck-dock-slots button:hover { color: var(--neon); }
+#ck-dock-slots button.on { background: var(--neon); color: #000; font-weight: bold; }
+/* the two floating buttons (📺 second screen, 🐞 log) sat over the corners of the windows - on a laptop they would cover a Send
+   button. Small, and inside the status bar's row instead (its text makes room for them). */
+body.ck-laptop:has(#ck-wrap) { --nd-fab-bottom: 1px; }   /* (outranks the cockpit's own 2.6rem just above the bar) */
+body.ck-laptop #nd-stage-fab { width: 22px; height: 22px; font-size: .75rem; left: 58px; line-height: 1; padding: 0; }
+body.ck-laptop #nd-logger-toggle { width: 22px !important; height: 22px !important; font-size: .75rem !important; right: 10px !important; padding: 0; }
+body.ck-laptop #ck-status { padding: .1rem 2.6rem .1rem 1.2rem; }
+.ck-win.ck-parked { display: none; }
+.ck-win.ck-flash { box-shadow: 0 0 0 2px var(--neon), 0 6px 22px rgba(0, 0, 0, .4); }
 
 @media (max-width: 900px) {
   #ck-viewport { overflow-y: auto; padding: .5rem; }

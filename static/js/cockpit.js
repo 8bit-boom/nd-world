@@ -92,6 +92,35 @@
   }
   function prefHeight(p) { return (CK_TYPES[p.type] && CK_TYPES[p.type].h) || 300; }
 
+  // ── the laptop layout ──────────────────────────────────────────────────────────────────────────────────────────────
+  // Below ~1700px of window width (a Vivobook is 1280-1536) the cockpit shows a few windows at a time, tiled big, and keeps
+  // the rest in a dock; the maths and the saved shape are in cockpit-layout.js. These three are this BROWSER's choices (they
+  // are not part of the saved layout): the layout class, how many windows show at once, and whether the site's top bar stays.
+  const MODE_KEY = 'nd_cockpit_mode';     // '' = by window width | 'laptop' | 'wide'
+  const SLOTS_KEY = 'nd_cockpit_slots';   // 'auto' | '1' | '2' | '3' | 'all'
+  const SITE_KEY = 'nd_cockpit_site';     // '1' = keep the site's top bar showing in the laptop layout
+  const HINT_KEY = 'nd_cockpit_laptop_hint';
+  function pref(key, dflt) { try { return localStorage.getItem(key) || dflt; } catch (e) { return dflt; } }
+  function setPref(key, val) { try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); } catch (e) {} }
+  let klass = LAYOUT.screenClass(window.innerWidth, null, pref(MODE_KEY, ''));   // 'laptop' | 'wide'
+  let otherVp = null;                     // the reference screen of the class that is NOT showing (it is saved with the layout)
+  const LAPTOP_FALLBACK_VP = { w: 1280, h: 620 };   // until the real workspace has a size (the phone shell hides it)
+  const WIDE_NOMINAL_VP = { w: 1800, h: 900 };      // what a window made on a laptop assumes the big screen to be
+  function LAPTOP() { return klass === 'laptop' && !MOBILE(); }
+  function slotsNow(n) {
+    return LAYOUT.resolveSlots(pref(SLOTS_KEY, 'auto'), vpNow() || refVp || LAPTOP_FALLBACK_VP, n == null ? panels.length : n);
+  }
+  function laptopOpts(n) {
+    const vp = vpNow() || refVp || LAPTOP_FALLBACK_VP;
+    return { klass: klass, vp: vp, slots: slotsNow(n), pref: prefHeight };
+  }
+  // Everything that gets stored: the windows with BOTH screens' geometry, and the screen each was arranged for.
+  function savedLayout() {
+    const mine = refVp || undefined;
+    return { panels: LAYOUT.toSaved(panels, klass),
+             vp: (klass === 'wide' ? mine : otherVp) || undefined, lvp: (klass === 'laptop' ? mine : otherVp) || undefined };
+  }
+
   let panels = [];
   let presets = {};
   let zTop = 10;
@@ -143,7 +172,7 @@
   function saveNow() {
     const now = vpNow();
     if (now) refVp = now;   // what is on screen now is what is being saved
-    const ws = { current: { panels: panels, vp: refVp || undefined }, presets: presets };
+    const ws = { current: savedLayout(), presets: presets };
     try { localStorage.setItem(LS_KEY, JSON.stringify(ws)); } catch (e) {}
     if (PLAYER) return;  // server workspace is GM-only
     fetch('/api/cockpit/workspace', {
@@ -161,32 +190,53 @@
     }).catch(function () { saveError = 'offline'; refreshSavedLabel(); });
   }
 
-  function adopt(ws) {
-    let from = null;       // the screen this layout was arranged for (older layouts did not record it)
-    if (ws && ws.current && Array.isArray(ws.current.panels) && ws.current.panels.length) {
-      panels = ws.current.panels;
-      presets = ws.presets || {};
-      from = LAYOUT.vpOk(ws.current.vp) ? ws.current.vp : null;
-    } else {
-      panels = defaultLayout();
-      presets = {};
-      from = vpNow();
-      save();
-    }
-    // Drop windows whose backing object vanished since the layout was saved
-    // (a deleted map, a disbanded party) rather than rendering dead panels.
-    panels = panels.filter(function (p) {
+  // Drop windows whose backing object vanished since the layout was saved
+  // (a deleted map, a disbanded party) rather than rendering dead panels.
+  function liveOnly(list) {
+    return list.filter(function (p) {
       if (p.type === 'map') return CK_MAPS.some(function (m) { return m.slug === p.ref; });
       if (p.type === 'wmap') return (CK_WORLD_MAPS || []).some(function (m) { return m.slug === p.ref; });
       if (p.type === 'party') return CK_PARTIES.some(function (x) { return String(x.id) === String(p.ref); });
       return true;
     });
-    if (panels.length > CK_MAX_PANELS) {
-      panels = panels.slice(0, CK_MAX_PANELS);
-      toast('This layout had more than ' + CK_MAX_PANELS + ' windows; the first ' + CK_MAX_PANELS + ' are shown.');
+  }
+
+  // Saved panels (the big screen's geometry on top, the laptop's in `lap`) -> working panels for the class showing now. Returns
+  // the screen their geometry is in terms of, so adaptToScreen can scale it to this one, and remembers the other class's.
+  function workingFrom(saved, wideVp, lapVp) {
+    const r = LAYOUT.toWorking(saved, laptopOpts(saved.length));
+    panels = r.panels;
+    otherVp = klass === 'wide' ? lapVp : wideVp;
+    if (klass === 'wide') return wideVp;
+    return r.derived ? (vpNow() || refVp || LAPTOP_FALLBACK_VP) : lapVp;
+  }
+
+  function adopt(ws) {
+    let from = null;       // the screen this layout was arranged for (older layouts did not record it)
+    if (ws && ws.current && Array.isArray(ws.current.panels) && ws.current.panels.length) {
+      presets = ws.presets || {};
+      let saved = liveOnly(ws.current.panels);
+      if (saved.length > CK_MAX_PANELS) {
+        saved = saved.slice(0, CK_MAX_PANELS);
+        toast('This layout had more than ' + CK_MAX_PANELS + ' windows; the first ' + CK_MAX_PANELS + ' are shown.');
+      }
+      from = workingFrom(saved, LAYOUT.vpOk(ws.current.vp) ? ws.current.vp : null, LAYOUT.vpOk(ws.current.lvp) ? ws.current.lvp : null);
+    } else {
+      panels = liveOnly(defaultLayout());
+      presets = {};
+      from = refVp;
+      save();
     }
     adaptToScreen(from);   // before focusMyCharacter: the panel it adds is already in this screen's terms
-    if (PLAYER) focusMyCharacter();
+    if (PLAYER) {
+      const before = panels.length;
+      focusMyCharacter();
+      const lead = panels[0];                                      // focusMyCharacter puts the character's panel first
+      if (klass === 'laptop' && lead && lead.type === 'pc') {
+        if (!lead.parked && panels.length > before) lead.parked = true;   // a new one has page-sized geometry: give it a real tile
+        if (lead.parked) LAYOUT.showLaptop(panels, lead.id, vpNow() || refVp || LAPTOP_FALLBACK_VP, slotsNow(), prefHeight);
+      }
+    }
     recomputeSeq();
     // Re-mint ids on every load: guarantees uniqueness even if an older
     // build saved a workspace with duplicate ids (its counter-reset bug).
@@ -290,7 +340,12 @@
     add('quests', '', '📜 Quests');
     add('dice', '', '🎲 Dice');
     refVp = vp;            // (a fallback size when the desktop workspace is hidden: scaled to the real one when it shows)
-    return LAYOUT.tilePanels(out, vp, { pref: prefHeight });
+    if (klass !== 'laptop') { otherVp = null; return LAYOUT.tilePanels(out, vp, { pref: prefHeight }); }
+    // A laptop shows a few windows at a time: tile the big screen's version too (so the same layout opens well there later)
+    // and let toWorking pick what shows here and park the rest.
+    otherVp = WIDE_NOMINAL_VP;
+    const wide = LAYOUT.tilePanels(out, WIDE_NOMINAL_VP, { pref: prefHeight });
+    return LAYOUT.toWorking(wide, laptopOpts(wide.length)).panels;
   }
 
   // ── rendering ──────────────────────────────────────────────────────────
@@ -328,7 +383,7 @@
 
   function buildWin(p) {
     const win = document.createElement('div');
-    win.className = 'ck-win' + (p.collapsed ? ' collapsed' : '');
+    win.className = 'ck-win' + (p.collapsed ? ' collapsed' : '') + (p.parked ? ' ck-parked' : '');
     win.dataset.pid = p.id;
     win.style.left = p.x + 'px';
     win.style.top = p.y + 'px';
@@ -372,8 +427,12 @@
       colBtn.textContent = p.collapsed ? '▸' : '▾';
       save();
     });
+    colBtn.dataset.role = 'collapse';
+    // Laptop layout only (CSS hides it elsewhere): out of the way, into the dock - the others fill the space
+    const dockBtn = mkBtn('⊟', 'Put this window in the dock (click its name in the bar above to bring it back)', function () { parkPanel(p); });
+    dockBtn.classList.add('ck-dockbtn');
     const closeBtn = mkBtn('✕', 'Remove this panel', function () { closePanel(p, win); });
-    head.append(title, accentBtn, reloadBtn, maxBtn, colBtn, closeBtn);
+    head.append(title, accentBtn, reloadBtn, maxBtn, colBtn, dockBtn, closeBtn);
     head.addEventListener('dblclick', function (e) {
       if (e.target.closest('.ck-wbtn')) return;
       win.classList.toggle('maxed');
@@ -979,6 +1038,10 @@
     // Undo restores the window, not its live contents (an aborted chat or
     // timer starts fresh) — the arrangement is what matters.
     toast('Closed "' + (p.title || CK_TYPES[p.type].label) + '"', 'Undo', undoClose);
+    if (LAPTOP() && panels.length) {   // the ones still showing grow into the gap (a window waiting in the dock does not jump in)
+      LAYOUT.retileLaptop(panels, lapVp(), Math.max(1, LAYOUT.visibleOf(panels).length), prefHeight);
+      applyLaptopState();
+    }
     updateStatus();
     save();
   }
@@ -988,7 +1051,9 @@
     const i = Math.min(item.index, panels.length);
     panels.splice(i, 0, item.panel);
     if (welcome) welcome.style.display = 'none';
+    if (LAPTOP()) item.panel.parked = true;      // it takes a slot like any window brought back
     viewport.appendChild(buildWin(item.panel));
+    if (LAPTOP()) { LAYOUT.showLaptop(panels, item.panel.id, lapVp(), slotsNow(), prefHeight); applyLaptopState(); }
     const fn = liveLoaders.get(item.panel.id);
     if (fn) fn();
     updateStatus();
@@ -1013,14 +1078,39 @@
 
   // ── window context menu (right-click a title bar) ──────────────────────
   let ctxEl = null;
-  function openCtx(p, win, x, y) {
-    if (COMPACT.matches) return;
+  function showCtx(items, x, y) {
     if (!ctxEl) {
       ctxEl = document.createElement('div');
       ctxEl.id = 'ck-ctx';
       document.body.appendChild(ctxEl);
     }
     ctxEl.innerHTML = '';
+    items.forEach(function (it) {
+      if (it === 'hr') { ctxEl.appendChild(document.createElement('hr')); return; }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = it[0];
+      b.addEventListener('click', function () { ctxEl.style.display = 'none'; it[1](); });
+      ctxEl.appendChild(b);
+    });
+    ctxEl.style.display = 'block';
+    ctxEl.style.left = Math.max(8, Math.min(x, window.innerWidth - ctxEl.offsetWidth - 8)) + 'px';
+    ctxEl.style.top = Math.max(8, Math.min(y, window.innerHeight - ctxEl.offsetHeight - 8)) + 'px';
+  }
+  // A dock chip's menu (laptop layout)
+  function openChipCtx(p, x, y) {
+    const items = [];
+    if (p.parked) items.push(['👁 Show', function () { showPanel(p); }]);
+    else {
+      items.push(['★ Make main window', function () { makeMainPanel(p); }]);
+      items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
+    }
+    items.push('hr');
+    items.push(['✕ Close', function () { closePanel(p, winEl(p)); }]);
+    showCtx(items, x, y);
+  }
+  function openCtx(p, win, x, y) {
+    if (COMPACT.matches) return;
     const items = [
       ['⟳ Reload', function () {
         const f = win.querySelector('.ck-body iframe');
@@ -1047,20 +1137,14 @@
       ['⤢ Maximize', function () { win.classList.toggle('maxed'); }],
       ['◧ Dock left', function () { win.classList.remove('maxed'); dockPanel(win, p, false); save(); }],
       ['◨ Dock right', function () { win.classList.remove('maxed'); dockPanel(win, p, true); save(); }],
-      'hr',
-      ['✕ Close', function () { closePanel(p, win); }],
     ];
-    items.forEach(function (it) {
-      if (it === 'hr') { ctxEl.appendChild(document.createElement('hr')); return; }
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = it[0];
-      b.addEventListener('click', function () { ctxEl.style.display = 'none'; it[1](); });
-      ctxEl.appendChild(b);
-    });
-    ctxEl.style.display = 'block';
-    ctxEl.style.left = Math.max(8, Math.min(x, window.innerWidth - ctxEl.offsetWidth - 8)) + 'px';
-    ctxEl.style.top = Math.max(8, Math.min(y, window.innerHeight - ctxEl.offsetHeight - 8)) + 'px';
+    if (LAPTOP()) {
+      items.push(['★ Make main window', function () { makeMainPanel(p); }]);
+      items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
+    }
+    items.push('hr');
+    items.push(['✕ Close', function () { closePanel(p, win); }]);
+    showCtx(items, x, y);
   }
   document.addEventListener('mousedown', function (e) {
     if (ctxEl && ctxEl.style.display === 'block' && !e.target.closest('#ck-ctx')) {
@@ -1074,6 +1158,7 @@
     if (c) c.textContent = '\u{1FA9F} ' + panels.length;
     const m = document.getElementById('ck-stat-mid');
     if (m) m.textContent = presetSelect.value ? '\u{1F4CB} ' + presetSelect.value : '';
+    renderDock();
   }
   function refreshSavedLabel() {
     const el = document.getElementById('ck-stat-saved');
@@ -1427,7 +1512,7 @@
       row.type = 'button';
       row.className = 'ck-winrow';
       const label = document.createElement('span');
-      label.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+      label.textContent = (p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label) + (LAPTOP() && p.parked ? '  (in the dock)' : '');
       row.appendChild(label);
       const x = document.createElement('span');
       x.className = 'ck-winrow-x';
@@ -1441,10 +1526,8 @@
       });
       row.appendChild(x);
       row.addEventListener('click', function () {
-        const el = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
-        if (el) { zTop += 1; el.style.zIndex = zTop; p.z = zTop; el.classList.remove('collapsed'); }
         windowsPop.style.display = 'none';
-        save();
+        showPanel(p);
       });
       windowsPop.appendChild(row);
     });
@@ -1614,12 +1697,20 @@
       x: at.x, y: at.y, w: size.w, h: size.h, z: ++zTop, collapsed: false, data: {},
     };
     panels.push(p);
+    if (LAPTOP()) {
+      // the big screen's place for it (a laptop-made window still opens sensibly there) ...
+      const wvp = otherVp || WIDE_NOMINAL_VP;
+      const wsz = LAYOUT.sizeFor(t, wvp), wat = LAYOUT.cascade(panels.length - 1, wsz, wvp);
+      p._wide = { x: wat.x, y: wat.y, w: wsz.w, h: wsz.h, z: p.z, collapsed: false };
+      p.parked = true;                                 // ... and here it takes a slot (below)
+    }
     if (opts && opts.autoRun) findAutoRan.add(p.id);   // must be known before buildWin: buildFind checks it
     if (welcome) welcome.style.display = 'none';
     if (MOBILE()) {
       renderMobile();
     } else {
       viewport.appendChild(buildWin(p));
+      if (LAPTOP()) { LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight); applyLaptopState(); }
     }
     const fn = liveLoaders.get(p.id);
     if (fn) fn();
@@ -1641,10 +1732,11 @@
   document.getElementById('ck-preset-select').addEventListener('change', function () {
     const name = this.value;
     if (!name || !presets[name]) return;
-    panels = clone(presets[name].panels);
+    const pr = presets[name];
+    const from = workingFrom(clone(pr.panels), LAYOUT.vpOk(pr.vp) ? pr.vp : null, LAYOUT.vpOk(pr.lvp) ? pr.lvp : null);
     recomputeSeq();
     panels.forEach(function (p) { p.id = newId(); });
-    adaptToScreen(LAYOUT.vpOk(presets[name].vp) ? presets[name].vp : null);   // arranged on another screen? scale it
+    adaptToScreen(from);   // arranged on another screen? scale it
     render();
     save();
   });
@@ -1658,7 +1750,8 @@
     } else if (!confirm('Overwrite the saved layout "' + current + '" with the current windows?')) {
       return;
     }
-    presets[name.trim().slice(0, 40)] = clone({ panels: panels, vp: vpNow() || refVp || undefined });
+    const now = vpNow(); if (now) refVp = now;
+    presets[name.trim().slice(0, 40)] = clone(savedLayout());
     renderPresetSelect(name.trim().slice(0, 40));
     save();
   });
@@ -1680,12 +1773,7 @@
   if (findBtn) findBtn.addEventListener('click', function () {
     // Focus an existing unseeded find panel instead of stacking duplicates.
     const existing = panels.find(function (q) { return q.type === 'find' && !q.ref; });
-    if (existing) {
-      const el = viewport.querySelector('.ck-win[data-pid="' + existing.id + '"]');
-      if (el) { zTop += 1; el.style.zIndex = zTop; existing.z = zTop; el.classList.remove('collapsed'); }
-      save();
-      return;
-    }
+    if (existing) { showPanel(existing); return; }
     addPanel('find', '', '\u{1F50D} AI Find');
   });
   document.getElementById('ck-add-close').addEventListener('click', closeAdd);
@@ -1695,6 +1783,8 @@
       if (addOverlay.style.display === 'block') closeAdd();
       if (windowsPop.style.display === 'block') windowsPop.style.display = 'none';
       if (ctxEl && ctxEl.style.display === 'block') ctxEl.style.display = 'none';
+      const big = viewport.querySelector('.ck-win.maxed');          // a window filling the cockpit: Esc gives it back
+      if (big && addOverlay.style.display !== 'block') big.classList.remove('maxed');
     }
   });
   addSearch.addEventListener('input', function () {
@@ -1886,6 +1976,7 @@
       renderMobile();
     } else {
       document.body.classList.remove('ck-mobile');
+      reclass();               // the window may have been widened across the laptop / desktop line while the phone shell showed
       adaptToScreen(refVp);
       render();
     }
@@ -1901,6 +1992,13 @@
     if (COMPACT.matches || !panels.length) return;
     const vp = vpNow();
     if (!vp) return;
+    if (LAPTOP()) {      // the main window big, the others beside it, as many as fit (the dock keeps the rest)
+      LAYOUT.retileLaptop(panels, vp, slotsNow(), prefHeight);
+      refVp = vp;
+      applyLaptopState();
+      save();
+      return;
+    }
     const ordered = panels.slice().sort(function (a, b) { return (a.y - b.y) || (a.x - b.x); });
     LAYOUT.tilePanels(ordered, vp, { pref: prefHeight }).forEach(function (q, i) {
       const p = ordered[i];
@@ -1936,9 +2034,159 @@
       win.style.top = p.y + 'px';
       win.style.width = p.w + 'px';
       win.style.height = p.h + 'px';
-      if (clearState) win.classList.remove('collapsed', 'maxed');
+      if (p.z) win.style.zIndex = p.z;
+      win.classList.toggle('ck-parked', !!p.parked);
+      win.classList.toggle('collapsed', !!p.collapsed);
+      const cb = win.querySelector('[data-role="collapse"]');
+      if (cb) cb.textContent = p.collapsed ? '▸' : '▾';
+      if (clearState) win.classList.remove('maxed');
     });
   }
+
+  // ── laptop layout: the dock, parking, switching class ────────────────────────────────────────────────────────────────
+  const dockEl = document.getElementById('ck-dock');
+  const dockChips = document.getElementById('ck-dock-chips');
+  const dockSlots = document.getElementById('ck-dock-slots');
+  const modeBtn = document.getElementById('ck-mode-btn');
+  const siteBtn = document.getElementById('ck-site-btn');
+
+  function winEl(p) { return viewport.querySelector('.ck-win[data-pid="' + p.id + '"]'); }
+  function fullTitle(p) { return p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label; }
+  function chipLabel(p) { const t = fullTitle(p); return t.length > 18 ? t.slice(0, 17) + '…' : t; }
+  function lapVp() { return vpNow() || refVp || LAPTOP_FALLBACK_VP; }
+  function raiseWin(p) {
+    const el = winEl(p);
+    if (el) { zTop += 1; el.style.zIndex = zTop; p.z = zTop; el.classList.remove('collapsed'); }
+  }
+  function flash(el) {
+    if (!el) return;
+    el.classList.add('ck-flash');
+    setTimeout(function () { el.classList.remove('ck-flash'); }, 800);
+  }
+
+  // Geometry, parked state and the dock all follow panels[] - without a re-render, which would reload every window's page.
+  function applyLaptopState() {
+    zTop = panels.reduce(function (m, p) { return Math.max(m, p.z || 0); }, zTop);
+    syncWindowStyles(true);
+    renderDock();
+  }
+
+  function renderDock() {
+    if (!dockEl) return;
+    const on = LAPTOP();
+    dockEl.hidden = !on;
+    if (!on) return;
+    dockChips.textContent = '';
+    panels.forEach(function (p) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ck-chip' + (p.parked ? '' : ' on');
+      b.dataset.pid = p.id;
+      b.textContent = chipLabel(p);
+      b.title = fullTitle(p) + (p.parked ? ' — click to show it' : ' — on screen (right-click for more)');
+      b.addEventListener('click', function () { showPanel(p); });
+      b.addEventListener('contextmenu', function (e) { e.preventDefault(); openChipCtx(p, e.clientX, e.clientY); });
+      dockChips.appendChild(b);
+    });
+    const chosen = pref(SLOTS_KEY, 'auto'), n = String(slotsNow());
+    dockSlots.querySelectorAll('button').forEach(function (b) {
+      const active = b.dataset.n === 'all' ? chosen === 'all' : (chosen !== 'all' && b.dataset.n === n);
+      b.classList.toggle('on', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  // Bring a window on screen (the dock chip, the Windows list, the Find button): a laptop swaps it in for the one used
+  // least recently; a big screen just raises it.
+  function showPanel(p) {
+    if (!LAPTOP()) { raiseWin(p); save(); return; }
+    LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight);
+    applyLaptopState();
+    flash(winEl(p));
+    save();
+  }
+  function parkPanel(p) {
+    if (!LAPTOP()) return;
+    if (!LAYOUT.parkLaptop(panels, p.id, lapVp(), prefHeight)) { toast('One window has to stay on screen.'); return; }
+    applyLaptopState();
+    save();
+  }
+  function makeMainPanel(p) {
+    if (!LAPTOP() || !LAYOUT.makeMain(panels, p.id)) return;
+    applyLaptopState();
+    save();
+  }
+  // How many windows show at once on this browser: 1, 2, 3 or all of them.
+  function setSlots(v) {
+    setPref(SLOTS_KEY, v);
+    if (LAPTOP()) {
+      LAYOUT.retileLaptop(panels, lapVp(), slotsNow(), prefHeight);
+      applyLaptopState();
+      save();
+    } else renderDock();
+  }
+  if (dockSlots) dockSlots.addEventListener('click', function (e) {
+    const b = e.target.closest('button[data-n]');
+    if (b) setSlots(b.dataset.n);
+  });
+
+  // The chrome that differs: the dock, the site's top bar (hidden by default on a laptop - it is 100px of a 650px screen -
+  // with a button to bring it back), the labels of the toolbar.
+  function applyChrome() {
+    const on = LAPTOP();
+    document.body.classList.toggle('ck-laptop', on);
+    document.body.classList.toggle('ck-showsite', on && pref(SITE_KEY, '') === '1');
+    if (siteBtn) siteBtn.setAttribute('aria-pressed', pref(SITE_KEY, '') === '1' ? 'true' : 'false');
+    if (modeBtn) {
+      modeBtn.textContent = klass === 'laptop' ? '💻' : '🖥';
+      modeBtn.title = klass === 'laptop'
+        ? 'Laptop layout: a few windows at a time, the rest in the dock. Click for the free-window desktop layout (Shift+click: automatic by window width)'
+        : 'Desktop layout: free windows. Click for the laptop layout - a few big windows at a time (Shift+click: automatic by window width)';
+    }
+    renderDock();
+  }
+  if (siteBtn) siteBtn.addEventListener('click', function () {
+    setPref(SITE_KEY, pref(SITE_KEY, '') === '1' ? '' : '1');
+    applyChrome();
+    fitViewport();
+  });
+
+  // Change class (the window moved to another monitor, was resized across the line, or the button was pressed). The windows are
+  // the same, so this changes geometry in place: no re-render, no reloaded pages, chats keep their text.
+  function switchClass(next) {
+    if (next === klass || MOBILE()) return;
+    clearTimeout(adaptTimer);
+    const saved = savedLayout();
+    klass = next;
+    applyChrome();
+    fitViewport();                       // the laptop layout hides the site's top bar: the workspace changes height
+    clearTimeout(adaptTimer);
+    const wideVp = LAYOUT.vpOk(saved.vp) ? saved.vp : null, lapRef = LAYOUT.vpOk(saved.lvp) ? saved.lvp : null;
+    const r = LAYOUT.toWorking(saved.panels, laptopOpts(saved.panels.length));
+    r.panels.forEach(function (w, i) {
+      const p = panels[i];
+      ['x', 'y', 'w', 'h', 'z', 'collapsed', '_wide', '_lap'].forEach(function (k) { p[k] = w[k]; });
+      if (w.parked) p.parked = true; else delete p.parked;
+    });
+    otherVp = klass === 'wide' ? lapRef : wideVp;
+    adaptToScreen(klass === 'wide' ? wideVp : (r.derived ? lapVp() : lapRef));
+    applyLaptopState();
+    if (klass === 'laptop' && pref(HINT_KEY, '') !== '1') {
+      setPref(HINT_KEY, '1');
+      toast('Laptop layout: a few windows at a time. The others wait in the bar at the top — click one to bring it in. 💻 switches back.');
+    }
+  }
+  // Has the window crossed the line between the two classes (or have we just left the phone shell)?
+  function reclass() {
+    if (MOBILE()) return;
+    const want = LAYOUT.screenClass(window.innerWidth, klass, pref(MODE_KEY, ''));
+    if (want !== klass) switchClass(want);
+  }
+  if (modeBtn) modeBtn.addEventListener('click', function (e) {
+    if (e.shiftKey) setPref(MODE_KEY, '');                                   // back to automatic
+    else setPref(MODE_KEY, klass === 'laptop' ? 'wide' : 'laptop');
+    reclass();
+  });
 
   // The workspace changed size — a window resized or maximised, fullscreen (⛶), the browser moved to another monitor,
   // devtools opened: scale the windows with it (a scrollbar or a bookmarks bar is within tolerance and does not count).
@@ -1960,11 +2208,13 @@
     if (MOBILE() && !document.body.classList.contains('ck-mobile')) renderMobile();
     else if (!MOBILE() && document.body.classList.contains('ck-mobile')) {
       document.body.classList.remove('ck-mobile');
+      reclass();
       adaptToScreen(refVp);
       render();
-    }
+    } else reclass();      // a plain resize: has the window crossed the line between the laptop and the desktop layout?
   }
   window.addEventListener('resize', function () { fitViewport(); syncMode(); });
+  applyChrome();           // before the first measure: the laptop layout hides the site's top bar, so the workspace is taller
   fitViewport();
   buildWelcomeTiles();
   updateStatus();
