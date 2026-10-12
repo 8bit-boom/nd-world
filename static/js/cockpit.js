@@ -35,6 +35,10 @@
   const pinBtn = document.getElementById('ck-pin-btn');
   const helpOverlay = document.getElementById('ck-help');
   const helpBody = document.getElementById('ck-help-body');
+  const scrollBox = document.getElementById('ck-stat-scroll');      // the status bar's  ▲ 1/2 ▼  (only while the workspace scrolls)
+  const scrollUp = document.getElementById('ck-scroll-up');
+  const scrollDown = document.getElementById('ck-scroll-down');
+  const scrollPos = document.getElementById('ck-scroll-pos');
 
   const GRID = 8;              // snap-to-grid (px)
   const DOCK_ZONE = 28;        // edge width that triggers half-dock (px)
@@ -109,6 +113,8 @@
   const KEEP_KEY = 'nd_cockpit_keep';     // '0' = windows in the dock are NOT kept loaded (default: kept)
   const HINT_KEY = 'nd_cockpit_laptop_hint';
   const LOCK_KEY = 'nd_cockpit_lock';     // '1' = the windows are locked: no moving, resizing or closing by accident
+  const WHEEL_KEY = 'nd_cockpit_wheel';   // '1' = the mouse wheel scrolls the WORKSPACE over a window (Alt + wheel: the page in it); default: the other way round
+  const SCROLL_HINT_KEY = 'nd_cockpit_scroll_hint';   // '1' = told once how the workspace scrolls (when a window first outgrew the screen)
   function pref(key, dflt) { try { return localStorage.getItem(key) || dflt; } catch (e) { return dflt; } }
   function setPref(key, val) { try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); } catch (e) {} }
   let klass = LAYOUT.screenClass(window.innerWidth, null, pref(MODE_KEY, ''));   // 'laptop' | 'wide'
@@ -665,6 +671,8 @@
     w.addEventListener('pointerdown', function () { activateFrameWindow(f); }, true);
     // the cockpit's keys work from inside a window too (Alt+N, Alt+1..9, F1 ...)
     w.addEventListener('keydown', function (e) { if (onKey(e)) { e.preventDefault(); e.stopPropagation(); } }, true);
+    // ... and so does Alt + wheel: it scrolls the workspace, not the page under the pointer
+    watchWheel(w);
   }
   function activateFrameWindow(f) {
     const w = f.closest ? f.closest('.ck-win') : null;
@@ -1184,6 +1192,7 @@
     const fn = liveLoaders.get(item.panel.id);
     if (fn) fn();
     updateStatus();
+    revealWin(item.panel);
     save();
   }
   document.addEventListener('keydown', function (e) { if (onKey(e)) e.preventDefault(); });
@@ -1191,7 +1200,7 @@
   // ── shared half-dock (drag release + context menu) ─────────────────────
   function dockPanel(win, p, right) {
     p.x = right ? Math.ceil(viewport.clientWidth / 2) : 0;
-    p.y = 0;
+    p.y = Math.round(viewport.scrollTop);             // the half you are looking at (the workspace may be scrolled)
     p.w = Math.floor(viewport.clientWidth / 2);
     p.h = viewport.clientHeight;
     win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
@@ -1406,6 +1415,7 @@
     const m = document.getElementById('ck-stat-mid');
     if (m) m.textContent = currentPreset ? '\u{1F4CB} ' + currentPreset : '';
     renderDock();
+    scheduleScrollUi();                              // a window was added, closed or put in the dock: the workspace's height changed
   }
   function refreshSavedLabel() {
     const el = document.getElementById('ck-stat-saved');
@@ -1755,6 +1765,177 @@
     });
   });
 
+  // ── scrolling the workspace ──────────────────────────────────────────────────────────────────────────────────────────
+  // The workspace is as tall as its lowest window: make a window taller than the screen, or keep more open than fit, and it
+  // scrolls. Its scrollbar (and the wheel over a title bar or a gap) does that natively; what is added here is what the windows' own
+  // pages take away - a wheel over a page scrolls THAT page - and what a drag needs: Alt + wheel over any window, Alt + Up / Down,
+  // the  ▲ 1/2 ▼  in the status bar, scrolling by itself while a window is carried or stretched to the top / bottom edge (the pointer
+  // cannot leave the screen, the workspace can scroll on for it), and a window brought into sight when it is shown or added.
+  // The numbers are in cockpit-layout.js (pure, tested).
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  function scrollRoom() { return Math.max(0, viewport.scrollHeight - viewport.clientHeight); }
+  let scrollGoal = null, scrollGoalAt = 0;          // where a smooth scroll in flight is heading, so quick key presses add up
+  function scrollWorkspaceTo(top, smooth) {
+    const to = Math.max(0, Math.min(scrollRoom(), Math.round(top)));
+    scrollGoal = to; scrollGoalAt = Date.now();
+    if (smooth && !reduceMotion.matches && viewport.scrollTo) viewport.scrollTo({ top: to, behavior: 'smooth' });
+    else viewport.scrollTop = to;
+  }
+  function scrollWorkspace(kind) {                  // 'up' | 'down' | 'top' | 'end' - Alt + arrows, the ▲ ▼ buttons
+    if (viewport.classList.contains('ck-maxed')) return;
+    if (scrollRoom() < 2) {
+      toast('Nothing to scroll: every window fits the screen. Drag a window\'s bottom edge down to make it taller, or open more windows.');
+      return;
+    }
+    const base = scrollGoal !== null && Date.now() - scrollGoalAt < 600 ? scrollGoal : viewport.scrollTop;
+    const step = LAYOUT.pageStep(viewport.clientHeight);
+    scrollWorkspaceTo(kind === 'top' ? 0 : kind === 'end' ? scrollRoom() : base + (kind === 'down' ? step : -step), true);
+  }
+  // A window into sight (the dock chip, the Windows list, Alt + 1..9, a window just added or reopened): left alone when it is already
+  // there, else scrolled the least that shows it - for one taller than the screen, to its title bar.
+  function revealWin(p, instant) {
+    const el = p && !p.parked && !MOBILE() ? winEl(p) : null;
+    if (!el || viewport.classList.contains('ck-maxed')) return;
+    const h = p.collapsed || el.classList.contains('collapsed') ? el.offsetHeight : p.h;
+    const to = LAYOUT.revealScroll(viewport.scrollTop, viewport.clientHeight, p.y, h, LAYOUT.GAP, { max: scrollRoom() });
+    if (to !== null) scrollWorkspaceTo(to, !instant);
+  }
+  // Alt + wheel scrolls the workspace wherever the pointer is - over a window's page too, which would take the wheel for itself (a page
+  // in a window reports to this from its own document: relayFrameEvents). With "Wheel scrolls the workspace" ticked (🧩 Layouts) it is the
+  // other way round over a PAGE: the plain wheel scrolls the workspace and Alt + wheel gives the wheel back to the page. (The cockpit's
+  // own controls and panels - the dock's chips, the menus, a notes window's text - always keep their plain wheel.)
+  function wheelOnWorkspace() { return pref(WHEEL_KEY, '') === '1'; }
+  function workspaceWheel(e) {
+    if (e.ctrlKey || e.metaKey || MOBILE() || viewport.classList.contains('ck-maxed')) return false;
+    const inPage = !!e.view && e.view !== window;                  // over a page in a window, not over the cockpit's own document
+    if (e.altKey === (inPage && wheelOnWorkspace())) return false;
+    const dy = LAYOUT.wheelPixels(e.deltaY, e.deltaMode, viewport.clientHeight);
+    if (!dy || scrollRoom() < 1) return false;
+    e.preventDefault();
+    scrollGoal = null;
+    viewport.scrollTop += dy;
+    return true;
+  }
+  // Cancelling a page's own scroll takes a NON-passive wheel listener, and one makes every scroll over its page wait for the main thread -
+  // which the cockpit and all its windows share (a busy map or the 3D dice would make scrolling anywhere feel laggy). So the blocking
+  // listeners exist only while Alt is held: Alt going down arms them on this document and on every page in a window, Alt going up takes
+  // them off, and a cheap passive listener catches an Alt pressed where this document could not see it (the first tick of such a wheel
+  // scrolls the page as usual) and a plain wheel while still armed (Alt released out of sight).
+  const wheelHosts = new Set();                      // this window and the pages in the windows
+  let altDown = false;
+  function armWheel(on) { altDown = on; syncWheel(); }
+  function syncWheel() {
+    wheelHosts.forEach(function (w) {
+      try {
+        if (w !== window && (w.closed || !w.document)) { wheelHosts.delete(w); return; }        // the window it was in is gone
+        // armed while Alt is down - and, with the wheel on the workspace, the pages in the windows stay armed (no Alt needed)
+        if (altDown || (w !== window && wheelOnWorkspace())) w.addEventListener('wheel', workspaceWheel, { capture: true, passive: false });
+        else w.removeEventListener('wheel', workspaceWheel, { capture: true });
+      } catch (e) { wheelHosts.delete(w); }
+    });
+  }
+  function watchWheel(w) {                           // called for this window and, from relayFrameEvents, for each page that loads
+    wheelHosts.add(w);
+    w.addEventListener('keydown', function (e) { if (e.key === 'Alt' && !altDown) armWheel(true); }, true);     // (a held key repeats)
+    w.addEventListener('keyup', function (e) { if (e.key === 'Alt') armWheel(false); }, true);
+    w.addEventListener('wheel', function (e) { if (!e.ctrlKey && e.altKey !== altDown) armWheel(e.altKey); }, { capture: true, passive: true });
+    syncWheel();                                     // loaded while Alt is held, or with the wheel on the workspace
+  }
+  watchWheel(window);
+  // 🧩 Layouts → "Wheel scrolls the workspace": a per-browser choice
+  function applyWheelRow() {
+    const on = wheelOnWorkspace();
+    const row = document.getElementById('ck-wheel-row');
+    if (row) { row.setAttribute('aria-pressed', on ? 'true' : 'false'); row.firstElementChild.textContent = (on ? '\u2611 ' : '\u2610 ') + 'Wheel scrolls the workspace'; }
+  }
+  function toggleWheelMode() {
+    setPref(WHEEL_KEY, wheelOnWorkspace() ? '' : '1');
+    applyWheelRow();
+    syncWheel();
+    toast(wheelOnWorkspace() ? '\u{1F5B1} The mouse wheel now scrolls the workspace, even over a window. Alt + wheel scrolls the page inside the window.'
+                              : '\u{1F5B1} The mouse wheel scrolls the page under the pointer again. Alt + wheel scrolls the workspace.');
+  }
+  // A maximised window fills the workspace as it is now (top: 0 of the CONTENT), so it must be in sight and stay there: the workspace is
+  // scrolled to the top and locked while any window is maximised, and goes back to where it was when the window is given back.
+  let maxedAt = null;
+  function syncMaxLock() {
+    const on = !!viewport.querySelector('.ck-win.maxed');
+    if (on === (maxedAt !== null)) return;
+    viewport.classList.toggle('ck-maxed', on);
+    if (on) { maxedAt = viewport.scrollTop; viewport.scrollTop = 0; }
+    else { const back = maxedAt; maxedAt = null; viewport.scrollTop = back; }
+    scheduleScrollUi();
+  }
+  new MutationObserver(syncMaxLock).observe(viewport, { attributes: true, attributeFilter: ['class'], subtree: true, childList: true });
+  // While a window is carried or stretched, the workspace scrolls by itself when the pointer nears its top or bottom edge (or leaves
+  // it) and the window follows: that is how a window is made taller than the screen, or carried down to the others. `apply(ev)`
+  // redraws the drag for the last pointer event; the caller feeds update() every move and calls stop() when the button is released.
+  // A workspace that fits the screen has nothing below to scroll into - and a window's bottom edge cannot pass the pointer, which
+  // cannot pass the screen - so once a drag starts to scroll DOWN an invisible spacer gives the workspace half a screen of room below
+  // the window (it grows as the window does); the workspace goes back to the height of its lowest window when the button is released.
+  // (Not before: an ordinary drag never changes the workspace, so its scrollbar never flickers in and out under the windows.)
+  let spacer = null;
+  function setSpacer(bottom) {
+    if (bottom === null) { if (spacer) { spacer.remove(); spacer = null; } return; }
+    if (!spacer) {
+      spacer = document.createElement('div');
+      spacer.id = 'ck-spacer';
+      spacer.setAttribute('aria-hidden', 'true');
+      viewport.appendChild(spacer);
+    }
+    spacer.style.top = Math.round(bottom) + 'px';
+  }
+  function autoScroller(apply, p) {
+    let ev = null, raf = 0, last = 0, acc = 0;
+    function makeRoom() { setSpacer(p.y + p.h + Math.round(viewport.clientHeight * 0.5)); }
+    function frame(now) {
+      raf = 0;
+      if (!ev) return;
+      const r = viewport.getBoundingClientRect();
+      const d = LAYOUT.autoScrollStep(ev.clientY, r.top, r.height);     // px per frame at 60 Hz
+      if (!d) { last = 0; acc = 0; return; }
+      if (d > 0 || spacer) makeRoom();
+      const dt = last ? Math.min(64, now - last) : 16.7;                // ms since the last frame: 144 Hz is not 2.4x as fast, a stalled tab does not jump a screen
+      last = now;
+      acc += d * dt / 16.7;
+      const whole = acc < 0 ? Math.ceil(acc) : Math.floor(acc);          // whole px only; the rest carries to the next frame
+      acc -= whole;
+      if (whole) {
+        const before = viewport.scrollTop;
+        viewport.scrollTop = before + whole;
+        if (viewport.scrollTop !== before) apply(ev);
+      }
+      raf = requestAnimationFrame(frame);
+    }
+    return {
+      update: function (e) { ev = e; if (spacer) makeRoom(); if (!raf) raf = requestAnimationFrame(frame); },
+      stop: function () { ev = null; if (raf) cancelAnimationFrame(raf); raf = 0; setSpacer(null); scheduleScrollUi(); },
+    };
+  }
+  // The status bar's  ▲ 2/3 ▼ : there while the workspace is taller than the screen, saying which screenful is showing.
+  let scrollUiRaf = 0, scrollHinted = false;
+  function scheduleScrollUi() { if (!scrollUiRaf) scrollUiRaf = requestAnimationFrame(updateScrollUi); }
+  function updateScrollUi() {
+    scrollUiRaf = 0;
+    if (!scrollBox || spacer) return;                // (not while a drag has stretched the workspace: stop() updates it)
+    const s = MOBILE() ? { scrollable: false } : LAYOUT.scrollPages(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight);
+    scrollBox.hidden = !s.scrollable || viewport.classList.contains('ck-maxed');
+    if (scrollBox.hidden) return;
+    scrollPos.textContent = s.page + '/' + s.pages;
+    scrollBox.title = 'Screen ' + s.page + ' of ' + s.pages + ' - the windows below are a scroll away (Alt + wheel over a window, Alt + ↑ / ↓)';
+    scrollUp.disabled = s.atTop;
+    scrollDown.disabled = s.atBottom;
+    if (!scrollHinted && userTouched && pref(SCROLL_HINT_KEY, '') !== '1') {      // the first time a window outgrows the screen
+      scrollHinted = true;
+      setPref(SCROLL_HINT_KEY, '1');
+      toast('The workspace scrolls now: use its scrollbar, Alt + mouse wheel over a window, Alt + ↑ / ↓, or the ▲ ▼ in the status bar.');
+    }
+  }
+  viewport.addEventListener('scroll', scheduleScrollUi, { passive: true });
+  if (scrollUp) scrollUp.addEventListener('click', function () { scrollWorkspace('up'); });
+  if (scrollDown) scrollDown.addEventListener('click', function () { scrollWorkspace('down'); });
+  setInterval(function () { if (!document.hidden) scheduleScrollUi(); }, 2000);      // whatever changed the workspace's height without a drag
+
   // ── drag / resize ──────────────────────────────────────────────────────
   // Moving and resizing go through the layout maths (cockpit-layout.js): eight handles per window, and magnetic edges - the
   // workspace's and the other windows' - with guide lines while a snap holds. Hold Ctrl while dragging for free placement
@@ -1799,13 +1980,18 @@
       e.preventDefault();
       handle.setPointerCapture(e.pointerId);
       // Y math includes scrollTop on both ends: the workspace scrolls
-      // vertically now, and p.y is a content coordinate, not a screen one.
+      // vertically, and p.y is a content coordinate, not a screen one.
       const sx = e.clientX - p.x, sy = e.clientY - p.y + viewport.scrollTop;
       let snapped = false, free = false;
+      const auto = autoScroller(apply, p);
       function move(ev) {
+        apply(ev);
+        if (Math.abs(ev.clientX - e.clientX) + Math.abs(ev.clientY - e.clientY) > 8) auto.update(ev);   // not for a click that wobbled
+      }
+      function apply(ev) {
         free = ev.ctrlKey || ev.metaKey;
         const raw = { x: Math.max(0, Math.min(viewport.clientWidth - 60, ev.clientX - sx)),
-                      y: Math.max(0, ev.clientY - sy + viewport.scrollTop), w: p.w, h: p.h };
+                      y: Math.min(LAYOUT.MAX_Y, Math.max(0, ev.clientY - sy + viewport.scrollTop)), w: p.w, h: p.h };
         const sn = free ? null : LAYOUT.snapBox(raw, 'move', otherBoxes(p), wsSize(), SNAP_PX);
         snapped = !!sn && (sn.guides.x.length > 0 || sn.guides.y.length > 0);
         p.x = sn ? sn.x : raw.x;
@@ -1818,10 +2004,15 @@
         win.classList.toggle('ck-dock-l', ev.clientX <= DOCK_ZONE);
         win.classList.toggle('ck-dock-r', ev.clientX >= viewport.clientWidth - DOCK_ZONE - 1);
       }
+      let ended = false;
       function up() {
+        if (ended) return;                           // (pointerup, then the capture being lost: once)
+        ended = true;
+        auto.stop();
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
         handle.removeEventListener('pointercancel', up);
+        handle.removeEventListener('lostpointercapture', up);
         hideGuides();
         if (win.classList.contains('ck-dock-l') || win.classList.contains('ck-dock-r')) {
           dockPanel(win, p, win.classList.contains('ck-dock-r'));
@@ -1832,11 +2023,13 @@
           win.style.top = p.y + 'px';
         }
         win.classList.remove('ck-dock-l', 'ck-dock-r');
+        scheduleScrollUi();
         save();
       }
       handle.addEventListener('pointermove', move);
       handle.addEventListener('pointerup', up);
       handle.addEventListener('pointercancel', up);
+      handle.addEventListener('lostpointercapture', up);     // a capture can end without a pointerup: the workspace must never be left scrolling by itself
     });
   }
 
@@ -1853,7 +2046,12 @@
       const start = { x: p.x, y: p.y, w: p.w, h: p.h };
       const ws = wsSize();
       let snapped = false, free = false;
+      const auto = autoScroller(apply, p);
       function move(ev) {
+        apply(ev);
+        if (Math.abs(ev.clientX - e.clientX) + Math.abs(ev.clientY - e.clientY) > 8) auto.update(ev);
+      }
+      function apply(ev) {
         free = ev.ctrlKey || ev.metaKey;
         let b = LAYOUT.resizeBox(start, ev.clientX - sx, ev.clientY + viewport.scrollTop - sy, dir, ws);
         const sn = free ? null : LAYOUT.snapBox(b, dir, otherBoxes(p), ws, SNAP_PX);
@@ -1864,10 +2062,15 @@
         win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
         showGuides(sn ? sn.guides : null);
       }
+      let ended = false;
       function up() {
+        if (ended) return;
+        ended = true;
+        auto.stop();
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
         handle.removeEventListener('pointercancel', up);
+        handle.removeEventListener('lostpointercapture', up);
         hideGuides();
         if (!snapped && !free) {                       // land the edges that moved on the grid, the others stay exactly put
           const sides = LAYOUT.EDGE_SIDES[dir] || LAYOUT.EDGE_SIDES.se;
@@ -1880,11 +2083,13 @@
           win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
           win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
         }
+        scheduleScrollUi();
         save();
       }
       handle.addEventListener('pointermove', move);
       handle.addEventListener('pointerup', up);
       handle.addEventListener('pointercancel', up);
+      handle.addEventListener('lostpointercapture', up);
     });
   }
 
@@ -2137,7 +2342,7 @@
     if (pol.warn) toast(pol.message);
     const vp = vpNow() || refVp || { w: 1200, h: 700 };
     const size = LAYOUT.sizeFor(t, vp);          // the type's usual size, scaled to this screen and never bigger than it
-    const at = LAYOUT.cascade(panels.length, size, vp);
+    const at = LAYOUT.cascade(panels.length, size, vp, MOBILE() ? 0 : viewport.scrollTop);   // (scrolled down: where you are looking)
     const p = {
       id: newId(), type: type, ref: ref || '', title: title || (t.icon + ' ' + t.label),
       x: at.x, y: at.y, w: size.w, h: size.h, z: ++zTop, collapsed: false, data: {},
@@ -2161,7 +2366,7 @@
     const fn = liveLoaders.get(p.id);
     if (fn) fn();
     updateStatus();                                  // the window count and the dock's chips
-    if (!(opts && opts.scene)) save();               // a scene arranges what it added and saves once
+    if (!(opts && opts.scene)) { revealWin(p); save(); }     // a scene arranges what it added and saves once
     return p;
   }
 
@@ -2251,6 +2456,7 @@
     panels.forEach(function (p) { p.id = newId(); });
     adaptToScreen(from);   // arranged on another screen? scale it
     render();
+    scrollWorkspaceTo(0, false);                     // a whole new arrangement is read from the top
     save();
   }
   function deletePreset(name) {
@@ -2309,6 +2515,7 @@
     const keep = panels.filter(function (q) { return q.parked; }).length;
     applyDockState();
     updateStatus();
+    scrollWorkspaceTo(0, true);                      // a scene is tiled from the top
     ids.forEach(function (id) { const q = panels.find(function (x) { return x.id === id; }); if (q && !q.parked) flash(winEl(q)); });
     save();
     toast(sc.label + ' — ' + (panels.length - keep) + ' window' + (panels.length - keep === 1 ? '' : 's') + ' showing' + (keep ? ', ' + keep + ' in the dock' : ''));
@@ -2316,6 +2523,7 @@
 
   layoutsBtn.addEventListener('click', function () { if (layoutsOpen()) closeLayouts(false); else openLayouts(); });
   layoutsPop.addEventListener('keydown', function (e) {
+    if (e.altKey) return;                            // Alt + arrows scroll the workspace
     const rows = Array.prototype.slice.call(layoutsPop.querySelectorAll('.ck-winrow'));
     const at = rows.indexOf(document.activeElement);
     let to = null;
@@ -2331,6 +2539,8 @@
   document.getElementById('ck-save-preset').addEventListener('click', function () { closeLayouts(false); saveLayoutAs(); });
   const lockRow = document.getElementById('ck-lock-row');
   if (lockRow) lockRow.addEventListener('click', function () { closeLayouts(false); toggleLock(); });
+  const wheelRow = document.getElementById('ck-wheel-row');
+  if (wheelRow) wheelRow.addEventListener('click', function () { closeLayouts(false); toggleWheelMode(); });
 
   document.getElementById('ck-add-btn').addEventListener('click', openAdd);
   // The Find-AI toolbar button is GM-only (absent in player mode) — its
@@ -2370,6 +2580,7 @@
     panels = defaultLayout();
     refVp = vpNow() || refVp;
     render();
+    scrollWorkspaceTo(0, false);                     // the default windows are read from the top
     save();
   });
 
@@ -2424,6 +2635,9 @@
       else toast('There is no window ' + k.n + ' (' + panels.length + ' open).');
     } else if (k.action === 'maximize') toggleMaxActive();
     else if (k.action === 'undo') { if (undoStack.length) undoClose(); else toast('Nothing to reopen.'); }
+    else if (k.action === 'scrollup' || k.action === 'scrolldown' || k.action === 'scrolltop' || k.action === 'scrollend') {
+      scrollWorkspace({ scrollup: 'up', scrolldown: 'down', scrolltop: 'top', scrollend: 'end' }[k.action]);
+    }
     else if (k.action === 'help') toggleHelp();
   }
   // True when the key was one of ours (the caller then stops it reaching the page it came from).
@@ -2442,6 +2656,9 @@
     ['Drag a title bar', 'Move the window. It snaps to the workspace edges and to other windows (hold Ctrl for free placement).'],
     ['Drag an edge or a corner', 'Resize the window from that side.'],
     ['Drag to the left / right edge', 'Dock the window to that half of the screen.'],
+    ['Drag or resize at the top / bottom edge', 'The workspace scrolls with you: make a window taller than the screen, or carry it down to the others.'],
+    ['Scrollbar  /  Alt + mouse wheel', 'Scroll the workspace (the wheel alone scrolls the page in the window under it). The ▲ 1/2 ▼ in the status bar does it too.'],
+    ['🧩 Layouts → Wheel scrolls the workspace', 'Tick it and the plain wheel scrolls the workspace even over a window; Alt + wheel then scrolls the page in the window.'],
     ['Double-click a title bar', 'Fill the cockpit with the window; again to give it back.'],
     ['Double-click the title text', 'Rename the window.'],
     ['Right-click a title bar', 'The window menu: maximize, dock, reload, rename, colour …'],
@@ -2763,6 +2980,7 @@
       LAYOUT.retileLaptop(panels, vp, slotsNow(), prefHeight);
       refVp = vp;
       applyDockState();
+      scrollWorkspaceTo(0, true);
       save();
       return;
     }
@@ -2774,6 +2992,7 @@
     });
     syncWindowStyles(true);
     refVp = vp;
+    scrollWorkspaceTo(0, true);                      // tiled from the top
     save();
   }
   pinBtn.addEventListener('click', autoArrange);
@@ -2791,6 +3010,7 @@
     const mwrap = document.getElementById('ck-mwrap');
     if (mwrap) mwrap.style.height = h;
     scheduleAdapt();
+    scheduleScrollUi();
   }
 
   // Write panels[]'s geometry onto the open windows (no re-render: that would reload every iframe).
@@ -2809,6 +3029,7 @@
       if (cb) cb.textContent = p.collapsed ? '▸' : '▾';
       if (clearState) win.classList.remove('maxed');
     });
+    scheduleScrollUi();
   }
 
   // ── laptop layout: the dock, parking, switching class ────────────────────────────────────────────────────────────────
@@ -2912,6 +3133,7 @@
     else LAYOUT.showWide(panels, p.id);
     applyDockState();
     revealChip(p);
+    revealWin(p);
     flash(winEl(p));
     save();
   }
@@ -2933,6 +3155,7 @@
     if (LAPTOP()) {
       LAYOUT.retileLaptop(panels, lapVp(), slotsNow(), prefHeight);
       applyDockState();
+      scrollWorkspaceTo(0, true);
       save();
     } else renderDock();
   }
@@ -3034,6 +3257,7 @@
   window.addEventListener('resize', function () { fitViewport(); syncMode(); });
   applyChrome();           // before the first measure: the laptop layout hides the site's top bar, so the workspace is taller
   applyLock();
+  applyWheelRow();
   fitViewport();
   buildWelcomeTiles();
   updateStatus();

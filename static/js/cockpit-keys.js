@@ -30,6 +30,11 @@
     { keys: '', codes: ['Digit0'], alt: true, action: 'zoomreset', hidden: true },       // (not Numpad0: Alt + numpad digits type characters)
     { keys: 'Alt + K', code: 'KeyK', alt: true, action: 'lock', what: 'Lock / unlock the windows (no moving, resizing or closing by accident)' },
     { keys: 'Alt + U', code: 'KeyU', alt: true, action: 'undo', what: 'Reopen the window closed last' },
+    { keys: 'Alt + ↑  /  Alt + ↓', code: 'ArrowUp', alt: true, notTyping: true, action: 'scrollup',
+      what: 'Scroll the workspace up / down by a screen - with Shift: to the very top / bottom (Alt + mouse wheel does it over a window too)' },
+    { keys: '', code: 'ArrowDown', alt: true, notTyping: true, action: 'scrolldown', hidden: true },
+    { keys: '', code: 'ArrowUp', alt: true, shift: true, notTyping: true, action: 'scrolltop', hidden: true },
+    { keys: '', code: 'ArrowDown', alt: true, shift: true, notTyping: true, action: 'scrollend', hidden: true },
     { keys: 'F1  or  ?', code: 'F1', action: 'help', what: 'This list' },
     { keys: '?', key: '?', anyShift: true, notTyping: true, action: 'help', hidden: true },
     { keys: 'Ctrl + Shift + T', code: 'KeyT', ctrl: true, shift: true, action: 'undo', hidden: true },

@@ -191,6 +191,30 @@ tools that require GM access still check `is_gm` at call time.)
   (`relayFrameEvents`; the same hook is where keys are relayed) and a focus move into a frame does it through the window's
   `blur`. Every iframe is titled with its window's title (`titleFrames`); icon-only controls inside panels get their tooltip as
   `aria-label` (`labelControls`). Site UI scale (`nd_ui_scale`) goes 90-200 % for a 4K screen.
+- **The cockpit workspace scrolls** (`#ck-viewport` is `overflow-y: auto` and `position: relative`; every window is `position:
+  absolute`, so the workspace is as tall as its lowest window - there is no separate canvas). So a window can be made taller than the
+  screen and more kept open than fit. Pure maths in `cockpit-layout.js` (`autoScrollStep`, `revealScroll`, `scrollPages`, `pageStep`,
+  `wheelPixels`, `cascade(..., top)`; `tests/test_cockpit_scroll.py`), wiring in the "scrolling the workspace" block of `cockpit.js`:
+  (1) a page in a window takes the wheel for itself, so **Alt + wheel** scrolls the workspace instead - one `wheel` listener
+  (`workspaceWheel`) on the cockpit's window AND, via `relayFrameEvents` -> `watchWheel`, on every page in a window. It must be NON-passive
+  (it cancels the page's scroll), and a blocking wheel listener makes every scroll over its page wait for the main thread, which the cockpit
+  and ALL its windows share - so `syncWheel` adds it only while Alt is down (keydown / keyup on every host; a cheap passive listener
+  catches an Alt pressed where the page could not see it and a plain wheel while still armed) - never leave one on. The per-browser option
+  `nd_cockpit_wheel` (🧩 Layouts → "Wheel scrolls the workspace") turns it round over a PAGE: the plain wheel scrolls the workspace, Alt +
+  wheel gives it back to the page, and the pages stay armed; the cockpit's own document (dock chips, menus, a notes window's text) never loses
+  its plain wheel. Plain wheel over a title bar or gap scrolls the workspace natively, the neon scrollbar is styled (`#ck-viewport` scrollbar rules), **Alt + ↑ / ↓** (+ Shift: to the ends - table
+  entries `scrollup` / `scrolldown` / `scrolltop` / `scrollend`, not while typing) and the **▲ 1/2 ▼** in the status bar do it too;
+  (2) dragging or stretching a window near the top / bottom edge scrolls by itself (`autoScroller`, by TIME not by frame, with an 8px
+  dead zone so a wobbly click does not start it) - and because a window's bottom edge cannot pass the pointer, which cannot pass the
+  screen, a workspace that FITS has nothing to scroll into, so once a drag scrolls down an invisible `#ck-spacer` gives it half a screen
+  below the window until the button is released (created lazily: an ordinary drag never makes the scrollbar flicker); y stops at
+  `MAX_Y` (8000), where the server stops keeping it; (3) `revealWin` brings a window into sight when it is shown from the dock / the
+  Windows list / Alt+1..9, added or reopened (the least scroll that shows it; one taller than the screen: its title bar), new windows
+  open where you are looking (`cascade(..., scrollTop)`), half-dock fills the half in sight, and a new arrangement (scene, saved
+  layout, auto-arrange, slot change) scrolls to the top; (4) a maximised window is `top: 0` of the CONTENT, so a MutationObserver
+  (`syncMaxLock`) scrolls to the top and locks the workspace (`.ck-maxed`) until it is given back. **Do NOT reserve the scrollbar's
+  place** (`scrollbar-gutter: stable`): layouts arranged to fill the screen would lose ~15px at the right edge, hiding half the
+  scrollbar of the page inside their right-hand windows.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character
   (Russian / Hebrew layouts), use Alt + letter/digit (never Ctrl+Alt: that is AltGr and types characters), skip the browser's own

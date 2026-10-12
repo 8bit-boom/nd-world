@@ -202,12 +202,13 @@
     return { w: w, h: h };
   }
 
-  // Where the n-th added window goes: stepped down-right from the top-left, kept inside the screen.
-  function cascade(n, size, vp) {
+  // Where the n-th added window goes: stepped down-right from the top-left of what is in sight, kept inside the screen.
+  // `top` is how far the workspace is scrolled (a window added then opens in the part you are looking at, not above it).
+  function cascade(n, size, vp, top) {
     var step = (n % 6) * 28;
     return {
       x: Math.max(0, Math.min(48 + step, vp.w - size.w - GAP)),
-      y: Math.max(0, Math.min(40 + step, vp.h - 160)),
+      y: Math.max(0, Math.round(top > 0 ? top : 0) + Math.max(0, Math.min(40 + step, vp.h - 160))),
     };
   }
 
@@ -553,9 +554,79 @@
     return out;
   }
 
+  // ── scrolling the workspace ──────────────────────────────────────────────────────────────────
+  //
+  // The workspace is as tall as its lowest window, so a window can be made taller than the screen and more of them kept open than
+  // fit: the cockpit scrolls. These are the numbers behind that - how fast to scroll while a window is carried or stretched near the
+  // edge, where to scroll to bring a window into sight, which screenful is showing - pure, so they are tested under Node.
+  var SCROLL_EDGE = 56;        // px from the workspace's top / bottom edge where carrying or stretching a window starts to scroll it
+  var SCROLL_MAX = 18;         // px per frame (at 60 Hz) at the edge: about 1000 px a second, a screenful a second
+  var MAX_Y = 8000;            // the server keeps a window's x / y up to this (and w / h), so a drag stops there too
+  var WHEEL_LINE = 40;         // px for one "line" of a mouse wheel that reports lines
+
+  // px to scroll this frame (negative = up) while the pointer is at `y` (page coordinates) and the workspace spans [top, top + height]:
+  // nothing in the middle, faster the nearer the edge, the top speed AT the edge and beyond it (a button held down keeps the pointer
+  // going when it leaves the workspace).
+  function autoScrollStep(y, top, height, opts) {
+    var edge = (opts && opts.edge) || SCROLL_EDGE, max = (opts && opts.max) || SCROLL_MAX;
+    if (!isFinite(y) || !isFinite(top) || !(height > 0)) return 0;
+    edge = Math.min(edge, Math.floor(height / 3));          // a very short workspace keeps a middle that does not scroll
+    if (edge < 1) return 0;
+    var into = top + edge - y;
+    if (into > 0) return -Math.max(1, Math.round(max * Math.min(1, into / edge)));
+    into = y - (top + height - edge);
+    if (into > 0) return Math.max(1, Math.round(max * Math.min(1, into / edge)));
+    return 0;
+  }
+
+  // Where to scroll so a window spanning [top, top + height] (content coordinates) is in sight with `margin` to spare: null when it
+  // already is, else the smallest scroll that brings it in. A window taller than the view cannot be shown whole: what counts is that
+  // its title bar (`opts.head`, 34 px) is, and it is scrolled to its top otherwise. `opts.max` is the furthest the workspace scrolls.
+  function revealScroll(scrollTop, viewH, top, height, margin, opts) {
+    margin = margin == null ? GAP : margin;
+    var head = (opts && opts.head) || 34;
+    var max = opts && isFinite(opts.max) ? Math.max(0, opts.max) : Infinity;
+    if (!(viewH > 0) || !isFinite(scrollTop) || !isFinite(top) || !isFinite(height)) return null;
+    var want;
+    if (height + 2 * margin > viewH) {
+      if (top - margin >= scrollTop && top + head + margin <= scrollTop + viewH) return null;
+      want = top - margin;
+    } else if (top - margin < scrollTop) {
+      want = top - margin;
+    } else if (top + height + margin > scrollTop + viewH) {
+      want = top + height + margin - viewH;
+    } else {
+      return null;
+    }
+    want = Math.round(clamp(want, 0, max));
+    return Math.abs(want - scrollTop) < 1 ? null : want;
+  }
+
+  // "Screen 2 of 3": how many screenfuls tall the workspace is and which one is showing (for the status bar's ▲ 2/3 ▼).
+  function scrollPages(scrollTop, viewH, contentH) {
+    var room = (contentH || 0) - (viewH || 0);
+    if (!(viewH > 0) || !(room > 4)) return { scrollable: false, page: 1, pages: 1, atTop: true, atBottom: true };
+    var pages = Math.max(2, Math.ceil(contentH / viewH - 0.02));
+    var at = clamp((scrollTop || 0) / room, 0, 1);
+    return { scrollable: true, pages: pages, page: 1 + Math.round(at * (pages - 1)), atTop: !(scrollTop > 1), atBottom: scrollTop >= room - 1 };
+  }
+
+  // One step of the ▲ ▼ buttons and Alt + ↑ / ↓: most of a screen, so a line or two of what was in sight stays in sight.
+  function pageStep(viewH) { return Math.max(80, Math.round((viewH || 0) * 0.85)); }
+
+  // A wheel event's vertical movement in px (deltaMode 0: px, 1: lines, 2: pages).
+  function wheelPixels(deltaY, deltaMode, viewH) {
+    if (!isFinite(deltaY)) return 0;
+    if (deltaMode === 1) return deltaY * WHEEL_LINE;
+    if (deltaMode === 2) return deltaY * pageStep(viewH);
+    return deltaY;
+  }
+
   root.ndCockpitLayout = {
     MIN_W: MIN_W, MIN_H: MIN_H, GRID: GRID, GAP: GAP, LAPTOP_BELOW: LAPTOP_BELOW, EDGE_SIDES: EDGE_SIDES,
     resizeBox: resizeBox, snapBox: snapBox,
+    SCROLL_EDGE: SCROLL_EDGE, SCROLL_MAX: SCROLL_MAX, MAX_Y: MAX_Y,
+    autoScrollStep: autoScrollStep, revealScroll: revealScroll, scrollPages: scrollPages, pageStep: pageStep, wheelPixels: wheelPixels,
     vpOk: vpOk, needsScale: needsScale, fitPanels: fitPanels, scalePanels: scalePanels,
     tilePanels: tilePanels, sizeFor: sizeFor, cascade: cascade,
     screenClass: screenClass, laptopSlots: laptopSlots, resolveSlots: resolveSlots, visibleOf: visibleOf, mainOf: mainOf,

@@ -279,7 +279,7 @@ def test_scenes_reuse_windows_add_what_is_missing_and_are_a_gm_feature():
     assert scene_fn.index("const have = panels.filter") < scene_fn.index("addPanel(type, ref, title")
     assert "type === 'entity') return null" in scene_fn
     # a scene saves ONCE, after arranging what it added - not once per window it made
-    assert "if (!(opts && opts.scene)) save();" in js
+    assert "if (!(opts && opts.scene)) { revealWin(p); save(); }" in js
 
 
 def test_saved_layouts_are_applied_deleted_and_saved_through_one_set_of_functions():

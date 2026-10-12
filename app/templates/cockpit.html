@@ -45,6 +45,11 @@
     <button type="button" class="ck-wbtn" id="ck-stat-combat" hidden></button>
     <span id="ck-stat-mid"></span>
     <span id="ck-stat-right"><span id="ck-stat-live" role="img" aria-label="Live sync: lights up when something changes in the world" title="Live sync: lights up when something changes in the world">●</span> <span id="ck-stat-saved">—</span></span>
+    <span id="ck-stat-scroll" role="group" aria-label="Scroll the workspace" hidden title="The workspace is taller than the screen: the windows below are a scroll away">
+      <button type="button" class="ck-wbtn" id="ck-scroll-up" title="Scroll up (Alt + ↑ - with Shift: to the top)" aria-label="Scroll the workspace up">▲</button>
+      <span id="ck-scroll-pos" aria-live="off">1/2</span>
+      <button type="button" class="ck-wbtn" id="ck-scroll-down" title="Scroll down (Alt + ↓ - with Shift: to the bottom)" aria-label="Scroll the workspace down">▼</button>
+    </span>
     <button type="button" class="ck-wbtn" id="ck-help-btn" title="Keyboard shortcuts and tips (F1)" aria-label="Keyboard shortcuts and tips">⌨</button>
     <button type="button" class="ck-wbtn" id="ck-fs-btn" title="Fullscreen (great at the table)" aria-label="Fullscreen" aria-pressed="false">⛶</button>
   </footer>
@@ -83,6 +88,7 @@
   <button type="button" class="ck-winrow" id="ck-pin-btn" role="menuitem" title="Tidy the windows that show for this screen — scroll down if the grid outgrows it">📌 Auto-arrange <small>tidy the windows for this screen</small></button>
   <button type="button" class="ck-winrow" id="ck-save-preset" role="menuitem" title="Save the current windows as a named layout">💾 Save the windows as a layout… <small>named, per world</small></button>
   <button type="button" class="ck-winrow" id="ck-lock-row" role="menuitemcheckbox" aria-pressed="false" title="No moving, resizing or closing by accident (Alt+K)"><span>🔒 Lock the windows</span><small>Alt+K</small></button>
+  <button type="button" class="ck-winrow" id="ck-wheel-row" role="menuitemcheckbox" aria-pressed="false" title="Unticked (default): the mouse wheel scrolls the page under the pointer and Alt + wheel scrolls the workspace. Ticked: the wheel scrolls the workspace even over a window and Alt + wheel scrolls the page in it. This browser only."><span>☐ Wheel scrolls the workspace</span><small>over windows</small></button>
   <button type="button" class="ck-winrow" id="ck-reset" role="menuitem" title="Back to the default panel set">↺ Reset to the default windows</button>
 </div>
 
@@ -145,6 +151,20 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
   background:
     radial-gradient(rgba(255,255,255,.028) 1px, transparent 1px) 0 0/22px 22px,
     var(--bg); }
+/* The workspace scrolls when a window is taller than the screen or more are open than fit. Its scrollbar is wide enough to grab and bright
+   enough to see on the dark workspace (the browser's own is a thin grey strip). (Its place is NOT reserved while it is not needed: a layout
+   that fits the screen keeps every pixel of the width it was arranged in.) A maximised window fills the workspace as it is: nothing
+   scrolls until it is given back. */
+#ck-viewport { scrollbar-width: auto; scrollbar-color: var(--neon) var(--bg2); }
+@supports (color: color-mix(in srgb, red, blue)) {
+  #ck-viewport { scrollbar-color: color-mix(in srgb, var(--neon) 55%, var(--bg2)) var(--bg2); }
+}
+#ck-viewport::-webkit-scrollbar { width: 14px; }
+#ck-viewport::-webkit-scrollbar-track { background: var(--bg2); border-left: 1px solid var(--border); }
+#ck-viewport::-webkit-scrollbar-thumb { background: var(--neon); border-radius: 7px; border: 3px solid var(--bg2); }
+#ck-viewport.ck-maxed { overflow-y: hidden; }
+/* room below the window being carried or stretched, so there is something to scroll into (cockpit.js autoScroller) */
+#ck-spacer { position: absolute; left: 0; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
 #ck-welcome { position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; text-align: center;
   color: var(--text-dim); font-size: .9rem; max-width: 520px; margin: 0 auto; padding: 1rem; }
@@ -327,6 +347,11 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
   max-width: 28ch; overflow: hidden; text-overflow: ellipsis; }
 #ck-stat-combat:hover { border-color: var(--neon); }
 #ck-lock-chip[hidden], #ck-stat-combat[hidden] { display: none; }
+#ck-stat-scroll { display: inline-flex; align-items: center; gap: .1rem; }
+#ck-stat-scroll[hidden] { display: none; }
+#ck-scroll-pos { min-width: 2.6em; text-align: center; font-variant-numeric: tabular-nums; }
+#ck-stat-scroll .ck-wbtn { font-size: .8rem; }
+#ck-stat-scroll .ck-wbtn:disabled { opacity: .3; cursor: default; }
 /* a window that is not at 100% zoom says so in its title bar */
 .ck-zoom-badge { font-size: .66rem !important; border: 1px solid var(--neon) !important; border-radius: 3px; color: var(--neon) !important; padding: 0 .3rem !important; }
 .ck-zoom-badge[hidden] { display: none; }
@@ -473,7 +498,7 @@ body.ck-mobile .topbar + .skip-link, body.ck-mobile footer { display: none !impo
 .ck-help-row { display: grid; grid-template-columns: minmax(8.5rem, 34%) 1fr; gap: .2rem .8rem; padding: .22rem 0;
   font-size: .82rem; color: var(--text); border-bottom: 1px solid rgba(255,255,255,.04); }
 .ck-help-row kbd { font-family: inherit; font-size: .76rem; color: var(--neon); background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 4px; padding: .05rem .4rem; white-space: nowrap; justify-self: start; align-self: start; }
+  border-radius: 4px; padding: .05rem .4rem; justify-self: start; align-self: start; max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }   /* (a long label wraps inside its column instead of running into the text) */
 .ck-help-row span { color: var(--text-dim); }
 @media (max-width: 560px) { .ck-help-row { grid-template-columns: 1fr; } }
 
