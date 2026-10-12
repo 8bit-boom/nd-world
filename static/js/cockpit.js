@@ -27,8 +27,8 @@
   const addPicker = document.getElementById('ck-add-picker');
   const addSearch = document.getElementById('ck-add-search');
   const addList = document.getElementById('ck-add-list');
-  const presetSelect = document.getElementById('ck-preset-select');
-  const deletePresetBtn = document.getElementById('ck-delete-preset');
+  const layoutsBtn = document.getElementById('ck-layouts-btn');
+  const layoutsPop = document.getElementById('ck-layouts-pop');
   const windowsBtn = document.getElementById('ck-windows-btn');
   const windowsPop = document.getElementById('ck-windows-pop');
   const kindSelect = document.getElementById('ck-add-kind');
@@ -108,6 +108,7 @@
   const SITE_KEY = 'nd_cockpit_site';     // '1' = keep the site's top bar showing in the laptop layout
   const KEEP_KEY = 'nd_cockpit_keep';     // '0' = windows in the dock are NOT kept loaded (default: kept)
   const HINT_KEY = 'nd_cockpit_laptop_hint';
+  const LOCK_KEY = 'nd_cockpit_lock';     // '1' = the windows are locked: no moving, resizing or closing by accident
   function pref(key, dflt) { try { return localStorage.getItem(key) || dflt; } catch (e) { return dflt; } }
   function setPref(key, val) { try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); } catch (e) {} }
   let klass = LAYOUT.screenClass(window.innerWidth, null, pref(MODE_KEY, ''));   // 'laptop' | 'wide'
@@ -139,6 +140,7 @@
   const findAutoRan = new Set();  // find panels seeded by a card's 🔗 (auto-run)
   const findBusy = new Set();     // find panels with a job in flight
   const panelCleanups = new Map(); // panel id -> fn (e.g. stop a timer)
+  let lastCombatRef = null;       // the combat the status bar follows (see refreshCombatStatus)
   const alarms = new Set();       // ids of the timers that have gone off and not been dismissed (the dock chip shows it too)
   const undoStack = [];           // last closed panels (Undo toast / Ctrl+Shift+T)
   let lastSavedAt = 0;
@@ -179,6 +181,7 @@
     liveTimer = setTimeout(function () {
       if (document.hidden) return;
       liveLoaders.forEach(function (fn) { fn(); });
+      refreshCombatStatus();
     }, 500);
   }
   function saveNow() {
@@ -253,7 +256,8 @@
     // Re-mint ids on every load: guarantees uniqueness even if an older
     // build saved a workspace with duplicate ids (its counter-reset bug).
     panels.forEach(function (p) { p.id = newId(); });
-    renderPresetSelect();
+    currentPreset = '';
+    renderLayoutsMenu();
     render();
   }
 
@@ -443,11 +447,16 @@
       save();
     });
     colBtn.dataset.role = 'collapse';
-    // Laptop layout only (CSS hides it elsewhere): out of the way, into the dock - the others fill the space
+    // Out of the way, into the dock (on a laptop the others fill the space); its chip in the bar above brings it back
     const dockBtn = mkBtn('⊟', 'Put this window in the dock (click its name in the bar above to bring it back)', function () { parkPanel(p); });
     dockBtn.classList.add('ck-dockbtn');
     const closeBtn = mkBtn('✕', 'Remove this panel', function () { closePanel(p, win); });
-    head.append(title, accentBtn, reloadBtn, maxBtn, colBtn, dockBtn, closeBtn);
+    closeBtn.dataset.role = 'close';                 // (hidden while the windows are locked)
+    // a window that is not at 100% says so; a click on it puts it back
+    const zoomBadge = mkBtn('', 'Zoom — click for 100%', function () { setZoom(p, 100); });
+    zoomBadge.className = 'ck-wbtn ck-zoom-badge';
+    zoomBadge.hidden = true;
+    head.append(title, zoomBadge, accentBtn, reloadBtn, maxBtn, colBtn, dockBtn, closeBtn);
     head.addEventListener('dblclick', function (e) {
       if (e.target.closest('.ck-wbtn')) return;
       win.classList.toggle('maxed');
@@ -464,6 +473,7 @@
     rz.title = 'Resize';
 
     win.append(head, body, rz);
+    applyZoomTo(p, win);                             // (after the window is put together: it looks inside it)
     head.addEventListener('contextmenu', function (e) {
       e.preventDefault();
       openCtx(p, win, e.clientX, e.clientY);
@@ -506,43 +516,40 @@
     return b;
   }
 
+  // The address of a window's page, for the window types that are one (null for the ones the cockpit draws itself, or a combat
+  // window with no combat picked yet). One mapping for building the window and for popping it out.
+  function framePath(p) {
+    const ref = encodeURIComponent(p.ref || '');
+    switch (p.type) {
+      case 'map': return '/maps/schematic/' + ref + '/view';
+      case 'wmap': return '/maps/' + ref;
+      case 'dice': return '/dice';
+      case 'entity': return '/entity/' + ref;
+      case 'ai': return '/ai';
+      case 'gallery': return '/images';
+      case 'audio': return '/audio';
+      case 'video': return '/video';
+      case 'imagestudio': return '/imagestudio';
+      case 'calendar': return '/calendar';
+      case 'combat': return p.ref ? '/combat/' + ref : null;
+      case 'page': return validPagePath(p.ref) ? p.ref : null;     // a saved layout is data, not trusted code: only a path on this site
+      default: return null;
+    }
+  }
+
   function fillBody(p, body) {
-    if (p.type === 'map') {
-      body.appendChild(mkIframe('/maps/schematic/' + encodeURIComponent(p.ref) + '/view'));
-    } else if (p.type === 'wmap') {
-      body.appendChild(mkIframe('/maps/' + encodeURIComponent(p.ref)));
-    } else if (p.type === 'dice') {
-      body.appendChild(mkIframe('/dice'));
-    } else if (p.type === 'entity') {
-      body.appendChild(mkIframe('/entity/' + encodeURIComponent(p.ref)));
-    } else if (p.type === 'ai') {
-      body.appendChild(mkIframe('/ai'));
-    } else if (p.type === 'gallery') {
-      body.appendChild(mkIframe('/images'));
-    } else if (p.type === 'audio') {
-      body.appendChild(mkIframe('/audio'));
-    } else if (p.type === 'video') {
-      body.appendChild(mkIframe('/video'));
-    } else if (p.type === 'imagestudio') {
-      body.appendChild(mkIframe('/imagestudio'));
-    } else if (p.type === 'calendar') {
-      body.appendChild(mkIframe('/calendar'));
+    const fp = framePath(p);
+    if (fp) {
+      body.appendChild(mkIframe(fp));
     } else if (p.type === 'page') {
-      // any page of this app; the address is a path on this site and nothing else (a saved layout is data, not trusted code)
-      if (validPagePath(p.ref)) body.appendChild(mkIframe(p.ref));
-      else body.insertAdjacentHTML('beforeend', '<p class="ck-empty" style="padding:.8rem;color:var(--text-dim)">This window has no valid page address.</p>');
+      body.insertAdjacentHTML('beforeend', '<p class="ck-empty" style="padding:.8rem;color:var(--text-dim)">This window has no valid page address.</p>');
     } else if (p.type === 'combat') {
-      // A picked combat embeds the live tracker; an unpicked one shows the
-      // in-panel picker so the GM can start from the window itself.
-      if (p.ref) {
-        body.appendChild(mkIframe('/combat/' + encodeURIComponent(p.ref)));
-      } else {
-        const live = document.createElement('div');
-        live.className = 'ck-live';
-        live.innerHTML = '<p class="ck-empty">Loading recent combats…</p>';
-        body.appendChild(live);
-        liveLoaders.set(p.id, function () { loadCombatPicker(p); });
-      }
+      // An unpicked combat shows the in-panel picker so the GM can start from the window itself (a picked one is a page, above).
+      const live = document.createElement('div');
+      live.className = 'ck-live';
+      live.innerHTML = '<p class="ck-empty">Loading recent combats…</p>';
+      body.appendChild(live);
+      liveLoaders.set(p.id, function () { loadCombatPicker(p); });
     } else if (p.type === 'tables') {
       buildTables(p, body);
     } else if (p.type === 'ecard') {
@@ -573,7 +580,7 @@
       ta.value = (p.data && p.data.text) || '';
       let t = null;
       ta.addEventListener('input', function () {
-        p.data = { text: ta.value };
+        p.data = Object.assign({}, p.data, { text: ta.value });     // (merged: the window's zoom lives in data too)
         clearTimeout(t);
         t = setTimeout(save, 900);
       });
@@ -639,6 +646,7 @@
       live.innerHTML = '<p class="ck-empty">Loading…</p>';
       body.appendChild(live);
       liveLoaders.set(p.id, function () { loadLive(p); });
+      if (p.type === 'party' && !PLAYER) live.addEventListener('click', function (e) { memberClick(e, p); });
     }
   }
 
@@ -668,8 +676,13 @@
     root.querySelectorAll('iframe').forEach(function (f) { f.title = fullTitle(p); });
   }
 
+  // A panel's container, on the desktop workspace or in the phone shell (a different element: the live loaders used to look only
+  // in the workspace, so a party / quests / card / combat-picker tab on a phone stayed on "Loading…").
+  function panelHost(p, inner) {
+    return viewport.querySelector('.ck-win[data-pid="' + p.id + '"] ' + inner) || document.querySelector('.ck-mpanel[data-pid="' + p.id + '"] ' + inner);
+  }
   async function loadLive(p) {
-    const live = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-live');
+    const live = panelHost(p, '.ck-live');
     if (!live) return;
     if (p.type === 'party') {
       try {
@@ -716,12 +729,65 @@
           (m.native === false ? '' : ' · AC ' + esc(m.ac || '—')) + (m.down ? ' · <strong style="color:#e07">DOWN</strong>' : '') + '</span>';
       }
       const lvl = m.native === false ? '' : 'Lvl ' + esc(m.level) + (m.levelup ? ' ⬆' : '');
-      return '<a class="ck-mem' + (m.down ? ' down' : '') + '" href="/characters/' + encodeURIComponent(m.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank">' +
-        '<span class="ck-mem-row"><span>' + esc(m.name) + '</span><span class="ck-mem-lvl">' + lvl + '</span></span>' +
+      return '<div class="ck-mem' + (m.down ? ' down' : '') + '" data-id="' + esc(m.id) + '">' +
+        '<a class="ck-mem-row" href="/characters/' + encodeURIComponent(m.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank"><span>' + esc(m.name) + '</span><span class="ck-mem-lvl">' + lvl + '</span></a>' +
         (chips ? '<span class="ck-reschips">' + chips + '</span>' : '') + hp +
         ((m.conditions || []).length ? '<span class="ck-conds">' + esc(m.conditions.join(', ')) + '</span>' : '') +
-        '</a>';
+        (PLAYER ? '' : memberControls(m)) +
+        '</div>';
     }).join('');
+  }
+
+  // A GM's quick controls under a member's HP: damage / heal by 5 or 1 and, on an N&D character, Shock. They go through the same
+  // routes the sheet's own steppers use (the N&D HP track, or the template's vital track of a custom system) and are queued per
+  // character, so five quick -1 clicks are five changes in order, never a lost one.
+  function memberControls(m) {
+    if (!m.id || (m.native === false && !m.hp_id) || (m.native !== false && !m.max_hp)) return '';
+    let h = '<span class="ck-memctl" role="group" aria-label="Change ' + esc(m.name) + '\'s ' + esc(m.hp_label || 'HP') + '" data-hp-id="' + esc(m.hp_id || '') + '">';
+    [-5, -1, 1, 5].forEach(function (n) {
+      const a = Math.abs(n);
+      h += '<button type="button" data-act="hp" data-d="' + n + '" title="' + (n < 0 ? 'Damage ' : 'Heal ') + a + '" aria-label="' + (n < 0 ? 'Damage ' : 'Heal ') + a + '">' + (n < 0 ? '−' : '+') + a + '</button>';
+    });
+    if (m.native !== false && m.shock_max) {
+      h += '<span class="ck-shock" title="Shock">⚡ ' + esc(m.shock || 0) + '/' + esc(m.shock_max) +
+        '<button type="button" data-act="shock" data-d="-1" title="Shock −1" aria-label="Shock minus one">−</button>' +
+        '<button type="button" data-act="shock" data-d="1" title="Shock +1" aria-label="Shock plus one">+</button></span>';
+    }
+    return h + '</span>';
+  }
+  const memberQueue = new Map();                   // character id -> the last change still on its way
+  function memberClick(e, p) {
+    const b = e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!b) return;
+    const card = b.closest('.ck-mem');
+    const ctl = b.closest('.ck-memctl');
+    if (!card || !ctl) return;
+    e.preventDefault();
+    const id = card.dataset.id, d = parseInt(b.dataset.d, 10) || 0;
+    let url, body;
+    if (b.dataset.act === 'shock') { url = '/api/characters/' + encodeURIComponent(id) + '/shock'; body = { action: 'delta', value: d }; }
+    else if (ctl.dataset.hpId) { url = '/api/characters/' + encodeURIComponent(id) + '/resource'; body = { field_id: ctl.dataset.hpId, action: 'delta', value: d }; }
+    else { url = '/api/characters/' + encodeURIComponent(id) + '/hp-async'; body = { action: 'delta', value: d }; }
+    nudgeHpText(card, b.dataset.act, d);
+    const next = (memberQueue.get(id) || Promise.resolve()).then(function () {
+      return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); });
+    }).catch(function (err) {
+      toast('Could not change that (' + (err.message || 'offline') + ').');
+    }).then(function () {
+      if (memberQueue.get(id) === next) { memberQueue.delete(id); loadLive(p); }       // the truth, once the last change has landed
+    });
+    memberQueue.set(id, next);
+  }
+  // Show the change at once (the server's answer replaces it a moment later): the HP number and its bar move, clamped.
+  function nudgeHpText(card, act, d) {
+    if (act !== 'hp') return;
+    const txt = card.querySelector('.ck-mem-hp'), fill = card.querySelector('.ck-hpfill');
+    const m = txt && txt.textContent.match(/(\d+)\/(\d+)/);
+    if (!m) return;
+    const max = parseInt(m[2], 10), now = Math.max(0, Math.min(max, parseInt(m[1], 10) + d));
+    txt.textContent = txt.textContent.replace(/(\d+)\/(\d+)/, now + '/' + max);
+    if (fill && max) fill.style.width = Math.max(0, Math.min(100, Math.round(now * 100 / max))) + '%';
   }
 
   function renderQuests(d, live) {
@@ -741,7 +807,7 @@
   }
 
   async function loadCard(p) {
-    const live = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-card');
+    const live = panelHost(p, '.ck-card');
     if (!live) return;
     try {
       const r = await fetch('/api/entity/' + encodeURIComponent(p.ref) + '/preview');
@@ -781,7 +847,7 @@
   }
 
   async function loadCombatPicker(p) {
-    const live = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-live');
+    const live = panelHost(p, '.ck-live');
     if (!live) return;
     try {
       const r = await fetch('/api/combat/recent');
@@ -1100,7 +1166,7 @@
     toast('Closed "' + (p.title || CK_TYPES[p.type].label) + '"', 'Undo', undoClose);
     if (LAPTOP() && panels.length) {   // the ones still showing grow into the gap (a window waiting in the dock does not jump in)
       LAYOUT.retileLaptop(panels, lapVp(), Math.max(1, LAYOUT.visibleOf(panels).length), prefHeight);
-      applyLaptopState();
+      applyDockState();
     }
     updateStatus();
     save();
@@ -1112,8 +1178,9 @@
     panels.splice(i, 0, item.panel);
     if (welcome) welcome.style.display = 'none';
     if (LAPTOP()) item.panel.parked = true;      // it takes a slot like any window brought back
+    else delete item.panel.parked;               // (the big screen: it is simply there again)
     viewport.appendChild(buildWin(item.panel));
-    if (LAPTOP()) { LAYOUT.showLaptop(panels, item.panel.id, lapVp(), slotsNow(), prefHeight); applyLaptopState(); }
+    if (LAPTOP()) { LAYOUT.showLaptop(panels, item.panel.id, lapVp(), slotsNow(), prefHeight); applyDockState(); }
     const fn = liveLoaders.get(item.panel.id);
     if (fn) fn();
     updateStatus();
@@ -1157,11 +1224,13 @@
     const items = [];
     if (p.parked) items.push(['👁 Show', function () { showPanel(p); }]);
     else {
-      items.push(['★ Make main window', function () { makeMainPanel(p); }]);
+      if (LAPTOP()) items.push(['★ Make main window', function () { makeMainPanel(p); }]);
       items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
     }
-    items.push('hr');
-    items.push(['✕ Close', function () { closePanel(p, winEl(p)); }]);
+    if (!locked()) {
+      items.push('hr');
+      items.push(['✕ Close', function () { closePanel(p, winEl(p)); }]);
+    }
     showCtx(items, x, y);
   }
   function openCtx(p, win, x, y) {
@@ -1191,15 +1260,22 @@
         save();
       }],
       ['⤢ Maximize', function () { win.classList.toggle('maxed'); }],
-      ['◧ Dock left', function () { win.classList.remove('maxed'); dockPanel(win, p, false); save(); }],
-      ['◨ Dock right', function () { win.classList.remove('maxed'); dockPanel(win, p, true); save(); }],
     ];
-    if (LAPTOP()) {
-      items.push(['★ Make main window', function () { makeMainPanel(p); }]);
-      items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
+    if (!locked()) {
+      items.push(['◧ Dock left', function () { win.classList.remove('maxed'); dockPanel(win, p, false); save(); }]);
+      items.push(['◨ Dock right', function () { win.classList.remove('maxed'); dockPanel(win, p, true); save(); }]);
     }
+    if (LAPTOP()) items.push(['★ Make main window', function () { makeMainPanel(p); }]);
+    items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
     items.push('hr');
-    items.push(['✕ Close', function () { closePanel(p, win); }]);
+    items.push(['🔍＋ Zoom in  (Alt +)', function () { stepZoom(p, 1); }]);
+    items.push(['🔍− Zoom out  (Alt −)', function () { stepZoom(p, -1); }]);
+    if (zoomOf(p) !== 100) items.push(['🔍 Back to 100%  (Alt 0)', function () { setZoom(p, 100); }]);
+    if (popOutPath(p)) items.push(['⇱ Pop out to its own window', function () { popOut(p); }]);
+    if (!locked()) {
+      items.push('hr');
+      items.push(['✕ Close', function () { closePanel(p, win); }]);
+    }
     showCtx(items, x, y);
   }
   document.addEventListener('mousedown', function (e) {
@@ -1208,12 +1284,127 @@
     }
   });
 
+  // ── per-window zoom ────────────────────────────────────────────────────────────────────────────────────────────────
+  // A window's own zoom (50-200 %, in data.zoom, saved with the layout): a page too small to read on a 4K screen grows, a wide page
+  // fits a small window. The window's page (or panel) is scaled from its top-left corner inside the window and given the inverse
+  // size, so it still fills the window exactly. Alt + / Alt - / Alt 0 zoom the active window; the badge in the title bar resets it.
+  function zoomOf(p) {
+    const z = p.data ? Number(p.data.zoom) : NaN;
+    return z >= 50 && z <= 200 ? Math.round(z) : 100;
+  }
+  function applyZoomTo(p, win) {
+    if (!win) return;
+    const z = zoomOf(p);
+    const el = win.querySelector('.ck-body') ? win.querySelector('.ck-body').firstElementChild : null;
+    if (el) {
+      if (z === 100) {
+        el.style.transform = ''; el.style.transformOrigin = ''; el.style.width = ''; el.style.height = '';
+      } else {
+        const box = LAYOUT.zoomBox(z);
+        el.style.transformOrigin = '0 0';
+        el.style.transform = 'scale(' + box.scale + ')';
+        el.style.width = box.size + '%';
+        el.style.height = box.size + '%';
+      }
+    }
+    const badge = win.querySelector('.ck-zoom-badge');
+    if (badge) { badge.hidden = z === 100; badge.textContent = z + '%'; badge.title = 'Zoom ' + z + '% — click for 100%'; }
+  }
+  function setZoom(p, z) {
+    z = Math.max(50, Math.min(200, Math.round(z)));
+    p.data = Object.assign({}, p.data);
+    if (z === 100) delete p.data.zoom; else p.data.zoom = z;
+    applyZoomTo(p, winEl(p));
+    save();
+  }
+  function stepZoom(p, dir) { setZoom(p, LAYOUT.zoomStep(zoomOf(p), dir)); }
+
+  // ── pop out ────────────────────────────────────────────────────────────────────────────────────────────────────────
+  // A window's page in a browser window of its own (nd-float.js) - for a second monitor. The window stays in the cockpit too.
+  function popOutPath(p) {
+    const win = winEl(p);
+    const f = win ? win.querySelector('.ck-body iframe') : null;
+    if (f) {
+      try {                                    // where the window is NOW (it may have followed a link), without the embed flag
+        const loc = f.contentWindow.location;
+        if (loc.href && loc.href !== 'about:blank') {
+          const u = new URL(loc.href);
+          u.searchParams.delete('embed');
+          return u.pathname + u.search;
+        }
+      } catch (e) { /* not reachable: use the address it was built with */ }
+    }
+    const fp = framePath(p);
+    if (fp) return fp;
+    if (p.type === 'party' && p.ref) return '/parties/' + encodeURIComponent(p.ref);
+    if (p.type === 'quests') return '/quests';
+    if (p.type === 'ecard' && p.ref) return '/entity/' + encodeURIComponent(p.ref);
+    return null;
+  }
+  function popOut(p) {
+    const path = popOutPath(p);
+    if (!path || !window.ndFloat) { toast('This window cannot be popped out.'); return; }
+    const w = ndFloat(path, { title: fullTitle(p), name: 'nd-cockpit-' + CK_WORLD + '-' + p.id, w: Math.max(360, Math.min(p.w || 640, 1400)), h: Math.max(300, Math.min(p.h || 640, 1000)) });
+    if (!w) toast('The browser blocked the new window - allow pop-ups for this site.');
+  }
+
+  // ── lock the windows ───────────────────────────────────────────────────────────────────────────────────────────────
+  // At the table a stray drag or a mis-hit ✕ costs a moment's attention. Locked (per browser): no moving, resizing, docking to an
+  // edge or closing; everything else works (collapse, maximise, the dock, zoom, scenes). The ✕ buttons go, so does "Close".
+  function locked() { return pref(LOCK_KEY, '') === '1'; }
+  function applyLock() {
+    const on = locked();
+    document.body.classList.toggle('ck-locked', on);
+    const row = document.getElementById('ck-lock-row');
+    if (row) { row.setAttribute('aria-pressed', on ? 'true' : 'false'); row.firstElementChild.textContent = on ? '🔓 Unlock the windows' : '🔒 Lock the windows'; }
+    const chip = document.getElementById('ck-lock-chip');
+    if (chip) chip.hidden = !on;
+  }
+  function toggleLock() {
+    setPref(LOCK_KEY, locked() ? '' : '1');
+    applyLock();
+    toast(locked() ? '🔒 Windows locked: no moving, resizing or closing (Alt+K unlocks).' : '🔓 Windows unlocked.');
+  }
+
+  // ── combat status in the status bar ────────────────────────────────────────────────────────────────────────────────
+  // The round and whose turn it is, for the combat window that has a combat picked - glanceable even when that window waits in the
+  // dock; a click brings it forward. Refreshed with the other live panels (the live-sync bus) and on a slow timer.
+  let combatStatusAt = 0;
+  async function refreshCombatStatus() {
+    const el = document.getElementById('ck-stat-combat');
+    if (!el) return;
+    const cp = PLAYER ? null : panels.find(function (q) { return q.type === 'combat' && q.ref; });
+    if (!cp) { el.hidden = true; return; }
+    combatStatusAt = Date.now();
+    try {
+      const r = await fetch('/api/combat/' + encodeURIComponent(cp.ref) + '/state');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      const list = d.combatants || [];
+      const cur = list[d.active_idx || 0];
+      el.textContent = '⚔ Round ' + (d.round_num || 1) + (cur && cur.name ? ' · ▶ ' + cur.name : '');
+      el.title = fullTitle(cp) + ' — click to bring the combat window forward';
+      el.dataset.pid = cp.id;
+      el.hidden = false;
+    } catch (e) { el.hidden = true; }
+  }
+  const combatChip = document.getElementById('ck-stat-combat');
+  if (combatChip) combatChip.addEventListener('click', function () {
+    const q = panels.find(function (x) { return x.id === combatChip.dataset.pid; });
+    if (q) { showPanel(q); focusWindow(q); }
+  });
+  const lockChip = document.getElementById('ck-lock-chip');
+  if (lockChip) lockChip.addEventListener('click', toggleLock);
+  setInterval(function () { if (!document.hidden && Date.now() - combatStatusAt > 18000) refreshCombatStatus(); }, 6000);
+
   // ── status bar ─────────────────────────────────────────────────────────
   function updateStatus() {
     const c = document.getElementById('ck-stat-left');
     if (c) c.textContent = '\u{1FA9F} ' + panels.length;
+    const combatRef = (panels.find(function (q) { return q.type === 'combat' && q.ref; }) || {}).ref || '';
+    if (combatRef !== lastCombatRef) { lastCombatRef = combatRef; refreshCombatStatus(); }     // a combat window was added, picked or closed
     const m = document.getElementById('ck-stat-mid');
-    if (m) m.textContent = presetSelect.value ? '\u{1F4CB} ' + presetSelect.value : '';
+    if (m) m.textContent = currentPreset ? '\u{1F4CB} ' + currentPreset : '';
     renderDock();
   }
   function refreshSavedLabel() {
@@ -1601,7 +1792,7 @@
 
   function wireDrag(handle, win, p) {
     handle.addEventListener('pointerdown', function (e) {
-      if (e.target.closest('.ck-wbtn') || COMPACT.matches || win.classList.contains('maxed')) return;
+      if (e.target.closest('.ck-wbtn') || COMPACT.matches || win.classList.contains('maxed') || locked()) return;
       e.preventDefault();
       handle.setPointerCapture(e.pointerId);
       // Y math includes scrollTop on both ends: the workspace scrolls
@@ -1649,7 +1840,7 @@
   // A handle on one side or corner of a window (dir: n s e w ne nw se sw). The side opposite the one dragged never moves.
   function wireResize(handle, win, p, dir) {
     handle.addEventListener('pointerdown', function (e) {
-      if (COMPACT.matches || win.classList.contains('maxed') || win.classList.contains('collapsed')) return;
+      if (COMPACT.matches || win.classList.contains('maxed') || win.classList.contains('collapsed') || locked()) return;
       e.preventDefault();
       e.stopPropagation();
       handle.setPointerCapture(e.pointerId);
@@ -1728,11 +1919,12 @@
       row.type = 'button';
       row.className = 'ck-winrow';
       const label = document.createElement('span');
-      label.textContent = (p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label) + (LAPTOP() && p.parked ? '  (in the dock)' : '');
+      label.textContent = (p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label) + (p.parked ? '  (in the dock)' : '');
       row.appendChild(label);
       const x = document.createElement('span');
       x.className = 'ck-winrow-x';
       x.textContent = '✕';
+      x.hidden = locked();
       x.title = 'Close this window';
       x.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -1751,6 +1943,7 @@
   windowsBtn.addEventListener('click', function () {
     const open = windowsPop.style.display === 'block';
     if (!open) {
+      closeLayouts(false);
       renderWindowList();
       const r = windowsBtn.getBoundingClientRect();
       windowsPop.style.left = Math.max(8, r.right - 260) + 'px';
@@ -1960,65 +2153,181 @@
       renderMobile();
     } else {
       viewport.appendChild(buildWin(p));
-      if (LAPTOP()) { LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight); applyLaptopState(); }
+      if (LAPTOP() && !(opts && opts.scene)) { LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight); applyDockState(); }
     }
     const fn = liveLoaders.get(p.id);
     if (fn) fn();
-    save();
+    updateStatus();                                  // the window count and the dock's chips
+    if (!(opts && opts.scene)) save();               // a scene arranges what it added and saves once
     return p;
   }
 
-  // ── presets ────────────────────────────────────────────────────────────
+  // ── layouts: scenes, saved layouts, auto-arrange (the 🧩 menu) ────────────────────────────────────────────────────────
+  // A SAVED LAYOUT is a snapshot of the windows (both screens' arrangement, who waits in the dock); a SCENE is a recipe - show
+  // these kinds of window, tile them, and put every other window in the dock - so it adapts to whatever is open and costs nothing:
+  // nothing is closed, a window that is not in the scene keeps its page and comes back with one click (or the next scene).
+  let currentPreset = '';                 // the saved layout applied or saved last (the status bar names it)
+  const SCENES = [
+    { id: 'combat',  label: '⚔ Combat',      sub: 'map · combat · party · dice',        wants: ['map', 'combat', 'party', 'dice'] },
+    { id: 'explore', label: '🧭 Exploration', sub: 'world map · party · quests · notes', wants: ['wmap', 'party', 'quests', 'notes'] },
+    { id: 'roleplay', label: '🎭 Roleplay',   sub: 'the open NPC · party · notes · AI chat', wants: ['entity', 'party', 'notes', 'ai_chat'] },
+    { id: 'prep',    label: '📖 Prep',        sub: 'AI chat · find · notes · tables · calendar', wants: ['ai_chat', 'find', 'notes', 'tables', 'calendar'] },
+  ];
+
   // A running timer is a moment in time, not an arrangement: a saved layout must not carry one (it would open as a stale countdown).
   function stripTimers(layout) {
     (layout.panels || []).forEach(function (q) { if (q.type === 'timer' && q.data) delete q.data.timer; });
     return layout;
   }
-  function renderPresetSelect(selected) {
+
+  function layoutsOpen() { return layoutsPop.style.display === 'block'; }
+  function closeLayouts(refocus) {
+    if (!layoutsOpen()) return;
+    layoutsPop.style.display = 'none';
+    layoutsBtn.setAttribute('aria-expanded', 'false');
+    if (refocus) layoutsBtn.focus();
+  }
+  function openLayouts() {
+    windowsPop.style.display = 'none';
+    renderLayoutsMenu();
+    const r = layoutsBtn.getBoundingClientRect();
+    layoutsPop.style.display = 'block';
+    layoutsPop.style.left = Math.max(8, Math.min(r.right - layoutsPop.offsetWidth, window.innerWidth - layoutsPop.offsetWidth - 8)) + 'px';
+    layoutsPop.style.top = (r.bottom + 6) + 'px';
+    layoutsBtn.setAttribute('aria-expanded', 'true');
+    const first = layoutsPop.querySelector('.ck-winrow');
+    if (first) first.focus();
+  }
+  function renderLayoutsMenu() {
+    const scenesEl = document.getElementById('ck-scenes');
+    if (scenesEl) {
+      scenesEl.textContent = '';
+      SCENES.forEach(function (sc) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'ck-winrow'; b.setAttribute('role', 'menuitem');
+        const name = document.createElement('span'); name.textContent = sc.label;
+        const sub = document.createElement('small'); sub.textContent = sc.sub;
+        b.append(name, sub);
+        b.addEventListener('click', function () { closeLayouts(false); applyScene(sc); });
+        scenesEl.appendChild(b);
+      });
+    }
+    const savedEl = document.getElementById('ck-saved');
+    if (!savedEl) return;
+    savedEl.textContent = '';
     const names = Object.keys(presets);
-    presetSelect.style.display = names.length ? '' : 'none';
-    deletePresetBtn.style.display = names.length ? '' : 'none';
-    presetSelect.innerHTML = '<option value="">' + (selected ? '' : 'Layout: unsaved') + '</option>' +
-      names.map(function (nm) {
-        return '<option value="' + esc(nm) + '"' + (nm === selected ? ' selected' : '') + '>' + esc(nm) + '</option>';
-      }).join('');
+    if (!names.length) {
+      const e = document.createElement('div');
+      e.className = 'ck-pop-empty';
+      e.textContent = 'None yet - arrange the windows, then "Save the windows as a layout…".';
+      savedEl.appendChild(e);
+    }
+    names.forEach(function (name) {
+      const row = document.createElement('div');
+      row.className = 'ck-saved-row';
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'ck-winrow' + (name === currentPreset ? ' current' : ''); b.setAttribute('role', 'menuitem');
+      b.textContent = name;
+      b.title = 'Apply the saved layout "' + name + '"';
+      b.addEventListener('click', function () { closeLayouts(false); applyPreset(name); });
+      const x = document.createElement('button');
+      x.type = 'button'; x.className = 'ck-winrow ck-winrow-x'; x.textContent = '✕';
+      x.title = 'Delete the saved layout "' + name + '"'; x.setAttribute('aria-label', x.title);
+      x.addEventListener('click', function () { deletePreset(name); });
+      row.append(b, x);
+      savedEl.appendChild(row);
+    });
   }
 
-  document.getElementById('ck-preset-select').addEventListener('change', function () {
-    const name = this.value;
+  function applyPreset(name) {
     if (!name || !presets[name]) return;
     const pr = presets[name];
     const from = workingFrom(stripTimers(clone(pr)).panels, LAYOUT.vpOk(pr.vp) ? pr.vp : null, LAYOUT.vpOk(pr.lvp) ? pr.lvp : null);
+    currentPreset = name;
     recomputeSeq();
     panels.forEach(function (p) { p.id = newId(); });
     adaptToScreen(from);   // arranged on another screen? scale it
     render();
     save();
-  });
-
-  document.getElementById('ck-save-preset').addEventListener('click', function () {
-    const current = presetSelect.value;
-    let name = current;
-    if (!name) {
-      name = prompt('Name this layout (e.g. Combat, Exploration):');
-      if (!name) return;
-    } else if (!confirm('Overwrite the saved layout "' + current + '" with the current windows?')) {
-      return;
-    }
-    const now = vpNow(); if (now) refVp = now;
-    presets[name.trim().slice(0, 40)] = stripTimers(clone(savedLayout()));
-    renderPresetSelect(name.trim().slice(0, 40));
-    save();
-  });
-
-  deletePresetBtn.addEventListener('click', function () {
-    const name = presetSelect.value;
+  }
+  function deletePreset(name) {
     if (!name || !presets[name]) return;
     if (!confirm('Delete the saved layout "' + name + '"?')) return;
     delete presets[name];
-    renderPresetSelect();
+    if (currentPreset === name) currentPreset = '';
+    renderLayoutsMenu();
+    updateStatus();
     save();
+  }
+  function saveLayoutAs() {
+    const typed = prompt('Save the windows as a layout named (e.g. Combat, Exploration):', currentPreset || '');
+    const name = (typed || '').trim().slice(0, 40);
+    if (!name) return;
+    if (presets[name] && !confirm('Replace the saved layout "' + name + '" with the current windows?')) return;
+    if (!presets[name] && Object.keys(presets).length >= CK_MAX_PRESETS) {
+      toast('At most ' + CK_MAX_PRESETS + ' saved layouts - delete one first.');
+      return;
+    }
+    const now = vpNow(); if (now) refVp = now;
+    presets[name] = stripTimers(clone(savedLayout()));
+    currentPreset = name;
+    renderLayoutsMenu();
+    updateStatus();
+    save();
+  }
+
+  // The window a scene wants of one kind: the one used last, else a new one (a map / party / world map needs one to exist
+  // in the world; a combat takes the most recent; an entity needs a choice, so only an open one is used).
+  async function sceneWindow(type) {
+    const have = panels.filter(function (q) { return q.type === type; }).sort(function (a, b) { return (b.z || 0) - (a.z || 0); })[0];
+    if (have) return have;
+    let ref = '', title = '';
+    if (type === 'map') { if (!CK_MAPS.length) return null; ref = CK_MAPS[0].slug; title = '📐 ' + CK_MAPS[0].name; }
+    else if (type === 'wmap') { if (!(CK_WORLD_MAPS || []).length) return null; ref = CK_WORLD_MAPS[0].slug; title = '🗺 ' + CK_WORLD_MAPS[0].name; }
+    else if (type === 'party') { if (!CK_PARTIES.length) return null; ref = String(CK_PARTIES[0].id); title = '❤ ' + CK_PARTIES[0].name; }
+    else if (type === 'combat') {
+      try {
+        const r = await fetch('/api/combat/recent');
+        const c = r.ok ? ((await r.json()).combats || [])[0] : null;
+        if (c) { ref = String(c.id); title = '⚔ ' + c.name; }
+      } catch (e) { /* an unpicked combat window offers its own picker */ }
+    } else if (type === 'entity') return null;
+    return addPanel(type, ref, title, { scene: true });
+  }
+  async function applyScene(sc) {
+    if (MOBILE() || PLAYER) return;
+    const ids = [];
+    for (let i = 0; i < sc.wants.length; i++) {
+      const p = await sceneWindow(sc.wants[i]);
+      if (p && ids.indexOf(p.id) < 0) ids.push(p.id);
+    }
+    if (!ids.length) { toast(sc.label + ': nothing to show yet - add a map, a party or a combat first.'); return; }
+    LAYOUT.applyScene(panels, ids, { klass: klass, vp: vpNow() || refVp || LAPTOP_FALLBACK_VP, slots: LAPTOP() ? slotsNow() : Infinity, pref: prefHeight, stage: ids[0] });
+    const keep = panels.filter(function (q) { return q.parked; }).length;
+    applyDockState();
+    updateStatus();
+    ids.forEach(function (id) { const q = panels.find(function (x) { return x.id === id; }); if (q && !q.parked) flash(winEl(q)); });
+    save();
+    toast(sc.label + ' — ' + (panels.length - keep) + ' window' + (panels.length - keep === 1 ? '' : 's') + ' showing' + (keep ? ', ' + keep + ' in the dock' : ''));
+  }
+
+  layoutsBtn.addEventListener('click', function () { if (layoutsOpen()) closeLayouts(false); else openLayouts(); });
+  layoutsPop.addEventListener('keydown', function (e) {
+    const rows = Array.prototype.slice.call(layoutsPop.querySelectorAll('.ck-winrow'));
+    const at = rows.indexOf(document.activeElement);
+    let to = null;
+    if (e.key === 'ArrowDown') to = rows[(at + 1) % rows.length];
+    else if (e.key === 'ArrowUp') to = rows[(at - 1 + rows.length) % rows.length];
+    else if (e.key === 'Home') to = rows[0];
+    else if (e.key === 'End') to = rows[rows.length - 1];
+    if (to) { e.preventDefault(); to.focus(); }
   });
+  document.addEventListener('mousedown', function (e) {
+    if (layoutsOpen() && !e.target.closest('#ck-layouts-pop') && !e.target.closest('#ck-layouts-btn')) closeLayouts(false);
+  });
+  document.getElementById('ck-save-preset').addEventListener('click', function () { closeLayouts(false); saveLayoutAs(); });
+  const lockRow = document.getElementById('ck-lock-row');
+  if (lockRow) lockRow.addEventListener('click', function () { closeLayouts(false); toggleLock(); });
 
   document.getElementById('ck-add-btn').addEventListener('click', openAdd);
   // The Find-AI toolbar button is GM-only (absent in player mode) — its
@@ -2040,6 +2349,7 @@
       const addWasOpen = addOverlay.style.display === 'block';
       if (addWasOpen) closeAdd();
       if (windowsPop.style.display === 'block') { windowsPop.style.display = 'none'; windowsBtn.focus(); }
+      if (layoutsOpen()) closeLayouts(true);
       if (ctxEl && ctxEl.style.display === 'block') ctxEl.style.display = 'none';
       const big = viewport.querySelector('.ck-win.maxed');          // a window filling the cockpit: Esc gives it back
       if (big && !addWasOpen) big.classList.remove('maxed');
@@ -2079,20 +2389,32 @@
     if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
     try { el.focus({ preventScroll: true }); } catch (e) { /* hidden */ }
   }
-  // Fill the cockpit with the active window (the topmost one when none is), or give back the one that fills it.
+  // The window the keys act on: the active one, else the topmost that shows.
+  function activeEl() {
+    const shown = Array.prototype.slice.call(viewport.querySelectorAll('.ck-win:not(.ck-parked):not(.closing)'));
+    return viewport.querySelector('.ck-win.ck-active:not(.ck-parked)') ||
+           shown.sort(function (a, b) { return (parseInt(b.style.zIndex, 10) || 0) - (parseInt(a.style.zIndex, 10) || 0); })[0] || null;
+  }
+  function activePanel() {
+    const el = activeEl();
+    return el ? panels.find(function (q) { return q.id === el.dataset.pid; }) || null : null;
+  }
+  // Fill the cockpit with the active window, or give back the one that fills it.
   function toggleMaxActive() {
-    let el = viewport.querySelector('.ck-win.maxed');
-    if (!el) {
-      const shown = Array.prototype.slice.call(viewport.querySelectorAll('.ck-win:not(.ck-parked):not(.closing)'));
-      el = viewport.querySelector('.ck-win.ck-active:not(.ck-parked)') ||
-           shown.sort(function (a, b) { return (parseInt(b.style.zIndex, 10) || 0) - (parseInt(a.style.zIndex, 10) || 0); })[0];
-    }
+    const el = viewport.querySelector('.ck-win.maxed') || activeEl();
     if (!el) { toast('Open a window first.'); return; }
     el.classList.toggle('maxed');
   }
   function runShortcut(k) {
     if (k.action === 'add') openAdd();
     else if (k.action === 'windows') windowsBtn.click();
+    else if (k.action === 'layouts') layoutsBtn.click();
+    else if (k.action === 'lock') toggleLock();
+    else if (k.action === 'zoomin' || k.action === 'zoomout' || k.action === 'zoomreset') {
+      const p = activePanel();
+      if (!p) { toast('Click a window first - Alt + / Alt - zoom the active one.'); return; }
+      if (k.action === 'zoomreset') setZoom(p, 100); else stepZoom(p, k.action === 'zoomin' ? 1 : -1);
+    }
     else if (k.action === 'show') {
       const p = panels[k.n - 1];
       if (p) { showPanel(p); focusWindow(p); }
@@ -2201,16 +2523,27 @@
     panels.forEach(function (p, i) {
       out.push({
         label: 'Show: ' + fullTitle(p),
-        sub: (lap && p.parked ? 'in the dock' : 'window') + (i < 9 ? ' · Alt+' + (i + 1) : ''),
+        sub: (p.parked ? 'in the dock' : 'window') + (i < 9 ? ' · Alt+' + (i + 1) : ''),
         kw: p.type + ' ' + (CK_TYPES[p.type] ? CK_TYPES[p.type].label : ''),
         run: function () { showPanel(p); focusWindow(p); },
       });
     });
     out.push({ label: '📌 Auto-arrange the windows', sub: 'layout', kw: 'tidy grid tile', run: clickEl('ck-pin-btn') });
     out.push({ label: '💾 Save this layout…', sub: 'layout', run: clickEl('ck-save-preset') });
-    Object.keys(presets).forEach(function (name) {
-      out.push({ label: 'Layout: ' + name, sub: 'saved layout', kw: 'scene preset', run: function () { presetSelect.value = name; presetSelect.dispatchEvent(new Event('change')); } });
+    if (!PLAYER) SCENES.forEach(function (sc) {
+      out.push({ label: 'Scene: ' + sc.label, sub: sc.sub, kw: 'layout view arrange', run: function () { applyScene(sc); } });
     });
+    Object.keys(presets).forEach(function (name) {
+      out.push({ label: 'Layout: ' + name, sub: 'saved layout', kw: 'preset', run: function () { applyPreset(name); } });
+    });
+    out.push({ label: '🧩 Layouts menu', sub: 'Alt+L', kw: 'scenes saved presets', run: openLayouts });
+    out.push({ label: locked() ? '🔓 Unlock the windows' : '🔒 Lock the windows', sub: 'Alt+K', kw: 'freeze protect accidental', run: toggleLock });
+    const ap = activePanel();
+    if (ap) {
+      out.push({ label: '🔍＋ Zoom in: ' + fullTitle(ap), sub: 'Alt +', kw: 'bigger larger', run: function () { stepZoom(ap, 1); } });
+      out.push({ label: '🔍− Zoom out: ' + fullTitle(ap), sub: 'Alt −', kw: 'smaller', run: function () { stepZoom(ap, -1); } });
+      if (popOutPath(ap)) out.push({ label: '⇱ Pop out: ' + fullTitle(ap), sub: 'own window', kw: 'second monitor float detach', run: function () { popOut(ap); } });
+    }
     out.push({ label: '↺ Reset to the default panels', sub: 'layout', run: clickEl('ck-reset') });
     out.push({ label: document.fullscreenElement ? '⛶ Leave fullscreen' : '⛶ Fullscreen', sub: 'F11', kw: 'table mode', run: toggleFullscreen });
     out.push({ label: lap ? '🖥 Desktop layout (free windows)' : '💻 Laptop layout (a few big windows)', sub: 'this browser', kw: 'mode screen', run: clickEl('ck-mode-btn') });
@@ -2426,11 +2759,12 @@
     if (LAPTOP()) {      // the main window big, the others beside it, as many as fit (the dock keeps the rest)
       LAYOUT.retileLaptop(panels, vp, slotsNow(), prefHeight);
       refVp = vp;
-      applyLaptopState();
+      applyDockState();
       save();
       return;
     }
-    const ordered = panels.slice().sort(function (a, b) { return (a.y - b.y) || (a.x - b.x); });
+    const ordered = LAYOUT.visibleOf(panels).sort(function (a, b) { return (a.y - b.y) || (a.x - b.x); });   // what waits in the dock is left alone
+    if (!ordered.length) return;
     LAYOUT.tilePanels(ordered, vp, { pref: prefHeight }).forEach(function (q, i) {
       const p = ordered[i];
       p.x = q.x; p.y = q.y; p.w = q.w; p.h = q.h; p.collapsed = false;
@@ -2497,7 +2831,7 @@
   }
 
   // Geometry, parked state and the dock all follow panels[] - without a re-render, which would reload every window's page.
-  function applyLaptopState() {
+  function applyDockState() {
     zTop = panels.reduce(function (m, p) { return Math.max(m, p.z || 0); }, zTop);
     syncWindowStyles(true);
     renderDock();
@@ -2520,13 +2854,17 @@
     window.addEventListener('resize', fadeChips);
   }
 
+  // The dock is the cockpit's taskbar on both layouts: a chip per window, lit while it shows; a click brings it in (a laptop swaps
+  // one out for it, the big screen just raises it); a window can wait there on either screen.
   function renderDock() {
     if (!dockEl) return;
-    const on = LAPTOP();
-    dockEl.hidden = !on;
-    if (!on) return;
+    const lap = LAPTOP();
+    dockEl.hidden = MOBILE() || !panels.length;
+    const empty = document.getElementById('ck-allparked');
+    if (empty) empty.hidden = MOBILE() || !panels.length || !panels.every(function (p) { return p.parked; });
+    if (dockEl.hidden) return;
     dockChips.textContent = '';
-    const mainWin = LAYOUT.mainOf(LAYOUT.visibleOf(panels));
+    const mainWin = lap ? LAYOUT.mainOf(LAYOUT.visibleOf(panels)) : null;
     panels.forEach(function (p) {
       const b = document.createElement('button');
       b.type = 'button';
@@ -2534,18 +2872,23 @@
       b.setAttribute('aria-pressed', p.parked ? 'false' : 'true');
       b.dataset.pid = p.id;
       b.textContent = chipLabel(p);
-      b.title = fullTitle(p) + (p.parked ? ' — click to show it' : (p === mainWin ? ' — the main window (right-click for more)' : ' — on screen (right-click for more)')) +
+      b.title = fullTitle(p) + (p.parked ? ' — in the dock, click to bring it back'
+        : (p === mainWin ? ' — the main window (right-click for more)' : (lap ? ' — on screen (right-click for more)' : ' — on screen, click to bring it to the front (right-click for more)'))) +
         (panels.indexOf(p) < 9 ? ' · Alt+' + (panels.indexOf(p) + 1) : '');
       b.addEventListener('click', function () { showPanel(p); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); openChipCtx(p, e.clientX, e.clientY); });
       dockChips.appendChild(b);
     });
-    const chosen = pref(SLOTS_KEY, 'auto'), n = String(slotsNow());
-    dockSlots.querySelectorAll('button').forEach(function (b) {
-      const active = b.dataset.n === 'all' ? chosen === 'all' : (chosen !== 'all' && b.dataset.n === n);
-      b.classList.toggle('on', active);
-      b.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
+    if (lap) {
+      const chosen = pref(SLOTS_KEY, 'auto'), n = String(slotsNow());
+      dockSlots.querySelectorAll('button').forEach(function (b) {
+        const active = b.dataset.n === 'all' ? chosen === 'all' : (chosen !== 'all' && b.dataset.n === n);
+        b.classList.toggle('on', active);
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+    const keepLabel = document.getElementById('ck-keep');
+    if (keepLabel) keepLabel.hidden = !lap && !panels.some(function (p) { return p.parked; });   // on the big screen: once something waits
     fadeChips();
   }
   // Scroll the chip row (only the row - never the page) so one chip is fully in sight.
@@ -2559,25 +2902,26 @@
     fadeChips();
   }
 
-  // Bring a window on screen (the dock chip, the Windows list, the Find button): a laptop swaps it in for the one used
-  // least recently; a big screen just raises it.
+  // Bring a window on screen (the dock chip, the Windows list, the Find button): a laptop swaps it in for the one brought in
+  // last; a big screen just brings it back from the dock (if it was there) and raises it.
   function showPanel(p) {
-    if (!LAPTOP()) { raiseWin(p); save(); return; }
-    LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight);
-    applyLaptopState();
+    if (LAPTOP()) LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight);
+    else LAYOUT.showWide(panels, p.id);
+    applyDockState();
     revealChip(p);
     flash(winEl(p));
     save();
   }
   function parkPanel(p) {
-    if (!LAPTOP()) return;
-    if (!LAYOUT.parkLaptop(panels, p.id, lapVp(), prefHeight)) { toast('One window has to stay on screen.'); return; }
-    applyLaptopState();
+    if (LAPTOP()) {
+      if (!LAYOUT.parkLaptop(panels, p.id, lapVp(), prefHeight)) { toast('One window has to stay on screen.'); return; }
+    } else if (!LAYOUT.parkWide(panels, p.id)) return;
+    applyDockState();
     save();
   }
   function makeMainPanel(p) {
     if (!LAPTOP() || !LAYOUT.makeMain(panels, p.id)) return;
-    applyLaptopState();
+    applyDockState();
     save();
   }
   // How many windows show at once on this browser: 1, 2, 3 or all of them.
@@ -2585,7 +2929,7 @@
     setPref(SLOTS_KEY, v);
     if (LAPTOP()) {
       LAYOUT.retileLaptop(panels, lapVp(), slotsNow(), prefHeight);
-      applyLaptopState();
+      applyDockState();
       save();
     } else renderDock();
   }
@@ -2600,7 +2944,7 @@
     const on = LAPTOP();
     document.body.classList.toggle('ck-laptop', on);
     document.body.classList.toggle('ck-showsite', on && pref(SITE_KEY, '') === '1');
-    document.body.classList.toggle('ck-keep', on && keepLoaded());
+    document.body.classList.toggle('ck-keep', !MOBILE() && keepLoaded());
     if (keepBox) keepBox.checked = keepLoaded();
     if (siteBtn) siteBtn.setAttribute('aria-pressed', pref(SITE_KEY, '') === '1' ? 'true' : 'false');
     if (modeBtn) {
@@ -2641,7 +2985,7 @@
     });
     otherVp = klass === 'wide' ? lapRef : wideVp;
     adaptToScreen(klass === 'wide' ? wideVp : (r.derived ? lapVp() : lapRef));
-    applyLaptopState();
+    applyDockState();
     if (klass === 'laptop' && pref(HINT_KEY, '') !== '1') {
       setPref(HINT_KEY, '1');
       toast('Laptop layout: a few windows at a time. The others wait in the bar at the top — click one to bring it in. 💻 switches back.');
@@ -2686,6 +3030,7 @@
   }
   window.addEventListener('resize', function () { fitViewport(); syncMode(); });
   applyChrome();           // before the first measure: the laptop layout hides the site's top bar, so the workspace is taller
+  applyLock();
   fitViewport();
   buildWelcomeTiles();
   updateStatus();

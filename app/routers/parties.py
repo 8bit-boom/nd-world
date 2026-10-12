@@ -180,6 +180,8 @@ def _member_vitals(db: Session, member_pcs: list, resource_limit: Optional[int] 
             "id": pc.id, "name": pc.name, "native": m["native"],
             "hp": hp, "max_hp": hp_max, "hp_label": hp_label, "hp_id": hp_id,
             "temp_hp": pc.temp_hp if m["native"] else 0,
+            # Shock is an N&D track (a custom system lists its own resources instead) - the cockpit's party window steps it
+            "shock": (pc.shock_current or 0) if m["native"] else None, "shock_max": m["shock"] if m["native"] else None,
             # level is an N&D concept; a custom system shows its own name instead
             "ac": ac, "level": pc.level if m["native"] else None,
             "system": "" if m["native"] or tpl is None else tpl.name,

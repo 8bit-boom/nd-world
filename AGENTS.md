@@ -204,6 +204,25 @@ tools that require GM access still check `is_gm` at call time.)
   the same rule (`_PAGE_PATH_RE` in `app/routers/cockpit.py`, `validPagePath` in `cockpit.js`; `tests/test_cockpit_page_windows.py`
   asserts they agree): one leading slash, no scheme / `//host`, no whitespace or backslash, 120 characters. Python's `$` lets a
   trailing newline through - use `\Z` for any such check.
+- **The dock is on both layouts, and a scene is a view over the windows** (`showWide` / `parkWide` / `applyScene` in `cockpit-layout.js`,
+  `tests/test_cockpit_scenes.py`): `parked` is saved at the TOP level for the big screen (absent = showing; the laptop's own flag stays
+  `lap.parked`), and `toWorking` / `toSaved` carry both - so a trip through the laptop never changes who waits in the big screen's dock.
+  `applyScene(panels, ids, {klass, vp, slots, pref, stage})` shows exactly `ids` (the first is the stage / main), tiles them, parks
+  everything else and NEVER closes or rebuilds a window (`cockpit.js` `sceneWindow` reuses the one used last of each type or adds a
+  missing one through `addPanel(..., {scene: true})`, which skips its own placement and save; `applyScene` saves once). The scenes
+  (`SCENES`) are GM-only; an entity window is never invented. Header controls for presets live in the 🧩 Layouts menu
+  (`#ck-layouts-pop`, which keeps the ids `ck-pin-btn` / `ck-save-preset` / `ck-reset`); presets are applied / deleted / saved through
+  `applyPreset` / `deletePreset` / `saveLayoutAs` (never read a `<select>`), and `CK_MAX_PRESETS` mirrors the server's cap.
+- **GM tools in cockpit windows** (`tests/test_cockpit_tools.py`): the party window's HP / Shock buttons are GM-only and go through the
+  sheet's own routes (`hp-async`, `shock`, `/resource` with the template's vital track); `memberClick` shows the change at once
+  (`nudgeHpText`), QUEUES per character (`memberQueue` - never fire-and-forget: five fast -1s must be five changes) and refetches
+  (`loadLive`) when the last has landed. `_member_vitals` carries `shock` / `shock_max` (None on a custom sheet). A window's **zoom** is
+  `data.zoom` (50-200, absent = 100; `_sanitize_panel_data` clamps it; `zoomStep` / `zoomBox` are pure in `cockpit-layout.js`): the first
+  child of `.ck-body` is scaled from the top-left and given the inverse size - apply it AFTER the window is assembled (`buildWin` looks
+  inside it). Never assign `p.data = {...}`: merge (`Object.assign({}, p.data, ...)`) or the zoom / timer is lost. `framePath(p)` is the
+  ONE mapping from a window to its page (building the iframe and Pop out both use it). The **lock** is per browser (`nd_cockpit_lock`)
+  and checked in `wireDrag` / `wireResize` and the menus, not a saved-layout field. The combat status chip follows the first combat
+  window with a `ref` and refreshes on the live bus plus a slow timer.
 - **The timer window is wall-clock** (`static/js/cockpit-timer.js` - the state machine, pure, `now` passed in, tested in
   `tests/test_cockpit_timer.py`; `buildTimer` in `cockpit.js` only draws it): a countdown stores its END TIME and a stopwatch its START
   TIME (epoch ms) in the window's `data.timer`, so a throttled background tab (hidden-tab timers run once a second, then once a minute),

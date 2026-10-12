@@ -130,8 +130,12 @@ def _sanitize_timer(raw) -> Optional[dict]:
     }
 
 
+ZOOM_MIN, ZOOM_MAX = 50, 200             # a window's own zoom, in percent (100 = as the page is)
+
+
 def _sanitize_panel_data(ptype: str, data) -> dict:
-    """What a window may keep besides its geometry: the notes text, and a timer's state on a timer window. Nothing else is stored."""
+    """What a window may keep besides its geometry: the notes text, a timer's state on a timer window, and its zoom (only when it is
+    not 100 %). Nothing else is stored."""
     if not isinstance(data, dict):
         return {}
     out = {"text": str(data.get("text") or "")[:8000]}
@@ -139,6 +143,9 @@ def _sanitize_panel_data(ptype: str, data) -> dict:
         timer = _sanitize_timer(data.get("timer"))
         if timer:
             out["timer"] = timer
+    zoom = _clamp_int(data.get("zoom"), ZOOM_MIN, ZOOM_MAX, default=100)
+    if zoom != 100:
+        out["zoom"] = zoom
     return out
 
 
@@ -172,6 +179,8 @@ def _sanitize_panels(raw_panels) -> list:
             "accent": accent if _ACCENT_RE.match(accent) else "",
             "data": _sanitize_panel_data(p["type"], data),
         }
+        if p.get("parked") is True:
+            entry["parked"] = True             # waiting in the BIG screen's dock (the laptop's own flag is lap.parked)
         lap = _sanitize_laptop_geometry(p.get("lap"))
         if lap:
             entry["lap"] = lap
@@ -226,7 +235,7 @@ def cockpit(request: Request, db: Session = Depends(get_db), active_world: str =
     parties = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name).all()
 
     return templates.TemplateResponse("cockpit.html", {
-        "request": request, "world": world, "worlds": worlds, "max_panels": MAX_PANELS,
+        "request": request, "world": world, "worlds": worlds, "max_panels": MAX_PANELS, "max_presets": MAX_PRESETS,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
         "world_maps_json": _world_maps(world.id),
         "parties_json": [{"id": p.id, "name": p.name} for p in parties],
@@ -572,7 +581,7 @@ def _player_cockpit(request: Request, db: Session, world, worlds, focus_pc: int 
     target = db.get(PlayerCharacter, focus) if focus else None
     view_as = bool(user and user.is_gm and target is not None and target.owner_user_id != user.id)
     return templates.TemplateResponse("cockpit.html", {
-        "request": request, "world": world, "worlds": worlds, "max_panels": MAX_PANELS,
+        "request": request, "world": world, "worlds": worlds, "max_panels": MAX_PANELS, "max_presets": MAX_PRESETS,
         "maps_json": [{"slug": s.slug, "name": s.name} for s in maps],
         "world_maps_json": _world_maps(world.id),
         "parties_json": parties,

@@ -101,9 +101,13 @@ def test_the_page_and_the_server_agree_on_what_an_address_is():
 
 def test_a_page_window_is_only_built_from_a_valid_address():
     js = (ROOT / "static/js/cockpit.js").read_text()
-    body = js.split("} else if (p.type === 'page') {", 1)[1].split("} else if (p.type === 'combat')", 1)[0]
-    assert "validPagePath(p.ref)" in body and "mkIframe(p.ref)" in body
-    assert body.index("validPagePath(p.ref)") < body.index("mkIframe(p.ref)")
+    # the address of every window's page is ONE mapping (framePath); a page window gets one only when its ref is a path on this site ...
+    path = js.split("function framePath(p) {", 1)[1].split("function fillBody", 1)[0]
+    assert "case 'page': return validPagePath(p.ref) ? p.ref : null;" in path
+    # ... and fillBody builds an iframe only from what framePath returns, otherwise says so
+    body = js.split("function fillBody(p, body) {", 1)[1].split("} else if (p.type === 'combat') {", 1)[0]
+    assert "const fp = framePath(p);" in body and "mkIframe(fp)" in body
+    assert "This window has no valid page address." in body
 
 
 def test_the_add_dialog_lists_the_sites_pages_and_takes_an_address(client, seed):

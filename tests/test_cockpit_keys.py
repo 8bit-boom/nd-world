@@ -47,6 +47,8 @@ def test_every_documented_shortcut_does_what_the_table_says():
     out.maximize = K.shortcutFor(ev({code: 'KeyM', alt: true}));
     out.undo = K.shortcutFor(ev({code: 'KeyU', alt: true}));
     out.help = K.shortcutFor(ev({code: 'F1'}));
+    out.layouts = K.shortcutFor(ev({code: 'KeyL', alt: true}));
+    out.lock = K.shortcutFor(ev({code: 'KeyK', alt: true}));
     out.show = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => K.shortcutFor(ev({code: 'Digit' + n, alt: true})));
     """)
     assert out["add"] == {"action": "add"}
@@ -54,6 +56,7 @@ def test_every_documented_shortcut_does_what_the_table_says():
     assert out["maximize"] == {"action": "maximize"}
     assert out["undo"] == {"action": "undo"}
     assert out["help"] == {"action": "help"}
+    assert out["layouts"] == {"action": "layouts"} and out["lock"] == {"action": "lock"}
     assert out["show"] == [{"action": "show", "n": n} for n in range(1, 10)]
 
 
@@ -82,8 +85,8 @@ def test_altgr_and_browser_keys_are_left_alone():
     out.ctrl_n = K.shortcutFor(ev({code: 'KeyN', ctrl: true}));           // new browser window
     out.ctrl_w = K.shortcutFor(ev({code: 'KeyW', ctrl: true}));           // close the tab
     out.alt_left = K.shortcutFor(ev({code: 'ArrowLeft', alt: true}));     // browser back
-    out.alt_zero = K.shortcutFor(ev({code: 'Digit0', alt: true}));
     out.numpad = K.shortcutFor(ev({code: 'Numpad1', alt: true}));         // Alt + numpad types a character on Windows
+    out.numpad_zero = K.shortcutFor(ev({code: 'Numpad0', alt: true}));    // ... and so does the Alt-code that starts with 0
     """)
     assert all(v is None for v in out.values()), out
 
@@ -325,3 +328,37 @@ def test_escape_closes_one_thing_at_a_time():
     esc = js.split("if (e.key === 'Escape') {", 1)[1].split("addSearch.addEventListener", 1)[0]
     assert esc.index("ndPalette.isOpen()") < esc.index("helpOpen()") < esc.index("closeAdd()")
     assert "const addWasOpen" in esc and "!addWasOpen" in esc, "Esc on the Add dialog must not also give a maximised window back"
+
+
+@needs_node
+def test_zoom_keys_work_with_or_without_shift_on_any_layout_and_alt_zero_resets():
+    out = _keys("""
+    const act = (o) => { const r = K.shortcutFor(ev(o)); return r && r.action; };
+    out.in_equal = act({code: 'Equal', alt: true});
+    out.in_plus = act({code: 'Equal', alt: true, shift: true, key: '+'});         // the + sign needs Shift on most keyboards
+    out.in_numpad = act({code: 'NumpadAdd', alt: true});
+    out.out_minus = act({code: 'Minus', alt: true});
+    out.out_shift = act({code: 'Minus', alt: true, shift: true});
+    out.out_numpad = act({code: 'NumpadSubtract', alt: true});
+    out.reset = act({code: 'Digit0', alt: true});
+    out.numpad_zero = act({code: 'Numpad0', alt: true});                           // Alt-codes start with it: left alone
+    out.ctrl_plus = act({code: 'Equal', ctrl: true});                              // the browser's own page zoom
+    out.ctrl_alt_plus = act({code: 'Equal', ctrl: true, alt: true});
+    out.mac_typing = act({code: 'Minus', alt: true, typing: true, mac: true});     // Option + - types an en dash on a Mac
+    out.win_typing = act({code: 'Minus', alt: true, typing: true});
+    """)
+    assert (out["in_equal"], out["in_plus"], out["in_numpad"]) == ("zoomin", "zoomin", "zoomin")
+    assert (out["out_minus"], out["out_shift"], out["out_numpad"]) == ("zoomout", "zoomout", "zoomout")
+    assert out["reset"] == "zoomreset"
+    assert out["numpad_zero"] is None and out["ctrl_plus"] is None and out["ctrl_alt_plus"] is None
+    assert out["mac_typing"] is None and out["win_typing"] == "zoomout"
+
+
+@needs_node
+def test_the_help_lists_the_zoom_and_lock_keys_once_each():
+    out = _keys("""
+    out.rows = K.helpRows().map(r => r.keys);
+    """)
+    rows = out["rows"]
+    assert "Alt + K" in rows and "Alt + L" in rows and "Alt + +  /  Alt + −  /  Alt + 0" in rows
+    assert len(rows) == len(set(rows)), "no key is listed twice"

@@ -370,10 +370,12 @@
   // this one was made from the big screen's windows - the caller treats it as already in this screen's pixels.
   function toWorking(saved, opts) {
     var list = saved.map(function (s) {
-      var p = copy(s), lap = p.lap;
+      var p = copy(s), lap = p.lap, wideParked = !!p.parked;     // a saved top-level `parked` is the BIG screen's: waiting in its dock
       PRIVATE.forEach(function (k) { delete p[k]; });
       p._wide = pickGeo(p);
+      p._wide.parked = wideParked;
       p._lap = lap && typeof lap === 'object' ? copy(lap) : null;
+      if (opts.klass !== 'laptop' && wideParked) p.parked = true;
       return p;
     });
     var derived = false;
@@ -405,12 +407,86 @@
         wide = p._wide || pickGeo(p);
       } else {
         wide = pickGeo(p);
+        wide.parked = !!p.parked;
         lap = p._lap || null;
       }
       putGeo(out, wide);
+      if (wide.parked) out.parked = true;                       // top level = the big screen's (absent = on screen, as it always was)
       if (lap) out.lap = lap;
       return out;
     });
+  }
+
+  // ── the big screen's dock ────────────────────────────────────────────────────────────────────
+  //
+  // A window can wait in the dock on the big screen too - out of the way but kept (its page, notes and settings), one click
+  // on its chip brings it back. There are no slots here: any number of windows may wait, and the ones that show stay where
+  // they were put.
+
+  // Bring a window back (if it was in the dock) and to the front. Returns 'none' | 'front' | 'shown'.
+  function showWide(panels, id) {
+    var p = null;
+    panels.forEach(function (q) { if (q.id === id) p = q; });
+    if (!p) return 'none';
+    var was = !!p.parked;
+    p.parked = false;
+    p.collapsed = false;
+    p.z = panels.reduce(function (m, q) { return Math.max(m, q.z || 0); }, 0) + 1;
+    return was ? 'shown' : 'front';
+  }
+
+  function parkWide(panels, id) {
+    var p = null;
+    panels.forEach(function (q) { if (q.id === id) p = q; });
+    if (!p || p.parked) return false;
+    p.parked = true;
+    return true;
+  }
+
+  // ── scenes ───────────────────────────────────────────────────────────────────────────────────
+  //
+  // A scene is a VIEW over the windows: show exactly these (in order of importance - the first is the stage, or the main window
+  // on a laptop), tile them for this screen, and put every other window in the dock. Nothing is closed: a window that is not in
+  // the scene keeps its page and its state and comes back with one click, or with the next scene that wants it.
+  // opts: { klass: 'wide' | 'laptop', vp, slots (laptop: how many fit), pref, stage (a window id) }
+  function applyScene(panels, ids, opts) {
+    var by = {};
+    panels.forEach(function (p) { by[p.id] = p; });
+    var chosen = [];
+    ids.forEach(function (id) { if (by[id] && chosen.indexOf(by[id]) < 0) chosen.push(by[id]); });
+    if (!chosen.length) return panels;
+    var shown = chosen;
+    if (opts.klass === 'laptop' && opts.slots !== Infinity && opts.slots < chosen.length) shown = chosen.slice(0, Math.max(1, opts.slots));
+    var top = panels.reduce(function (m, q) { return Math.max(m, q.z || 0); }, 0);
+    panels.forEach(function (p) { p.parked = shown.indexOf(p) < 0; delete p.swapped; });
+    shown.forEach(function (p, i) { p.z = top + shown.length - i; p.collapsed = false; });     // recency follows the scene's order
+    var stage = opts.stage && by[opts.stage] && shown.indexOf(by[opts.stage]) >= 0 ? by[opts.stage] : null;
+    var ordered = stage ? [stage].concat(shown.filter(function (p) { return p !== stage; })) : shown.slice();
+    var tiled = tilePanels(ordered, opts.vp, { pref: opts.pref, stage: stage ? 0 : undefined });
+    ordered.forEach(function (p, i) { putBox(p, tiled[i]); p.collapsed = false; });
+    if (opts.klass === 'laptop') {                           // what waits in the dock sits where a swap will find a sane box
+      panels.forEach(function (p) { if (p.parked) putBox(p, ordered[0]); });
+    }
+    return panels;
+  }
+
+  // ── per-window zoom ──────────────────────────────────────────────────────────────────────────
+  // A window can show its page at 50-200 %: scaled from the top-left corner and given the inverse size, so it still fills the
+  // window exactly (scale 1.5 on a box 66.67 % as wide and tall).
+  var ZOOMS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+  function zoomStep(cur, dir) {
+    var at = ZOOMS.indexOf(cur), i;
+    if (at >= 0) return ZOOMS[clamp(at + dir, 0, ZOOMS.length - 1)];
+    if (dir > 0) {                                      // a value that is not a step (an older save): the next step in that direction
+      for (i = 0; i < ZOOMS.length; i++) if (ZOOMS[i] > cur) return ZOOMS[i];
+      return ZOOMS[ZOOMS.length - 1];
+    }
+    for (i = ZOOMS.length - 1; i >= 0; i--) if (ZOOMS[i] < cur) return ZOOMS[i];
+    return ZOOMS[0];
+  }
+  function zoomBox(z) {
+    z = clamp(Math.round(z), 50, 200);
+    return { scale: z / 100, size: 10000 / z };
   }
 
   // ── moving and resizing by hand ──────────────────────────────────────────────────────────────
@@ -485,5 +561,7 @@
     screenClass: screenClass, laptopSlots: laptopSlots, resolveSlots: resolveSlots, visibleOf: visibleOf, mainOf: mainOf,
     retileLaptop: retileLaptop, showLaptop: showLaptop, parkLaptop: parkLaptop, makeMain: makeMain,
     deriveLaptop: deriveLaptop, toWorking: toWorking, toSaved: toSaved,
+    showWide: showWide, parkWide: parkWide, applyScene: applyScene,
+    ZOOMS: ZOOMS, zoomStep: zoomStep, zoomBox: zoomBox,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
