@@ -413,8 +413,73 @@
     });
   }
 
+  // ── moving and resizing by hand ──────────────────────────────────────────────────────────────
+
+  // Which sides of a window each of the eight handles moves.
+  var EDGE_SIDES = {
+    n: { top: 1 }, s: { bottom: 1 }, e: { right: 1 }, w: { left: 1 },
+    ne: { top: 1, right: 1 }, nw: { top: 1, left: 1 }, se: { bottom: 1, right: 1 }, sw: { bottom: 1, left: 1 },
+  };
+
+  // The box a window has after its `dir` handle ({n,s,e,w,ne,nw,se,sw}) is dragged by (dx, dy) from `start`. A window keeps at
+  // least minW x minH, never leaves the workspace sideways or off its top, and (the workspace scrolls) may grow down freely.
+  function resizeBox(start, dx, dy, dir, vp, minW, minH) {
+    minW = minW || MIN_W; minH = minH || MIN_H;
+    var s = EDGE_SIDES[dir] || EDGE_SIDES.se;
+    var x = start.x, y = start.y, w = start.w, h = start.h;
+    var right = start.x + start.w, bottom = start.y + start.h;
+    if (s.left) { x = clamp(start.x + dx, 0, right - minW); w = right - x; }
+    if (s.right) { w = clamp(start.w + dx, minW, Math.max(minW, vp.w - start.x)); }
+    if (s.top) { y = clamp(start.y + dy, 0, bottom - minH); h = bottom - y; }
+    if (s.bottom) { h = clamp(start.h + dy, minH, 8000); }
+    return { x: x, y: y, w: w, h: h };
+  }
+
+  // Magnetic edges: the box's edges that are being moved jump onto a nearby line - the workspace's edges (and an 8px margin in
+  // from them, like a tiled layout), and the edges of the other windows (flush, or an 8px gap away, like a tiled layout) - when
+  // they come within `thr` px. `moving`: 'move' (all four edges, the box keeps its size) or a handle name (only its sides).
+  // Returns the snapped box and the lines it snapped to, for drawing guides.
+  function snapBox(box, moving, others, vp, thr) {
+    thr = thr == null ? 8 : thr;
+    var s = moving === 'move' ? { left: 1, right: 1, top: 1, bottom: 1 } : (EDGE_SIDES[moving] || {});
+    var xs = [0, GAP, vp.w - GAP, vp.w], ys = [0, GAP];
+    others.forEach(function (o) {
+      xs.push(o.x, o.x + o.w, o.x - GAP, o.x + o.w + GAP);
+      ys.push(o.y, o.y + o.h, o.y - GAP, o.y + o.h + GAP);
+    });
+    function nearest(v, lines) {
+      var best = null;
+      lines.forEach(function (l) { var d = Math.abs(l - v); if (d <= thr && (best === null || d < Math.abs(best - v))) best = l; });
+      return best;
+    }
+    var out = { x: box.x, y: box.y, w: box.w, h: box.h, guides: { x: [], y: [] } };
+    var l = s.left ? nearest(box.x, xs) : null, r = s.right ? nearest(box.x + box.w, xs) : null;
+    if (moving === 'move') {
+      // both sides could snap: take the closer one, the box keeps its width
+      var dl = l === null ? Infinity : Math.abs(l - box.x), dr = r === null ? Infinity : Math.abs(r - (box.x + box.w));
+      if (dl <= dr && l !== null) { out.x = l; out.guides.x.push(l); }
+      else if (r !== null) { out.x = r - box.w; out.guides.x.push(r); }
+    } else {
+      if (l !== null) { out.w = box.x + box.w - l; out.x = l; out.guides.x.push(l); }
+      if (r !== null) { out.w = r - out.x; out.guides.x.push(r); }
+    }
+    var t = s.top ? nearest(box.y, ys) : null, b = s.bottom ? nearest(box.y + box.h, ys) : null;
+    if (moving === 'move') {
+      var dt = t === null ? Infinity : Math.abs(t - box.y), db = b === null ? Infinity : Math.abs(b - (box.y + box.h));
+      if (dt <= db && t !== null) { out.y = t; out.guides.y.push(t); }
+      else if (b !== null) { out.y = b - box.h; out.guides.y.push(b); }
+    } else {
+      if (t !== null) { out.h = box.y + box.h - t; out.y = t; out.guides.y.push(t); }
+      if (b !== null) { out.h = b - out.y; out.guides.y.push(b); }
+    }
+    out.x = Math.max(0, out.x); out.y = Math.max(0, out.y);
+    out.w = Math.max(MIN_W, out.w); out.h = Math.max(MIN_H, out.h);
+    return out;
+  }
+
   root.ndCockpitLayout = {
-    MIN_W: MIN_W, MIN_H: MIN_H, GRID: GRID, GAP: GAP, LAPTOP_BELOW: LAPTOP_BELOW,
+    MIN_W: MIN_W, MIN_H: MIN_H, GRID: GRID, GAP: GAP, LAPTOP_BELOW: LAPTOP_BELOW, EDGE_SIDES: EDGE_SIDES,
+    resizeBox: resizeBox, snapBox: snapBox,
     vpOk: vpOk, needsScale: needsScale, fitPanels: fitPanels, scalePanels: scalePanels,
     tilePanels: tilePanels, sizeFor: sizeFor, cascade: cascade,
     screenClass: screenClass, laptopSlots: laptopSlots, resolveSlots: resolveSlots, visibleOf: visibleOf, mainOf: mainOf,

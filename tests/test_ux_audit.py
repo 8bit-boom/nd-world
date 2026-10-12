@@ -304,7 +304,7 @@ def test_mobile_input_bar_stacks_textarea_above_buttons():
 # ── UI scale preference ──────────────────────────────────────────────────────
 
 def test_ui_scale_css_rules_present():
-    for pct in ("90", "110", "125", "150"):
+    for pct in ("90", "110", "125", "150", "175", "200"):
         assert f'html[data-scale="{pct}"]' in _STYLE_CSS
 
 

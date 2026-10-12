@@ -72,7 +72,11 @@
   const PLAYER_TYPES = ['pc', 'map', 'wmap', 'dice', 'party', 'quests', 'entity',
     'ecard', 'notes', 'ai_chat', 'timer', 'calendar', 'gallery', 'audio', 'video'];
   function panelTypes() {
-    if (!PLAYER) return CK_TYPES;
+    if (!PLAYER) {                     // "My Character" is the player's own sheet: a GM has none to show
+      const gm = {};
+      Object.keys(CK_TYPES).forEach(function (k) { if (k !== 'pc') gm[k] = CK_TYPES[k]; });
+      return gm;
+    }
     const out = {};
     PLAYER_TYPES.forEach(function (k) { if (CK_TYPES[k]) out[k] = CK_TYPES[k]; });
     return out;
@@ -408,6 +412,7 @@
       if (name === null) return;
       p.title = name.trim().slice(0, 120);
       title.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+      titleFrames(p, win);
       save();
     });
     const accentBtn = mkBtn('🎨', 'Colour-code this panel', function () {
@@ -445,6 +450,8 @@
     const body = document.createElement('div');
     body.className = 'ck-body';
     fillBody(p, body);
+    labelControls(body);
+    titleFrames(p, body);
 
     const rz = document.createElement('div');
     rz.className = 'ck-resize';
@@ -456,13 +463,30 @@
       openCtx(p, win, e.clientX, e.clientY);
     });
     win.addEventListener('pointerdown', function () {
-      zTop += 1;
-      win.style.zIndex = zTop;
-      p.z = zTop;
+      bringToFront(p);
+      setActive(p);
     });
     wireDrag(head, win, p);
-    wireResize(rz, win, p);
+    RESIZE_DIRS.forEach(function (dir) {
+      if (dir === 'se') { wireResize(rz, win, p, 'se'); return; }      // the visible corner grip is the south-east handle
+      const h = document.createElement('div');
+      h.className = 'ck-rz ck-rz-' + dir;
+      h.setAttribute('aria-hidden', 'true');
+      win.appendChild(h);
+      wireResize(h, win, p, dir);
+    });
     return win;
+  }
+
+  // A name for every field and icon button a panel builds (its tooltip or placeholder), so a screen reader is not left with "edit text".
+  function labelControls(root) {
+    root.querySelectorAll('textarea, input:not([type=hidden]), select, button').forEach(function (el) {
+      if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby')) return;
+      if (el.labels && el.labels.length) return;
+      if (el.tagName === 'BUTTON' && /[A-Za-z0-9]{2,}/.test(el.textContent || '')) return;     // a button that says something already
+      const t = el.getAttribute('title') || el.getAttribute('placeholder');
+      if (t) el.setAttribute('aria-label', t.replace(/\s*[—(].*$/, '').replace(/…$/, '').trim().slice(0, 60) || t.slice(0, 60));
+    });
   }
 
   function mkBtn(label, tip, fn) {
@@ -471,6 +495,7 @@
     b.className = 'ck-wbtn';
     b.textContent = label;
     b.title = tip;
+    b.setAttribute('aria-label', tip);
     b.addEventListener('click', function (e) { e.stopPropagation(); fn(e); });
     return b;
   }
@@ -610,8 +635,25 @@
   function mkIframe(path) {
     const f = document.createElement('iframe');
     f.title = 'panel';
+    f.addEventListener('load', function () { relayFrameEvents(f); });
     frames.mount(f, embed(path));   // src is set by the loader when the window is showing and a slot is free
     return f;
+  }
+  // A page inside a window is a document of its own: a press there never reaches this one. It is the same origin, so each time one
+  // loads the window listens in on it - a press raises and highlights its window.
+  function relayFrameEvents(f) {
+    let w;
+    try { w = f.contentWindow; if (!w || !w.document || w.location.href === 'about:blank') return; } catch (e) { return; }
+    w.addEventListener('pointerdown', function () { activateFrameWindow(f); }, true);
+  }
+  function activateFrameWindow(f) {
+    const w = f.closest ? f.closest('.ck-win') : null;
+    const q = w ? panels.find(function (x) { return x.id === w.dataset.pid; }) : null;
+    if (q && !q.parked) { bringToFront(q); setActive(q); }
+  }
+  // Every page in a window names itself for a screen reader (the window's title), not "panel".
+  function titleFrames(p, root) {
+    root.querySelectorAll('iframe').forEach(function (f) { f.title = fullTitle(p); });
   }
 
   async function loadLive(p) {
@@ -1007,6 +1049,8 @@
     if (!toastHost) {
       toastHost = document.createElement('div');
       toastHost.id = 'ck-toasts';
+      toastHost.setAttribute('role', 'status');
+      toastHost.setAttribute('aria-live', 'polite');
       document.body.appendChild(toastHost);
     }
     const t = document.createElement('div');
@@ -1128,6 +1172,7 @@
         p.title = name.trim().slice(0, 120);
         const t = win.querySelector('.ck-win-title');
         if (t) t.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+        titleFrames(p, win);
         save();
       }],
       ['🎨 Accent', function () {
@@ -1175,13 +1220,20 @@
   setInterval(refreshSavedLabel, 3000);
 
   // ── fullscreen (table mode) ─────────────────────────────────────────────
-  const fsBtn = document.getElementById('ck-fs-btn');
-  if (fsBtn) {
-    fsBtn.addEventListener('click', function () {
-      if (document.fullscreenElement) document.exitFullscreen();
-      else document.documentElement.requestFullscreen().catch(function () {});
-    });
+  const fsBtns = [document.getElementById('ck-fs-btn'), document.getElementById('ck-fs-btn2')].filter(Boolean);
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(function () {});
   }
+  fsBtns.forEach(function (b) { b.addEventListener('click', toggleFullscreen); });
+  document.addEventListener('fullscreenchange', function () {
+    const on = !!document.fullscreenElement;
+    fsBtns.forEach(function (b) {
+      b.title = on ? 'Leave fullscreen' : 'Fullscreen (great at the table)';
+      b.setAttribute('aria-label', on ? 'Leave fullscreen' : 'Fullscreen');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  });
 
   // ── welcome quick-start tiles ───────────────────────────────────────────
   function buildWelcomeTiles() {
@@ -1192,6 +1244,7 @@
     if ((CK_WORLD_MAPS || []).length) quick.push(['wmap', CK_WORLD_MAPS[0].slug, '\u{1F5FA}\u{FE0F} ' + CK_WORLD_MAPS[0].name]);
     if (CK_PARTIES.length) quick.push(['party', String(CK_PARTIES[0].id), '\u2764 ' + CK_PARTIES[0].name]);
     ['pc', 'quests', 'dice', 'ai_chat', 'find', 'notes', 'timer'].forEach(function (t) {
+      if (t === 'pc' && !PLAYER) return;
       quick.push([t, '', '']);
     });
     quick.forEach(function (q) {
@@ -1440,6 +1493,43 @@
   });
 
   // ── drag / resize ──────────────────────────────────────────────────────
+  // Moving and resizing go through the layout maths (cockpit-layout.js): eight handles per window, and magnetic edges - the
+  // workspace's and the other windows' - with guide lines while a snap holds. Hold Ctrl while dragging for free placement
+  // (no snapping, no grid).
+  const RESIZE_DIRS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+  const SNAP_PX = 8;
+  function otherBoxes(p) {
+    return panels.filter(function (q) { return q !== p && !q.parked && !q.collapsed; })
+      .map(function (q) { return { x: q.x, y: q.y, w: q.w, h: q.h }; });
+  }
+  function wsSize() { return { w: viewport.clientWidth, h: viewport.clientHeight }; }
+
+  let guideHost = null;
+  function showGuides(g) {
+    if (!g || (!g.x.length && !g.y.length)) { hideGuides(); return; }
+    if (!guideHost) {
+      guideHost = document.createElement('div');
+      guideHost.id = 'ck-guides';
+      viewport.appendChild(guideHost);
+    }
+    guideHost.textContent = '';
+    g.x.forEach(function (x) {
+      const l = document.createElement('div');
+      l.className = 'ck-guide v';
+      l.style.left = x + 'px';
+      l.style.height = Math.max(viewport.scrollHeight, viewport.clientHeight) + 'px';
+      guideHost.appendChild(l);
+    });
+    g.y.forEach(function (y) {
+      const l = document.createElement('div');
+      l.className = 'ck-guide h';
+      l.style.top = y + 'px';
+      l.style.width = viewport.clientWidth + 'px';
+      guideHost.appendChild(l);
+    });
+  }
+  function hideGuides() { if (guideHost) guideHost.textContent = ''; }
+
   function wireDrag(handle, win, p) {
     handle.addEventListener('pointerdown', function (e) {
       if (e.target.closest('.ck-wbtn') || COMPACT.matches || win.classList.contains('maxed')) return;
@@ -1448,22 +1538,31 @@
       // Y math includes scrollTop on both ends: the workspace scrolls
       // vertically now, and p.y is a content coordinate, not a screen one.
       const sx = e.clientX - p.x, sy = e.clientY - p.y + viewport.scrollTop;
+      let snapped = false, free = false;
       function move(ev) {
-        p.x = Math.max(0, Math.min(viewport.clientWidth - 60, ev.clientX - sx));
-        p.y = Math.max(0, ev.clientY - sy + viewport.scrollTop);
+        free = ev.ctrlKey || ev.metaKey;
+        const raw = { x: Math.max(0, Math.min(viewport.clientWidth - 60, ev.clientX - sx)),
+                      y: Math.max(0, ev.clientY - sy + viewport.scrollTop), w: p.w, h: p.h };
+        const sn = free ? null : LAYOUT.snapBox(raw, 'move', otherBoxes(p), wsSize(), SNAP_PX);
+        snapped = !!sn && (sn.guides.x.length > 0 || sn.guides.y.length > 0);
+        p.x = sn ? sn.x : raw.x;
+        p.y = sn ? sn.y : raw.y;
         win.style.left = p.x + 'px';
         win.style.top = p.y + 'px';
+        showGuides(sn ? sn.guides : null);
         // Edge-dock preview: hover near the left/right edge to see the half
         // the window will occupy on release.
         win.classList.toggle('ck-dock-l', ev.clientX <= DOCK_ZONE);
         win.classList.toggle('ck-dock-r', ev.clientX >= viewport.clientWidth - DOCK_ZONE - 1);
       }
-      function up(ev) {
+      function up() {
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+        hideGuides();
         if (win.classList.contains('ck-dock-l') || win.classList.contains('ck-dock-r')) {
           dockPanel(win, p, win.classList.contains('ck-dock-r'));
-        } else {
+        } else if (!snapped && !free) {              // a snapped window stays exactly where it snapped; the rest land on the grid
           p.x = Math.round(p.x / GRID) * GRID;
           p.y = Math.round(p.y / GRID) * GRID;
           win.style.left = p.x + 'px';
@@ -1474,35 +1573,79 @@
       }
       handle.addEventListener('pointermove', move);
       handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
     });
   }
 
-  function wireResize(handle, win, p) {
+  // A handle on one side or corner of a window (dir: n s e w ne nw se sw). The side opposite the one dragged never moves.
+  function wireResize(handle, win, p, dir) {
     handle.addEventListener('pointerdown', function (e) {
-      if (COMPACT.matches || win.classList.contains('maxed')) return;
+      if (COMPACT.matches || win.classList.contains('maxed') || win.classList.contains('collapsed')) return;
       e.preventDefault();
       e.stopPropagation();
       handle.setPointerCapture(e.pointerId);
-      const sx = e.clientX - p.w, sy = e.clientY - p.h + viewport.scrollTop;
+      bringToFront(p);
+      setActive(p);
+      const sx = e.clientX, sy = e.clientY + viewport.scrollTop;
+      const start = { x: p.x, y: p.y, w: p.w, h: p.h };
+      const ws = wsSize();
+      let snapped = false, free = false;
       function move(ev) {
-        p.w = Math.max(240, Math.min(viewport.clientWidth, ev.clientX - sx));
-        p.h = Math.max(140, Math.min(8000, ev.clientY - sy + viewport.scrollTop));
-        win.style.width = p.w + 'px';
-        win.style.height = p.h + 'px';
+        free = ev.ctrlKey || ev.metaKey;
+        let b = LAYOUT.resizeBox(start, ev.clientX - sx, ev.clientY + viewport.scrollTop - sy, dir, ws);
+        const sn = free ? null : LAYOUT.snapBox(b, dir, otherBoxes(p), ws, SNAP_PX);
+        snapped = !!sn && (sn.guides.x.length > 0 || sn.guides.y.length > 0);
+        if (sn) b = sn;
+        p.x = b.x; p.y = b.y; p.w = b.w; p.h = b.h;
+        win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
+        win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
+        showGuides(sn ? sn.guides : null);
       }
       function up() {
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
-        p.w = Math.round(p.w / GRID) * GRID;
-        p.h = Math.round(p.h / GRID) * GRID;
-        win.style.width = p.w + 'px';
-        win.style.height = p.h + 'px';
+        handle.removeEventListener('pointercancel', up);
+        hideGuides();
+        if (!snapped && !free) {                       // land the edges that moved on the grid, the others stay exactly put
+          const sides = LAYOUT.EDGE_SIDES[dir] || LAYOUT.EDGE_SIDES.se;
+          const right = p.x + p.w, bottom = p.y + p.h;
+          if (sides.left) { p.x = Math.round(p.x / GRID) * GRID; p.w = right - p.x; }
+          if (sides.right) p.w = Math.round(p.w / GRID) * GRID;
+          if (sides.top) { p.y = Math.round(p.y / GRID) * GRID; p.h = bottom - p.y; }
+          if (sides.bottom) p.h = Math.round(p.h / GRID) * GRID;
+          p.w = Math.max(LAYOUT.MIN_W, p.w); p.h = Math.max(LAYOUT.MIN_H, p.h);
+          win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
+          win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
+        }
         save();
       }
       handle.addEventListener('pointermove', move);
       handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
     });
   }
+
+  // ── the active window ──────────────────────────────────────────────────
+  // The one you last pressed on or clicked into (also inside its page: focus moving into an iframe blurs this window), drawn
+  // with a brighter frame and title bar, and raised above the others - a click inside a window's page never reaches this document.
+  function setActive(p) {
+    viewport.querySelectorAll('.ck-win.ck-active').forEach(function (el) { el.classList.remove('ck-active'); });
+    const el = p ? viewport.querySelector('.ck-win[data-pid="' + p.id + '"]') : null;
+    if (el) el.classList.add('ck-active');
+  }
+  function bringToFront(p) {
+    const el = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
+    if (el && p.z === zTop && el.style.zIndex === String(zTop)) return;
+    zTop += 1;
+    p.z = zTop;
+    if (el) el.style.zIndex = zTop;
+  }
+  window.addEventListener('blur', function () {
+    setTimeout(function () {
+      const a = document.activeElement;
+      if (a && a.tagName === 'IFRAME') activateFrameWindow(a);
+    }, 0);
+  });
 
   // ── window list popover ───────────────────────────────────
   function renderWindowList() {
@@ -2076,19 +2219,38 @@
     renderDock();
   }
 
+  // The chip row scrolls sideways when there are more chips than room: the wheel scrolls it, its edges fade while there is more that
+  // way, and the chip just brought in is scrolled into view.
+  function fadeChips() {
+    const c = dockChips;
+    c.style.setProperty('--fl', c.scrollLeft > 4 ? '28px' : '0px');
+    c.style.setProperty('--fr', c.scrollLeft + c.clientWidth < c.scrollWidth - 4 ? '28px' : '0px');
+  }
+  if (dockChips) {
+    dockChips.addEventListener('scroll', fadeChips);
+    dockChips.addEventListener('wheel', function (e) {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || dockChips.scrollWidth <= dockChips.clientWidth) return;
+      e.preventDefault();
+      dockChips.scrollLeft += e.deltaY;
+    }, { passive: false });
+    window.addEventListener('resize', fadeChips);
+  }
+
   function renderDock() {
     if (!dockEl) return;
     const on = LAPTOP();
     dockEl.hidden = !on;
     if (!on) return;
     dockChips.textContent = '';
+    const mainWin = LAYOUT.mainOf(LAYOUT.visibleOf(panels));
     panels.forEach(function (p) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'ck-chip' + (p.parked ? '' : ' on');
+      b.className = 'ck-chip' + (p.parked ? '' : ' on') + (p === mainWin && !p.parked ? ' main' : '');
+      b.setAttribute('aria-pressed', p.parked ? 'false' : 'true');
       b.dataset.pid = p.id;
       b.textContent = chipLabel(p);
-      b.title = fullTitle(p) + (p.parked ? ' — click to show it' : ' — on screen (right-click for more)');
+      b.title = fullTitle(p) + (p.parked ? ' — click to show it' : (p === mainWin ? ' — the main window (right-click for more)' : ' — on screen (right-click for more)'));
       b.addEventListener('click', function () { showPanel(p); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); openChipCtx(p, e.clientX, e.clientY); });
       dockChips.appendChild(b);
@@ -2099,6 +2261,17 @@
       b.classList.toggle('on', active);
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
+    fadeChips();
+  }
+  // Scroll the chip row (only the row - never the page) so one chip is fully in sight.
+  function revealChip(p) {
+    if (!dockChips || !p) return;
+    const b = dockChips.querySelector('.ck-chip[data-pid="' + p.id + '"]');
+    if (!b) return;
+    const row = dockChips.getBoundingClientRect(), r = b.getBoundingClientRect();
+    if (r.left < row.left) dockChips.scrollLeft -= row.left - r.left + 12;
+    else if (r.right > row.right) dockChips.scrollLeft += r.right - row.right + 12;
+    fadeChips();
   }
 
   // Bring a window on screen (the dock chip, the Windows list, the Find button): a laptop swaps it in for the one used
@@ -2107,6 +2280,7 @@
     if (!LAPTOP()) { raiseWin(p); save(); return; }
     LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight);
     applyLaptopState();
+    revealChip(p);
     flash(winEl(p));
     save();
   }

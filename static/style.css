@@ -75,6 +75,8 @@ html[data-scale="90"]  { font-size: calc(var(--font-size-base) * 0.9); }
 html[data-scale="110"] { font-size: calc(var(--font-size-base) * 1.1); }
 html[data-scale="125"] { font-size: calc(var(--font-size-base) * 1.25); }
 html[data-scale="150"] { font-size: calc(var(--font-size-base) * 1.5); }
+html[data-scale="175"] { font-size: calc(var(--font-size-base) * 1.75); }
+html[data-scale="200"] { font-size: calc(var(--font-size-base) * 2); }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

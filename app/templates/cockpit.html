@@ -17,18 +17,19 @@
       <label id="ck-keep" title="Ticked: windows waiting in the dock load with the rest and stay loaded, so a chat, a scroll position or a map is as you left it when you bring them back. Unticked: a window loads when it is first shown and a page left in the dock for a minute is given back (less memory)."><input type="checkbox" id="ck-keep-box" checked> Keep loaded</label>
     </div>
     <div id="ck-head-actions">
-      <button type="button" class="ck-btn" id="ck-site-btn" aria-pressed="false" title="Show / hide the site menu (Entities, Tools, Settings…) above the cockpit">☰</button>
-      <button type="button" class="ck-btn" id="ck-mode-btn" title="Laptop or desktop layout">💻</button>
-      <select id="ck-preset-select" title="Saved layouts" style="display:none"></select>
-      <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
-      <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows">🗂<span class="ck-bl"> Windows</span></button>
-      <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout">💾<span class="ck-bl"> Save layout</span></button>
-      <button type="button" class="ck-btn" id="ck-pin-btn" title="Auto-arrange all windows in a grid from top-left — scroll down if the grid outgrows the screen">📌<span class="ck-bl"> Auto-arrange</span></button>
-      {% if not player_mode %}<button type="button" class="ck-btn" id="ck-find-btn" title="Find entities & notes connected to a query — or to a focused entity (AI, thinking + RAG)">🔍<span class="ck-bl"> Find AI</span></button>{% endif %}
-      <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋<span class="ck-bl"> Add panel</span></button>
-      <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺<span class="ck-bl"> Reset</span></button>
-      <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
-      <a class="ck-btn" id="ck-exit" href="{{ (exit_href or '/')|wq }}" title="{{ 'Close the cockpit — back to the character sheet' if exit_href and exit_href != '/characters' else 'Exit the cockpit' }}">✕</a>
+      <button type="button" class="ck-btn" id="ck-site-btn" aria-pressed="false" aria-label="Show or hide the site menu" title="Show / hide the site menu (Entities, Tools, Settings…) above the cockpit">☰</button>
+      <button type="button" class="ck-btn" id="ck-mode-btn" title="Laptop or desktop layout" aria-label="Switch between the laptop and the desktop layout">💻</button>
+      <select id="ck-preset-select" title="Saved layouts" aria-label="Saved layouts" style="display:none"></select>
+      <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" aria-label="Delete the selected saved layout" style="display:none">🗑</button>
+      <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows" aria-label="All open windows" aria-haspopup="true">🗂<span class="ck-bl"> Windows</span></button>
+      <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout" aria-label="Save layout">💾<span class="ck-bl"> Save layout</span></button>
+      <button type="button" class="ck-btn" id="ck-pin-btn" title="Auto-arrange all windows in a grid from top-left — scroll down if the grid outgrows the screen" aria-label="Auto-arrange the windows">📌<span class="ck-bl"> Auto-arrange</span></button>
+      {% if not player_mode %}<button type="button" class="ck-btn" id="ck-find-btn" title="Find entities & notes connected to a query — or to a focused entity (AI, thinking + RAG)" aria-label="Find with AI">🔍<span class="ck-bl"> Find AI</span></button>{% endif %}
+      <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat" aria-label="Add a panel">＋<span class="ck-bl"> Add panel</span></button>
+      <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set" aria-label="Reset to the default panels">↺<span class="ck-bl"> Reset</span></button>
+      <button type="button" class="ck-btn" id="ck-fs-btn2" title="Fullscreen (great at the table; F11 does the same)" aria-label="Fullscreen" aria-pressed="false">⛶</button>
+      <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker" aria-label="Combat Tracker">⚔</a>
+      <a class="ck-btn" id="ck-exit" href="{{ (exit_href or '/')|wq }}" title="{{ 'Close the cockpit — back to the character sheet' if exit_href and exit_href != '/characters' else 'Exit the cockpit' }}" aria-label="{{ 'Close the cockpit and go back to the character sheet' if exit_href and exit_href != '/characters' else 'Exit the cockpit' }}">✕</a>
     </div>
   </header>
 
@@ -43,8 +44,8 @@
   <footer id="ck-status">
     <span id="ck-stat-left">🪟 0</span>
     <span id="ck-stat-mid"></span>
-    <span id="ck-stat-right"><span id="ck-stat-live" title="live sync">●</span> <span id="ck-stat-saved">—</span></span>
-    <button type="button" class="ck-wbtn" id="ck-fs-btn" title="Fullscreen (great at the table)">⛶</button>
+    <span id="ck-stat-right"><span id="ck-stat-live" role="img" aria-label="Live sync: lights up when something changes in the world" title="Live sync: lights up when something changes in the world">●</span> <span id="ck-stat-saved">—</span></span>
+    <button type="button" class="ck-wbtn" id="ck-fs-btn" title="Fullscreen (great at the table)" aria-label="Fullscreen" aria-pressed="false">⛶</button>
   </footer>
 </div>
 
@@ -113,6 +114,7 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
   background: var(--bg2); border: 1px solid var(--border); color: var(--text-dim);
   font-family: inherit; font-size: .78rem; padding: .22rem .55rem;
   border-radius: 4px; cursor: pointer; text-decoration: none; white-space: nowrap;
+  display: inline-flex; align-items: center; justify-content: center; min-height: 24px; min-width: 26px; box-sizing: border-box;
 }
 .ck-btn:hover { color: var(--neon); border-color: var(--neon); }
 .ck-btn-primary { color: var(--neon); border-color: var(--neon); }
@@ -129,26 +131,46 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
 /* ── windows ── */
 .ck-win { position: absolute; display: flex; flex-direction: column;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  box-shadow: 0 6px 22px rgba(0,0,0,.4); min-width: 160px; min-height: 100px;
-  overflow: hidden; }
+  box-shadow: 0 6px 22px rgba(0,0,0,.4); min-width: 160px; min-height: 100px; }
 .ck-win:focus-within { border-color: var(--neon); }
 .ck-head2 { display: flex; align-items: center; gap: .35rem; cursor: grab;
   padding: .28rem .5rem; background: var(--bg3); border-bottom: 1px solid var(--border);
-  user-select: none; touch-action: none; }
+  border-radius: 5px 5px 0 0; user-select: none; touch-action: none; }
+.ck-win.collapsed .ck-head2 { border-radius: 5px; border-bottom-color: transparent; }
 .ck-head2:active { cursor: grabbing; }
 .ck-win-title { flex: 1; font-size: .78rem; font-weight: bold; color: var(--neon);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ck-wbtn { background: none; border: none; color: var(--text-dim); cursor: pointer;
   font-size: .75rem; padding: 0 .25rem; font-family: inherit; line-height: 1.4; }
 .ck-wbtn:hover { color: var(--neon); }
-.ck-body { flex: 1; min-height: 0; position: relative; background: var(--bg2); }
+.ck-body { flex: 1; min-height: 0; position: relative; background: var(--bg2); overflow: hidden; border-radius: 0 0 5px 5px; }
 .ck-body iframe { width: 100%; height: 100%; border: 0; background: var(--bg2); }
 .ck-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
   cursor: nwse-resize; touch-action: none; z-index: 2;
   border-right: 2px solid var(--border); border-bottom: 2px solid var(--border);
   border-bottom-right-radius: 6px; }
 .ck-resize:hover { border-color: var(--neon); }
-.ck-win.collapsed .ck-body, .ck-win.collapsed .ck-resize { display: none; }
+.ck-win.collapsed .ck-body, .ck-win.collapsed .ck-resize, .ck-win.collapsed .ck-rz, .ck-win.maxed .ck-rz, .ck-win.maxed .ck-resize { display: none; }
+
+/* Eight resize handles. They sit just OUTSIDE the frame (the workspace clips what leaves it), so they never cover the scrollbar of
+   the page inside the window; the visible corner grip is the south-east one. */
+.ck-rz { position: absolute; z-index: 4; touch-action: none; }
+.ck-rz-n  { top: -6px;    left: 12px;  right: 12px;  height: 8px; cursor: ns-resize; }
+.ck-rz-s  { bottom: -6px; left: 12px;  right: 12px;  height: 8px; cursor: ns-resize; }
+.ck-rz-e  { right: -6px;  top: 12px;   bottom: 12px; width: 8px;  cursor: ew-resize; }
+.ck-rz-w  { left: -6px;   top: 12px;   bottom: 12px; width: 8px;  cursor: ew-resize; }
+.ck-rz-ne { top: -6px;    right: -6px; width: 16px;  height: 16px; cursor: nesw-resize; }
+.ck-rz-sw { bottom: -6px; left: -6px;  width: 16px;  height: 16px; cursor: nesw-resize; }
+.ck-rz-nw { top: -6px;    left: -6px;  width: 16px;  height: 16px; cursor: nwse-resize; }
+.ck-rz:hover { background: rgba(0, 240, 255, .18); }
+/* The window you last pressed on or clicked into: a brighter frame and title bar (it is also raised above the others) */
+.ck-win.ck-active { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon), 0 10px 30px rgba(0, 0, 0, .55); }
+.ck-win.ck-active .ck-head2 { background: linear-gradient(90deg, rgba(0, 240, 255, .16), var(--bg3) 75%); }
+/* guide lines while a move or resize snaps to an edge (hold Ctrl to move without snapping) */
+#ck-guides { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 99998; }
+.ck-guide { position: absolute; background: var(--neon); opacity: .75; }
+.ck-guide.v { width: 1px; top: 0; }
+.ck-guide.h { height: 1px; left: 0; }
 .ck-win.maxed { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; z-index: 99999 !important; border-radius: 0; }
 
 /* live panel bodies (party vitals / quests) */
@@ -248,10 +270,10 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
 /* status bar */
 #ck-status { display: flex; align-items: center; gap: .8rem; padding: .25rem .8rem;
   background: var(--bg2); border-top: 1px solid var(--border);
-  font-size: .72rem; color: var(--text-dim); }
+  font-size: max(12px, .72rem); color: var(--text-dim); }
 #ck-status #ck-stat-mid { flex: 1; text-align: center; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
-#ck-stat-live { color: #555; transition: color .3s; }
+#ck-stat-live { color: #7d8196; transition: color .3s; }
 #ck-stat-live.on { color: #4f4; }
 #ck-fs-btn { color: var(--text-dim); font-size: .85rem; }
 
@@ -438,7 +460,12 @@ body.ck-laptop #ck-head { flex-wrap: nowrap; padding: .25rem .6rem; gap: .5rem; 
 body.ck-laptop #ck-world, body.ck-laptop .ck-title-text, body.ck-laptop .ck-bl { display: none; }
 body.ck-laptop #ck-head-actions { flex-wrap: nowrap; gap: .25rem; margin-left: 0; flex: none; }
 body.ck-laptop .ck-btn { padding: .2rem .5rem; }
-#ck-dock-chips { flex: 1; min-width: 0; display: flex; gap: .3rem; overflow-x: auto; padding: 2px 0; scrollbar-width: thin; }
+#ck-dock-chips { flex: 1; min-width: 0; display: flex; gap: .3rem; overflow-x: auto; padding: 2px 0; scrollbar-width: none;
+  /* more chips than fit: the edge fades while there is more that way (--fl / --fr are set from the scroll position) */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%);
+          mask-image: linear-gradient(90deg, transparent 0, #000 var(--fl, 0px), #000 calc(100% - var(--fr, 0px)), transparent 100%); }
+#ck-dock-chips::-webkit-scrollbar { display: none; }
+.ck-chip.main::before { content: '★ '; color: var(--neon); }
 .ck-chip { flex: none; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); border-radius: 999px;
   font-family: inherit; font-size: .76rem; padding: .2rem .7rem; cursor: pointer; }
@@ -447,7 +474,7 @@ body.ck-laptop .ck-btn { padding: .2rem .5rem; }
 #ck-dock-slots { flex: none; display: flex; align-items: stretch; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 #ck-dock-slots::before { content: 'Show'; display: flex; align-items: center; padding: 0 .45rem; font-size: .68rem; color: var(--text-dim); }
 #ck-dock-slots button { background: var(--bg2); border: 0; border-left: 1px solid var(--border); color: var(--text-dim);
-  font-family: inherit; font-size: .76rem; padding: .2rem .55rem; cursor: pointer; }
+  font-family: inherit; font-size: .76rem; padding: .2rem .55rem; cursor: pointer; min-height: 24px; min-width: 28px; }
 #ck-dock-slots button:hover { color: var(--neon); }
 #ck-dock-slots button.on { background: var(--neon); color: #000; font-weight: bold; }
 /* the two floating buttons (📺 second screen, 🐞 log) sat over the corners of the windows - on a laptop they would cover a Send
@@ -462,16 +489,23 @@ body.ck-laptop #ck-status { padding: .1rem 2.6rem .1rem 1.2rem; }
    frame loader does not start until the window is shown and gives back after a minute. */
 .ck-win.ck-parked { display: none; }
 body.ck-keep .ck-win.ck-parked { display: flex; visibility: hidden; pointer-events: none; left: 0 !important; top: 0 !important; z-index: 0 !important; max-width: 100%; max-height: 100%; }
-#ck-keep { flex: none; display: flex; align-items: center; gap: .3rem; font-size: .72rem; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+#ck-keep { flex: none; display: flex; align-items: center; gap: .3rem; font-size: max(12px, .72rem); color: var(--text-dim); cursor: pointer; white-space: nowrap; }
 #ck-keep input { margin: 0; accent-color: var(--neon); }
 .ck-win.ck-flash { box-shadow: 0 0 0 2px var(--neon), 0 6px 22px rgba(0, 0, 0, .4); }
+
+/* people who ask for less motion get none: windows appear and close at once, the finished timer does not blink */
+@media (prefers-reduced-motion: reduce) {
+  .ck-win, .ck-win.closing, .ck-toast, .ck-timer.done .ck-timer-time { animation: none !important; }
+  .ck-win.closing { display: none; }
+  #ck-stat-live { transition: none; }
+}
 
 @media (max-width: 900px) {
   #ck-viewport { overflow-y: auto; padding: .5rem; }
   .ck-win { position: static; width: auto !important; height: 320px !important;
     margin-bottom: .6rem; }
   .ck-head2 { cursor: default; }
-  .ck-resize { display: none; }
+  .ck-resize, .ck-rz { display: none; }
   .ck-win.maxed { position: static; height: 80vh !important; }
 }
 </style>

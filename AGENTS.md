@@ -182,6 +182,15 @@ tools that require GM access still check `is_gm` at call time.)
   The class, the slot count and the site-bar toggle are per-browser (`nd_cockpit_mode|slots|site` in `localStorage`), not world data.
   A change of class only restyles in place (no re-render: pages stay loaded, chats keep their text). `tests/test_cockpit_laptop.py`
   drives the maths under Node across laptop sizes and the server keeps/validates `lap` / `lvp`.
+- **Cockpit windows behave like a window manager** (`cockpit.js` drag/resize block + the pure `resizeBox` / `snapBox` in
+  `cockpit-layout.js`, tested in `tests/test_cockpit_window_manager.py`): eight resize handles per window (`.ck-rz-*` sit just
+  OUTSIDE the frame so they never cover the scrollbar of the page inside; the visible corner grip is the south-east one), moves
+  and resizes snap to the workspace's edges and to other windows' (guide lines while a snap holds, `SNAP_PX`), **Ctrl held =
+  free placement** (no snapping, no 8px grid). The window you last pressed on is `.ck-active` and raised - a press INSIDE a
+  window's page never reaches the cockpit, so `mkIframe` listens in on the same-origin page on every `load`
+  (`relayFrameEvents`; the same hook is where keys are relayed) and a focus move into a frame does it through the window's
+  `blur`. Every iframe is titled with its window's title (`titleFrames`); icon-only controls inside panels get their tooltip as
+  `aria-label` (`labelControls`). Site UI scale (`nd_ui_scale`) goes 90-200 % for a 4K screen.
 - **Images in cockpit / floated windows open full screen in the MAIN window** (`static/js/nd-lightbox-bridge.js`, tested under
   Node in `tests/test_lightbox_bridge.py`): an embedded page's `openLightbox()` posts the image up to the window above (same
   origin, image addresses only, passed up again through nested frames), because an iframe's lightbox is confined to its
