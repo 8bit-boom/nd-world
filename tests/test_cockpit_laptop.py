@@ -565,7 +565,11 @@ def test_the_cockpit_page_has_the_dock_the_mode_button_and_the_site_menu_button(
 def test_the_laptop_layout_hides_the_site_bar_and_parks_windows_only_through_css_classes():
     html = (ROOT / "app/templates/cockpit.html").read_text()
     assert "body.ck-laptop:not(.ck-showsite) .topbar { display: none; }" in html
-    assert ".ck-win.ck-parked { display: none; }" in html
+    # a window in the dock is hidden but keeps a box, so its page loads and stays loaded (display:none would be a 0x0 frame
+    # that the loader neither starts nor keeps)
+    rule = html[html.index(".ck-win.ck-parked {"):].split("}", 1)[0]
+    assert "visibility: hidden" in rule and "pointer-events: none" in rule and "max-height: 100%" in rule
+    assert "display: none" not in rule
     # the floating buttons must not sit over a window's corner on a laptop
     assert "body.ck-laptop:has(#ck-wrap) { --nd-fab-bottom: 1px; }" in html
 

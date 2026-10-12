@@ -177,6 +177,8 @@ tools that require GM access still check `is_gm` at call time.)
   never written by the laptop, the laptop's travel as `lap` (+ `lvp`, its reference screen); working panels hold the current class's
   geometry in those same fields and stash the other in `_wide` / `_lap`, so only `toWorking` / `toSaved` know there are two - save
   through `savedLayout()`, never `panels` directly, and never put layout state (`parked`, `swapped`, `_wide`, `_lap`) anywhere else.
+  A parked window is `visibility:hidden` with a real (clamped) box, NOT `display:none`: its page loads with the rest and is never given back,
+  so a window in the dock is as live as one on screen (a 0x0 frame would not load, and a map initialised at 0x0 fits wrong).
   The class, the slot count and the site-bar toggle are per-browser (`nd_cockpit_mode|slots|site` in `localStorage`), not world data.
   A change of class only restyles in place (no re-render: pages stay loaded, chats keep their text). `tests/test_cockpit_laptop.py`
   drives the maths under Node across laptop sizes and the server keeps/validates `lap` / `lvp`.

@@ -374,7 +374,9 @@
       }
     });
     updateStatus();
-    panels.forEach(function (p) { viewport.appendChild(buildWin(p)); });
+    // The windows on screen first: their pages take the first free slots, the ones waiting in the dock load behind them.
+    panels.filter(function (p) { return !p.parked; }).concat(panels.filter(function (p) { return p.parked; }))
+      .forEach(function (p) { viewport.appendChild(buildWin(p)); });
     // Everything registered a loader in fillBody — fire them all now that
     // the nodes are attached (the loaders query the DOM by panel id).
     liveLoaders.forEach(function (fn) { fn(); });

@@ -10,6 +10,8 @@
 //   3. Give back: a window hidden BY THE LAYOUT (display:none -> a 0x0 box) for a minute is unloaded (about:blank)
 //      and loads again when shown. A window merely scrolled out of view keeps its page - dropping it would lose
 //      its state for nothing. Collapsing and switching tabs briefly costs nothing.
+//   (A window parked in the laptop layout's dock is NOT hidden by the layout in this sense: it is visibility:hidden with a real
+//   box - see .ck-win.ck-parked - so it loads with the others and its page is never given back.)
 (function (root) {
   'use strict';
 
