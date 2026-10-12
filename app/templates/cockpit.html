@@ -21,11 +21,11 @@
       <button type="button" class="ck-btn" id="ck-mode-btn" title="Laptop or desktop layout" aria-label="Switch between the laptop and the desktop layout">💻</button>
       <select id="ck-preset-select" title="Saved layouts" aria-label="Saved layouts" style="display:none"></select>
       <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" aria-label="Delete the selected saved layout" style="display:none">🗑</button>
-      <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows" aria-label="All open windows" aria-haspopup="true">🗂<span class="ck-bl"> Windows</span></button>
+      <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows (Alt+W)" aria-label="All open windows" aria-haspopup="true">🗂<span class="ck-bl"> Windows</span></button>
       <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout" aria-label="Save layout">💾<span class="ck-bl"> Save layout</span></button>
       <button type="button" class="ck-btn" id="ck-pin-btn" title="Auto-arrange all windows in a grid from top-left — scroll down if the grid outgrows the screen" aria-label="Auto-arrange the windows">📌<span class="ck-bl"> Auto-arrange</span></button>
       {% if not player_mode %}<button type="button" class="ck-btn" id="ck-find-btn" title="Find entities & notes connected to a query — or to a focused entity (AI, thinking + RAG)" aria-label="Find with AI">🔍<span class="ck-bl"> Find AI</span></button>{% endif %}
-      <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat" aria-label="Add a panel">＋<span class="ck-bl"> Add panel</span></button>
+      <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat (Alt+N)" aria-label="Add a panel">＋<span class="ck-bl"> Add panel</span></button>
       <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set" aria-label="Reset to the default panels">↺<span class="ck-bl"> Reset</span></button>
       <button type="button" class="ck-btn" id="ck-fs-btn2" title="Fullscreen (great at the table; F11 does the same)" aria-label="Fullscreen" aria-pressed="false">⛶</button>
       <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker" aria-label="Combat Tracker">⚔</a>
@@ -38,13 +38,15 @@
       <p><strong>Empty cockpit — pin your first panels:</strong></p>
       <div id="ck-welcome-tiles"></div>
       <p style="font-size:.75rem">Everything stays live and saves automatically;
-      💾 keeps named layouts. Right-click a window's title bar for its menu.</p>
+      💾 keeps named layouts. Right-click a window's title bar for its menu.
+      <strong>Ctrl+K</strong> finds anything (a window, a page, an entity, a command) and <strong>F1</strong> lists the shortcuts.</p>
     </div>
   </div>
   <footer id="ck-status">
     <span id="ck-stat-left">🪟 0</span>
     <span id="ck-stat-mid"></span>
     <span id="ck-stat-right"><span id="ck-stat-live" role="img" aria-label="Live sync: lights up when something changes in the world" title="Live sync: lights up when something changes in the world">●</span> <span id="ck-stat-saved">—</span></span>
+    <button type="button" class="ck-wbtn" id="ck-help-btn" title="Keyboard shortcuts and tips (F1)" aria-label="Keyboard shortcuts and tips">⌨</button>
     <button type="button" class="ck-wbtn" id="ck-fs-btn" title="Fullscreen (great at the table)" aria-label="Fullscreen" aria-pressed="false">⛶</button>
   </footer>
 </div>
@@ -85,6 +87,17 @@
       </div>
       <div id="ck-add-list"></div>
     </div>
+  </div>
+</div>
+
+<!-- Keyboard & mouse help (F1) - the rows come from static/js/cockpit-keys.js, so it cannot disagree with the keys -->
+<div id="ck-help" style="display:none">
+  <div id="ck-help-box" role="dialog" aria-modal="true" aria-labelledby="ck-help-title">
+    <div id="ck-help-head">
+      <span id="ck-help-title">Keyboard &amp; mouse</span>
+      <button type="button" class="ck-btn" id="ck-help-close" title="Close (Esc)" aria-label="Close">✕</button>
+    </div>
+    <div id="ck-help-body"></div>
   </div>
 </div>
 
@@ -275,7 +288,7 @@ body.nd-embed #ck-exit, body.nd-embed #ck-m-exit { display: none !important; }
   text-overflow: ellipsis; white-space: nowrap; }
 #ck-stat-live { color: #7d8196; transition: color .3s; }
 #ck-stat-live.on { color: #4f4; }
-#ck-fs-btn { color: var(--text-dim); font-size: .85rem; }
+#ck-fs-btn, #ck-help-btn { color: var(--text-dim); font-size: .85rem; }
 
 /* The GM's floating 📺 second-screen and 🐞 activity-log buttons (nd-stage.js / nd-logger.js) sit 14px from the
    bottom of every page — right on this status bar. Lift them clear of it (rem: the bar grows with the UI scale), and
@@ -322,14 +335,21 @@ body.ck-mobile #nd-stage-panel, body.ck-mobile #nd-logger-panel { display: none 
 .ck-tile:hover { border-color: var(--neon); color: var(--neon); }
 .ck-tile .ck-tile-ic { font-size: 1.3rem; }
 
-/* timer panel */
-.ck-timer { display: flex; flex-direction: column; height: 100%; box-sizing: border-box;
+/* timer panel: the time grows with the window (container units), so it can be read across the table */
+.ck-timer { container-type: size; display: flex; flex-direction: column; height: 100%; box-sizing: border-box;
   gap: .5rem; padding: .6rem .7rem; align-items: center; justify-content: center; }
-.ck-timer-time { font-size: 2.4rem; font-weight: bold; color: var(--neon);
+.ck-timer-time { font-size: clamp(2rem, min(19cqw, 34cqh), 9rem); line-height: 1.05; font-weight: bold; color: var(--neon);
   font-variant-numeric: tabular-nums; letter-spacing: .04em; }
 .ck-timer.done .ck-timer-time { color: #ff2d78; animation: ck-flash 1s infinite; }
 @keyframes ck-flash { 50% { opacity: .45; } }
 .ck-timer-row { display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; justify-content: center; }
+.ck-timer-row[hidden] { display: none; }
+.ck-timer-presets .ck-btn { min-width: 2.6rem; }
+/* a timer that has gone off: its window (and its chip in the laptop dock) pulses until it is dismissed */
+.ck-win.ck-alarm, .ck-mpanel.ck-alarm { border-color: #ff2d78; animation: ck-alarm 1s infinite; }
+.ck-win.ck-alarm .ck-head2 { background: rgba(255, 45, 120, .28); }
+.ck-chip.alarm { border-color: #ff2d78; color: #ff2d78; animation: ck-flash 1s infinite; }
+@keyframes ck-alarm { 50% { box-shadow: 0 0 0 3px #ff2d78, 0 0 26px #ff2d78; } }
 .ck-timer input[type=number] { width: 4.2rem; background: var(--bg3); border: 1px solid var(--border);
   color: var(--text); font-family: inherit; font-size: .78rem; border-radius: 4px; padding: .25rem .35rem; }
 
@@ -390,6 +410,23 @@ body.ck-mobile .topbar + .skip-link, body.ck-mobile footer { display: none !impo
 .ck-m-empty button { background: var(--bg2); border: 1px solid var(--neon);
   color: var(--neon); font-family: inherit; font-size: .9rem; padding: .6rem 1.2rem;
   border-radius: 6px; cursor: pointer; }
+
+/* keyboard & mouse help */
+#ck-help { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);
+  padding: clamp(.5rem, 8vh, 6rem) .5rem .5rem; box-sizing: border-box; }
+#ck-help-box { max-width: min(680px, 100%); max-height: 100%; overflow-y: auto; margin: 0 auto; background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+#ck-help-head { position: sticky; top: 0; z-index: 1; background: var(--bg2); display: flex; justify-content: space-between;
+  align-items: center; padding: .5rem .8rem; border-bottom: 1px solid var(--border); color: var(--neon); font-weight: bold; font-size: .9rem; }
+#ck-help-body { padding: .6rem .9rem .9rem; }
+#ck-help-body h3 { margin: .8rem 0 .35rem; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); font-weight: normal; }
+#ck-help-body h3:first-child { margin-top: .2rem; }
+.ck-help-row { display: grid; grid-template-columns: minmax(8.5rem, 34%) 1fr; gap: .2rem .8rem; padding: .22rem 0;
+  font-size: .82rem; color: var(--text); border-bottom: 1px solid rgba(255,255,255,.04); }
+.ck-help-row kbd { font-family: inherit; font-size: .76rem; color: var(--neon); background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; padding: .05rem .4rem; white-space: nowrap; justify-self: start; align-self: start; }
+.ck-help-row span { color: var(--text-dim); }
+@media (max-width: 560px) { .ck-help-row { grid-template-columns: 1fr; } }
 
 /* add-modal */
 #ck-add-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);
@@ -495,7 +532,8 @@ body.ck-keep .ck-win.ck-parked { display: flex; visibility: hidden; pointer-even
 
 /* people who ask for less motion get none: windows appear and close at once, the finished timer does not blink */
 @media (prefers-reduced-motion: reduce) {
-  .ck-win, .ck-win.closing, .ck-toast, .ck-timer.done .ck-timer-time { animation: none !important; }
+  .ck-win, .ck-win.closing, .ck-toast, .ck-timer.done .ck-timer-time, .ck-win.ck-alarm, .ck-chip.alarm { animation: none !important; }
+  .ck-win.ck-alarm { box-shadow: 0 0 0 3px #ff2d78; }
   .ck-win.closing { display: none; }
   #ck-stat-live { transition: none; }
 }
@@ -543,9 +581,12 @@ const CK_TYPES = {
   combat:  { icon: '⚔', label: 'Combat',       sub: 'live combat tracker',           w: 560, h: 560, picker: 'combat' },
   tables:  { icon: '🎰', label: 'Table roll',   sub: 'roll any random table',         w: 360, h: 280, picker: null },
   calendar:{ icon: '🗓', label: 'Calendar',     sub: 'in-world calendar',             w: 520, h: 480, picker: null },
+  page:    { icon: '📄', label: 'Page',         sub: 'any page of the app, as a window', w: 640, h: 640, picker: 'page' },
 };
 </script>
 <script src="/static/js/cockpit-frames.js?v={{ asset_v('js/cockpit-frames.js') }}"></script>
 <script src="/static/js/cockpit-layout.js?v={{ asset_v('js/cockpit-layout.js') }}"></script>
+<script src="/static/js/cockpit-keys.js?v={{ asset_v('js/cockpit-keys.js') }}"></script>
+<script src="/static/js/cockpit-timer.js?v={{ asset_v('js/cockpit-timer.js') }}"></script>
 <script src="/static/js/cockpit.js?v={{ asset_v('js/cockpit.js') }}"></script>
 {% endblock %}

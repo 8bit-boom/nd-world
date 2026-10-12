@@ -1844,6 +1844,21 @@ textarea[data-fmt].fmt-drag-over {
 }
 .nd-float-btn:hover { color: var(--neon); border-color: var(--neon); }
 
+/* ── Pages inside a window (body.nd-embed: cockpit windows, floated panels, the character viewer) ──────────────────
+   The window's title bar already says what the page is and a window is 350-700px wide, so headings and padding get compact:
+   the content, not the heading, gets the room. (The chrome that goes away entirely is in the body.nd-embed rules of base.html.) */
+body.nd-embed .detail-meta h1 { font-size: 1.25rem; margin: .2rem 0 .4rem; }
+body.nd-embed .list-header h1, body.nd-embed .form-page h1 { font-size: 1.1rem; letter-spacing: .08em; }
+body.nd-embed .list-header { margin-bottom: .8rem; gap: .5rem; }
+body.nd-embed .form-page h1 { margin-bottom: .7rem; }
+body.nd-embed .detail-summary { margin-bottom: .3rem; }
+body.nd-embed .empty { padding: 2rem 1rem; }
+/* the dice window: no page title (the window has one), a tray that leaves room for the buttons under it */
+body.nd-embed .dice-head { display: none !important; }
+body.nd-embed .dice-page { padding: .3rem .4rem !important; }
+body.nd-embed .dice-card { padding: .6rem .7rem !important; }
+body.nd-embed #dice-tray { aspect-ratio: auto !important; height: min(380px, 44vh) !important; min-height: 150px !important; max-height: none !important; }
+
 /* ── Phone layout for Player Characters, Parties and the character hub ────────
    Pages opt in through <main class="mp"> (the base template's main_attrs block).
    The page <style> blocks size controls for a mouse (26–34px buttons, 13–14px

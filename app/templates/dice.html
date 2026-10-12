@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Dice — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+<div class="dice-page" style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
+  <div class="dice-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🎲 Dice</h1>
     <div style="display:flex;gap:.35rem">
       <button type="button" class="nd-float-btn" title="Float the dice tray — it stays open while you browse other pages"
@@ -33,7 +33,7 @@
     <div id="dice-tray-result" aria-live="polite" style="min-height:1.4rem;margin-top:.4rem;font-size:.9rem;color:var(--text)"></div>
   </div>
 
-  <form id="dice-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:.6rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
+  <form id="dice-form" class="dice-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:.6rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
     <div class="form-group" style="flex:1;min-width:220px;margin:0">
       <label>Roll</label>
       <input name="notation" value="{{ last_notation }}" placeholder="2d6+3" {% if not request.query_params.get('embed') %}autofocus{% endif %}
@@ -51,7 +51,7 @@
 
   <div id="dice-error" style="display:none;background:var(--bg2);border:1px solid #a33;border-radius:6px;padding:.7rem 1rem;margin-bottom:1rem;color:#e88;font-size:.85rem"></div>
 
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem">
+  <div class="dice-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">Roll log — {{ world.name }} <span id="dice-count" style="color:var(--text-dim);font-weight:normal;font-size:.78rem">(latest {{ rolls|length }})</span></h2>
     <div id="dice-log" style="display:flex;flex-direction:column;gap:.45rem">
       {% for r in rolls %}

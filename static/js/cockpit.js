@@ -33,6 +33,8 @@
   const windowsPop = document.getElementById('ck-windows-pop');
   const kindSelect = document.getElementById('ck-add-kind');
   const pinBtn = document.getElementById('ck-pin-btn');
+  const helpOverlay = document.getElementById('ck-help');
+  const helpBody = document.getElementById('ck-help-body');
 
   const GRID = 8;              // snap-to-grid (px)
   const DOCK_ZONE = 28;        // edge width that triggers half-dock (px)
@@ -70,7 +72,7 @@
   const LS_KEY = 'nd_cockpit_ws_' + CK_WORLD + (CK_VIEW_AS ? '_as_player' : '');
   const BOARD_URL = '/api/cockpit/player-board' + (CK_VIEW_AS && CK_FOCUS_PC ? '?pc=' + CK_FOCUS_PC : '');
   const PLAYER_TYPES = ['pc', 'map', 'wmap', 'dice', 'party', 'quests', 'entity',
-    'ecard', 'notes', 'ai_chat', 'timer', 'calendar', 'gallery', 'audio', 'video'];
+    'ecard', 'notes', 'ai_chat', 'timer', 'calendar', 'gallery', 'audio', 'video', 'page'];
   function panelTypes() {
     if (!PLAYER) {                     // "My Character" is the player's own sheet: a GM has none to show
       const gm = {};
@@ -88,6 +90,7 @@
   // (refVp) and, opened on another screen, is scaled from that one to this one rather than used as raw pixels. The maths
   // is in cockpit-layout.js (pure, tested across screen sizes); this file only applies it.
   const LAYOUT = window.ndCockpitLayout;
+  const KEYS = window.ndCockpitKeys;
   let refVp = null;                       // the workspace size panels[] is currently expressed in
   // null while the desktop workspace is hidden (the phone shell): it has no size then, so nothing is scaled or saved
   function vpNow() {
@@ -136,6 +139,7 @@
   const findAutoRan = new Set();  // find panels seeded by a card's 🔗 (auto-run)
   const findBusy = new Set();     // find panels with a job in flight
   const panelCleanups = new Map(); // panel id -> fn (e.g. stop a timer)
+  const alarms = new Set();       // ids of the timers that have gone off and not been dismissed (the dock chip shows it too)
   const undoStack = [];           // last closed panels (Undo toast / Ctrl+Shift+T)
   let lastSavedAt = 0;
   let saveError = '';   // why the last server save failed ('' = it did not)
@@ -144,6 +148,8 @@
     const glue = path.indexOf('?') > -1 ? '&' : '?';
     return path + glue + 'embed=1&w=' + encodeURIComponent(CK_WORLD);
   }
+  // A "Page" window shows one page of this app: an absolute path on this site (one leading slash, no scheme, no spaces).
+  function validPagePath(ref) { return typeof ref === 'string' && /^\/(?!\/)[^\s\\]{0,119}$/.test(ref); }
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
   // Panel ids are "p<seq>"; restore seq from the saved ids' numeric part.
   // (parseInt alone can't read them — "p5" parses as NaN, which used to
@@ -521,6 +527,10 @@
       body.appendChild(mkIframe('/imagestudio'));
     } else if (p.type === 'calendar') {
       body.appendChild(mkIframe('/calendar'));
+    } else if (p.type === 'page') {
+      // any page of this app; the address is a path on this site and nothing else (a saved layout is data, not trusted code)
+      if (validPagePath(p.ref)) body.appendChild(mkIframe(p.ref));
+      else body.insertAdjacentHTML('beforeend', '<p class="ck-empty" style="padding:.8rem;color:var(--text-dim)">This window has no valid page address.</p>');
     } else if (p.type === 'combat') {
       // A picked combat embeds the live tracker; an unpicked one shows the
       // in-panel picker so the GM can start from the window itself.
@@ -645,6 +655,8 @@
     let w;
     try { w = f.contentWindow; if (!w || !w.document || w.location.href === 'about:blank') return; } catch (e) { return; }
     w.addEventListener('pointerdown', function () { activateFrameWindow(f); }, true);
+    // the cockpit's keys work from inside a window too (Alt+N, Alt+1..9, F1 ...)
+    w.addEventListener('keydown', function (e) { if (onKey(e)) { e.preventDefault(); e.stopPropagation(); } }, true);
   }
   function activateFrameWindow(f) {
     const w = f.closest ? f.closest('.ck-win') : null;
@@ -1107,12 +1119,7 @@
     updateStatus();
     save();
   }
-  document.addEventListener('keydown', function (e) {
-    if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) {
-      e.preventDefault();
-      undoClose();
-    }
-  });
+  document.addEventListener('keydown', function (e) { if (onKey(e)) e.preventDefault(); });
 
   // ── shared half-dock (drag release + context menu) ─────────────────────
   function dockPanel(win, p, right) {
@@ -1258,92 +1265,154 @@
     });
   }
 
-  // ── timer panel (client-only, session-transient by design) ─────────────
+  // ── timer panel ────────────────────────────────────────────────────────────────────────────────────────────────────
+  // The state machine is static/js/cockpit-timer.js (pure, tested): wall-clock, so a throttled background tab, a laptop that slept,
+  // a reload or an Undo-close all still show the true time. The state lives in the window's data.timer (saved with the layout).
+  // The alarm is loud AND visible: the time flashes, the window and its dock chip pulse, the tab title says so and a toast stays -
+  // the sound alone is not enough when the tab is muted or the window is parked.
+  const TIMER = window.ndCockpitTimer;
+  const TIMER_PRESETS = [1, 5, 10, 15, 30];
+  const baseTitle = document.title;
+  function setAlarmUi(p, on) {
+    if (on) alarms.add(p.id); else alarms.delete(p.id);
+    const el = winEl(p) || document.querySelector('.ck-mpanel[data-pid="' + p.id + '"]');
+    if (el) el.classList.toggle('ck-alarm', on);
+    const chip = dockChips && dockChips.querySelector('.ck-chip[data-pid="' + p.id + '"]');
+    if (chip) chip.classList.toggle('alarm', on);
+    document.title = (alarms.size ? '⏰ ' : '') + baseTitle;
+  }
+  let timerAudio = null;
+  function timerAudioReady() {                    // made on a Start click (a user gesture), so the browser lets it sound later
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!timerAudio && AC) timerAudio = new AC();
+      if (timerAudio && timerAudio.state === 'suspended') timerAudio.resume();
+    } catch (e) { /* silent: the flashing is the alarm */ }
+  }
+  function timerBeeps() {
+    try {
+      timerAudioReady();
+      if (!timerAudio) return;
+      [0, 0.45, 0.9].forEach(function (at) {
+        const o = timerAudio.createOscillator(), g = timerAudio.createGain();
+        const t0 = timerAudio.currentTime + at;
+        o.connect(g); g.connect(timerAudio.destination);
+        o.frequency.value = 880;
+        g.gain.setValueAtTime(0.001, t0);
+        g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+        o.start(t0); o.stop(t0 + 0.4);
+      });
+    } catch (e) { /* silent */ }
+  }
+
   function buildTimer(p, body) {
+    const prev = panelCleanups.get(p.id);             // a rebuilt window must not leave the old one's tick running
+    if (prev) prev();
+    p.data = p.data && typeof p.data === 'object' ? p.data : {};
+    const t = p.data.timer = TIMER.normalize(p.data.timer);
     const wrap = document.createElement('div');
     wrap.className = 'ck-timer';
     const time = document.createElement('div');
     time.className = 'ck-timer-time';
+    time.setAttribute('role', 'timer');
+    const presets = document.createElement('div');
+    presets.className = 'ck-timer-row ck-timer-presets';
     const row = document.createElement('div');
     row.className = 'ck-timer-row';
+    function btn(label, tip) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'ck-btn'; b.textContent = label; b.title = tip; b.setAttribute('aria-label', tip);
+      return b;
+    }
     const mins = document.createElement('input');
-    mins.type = 'number'; mins.min = '1'; mins.max = '600'; mins.value = '5';
-    mins.title = 'Minutes';
-    const modeBtn = document.createElement('button');
-    modeBtn.type = 'button'; modeBtn.className = 'ck-btn';
-    modeBtn.textContent = '\u23F1 Countdown';
-    const startBtn = document.createElement('button');
-    startBtn.type = 'button'; startBtn.className = 'ck-btn';
-    startBtn.textContent = '\u25B6 Start';
-    const resetBtn = document.createElement('button');
-    resetBtn.type = 'button'; resetBtn.className = 'ck-btn';
-    resetBtn.textContent = '\u21BA';
-    row.append(mins, modeBtn, startBtn, resetBtn);
-    wrap.append(time, row);
+    mins.type = 'number'; mins.min = '1'; mins.max = String(TIMER.MAX_MINUTES); mins.value = String(t.minutes);
+    mins.title = 'Minutes'; mins.setAttribute('aria-label', 'Countdown minutes');
+    const modeBtn = btn('', 'Switch between a countdown and a stopwatch');
+    const startBtn = btn('', 'Start / pause');
+    const resetBtn = btn('↺', 'Reset');
+    const plus = btn('+1m', 'Add a minute to the countdown');
+    const minus = btn('−1m', 'Take a minute off the countdown');
+    TIMER_PRESETS.forEach(function (n) {
+      const b = btn(n + 'm', 'Start a ' + n + ' minute countdown');
+      b.addEventListener('click', function () { TIMER.setMode(t, 'down'); setMinutes(n); reset(); start(); });
+      presets.appendChild(b);
+    });
+    row.append(mins, modeBtn, startBtn, resetBtn, minus, plus);
+    wrap.append(time, presets, row);
     body.appendChild(wrap);
 
-    let up = false, running = false, remain = 5 * 60, elapsed = 0, iv = null;
-    function fmt(s) {
-      s = Math.max(0, Math.round(s));
-      const m = Math.floor(s / 60), r = s % 60;
-      return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+    let iv = null;
+    function setMinutes(n) { TIMER.setMinutes(t, n); mins.value = String(t.minutes); }
+    function paint() {
+      const up = t.mode === 'up', now = Date.now();
+      time.textContent = up ? TIMER.fmt(TIMER.elapsed(t, now), true) : TIMER.fmt(TIMER.left(t, now), false);
+      wrap.classList.toggle('done', t.done);
+      modeBtn.textContent = up ? '▶ Stopwatch' : '⏱ Countdown';
+      mins.disabled = up;
+      presets.hidden = minus.hidden = plus.hidden = up;
+      const label = TIMER.startLabel(t);
+      startBtn.textContent = (label === 'Pause' ? '⏸ ' : '▶ ') + label;
     }
-    function paint() { time.textContent = fmt(up ? elapsed : remain); }
-    function beep() {
-      try {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return;
-        const ac = new AC();
-        const o = ac.createOscillator(), g = ac.createGain();
-        o.connect(g); g.connect(ac.destination);
-        o.frequency.value = 880;
-        g.gain.setValueAtTime(0.001, ac.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.8);
-        o.start(); o.stop(ac.currentTime + 0.85);
-        setTimeout(function () { ac.close(); }, 1000);
-      } catch (e) {}
-    }
-    function stopTick() { if (iv) { clearInterval(iv); iv = null; } running = false; }
-    function resetTimer() {
-      stopTick();
-      elapsed = 0;
-      remain = (parseInt(mins.value, 10) || 5) * 60;
-      wrap.classList.remove('done');
-      startBtn.textContent = '\u25B6 Start';
+    function stopTick() { if (iv) { clearInterval(iv); iv = null; } }
+    function startTick() { stopTick(); iv = setInterval(tick, 250); }
+    function tick() {
+      if (TIMER.expired(t, Date.now())) fire();
       paint();
     }
-    modeBtn.addEventListener('click', function () {
-      up = !up;
-      modeBtn.textContent = up ? '\u25B6 Stopwatch' : '\u23F1 Countdown';
-      mins.disabled = up;
-      resetTimer();
-    });
-    startBtn.addEventListener('click', function () {
-      if (running) { stopTick(); startBtn.textContent = '\u25B6 Resume'; return; }
-      running = true;
-      startBtn.textContent = '\u23F8 Pause';
-      wrap.classList.remove('done');
-      iv = setInterval(function () {
-        if (up) { elapsed += 1; paint(); return; }
-        remain -= 1;
-        paint();
-        if (remain <= 0) {
-          stopTick();
-          wrap.classList.add('done');
-          startBtn.textContent = '\u25B6 Start';
-          beep();
-        }
-      }, 1000);
-    });
-    resetBtn.addEventListener('click', resetTimer);
+    function fire() {
+      TIMER.expire(t);
+      stopTick();
+      setAlarmUi(p, true);
+      timerBeeps();
+      toast((p.title || '⏱ Timer') + ' — time is up', 'OK', dismiss);
+      save();
+    }
+    function dismiss() { if (t.done) { TIMER.reset(t); setAlarmUi(p, false); paint(); save(); } }
+    function reset() {
+      stopTick();
+      TIMER.reset(t);
+      setAlarmUi(p, false);
+      paint();
+      save();
+    }
+    function start() {
+      timerAudioReady();
+      if (t.done) setAlarmUi(p, false);
+      if (TIMER.toggle(t, Date.now()) === 'started') startTick(); else stopTick();
+      paint();
+      save();
+    }
+    function adjust(ms) {
+      if (t.done) setAlarmUi(p, false);
+      TIMER.adjust(t, ms, Date.now());
+      paint();
+      save();
+    }
+    modeBtn.addEventListener('click', function () { TIMER.setMode(t, t.mode === 'up' ? 'down' : 'up'); reset(); });
+    startBtn.addEventListener('click', start);
+    resetBtn.addEventListener('click', reset);
+    plus.addEventListener('click', function () { adjust(60000); });
+    minus.addEventListener('click', function () { adjust(-60000); });
     mins.addEventListener('change', function () {
-      if (!running) { remain = (parseInt(mins.value, 10) || 5) * 60; paint(); }
+      setMinutes(parseInt(mins.value, 10));
+      if (!t.running) { TIMER.reset(t); setAlarmUi(p, false); paint(); save(); }
     });
+    wrap.addEventListener('pointerdown', function () { if (t.done) dismiss(); });   // a touch on a flashing timer silences it
+    document.addEventListener('visibilitychange', paint);
+
+    // Back at a saved timer: still running -> carry on; ran out while nobody was here -> say so, quietly (no beep: the browser
+    // would not play one and it would be a surprise).
+    const woke = TIMER.wake(t, Date.now());
+    if (woke === 'running') startTick();
+    else if (woke === 'expired' || woke === 'done') setTimeout(function () { setAlarmUi(p, true); }, 0);
     paint();
-    // Closing/preset-switching the window must stop the interval — register
-    // with the generic per-panel cleanup.
-    panelCleanups.set(p.id, stopTick);
+    // Closing / re-rendering the window must stop the interval - register with the generic per-panel cleanup.
+    panelCleanups.set(p.id, function () {
+      stopTick();
+      document.removeEventListener('visibilitychange', paint);
+      setAlarmUi(p, false);
+    });
   }
 
   // ── AI find / connections panel ────────────────────────────────────────
@@ -1687,9 +1756,21 @@
       windowsPop.style.left = Math.max(8, r.right - 260) + 'px';
       windowsPop.style.top = (r.bottom + 6) + 'px';
       windowsPop.style.display = 'block';
+      const first = windowsPop.querySelector('.ck-winrow');          // the keyboard is in the list at once (Up / Down, Enter, Esc)
+      if (first) first.focus();
     } else {
       windowsPop.style.display = 'none';
     }
+  });
+  windowsPop.addEventListener('keydown', function (e) {
+    const rows = Array.prototype.slice.call(windowsPop.querySelectorAll('.ck-winrow'));
+    const at = rows.indexOf(document.activeElement);
+    let to = null;
+    if (e.key === 'ArrowDown') to = rows[(at + 1) % rows.length];
+    else if (e.key === 'ArrowUp') to = rows[(at - 1 + rows.length) % rows.length];
+    else if (e.key === 'Home') to = rows[0];
+    else if (e.key === 'End') to = rows[rows.length - 1];
+    if (to) { e.preventDefault(); to.focus(); }
   });
   document.addEventListener('mousedown', function (e) {
     if (windowsPop.style.display === 'block' && !e.target.closest('#ck-windows-pop') && !e.target.closest('#ck-windows-btn')) {
@@ -1718,6 +1799,8 @@
       b.addEventListener('click', function () { chooseType(key); });
       addTypes.appendChild(b);
     });
+    const first = addTypes.querySelector('.ck-type');
+    if (first) first.focus();
   }
   function closeAdd() { addOverlay.style.display = 'none'; }
 
@@ -1743,10 +1826,10 @@
         });
       });
     }
-    if (key === 'map' || key === 'wmap' || key === 'party' || key === 'entity' || key === 'ecard' || key === 'combat') {
+    if (key === 'map' || key === 'wmap' || key === 'party' || key === 'entity' || key === 'ecard' || key === 'combat' || key === 'page') {
       addPicker.style.display = '';
       addSearch.value = '';
-      addSearch.placeholder = (key === 'entity' || key === 'ecard') ? 'Search entities…' : 'Filter…';
+      addSearch.placeholder = (key === 'entity' || key === 'ecard') ? 'Search entities…' : (key === 'page' ? 'Filter the pages — or type an address like /tables' : 'Filter…');
       addList.innerHTML = '';
       if (key === 'map') {
         pickerRows = CK_MAPS.map(function (m) { return { ref: m.slug, label: '📐 ' + m.name, sub: 'schematic' }; });
@@ -1771,6 +1854,9 @@
       } else if (key === 'ecard' || key === 'entity') {
         pickerRows = [];
         ensureEntities().then(function () { filterEntities(''); });
+      } else if (key === 'page') {
+        pickerRows = pageRows();
+        fillPicker(pickerRows);
       } else {
         pickerRows = [];
       }
@@ -1805,9 +1891,26 @@
   function filterPicker(q) {
     if (pickerType === 'entity' || pickerType === 'ecard') { filterEntities(q); return; }
     q = q.trim().toLowerCase();
-    fillPicker(pickerRows.filter(function (r) {
+    const rows = pickerRows.filter(function (r) {
       return !q || r.label.toLowerCase().indexOf(q) !== -1;
-    }));
+    });
+    if (pickerType === 'page' && validPagePath(q) && q.length > 1) rows.push({ ref: q, label: pageTitle(q), sub: 'this address' });
+    fillPicker(rows);
+  }
+  // Every page the site's menu offers (the quick switcher's index), as rows for the picker.
+  function pageRows() {
+    const pages = window.ndPalette && window.ndPalette.pages ? window.ndPalette.pages() : [];
+    return pages.filter(function (pg) { return validPagePath(pageHref(pg.href)); })
+      .map(function (pg) { return { ref: pageHref(pg.href), label: pageTitle(pg.label), sub: 'page' }; });
+  }
+  // A menu label usually starts with its own icon ("🎲 Random Tables"); one that does not gets the page icon.
+  function pageTitle(label) {
+    label = String(label || '').trim();
+    return /^[^\x00-\x7F]/.test(label) ? label : '📄 ' + label;
+  }
+  // A menu link carries the world as ?w=slug; the window adds its own (embed()), so take it off.
+  function pageHref(href) {
+    return String(href || '').replace(/([?&])w=[^&#]*&?/, '$1').replace(/[?&]$/, '');
   }
 
   function fillPicker(rows) {
@@ -1866,6 +1969,11 @@
   }
 
   // ── presets ────────────────────────────────────────────────────────────
+  // A running timer is a moment in time, not an arrangement: a saved layout must not carry one (it would open as a stale countdown).
+  function stripTimers(layout) {
+    (layout.panels || []).forEach(function (q) { if (q.type === 'timer' && q.data) delete q.data.timer; });
+    return layout;
+  }
   function renderPresetSelect(selected) {
     const names = Object.keys(presets);
     presetSelect.style.display = names.length ? '' : 'none';
@@ -1880,7 +1988,7 @@
     const name = this.value;
     if (!name || !presets[name]) return;
     const pr = presets[name];
-    const from = workingFrom(clone(pr.panels), LAYOUT.vpOk(pr.vp) ? pr.vp : null, LAYOUT.vpOk(pr.lvp) ? pr.lvp : null);
+    const from = workingFrom(stripTimers(clone(pr)).panels, LAYOUT.vpOk(pr.vp) ? pr.vp : null, LAYOUT.vpOk(pr.lvp) ? pr.lvp : null);
     recomputeSeq();
     panels.forEach(function (p) { p.id = newId(); });
     adaptToScreen(from);   // arranged on another screen? scale it
@@ -1898,7 +2006,7 @@
       return;
     }
     const now = vpNow(); if (now) refVp = now;
-    presets[name.trim().slice(0, 40)] = clone(savedLayout());
+    presets[name.trim().slice(0, 40)] = stripTimers(clone(savedLayout()));
     renderPresetSelect(name.trim().slice(0, 40));
     save();
   });
@@ -1927,11 +2035,14 @@
   addOverlay.addEventListener('mousedown', function (e) { if (e.target === addOverlay) closeAdd(); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-      if (addOverlay.style.display === 'block') closeAdd();
-      if (windowsPop.style.display === 'block') windowsPop.style.display = 'none';
+      if (window.ndPalette && window.ndPalette.isOpen()) return;       // the palette closes itself; one Esc, one thing
+      if (helpOpen()) { closeHelp(); return; }
+      const addWasOpen = addOverlay.style.display === 'block';
+      if (addWasOpen) closeAdd();
+      if (windowsPop.style.display === 'block') { windowsPop.style.display = 'none'; windowsBtn.focus(); }
       if (ctxEl && ctxEl.style.display === 'block') ctxEl.style.display = 'none';
       const big = viewport.querySelector('.ck-win.maxed');          // a window filling the cockpit: Esc gives it back
-      if (big && addOverlay.style.display !== 'block') big.classList.remove('maxed');
+      if (big && !addWasOpen) big.classList.remove('maxed');
     }
   });
   addSearch.addEventListener('input', function () {
@@ -1948,6 +2059,179 @@
     render();
     save();
   });
+
+  // ── keyboard, help and the quick switcher ──────────────────────────────────────────────────────────────────────────
+  // The shortcut table is static/js/cockpit-keys.js (pure and tested; the same rows fill the help overlay, so the list can never
+  // disagree with the keys). A window's page is a document of its own and its keys never reach this one, so relayFrameEvents
+  // listens in on each page and feeds the same handler. Ctrl+K is the site's quick switcher (command-palette.js), which this
+  // page extends with its own commands, the windows, and "open as a window" for entities and pages.
+  const MAC = /Mac|iPhone|iPad/.test(navigator.platform || '');
+  function helpOpen() { return !!helpOverlay && helpOverlay.style.display === 'block'; }
+  function modalOpen() {
+    return addOverlay.style.display === 'block' || helpOpen() || !!(window.ndPalette && window.ndPalette.isOpen());
+  }
+  // Put the keyboard inside a window: its page when it has one (so arrow keys and PgDn scroll it), else the window itself.
+  function focusWindow(p) {
+    const el = winEl(p);
+    if (!el) return;
+    const f = el.querySelector('.ck-body iframe');
+    if (f && f.contentWindow) { try { f.contentWindow.focus(); return; } catch (e) { /* not reachable: focus the frame */ } }
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+    try { el.focus({ preventScroll: true }); } catch (e) { /* hidden */ }
+  }
+  // Fill the cockpit with the active window (the topmost one when none is), or give back the one that fills it.
+  function toggleMaxActive() {
+    let el = viewport.querySelector('.ck-win.maxed');
+    if (!el) {
+      const shown = Array.prototype.slice.call(viewport.querySelectorAll('.ck-win:not(.ck-parked):not(.closing)'));
+      el = viewport.querySelector('.ck-win.ck-active:not(.ck-parked)') ||
+           shown.sort(function (a, b) { return (parseInt(b.style.zIndex, 10) || 0) - (parseInt(a.style.zIndex, 10) || 0); })[0];
+    }
+    if (!el) { toast('Open a window first.'); return; }
+    el.classList.toggle('maxed');
+  }
+  function runShortcut(k) {
+    if (k.action === 'add') openAdd();
+    else if (k.action === 'windows') windowsBtn.click();
+    else if (k.action === 'show') {
+      const p = panels[k.n - 1];
+      if (p) { showPanel(p); focusWindow(p); }
+      else toast('There is no window ' + k.n + ' (' + panels.length + ' open).');
+    } else if (k.action === 'maximize') toggleMaxActive();
+    else if (k.action === 'undo') { if (undoStack.length) undoClose(); else toast('Nothing to reopen.'); }
+    else if (k.action === 'help') toggleHelp();
+  }
+  // True when the key was one of ours (the caller then stops it reaching the page it came from).
+  function onKey(e) {
+    if (MOBILE() || !KEYS) return false;
+    const k = KEYS.shortcutFor({ key: e.key, code: e.code, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, shift: e.shiftKey,
+                                 typing: KEYS.isTypingTarget(e.target), mac: MAC });
+    if (!k) return false;
+    if (k.action !== 'help' && modalOpen()) return false;          // a dialog is up: keys belong to it
+    if (!e.repeat) runShortcut(k);                                 // a held key must not reopen ten windows
+    return true;
+  }
+
+  // ── the help overlay (F1, ?, the ⌨ button) ─────────────────────────────────────────────────────────────────────────
+  const MOUSE_TIPS = [
+    ['Drag a title bar', 'Move the window. It snaps to the workspace edges and to other windows (hold Ctrl for free placement).'],
+    ['Drag an edge or a corner', 'Resize the window from that side.'],
+    ['Drag to the left / right edge', 'Dock the window to that half of the screen.'],
+    ['Double-click a title bar', 'Fill the cockpit with the window; again to give it back.'],
+    ['Double-click the title text', 'Rename the window.'],
+    ['Right-click a title bar', 'The window menu: maximize, dock, reload, rename, colour …'],
+  ];
+  const LAPTOP_TIPS = [
+    ['Dock chips (top)', 'Click one to bring that window in, swapping out the one brought in last. Right-click: make main, put in the dock, close.'],
+    ['Show 1 · 2 · 3 · All', 'How many windows share the screen. Windows in the dock keep running.'],
+  ];
+  function buildHelp() {
+    helpBody.textContent = '';
+    function section(title, rows) {
+      const h = document.createElement('h3');
+      h.textContent = title;
+      helpBody.appendChild(h);
+      rows.forEach(function (r) {
+        const row = document.createElement('div');
+        row.className = 'ck-help-row';
+        const kb = document.createElement('kbd');
+        const tip = Array.isArray(r);                       // [keys, what] pairs (mouse tips) or {keys, what} rows (the key table)
+        kb.textContent = tip ? r[0] : r.keys;
+        const what = document.createElement('span');
+        what.textContent = tip ? r[1] : r.what;
+        row.append(kb, what);
+        helpBody.appendChild(row);
+      });
+    }
+    section('Keyboard', KEYS ? KEYS.helpRows() : []);
+    section('Mouse', MOUSE_TIPS);
+    if (LAPTOP()) section('Laptop layout', LAPTOP_TIPS);
+  }
+  let helpReturnTo = null;
+  function openHelp() {
+    if (!helpOverlay || helpOpen()) return;
+    buildHelp();
+    helpReturnTo = document.activeElement;
+    helpOverlay.style.display = 'block';
+    const x = document.getElementById('ck-help-close');
+    if (x) x.focus();
+  }
+  function closeHelp() {
+    if (!helpOpen()) return;
+    helpOverlay.style.display = 'none';
+    const back = helpReturnTo;
+    helpReturnTo = null;
+    if (back && back.focus && document.contains(back)) { try { back.focus(); } catch (e) { /* gone */ } }
+  }
+  function toggleHelp() { if (helpOpen()) closeHelp(); else openHelp(); }
+  if (helpOverlay) {
+    document.getElementById('ck-help-close').addEventListener('click', closeHelp);
+    helpOverlay.addEventListener('mousedown', function (e) { if (e.target === helpOverlay) closeHelp(); });
+    const helpBtn = document.getElementById('ck-help-btn');
+    if (helpBtn) helpBtn.addEventListener('click', toggleHelp);
+  }
+
+  // ── the quick switcher (Ctrl+K) ────────────────────────────────────────────────────────────────────────────────────
+  // command-palette.js is deferred, so it is not there yet when this script runs: register once the page has been parsed.
+  function openEntityWindow(ent) {
+    const ref = String(ent.id);
+    const have = panels.find(function (q) { return q.type === 'entity' && q.ref === ref; });
+    const p = have || addPanel('entity', ref, (KIND_ICONS[ent.kind] || '👤') + ' ' + ent.name);
+    if (!p) return;
+    if (have) showPanel(p);
+    focusWindow(p);
+  }
+  function openPageWindow(it) {
+    const ref = pageHref(it.href);
+    if (!validPagePath(ref)) { location.href = it.href; return; }
+    const have = panels.find(function (q) { return q.type === 'page' && q.ref === ref; });
+    const p = have || addPanel('page', ref, pageTitle(it.label));
+    if (!p) return;
+    if (have) showPanel(p);
+    focusWindow(p);
+  }
+  function clickEl(id) { return function () { const el = document.getElementById(id); if (el) el.click(); }; }
+  function paletteItems() {
+    const out = [];
+    const lap = LAPTOP();
+    out.push({ label: '＋ Add a panel…', sub: 'Alt+N', kw: 'new window open', run: openAdd });
+    out.push({ label: '🗂 List of windows', sub: 'Alt+W', kw: 'switch', run: function () { windowsBtn.click(); } });
+    if (undoStack.length) out.push({ label: '↩ Reopen the closed window', sub: 'Alt+U · ' + chipLabel(undoStack[undoStack.length - 1].panel), kw: 'undo closed', run: undoClose });
+    out.push({ label: '⌨ Keyboard shortcuts and tips', sub: 'F1', kw: 'help keys', run: openHelp });
+    panels.forEach(function (p, i) {
+      out.push({
+        label: 'Show: ' + fullTitle(p),
+        sub: (lap && p.parked ? 'in the dock' : 'window') + (i < 9 ? ' · Alt+' + (i + 1) : ''),
+        kw: p.type + ' ' + (CK_TYPES[p.type] ? CK_TYPES[p.type].label : ''),
+        run: function () { showPanel(p); focusWindow(p); },
+      });
+    });
+    out.push({ label: '📌 Auto-arrange the windows', sub: 'layout', kw: 'tidy grid tile', run: clickEl('ck-pin-btn') });
+    out.push({ label: '💾 Save this layout…', sub: 'layout', run: clickEl('ck-save-preset') });
+    Object.keys(presets).forEach(function (name) {
+      out.push({ label: 'Layout: ' + name, sub: 'saved layout', kw: 'scene preset', run: function () { presetSelect.value = name; presetSelect.dispatchEvent(new Event('change')); } });
+    });
+    out.push({ label: '↺ Reset to the default panels', sub: 'layout', run: clickEl('ck-reset') });
+    out.push({ label: document.fullscreenElement ? '⛶ Leave fullscreen' : '⛶ Fullscreen', sub: 'F11', kw: 'table mode', run: toggleFullscreen });
+    out.push({ label: lap ? '🖥 Desktop layout (free windows)' : '💻 Laptop layout (a few big windows)', sub: 'this browser', kw: 'mode screen', run: clickEl('ck-mode-btn') });
+    if (lap) out.push({ label: '☰ Show / hide the site menu', sub: 'laptop', run: clickEl('ck-site-btn') });
+    Object.keys(panelTypes()).forEach(function (key) {
+      const t = CK_TYPES[key];
+      out.push({
+        label: '＋ Add: ' + t.label, sub: t.sub, kw: 'new open window ' + key,
+        run: t.picker ? function () { openAdd(); chooseType(key); } : function () { const p = addPanel(key, '', ''); if (p) focusWindow(p); },
+      });
+    });
+    return out;
+  }
+  function registerPalette() {
+    const pal = window.ndPalette;
+    if (!pal) return;
+    pal.addProvider(paletteItems);
+    pal.setEntityOpener(openEntityWindow);
+    pal.setPageOpener(openPageWindow);
+  }
+  if (window.ndPalette) registerPalette(); else document.addEventListener('DOMContentLoaded', registerPalette);
 
   // ── My Character panel (player mode): the viewer's own PC at a glance ──
   let myPcCache = null;
@@ -2246,11 +2530,12 @@
     panels.forEach(function (p) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'ck-chip' + (p.parked ? '' : ' on') + (p === mainWin && !p.parked ? ' main' : '');
+      b.className = 'ck-chip' + (p.parked ? '' : ' on') + (p === mainWin && !p.parked ? ' main' : '') + (alarms.has(p.id) ? ' alarm' : '');
       b.setAttribute('aria-pressed', p.parked ? 'false' : 'true');
       b.dataset.pid = p.id;
       b.textContent = chipLabel(p);
-      b.title = fullTitle(p) + (p.parked ? ' — click to show it' : (p === mainWin ? ' — the main window (right-click for more)' : ' — on screen (right-click for more)'));
+      b.title = fullTitle(p) + (p.parked ? ' — click to show it' : (p === mainWin ? ' — the main window (right-click for more)' : ' — on screen (right-click for more)')) +
+        (panels.indexOf(p) < 9 ? ' · Alt+' + (panels.indexOf(p) + 1) : '');
       b.addEventListener('click', function () { showPanel(p); });
       b.addEventListener('contextmenu', function (e) { e.preventDefault(); openChipCtx(p, e.clientX, e.clientY); });
       dockChips.appendChild(b);

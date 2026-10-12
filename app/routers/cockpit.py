@@ -45,19 +45,23 @@ router = APIRouter()
 # layout is dropped by the sanitizer.
 PANEL_TYPES = {"map", "wmap", "dice", "party", "quests", "entity", "ecard",
                "notes", "ai", "ai_chat", "combat", "tables", "calendar",
-               "gallery", "audio", "video", "imagestudio", "find", "timer"}
+               "gallery", "audio", "video", "imagestudio", "find", "timer",
+               "page"}
 
 MAX_PANELS = 24          # per layout
 MAX_PRESETS = 12         # named layouts per world
 MAX_PANELS_BYTES = 128 * 1024  # whole workspace JSON cap
 
-_ACCENT_RE = re.compile(r"^$|^#[0-9a-fA-F]{6}$")
+_ACCENT_RE = re.compile(r"^\Z|^#[0-9a-fA-F]{6}\Z")
+# A "page" window shows one page of this app in an iframe, its `ref` being the address: an absolute path on this site (one leading
+# slash - so never `//host`, a scheme or `javascript:` - no whitespace, no backslash; 120 characters is the ref's own cap).
+_PAGE_PATH_RE = re.compile(r"^/(?!/)[^\s\\]{0,119}\Z")      # \Z, not $: "$" would let a trailing newline through
 
 
 def _clamp_int(v, lo, hi, default=0):
     try:
         return max(lo, min(hi, int(v)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):    # OverflowError: a JSON `Infinity` is a float that cannot be an int
         return default
 
 
@@ -105,6 +109,39 @@ def _sanitize_laptop_geometry(raw) -> Optional[dict]:
     }
 
 
+_EPOCH_MS_MAX = 4_102_444_800_000        # 2100-01-01
+
+
+def _sanitize_timer(raw) -> Optional[dict]:
+    """A timer window's state. It is wall-clock - an end time (countdown) or a start time (stopwatch) in epoch milliseconds - so a
+    reload, an Undo-close or another browser shows the true time left rather than a frozen number."""
+    if not isinstance(raw, dict):
+        return None
+    minutes = _clamp_int(raw.get("minutes"), 1, 600, default=5)
+    return {
+        "mode": "up" if raw.get("mode") == "up" else "down",
+        "minutes": minutes,
+        "running": bool(raw.get("running")),
+        "done": bool(raw.get("done")),
+        "endAt": _clamp_int(raw.get("endAt"), 0, _EPOCH_MS_MAX),
+        "startAt": _clamp_int(raw.get("startAt"), 0, _EPOCH_MS_MAX),
+        "remainMs": _clamp_int(raw.get("remainMs"), 0, 36_000_000, default=minutes * 60_000),
+        "elapsedMs": _clamp_int(raw.get("elapsedMs"), 0, 360_000_000),
+    }
+
+
+def _sanitize_panel_data(ptype: str, data) -> dict:
+    """What a window may keep besides its geometry: the notes text, and a timer's state on a timer window. Nothing else is stored."""
+    if not isinstance(data, dict):
+        return {}
+    out = {"text": str(data.get("text") or "")[:8000]}
+    if ptype == "timer":
+        timer = _sanitize_timer(data.get("timer"))
+        if timer:
+            out["timer"] = timer
+    return out
+
+
 def _sanitize_panels(raw_panels) -> list:
     """Round a posted panel list into the exact saved shape — unknown keys
     dropped, types allowlisted, geometry clamped, strings bounded. Raises
@@ -116,6 +153,8 @@ def _sanitize_panels(raw_panels) -> list:
     out = []
     for p in raw_panels[:MAX_PANELS]:
         if not isinstance(p, dict) or p.get("type") not in PANEL_TYPES:
+            continue
+        if p["type"] == "page" and not _PAGE_PATH_RE.match(str(p.get("ref") or "")):
             continue
         data = p.get("data")
         accent = str(p.get("accent") or "")
@@ -131,8 +170,7 @@ def _sanitize_panels(raw_panels) -> list:
             "z": _clamp_int(p.get("z"), 0, 100000),
             "collapsed": bool(p.get("collapsed")),
             "accent": accent if _ACCENT_RE.match(accent) else "",
-            "data": {"text": str((data or {}).get("text") or "")[:8000]}
-            if isinstance(data, dict) else {},
+            "data": _sanitize_panel_data(p["type"], data),
         }
         lap = _sanitize_laptop_geometry(p.get("lap"))
         if lap:

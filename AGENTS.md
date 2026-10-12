@@ -191,6 +191,28 @@ tools that require GM access still check `is_gm` at call time.)
   (`relayFrameEvents`; the same hook is where keys are relayed) and a focus move into a frame does it through the window's
   `blur`. Every iframe is titled with its window's title (`titleFrames`); icon-only controls inside panels get their tooltip as
   `aria-label` (`labelControls`). Site UI scale (`nd_ui_scale`) goes 90-200 % for a 4K screen.
+- **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
+  handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character
+  (Russian / Hebrew layouts), use Alt + letter/digit (never Ctrl+Alt: that is AltGr and types characters), skip the browser's own
+  keys, and wait while typing on a Mac. A window's page never delivers its keys to the cockpit, so `relayFrameEvents` (called from
+  each iframe's `load`) listens in on it and feeds the same `onKey`. **Ctrl+K belongs to `command-palette.js`**: a page inside a
+  frame forwards it to the nearest ancestor palette that has providers (`hostPalette`), because a palette confined to a window is
+  useless; the cockpit plugs in through `window.ndPalette` (`addProvider`, `setEntityOpener`, `setPageOpener`) - registered on
+  `DOMContentLoaded` because the palette script is `defer`red. The palette sits at z-index 100020, above every cockpit layer.
+- **A "page" window is any page of the app** (`type: 'page'`, `ref` = a path on this site): opened from the quick switcher (a menu
+  entry's Enter) or the Add dialog's Page picker. The address is data that goes into an iframe `src`, so it is checked twice with
+  the same rule (`_PAGE_PATH_RE` in `app/routers/cockpit.py`, `validPagePath` in `cockpit.js`; `tests/test_cockpit_page_windows.py`
+  asserts they agree): one leading slash, no scheme / `//host`, no whitespace or backslash, 120 characters. Python's `$` lets a
+  trailing newline through - use `\Z` for any such check.
+- **The timer window is wall-clock** (`static/js/cockpit-timer.js` - the state machine, pure, `now` passed in, tested in
+  `tests/test_cockpit_timer.py`; `buildTimer` in `cockpit.js` only draws it): a countdown stores its END TIME and a stopwatch its START
+  TIME (epoch ms) in the window's `data.timer`, so a throttled background tab (hidden-tab timers run once a second, then once a minute),
+  a sleeping laptop, a reload and an Undo-close all show the true time - never count ticks. The server keeps `data.timer` only on a
+  `timer` panel, clamped (`_sanitize_timer`); a saved layout is stripped of timers (`stripTimers`), because a running one is a moment, not
+  an arrangement. An alarm is visible as well as audible (`setAlarmUi`: pulsing window + dock chip, tab title, toast) - sound alone is
+  lost when the tab is muted or the window parked. `_clamp_int` also catches `OverflowError` (a JSON `Infinity`).
+- **Pages in windows are compact** (`body.nd-embed` block in `static/style.css`; inline-styled elements need `!important` to be
+  overridden, as the dice page's title row, tray and cards do): smaller headings and padding so the content gets the room.
 - **Images in cockpit / floated windows open full screen in the MAIN window** (`static/js/nd-lightbox-bridge.js`, tested under
   Node in `tests/test_lightbox_bridge.py`): an embedded page's `openLightbox()` posts the image up to the window above (same
   origin, image addresses only, passed up again through nested frames), because an iframe's lightbox is confined to its
