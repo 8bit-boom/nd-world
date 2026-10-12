@@ -388,6 +388,11 @@ body.ck-mobile #nd-stage-panel, body.ck-mobile #nd-logger-panel { display: none 
 @keyframes ck-flash { 50% { opacity: .45; } }
 .ck-timer-row { display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; justify-content: center; }
 .ck-timer-row[hidden] { display: none; }
+.ck-timer-time { cursor: pointer; user-select: none; -webkit-user-select: none; }   /* a button: a double click must not select the digits */
+/* a short window keeps what fits - the time first, then the controls, the presets only with room for them. (Heights are of the content box;
+   measured in a browser: the controls need ~80px, the presets ~120px more, ~150px when a narrow window wraps them onto two lines.) */
+@container (max-height: 153px) { .ck-timer-presets { display: none; } }
+@container (max-height: 80px) { .ck-timer-row { display: none; } }
 .ck-timer-presets .ck-btn { min-width: 2.6rem; }
 /* a timer that has gone off: its window (and its chip in the laptop dock) pulses until it is dismissed */
 .ck-win.ck-alarm, .ck-mpanel.ck-alarm { border-color: #ff2d78; animation: ck-alarm 1s infinite; }
@@ -566,6 +571,7 @@ body.ck-laptop:has(#ck-wrap) { --nd-fab-bottom: 1px; }   /* (outranks the cockpi
 body.ck-laptop #nd-stage-fab { width: 22px; height: 22px; font-size: .75rem; left: 58px; line-height: 1; padding: 0; }
 body.ck-laptop #nd-logger-toggle { width: 22px !important; height: 22px !important; font-size: .75rem !important; right: 10px !important; padding: 0; }
 body.ck-laptop #ck-status { padding: .1rem 2.6rem .1rem 1.2rem; }
+body.ck-laptop #ck-stat-left { margin-right: 1.8rem; }   /* the 📺 button floats over the bar from 58px to 80px: what follows starts after it */
 /* A window in the dock is gone from the screen. With "Keep loaded" ticked (the default, body.ck-keep) it is hidden, not removed: it keeps a
    real box (never bigger than the workspace, so it adds no scroll), so its page loads with the others at the start and stays loaded -
    chats, scroll positions and maps are as you left them when its chip is clicked. Unticked it is display:none: a 0x0 box, which the

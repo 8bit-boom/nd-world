@@ -271,6 +271,24 @@ def test_the_alarm_is_visible_as_well_as_audible(client, seed):
     assert js.index("const alarms = new Set()") < js.index("function renderDock()")
 
 
+def test_a_short_timer_window_keeps_the_time_then_the_controls_and_drops_the_presets_first(client, seed):
+    import re
+    _login_gm(client, seed)
+    html = client.get("/cockpit").text
+    base = html.index(".ck-timer-row { display: flex;")
+    drops = {m.group(2): (int(m.group(1)), m.start()) for m in re.finditer(r"@container \(max-height: (\d+)px\) \{ (\.ck-timer-presets|\.ck-timer-row) \{ display: none; \} \}", html)}
+    assert set(drops) == {".ck-timer-presets", ".ck-timer-row"}, drops
+    # the presets (a convenience) go while there is still room for the controls, and the controls go only when there is no room at all
+    assert drops[".ck-timer-presets"][0] > drops[".ck-timer-row"][0] > 0
+    # both are the same specificity as the rule that lays the rows out, so they only win when they come after it
+    assert all(at > base for _, at in drops.values())
+    # the time stays and is itself a big button: it starts and pauses the timer, which is all that is left in a very short window
+    js = (ROOT / "static/js/cockpit.js").read_text()
+    assert "if (silenced) { silenced = false; return; } start();" in js and "cursor: pointer; user-select: none;" in html
+    # a touch on a FLASHING timer silences it (pointerdown resets it); the click that follows on the same time must not start it again
+    assert "silenced = t.done; if (t.done) dismiss();" in js
+
+
 def test_pages_in_windows_are_compact_and_the_dice_window_keeps_its_buttons_in_view(client, seed):
     css = (ROOT / "static/style.css").read_text()
     block = css.split("Pages inside a window (body.nd-embed", 1)[1].split("/* ── Phone layout", 1)[0]

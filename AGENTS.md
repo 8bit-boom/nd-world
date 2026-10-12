@@ -229,7 +229,9 @@ tools that require GM access still check `is_gm` at call time.)
   a sleeping laptop, a reload and an Undo-close all show the true time - never count ticks. The server keeps `data.timer` only on a
   `timer` panel, clamped (`_sanitize_timer`); a saved layout is stripped of timers (`stripTimers`), because a running one is a moment, not
   an arrangement. An alarm is visible as well as audible (`setAlarmUi`: pulsing window + dock chip, tab title, toast) - sound alone is
-  lost when the tab is muted or the window parked. `_clamp_int` also catches `OverflowError` (a JSON `Infinity`).
+  lost when the tab is muted or the window parked. `_clamp_int` also catches `OverflowError` (a JSON `Infinity`). The window is a CSS size
+  container (`.ck-timer`, `container-type: size`): the time grows with it and a short window drops the presets, then the controls
+  (`@container` rules measure the CONTENT box - and a container cannot restyle itself, only its children); the time is a button too.
 - **Pages in windows are compact** (`body.nd-embed` block in `static/style.css`; inline-styled elements need `!important` to be
   overridden, as the dice page's title row, tray and cards do): smaller headings and padding so the content gets the room.
 - **Images in cockpit / floated windows open full screen in the MAIN window** (`static/js/nd-lightbox-bridge.js`, tested under

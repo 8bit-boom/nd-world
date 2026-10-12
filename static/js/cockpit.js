@@ -1582,6 +1582,9 @@
     }
     modeBtn.addEventListener('click', function () { TIMER.setMode(t, t.mode === 'up' ? 'down' : 'up'); reset(); });
     startBtn.addEventListener('click', start);
+    time.title = 'Click to start / pause';           // a big target (and all that is left in a short window)
+    let silenced = false;                             // the touch that just silenced a flashing timer must not also start it again
+    time.addEventListener('click', function () { if (silenced) { silenced = false; return; } start(); });
     resetBtn.addEventListener('click', reset);
     plus.addEventListener('click', function () { adjust(60000); });
     minus.addEventListener('click', function () { adjust(-60000); });
@@ -1589,7 +1592,7 @@
       setMinutes(parseInt(mins.value, 10));
       if (!t.running) { TIMER.reset(t); setAlarmUi(p, false); paint(); save(); }
     });
-    wrap.addEventListener('pointerdown', function () { if (t.done) dismiss(); });   // a touch on a flashing timer silences it
+    wrap.addEventListener('pointerdown', function () { silenced = t.done; if (t.done) dismiss(); });   // a touch on a flashing timer silences it
     document.addEventListener('visibilitychange', paint);
 
     // Back at a saved timer: still running -> carry on; ran out while nobody was here -> say so, quietly (no beep: the browser

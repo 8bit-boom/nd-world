@@ -573,6 +573,10 @@ def test_the_laptop_layout_hides_the_site_bar_and_parks_windows_only_through_css
     assert ".ck-win.ck-parked { display: none; }" in html
     # the floating buttons must not sit over a window's corner on a laptop
     assert "body.ck-laptop:has(#ck-wrap) { --nd-fab-bottom: 1px; }" in html
+    # ... nor over the status bar's chips: the 📺 button floats over the bar from 58px to 80px, so what follows the window counter is pushed
+    # past it (measured in Chromium at 1280, 1366 and 1536 wide: the counter ends at 49px, the next chip starts at 90px)
+    assert "body.ck-laptop #nd-stage-fab { width: 22px; height: 22px; font-size: .75rem; left: 58px;" in html, "the 📺 button moved: re-check the status chips"
+    assert "body.ck-laptop #ck-stat-left { margin-right: 1.8rem; }" in html
 
 
 def test_the_cockpit_script_goes_through_the_layout_maths_for_both_classes():
