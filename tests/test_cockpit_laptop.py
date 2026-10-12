@@ -558,7 +558,7 @@ def test_the_cockpit_page_has_the_dock_the_mode_button_and_the_site_menu_button(
     for path in ("/cockpit", "/player-cockpit"):
         html = client.get(path).text
         for needle in ('id="ck-dock"', 'id="ck-dock-chips"', 'id="ck-dock-slots"', 'id="ck-mode-btn"', 'id="ck-site-btn"',
-                       'data-n="1"', 'data-n="2"', 'data-n="3"', 'data-n="all"', ".ck-win.ck-parked", "body.ck-laptop"):
+                       'data-n="1"', 'data-n="2"', 'data-n="3"', 'data-n="all"', 'id="ck-keep-box" checked', ".ck-win.ck-parked", "body.ck-laptop"):
             assert needle in html, (path, needle)
 
 
@@ -567,9 +567,10 @@ def test_the_laptop_layout_hides_the_site_bar_and_parks_windows_only_through_css
     assert "body.ck-laptop:not(.ck-showsite) .topbar { display: none; }" in html
     # a window in the dock is hidden but keeps a box, so its page loads and stays loaded (display:none would be a 0x0 frame
     # that the loader neither starts nor keeps)
-    rule = html[html.index(".ck-win.ck-parked {"):].split("}", 1)[0]
-    assert "visibility: hidden" in rule and "pointer-events: none" in rule and "max-height: 100%" in rule
-    assert "display: none" not in rule
+    keep = html[html.index("body.ck-keep .ck-win.ck-parked {"):].split("}", 1)[0]
+    assert "visibility: hidden" in keep and "pointer-events: none" in keep and "max-height: 100%" in keep and "display: none" not in keep
+    # ... unless the user unticked "Keep loaded": then it is display:none again
+    assert ".ck-win.ck-parked { display: none; }" in html
     # the floating buttons must not sit over a window's corner on a laptop
     assert "body.ck-laptop:has(#ck-wrap) { --nd-fab-bottom: 1px; }" in html
 
@@ -578,7 +579,7 @@ def test_the_cockpit_script_goes_through_the_layout_maths_for_both_classes():
     js = (ROOT / "static/js/cockpit.js").read_text()
     for needle in ("LAYOUT.screenClass", "LAYOUT.toWorking", "LAYOUT.toSaved", "LAYOUT.showLaptop", "LAYOUT.parkLaptop",
                    "LAYOUT.retileLaptop", "LAYOUT.makeMain", "lvp:", "function switchClass", "function renderDock",
-                   "nd_cockpit_mode", "nd_cockpit_slots", "nd_cockpit_site"):
+                   "nd_cockpit_mode", "nd_cockpit_slots", "nd_cockpit_site", "nd_cockpit_keep"):
         assert needle in js, needle
     assert "panels: panels, vp: refVp" not in js          # a save always goes through savedLayout()
     # the layout class is a per-browser choice: never part of what is stored for the world

@@ -14,6 +14,7 @@
         <button type="button" data-n="3" title="A main window and two beside it">3</button>
         <button type="button" data-n="all" title="Every window (the workspace scrolls)">All</button>
       </div>
+      <label id="ck-keep" title="Ticked: windows waiting in the dock load with the rest and stay loaded, so a chat, a scroll position or a map is as you left it when you bring them back. Unticked: a window loads when it is first shown and a page left in the dock for a minute is given back (less memory)."><input type="checkbox" id="ck-keep-box" checked> Keep loaded</label>
     </div>
     <div id="ck-head-actions">
       <button type="button" class="ck-btn" id="ck-site-btn" aria-pressed="false" title="Show / hide the site menu (Entities, Tools, Settings…) above the cockpit">☰</button>
@@ -455,10 +456,14 @@ body.ck-laptop:has(#ck-wrap) { --nd-fab-bottom: 1px; }   /* (outranks the cockpi
 body.ck-laptop #nd-stage-fab { width: 22px; height: 22px; font-size: .75rem; left: 58px; line-height: 1; padding: 0; }
 body.ck-laptop #nd-logger-toggle { width: 22px !important; height: 22px !important; font-size: .75rem !important; right: 10px !important; padding: 0; }
 body.ck-laptop #ck-status { padding: .1rem 2.6rem .1rem 1.2rem; }
-/* A window in the dock is hidden, not removed: it keeps a real box (never bigger than the workspace, so it adds no scroll), so its page
-   loads with the others at the start and stays loaded - chats, scroll positions and maps are as you left them when its chip is
-   clicked. (display:none would give it a 0x0 box: the frame loader would not start it, and would give its page back after a minute.) */
-.ck-win.ck-parked { visibility: hidden; pointer-events: none; left: 0 !important; top: 0 !important; z-index: 0 !important; max-width: 100%; max-height: 100%; }
+/* A window in the dock is gone from the screen. With "Keep loaded" ticked (the default, body.ck-keep) it is hidden, not removed: it keeps a
+   real box (never bigger than the workspace, so it adds no scroll), so its page loads with the others at the start and stays loaded -
+   chats, scroll positions and maps are as you left them when its chip is clicked. Unticked it is display:none: a 0x0 box, which the
+   frame loader does not start until the window is shown and gives back after a minute. */
+.ck-win.ck-parked { display: none; }
+body.ck-keep .ck-win.ck-parked { display: flex; visibility: hidden; pointer-events: none; left: 0 !important; top: 0 !important; z-index: 0 !important; max-width: 100%; max-height: 100%; }
+#ck-keep { flex: none; display: flex; align-items: center; gap: .3rem; font-size: .72rem; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+#ck-keep input { margin: 0; accent-color: var(--neon); }
 .ck-win.ck-flash { box-shadow: 0 0 0 2px var(--neon), 0 6px 22px rgba(0, 0, 0, .4); }
 
 @media (max-width: 900px) {

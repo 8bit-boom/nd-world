@@ -99,6 +99,7 @@
   const MODE_KEY = 'nd_cockpit_mode';     // '' = by window width | 'laptop' | 'wide'
   const SLOTS_KEY = 'nd_cockpit_slots';   // 'auto' | '1' | '2' | '3' | 'all'
   const SITE_KEY = 'nd_cockpit_site';     // '1' = keep the site's top bar showing in the laptop layout
+  const KEEP_KEY = 'nd_cockpit_keep';     // '0' = windows in the dock are NOT kept loaded (default: kept)
   const HINT_KEY = 'nd_cockpit_laptop_hint';
   function pref(key, dflt) { try { return localStorage.getItem(key) || dflt; } catch (e) { return dflt; } }
   function setPref(key, val) { try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); } catch (e) {} }
@@ -107,6 +108,7 @@
   const LAPTOP_FALLBACK_VP = { w: 1280, h: 620 };   // until the real workspace has a size (the phone shell hides it)
   const WIDE_NOMINAL_VP = { w: 1800, h: 900 };      // what a window made on a laptop assumes the big screen to be
   function LAPTOP() { return klass === 'laptop' && !MOBILE(); }
+  function keepLoaded() { return pref(KEEP_KEY, '') !== '0'; }
   function slotsNow(n) {
     return LAYOUT.resolveSlots(pref(SLOTS_KEY, 'auto'), vpNow() || refVp || LAPTOP_FALLBACK_VP, n == null ? panels.length : n);
   }
@@ -2051,6 +2053,7 @@
   const dockSlots = document.getElementById('ck-dock-slots');
   const modeBtn = document.getElementById('ck-mode-btn');
   const siteBtn = document.getElementById('ck-site-btn');
+  const keepBox = document.getElementById('ck-keep-box');
 
   function winEl(p) { return viewport.querySelector('.ck-win[data-pid="' + p.id + '"]'); }
   function fullTitle(p) { return p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label; }
@@ -2138,6 +2141,8 @@
     const on = LAPTOP();
     document.body.classList.toggle('ck-laptop', on);
     document.body.classList.toggle('ck-showsite', on && pref(SITE_KEY, '') === '1');
+    document.body.classList.toggle('ck-keep', on && keepLoaded());
+    if (keepBox) keepBox.checked = keepLoaded();
     if (siteBtn) siteBtn.setAttribute('aria-pressed', pref(SITE_KEY, '') === '1' ? 'true' : 'false');
     if (modeBtn) {
       modeBtn.textContent = klass === 'laptop' ? '💻' : '🖥';
@@ -2147,6 +2152,11 @@
     }
     renderDock();
   }
+  // Keep the windows in the dock loaded (CSS: body.ck-keep) - on by default, remembered per browser
+  if (keepBox) keepBox.addEventListener('change', function () {
+    setPref(KEEP_KEY, keepBox.checked ? '' : '0');
+    applyChrome();
+  });
   if (siteBtn) siteBtn.addEventListener('click', function () {
     setPref(SITE_KEY, pref(SITE_KEY, '') === '1' ? '' : '1');
     applyChrome();
