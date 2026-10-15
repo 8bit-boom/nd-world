@@ -218,9 +218,16 @@ tools that require GM access still check `is_gm` at call time.)
 - **Roomy windows** (🧩 Layouts, per browser `nd_cockpit_roomy`): `tilePanels` never makes a tile shorter than `pref.minH(vp)` - cockpit.js hangs
   `minH` on `prefHeight`, the height function EVERY tiler already receives (auto-arrange, scenes, the laptop's tiles), so one option covers all
   of them without threading a parameter; `roomyHeight` = 60% of the screen, 300-560 px. Many windows stay big and the workspace scrolls.
-- **Text selection menu** (`text-format-toolbar.js`, `data-fmt-gmonly` fields): right-click on a selection shows the full menu (hide from players
-  = `[gmonly]`, spoiler, highlight, bold, italic); letting go of a mouse selection shows a bubble with the two hiding actions. All go through
-  `ndFmtWrapSelection`. An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
+- **Text selection menu** (`text-format-toolbar.js`): ONE menu (`ndFmtOpenMenu`) for the editor textarea (`data-fmt-gmonly` fields) and, for a GM, the
+  rendered entity page. Right-click on a selection: hide from players (`[gmonly]`), spoiler, B/I/U/S, highlight, 8 colours, copy, search the
+  world, new entity from the text; inside a GM-only part or spoiler it offers to take it off. Letting go of a selection shows a small bubble
+  (hide / spoiler / more). Editor: `ndFmtWrapSelection` on the textarea. Read view (`ndFmtSetupReadMode`, elements with `data-markup-field`
+  = body | summary | note, `data-markup-entity` on the article, GM only): the selection + ~80 chars of context is POSTed to
+  `/api/entity/{id}/markup`, `app/markup_locator.py` finds it in the markdown (mask markup, collapse whitespace, search, score by
+  surrounding text, map back, one wrapper per line, widen over half-covered emphasis) and the page reloads. It REFUSES (422 + reason)
+  when the text is ambiguous, not in the source, cuts across formatting, or the note is rich text - a wrong guess would hide or leak the
+  wrong text. In the read view `[gmonly]` inside a paragraph renders as an inline `gm-only-text gm-inline` span, a whole-block one as a box.
+  An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character
   (Russian / Hebrew layouts), use Alt + letter/digit (never Ctrl+Alt: that is AltGr and types characters), skip the browser's own

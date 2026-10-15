@@ -37,6 +37,7 @@ from . import map_layout as _map_layout
 from . import map_walls as _map_walls_mod
 from . import map_rooms as _map_rooms_mod
 from . import map_strict as _map_strict
+from . import markup_locator as _markup_locator
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
@@ -6162,6 +6163,63 @@ def api_entity_set_image(
     return {"ok": True}
 
 
+class EntityMarkupBody(BaseModel):
+    field: str                      # "body" | "summary" | "note"
+    note_id: Optional[int] = None
+    action: str                     # gmonly | spoiler | mark | underline | bold | italic | strike | color:#rrggbb | unwrap:gmonly | unwrap:spoiler | unwrap:mark
+    text: str = ""                  # what was selected on the page
+    before: str = ""                # a little of the text either side of it, to tell a repeated phrase apart
+    after: str = ""
+    index: int = 0                  # unwrap: which block (reading order) the page showed
+    snippet: str = ""               # unwrap: the start of what the page showed in it
+
+
+@app.post("/api/entity/{entity_id}/markup")
+def api_entity_markup(
+    entity_id: int, body: EntityMarkupBody, request: Request,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Marks up text SELECTED ON THE READ VIEW of an entity (hide it from players, spoiler, bold ...) without opening the editor: the selection
+    is located in the markdown it came from (app/markup_locator.py - refused, never guessed, when it is not certain) and wrapped. GM only: the
+    read view's [gmonly] boxes exist only for a GM, and this is what puts them there."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    entity = db.get(Entity, entity_id)
+    world = get_active_world(request, db, active_world)
+    if not entity or not world or entity.world_id != world.id:
+        raise HTTPException(404)
+    note = None
+    if body.field == "body":
+        source = entity.body or ""
+    elif body.field == "summary":
+        source = entity.summary or ""
+    elif body.field == "note":
+        note = db.get(EntityNote, body.note_id or 0)
+        if not note or note.entity_id != entity.id:
+            raise HTTPException(404)
+        if note.content_is_html:
+            return JSONResponse({"error": "This note is rich text (imported with its formatting) - edit it with Edit."}, status_code=422)
+        source = note.content or ""
+    else:
+        raise HTTPException(400, "unknown field")
+    try:
+        if body.action.startswith("unwrap:"):
+            out = _markup_locator.unwrap(source, body.action[7:], body.index, body.snippet)
+        else:
+            out = _markup_locator.wrap(source, body.text, body.before, body.after, body.action)
+    except _markup_locator.MarkupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    if note is not None:
+        note.content = out
+    elif body.field == "body":
+        entity.body = out
+    else:
+        entity.summary = out
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/hover-preview/config")
 def hover_preview_config(db: Session = Depends(get_db)):
     """Instance-wide hover-preview settings (Settings > Options), fetched
@@ -6443,7 +6501,7 @@ def entity_template_delete(tpl_id: int, db: Session = Depends(get_db)):
 # ── Create ────────────────────────────────────────────────────────────────────
 
 @app.get("/new", response_class=HTMLResponse)
-def new_form(request: Request, kind: str = "character", folder: str = "",
+def new_form(request: Request, kind: str = "character", folder: str = "", name: str = "",
              db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
@@ -6455,7 +6513,7 @@ def new_form(request: Request, kind: str = "character", folder: str = "",
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": set(),
-        "folder_options": folder_options, "prefill_folder": folder,
+        "folder_options": folder_options, "prefill_folder": folder, "prefill_name": name.strip()[:256],
         "entity_templates": entity_templates, "custom_fields": {},
         "gallery_images": gallery_images,
     })

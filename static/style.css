@@ -833,6 +833,9 @@ pre.md-wrap, pre.md-wrap code { white-space: pre-wrap; overflow-wrap: anywhere; 
   border: 1px dashed var(--neon2);
   border-radius: 3px;
 }
+/* inside a sentence (rendering._gm_only_sub): marked in line, not a box that tears the paragraph */
+.gm-only-text.gm-inline { display: inline; margin: 0; padding: .02em .3em; border-radius: 3px; }
+.gm-only-text.gm-inline::before { content: "\1F512"; display: inline; font-size: .75em; margin: 0 .25em 0 0; letter-spacing: 0; }
 .gm-only-text::before {
   content: "GM ONLY";
   display: block;
@@ -1758,7 +1761,18 @@ input[type="file"]:hover { border-color: var(--neon); }
   padding: .4rem .7rem; border-radius: 3px;
   font-family: var(--font); font-size: .82rem;
 }
-.fmt-ctx-menu button:hover { background: var(--bg3); color: var(--neon); }
+.fmt-ctx-menu button:hover, .fmt-ctx-menu button:focus-visible { background: var(--bg3); color: var(--neon); outline: none; }
+.fmt-ctx-menu { min-width: 15rem; max-width: 22rem; z-index: 100030; }
+.fmt-ctx-menu.fmt-ctx-compact { min-width: 0; }
+.fmt-ctx-menu hr { border: 0; border-top: 1px solid var(--border); margin: .25rem 0; }
+.fmt-ctx-menu .fmt-ctx-row { display: flex; gap: .25rem; align-items: center; padding: .15rem .35rem; flex-wrap: wrap; }
+.fmt-ctx-menu .fmt-ctx-ico { display: inline-block; width: 2rem; padding: .25rem 0; text-align: center; font-weight: bold; border: 1px solid var(--border); }
+.fmt-ctx-menu .fmt-swatch { display: inline-block; width: 1.1rem; padding: 0; }
+.fmt-ctx-menu button { overflow: hidden; text-overflow: ellipsis; }
+/* a short message after a menu action (Copied. / why a selection could not be marked) */
+.fmt-notice { position: fixed; right: 1rem; bottom: 1rem; z-index: 100031; max-width: 26rem; padding: .55rem .8rem; border-radius: 6px;
+  background: var(--bg2); border: 1px solid var(--neon); color: var(--text); font-size: .84rem; box-shadow: 0 6px 22px rgba(0,0,0,.5); }
+.fmt-notice-bad { border-color: var(--neon2); }
 .fmt-swatch {
   width: 1.1rem; height: 1.1rem; padding: 0; border-radius: 50%;
   border: 1px solid rgba(255,255,255,.35); cursor: pointer;

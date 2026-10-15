@@ -621,10 +621,13 @@ function ndFmtBuildToolbar(ta) {
   });
 }
 
-// A single shared floating menu, reused across every gmonly-enabled
-// textarea — like the browser's own native context menu, only one is ever
-// open at a time — rather than building/tearing down a fresh element per
-// right-click.
+// ── the selection menu ───────────────────────────────────────────────────────────────────────────────────────────────
+// ONE floating menu next to the pointer, shared by the editor (a <textarea data-fmt-gmonly>) and - for a GM - the READ view of an
+// entity (its body, summary and notes). Select text and right-click for the full menu, or just let go of a mouse selection for a small
+// bubble with the two things a GM reaches for first: hide it from players, or make it a click-to-reveal spoiler. In the read view the
+// choice is saved at once (POST /api/entity/{id}/markup finds the selection in the markdown it came from - app/markup_locator.py) and the
+// page reloads; in the editor it wraps the selection in the textarea as the toolbar does. Right-click inside a part that is already GM only
+// or a spoiler offers to undo it.
 let _ndFmtCtxMenu = null;
 
 function _ndFmtCloseCtxMenu() {
@@ -644,63 +647,158 @@ window.addEventListener("resize", _ndFmtCloseCtxMenu);
 
 const NDFMT_GMONLY_SHORTCUT_LABEL = /Mac/.test(navigator.platform || "") ? "⌘⇧G" : "Ctrl+Shift+G";
 
-// Two quick ways to mark a selection [gmonly] besides the toolbar's lock
-// button — same data-fmt-gmonly opt-in as that button (see its own comment
-// for why this isn't offered on every data-fmt field):
-//  1. Select text, right-click: one menu item wraps it. Only intercepts the
-//     native context menu when there's an actual selection to wrap; a
-//     right-click with nothing selected (paste, spellcheck, the browser's
-//     own menu) is left alone.
-//  2. Select text, Ctrl+Shift+G (Cmd+Shift+G on Mac): wraps it immediately,
-//     no menu — for a GM who'd rather keep both hands on the keyboard.
-// Menu items for a selection: what a GM reaches for while reading their own text (hide it from players first).
-function ndFmtSelectionItems(ta) {
-  return [
-    [`🔒 Hide from players - GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`, "[gmonly]", "[/gmonly]"],
-    ["🙈 Spoiler - hidden until clicked", "[spoiler]", "[/spoiler]"],
-    ["⬛ Highlight", "[mark]", "[/mark]"],
-    ["B Bold", "**", "**"],
-    ["I Italic", "*", "*"],
-  ].map(([label, open, close]) => [label, () => ndFmtWrapSelection(ta, open, close)]);
+// action id -> [open, close] (the same syntax the server's app/markup_locator.py ACTIONS writes)
+const NDFMT_ACTION_TAGS = {
+  gmonly: ["[gmonly]", "[/gmonly]"], spoiler: ["[spoiler]", "[/spoiler]"], mark: ["[mark]", "[/mark]"],
+  underline: ["[u]", "[/u]"], bold: ["**", "**"], italic: ["*", "*"], strike: ["~~", "~~"],
+};
+const NDFMT_UNWRAP_LABELS = { gmonly: "🔓 Show to players again", spoiler: "👁 Remove the spoiler", mark: "Remove the highlight" };
+
+function _ndFmtNotice(msg, bad) {
+  const n = document.createElement("div");
+  n.className = "fmt-notice" + (bad ? " fmt-notice-bad" : "");
+  n.textContent = msg;
+  n.setAttribute("role", "status");
+  document.body.appendChild(n);
+  setTimeout(() => n.remove(), bad ? 7000 : 2500);
 }
 
-// One small menu next to the pointer. `compact` (the bubble that follows a mouse selection) offers only the two hide actions.
-function ndFmtShowSelectionMenu(ta, pageX, pageY, compact) {
+function _ndFmtCopy(text) {
+  const done = () => _ndFmtNotice("Copied.");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => _ndFmtNotice("Could not copy.", true));
+    return;
+  }
+  const t = document.createElement("textarea");
+  t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.appendChild(t); t.select();
+  try { document.execCommand("copy"); done(); } catch (e) { _ndFmtNotice("Could not copy.", true); }
+  t.remove();
+}
+
+function _ndFmtWorldParam() {
+  const w = new URLSearchParams(location.search).get("w");
+  return w ? "&w=" + encodeURIComponent(w) : "";
+}
+
+// ctx: { selected, apply(action) -> runs it, undo: [{tag, run}] , label }
+//   compact: only the two hide actions (+ "More" to open the full menu where it is)
+function ndFmtOpenMenu(pageX, pageY, ctx, compact) {
   _ndFmtCloseCtxMenu();
   const menu = document.createElement("div");
-  menu.className = "fmt-ctx-menu";
+  menu.className = "fmt-ctx-menu" + (compact ? " fmt-ctx-compact" : "");
+  menu.setAttribute("role", "menu");
   menu.style.left = pageX + "px";
   menu.style.top = pageY + "px";
-  ndFmtSelectionItems(ta).slice(0, compact ? 2 : 5).forEach(([label, run]) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = label;
-    btn.onclick = () => { run(); _ndFmtCloseCtxMenu(); };
-    menu.appendChild(btn);
-  });
+  const close = () => _ndFmtCloseCtxMenu();
+  const item = (label, title, run) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.setAttribute("role", "menuitem");
+    b.textContent = label;
+    if (title) b.title = title;
+    b.onclick = () => { close(); run(); };
+    return b;
+  };
+  const sep = () => { const h = document.createElement("hr"); menu.appendChild(h); };
+  const sel = (ctx.selected || "").trim();
+  (ctx.undo || []).forEach((u) => menu.appendChild(item(NDFMT_UNWRAP_LABELS[u.tag] || "Undo", "", u.run)));
+  if (sel) {
+    menu.appendChild(item(`🔒 Hide from players - GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`,
+      "Players never see it - stripped before they get the page or ask the AI about it", () => ctx.apply("gmonly")));
+    menu.appendChild(item("🙈 Spoiler - hidden until clicked", "Players see it blurred until they click it", () => ctx.apply("spoiler")));
+  }
+  if (compact) {
+    if (sel) menu.appendChild(item("⋯ More", "", () => ndFmtOpenMenu(pageX, pageY, ctx, false)));
+  } else if (sel) {
+    sep();
+    const row = document.createElement("div");
+    row.className = "fmt-ctx-row";
+    [["B", "Bold", "bold"], ["I", "Italic", "italic"], ["U", "Underline", "underline"], ["S", "Strikethrough", "strike"], ["⬛", "Highlight", "mark"]]
+      .forEach(([t, title, action]) => {
+        const b = item(t, title, () => ctx.apply(action));
+        b.className = "fmt-ctx-ico";
+        b.setAttribute("aria-label", title);
+        row.appendChild(b);
+      });
+    menu.appendChild(row);
+    const sw = document.createElement("div");
+    sw.className = "fmt-ctx-row";
+    NDFMT_COLORS.forEach((c) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "fmt-swatch"; b.style.background = c.value;
+      b.title = "Colour: " + c.name; b.setAttribute("aria-label", b.title);
+      b.onclick = () => { close(); ctx.apply("color:" + c.value); };
+      sw.appendChild(b);
+    });
+    menu.appendChild(sw);
+    sep();
+    const short = sel.length > 28 ? sel.slice(0, 27) + "…" : sel;
+    menu.appendChild(item("📋 Copy", "", () => _ndFmtCopy(sel)));
+    menu.appendChild(item(`🔍 Search the world for “${short}”`, "Opens the search in a new tab",
+      () => window.open("/search?q=" + encodeURIComponent(sel.slice(0, 120)) + _ndFmtWorldParam(), "_blank")));
+    menu.appendChild(item(`➕ New entity named “${short}”`, "Opens the new-entity form in a new tab",
+      () => window.open("/new?kind=note&name=" + encodeURIComponent(sel.slice(0, 120)) + _ndFmtWorldParam(), "_blank")));
+  }
+  if (!menu.children.length) return;
   document.body.appendChild(menu);
   _ndFmtCtxMenu = menu;
   // Nudge back on-screen near the right/bottom edge.
   const rect = menu.getBoundingClientRect();
   const overflowX = rect.right - window.innerWidth;
   const overflowY = rect.bottom - window.innerHeight;
-  if (overflowX > 0) menu.style.left = Math.max(0, pageX - overflowX) + "px";
-  if (overflowY > 0) menu.style.top = Math.max(0, pageY - overflowY) + "px";
+  if (overflowX > 0) menu.style.left = Math.max(0, pageX - overflowX - 8) + "px";
+  if (overflowY > 0) menu.style.top = Math.max(0, pageY - overflowY - 8) + "px";
+  const first = menu.querySelector("button");
+  if (first && !compact) first.focus({ preventScroll: true });
+}
+
+// ── in the editor ──
+function _ndFmtEditorContext(ta) {
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const ctx = {
+    selected: ta.value.slice(start, end),
+    apply(action) {
+      if (action.startsWith("color:")) return ndFmtWrapSelection(ta, `[color=${action.slice(6)}]`, "[/color]");
+      const t = NDFMT_ACTION_TAGS[action];
+      if (t) ndFmtWrapSelection(ta, t[0], t[1]);
+    },
+    undo: [],
+  };
+  // inside a [gmonly] / [spoiler] block already? offer to take it off
+  ["gmonly", "spoiler"].forEach((tag) => {
+    const re = new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[/${tag}\\]`, "gi");
+    let m;
+    while ((m = re.exec(ta.value))) {
+      if (m.index <= start && end <= m.index + m[0].length) {
+        const at = m.index, inner = m[1], len = m[0].length;
+        ctx.undo.push({ tag, run() {
+          ta.value = ta.value.slice(0, at) + inner + ta.value.slice(at + len);
+          ta.focus();
+          ta.selectionStart = at; ta.selectionEnd = at + inner.length;
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+        } });
+        break;
+      }
+    }
+  });
+  return ctx;
 }
 
 function ndFmtSetupGmOnlyShortcuts(ta) {
-  // Right-click on a selection: the full menu. Nothing selected: the browser's own menu (paste, spellcheck) is left alone.
+  // Right-click on a selection: the full menu. Nothing selected: the browser's own menu (paste, spellcheck) is left alone - unless the
+  // caret is inside a GM-only part or a spoiler, where the menu offers to undo it.
   ta.addEventListener("contextmenu", (e) => {
-    if (ta.selectionStart === ta.selectionEnd) return;
+    const ctx = _ndFmtEditorContext(ta);
+    if (ta.selectionStart === ta.selectionEnd && !ctx.undo.length) return;
     e.preventDefault();
-    ndFmtShowSelectionMenu(ta, e.pageX, e.pageY, false);
+    ndFmtOpenMenu(e.pageX, e.pageY, ctx, false);
   });
   // Select with the mouse and let go: a small bubble at the pointer offers to hide it from players (no right-click needed).
   ta.addEventListener("mouseup", (e) => {
     if (e.button !== 0) return;
     setTimeout(() => {
       if (ta.selectionEnd - ta.selectionStart < 2) return;
-      ndFmtShowSelectionMenu(ta, e.pageX + 6, e.pageY + 12, true);
+      ndFmtOpenMenu(e.pageX + 6, e.pageY + 12, _ndFmtEditorContext(ta), true);
     }, 0);
   });
   ta.addEventListener("keydown", (e) => {
@@ -711,7 +809,100 @@ function ndFmtSetupGmOnlyShortcuts(ta) {
   });
 }
 
+// ── in the read view (a GM, on an entity page: elements carry data-markup-field="body|summary|note") ──
+function _ndFmtReadField(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  return el && el.closest ? el.closest("[data-markup-field]") : null;
+}
+
+function _ndFmtBlockOf(node) {
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  return (el && el.closest("p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, .gm-only-text, section, div")) || document.body;
+}
+
+// what the page selection is, where it lives, and a little text around it (to tell a repeated phrase apart)
+function _ndFmtReadSelection() {
+  const s = window.getSelection();
+  if (!s || s.isCollapsed || !s.rangeCount) return null;
+  const range = s.getRangeAt(0);
+  const field = _ndFmtReadField(range.commonAncestorContainer);
+  if (!field || !field.closest("[data-markup-entity]")) return null;
+  const text = s.toString();
+  if (!text.trim()) return null;
+  const b = document.createRange();
+  b.selectNodeContents(_ndFmtBlockOf(range.startContainer));
+  b.setEnd(range.startContainer, range.startOffset);
+  const a = document.createRange();
+  a.selectNodeContents(_ndFmtBlockOf(range.endContainer));
+  a.setStart(range.endContainer, range.endOffset);
+  return { field, text, before: b.toString().slice(-80), after: a.toString().slice(0, 80) };
+}
+
+async function _ndFmtReadPost(field, payload) {
+  const entityId = field.closest("[data-markup-entity]").dataset.markupEntity;
+  try {
+    const res = await fetch(`/api/entity/${entityId}/markup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ field: field.dataset.markupField, note_id: field.dataset.noteId ? +field.dataset.noteId : null }, payload)),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      _ndFmtNotice(data.error || (res.status === 403 ? "Only the GM can do that." : "Could not save that."), true);
+      return;
+    }
+    location.reload();
+  } catch (e) {
+    _ndFmtNotice("Could not reach the server.", true);
+  }
+}
+
+function _ndFmtReadContext(sel, target) {
+  const ctx = { selected: sel ? sel.text : "", undo: [] };
+  const field = sel ? sel.field : _ndFmtReadField(target);
+  ctx.apply = (action) => _ndFmtReadPost(sel.field, { action, text: sel.text, before: sel.before, after: sel.after });
+  if (field && target && target.closest) {
+    [["gmonly", ".gm-only-text"], ["spoiler", ".spoiler-text"]].forEach(([tag, css]) => {
+      const box = target.closest(css);
+      if (!box || !field.contains(box)) return;
+      const index = Array.prototype.indexOf.call(field.querySelectorAll(css), box);
+      ctx.undo.push({ tag, run: () => _ndFmtReadPost(field, { action: "unwrap:" + tag, index, snippet: box.textContent.trim().slice(0, 60) }) });
+    });
+  }
+  return ctx;
+}
+
+function ndFmtSetupReadMode() {
+  if (window._ndFmtReadReady || !document.querySelector("[data-markup-entity]")) return;
+  window._ndFmtReadReady = true;
+  document.addEventListener("contextmenu", (e) => {
+    if (e.target.closest && e.target.closest("textarea, input, a[href]")) return;
+    if (!e.target.closest || !e.target.closest("[data-markup-field]")) return;
+    const sel = _ndFmtReadSelection();
+    const ctx = _ndFmtReadContext(sel, e.target);
+    if (!sel && !ctx.undo.length) return;
+    e.preventDefault();
+    ndFmtOpenMenu(e.pageX, e.pageY, ctx, false);
+  });
+  document.addEventListener("mouseup", (e) => {
+    if (e.button !== 0 || !e.target.closest || !e.target.closest("[data-markup-field]")) return;
+    setTimeout(() => {
+      const sel = _ndFmtReadSelection();
+      if (!sel || sel.text.trim().length < 2) return;
+      ndFmtOpenMenu(e.pageX + 6, e.pageY + 12, _ndFmtReadContext(sel, null), true);
+    }, 0);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.key.toLowerCase() !== "g") return;
+    if (e.target.closest && e.target.closest("textarea, input")) return;
+    const sel = _ndFmtReadSelection();
+    if (!sel) return;
+    e.preventDefault();
+    _ndFmtReadContext(sel, null).apply("gmonly");
+  });
+}
+
 function ndFmtInit() {
+  ndFmtSetupReadMode();
   document.querySelectorAll("textarea[data-fmt]").forEach((ta) => {
     if (ta.dataset.fmtReady) return;
     ta.dataset.fmtReady = "1";

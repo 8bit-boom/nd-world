@@ -131,6 +131,18 @@ def _transform_media_tags(html: str) -> str:
     return _IMG_TAG_RE.sub(repl, html)
 
 
+_BLOCK_HTML_RE = re.compile(r'<(?:p|div|ul|ol|li|h[1-6]|table|blockquote|pre|hr)\b', re.IGNORECASE)
+
+
+def _gm_only_sub(m):
+    """A [gmonly] part inside a sentence stays inside the sentence (a labelled inline span); one that holds blocks - several paragraphs, a
+    list - is the labelled box it always was. (A box in the middle of a sentence tore the paragraph in three.)"""
+    inner = m.group(1)
+    if _BLOCK_HTML_RE.search(inner):
+        return f'<div class="gm-only-text" data-gm-only>{inner}</div>'
+    return f'<span class="gm-only-text gm-inline" data-gm-only>{inner}</span>'
+
+
 def _apply_inline_styles(html: str) -> str:
     def color_sub(m):
         color = _safe_color(m.group(1))
@@ -157,10 +169,7 @@ def _apply_inline_styles(html: str) -> str:
     # which removes the tag and its contents entirely before render_md ever
     # runs. So unlike [spoiler] there's no non-GM viewer left to hide this
     # from; it's rendered as a plainly-labeled box rather than click-to-reveal.
-    html = _GM_ONLY_TAG_RE.sub(
-        r'<div class="gm-only-text" data-gm-only>\1</div>',
-        html,
-    )
+    html = _GM_ONLY_TAG_RE.sub(_gm_only_sub, html)
     return html
 
 

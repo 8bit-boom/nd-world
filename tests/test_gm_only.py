@@ -56,7 +56,10 @@ def test_render_md_shows_gm_only_as_a_labeled_box():
     intact tag renders visibly because, by construction, only a
     GM-authorized call site ever hands render_md text that still has one."""
     html = render_md("Text. [gmonly]The real trigger is the third lever.[/gmonly]")
-    assert 'class="gm-only-text"' in html
+    assert 'class="gm-only-text gm-inline"' in html          # inside a sentence: stays inline
+    assert "<div" not in html.split("Text.", 1)[1]
+    block = render_md("[gmonly]\n\nFirst secret.\n\nSecond secret.\n\n[/gmonly]")
+    assert '<div class="gm-only-text"' in block              # holding paragraphs: the labelled box
     assert "The real trigger is the third lever." in html
 
 
@@ -473,18 +476,17 @@ def test_gmonly_keyboard_shortcut_requires_ctrl_or_meta_and_shift_g(client, seed
 
 
 def test_selecting_text_offers_a_bubble_at_the_pointer_to_hide_it_from_players(client, seed):
-    """Not only a right-click: letting go of a mouse selection shows a small bubble with the two hiding actions, and the right-click
-    menu now lists the common formats too - all through the same wrapper the toolbar's lock button uses."""
+    """Not only a right-click: letting go of a mouse selection shows a small bubble with the two hiding actions; the right-click menu is the
+    full one - all through one shared menu for the editor and the read view."""
     js = client.get("/static/js/text-format-toolbar.js").text
     fn = _fn_body(js, "ndFmtSetupGmOnlyShortcuts")
-    assert '"mouseup"' in fn and "e.button !== 0" in fn and "ndFmtShowSelectionMenu(ta, e.pageX + 6, e.pageY + 12, true)" in fn
-    assert "ndFmtShowSelectionMenu(ta, e.pageX, e.pageY, false)" in fn
-    items = _fn_body(js, "ndFmtSelectionItems")
+    assert '"mouseup"' in fn and "e.button !== 0" in fn and "ndFmtOpenMenu(e.pageX + 6, e.pageY + 12, _ndFmtEditorContext(ta), true)" in fn
+    assert "ndFmtOpenMenu(e.pageX, e.pageY, ctx, false)" in fn
+    tags = js.split("NDFMT_ACTION_TAGS", 1)[1][:600]
     for tag in ('"[gmonly]", "[/gmonly]"', '"[spoiler]", "[/spoiler]"', '"[mark]", "[/mark]"', '"**", "**"'):
-        assert tag in items, tag
-    assert "Hide from players" in items
-    # the bubble (compact) offers only the first two - hide from players, spoiler
-    assert ".slice(0, compact ? 2 : 5)" in _fn_body(js, "ndFmtShowSelectionMenu")
+        assert tag in tags, tag
+    menu = _fn_body(js, "ndFmtOpenMenu")
+    assert "Hide from players" in menu and "if (compact)" in menu
 
 
 def test_an_entity_page_has_a_breadcrumb_back_through_every_folder_and_subfolder(client, seed):
@@ -501,3 +503,87 @@ def test_an_entity_page_has_a_breadcrumb_back_through_every_folder_and_subfolder
     eid2 = _make_entity(seed.world_a.id, kind="creature", name="Loose Thing")
     nav2 = client.get(f"/entity/{eid2}").text.split('id="entity-breadcrumb"', 1)[1].split("</nav>", 1)[0]
     assert "/kind/creature" in nav2 and "folder=" not in nav2
+
+
+# ── marking up from the read view: POST /api/entity/{id}/markup ─────────────
+
+def _body_of(eid):
+    db = SessionLocal()
+    try:
+        return db.get(Entity, eid).body
+    finally:
+        db.close()
+
+
+def _gm(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_markup_endpoint_wraps_a_selection_from_the_read_view(client, seed):
+    eid = _make_entity(seed.world_a.id, body="The innkeeper is a **cult** spy.\n\nThe door is old.")
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "gmonly", "text": "cult spy", "before": "innkeeper is a", "after": ""})
+    assert r.status_code == 200, r.text
+    assert _body_of(eid) == "The innkeeper is a [gmonly]**cult** spy[/gmonly].\n\nThe door is old."
+    # …and the same endpoint takes it off again
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "unwrap:gmonly", "index": 0, "snippet": "cult spy"})
+    assert r.status_code == 200
+    assert _body_of(eid) == "The innkeeper is a **cult** spy.\n\nThe door is old."
+
+
+def test_markup_endpoint_refuses_what_it_cannot_place_and_saves_nothing(client, seed):
+    eid = _make_entity(seed.world_a.id, body="The door. The door.")
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "gmonly", "text": "The door"})
+    assert r.status_code == 422 and "more than once" in r.json()["error"]
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "gmonly", "text": "not there"})
+    assert r.status_code == 422
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "evil", "text": "The door."})
+    assert r.status_code == 422
+    assert _body_of(eid) == "The door. The door."
+
+
+def test_markup_endpoint_is_gm_only_and_world_scoped(client, seed):
+    eid = _make_entity(seed.world_a.id, body="Secret words here")
+    payload = {"field": "body", "action": "gmonly", "text": "Secret"}
+    assert client.post(f"/api/entity/{eid}/markup", json=payload).status_code in (401, 403, 302, 303, 307)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post(f"/api/entity/{eid}/markup", json=payload).status_code == 403
+    assert _body_of(eid) == "Secret words here"
+
+
+def test_markup_endpoint_handles_notes(client, seed):
+    eid = _make_entity(seed.world_a.id, body="x")
+    db = SessionLocal()
+    try:
+        n = EntityNote(entity_id=eid, content="Meet at dawn", content_is_html=False)
+        h = EntityNote(entity_id=eid, content="<p>Meet at dawn</p>", content_is_html=True)
+        db.add_all([n, h]); db.commit()
+        nid, hid = n.id, h.id
+    finally:
+        db.close()
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "note", "note_id": nid, "action": "spoiler", "text": "at dawn"})
+    assert r.status_code == 200
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "note", "note_id": hid, "action": "spoiler", "text": "at dawn"})
+    assert r.status_code == 422
+    db = SessionLocal()
+    try:
+        assert db.get(EntityNote, nid).content == "Meet [spoiler]at dawn[/spoiler]"
+        assert db.get(EntityNote, hid).content == "<p>Meet at dawn</p>"
+    finally:
+        db.close()
+
+
+def test_entity_page_marks_its_fields_for_the_read_view_menu_only_for_a_gm(client, seed):
+    eid = _make_entity(seed.world_a.id, body="Some text")
+    _gm(client, seed)
+    html = client.get(f"/entity/{eid}").text
+    assert f'data-markup-entity="{eid}"' in html and 'data-markup-field="body"' in html
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/entity/{eid}").text
+    assert "data-markup-entity" not in html

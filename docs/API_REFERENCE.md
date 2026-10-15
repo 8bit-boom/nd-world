@@ -218,6 +218,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/entity/{entity_id}/notes/{note_id}/edit` | GM / Assistant | Edits a note's content/visibility — reopens it in the same data-fmt textarea used to create it, so an embedded image can be resized after the fact via the toolbar's Resize control. |
 | POST | `/api/upload-image` | GM / Assistant | Uploads an image and returns its URL — backs the rich-text formatting toolbar's image button on GM-only fields (entity body/notes). |
 | POST | `/api/upload-media` | GM / Assistant | Superset of `/api/upload-image` — also accepts audio/video (browser-native containers only). Backs the same toolbar's media button/drag-drop/clipboard-paste; response is `{url, kind}` where `kind` is `image`/`audio`/`video`. |
+| POST | `/api/entity/{entity_id}/markup` | GM | Marks up text selected on the read view (`field` body/summary/note, `action` gmonly/spoiler/mark/underline/bold/italic/strike/`color:#rrggbb`/`unwrap:<tag>`, `text`+`before`+`after`; unwrap: `index`+`snippet`). The selection is located in the markdown; 422 `{error}` when it is ambiguous or cannot be placed (nothing is saved). |
 | POST | `/api/entity/{entity_id}/image` | GM / Assistant | Sets an entity's portrait directly from a URL (Image Studio's "Set as portrait"/"Attach" flow) without the full edit form. |
 
 ## Entity Field Templates
