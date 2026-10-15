@@ -24,6 +24,20 @@
   <div class="ed-content">
 {% endif %}
 <article class="detail kind-{{ entity.kind }}">
+  {# Where this lives: the kind's list, then each folder and subfolder - every step is a link back up. #}
+  <nav class="breadcrumb" aria-label="Where this is filed" id="entity-breadcrumb">
+    <a href="{{ ('/kind/' + entity.kind)|wq }}">{{ kind_icons[entity.kind] }} {{ entity.kind|capitalize }}s</a>
+    {% if entity.folder %}
+    {% set ns = namespace(path='') %}
+    {% for part in entity.folder.split('/') %}
+      {% if loop.first %}{% set ns.path = part %}{% else %}{% set ns.path = ns.path + '/' + part %}{% endif %}
+      <span class="bc-sep">›</span>
+      <a href="{{ ('/kind/' + entity.kind + '?folder=' + ns.path|urlencode)|wq }}">{{ part }}</a>
+    {% endfor %}
+    {% endif %}
+    <span class="bc-sep">›</span>
+    <span class="bc-current">{{ entity.name }}</span>
+  </nav>
   <header class="detail-header">
     {% if entity.image_url %}
     {# The box is 160px: show the small thumbnail (when one exists) and load the original only on click. #}

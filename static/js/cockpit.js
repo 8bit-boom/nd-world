@@ -102,6 +102,11 @@
     return w >= 200 && h >= 150 ? { w: w, h: h } : null;
   }
   function prefHeight(p) { return (CK_TYPES[p.type] && CK_TYPES[p.type].h) || 300; }
+  // "Roomy windows" (🧩 Layouts, per browser): every tiler (auto-arrange, scenes, the laptop's tiles) keeps each tile big - about 60% of the
+  // screen tall - and lets the workspace scroll for the rest, instead of squeezing every window into one screen.
+  const ROOMY_KEY = 'nd_cockpit_roomy';
+  function roomy() { try { return localStorage.getItem(ROOMY_KEY) === '1'; } catch (e) { return false; } }
+  prefHeight.minH = function (vp) { return roomy() ? LAYOUT.roomyHeight(vp) : 0; };
 
   // ── the laptop layout ──────────────────────────────────────────────────────────────────────────────────────────────
   // Below ~1700px of window width (a Vivobook is 1280-1536) the cockpit shows a few windows at a time, tiled big, and keeps
@@ -1848,6 +1853,18 @@
     const row = document.getElementById('ck-wheel-row');
     if (row) { row.setAttribute('aria-pressed', on ? 'true' : 'false'); row.firstElementChild.textContent = (on ? '\u2611 ' : '\u2610 ') + 'Wheel scrolls the workspace'; }
   }
+  function applyRoomyRow() {
+    const on = roomy();
+    const row = document.getElementById('ck-roomy-row');
+    if (row) { row.setAttribute('aria-pressed', on ? 'true' : 'false'); row.firstElementChild.textContent = (on ? '\u2611 ' : '\u2610 ') + 'Roomy windows'; }
+  }
+  function toggleRoomy() {
+    setPref(ROOMY_KEY, roomy() ? '' : '1');
+    applyRoomyRow();
+    autoArrange();                                   // tidy now, so the choice shows
+    toast(roomy() ? 'Roomy windows: auto-arrange, scenes and the laptop tiles keep every window big - scroll for the rest.'
+                  : 'Windows are fitted to one screen again.');
+  }
   function toggleWheelMode() {
     setPref(WHEEL_KEY, wheelOnWorkspace() ? '' : '1');
     applyWheelRow();
@@ -2539,6 +2556,8 @@
   document.getElementById('ck-save-preset').addEventListener('click', function () { closeLayouts(false); saveLayoutAs(); });
   const lockRow = document.getElementById('ck-lock-row');
   if (lockRow) lockRow.addEventListener('click', function () { closeLayouts(false); toggleLock(); });
+  const roomyRow = document.getElementById('ck-roomy-row');
+  if (roomyRow) roomyRow.addEventListener('click', function () { closeLayouts(false); toggleRoomy(); });
   const wheelRow = document.getElementById('ck-wheel-row');
   if (wheelRow) wheelRow.addEventListener('click', function () { closeLayouts(false); toggleWheelMode(); });
 
@@ -2658,6 +2677,7 @@
     ['Drag to the left / right edge', 'Dock the window to that half of the screen.'],
     ['Drag or resize at the top / bottom edge', 'The workspace scrolls with you: make a window taller than the screen, or carry it down to the others.'],
     ['Scrollbar  /  Alt + mouse wheel', 'Scroll the workspace (the wheel alone scrolls the page in the window under it). The ▲ 1/2 ▼ in the status bar does it too.'],
+    ['🧩 Layouts → Roomy windows', 'Auto-arrange, scenes and the laptop tiles keep every window big (about 60% of the screen tall) and the workspace scrolls for the rest.'],
     ['🧩 Layouts → Wheel scrolls the workspace', 'Tick it and the plain wheel scrolls the workspace even over a window; Alt + wheel then scrolls the page in the window.'],
     ['Double-click a title bar', 'Fill the cockpit with the window; again to give it back.'],
     ['Double-click the title text', 'Rename the window.'],
@@ -3258,6 +3278,7 @@
   applyChrome();           // before the first measure: the laptop layout hides the site's top bar, so the workspace is taller
   applyLock();
   applyWheelRow();
+  applyRoomyRow();
   fitViewport();
   buildWelcomeTiles();
   updateStatus();

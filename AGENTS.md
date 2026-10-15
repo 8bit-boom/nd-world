@@ -215,6 +215,12 @@ tools that require GM access still check `is_gm` at call time.)
   (`syncMaxLock`) scrolls to the top and locks the workspace (`.ck-maxed`) until it is given back. **Do NOT reserve the scrollbar's
   place** (`scrollbar-gutter: stable`): layouts arranged to fill the screen would lose ~15px at the right edge, hiding half the
   scrollbar of the page inside their right-hand windows.
+- **Roomy windows** (🧩 Layouts, per browser `nd_cockpit_roomy`): `tilePanels` never makes a tile shorter than `pref.minH(vp)` - cockpit.js hangs
+  `minH` on `prefHeight`, the height function EVERY tiler already receives (auto-arrange, scenes, the laptop's tiles), so one option covers all
+  of them without threading a parameter; `roomyHeight` = 60% of the screen, 300-560 px. Many windows stay big and the workspace scrolls.
+- **Text selection menu** (`text-format-toolbar.js`, `data-fmt-gmonly` fields): right-click on a selection shows the full menu (hide from players
+  = `[gmonly]`, spoiler, highlight, bold, italic); letting go of a mouse selection shows a bubble with the two hiding actions. All go through
+  `ndFmtWrapSelection`. An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character
   (Russian / Hebrew layouts), use Alt + letter/digit (never Ctrl+Alt: that is AltGr and types characters), skip the browser's own

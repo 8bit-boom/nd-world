@@ -653,33 +653,55 @@ const NDFMT_GMONLY_SHORTCUT_LABEL = /Mac/.test(navigator.platform || "") ? "⌘�
 //     own menu) is left alone.
 //  2. Select text, Ctrl+Shift+G (Cmd+Shift+G on Mac): wraps it immediately,
 //     no menu — for a GM who'd rather keep both hands on the keyboard.
+// Menu items for a selection: what a GM reaches for while reading their own text (hide it from players first).
+function ndFmtSelectionItems(ta) {
+  return [
+    [`🔒 Hide from players - GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`, "[gmonly]", "[/gmonly]"],
+    ["🙈 Spoiler - hidden until clicked", "[spoiler]", "[/spoiler]"],
+    ["⬛ Highlight", "[mark]", "[/mark]"],
+    ["B Bold", "**", "**"],
+    ["I Italic", "*", "*"],
+  ].map(([label, open, close]) => [label, () => ndFmtWrapSelection(ta, open, close)]);
+}
+
+// One small menu next to the pointer. `compact` (the bubble that follows a mouse selection) offers only the two hide actions.
+function ndFmtShowSelectionMenu(ta, pageX, pageY, compact) {
+  _ndFmtCloseCtxMenu();
+  const menu = document.createElement("div");
+  menu.className = "fmt-ctx-menu";
+  menu.style.left = pageX + "px";
+  menu.style.top = pageY + "px";
+  ndFmtSelectionItems(ta).slice(0, compact ? 2 : 5).forEach(([label, run]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.onclick = () => { run(); _ndFmtCloseCtxMenu(); };
+    menu.appendChild(btn);
+  });
+  document.body.appendChild(menu);
+  _ndFmtCtxMenu = menu;
+  // Nudge back on-screen near the right/bottom edge.
+  const rect = menu.getBoundingClientRect();
+  const overflowX = rect.right - window.innerWidth;
+  const overflowY = rect.bottom - window.innerHeight;
+  if (overflowX > 0) menu.style.left = Math.max(0, pageX - overflowX) + "px";
+  if (overflowY > 0) menu.style.top = Math.max(0, pageY - overflowY) + "px";
+}
+
 function ndFmtSetupGmOnlyShortcuts(ta) {
+  // Right-click on a selection: the full menu. Nothing selected: the browser's own menu (paste, spellcheck) is left alone.
   ta.addEventListener("contextmenu", (e) => {
     if (ta.selectionStart === ta.selectionEnd) return;
     e.preventDefault();
-    _ndFmtCloseCtxMenu();
-    const menu = document.createElement("div");
-    menu.className = "fmt-ctx-menu";
-    menu.style.left = e.pageX + "px";
-    menu.style.top = e.pageY + "px";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = `🔒 Mark as GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`;
-    btn.onclick = () => {
-      ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]");
-      _ndFmtCloseCtxMenu();
-    };
-    menu.appendChild(btn);
-    document.body.appendChild(menu);
-    _ndFmtCtxMenu = menu;
-    // Nudge back on-screen if the click landed near the right/bottom edge —
-    // pageX/pageY alone would otherwise let the menu render partly (or
-    // fully) off the visible viewport.
-    const rect = menu.getBoundingClientRect();
-    const overflowX = rect.right - window.innerWidth;
-    const overflowY = rect.bottom - window.innerHeight;
-    if (overflowX > 0) menu.style.left = Math.max(0, e.pageX - overflowX) + "px";
-    if (overflowY > 0) menu.style.top = Math.max(0, e.pageY - overflowY) + "px";
+    ndFmtShowSelectionMenu(ta, e.pageX, e.pageY, false);
+  });
+  // Select with the mouse and let go: a small bubble at the pointer offers to hide it from players (no right-click needed).
+  ta.addEventListener("mouseup", (e) => {
+    if (e.button !== 0) return;
+    setTimeout(() => {
+      if (ta.selectionEnd - ta.selectionStart < 2) return;
+      ndFmtShowSelectionMenu(ta, e.pageX + 6, e.pageY + 12, true);
+    }, 0);
   });
   ta.addEventListener("keydown", (e) => {
     if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.key.toLowerCase() !== "g") return;

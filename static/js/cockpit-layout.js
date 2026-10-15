@@ -19,6 +19,8 @@
   var MAX_ASPECT = 1.8;           // taller than this (height / width) and a tile is a sliver ...
   var MIN_ASPECT = 0.4;           // ... flatter than this and it is a bar
   var TOLERANCE = 0.04;           // a scrollbar or a bookmarks bar is not a new screen
+  // roomy tiles: ~60% of the screen's height, at least 300 and at most 560 px (a laptop shows one and a half, a 4K screen two)
+  function roomyHeight(vp) { return clamp(Math.round(((vp && vp.h) || 700) * 0.6), 300, 560); }
   var STAGE = { map: 1, wmap: 1, combat: 1 };   // the window that gets the big area
 
   function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
@@ -63,16 +65,16 @@
 
   // Stack `list` (indices into out) in one column; each window's height follows what it wants (opts.pref), never below
   // MIN_CELL_H — more windows than fit make the column taller and the workspace scrolls.
-  function fillColumn(out, panels, list, x, y0, w, availH, pref) {
+  function fillColumn(out, panels, list, x, y0, w, availH, pref, minH) {
     if (!list.length) return;
     var total = 0;
     list.forEach(function (i) { total += Math.max(1, pref(panels[i])); });
     var room = availH - GAP * (list.length - 1);
     var y = y0;
     list.forEach(function (i, k) {
-      var h = Math.max(MIN_CELL_H, Math.floor(room * Math.max(1, pref(panels[i])) / total));
+      var h = Math.max(minH, Math.floor(room * Math.max(1, pref(panels[i])) / total));
       // the last window in a column that fits takes the rounding remainder, so it ends exactly at the bottom
-      if (k === list.length - 1 && y + h < y0 + availH && h > MIN_CELL_H) h = y0 + availH - y;
+      if (k === list.length - 1 && y + h < y0 + availH && h > minH) h = y0 + availH - y;
       place(out[i], x, y, w, h);
       y += h + GAP;
     });
@@ -109,9 +111,9 @@
   }
 
   // Aligned rows of c columns inside an area; a short last row stretches across the width.
-  function placeGrid(out, list, x0, y0, areaW, areaH, c) {
+  function placeGrid(out, list, x0, y0, areaW, areaH, c, minH) {
     var rows = Math.ceil(list.length / c);
-    var ch = Math.max(MIN_CELL_H, (areaH - GAP * (rows - 1)) / rows);
+    var ch = Math.max(minH, (areaH - GAP * (rows - 1)) / rows);
     for (var r = 0; r < rows; r++) {
       var inRow = Math.min(c, list.length - r * c);
       var cw = (areaW - GAP * (inRow - 1)) / inRow;
@@ -124,6 +126,9 @@
   // plain grid. opts.pref(panel) is how tall a window likes to be.
   function tilePanels(panels, vp, opts) {
     var pref = (opts && opts.pref) || function () { return 300; };
+    // "Roomy": a tile is never shorter than pref.minH(vp) (cockpit.js hangs it on the height function it already passes everywhere),
+    // so many windows stay big and the workspace scrolls instead of every one being squeezed into one screen.
+    var minH = Math.max(MIN_CELL_H, typeof pref.minH === 'function' ? Math.round(pref.minH(vp)) || 0 : 0);
     var n = panels.length;
     if (!n) return [];
     var W = Math.max(MIN_W, vp.w), H = Math.max(MIN_H, vp.h);
@@ -140,7 +145,7 @@
     if (stage < 0) {                                   // a plain grid
       var all = [];
       for (var g = 0; g < n; g++) all.push(g);
-      placeGrid(out, all, GAP, GAP, inner, innerH, gridColumns(n, cols, inner, innerH, false).c);
+      placeGrid(out, all, GAP, GAP, inner, innerH, gridColumns(n, cols, inner, innerH, false).c, minH);
       return out;
     }
 
@@ -150,7 +155,7 @@
     if (cols === 1) {                                  // too narrow for side by side: stage on top, the rest below
       var sh = Math.max(MIN_H * 2, Math.round(innerH * 0.62));
       place(out[stage], GAP, GAP, inner, sh);
-      fillColumn(out, panels, rest, GAP, GAP + sh + GAP, inner, Math.max(rest.length * MIN_CELL_H, innerH - sh - GAP), pref);
+      fillColumn(out, panels, rest, GAP, GAP + sh + GAP, inner, Math.max(rest.length * minH, innerH - sh - GAP), pref, minH);
       return out;
     }
 
@@ -169,7 +174,7 @@
     var stacked = gridColumns(rest.length, restCols, restW, innerH, true);
     var aligned = gridColumns(rest.length, restCols, restW, innerH, false);
     if (aligned.violation < stacked.violation) {
-      placeGrid(out, rest, GAP + stageW + GAP, GAP, restW, innerH, aligned.c);
+      placeGrid(out, rest, GAP + stageW + GAP, GAP, restW, innerH, aligned.c, minH);
       return out;
     }
     var nc = stacked.c;
@@ -186,7 +191,7 @@
       heights[best] += pref(panels[idx]);
     });
     columns.forEach(function (list, q) {
-      fillColumn(out, panels, list, GAP + stageW + GAP + q * (colW + GAP), GAP, colW, innerH, pref);
+      fillColumn(out, panels, list, GAP + stageW + GAP + q * (colW + GAP), GAP, colW, innerH, pref, minH);
     });
     return out;
   }
@@ -624,7 +629,7 @@
 
   root.ndCockpitLayout = {
     MIN_W: MIN_W, MIN_H: MIN_H, GRID: GRID, GAP: GAP, LAPTOP_BELOW: LAPTOP_BELOW, EDGE_SIDES: EDGE_SIDES,
-    resizeBox: resizeBox, snapBox: snapBox,
+    resizeBox: resizeBox, snapBox: snapBox, roomyHeight: roomyHeight,
     SCROLL_EDGE: SCROLL_EDGE, SCROLL_MAX: SCROLL_MAX, MAX_Y: MAX_Y,
     autoScrollStep: autoScrollStep, revealScroll: revealScroll, scrollPages: scrollPages, pageStep: pageStep, wheelPixels: wheelPixels,
     vpOk: vpOk, needsScale: needsScale, fitPanels: fitPanels, scalePanels: scalePanels,

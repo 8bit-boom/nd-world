@@ -372,3 +372,49 @@ def test_the_wheel_can_be_made_to_scroll_the_workspace_over_windows_in_this_brow
     row = html.split('id="ck-wheel-row"', 1)[1].split("</button>", 1)[0]
     assert 'role="menuitemcheckbox"' in row and 'aria-pressed="false"' in row and "Wheel scrolls the workspace" in row
     assert html.index('id="ck-lock-row"') < html.index('id="ck-wheel-row"') < html.index('id="ck-reset"')
+
+
+# ── roomy auto-arrange ────────────────────────────────────────────────────────────────────────────────────────────────
+
+@needs_node
+def test_roomy_tiles_keep_every_window_big_and_let_the_workspace_scroll():
+    out = _run("""
+const mk = (n) => Array.from({length: n}, (_, i) => ({id: 'p' + i, type: i === 0 ? 'map' : 'notes'}));
+const vp = {w: 1536, h: 670};
+const plain = L.tilePanels(mk(9), vp, {pref: () => 300});
+const roomyPref = () => 300; roomyPref.minH = (v) => L.roomyHeight(v);
+const roomy = L.tilePanels(mk(9), vp, {pref: roomyPref});
+const bottom = (t) => Math.max(...t.map(p => p.y + p.h));
+const minH = (t) => Math.min(...t.slice(1).map(p => p.h));
+out.plain = {bottom: bottom(plain), minH: minH(plain)};
+out.roomy = {bottom: bottom(roomy), minH: minH(roomy)};
+out.height = [L.roomyHeight({w: 1280, h: 400}), L.roomyHeight({w: 1536, h: 670}), L.roomyHeight({w: 3840, h: 2000}), L.roomyHeight(null)];
+// a grid with no stage, and a single column (a narrow screen)
+const g = mk(6).map(p => ({id: p.id, type: 'notes'}));
+out.grid = [Math.min(...L.tilePanels(g, {w: 1500, h: 700}, {pref: roomyPref}).map(p => p.h)), Math.min(...L.tilePanels(g, {w: 1500, h: 700}, {pref: () => 300}).map(p => p.h))];
+out.narrow = Math.min(...L.tilePanels(mk(5), {w: 500, h: 700}, {pref: roomyPref}).slice(1).map(p => p.h));
+// no overlaps either way
+const overlap = (t) => t.some((a, i) => t.some((b, j) => j > i && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h));
+out.overlap = [overlap(plain), overlap(roomy)];
+""")
+    assert out["height"] == [300, 402, 560, 420]
+    assert out["roomy"]["minH"] >= 402 > out["plain"]["minH"], "roomy tiles are never shorter than ~60% of the screen"
+    assert out["roomy"]["bottom"] > out["plain"]["bottom"], "so the workspace is taller than the screen"
+    assert out["grid"][0] >= 420 and out["grid"][0] > out["grid"][1]
+    assert out["narrow"] >= 420
+    assert out["overlap"] == [False, False]
+
+
+def test_roomy_windows_is_a_per_browser_option_every_tiler_honours(client, seed):
+    js = _js()
+    assert "const ROOMY_KEY = 'nd_cockpit_roomy';" in js
+    assert "prefHeight.minH = function (vp) { return roomy() ? LAYOUT.roomyHeight(vp) : 0; };" in js
+    # the height function is what every tiler already receives, so auto-arrange, scenes and the laptop's tiles all follow it
+    assert js.count("prefHeight)") >= 8
+    toggle = js.split("function toggleRoomy() {", 1)[1].split("\n  }\n", 1)[0]
+    assert "setPref(ROOMY_KEY, roomy() ? '' : '1');" in toggle and "autoArrange();" in toggle
+    assert "applyRoomyRow();" in js.split("applyLock();", 1)[1].split("fitViewport();", 1)[0]
+    _login_gm(client, seed)
+    html = client.get("/cockpit").text
+    row = html.split('id="ck-roomy-row"', 1)[1].split("</button>", 1)[0]
+    assert 'role="menuitemcheckbox"' in row and 'aria-pressed="false"' in row and "Roomy windows" in row

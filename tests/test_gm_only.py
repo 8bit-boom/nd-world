@@ -470,3 +470,34 @@ def test_gmonly_keyboard_shortcut_requires_ctrl_or_meta_and_shift_g(client, seed
     assert "e.ctrlKey || e.metaKey" in fn
     assert "e.shiftKey" in fn
     assert 'e.key.toLowerCase() !== "g"' in fn
+
+
+def test_selecting_text_offers_a_bubble_at_the_pointer_to_hide_it_from_players(client, seed):
+    """Not only a right-click: letting go of a mouse selection shows a small bubble with the two hiding actions, and the right-click
+    menu now lists the common formats too - all through the same wrapper the toolbar's lock button uses."""
+    js = client.get("/static/js/text-format-toolbar.js").text
+    fn = _fn_body(js, "ndFmtSetupGmOnlyShortcuts")
+    assert '"mouseup"' in fn and "e.button !== 0" in fn and "ndFmtShowSelectionMenu(ta, e.pageX + 6, e.pageY + 12, true)" in fn
+    assert "ndFmtShowSelectionMenu(ta, e.pageX, e.pageY, false)" in fn
+    items = _fn_body(js, "ndFmtSelectionItems")
+    for tag in ('"[gmonly]", "[/gmonly]"', '"[spoiler]", "[/spoiler]"', '"[mark]", "[/mark]"', '"**", "**"'):
+        assert tag in items, tag
+    assert "Hide from players" in items
+    # the bubble (compact) offers only the first two - hide from players, spoiler
+    assert ".slice(0, compact ? 2 : 5)" in _fn_body(js, "ndFmtShowSelectionMenu")
+
+
+def test_an_entity_page_has_a_breadcrumb_back_through_every_folder_and_subfolder(client, seed):
+    eid = _make_entity(seed.world_a.id, kind="creature", name="Silt Wyrm", folder="Beasts/Water/Big")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/entity/{eid}").text
+    nav = html.split('id="entity-breadcrumb"', 1)[1].split("</nav>", 1)[0]
+    assert "/kind/creature" in nav
+    for path in ("Beasts", "Beasts/Water", "Beasts/Water/Big"):
+        assert "folder=" + path + "&amp;" in nav, path
+    assert "Silt Wyrm" in nav.split("bc-current", 1)[1]
+    # an unfiled entity still links back to its list
+    eid2 = _make_entity(seed.world_a.id, kind="creature", name="Loose Thing")
+    nav2 = client.get(f"/entity/{eid2}").text.split('id="entity-breadcrumb"', 1)[1].split("</nav>", 1)[0]
+    assert "/kind/creature" in nav2 and "folder=" not in nav2
