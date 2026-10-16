@@ -66,17 +66,72 @@ _SPOILER_TAG_RE = re.compile(r'\[spoiler\](.*?)\[/spoiler\]', re.DOTALL)
 _GM_ONLY_TAG_RE = re.compile(r'\[gmonly\](.*?)\[/gmonly\]', re.DOTALL | re.IGNORECASE)
 
 
-def strip_gm_only(text: str) -> str:
+# [for=ID,ID]...[/for] - a secret for particular players (the GM sees it labelled; the listed players see it as plain text; everyone else
+# gets nothing). [reveal=YYYY-MM-DD[THH:MM]]...[/reveal] - text hidden from players until that moment (UTC), then plain text. Both are
+# access control exactly like [gmonly], and both are handled INSIDE strip_gm_only, so every call site that already strips for a
+# non-GM viewer hides them too (fail-closed). A site that also passes the viewer's id lets a listed player see their own [for] text.
+_FOR_OPEN = r'\[for=([0-9][0-9,\s]{0,63})\]'
+_REVEAL_OPEN = r'\[reveal=(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?)\]'
+# the innermost block only (no further opening tag of the same kind inside), so nested blocks resolve from the inside out
+_FOR_RE = re.compile(_FOR_OPEN + r'((?:(?!\[for=).)*?)\[/for\]', re.DOTALL | re.IGNORECASE)
+_REVEAL_RE = re.compile(_REVEAL_OPEN + r'((?:(?!\[reveal=).)*?)\[/reveal\]', re.DOTALL | re.IGNORECASE)
+_FOR_ORPHAN_OPEN_RE = re.compile(r'\[for=[^\]]*\].*', re.DOTALL | re.IGNORECASE)
+_REVEAL_ORPHAN_OPEN_RE = re.compile(r'\[reveal=[^\]]*\].*', re.DOTALL | re.IGNORECASE)
+_ORPHAN_CLOSE_RE = re.compile(r'\[/(?:for|reveal)\]', re.IGNORECASE)
+
+
+def parse_reveal_at(value: str):
+    """The UTC datetime a [reveal=...] tag names, or None when it is not a valid date (such a block then stays hidden)."""
+    from datetime import datetime
+    v = (value or "").strip().replace(" ", "T")
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(v, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _for_ids(raw: str) -> set:
+    return {int(x) for x in re.findall(r"\d+", raw or "")}
+
+
+def strip_gm_only(text: str, viewer_id=None, now=None) -> str:
     """Removes every [gmonly]...[/gmonly] block (tag and contents alike)
     from `text`. Call this on any entity/note field BEFORE render_md,
     autolinking, a .md/.zip download, or a RAG excerpt — anywhere the
     caller knows the current viewer is not a GM. A GM viewing/editing
     their own content is never passed through this function, so the raw
-    markers and the secret text underneath survive untouched for them."""
+    markers and the secret text underneath survive untouched for them.
+
+    Also resolves the other two access tags for a non-GM viewer: a [for=IDs] block stays (as plain text) only when `viewer_id` is one of
+    the IDs, and a [reveal=DATE] block stays (as plain text) once DATE has passed (`now`, default the current UTC time). Anything
+    malformed - an unclosed opening tag, an unparseable date - hides, never shows."""
     if not text:
         return text
-    return _GM_ONLY_TAG_RE.sub("", text)
+    text = _GM_ONLY_TAG_RE.sub("", text)
+    if "[" not in text:
+        return text
+    from datetime import datetime
+    when = now or datetime.utcnow()
 
+    def for_sub(m):
+        return m.group(2) if viewer_id is not None and int(viewer_id) in _for_ids(m.group(1)) else ""
+
+    def reveal_sub(m):
+        at = parse_reveal_at(m.group(1))
+        return m.group(2) if at is not None and at <= when else ""
+
+    for rx, sub in ((_FOR_RE, for_sub), (_REVEAL_RE, reveal_sub)):
+        for _ in range(50):                     # innermost first; each pass resolves one nesting level
+            new = rx.sub(sub, text)
+            if new == text:
+                break
+            text = new
+    # whatever is still tagged is malformed: an opening tag that never closes hides the rest of the text, a stray closing tag goes away
+    text = _FOR_ORPHAN_OPEN_RE.sub("", text)
+    text = _REVEAL_ORPHAN_OPEN_RE.sub("", text)
+    return _ORPHAN_CLOSE_RE.sub("", text)
 
 
 def _safe_color(raw: str) -> str | None:
@@ -145,6 +200,20 @@ def _gm_only_sub(m):
     return f'<span class="gm-only-text gm-inline" data-gm-only>{inner}</span>'
 
 
+def _for_sub(m):
+    """A GM sees a [for=IDs] part labelled (the page script fills in the player names from data-for)."""
+    ids = ",".join(str(i) for i in sorted(_for_ids(m.group(1))))
+    tag, cls = ("div", "for-only-text") if _BLOCK_HTML_RE.search(m.group(2)) else ("span", "for-only-text gm-inline")
+    return f'<{tag} class="{cls}" data-for="{ids}">{m.group(2)}</{tag}>'
+
+
+def _reveal_sub(m):
+    at = parse_reveal_at(m.group(1))
+    stamp = at.strftime("%Y-%m-%dT%H:%M") if at else ""
+    tag, cls = ("div", "reveal-later-text") if _BLOCK_HTML_RE.search(m.group(2)) else ("span", "reveal-later-text gm-inline")
+    return f'<{tag} class="{cls}" data-reveal="{stamp}">{m.group(2)}</{tag}>'
+
+
 def _apply_inline_styles(html: str) -> str:
     def color_sub(m):
         color = _safe_color(m.group(1))
@@ -173,6 +242,8 @@ def _apply_inline_styles(html: str) -> str:
     # runs. So unlike [spoiler] there's no non-GM viewer left to hide this
     # from; it's rendered as a plainly-labeled box rather than click-to-reveal.
     html = _GM_ONLY_TAG_RE.sub(_gm_only_sub, html)
+    html = _FOR_RE.sub(_for_sub, html)
+    html = _REVEAL_RE.sub(_reveal_sub, html)
     return html
 
 

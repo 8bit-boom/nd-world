@@ -724,3 +724,176 @@ def test_menu_script_has_quest_fact_block_format_and_read_aloud_actions(client, 
     js = client.get("/static/js/text-format-toolbar.js").text
     for needle in ("/quests/new", "/facts/new", "Make a quest from this", "Save as a fact", "lineFormat", "Clear formatting", "Read-aloud box", "[read]"):
         assert needle in js, needle
+
+
+# ── per-player secrets [for=IDs] and timed reveals [reveal=DATE] ─────────────
+
+from datetime import datetime as _dt
+
+
+def test_strip_resolves_for_and_reveal_fail_closed():
+    now = _dt(2026, 10, 16, 12, 0)
+    t = "A [for=3]s3[/for] B [reveal=2026-10-01]old[/reveal] C [reveal=2026-12-01]new[/reveal] D"
+    assert strip_gm_only(t, now=now) == "A  B old C  D"                     # no viewer: no [for] text; the past reveal is plain text
+    assert strip_gm_only(t, 3, now=now) == "A s3 B old C  D"
+    assert strip_gm_only(t, 4, now=now) == "A  B old C  D"
+    assert strip_gm_only("x [reveal=2026-10-16T12:00]at[/reveal]", now=now) == "x at"          # the moment itself counts
+    assert strip_gm_only("x [reveal=2026-10-16T12:01]soon[/reveal]", now=now) == "x "
+    assert strip_gm_only("x [FOR=3]caps[/FOR]", 3) == "x caps"
+
+
+def test_strip_nested_and_malformed_access_tags_never_leak():
+    # inner resolves first, then the outer: a player of the inner block only still gets nothing from the outer one
+    t = "x [for=1]a [for=2]b[/for] c[/for] y"
+    assert strip_gm_only(t, 1) == "x a  c y"
+    assert strip_gm_only(t, 2) == "x  y"
+    assert strip_gm_only(t) == "x  y"
+    # a reveal inside a secret, and a secret inside a not-yet reveal
+    assert strip_gm_only("[for=1]a [reveal=2020-01-01]b[/reveal][/for]", 2) == ""
+    assert strip_gm_only("[reveal=2099-01-01]a [for=1]b[/for][/reveal]", 1) == ""
+    # [gmonly] inside still wins
+    assert strip_gm_only("[for=1]a [gmonly]g[/gmonly] b[/for]", 1) == "a  b"
+    # an opening tag that never closes hides the rest; a stray closing tag disappears; a bad date stays hidden
+    assert strip_gm_only("pub [for=1]secret forever", 1) == "pub "
+    assert strip_gm_only("pub [reveal=2020-01-01]secret forever") == "pub "
+    assert strip_gm_only("pub [/for] [/reveal] end") == "pub   end"
+    assert strip_gm_only("a [reveal=2026-13-45]x[/reveal] b") == "a  b"
+    assert strip_gm_only("a [for=]x[/for] b", 1) == "a "                       # a tag with no ids is malformed: hides the rest
+
+
+def test_gm_sees_access_parts_labelled_in_the_rendered_page():
+    html = render_md("Hi [for=2,3]sec[/for] and [reveal=2026-12-01T18:30]later[/reveal]")
+    assert 'class="for-only-text gm-inline" data-for="2,3"' in html and 'data-reveal="2026-12-01T18:30"' in html
+    block = render_md("[for=2]\n\npara one\n\npara two\n\n[/for]")
+    assert "for-only-text" in block
+
+
+def _member(world_id, user_id):
+    from app.models import WorldMembership
+    db = SessionLocal()
+    try:
+        if not db.query(WorldMembership).filter_by(world_id=world_id, user_id=user_id).first():
+            db.add(WorldMembership(world_id=world_id, user_id=user_id)); db.commit()
+    finally:
+        db.close()
+
+
+def test_a_player_sees_only_their_own_secret_and_only_a_due_reveal(client, seed):
+    _member(seed.world_a.id, seed.player_a.id)
+    body = (f"Public. [for={seed.player_a.id}]For A only.[/for] [for={seed.player_b.id}]For B only.[/for] "
+            "[reveal=2020-01-01]Already revealed.[/reveal] [reveal=2099-01-01]Not yet revealed.[/reveal]")
+    eid = _make_entity(seed.world_a.id, name="Secrets", body=body, summary=f"S [for={seed.player_b.id}]sum for B[/for]")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id); w.players_can_download_entities = True; db.commit()
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/entity/{eid}").text
+    assert "Public." in html and "For A only." in html and "Already revealed." in html
+    for hidden in ("For B only.", "Not yet revealed.", "sum for B", "data-for", "data-reveal", "[for=", "[reveal="):
+        assert hidden not in html, hidden
+    md = client.get(f"/entity/{eid}/download.md").text
+    assert "For A only." in md and "For B only." not in md and "Not yet revealed." not in md and "sum for B" not in md
+    prev = client.get(f"/api/entity/{eid}/preview").json()
+    assert "For B only." not in prev["body"] and "For A only." in prev["body"] and "sum for B" not in prev["summary"]
+    # a secret word searched for is not quoted back, from the secret that is not theirs
+    sr = client.get("/search", params={"q": "Not yet revealed"}).text
+    assert "Not yet revealed." not in sr
+
+
+def test_the_gm_sees_everything_labelled_and_can_preview_as_one_player(client, seed):
+    _member(seed.world_a.id, seed.player_a.id)
+    body = f"[for={seed.player_a.id}]For A only.[/for] [reveal=2099-01-01]Later text.[/reveal]"
+    eid = _make_entity(seed.world_a.id, name="GM Sees", body=body)
+    _gm(client, seed)
+    html = client.get(f"/entity/{eid}").text
+    assert "For A only." in html and "Later text." in html and f'data-for="{seed.player_a.id}"' in html and 'data-reveal="2099-01-01T00:00"' in html
+    as_a = client.get(f"/entity/{eid}?as=player&player={seed.player_a.id}").text
+    assert "For A only." in as_a and "Later text." not in as_a
+    as_nobody = client.get(f"/entity/{eid}?as=player").text
+    assert "For A only." not in as_nobody and "Later text." not in as_nobody
+
+
+def test_player_rag_and_second_screen_never_get_the_secret_even_for_its_own_player(client, seed):
+    """Fail-closed: only the pages that know the viewer show their own [for] text; every other consumer of strip_gm_only (AI context,
+    the second screen) drops it - a leak-proof default rather than a feature."""
+    from app.models import Entity as _E
+    db = SessionLocal()
+    try:
+        ent = _E(world_id=seed.world_a.id, kind="character", name="Rag Test", visible_to_players=True,
+                 body=f"Open. [for={seed.player_a.id}]Private clue.[/for] [reveal=2099-01-01]Future twist.[/reveal]")
+        db.add(ent); db.commit(); db.refresh(ent)
+        text = format_context_from_entities([ent], strip_gm_only=True)
+    finally:
+        db.close()
+    assert "Open." in text and "Private clue." not in text and "Future twist." not in text
+
+
+def test_markup_endpoint_makes_player_secrets_and_timed_reveals(client, seed):
+    _member(seed.world_a.id, seed.player_a.id)
+    eid = _make_entity(seed.world_a.id, body="The key is under the mat. Say nothing.")
+    _gm(client, seed)
+    pid = seed.player_a.id
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": f"for:{pid}", "text": "under the mat"})
+    assert r.status_code == 200, r.text
+    assert _body_of(eid) == f"The key is [for={pid}]under the mat[/for]. Say nothing."
+    # no nesting; a player of another world cannot be named; bad date refused
+    assert client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": f"for:{pid}", "text": "key is under the mat"}).status_code == 422
+    assert client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": f"for:{seed.player_b.id}", "text": "Say nothing"}).status_code == 422
+    assert client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "for:999999", "text": "Say nothing"}).status_code == 422
+    assert client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "reveal:2026-13-45", "text": "Say nothing"}).status_code == 422
+    assert client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "reveal:nonsense", "text": "Say nothing"}).status_code == 422
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "reveal:2099-01-01T18:30", "text": "Say nothing"})
+    assert r.status_code == 200
+    assert _body_of(eid).endswith("[reveal=2099-01-01T18:30]Say nothing[/reveal].")
+    # taking them off again
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "unwrap:reveal", "index": 0, "snippet": "Say nothing"})
+    assert r.status_code == 200 and "[reveal" not in _body_of(eid)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "unwrap:for", "index": 0, "snippet": "under"})
+    assert r.status_code == 200 and "[for" not in _body_of(eid)
+
+
+def test_menu_script_offers_player_secrets_and_timed_reveals(client, seed):
+    js = client.get("/static/js/text-format-toolbar.js").text
+    for needle in ("Secret for one player", "Reveal to players later", "_ndFmtRevealDialog", "_ndFmtLabelAccessParts", '"for:"', '"reveal:"', "for-only-text", "reveal-later-text"):
+        assert needle in js, needle
+
+
+def test_search_does_not_reveal_that_an_entity_mentions_a_word_only_a_secret_contains(client, seed):
+    """The snippet was always stripped; the entity showing up in a player's results at all used to confirm the secret word."""
+    from app.models import EntityNote
+    _member(seed.world_a.id, seed.player_a.id)
+    body = (f"Common words here. [gmonly]zorblax gm secret[/gmonly] [for={seed.player_b.id}]quillnor for b[/for] "
+            f"[for={seed.player_a.id}]flumpet for a[/for] [reveal=2099-01-01]vexwhistle later[/reveal] [reveal=2020-01-01]snarfle due[/reveal]")
+    eid = _make_entity(seed.world_a.id, name="Probe Target", body=body, summary="[gmonly]summarysecret[/gmonly] plain summary")
+    db = SessionLocal()
+    try:
+        db.add(EntityNote(entity_id=eid, content="note [gmonly]noteleak[/gmonly] visible", visible_to_players=True)); db.commit()
+    finally:
+        db.close()
+    from app.retrieval import find_relevant_entities
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    def found(word):
+        return "Probe Target" in client.get("/search", params={"q": word}).text
+
+    for secret in ("zorblax", "quillnor", "vexwhistle", "summarysecret", "noteleak"):
+        assert not found(secret), secret
+    for visible in ("flumpet", "snarfle", "Common"):
+        assert found(visible), visible
+    # the same through the RAG entity lookup a player's AI uses
+    db = SessionLocal()
+    try:
+        from app.models import User
+        player = db.get(User, seed.player_a.id)
+        assert not [e for e in find_relevant_entities(db, seed.world_a.id, "zorblax", user=player) if e.name == "Probe Target"]
+        assert [e for e in find_relevant_entities(db, seed.world_a.id, "flumpet", user=player) if e.name == "Probe Target"]
+    finally:
+        db.close()
+    # the GM still finds secrets
+    client.cookies.clear()
+    _gm(client, seed)
+    assert "Probe Target" in client.get("/search", params={"q": "zorblax"}).text

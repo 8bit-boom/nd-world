@@ -15,7 +15,7 @@ Pure functions over strings, no database, tested on their own (tests/test_markup
 import re
 
 # what is NOT shown: our tags, link / image syntax (the text of a link stays), emphasis marks, code ticks
-_TAG = r"\[/?(?:u|spoiler|gmonly|mark|color|read)(?:=[^\]\n]{0,20})?\]"
+_TAG = r"\[/?(?:u|spoiler|gmonly|mark|color|read|for|reveal)(?:=[^\]\n]{0,20})?\]"
 _MASK_RE = re.compile(
     r"(?P<tag>" + _TAG + r")"
     r"|(?P<linkend>\]\([^)\n]*\))|(?P<open>!?\[)"
@@ -40,7 +40,9 @@ ACTIONS = {
     "strike": ("~~", "~~"),
 }
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-UNWRAPPABLE = {"gmonly": "gmonly", "spoiler": "spoiler", "mark": "mark", "read": "read"}
+_FOR_ACTION_RE = re.compile(r"^for:(\d{1,9}(?:,\d{1,9}){0,19})$")
+_REVEAL_ACTION_RE = re.compile(r"^reveal:(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?)$")
+UNWRAPPABLE = {"gmonly": "gmonly", "spoiler": "spoiler", "mark": "mark", "read": "read", "for": "for", "reveal": "reveal"}
 
 MAX_SELECTION = 4000
 
@@ -203,6 +205,13 @@ def _inside(source: str, s: int, tag: str) -> bool:
     return False
 
 
+def _inside_attr(source: str, s: int, tag: str) -> bool:
+    for m in re.finditer(r"\[%s=[^\]\n]*\](.*?)\[/%s\]" % (tag, tag), source, re.DOTALL | re.IGNORECASE):
+        if m.start() <= s < m.end():
+            return True
+    return False
+
+
 def wrap(source: str, selected: str, before: str, after: str, action: str):
     """The source with the selection wrapped for `action` ('gmonly', 'spoiler', 'mark', 'underline', 'bold', 'italic', 'strike' or
     'color:#rrggbb')."""
@@ -211,11 +220,25 @@ def wrap(source: str, selected: str, before: str, after: str, action: str):
         if not _COLOR_RE.match(color):
             raise MarkupError("That colour is not allowed.")
         open_, close = "[color=%s]" % color, "[/color]"
+    elif _FOR_ACTION_RE.match(action):
+        open_, close = "[for=%s]" % _FOR_ACTION_RE.match(action).group(1), "[/for]"
+    elif _REVEAL_ACTION_RE.match(action):
+        from .rendering import parse_reveal_at
+        when = _REVEAL_ACTION_RE.match(action).group(1)
+        if parse_reveal_at(when) is None:
+            raise MarkupError("That date is not valid.")
+        open_, close = "[reveal=%s]" % when, "[/reveal]"
     elif action in ACTIONS:
         open_, close = ACTIONS[action]
     else:
         raise MarkupError("Unknown action.")
     ranges = [_widen(source, s, e) for s, e in locate(source, selected, before, after)]
+    kind = "for" if action.startswith("for:") else "reveal" if action.startswith("reveal:") else ""
+    if kind:
+        # these tags do not nest (they would resolve the wrong way round): refuse over a part that already has one, or inside one
+        for s_, e_ in ranges:
+            if re.search(r"\[%s[=\]]" % kind, source[s_:e_], re.IGNORECASE) or _inside_attr(source, s_, kind):
+                raise MarkupError("That already has a %s part - take it off first, or use the editor." % ("player-only" if kind == "for" else "reveal-later"))
     if action in ("gmonly", "spoiler") and all(_inside(source, s, action) for s, _ in ranges):
         raise MarkupError("That is already marked.")
     out = source
@@ -233,7 +256,8 @@ def unwrap(source: str, tag: str, n: int, snippet: str = ""):
     page showed in it) guards against the page and the source having drifted apart."""
     if tag not in UNWRAPPABLE:
         raise MarkupError("Unknown action.")
-    blocks = list(re.finditer(r"\[%s\](.*?)\[/%s\]" % (tag, tag), source, re.DOTALL | re.IGNORECASE))
+    open_re = r"\[%s=[^\]\n]*\]" % tag if tag in ("for", "reveal") else r"\[%s\]" % tag
+    blocks = list(re.finditer(r"%s(.*?)\[/%s\]" % (open_re, tag), source, re.DOTALL | re.IGNORECASE))
     if not 0 <= n < len(blocks):
         raise MarkupError("Could not find that block any more - reload the page.")
     m = blocks[n]

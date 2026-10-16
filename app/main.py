@@ -5974,16 +5974,18 @@ def _entity_to_markdown(db: Session, entity: Entity, request: Request) -> str:
     kind_label = f"{kind_icons.get(entity.kind, '')} {entity.kind.capitalize()}".strip()
     if entity.subtype:
         kind_label += f" — {entity.subtype}"
-    body = entity.body if is_gm else strip_gm_only(entity.body)
+    viewer_id = user.id if user else None
+    body = entity.body if is_gm else strip_gm_only(entity.body, viewer_id)
     parts = [f"# {entity.name}", "", f"*{kind_label}*", ""]
-    if entity.summary:
-        parts += [f"*{entity.summary}*", ""]
+    summary = entity.summary if is_gm else strip_gm_only(entity.summary, viewer_id)
+    if summary:
+        parts += [f"*{summary}*", ""]
     parts += ["---", "", body or "", ""]
     notes = _visible_entity_notes(db, entity.id, request)
     if notes:
         parts += ["## Notes", ""]
         for note in notes:
-            content = note.content if is_gm else strip_gm_only(note.content)
+            content = note.content if is_gm else strip_gm_only(note.content, viewer_id)
             parts += [content, "", "---", ""]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -6089,14 +6091,15 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
     # function's own docstring), which reads the raw `body` field below —
     # a non-GM viewer must never receive a [gmonly] secret in either shape,
     # not just the rendered HTML one.
-    body = entity.body if (user and user.is_gm) else strip_gm_only(entity.body)
+    viewer_id = user.id if user else None
+    body = entity.body if (user and user.is_gm) else strip_gm_only(entity.body, viewer_id)
     return {
         "id": entity.id,
         "name": entity.name,
         "kind": entity.kind,
         "kind_icon": deps.effective_kinds(ent_world)[1].get(entity.kind, ""),
         "subtype": entity.subtype,
-        "summary": entity.summary if (user and user.is_gm) else strip_gm_only(entity.summary or ""),
+        "summary": entity.summary if (user and user.is_gm) else strip_gm_only(entity.summary or "", viewer_id),
         "image_url": entity.image_url,
         "thumb_url": thumb_url(entity.image_url) if entity.image_url else entity.image_url,
         "tags": [t.strip() for t in (entity.tags or "").split(",") if t.strip()],
@@ -6206,6 +6209,12 @@ def api_entity_markup(
         source = note.content or ""
     else:
         raise HTTPException(400, "unknown field")
+    if body.action.startswith("for:"):
+        # only players of THIS world can be named (a GM or a stranger's id would just be a dead tag)
+        ids = {int(x) for x in re.findall(r"\d+", body.action[4:])}
+        world_ids = {u.id for u in _world_player_list(db, world.id) if not u.is_gm}
+        if not ids or not ids <= world_ids:
+            return JSONResponse({"error": "Pick players of this world."}, status_code=422)
     try:
         if body.action.startswith("unwrap:"):
             out = _markup_locator.unwrap(source, body.action[7:], body.index, body.snippet)
@@ -6405,6 +6414,11 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     # context). Only a GM can ask; for anyone else the parameter does nothing.
     view_as_player = bool(user and user.is_gm and request.query_params.get("as") == "player")
     is_gm = bool(user and user.is_gm) and not view_as_player
+    # whose secrets ([for=ID] parts) the page shows: the viewer's own - or, in the GM's preview, the player named by ?player=ID
+    viewer_id = user.id if user else None
+    if view_as_player:
+        pid = request.query_params.get("player", "")
+        viewer_id = int(pid) if pid.isdigit() else None
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     # Media attached to this entity — audio/video library clips linked via
@@ -6435,7 +6449,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         # about to go through render_md or inside already-sanitized HTML
         # from the rich note editor (sanitize_note_html doesn't know this
         # syntax and would otherwise leave it sitting there unmangled).
-        content = n.content if is_gm else strip_gm_only(n.content)
+        content = n.content if is_gm else strip_gm_only(n.content, viewer_id)
         note_html = content if n.content_is_html else render_md(content)
         n.content_html = autolink_entities(note_html, autolink_names)  # type: ignore[attr-defined]
     custom_sections = []
@@ -6464,8 +6478,8 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     # from the DB on its own page, so mutating `entity.body` here would gain
     # nothing there and would risk this in-memory copy resurfacing somewhere
     # unstripped; computing separate variables is the safer boundary.
-    safe_body = entity.body if is_gm else strip_gm_only(entity.body)
-    safe_summary = entity.summary if is_gm else strip_gm_only(entity.summary)
+    safe_body = entity.body if is_gm else strip_gm_only(entity.body, viewer_id)
+    safe_summary = entity.summary if is_gm else strip_gm_only(entity.summary, viewer_id)
     body_sections, toc = [], []
     if safe_body:
         content_html = autolink_entities(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", safe_body)), autolink_names)
@@ -7164,7 +7178,9 @@ def _search_entities(db: Session, world: World, request: Request, q: str, kind: 
     query = _filter_visible_entities(query, request)
     if kind:
         query = query.filter(Entity.kind == kind)
-    return query.order_by(Entity.kind, Entity.name).limit(_SEARCH_RESULT_CAP).all()
+    return _retrieval.drop_secret_only_matches(
+        query.order_by(Entity.kind, Entity.name).limit(_SEARCH_RESULT_CAP).all(), [q.lower()], user,
+    )
 
 
 def _search_characters(db: Session, world: World, request: Request, q: str) -> list[dict]:
@@ -7250,7 +7266,9 @@ def _search_notes(db: Session, world: World, request: Request, q: str) -> list[d
             # The detail page strips [gmonly] blocks; the snippet here must
             # not become the one surface that serves them raw — searching a
             # word unique to the secret would actively extract it.
-            content = strip_gm_only(content)
+            content = strip_gm_only(content, user.id if user else None)
+            if q.lower() not in content.lower():
+                continue                    # it matched only inside text this viewer cannot see
         out.append({"title": ent_name, "subtitle": "Note", "url": f"/entity/{ent_id}",
                     "icon": "🔒", "snippet": _snippet(content, q)})
     return out
@@ -7280,7 +7298,7 @@ def search(request: Request, q: str = "", kind: str = "",
             # a word unique to a secret would otherwise quote it back).
             if q.lower() not in (e.name or "").lower() and q.lower() not in (e.summary or "").lower():
                 body = e.body or ""
-                snippets[e.id] = _snippet(body if is_gm else strip_gm_only(body), q)
+                snippets[e.id] = _snippet(body if is_gm else strip_gm_only(body, user.id if user else None), q)
 
         # The entity-kind filter dropdown only makes sense against entities —
         # characters/quests/sessions/notes aren't entity kinds, so leave them
@@ -7298,7 +7316,7 @@ def search(request: Request, q: str = "", kind: str = "",
     # Same [gmonly] rule for the summary line the results list renders —
     # passed separately so the ORM rows themselves are never mutated.
     summaries = {
-        e.id: (e.summary or "") if is_gm else strip_gm_only(e.summary or "")
+        e.id: (e.summary or "") if is_gm else strip_gm_only(e.summary or "", user.id if user else None)
         for e in results
     }
 

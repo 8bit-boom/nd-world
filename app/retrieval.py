@@ -486,6 +486,31 @@ def _fts_term(word: str) -> str:
     return f'("{esc}"* OR "{stem.replace(chr(34), chr(34) * 2)}"*)'
 
 
+_ACCESS_TAG_RE = re.compile(r"\[(?:gmonly|for=|reveal=)", re.IGNORECASE)
+
+
+def drop_secret_only_matches(entities: list, words: list, user=None) -> list:
+    """For a real non-GM viewer: drops an entity whose ONLY match for the query is text this viewer cannot see ([gmonly], another
+    player's [for], a [reveal] not yet due). The search index covers the raw text, so without this a player could probe for a secret word
+    and learn that an entity mentions it (the snippet was always stripped; the entity showing up at all was the leak). Entities with no
+    access tags, and GM/no-user callers, are returned untouched."""
+    if user is None or getattr(user, "is_gm", False) or not words:
+        return entities
+    keep = []
+    for e in entities:
+        raw = (e.summary or "") + "\n" + (e.body or "")
+        if not _ACCESS_TAG_RE.search(raw):
+            keep.append(e)
+            continue
+        seen = " ".join([
+            e.name or "", e.tags or "", e.aliases or "",
+            _strip_gm_only(e.summary or "", user.id), _strip_gm_only(e.body or "", user.id),
+        ]).lower()
+        if any(w in seen or _stem(w) in seen for w in words):
+            keep.append(e)
+    return keep
+
+
 def find_relevant_entities_fts(
     db: Session, world_id: int, words: list, limit: int, user=None, kind: Optional[str] = None,
 ) -> list:
@@ -558,7 +583,7 @@ def find_relevant_entities_fts(
         return []
     q = _visibility_filter(db.query(Entity).filter(Entity.id.in_(ids)), user)
     by_id = {e.id: e for e in q.all()}
-    return [by_id[i] for i in ids if i in by_id][:limit]
+    return drop_secret_only_matches([by_id[i] for i in ids if i in by_id], words, user)[:limit]
 
 
 def find_relevant_entities_ilike(
@@ -600,7 +625,7 @@ def find_relevant_entities_ilike(
     )
     if kind:
         q = q.filter(Entity.kind == kind)
-    return q.order_by(Entity.kind, Entity.name).limit(limit).all()
+    return drop_secret_only_matches(q.order_by(Entity.kind, Entity.name).limit(limit).all(), words, user)
 
 
 def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 25, user=None) -> list:

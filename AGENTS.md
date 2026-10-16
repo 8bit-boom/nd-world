@@ -241,6 +241,18 @@ tools that require GM access still check `is_gm` at call time.)
   bullet toggled per line, link, clear formatting). `/entity/{id}?as=player` previews the page's content as a player gets it (GM only;
   body, summary, notes and the AI panel's context are stripped of `[gmonly]`; the read-view menu hooks are off). Not built yet: per-player
   secrets and timed reveals (they need the same strip-everywhere treatment as `[gmonly]`), add-to-combat.
+  **Per-player secrets and timed reveals** (`app/rendering.py`): `[for=ID,ID]…[/for]` (visible only to those users, by user id) and
+  `[reveal=YYYY-MM-DD[THH:MM]]…[/reveal]` (UTC; hidden until then, plain text after). Both are access control and are resolved INSIDE
+  `strip_gm_only(text, viewer_id=None, now=None)`, so EVERY existing call site that strips for a non-GM already hides them (fail-closed):
+  a `[for]` part shows only where the caller passes `viewer_id` (entity page, notes, download.md, hover preview, search snippets; the GM's
+  `?as=player&player=ID` preview); AI/RAG context, the second screen and every other consumer drop it for everyone, including its own
+  player. Reveals need no viewer: once due they are plain text everywhere. Malformed tags hide, never show: an opening tag that never
+  closes hides the rest of the text, a bad date stays hidden; nested blocks resolve innermost-first so an outer restriction still wins.
+  The GM sees both rendered as labelled parts (`.for-only-text[data-for]`, `.reveal-later-text[data-reveal]`; the page script fills in
+  player names / local time). From the menu: "Secret for one player…" (`action:"for:ID"`, the id must be a player of the world) and
+  "Reveal to players later…" (`action:"reveal:ISO"`, picked in local time, stored UTC); these tags refuse to nest when marked from the
+  read view. A due reveal appears on the player's next page load (nothing is pushed). Search cannot be used to probe secrets: `retrieval.drop_secret_only_matches` drops, for a non-GM viewer, any entity (search,
+  RAG lookups, ILIKE fallback) whose only match is text that viewer cannot see, and note search checks the stripped text.
   An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character

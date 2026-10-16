@@ -653,7 +653,8 @@ const NDFMT_ACTION_TAGS = {
   gmonly: ["[gmonly]", "[/gmonly]"], spoiler: ["[spoiler]", "[/spoiler]"], mark: ["[mark]", "[/mark]"], read: ["[read]", "[/read]"],
   underline: ["[u]", "[/u]"], bold: ["**", "**"], italic: ["*", "*"], strike: ["~~", "~~"],
 };
-const NDFMT_UNWRAP_LABELS = { gmonly: "🔓 Show to players again", spoiler: "👁 Remove the spoiler", mark: "Remove the highlight", read: "Remove the read-aloud box" };
+const NDFMT_UNWRAP_LABELS = { gmonly: "🔓 Show to players again", spoiler: "👁 Remove the spoiler", mark: "Remove the highlight", read: "Remove the read-aloud box",
+  for: "🔓 Show to every player", reveal: "⏩ Reveal to players now" };
 
 function _ndFmtNotice(msg, bad, action) {
   const n = document.createElement("div");
@@ -779,6 +780,69 @@ async function _ndFmtMakeFact(text, from) {
   if (res) _ndFmtNotice("Saved as a GM-only fact.");
 }
 
+
+let _ndFmtPlayerCache = null;
+async function _ndFmtPlayers() {
+  if (_ndFmtPlayerCache) return _ndFmtPlayerCache;
+  try {
+    const r = await fetch("/api/world-players");
+    _ndFmtPlayerCache = r.ok ? await r.json() : [];
+  } catch (e) { _ndFmtPlayerCache = []; }
+  return _ndFmtPlayerCache;
+}
+
+// pick the moment (your local time) a hidden part appears for players; hands back UTC "YYYY-MM-DDTHH:MM"
+function _ndFmtRevealDialog(done) {
+  const wrap = document.createElement("div");
+  wrap.className = "fmt-modal-back";
+  wrap.innerHTML = '<div class="fmt-modal" role="dialog" aria-modal="true" aria-label="Reveal later" style="max-width:26rem">' +
+    '<h3>⏳ Reveal to players later</h3><p style="margin:.2rem 0 .6rem;font-size:.85rem">Players see nothing until then; it appears by itself when they next load the page.</p>' +
+    '<div class="fmt-modal-styles"></div><div class="fmt-modal-custom"><input type="datetime-local" aria-label="Reveal at" style="font-size:16px"></div>' +
+    '<div class="fmt-modal-foot"><button type="button" class="fmt-modal-use" disabled>Set it</button><button type="button" class="fmt-modal-cancel">Cancel</button></div></div>';
+  const q = (sel) => wrap.querySelector(sel);
+  const input = q("input"), go = q(".fmt-modal-use");
+  const pad = (n) => String(n).padStart(2, "0");
+  const local = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+  const set = (d) => { input.value = local(d); go.disabled = false; };
+  [["In 1 hour", () => new Date(Date.now() + 3600e3)], ["Tomorrow 9:00", () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d; }],
+   ["In a week", () => new Date(Date.now() + 7 * 864e5)]].forEach(([l, f]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = l; b.onclick = () => set(f());
+    q(".fmt-modal-styles").appendChild(b);
+  });
+  input.addEventListener("input", () => { go.disabled = !input.value; });
+  go.onclick = () => {
+    const d = new Date(input.value);
+    if (isNaN(d)) return;
+    close();
+    done(d.toISOString().slice(0, 16));
+  };
+  q(".fmt-modal-cancel").onclick = close;
+  wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+  document.body.appendChild(wrap);
+  input.focus();
+}
+
+// the GM's labels on [for] / [reveal] parts of the page ("Only: Aria", "Reveals Fri 18:30")
+async function _ndFmtLabelAccessParts() {
+  const parts = document.querySelectorAll("[data-for], [data-reveal]");
+  if (!parts.length) return;
+  const players = await _ndFmtPlayers();
+  const name = (id) => (players.find((p) => String(p.id) === id) || {}).name || "player #" + id;
+  parts.forEach((el) => {
+    if (el.dataset.for !== undefined) {
+      el.dataset.label = "🔒 ONLY: " + el.dataset.for.split(",").map(name).join(", ");
+    } else {
+      const d = new Date(el.dataset.reveal + ":00Z");
+      const when = isNaN(d) ? "(bad date - stays hidden)" : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      el.dataset.label = (!isNaN(d) && d <= new Date() ? "👁 REVEALED " : "⏳ REVEALS ") + when;
+    }
+  });
+}
+
 // AI rewrite of the selection: pick a style (or type an instruction), see the result next to the original, accept or try again.
 function _ndFmtRewriteDialog(original, ctx) {
   const wrap = document.createElement("div");
@@ -847,6 +911,15 @@ function ndFmtOpenMenu(pageX, pageY, ctx, compact) {
       "Players never see it - stripped before they get the page or ask the AI about it", () => ctx.apply("gmonly")));
     menu.appendChild(item("🙈 Spoiler - hidden until clicked", "Players see it blurred until they click it", () => ctx.apply("spoiler")));
     if (!compact) menu.appendChild(item("📖 Read-aloud box", "Boxed text for you to read to the table - everyone sees it", () => ctx.apply("read")));
+    if (!compact) {
+      menu.appendChild(item("👤 Secret for one player…", "Only that player (and you) can see it; other players get nothing",
+        async () => {
+          const players = await _ndFmtPlayers();
+          _ndFmtListMenu(pageX, pageY, "Visible only to…", players.map((p) => ({ label: p.name, run: () => ctx.apply("for:" + p.id) })));
+        }));
+      menu.appendChild(item("⏳ Reveal to players later…", "Hidden from players until the date you pick, then it appears by itself",
+        () => _ndFmtRevealDialog((iso) => ctx.apply("reveal:" + iso))));
+    }
   }
   if (compact) {
     if (sel) menu.appendChild(item("⋯ More", "", () => ndFmtOpenMenu(pageX, pageY, ctx, false)));
@@ -952,14 +1025,17 @@ function _ndFmtEditorContext(ta) {
     },
     apply(action) {
       if (action.startsWith("color:")) return ndFmtWrapSelection(ta, `[color=${action.slice(6)}]`, "[/color]");
+      if (action.startsWith("for:")) return ndFmtWrapSelection(ta, `[for=${action.slice(4)}]`, "[/for]");
+      if (action.startsWith("reveal:")) return ndFmtWrapSelection(ta, `[reveal=${action.slice(7)}]`, "[/reveal]");
       const t = NDFMT_ACTION_TAGS[action];
       if (t) ndFmtWrapSelection(ta, t[0], t[1]);
     },
     undo: [],
   };
   // inside a [gmonly] / [spoiler] block already? offer to take it off
-  ["gmonly", "spoiler", "read"].forEach((tag) => {
-    const re = new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[/${tag}\\]`, "gi");
+  ["gmonly", "spoiler", "read", "for", "reveal"].forEach((tag) => {
+    const open = tag === "for" || tag === "reveal" ? `\\[${tag}=[^\\]\\n]*\\]` : `\\[${tag}\\]`;
+    const re = new RegExp(`${open}([\\s\\S]*?)\\[/${tag}\\]`, "gi");
     let m;
     while ((m = re.exec(ta.value))) {
       if (m.index <= start && end <= m.index + m[0].length) {
@@ -1033,7 +1109,7 @@ function _ndFmtReadSelection() {
 
 const NDFMT_UNDO_KEY = "ndfmt-undo";
 const NDFMT_DONE_LABELS = {
-  gmonly: "Hidden from players.", spoiler: "Made a spoiler.", mark: "Highlighted.", read: "Made a read-aloud box.", underline: "Underlined.", bold: "Made bold.",
+  gmonly: "Hidden from players.", spoiler: "Made a spoiler.", mark: "Highlighted.", read: "Made a read-aloud box.", "unwrap:for": "Shown to every player.", "unwrap:reveal": "Revealed now.", underline: "Underlined.", bold: "Made bold.",
   italic: "Made italic.", strike: "Struck through.", replace: "Text replaced.",
   "unwrap:gmonly": "Shown to players again.", "unwrap:spoiler": "Spoiler removed.", "unwrap:mark": "Highlight removed.", "unwrap:read": "Read-aloud box removed.",
 };
@@ -1050,7 +1126,7 @@ async function _ndFmtReadPost(field, payload) {
   try {
     if (data.undo) sessionStorage.setItem(NDFMT_UNDO_KEY, JSON.stringify({
       entityId, base: _ndFmtReadBase(field), undo: data.undo, at: Date.now(),
-      label: NDFMT_DONE_LABELS[payload.action] || (payload.action.startsWith("color:") ? "Coloured." : "Done."),
+      label: NDFMT_DONE_LABELS[payload.action] || (payload.action.startsWith("color:") ? "Coloured." : payload.action.startsWith("for:") ? "Now a secret for that player." : payload.action.startsWith("reveal:") ? "Will be revealed to players on that date." : "Done."),
     }));
     else sessionStorage.removeItem(NDFMT_UNDO_KEY);
   } catch (e) { /* storage blocked: the change is saved, there is just no Undo button */ }
@@ -1106,7 +1182,7 @@ function _ndFmtReadContext(sel, target) {
     }
   }
   if (field && target && target.closest) {
-    [["gmonly", ".gm-only-text"], ["spoiler", ".spoiler-text"], ["read", ".read-aloud"]].forEach(([tag, css]) => {
+    [["gmonly", ".gm-only-text"], ["spoiler", ".spoiler-text"], ["read", ".read-aloud"], ["for", ".for-only-text"], ["reveal", ".reveal-later-text"]].forEach(([tag, css]) => {
       const box = target.closest(css);
       if (!box || !field.contains(box)) return;
       const index = Array.prototype.indexOf.call(field.querySelectorAll(css), box);
@@ -1185,6 +1261,7 @@ function ndFmtSetupReadMode() {
   if (window._ndFmtReadReady || !document.querySelector("[data-markup-entity]")) return;
   window._ndFmtReadReady = true;
   _ndFmtShowPendingUndo();
+  _ndFmtLabelAccessParts();
   document.addEventListener("contextmenu", (e) => {
     const t = e.target;
     if (!t.closest || t.closest("textarea, input") || !t.closest("[data-markup-entity]")) return;
