@@ -227,6 +227,15 @@ tools that require GM access still check `is_gm` at call time.)
   surrounding text, map back, one wrapper per line, widen over half-covered emphasis) and the page reloads. It REFUSES (422 + reason)
   when the text is ambiguous, not in the source, cuts across formatting, or the note is rich text - a wrong guess would hide or leak the
   wrong text. In the read view `[gmonly]` inside a paragraph renders as an inline `gm-only-text gm-inline` span, a whole-block one as a box.
+  More actions on the same menu: **Undo** (the read-view POST returns `undo:{previous,expected}`, kept in sessionStorage across the reload;
+  `action:"restore"` puts `previous` back only while the field is still `expected`, so it never clobbers a later edit), **Roll** (a
+  selection like `2d6+3` -> `/api/dice/roll`), **Show on the second screen** (`/api/display/show`), **Rewrite with AI** (`/api/ai/rewrite`
+  is a PREVIEW; accepting does `action:"replace"` in the read view / `setRangeText` in the editor; one line only), **Send to a player**
+  (`/api/entity/{id}/send-to-player`: text is taken from the SOURCE, parts inside `[gmonly]` are dropped by position AND by
+  `strip_gm_only`, never from what the browser says it selected), **Add as another name** (`/api/entity/{id}/alias`). Right-click with
+  nothing selected: the block under the pointer (paragraph / list item / quote: hide or spoiler; heading: the whole section) and, on an
+  entity link inside an entity page, open in a tab / floating window / second screen / copy. Wrapping over a part that is already
+  `[gmonly]`/`[spoiler]` removes the inner tags (nested tags would pair up wrongly when rendered).
   An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character

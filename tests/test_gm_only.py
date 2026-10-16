@@ -587,3 +587,105 @@ def test_entity_page_marks_its_fields_for_the_read_view_menu_only_for_a_gm(clien
     client.cookies.set("active_world", seed.world_a.slug)
     html = client.get(f"/entity/{eid}").text
     assert "data-markup-entity" not in html
+
+
+# ── undo, alias, send to a player, AI rewrite ───────────────────────────────
+
+def test_markup_returns_what_is_needed_to_undo_and_restore_refuses_after_a_later_edit(client, seed):
+    eid = _make_entity(seed.world_a.id, body="The innkeeper is a cult spy.")
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "gmonly", "text": "cult spy"})
+    undo = r.json()["undo"]
+    assert undo["previous"] == "The innkeeper is a cult spy." and undo["expected"] == "The innkeeper is a [gmonly]cult spy[/gmonly]."
+    # edited in between: undo must not clobber it
+    db = SessionLocal()
+    try:
+        e = db.get(Entity, eid); e.body = undo["expected"] + " More."; db.commit()
+    finally:
+        db.close()
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "restore", "previous": undo["previous"], "expected": undo["expected"]})
+    assert r.status_code == 422 and _body_of(eid).endswith("More.")
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "restore", "previous": undo["previous"], "expected": undo["expected"] + " More."})
+    assert r.status_code == 200 and _body_of(eid) == "The innkeeper is a cult spy."
+
+
+def test_markup_replace_puts_the_accepted_rewrite_in_place(client, seed):
+    eid = _make_entity(seed.world_a.id, body="He is nice.\n\nThe door is old.")
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "replace", "text": "He is nice.", "replacement": "He smiles too widely."})
+    assert r.status_code == 200 and _body_of(eid) == "He smiles too widely.\n\nThe door is old."
+
+
+def test_add_alias_is_gm_only_and_rejects_duplicates(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Edmund Vosk", aliases="Vosk")
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/alias", json={"alias": "the Greyfather"})
+    assert r.status_code == 200 and r.json()["aliases"] == "Vosk, the Greyfather"
+    assert client.post(f"/api/entity/{eid}/alias", json={"alias": "VOSK"}).status_code == 422
+    assert client.post(f"/api/entity/{eid}/alias", json={"alias": "edmund vosk"}).status_code == 422
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post(f"/api/entity/{eid}/alias", json={"alias": "Nope"}).status_code == 403
+
+
+def test_send_to_player_uses_the_source_and_never_sends_gm_only_text(client, seed):
+    from app.models import PrivateNote, WorldMembership
+    db = SessionLocal()
+    try:
+        if not db.query(WorldMembership).filter_by(world_id=seed.world_a.id, user_id=seed.player_a.id).first():
+            db.add(WorldMembership(world_id=seed.world_a.id, user_id=seed.player_a.id)); db.commit()
+    finally:
+        db.close()
+    eid = _make_entity(seed.world_a.id, name="Old Map", body="Meet at the mill. [gmonly]The miller is the traitor.[/gmonly] Bring rope.")
+    _gm(client, seed)
+    players = client.get("/api/world-players").json()
+    assert any(p["id"] == seed.player_a.id for p in players)
+    # a selection that spans the secret: the secret is stripped from what is sent
+    r = client.post(f"/api/entity/{eid}/send-to-player", json={"user_id": seed.player_a.id, "field": "body", "text": "Meet at the mill. The miller is the traitor. Bring rope."})
+    assert r.status_code == 200, r.text
+    db = SessionLocal()
+    try:
+        notes = db.query(PrivateNote).filter_by(player_user_id=seed.player_a.id).all()
+        assert len(notes) == 1 and "traitor" not in notes[0].content and "Meet at the mill." in notes[0].content
+        assert notes[0].title == "From Old Map"
+    finally:
+        db.close()
+    # a selection that is only the secret sends nothing
+    r = client.post(f"/api/entity/{eid}/send-to-player", json={"user_id": seed.player_a.id, "field": "body", "text": "The miller is the traitor."})
+    assert r.status_code == 422
+    # a player of another world cannot be a target
+    assert client.post(f"/api/entity/{eid}/send-to-player", json={"user_id": seed.player_b.id, "field": "body", "text": "Bring rope."}).status_code == 404
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post(f"/api/entity/{eid}/send-to-player", json={"user_id": seed.player_a.id, "field": "body", "text": "Bring rope."}).status_code == 403
+    assert client.get("/api/world-players").status_code == 403
+
+
+def test_ai_rewrite_returns_a_preview_and_is_gm_only(client, seed, monkeypatch):
+    from app.routers import ai as ai_router
+    seen = {}
+
+    async def fake_chat(messages, system="", model="", options=None, **kw):
+        seen["prompt"] = messages[0]["content"]; seen["system"] = system
+        return "He smiles too widely."
+    monkeypatch.setattr(ai_router._ai, "generate_chat", fake_chat)
+    _gm(client, seed)
+    r = client.post("/api/ai/rewrite", json={"text": "He is nice.", "style": "creepier"})
+    assert r.status_code == 200 and r.json() == {"text": "He smiles too widely."}
+    assert "eerie" in seen["prompt"] and "He is nice." in seen["prompt"] and "gmonly" in seen["system"]
+    assert client.post("/api/ai/rewrite", json={"text": "x"}).status_code == 400            # no style or instruction
+    assert client.post("/api/ai/rewrite", json={"text": "  ", "style": "shorter"}).status_code == 400
+    assert client.post("/api/ai/rewrite", json={"text": "x" * 4001, "style": "shorter"}).status_code == 400
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.post("/api/ai/rewrite", json={"text": "He is nice.", "style": "shorter"}).status_code == 403
+
+
+def test_the_menu_script_offers_the_new_actions(client, seed):
+    js = client.get("/static/js/text-format-toolbar.js").text
+    for needle in ("/api/dice/roll", "/api/display/show", "/api/ai/rewrite", "/send-to-player", "/alias", "/api/world-players",
+                   "Hide this whole section from players", "Undo", 'action: "restore"', "_ndFmtLinkItems", "_ndFmtBlockItems"):
+        assert needle in js, needle
+    assert "NDFMT_DICE_RE" in js

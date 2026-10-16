@@ -477,6 +477,47 @@ async def api_entity_from_text(
     return draft
 
 
+_REWRITE_STYLES = {
+    "shorter": "Make it shorter and tighter. Keep every fact.",
+    "longer": "Expand it with a little more vivid detail. Do not contradict or add major new facts.",
+    "creepier": "Make the tone eerie and unsettling. Keep every fact.",
+    "simpler": "Say it in simpler, plainer words. Keep every fact.",
+    "grammar": "Fix spelling, grammar and punctuation only. Change nothing else.",
+}
+
+
+class RewriteBody(BaseModel):
+    text: str
+    style: str = ""          # a key of _REWRITE_STYLES, or empty with `instruction`
+    instruction: str = ""    # free-form (used when style is empty)
+
+
+@router.post("/rewrite")
+async def api_rewrite(body: RewriteBody, request: Request):
+    """Rewrites a short passage the GM selected (shorter / longer / creepier / simpler / fix grammar / their own instruction) and returns it
+    as a PREVIEW - nothing is written; the client replaces the selection only if the GM accepts. GM only."""
+    _require_gm(request)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+    if len(text) > 4000:
+        raise HTTPException(400, "Select a smaller part (4000 characters at most).")
+    how = _REWRITE_STYLES.get(body.style) or body.instruction.strip()[:300]
+    if not how:
+        raise HTTPException(400, "Say how to rewrite it.")
+    system = ("You rewrite short passages of tabletop role-playing game notes. Follow the instruction exactly. Keep the same language, "
+              "the same point of view and any markdown. Never add [gmonly], [spoiler] or other bracket tags. "
+              "Reply with ONLY the rewritten passage - no preface, no quotes, no explanation.")
+    try:
+        out = await _ai.generate_chat([{"role": "user", "content": f"Instruction: {how}\n\nPassage:\n{text}"}], system, "", {"temperature": 0.7})
+    except Exception as exc:
+        raise HTTPException(502, f"The AI could not be reached: {exc}")
+    out = (out or "").strip()
+    if not out or _ai.is_failure_sentinel(out) or len(out) > 8000:
+        raise HTTPException(502, "The AI gave no usable answer.")
+    return {"text": out}
+
+
 class EntitiesBatchFromTextBody(BaseModel):
     text: str
 

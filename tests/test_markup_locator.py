@@ -1,6 +1,7 @@
 """Marking up text from the read view: the selection on the rendered page is found in the markdown it came from (app/markup_locator.py)."""
 import pytest
 
+from app import markup_locator as ml
 from app.markup_locator import MarkupError, locate, unwrap, wrap
 from app.rendering import render_md, strip_gm_only
 
@@ -112,3 +113,25 @@ def test_what_is_wrapped_renders_as_the_editor_would_have_it():
 def test_locate_returns_one_range_per_line():
     src = "ab cd\nef gh"
     assert locate(src, "cd ef") == [(3, 5), (6, 8)]
+
+
+def test_wrapping_over_a_part_already_marked_does_not_nest_the_tags():
+    out = ml.wrap("Intro [gmonly]secret[/gmonly] outro.", "Intro secret outro.", "", "", "gmonly")
+    assert out == "[gmonly]Intro secret outro.[/gmonly]"
+    out = ml.wrap("A [spoiler]b[/spoiler] c", "A b c", "", "", "spoiler")
+    assert out == "[spoiler]A b c[/spoiler]"
+
+
+def test_replace_swaps_one_selection_and_refuses_several_lines():
+    src = "The innkeeper is a **cult** spy.\n\nThe door is old."
+    assert ml.replace(src, "The door is old.", "", "", "The door creaks.") == "The innkeeper is a **cult** spy.\n\nThe door creaks."
+    with pytest.raises(ml.MarkupError):
+        ml.replace(src, "cult spy. The door", "", "", "x")
+    with pytest.raises(ml.MarkupError):
+        ml.replace(src, "The door", "", "", "  ")
+
+
+def test_restore_only_over_exactly_what_the_action_left():
+    assert ml.restore("now", "now", "was") == "was"
+    with pytest.raises(ml.MarkupError):
+        ml.restore("edited since", "now", "was")

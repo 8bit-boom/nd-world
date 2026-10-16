@@ -2093,3 +2093,22 @@ a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .sess-meta-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: .75rem; }
 .sess-meta-grid input { min-width: 0; }
 @media (max-width: 600px) { .sess-meta-grid { grid-template-columns: 1fr 1fr; } .sess-meta-grid .sess-title { grid-column: 1 / -1; } }
+
+/* menu extras: a heading row in a pick-list, the Undo button of a notice, and the AI rewrite dialog */
+.fmt-ctx-menu .fmt-ctx-heading { padding: .3rem .7rem; font-size: .72rem; color: var(--text-dim, #8892a6); text-transform: uppercase; letter-spacing: .05em; }
+.fmt-notice { display: flex; gap: .8rem; align-items: center; }
+.fmt-notice .fmt-notice-action { background: none; border: 1px solid var(--neon); color: var(--neon); border-radius: 4px; padding: .15rem .6rem; cursor: pointer; font: inherit; font-weight: 600; }
+.fmt-notice .fmt-notice-action:hover, .fmt-notice .fmt-notice-action:focus-visible { background: var(--neon); color: var(--bg); outline: none; }
+.fmt-modal-back { position: fixed; inset: 0; z-index: 100040; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.fmt-modal { background: var(--bg2); border: 1px solid var(--neon); border-radius: 8px; padding: 1rem 1.1rem; width: min(44rem, 100%); max-height: 90vh; overflow: auto; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.fmt-modal h3 { margin: 0 0 .6rem; }
+.fmt-modal button { background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: .3rem .7rem; cursor: pointer; font: inherit; }
+.fmt-modal button:hover:not(:disabled), .fmt-modal button:focus-visible { border-color: var(--neon); color: var(--neon); outline: none; }
+.fmt-modal button:disabled { opacity: .45; cursor: default; }
+.fmt-modal-styles { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .5rem; }
+.fmt-modal-custom { display: flex; gap: .4rem; margin-bottom: .7rem; }
+.fmt-modal-custom input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: .3rem .5rem; font: inherit; font-size: 16px; }
+.fmt-modal-cols { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+.fmt-modal-text { margin-top: .25rem; padding: .5rem .6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; white-space: pre-wrap; max-height: 40vh; overflow: auto; font-size: .9rem; }
+.fmt-modal-foot { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .8rem; }
+@media (max-width: 560px) { .fmt-modal-cols { grid-template-columns: 1fr; } }

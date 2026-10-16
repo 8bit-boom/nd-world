@@ -219,8 +219,11 @@ def wrap(source: str, selected: str, before: str, after: str, action: str):
         raise MarkupError("That is already marked.")
     out = source
     for s, e in reversed(ranges):
-        out = out[:e] + close + out[e:]
-        out = out[:s] + open_ + out[s:]
+        seg = out[s:e]
+        if action in ("gmonly", "spoiler"):
+            # a part already marked inside the new one is subsumed: nested tags would pair up wrongly when rendered
+            seg = re.sub(r"\[/?%s\]" % action, "", seg, flags=re.IGNORECASE)
+        out = out[:s] + open_ + seg + close + out[e:]
     return out
 
 
@@ -236,3 +239,28 @@ def unwrap(source: str, tag: str, n: int, snippet: str = ""):
     if snippet and _norm(snippet)[:30] not in _project(m.group(1))[0]:
         raise MarkupError("The text changed since this page was loaded - reload it.")
     return source[:m.start()] + m.group(1) + source[m.end():]
+
+
+MAX_REPLACEMENT = 6000
+
+
+def replace(source: str, selected: str, before: str, after: str, replacement: str):
+    """The source with the selection's text swapped for `replacement` (an AI rewrite the GM accepted). Only a selection inside ONE line is
+    replaced: a selection over several paragraphs or list items would need the new text split back over them, which cannot be done safely."""
+    replacement = (replacement or "").strip()
+    if not replacement:
+        raise MarkupError("There is no replacement text.")
+    if len(replacement) > MAX_REPLACEMENT:
+        raise MarkupError("The replacement is too long.")
+    ranges = locate(source, selected, before, after)
+    if len(ranges) != 1:
+        raise MarkupError("Select text inside one paragraph or list item to replace it - or use the editor.")
+    s, e = _widen(source, *ranges[0])
+    return source[:s] + replacement + source[e:]
+
+
+def restore(source: str, expected_now: str, previous: str):
+    """Undo: `previous` comes back only if the field is still exactly what the action left (`expected_now`) - never over a later edit."""
+    if source != expected_now:
+        raise MarkupError("This was edited since - open the editor to change it back.")
+    return previous

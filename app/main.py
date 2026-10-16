@@ -6172,6 +6172,9 @@ class EntityMarkupBody(BaseModel):
     after: str = ""
     index: int = 0                  # unwrap: which block (reading order) the page showed
     snippet: str = ""               # unwrap: the start of what the page showed in it
+    replacement: str = ""           # replace: the new text (an accepted AI rewrite)
+    previous: str = ""              # restore: the source to put back
+    expected: str = ""              # restore: what the field must be right now (the result of the action being undone)
 
 
 @app.post("/api/entity/{entity_id}/markup")
@@ -6206,6 +6209,10 @@ def api_entity_markup(
     try:
         if body.action.startswith("unwrap:"):
             out = _markup_locator.unwrap(source, body.action[7:], body.index, body.snippet)
+        elif body.action == "replace":
+            out = _markup_locator.replace(source, body.text, body.before, body.after, body.replacement)
+        elif body.action == "restore":
+            out = _markup_locator.restore(source, body.expected, body.previous)
         else:
             out = _markup_locator.wrap(source, body.text, body.before, body.after, body.action)
     except _markup_locator.MarkupError as exc:
@@ -6217,7 +6224,107 @@ def api_entity_markup(
     else:
         entity.summary = out
     db.commit()
-    return {"ok": True}
+    result = {"ok": True}
+    if body.action != "restore" and len(source) + len(out) <= 200_000:
+        # what the page needs to offer an Undo: put `previous` back, but only while the field is still `expected`
+        result["undo"] = {"previous": source, "expected": out}
+    return result
+
+
+@app.get("/api/world-players")
+def api_world_players(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The players of the active world (id + name) - for the menus that send something to one of them. GM only."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return [{"id": u.id, "name": u.display_name} for u in _world_player_list(db, world.id) if not u.is_gm]
+
+
+class EntityAliasBody(BaseModel):
+    alias: str
+
+
+@app.post("/api/entity/{entity_id}/alias")
+def api_entity_add_alias(entity_id: int, body: EntityAliasBody, request: Request,
+                         db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Adds one alternate name to an entity (the autolinker and search then know it) - from selecting the name on the page. GM only."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    entity = db.get(Entity, entity_id)
+    world = get_active_world(request, db, active_world)
+    if not entity or not world or entity.world_id != world.id:
+        raise HTTPException(404)
+    alias = " ".join((body.alias or "").replace(",", " ").split())[:64]
+    if len(alias) < 2:
+        raise HTTPException(422, "Select the name first.")
+    if alias.casefold() == (entity.name or "").casefold():
+        return JSONResponse({"error": "That is already the name."}, status_code=422)
+    existing = [a.strip() for a in (entity.aliases or "").split(",") if a.strip()]
+    if any(a.casefold() == alias.casefold() for a in existing):
+        return JSONResponse({"error": "That is already an alias."}, status_code=422)
+    entity.aliases = _normalize_aliases(", ".join(existing + [alias]))
+    db.commit()
+    return {"ok": True, "aliases": entity.aliases}
+
+
+class EntitySendBody(BaseModel):
+    user_id: int
+    field: str = "body"             # "body" | "summary" | "note"
+    note_id: Optional[int] = None
+    text: str                       # what was selected on the page
+    before: str = ""
+    after: str = ""
+    title: str = ""
+
+
+@app.post("/api/entity/{entity_id}/send-to-player")
+def api_entity_send_to_player(entity_id: int, body: EntitySendBody, request: Request,
+                              db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Sends a selection from an entity page to one player as a private note (visible to the GM and that player only). GM only. The text
+    sent is taken from the SOURCE (the selection is located in it, as for marking up) with [gmonly] parts stripped - never from what the
+    browser says it selected, which could include GM-only text."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    entity = db.get(Entity, entity_id)
+    world = get_active_world(request, db, active_world)
+    if not entity or not world or entity.world_id != world.id:
+        raise HTTPException(404)
+    if body.field == "body":
+        source = entity.body or ""
+    elif body.field == "summary":
+        source = entity.summary or ""
+    elif body.field == "note":
+        note = db.get(EntityNote, body.note_id or 0)
+        if not note or note.entity_id != entity.id:
+            raise HTTPException(404)
+        if note.content_is_html:
+            return JSONResponse({"error": "This note is rich text - copy it by hand."}, status_code=422)
+        source = note.content or ""
+    else:
+        raise HTTPException(400, "unknown field")
+    try:
+        ranges = [_markup_locator._widen(source, s, e) for s, e in _markup_locator.locate(source, body.text, body.before, body.after)]
+    except _markup_locator.MarkupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    # a piece that sits INSIDE a [gmonly] block carries no tag of its own, so strip_gm_only would not see it: drop it by position first
+    kept = [source[s:e] for s, e in ranges if not _markup_locator._inside(source, s, "gmonly")]
+    text = strip_gm_only("\n\n".join(kept)).strip()
+    if not text:
+        return JSONResponse({"error": "That part is GM only - it is never sent."}, status_code=422)
+    if len(text) > 8000:
+        return JSONResponse({"error": "That is a lot of text - select a smaller part."}, status_code=422)
+    player = next((u for u in _world_player_list(db, world.id) if u.id == body.user_id and not u.is_gm), None)
+    if not player:
+        raise HTTPException(404, "That player is not in this world.")
+    title = (body.title or "").strip()[:200] or f"From {entity.name}"
+    db.add(PrivateNote(world_id=world.id, player_user_id=player.id, author_id=user.id, title=title, content=text))
+    db.commit()
+    return {"ok": True, "player": player.display_name}
 
 
 @app.get("/api/hover-preview/config")

@@ -654,13 +654,37 @@ const NDFMT_ACTION_TAGS = {
 };
 const NDFMT_UNWRAP_LABELS = { gmonly: "🔓 Show to players again", spoiler: "👁 Remove the spoiler", mark: "Remove the highlight" };
 
-function _ndFmtNotice(msg, bad) {
+function _ndFmtNotice(msg, bad, action) {
   const n = document.createElement("div");
   n.className = "fmt-notice" + (bad ? " fmt-notice-bad" : "");
-  n.textContent = msg;
   n.setAttribute("role", "status");
+  const t = document.createElement("span");
+  t.textContent = msg;
+  n.appendChild(t);
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "fmt-notice-action"; b.textContent = action.label;
+    b.onclick = () => { n.remove(); action.run(); };
+    n.appendChild(b);
+  }
   document.body.appendChild(n);
-  setTimeout(() => n.remove(), bad ? 7000 : 2500);
+  setTimeout(() => n.remove(), action ? 12000 : bad ? 7000 : 2500);
+}
+
+async function _ndFmtJson(url, payload) {
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      _ndFmtNotice(data.error || (typeof data.detail === "string" ? data.detail : "") ||
+        (res.status === 403 ? "Only the GM can do that." : "That did not work (" + res.status + ")."), true);
+      return null;
+    }
+    return data;
+  } catch (e) {
+    _ndFmtNotice("Could not reach the server.", true);
+    return null;
+  }
 }
 
 function _ndFmtCopy(text) {
@@ -679,6 +703,97 @@ function _ndFmtCopy(text) {
 function _ndFmtWorldParam() {
   const w = new URLSearchParams(location.search).get("w");
   return w ? "&w=" + encodeURIComponent(w) : "";
+}
+
+
+// ── actions beyond formatting ──
+const NDFMT_DICE_RE = /^\s*\d{0,3}\s*d\s*\d{1,4}(\s*[+-]\s*\d{1,4})?\s*$/i;
+
+async function _ndFmtRoll(notation, label) {
+  const r = await _ndFmtJson("/api/dice/roll", { notation, label: label ? "from " + label : "" });
+  if (!r) return;
+  const parts = Array.isArray(r.breakdown) ? r.breakdown.map((b) => {
+    if (!b || typeof b !== "object") return String(b);
+    const t = String(b.term || "").replace(/^\+/, "");
+    return Array.isArray(b.rolls) ? t + " [" + b.rolls.join(", ") + "]" : t;
+  }).join(" + ") : "";
+  _ndFmtNotice("🎲 " + r.notation + " = " + r.total + (parts ? "   (" + parts + ")" : ""));
+}
+
+async function _ndFmtShowOnScreen(item) {
+  const r = await _ndFmtJson("/api/display/show", item);
+  if (r) _ndFmtNotice("Sent to the second screen.");
+}
+
+// a small menu of choices at (x, y) - replaces the current one
+function _ndFmtListMenu(pageX, pageY, heading, choices) {
+  _ndFmtCloseCtxMenu();
+  const menu = document.createElement("div");
+  menu.className = "fmt-ctx-menu";
+  menu.setAttribute("role", "menu");
+  menu.style.left = pageX + "px"; menu.style.top = pageY + "px";
+  const h = document.createElement("div");
+  h.className = "fmt-ctx-heading"; h.textContent = heading;
+  menu.appendChild(h);
+  if (!choices.length) {
+    const none = document.createElement("div");
+    none.className = "fmt-ctx-heading"; none.textContent = "(none)";
+    menu.appendChild(none);
+  }
+  choices.forEach((c) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.setAttribute("role", "menuitem"); b.textContent = c.label;
+    b.onclick = () => { _ndFmtCloseCtxMenu(); c.run(); };
+    menu.appendChild(b);
+  });
+  document.body.appendChild(menu);
+  _ndFmtCtxMenu = menu;
+  const r = menu.getBoundingClientRect();
+  if (r.right > window.innerWidth) menu.style.left = Math.max(0, pageX - (r.right - window.innerWidth) - 8) + "px";
+  if (r.bottom > window.innerHeight) menu.style.top = Math.max(0, pageY - (r.bottom - window.innerHeight) - 8) + "px";
+  const first = menu.querySelector("button");
+  if (first) first.focus({ preventScroll: true });
+}
+
+// AI rewrite of the selection: pick a style (or type an instruction), see the result next to the original, accept or try again.
+function _ndFmtRewriteDialog(original, ctx) {
+  const wrap = document.createElement("div");
+  wrap.className = "fmt-modal-back";
+  wrap.innerHTML = '<div class="fmt-modal" role="dialog" aria-modal="true" aria-label="Rewrite with AI">' +
+    '<h3>✨ Rewrite with AI</h3><div class="fmt-modal-styles"></div>' +
+    '<div class="fmt-modal-custom"><input type="text" maxlength="300" placeholder="…or say how: “make it sound like a sailor”" aria-label="Your instruction"><button type="button" class="fmt-modal-go">Go</button></div>' +
+    '<div class="fmt-modal-cols"><div><b>Now</b><div class="fmt-modal-text fmt-modal-old"></div></div><div><b>Rewritten</b><div class="fmt-modal-text fmt-modal-new">Pick a style above.</div></div></div>' +
+    '<div class="fmt-modal-foot"><button type="button" class="fmt-modal-use" disabled>Use this</button><button type="button" class="fmt-modal-cancel">Cancel</button></div></div>';
+  const q = (sel) => wrap.querySelector(sel);
+  q(".fmt-modal-old").textContent = original;
+  const out = q(".fmt-modal-new"), use = q(".fmt-modal-use"), input = q(".fmt-modal-custom input");
+  let result = "", busy = false;
+  const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+  const run = async (payload) => {
+    if (busy) return;
+    busy = true; use.disabled = true; out.textContent = "Thinking…";
+    try {
+      const res = await fetch("/api/ai/rewrite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ text: original }, payload)) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { out.textContent = data.detail || data.error || "The AI could not do that."; }
+      else { result = data.text; out.textContent = result; use.disabled = false; use.focus(); }
+    } catch (e) { out.textContent = "Could not reach the server."; }
+    busy = false;
+  };
+  [["shorter", "Shorter"], ["longer", "Longer"], ["creepier", "Creepier"], ["simpler", "Simpler"], ["grammar", "Fix grammar"]].forEach(([k, l]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = l; b.onclick = () => run({ style: k });
+    q(".fmt-modal-styles").appendChild(b);
+  });
+  q(".fmt-modal-go").onclick = () => { if (input.value.trim()) run({ instruction: input.value.trim() }); };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); q(".fmt-modal-go").click(); } });
+  use.onclick = () => { const r = result; close(); if (r) ctx.replace(r); };
+  q(".fmt-modal-cancel").onclick = close;
+  wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+  document.body.appendChild(wrap);
+  input.focus();
 }
 
 // ctx: { selected, apply(action) -> runs it, undo: [{tag, run}] , label }
@@ -702,6 +817,7 @@ function ndFmtOpenMenu(pageX, pageY, ctx, compact) {
   const sep = () => { const h = document.createElement("hr"); menu.appendChild(h); };
   const sel = (ctx.selected || "").trim();
   (ctx.undo || []).forEach((u) => menu.appendChild(item(NDFMT_UNWRAP_LABELS[u.tag] || "Undo", "", u.run)));
+  (ctx.blockItems || []).forEach((b) => menu.appendChild(item(b.label, b.title, b.run)));
   if (sel) {
     menu.appendChild(item(`🔒 Hide from players - GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`,
       "Players never see it - stripped before they get the page or ask the AI about it", () => ctx.apply("gmonly")));
@@ -733,6 +849,14 @@ function ndFmtOpenMenu(pageX, pageY, ctx, compact) {
     menu.appendChild(sw);
     sep();
     const short = sel.length > 28 ? sel.slice(0, 27) + "…" : sel;
+    const diceMatch = sel.match(NDFMT_DICE_RE);
+    const doing = [];
+    if (diceMatch) doing.push(["🎲 Roll " + sel.replace(/\s+/g, ""), "Rolls it and logs it with the table's dice", () => _ndFmtRoll(sel.replace(/\s+/g, ""), ctx.entityName)]);
+    doing.push(["📺 Show on the second screen", "Puts this text on the players' display window", () => _ndFmtShowOnScreen({ kind: "text", text: sel.slice(0, 4000), title: ctx.entityName || "" })]);
+    if (ctx.replace) doing.push(["✨ Rewrite with AI…", "Shorter, longer, creepier… you see the result before anything changes", () => _ndFmtRewriteDialog(sel, ctx)]);
+    (ctx.extras || []).forEach((x) => doing.push([x.label, x.title, x.run(pageX, pageY)]));
+    doing.forEach(([l, t, run]) => menu.appendChild(item(l, t, run)));
+    sep();
     menu.appendChild(item("📋 Copy", "", () => _ndFmtCopy(sel)));
     menu.appendChild(item(`🔍 Search the world for “${short}”`, "Opens the search in a new tab",
       () => window.open("/search?q=" + encodeURIComponent(sel.slice(0, 120)) + _ndFmtWorldParam(), "_blank")));
@@ -757,6 +881,12 @@ function _ndFmtEditorContext(ta) {
   const start = ta.selectionStart, end = ta.selectionEnd;
   const ctx = {
     selected: ta.value.slice(start, end),
+    kind: "editor",
+    replace(text) {
+      ta.focus();
+      ta.setRangeText(text, start, end, "select");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    },
     apply(action) {
       if (action.startsWith("color:")) return ndFmtWrapSelection(ta, `[color=${action.slice(6)}]`, "[/color]");
       const t = NDFMT_ACTION_TAGS[action];
@@ -838,28 +968,80 @@ function _ndFmtReadSelection() {
   return { field, text, before: b.toString().slice(-80), after: a.toString().slice(0, 80) };
 }
 
+const NDFMT_UNDO_KEY = "ndfmt-undo";
+const NDFMT_DONE_LABELS = {
+  gmonly: "Hidden from players.", spoiler: "Made a spoiler.", mark: "Highlighted.", underline: "Underlined.", bold: "Made bold.",
+  italic: "Made italic.", strike: "Struck through.", replace: "Text replaced.",
+  "unwrap:gmonly": "Shown to players again.", "unwrap:spoiler": "Spoiler removed.", "unwrap:mark": "Highlight removed.",
+};
+
+function _ndFmtReadBase(field) {
+  return { field: field.dataset.markupField, note_id: field.dataset.noteId ? +field.dataset.noteId : null };
+}
+
 async function _ndFmtReadPost(field, payload) {
   const entityId = field.closest("[data-markup-entity]").dataset.markupEntity;
+  const data = await _ndFmtJson(`/api/entity/${entityId}/markup`, Object.assign(_ndFmtReadBase(field), payload));
+  if (!data) return;
+  // keep what is needed to undo it across the reload: the page offers "Undo" for a minute
   try {
-    const res = await fetch(`/api/entity/${entityId}/markup`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(Object.assign({ field: field.dataset.markupField, note_id: field.dataset.noteId ? +field.dataset.noteId : null }, payload)),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      _ndFmtNotice(data.error || (res.status === 403 ? "Only the GM can do that." : "Could not save that."), true);
-      return;
-    }
-    location.reload();
-  } catch (e) {
-    _ndFmtNotice("Could not reach the server.", true);
-  }
+    if (data.undo) sessionStorage.setItem(NDFMT_UNDO_KEY, JSON.stringify({
+      entityId, base: _ndFmtReadBase(field), undo: data.undo, at: Date.now(),
+      label: NDFMT_DONE_LABELS[payload.action] || (payload.action.startsWith("color:") ? "Coloured." : "Done."),
+    }));
+    else sessionStorage.removeItem(NDFMT_UNDO_KEY);
+  } catch (e) { /* storage blocked: the change is saved, there is just no Undo button */ }
+  location.reload();
+}
+
+function _ndFmtShowPendingUndo() {
+  let saved = null;
+  try {
+    saved = JSON.parse(sessionStorage.getItem(NDFMT_UNDO_KEY) || "null");
+    sessionStorage.removeItem(NDFMT_UNDO_KEY);
+  } catch (e) { return; }
+  const art = document.querySelector("[data-markup-entity]");
+  if (!saved || !art || String(saved.entityId) !== art.dataset.markupEntity || Date.now() - saved.at > 60000) return;
+  _ndFmtNotice(saved.label, false, { label: "Undo", run: async () => {
+    const d = await _ndFmtJson(`/api/entity/${saved.entityId}/markup`,
+      Object.assign({}, saved.base, { action: "restore", previous: saved.undo.previous, expected: saved.undo.expected }));
+    if (d) location.reload();
+  } });
 }
 
 function _ndFmtReadContext(sel, target) {
-  const ctx = { selected: sel ? sel.text : "", undo: [] };
+  const ctx = { selected: sel ? sel.text : "", undo: [], kind: "read" };
   const field = sel ? sel.field : _ndFmtReadField(target);
+  const art = field && field.closest("[data-markup-entity]");
+  const h1 = art && art.querySelector("h1");
+  ctx.entityName = h1 ? h1.textContent.trim().slice(0, 120) : "";
   ctx.apply = (action) => _ndFmtReadPost(sel.field, { action, text: sel.text, before: sel.before, after: sel.after });
+  if (sel) {
+    ctx.replace = (text) => _ndFmtReadPost(sel.field, { action: "replace", text: sel.text, before: sel.before, after: sel.after, replacement: text });
+    ctx.extras = [{
+      label: "✉ Send to a player…", title: "Sends this text to one player as a private note (GM-only parts are never sent)",
+      run: (x, y) => async () => {
+        let players = [];
+        try { const r = await fetch("/api/world-players"); players = r.ok ? await r.json() : []; } catch (e) { /* none */ }
+        _ndFmtListMenu(x, y, "Send to…", players.map((p) => ({ label: p.name, run: async () => {
+          const d = await _ndFmtJson(`/api/entity/${art.dataset.markupEntity}/send-to-player`,
+            Object.assign(_ndFmtReadBase(sel.field), { user_id: p.id, text: sel.text, before: sel.before, after: sel.after }));
+          if (d) _ndFmtNotice("Sent to " + d.player + " as a private note.");
+        } })));
+      },
+    }];
+    const one = sel.text.trim().replace(/\s+/g, " ");
+    if (one.length >= 2 && one.length <= 64 && art) {
+      ctx.extras.push({
+        label: "🏷 Add “" + (one.length > 22 ? one.slice(0, 21) + "…" : one) + "” as another name for this entity",
+        title: "Search and auto-links will know the entity by this name too",
+        run: () => async () => {
+          const d = await _ndFmtJson(`/api/entity/${art.dataset.markupEntity}/alias`, { alias: one });
+          if (d) _ndFmtNotice("Added. Other names: " + d.aliases);
+        },
+      });
+    }
+  }
   if (field && target && target.closest) {
     [["gmonly", ".gm-only-text"], ["spoiler", ".spoiler-text"]].forEach(([tag, css]) => {
       const box = target.closest(css);
@@ -871,15 +1053,87 @@ function _ndFmtReadContext(sel, target) {
   return ctx;
 }
 
+// ── right-click with nothing selected: the block under the pointer ──
+function _ndFmtOwnText(el) {
+  const c = el.cloneNode(true);
+  c.querySelectorAll("ul, ol").forEach((n) => n.remove());
+  return c.textContent.replace(/\s+/g, " ").trim();
+}
+
+function _ndFmtBlockSelections(target, field) {
+  const el = target.closest && target.closest("p, li, h1, h2, h3, h4, h5, h6, blockquote");
+  if (!el || !field.contains(el) || el.closest("table, .gm-only-text, .spoiler-text")) return null;
+  const tail = (n) => (n ? n.textContent.replace(/\s+/g, " ").trim().slice(-80) : "");
+  const head = (n) => (n ? n.textContent.replace(/\s+/g, " ").trim().slice(0, 80) : "");
+  const mk = (text, prev, next) => ({ field, text, before: tail(prev), after: head(next) });
+  const level = /^H([1-6])$/.exec(el.tagName);
+  if (!level) {
+    const text = _ndFmtOwnText(el);
+    if (text.length < 2) return null;
+    const noun = el.tagName === "LI" ? "list item" : el.tagName === "BLOCKQUOTE" ? "quote" : "paragraph";
+    return { noun, whole: mk(text, el.previousElementSibling, el.nextElementSibling) };
+  }
+  const n = +level[1], parts = [el];
+  for (let s = el.nextElementSibling; s; s = s.nextElementSibling) {
+    const m = /^H([1-6])$/.exec(s.tagName);
+    if (m && +m[1] <= n) break;
+    parts.push(s);
+  }
+  const last = parts[parts.length - 1];
+  const out = { noun: "heading", only: mk(_ndFmtOwnText(el), el.previousElementSibling, el.nextElementSibling) };
+  if (parts.length > 1) out.section = mk(parts.map((x) => x.textContent.replace(/\s+/g, " ").trim()).join("\n\n"), el.previousElementSibling, last.nextElementSibling);
+  return out;
+}
+
+function _ndFmtBlockItems(target, field) {
+  const b = _ndFmtBlockSelections(target, field);
+  if (!b) return [];
+  const go = (sel, action) => () => _ndFmtReadPost(field, { action, text: sel.text, before: sel.before, after: sel.after });
+  const items = [];
+  if (b.section) items.push({ label: "🔒 Hide this whole section from players", title: "The heading and everything under it", run: go(b.section, "gmonly") });
+  const one = b.whole || b.only;
+  items.push({ label: `🔒 Hide this ${b.noun} from players`, title: "Players never see it", run: go(one, "gmonly") });
+  items.push({ label: `🙈 Make this ${b.noun} a spoiler`, title: "Players see it blurred until they click it", run: go(one, "spoiler") });
+  return items;
+}
+
+function _ndFmtEntityLinkId(a) {
+  try {
+    const u = new URL(a.getAttribute("href"), location.href);
+    const m = u.origin === location.origin && /^\/entity\/(\d+)\/?$/.exec(u.pathname);
+    return m ? { id: +m[1], url: u.pathname } : null;
+  } catch (e) { return null; }
+}
+
+function _ndFmtLinkItems(a) {
+  const t = _ndFmtEntityLinkId(a);
+  if (!t) return [];
+  const name = a.textContent.trim().slice(0, 60);
+  const items = [
+    { label: "↗ Open in a new tab", title: "", run: () => window.open(t.url, "_blank") },
+  ];
+  if (window.ndFloat) items.push({ label: "🪟 Open in a floating window", title: "A small window you can park on another monitor", run: () => window.ndFloat(t.url, { title: name }) });
+  items.push({ label: "📺 Show on the second screen", title: "Sends this entity to the players' display window", run: () => _ndFmtShowOnScreen({ kind: "entity", entity_id: t.id }) });
+  items.push({ label: "📋 Copy link", title: "", run: () => _ndFmtCopy(location.origin + t.url) });
+  return items;
+}
+
 function ndFmtSetupReadMode() {
   if (window._ndFmtReadReady || !document.querySelector("[data-markup-entity]")) return;
   window._ndFmtReadReady = true;
+  _ndFmtShowPendingUndo();
   document.addEventListener("contextmenu", (e) => {
-    if (e.target.closest && e.target.closest("textarea, input, a[href]")) return;
-    if (!e.target.closest || !e.target.closest("[data-markup-field]")) return;
-    const sel = _ndFmtReadSelection();
-    const ctx = _ndFmtReadContext(sel, e.target);
-    if (!sel && !ctx.undo.length) return;
+    const t = e.target;
+    if (!t.closest || t.closest("textarea, input") || !t.closest("[data-markup-entity]")) return;
+    const field = t.closest("[data-markup-field]");
+    const link = t.closest("a[href]");
+    const linkItems = link ? _ndFmtLinkItems(link) : [];
+    if (!field && !linkItems.length) return;
+    const sel = field ? _ndFmtReadSelection() : null;
+    const ctx = field ? _ndFmtReadContext(sel, t) : { selected: "", undo: [] };
+    if (!sel) ctx.blockItems = link ? linkItems : (ctx.undo.length ? [] : _ndFmtBlockItems(t, field));
+    else if (linkItems.length) ctx.blockItems = linkItems;
+    if (!sel && !ctx.undo.length && !(ctx.blockItems || []).length) return;
     e.preventDefault();
     ndFmtOpenMenu(e.pageX, e.pageY, ctx, false);
   });
