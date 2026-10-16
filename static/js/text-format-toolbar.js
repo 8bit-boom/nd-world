@@ -542,6 +542,7 @@ function ndFmtBuildToolbar(ta) {
   bar.appendChild(ndFmtButton("U", "Underline", () => ndFmtWrapSelection(ta, "[u]", "[/u]")));
   bar.appendChild(ndFmtButton("S", "Strikethrough", () => ndFmtWrapSelection(ta, "~~", "~~")));
   bar.appendChild(ndFmtButton("⬛", "Highlight", () => ndFmtWrapSelection(ta, "[mark]", "[/mark]")));
+  bar.appendChild(ndFmtButton("📖", "Read-aloud box - boxed text you read to the players", () => ndFmtWrapSelection(ta, "[read]", "[/read]")));
   bar.appendChild(ndFmtButton("🙈", "Spoiler — hidden until clicked", () => ndFmtWrapSelection(ta, "[spoiler]", "[/spoiler]")));
   // Opt-in per textarea (data-fmt-gmonly), not shown on every data-fmt field:
   // strip_gm_only() is only actually wired into the entity/note render,
@@ -649,10 +650,10 @@ const NDFMT_GMONLY_SHORTCUT_LABEL = /Mac/.test(navigator.platform || "") ? "⌘�
 
 // action id -> [open, close] (the same syntax the server's app/markup_locator.py ACTIONS writes)
 const NDFMT_ACTION_TAGS = {
-  gmonly: ["[gmonly]", "[/gmonly]"], spoiler: ["[spoiler]", "[/spoiler]"], mark: ["[mark]", "[/mark]"],
+  gmonly: ["[gmonly]", "[/gmonly]"], spoiler: ["[spoiler]", "[/spoiler]"], mark: ["[mark]", "[/mark]"], read: ["[read]", "[/read]"],
   underline: ["[u]", "[/u]"], bold: ["**", "**"], italic: ["*", "*"], strike: ["~~", "~~"],
 };
-const NDFMT_UNWRAP_LABELS = { gmonly: "🔓 Show to players again", spoiler: "👁 Remove the spoiler", mark: "Remove the highlight" };
+const NDFMT_UNWRAP_LABELS = { gmonly: "🔓 Show to players again", spoiler: "👁 Remove the spoiler", mark: "Remove the highlight", read: "Remove the read-aloud box" };
 
 function _ndFmtNotice(msg, bad, action) {
   const n = document.createElement("div");
@@ -755,6 +756,29 @@ function _ndFmtListMenu(pageX, pageY, heading, choices) {
   if (first) first.focus({ preventScroll: true });
 }
 
+
+async function _ndFmtForm(url, fields) {
+  try {
+    const fd = new FormData();
+    Object.keys(fields).forEach((k) => fd.append(k, fields[k]));
+    const res = await fetch(url, { method: "POST", body: fd });
+    if (!res.ok) { _ndFmtNotice(res.status === 403 ? "You cannot do that here." : "That did not work (" + res.status + ").", true); return null; }
+    return res;
+  } catch (e) { _ndFmtNotice("Could not reach the server.", true); return null; }
+}
+
+async function _ndFmtMakeQuest(text, from) {
+  const one = text.replace(/\s+/g, " ").trim();
+  const title = one.length > 70 ? one.slice(0, 69) + "…" : one;
+  const res = await _ndFmtForm("/quests/new", { title, summary: one.slice(0, 1000), body: from ? "From: " + from + "\n\n" + text : text, status: "active", category: "side" });
+  if (res) _ndFmtNotice("Quest created.", false, { label: "Open it", run: () => { location.href = res.url; } });
+}
+
+async function _ndFmtMakeFact(text, from) {
+  const res = await _ndFmtForm("/facts/new", { content: (from ? from + ": " : "") + text.replace(/\s+/g, " ").trim(), next: "/facts" });
+  if (res) _ndFmtNotice("Saved as a GM-only fact.");
+}
+
 // AI rewrite of the selection: pick a style (or type an instruction), see the result next to the original, accept or try again.
 function _ndFmtRewriteDialog(original, ctx) {
   const wrap = document.createElement("div");
@@ -822,6 +846,7 @@ function ndFmtOpenMenu(pageX, pageY, ctx, compact) {
     menu.appendChild(item(`🔒 Hide from players - GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`,
       "Players never see it - stripped before they get the page or ask the AI about it", () => ctx.apply("gmonly")));
     menu.appendChild(item("🙈 Spoiler - hidden until clicked", "Players see it blurred until they click it", () => ctx.apply("spoiler")));
+    if (!compact) menu.appendChild(item("📖 Read-aloud box", "Boxed text for you to read to the table - everyone sees it", () => ctx.apply("read")));
   }
   if (compact) {
     if (sel) menu.appendChild(item("⋯ More", "", () => ndFmtOpenMenu(pageX, pageY, ctx, false)));
@@ -847,12 +872,26 @@ function ndFmtOpenMenu(pageX, pageY, ctx, compact) {
       sw.appendChild(b);
     });
     menu.appendChild(sw);
+    if (ctx.lineFormat) {
+      const fr = document.createElement("div");
+      fr.className = "fmt-ctx-row";
+      [["H", "Heading (toggle ## on each line)", () => ctx.lineFormat("## ")], ["❝", "Quote (toggle > on each line)", () => ctx.lineFormat("> ")],
+       ["•", "Bullet list (toggle - on each line)", () => ctx.lineFormat("- ")], ["🔗", "Make it a link", () => ctx.link()], ["⌫", "Clear formatting", () => ctx.clear()]]
+        .forEach(([t, title, run]) => {
+          const b = item(t, title, run);
+          b.className = "fmt-ctx-ico"; b.setAttribute("aria-label", title);
+          fr.appendChild(b);
+        });
+      menu.appendChild(fr);
+    }
     sep();
     const short = sel.length > 28 ? sel.slice(0, 27) + "…" : sel;
     const diceMatch = sel.match(NDFMT_DICE_RE);
     const doing = [];
     if (diceMatch) doing.push(["🎲 Roll " + sel.replace(/\s+/g, ""), "Rolls it and logs it with the table's dice", () => _ndFmtRoll(sel.replace(/\s+/g, ""), ctx.entityName)]);
     doing.push(["📺 Show on the second screen", "Puts this text on the players' display window", () => _ndFmtShowOnScreen({ kind: "text", text: sel.slice(0, 4000), title: ctx.entityName || "" })]);
+    doing.push(["🎯 Make a quest from this", "Creates a quest with this text as its summary and opens it", () => _ndFmtMakeQuest(sel, ctx.entityName)]);
+    doing.push(["📌 Save as a fact (GM only)", "Adds it to the Facts list, hidden from players", () => _ndFmtMakeFact(sel, ctx.entityName)]);
     if (ctx.replace) doing.push(["✨ Rewrite with AI…", "Shorter, longer, creepier… you see the result before anything changes", () => _ndFmtRewriteDialog(sel, ctx)]);
     (ctx.extras || []).forEach((x) => doing.push([x.label, x.title, x.run(pageX, pageY)]));
     doing.forEach(([l, t, run]) => menu.appendChild(item(l, t, run)));
@@ -882,6 +921,30 @@ function _ndFmtEditorContext(ta) {
   const ctx = {
     selected: ta.value.slice(start, end),
     kind: "editor",
+    lineFormat(prefix) {
+      const v = ta.value;
+      const from = v.lastIndexOf("\n", start - 1) + 1;
+      let to = v.indexOf("\n", end); if (to < 0) to = v.length;
+      const lines = v.slice(from, to).split("\n");
+      const all = lines.every((l) => !l.trim() || l.startsWith(prefix));
+      const out = lines.map((l) => (!l.trim() ? l : all ? l.slice(prefix.length) : prefix + l)).join("\n");
+      ta.focus(); ta.setRangeText(out, from, to, "select");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    link() {
+      const url = window.prompt("Link address (https://… or /entity/12):", "https://");
+      if (!url || url === "https://") return;
+      ta.focus(); ta.setRangeText("[" + ta.value.slice(start, end) + "](" + url.trim() + ")", start, end, "end");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    clear() {
+      const cleaned = ta.value.slice(start, end)
+        .replace(/\[\/?(?:u|spoiler|gmonly|mark|color|read)(?:=[^\]\n]{0,20})?\]/gi, "")
+        .replace(/(\*\*|__|~~|`)/g, "").replace(/(^|\s)[*_](?=\S)|(?<=\S)[*_](?=\s|$)/g, "$1")
+        .replace(/^(\s*)(?:#{1,6}|>|[-*+])\s+/gm, "$1");
+      ta.focus(); ta.setRangeText(cleaned, start, end, "select");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    },
     replace(text) {
       ta.focus();
       ta.setRangeText(text, start, end, "select");
@@ -895,7 +958,7 @@ function _ndFmtEditorContext(ta) {
     undo: [],
   };
   // inside a [gmonly] / [spoiler] block already? offer to take it off
-  ["gmonly", "spoiler"].forEach((tag) => {
+  ["gmonly", "spoiler", "read"].forEach((tag) => {
     const re = new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[/${tag}\\]`, "gi");
     let m;
     while ((m = re.exec(ta.value))) {
@@ -970,9 +1033,9 @@ function _ndFmtReadSelection() {
 
 const NDFMT_UNDO_KEY = "ndfmt-undo";
 const NDFMT_DONE_LABELS = {
-  gmonly: "Hidden from players.", spoiler: "Made a spoiler.", mark: "Highlighted.", underline: "Underlined.", bold: "Made bold.",
+  gmonly: "Hidden from players.", spoiler: "Made a spoiler.", mark: "Highlighted.", read: "Made a read-aloud box.", underline: "Underlined.", bold: "Made bold.",
   italic: "Made italic.", strike: "Struck through.", replace: "Text replaced.",
-  "unwrap:gmonly": "Shown to players again.", "unwrap:spoiler": "Spoiler removed.", "unwrap:mark": "Highlight removed.",
+  "unwrap:gmonly": "Shown to players again.", "unwrap:spoiler": "Spoiler removed.", "unwrap:mark": "Highlight removed.", "unwrap:read": "Read-aloud box removed.",
 };
 
 function _ndFmtReadBase(field) {
@@ -1043,7 +1106,7 @@ function _ndFmtReadContext(sel, target) {
     }
   }
   if (field && target && target.closest) {
-    [["gmonly", ".gm-only-text"], ["spoiler", ".spoiler-text"]].forEach(([tag, css]) => {
+    [["gmonly", ".gm-only-text"], ["spoiler", ".spoiler-text"], ["read", ".read-aloud"]].forEach(([tag, css]) => {
       const box = target.closest(css);
       if (!box || !field.contains(box)) return;
       const index = Array.prototype.indexOf.call(field.querySelectorAll(css), box);

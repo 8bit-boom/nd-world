@@ -2112,3 +2112,7 @@ a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .fmt-modal-text { margin-top: .25rem; padding: .5rem .6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; white-space: pre-wrap; max-height: 40vh; overflow: auto; font-size: .9rem; }
 .fmt-modal-foot { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .8rem; }
 @media (max-width: 560px) { .fmt-modal-cols { grid-template-columns: 1fr; } }
+
+/* "As players" preview banner and the read-aloud box */
+.view-as-banner { margin: 0 0 .8rem; padding: .5rem .8rem; border: 1px solid var(--neon2); border-radius: 6px; background: var(--bg2); font-size: .85rem; }
+.read-aloud { display: block; margin: .3rem 0; padding: .45rem .8rem; border-left: 3px solid var(--neon); background: var(--bg2); font-style: italic; border-radius: 0 4px 4px 0; }

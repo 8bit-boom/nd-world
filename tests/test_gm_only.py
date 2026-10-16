@@ -689,3 +689,38 @@ def test_the_menu_script_offers_the_new_actions(client, seed):
                    "Hide this whole section from players", "Undo", 'action: "restore"', "_ndFmtLinkItems", "_ndFmtBlockItems"):
         assert needle in js, needle
     assert "NDFMT_DICE_RE" in js
+
+
+# ── view as players, read-aloud box, quest / fact from a selection ──────────
+
+def test_gm_can_preview_an_entity_page_as_a_player_and_nobody_else_can_ask_for_it(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Preview Me", body="Public line. [gmonly]Hidden twist.[/gmonly]", summary="Sum [gmonly]hidden sum[/gmonly]")
+    _gm(client, seed)
+    gm_html = client.get(f"/entity/{eid}").text
+    assert "Hidden twist." in gm_html and "data-markup-entity" in gm_html and "As players" in gm_html
+    pv = client.get(f"/entity/{eid}?as=player").text
+    assert "Public line." in pv and "Hidden twist." not in pv and "hidden sum" not in pv
+    assert "data-markup-entity" not in pv and "Previewing this page as a player" in pv
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/entity/{eid}?as=player").text
+    assert "Previewing this page" not in html and "Hidden twist." not in html
+
+
+def test_read_aloud_tag_renders_a_box_and_can_be_marked_from_the_read_view(client, seed):
+    assert '<span class="read-aloud">The cellar door creaks.</span>' in render_md("[read]The cellar door creaks.[/read]")
+    from app import markup_locator as ml
+    out = ml.wrap("The cellar door creaks. Then silence.", "The cellar door creaks.", "", "", "read")
+    assert out == "[read]The cellar door creaks.[/read] Then silence."
+    assert ml.unwrap(out, "read", 0, "The cellar") == "The cellar door creaks. Then silence."
+    eid = _make_entity(seed.world_a.id, body="Intro line.")
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "read", "text": "Intro line."})
+    assert r.status_code == 200 and _body_of(eid) == "[read]Intro line.[/read]"
+
+
+def test_menu_script_has_quest_fact_block_format_and_read_aloud_actions(client, seed):
+    js = client.get("/static/js/text-format-toolbar.js").text
+    for needle in ("/quests/new", "/facts/new", "Make a quest from this", "Save as a fact", "lineFormat", "Clear formatting", "Read-aloud box", "[read]"):
+        assert needle in js, needle

@@ -33,6 +33,8 @@ _HEX_COLOR_RE = re.compile(r'^#(?:[0-9a-fA-F]{3}){1,2}$')
 _COLOR_TAG_RE = re.compile(r'\[color=([^\]]{1,20})\](.*?)\[/color\]', re.DOTALL)
 _MARK_TAG_RE = re.compile(r'\[mark(?:=([^\]]{1,20}))?\](.*?)\[/mark\]', re.DOTALL)
 _U_TAG_RE = re.compile(r'\[u\](.*?)\[/u\]', re.DOTALL)
+# [read]...[/read]: boxed text the GM reads aloud to the table (not a secret - everyone sees it)
+_READ_TAG_RE = re.compile(r'\[read\](.*?)\[/read\]', re.DOTALL | re.IGNORECASE)
 # [spoiler]...[/spoiler] — a GM redacting the twist ending of a note, the
 # location of a hidden trap, etc. without splitting it into a separate
 # GM-only note (visible_to_players/entity_player_access already cover
@@ -156,6 +158,7 @@ def _apply_inline_styles(html: str) -> str:
     html = _COLOR_TAG_RE.sub(color_sub, html)
     html = _MARK_TAG_RE.sub(mark_sub, html)
     html = _U_TAG_RE.sub(r'<u>\1</u>', html)
+    html = _READ_TAG_RE.sub(r'<span class="read-aloud">\1</span>', html)
     # Runs last so a [spoiler] wrapping a [color]/[mark]/[u] span sees those
     # already-rendered — a spoiler-hidden phrase can still be colored, etc.
     html = _SPOILER_TAG_RE.sub(

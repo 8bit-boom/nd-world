@@ -236,6 +236,11 @@ tools that require GM access still check `is_gm` at call time.)
   nothing selected: the block under the pointer (paragraph / list item / quote: hide or spoiler; heading: the whole section) and, on an
   entity link inside an entity page, open in a tab / floating window / second screen / copy. Wrapping over a part that is already
   `[gmonly]`/`[spoiler]` removes the inner tags (nested tags would pair up wrongly when rendered).
+  Also: **Make a quest from this** (`/quests/new`), **Save as a fact** (`/facts/new`, GM-only), a **read-aloud box** (`[read]…[/read]` ->
+  `<span class="read-aloud">`, everyone sees it; toolbar 📖 and menu item), and in the editor menu a row of block formats (heading / quote /
+  bullet toggled per line, link, clear formatting). `/entity/{id}?as=player` previews the page's content as a player gets it (GM only;
+  body, summary, notes and the AI panel's context are stripped of `[gmonly]`; the read-view menu hooks are off). Not built yet: per-player
+  secrets and timed reveals (they need the same strip-everywhere treatment as `[gmonly]`), add-to-combat.
   An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character

@@ -6166,7 +6166,7 @@ def api_entity_set_image(
 class EntityMarkupBody(BaseModel):
     field: str                      # "body" | "summary" | "note"
     note_id: Optional[int] = None
-    action: str                     # gmonly | spoiler | mark | underline | bold | italic | strike | color:#rrggbb | unwrap:gmonly | unwrap:spoiler | unwrap:mark
+    action: str                     # gmonly | spoiler | mark | read | underline | bold | italic | strike | color:#rrggbb | unwrap:gmonly | unwrap:spoiler | unwrap:mark
     text: str = ""                  # what was selected on the page
     before: str = ""                # a little of the text either side of it, to tell a repeated phrase apart
     after: str = ""
@@ -6401,7 +6401,10 @@ def api_spotlight(request: Request, db: Session = Depends(get_db), active_world:
 def detail(request: Request, entity_id: int, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     entity = _entity_view_gate(db, request, entity_id)
     user = getattr(request.state, "user", None)
-    is_gm = bool(user and user.is_gm)
+    # ?as=player: a GM previews the page's CONTENT as a player gets it (GM-only parts stripped from the body, summary, notes and the AI panel's
+    # context). Only a GM can ask; for anyone else the parameter does nothing.
+    view_as_player = bool(user and user.is_gm and request.query_params.get("as") == "player")
+    is_gm = bool(user and user.is_gm) and not view_as_player
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     # Media attached to this entity — audio/video library clips linked via
@@ -6489,7 +6492,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         strip_gm_only=not is_gm,
     )
     return templates.TemplateResponse("entities/detail.html", {
-        "request": request, "entity": entity,
+        "request": request, "entity": entity, "view_as_player": view_as_player,
         "world": world, "worlds": worlds, "backlinks": backlinks,
         "entity_notes": entity_notes,
         "custom_sections": custom_sections, "custom_fields": custom_fields,

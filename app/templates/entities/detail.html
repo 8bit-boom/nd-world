@@ -23,7 +23,8 @@
   </div>
   <div class="ed-content">
 {% endif %}
-<article class="detail kind-{{ entity.kind }}"{% if request.state.user and request.state.user.is_gm %} data-markup-entity="{{ entity.id }}"{% endif %}>
+<article class="detail kind-{{ entity.kind }}"{% if request.state.user and request.state.user.is_gm and not view_as_player %} data-markup-entity="{{ entity.id }}"{% endif %}>
+  {% if view_as_player %}<div class="view-as-banner" role="status">👁 Previewing this page as a player sees it (GM-only text removed). <a href="/entity/{{ entity.id }}">Back to the GM view</a></div>{% endif %}
   {# Where this lives: the kind's list, then each folder and subfolder - every step is a link back up. #}
   <nav class="breadcrumb" aria-label="Where this is filed" id="entity-breadcrumb">
     <a href="{{ ('/kind/' + entity.kind)|wq }}">{{ kind_icons[entity.kind] }} {{ entity.kind|capitalize }}s</a>
@@ -55,7 +56,8 @@
       <div class="detail-date">Updated: {{ entity.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
     </div>
     <div class="detail-actions">
-      {% if request.state.user and request.state.user.is_gm %}
+      {% if request.state.user and request.state.user.is_gm and not view_as_player %}
+      <a href="/entity/{{ entity.id }}?as=player" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)" title="Preview this page as a player sees it">👁 As players</a>
       {# Second screen: show this on the other monitor (its image if it has one, else its text). #}
       <button type="button" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)" onclick="ndStage.showEntity({{ entity.id }})" title="Show this on the second monitor">📺 Show</button>
       {% if entity.image_url and (entity.body or entity.summary) %}<button type="button" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)" onclick="ndStage.showEntity({{ entity.id }}, 'text')" title="Show the text of this entity on the second monitor (GM-only parts are left out)">📺 Text</button>{% endif %}

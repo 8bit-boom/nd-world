@@ -15,7 +15,7 @@ Pure functions over strings, no database, tested on their own (tests/test_markup
 import re
 
 # what is NOT shown: our tags, link / image syntax (the text of a link stays), emphasis marks, code ticks
-_TAG = r"\[/?(?:u|spoiler|gmonly|mark|color)(?:=[^\]\n]{0,20})?\]"
+_TAG = r"\[/?(?:u|spoiler|gmonly|mark|color|read)(?:=[^\]\n]{0,20})?\]"
 _MASK_RE = re.compile(
     r"(?P<tag>" + _TAG + r")"
     r"|(?P<linkend>\]\([^)\n]*\))|(?P<open>!?\[)"
@@ -33,13 +33,14 @@ ACTIONS = {
     "gmonly": ("[gmonly]", "[/gmonly]"),
     "spoiler": ("[spoiler]", "[/spoiler]"),
     "mark": ("[mark]", "[/mark]"),
+    "read": ("[read]", "[/read]"),
     "underline": ("[u]", "[/u]"),
     "bold": ("**", "**"),
     "italic": ("*", "*"),
     "strike": ("~~", "~~"),
 }
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-UNWRAPPABLE = {"gmonly": "gmonly", "spoiler": "spoiler", "mark": "mark"}
+UNWRAPPABLE = {"gmonly": "gmonly", "spoiler": "spoiler", "mark": "mark", "read": "read"}
 
 MAX_SELECTION = 4000
 
@@ -186,7 +187,7 @@ def _widen(source: str, s: int, e: int):
         marks = [m.start() for m in rx.finditer(source, lo, hi)]
         if sum(1 for a in marks if s <= a < e) % 2:
             raise MarkupError("That selection cuts across bold / italic / code - extend it over the whole formatted part, or use the editor.")
-    for tag in ("u", "spoiler", "gmonly", "mark"):
+    for tag in ("u", "spoiler", "gmonly", "mark", "read"):
         opens = len(re.findall(r"\[%s(?:=[^\]\n]{0,20})?\]" % tag, seg, re.IGNORECASE))
         closes = len(re.findall(r"\[/%s\]" % tag, seg, re.IGNORECASE))
         if opens != closes:
