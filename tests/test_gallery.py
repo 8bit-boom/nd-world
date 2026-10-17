@@ -1239,3 +1239,22 @@ def test_delete_many_validates_input_and_is_editors_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     assert client.post("/images/delete-many", json={"urls": ["/uploads/a.png"]}).status_code == 403
+
+
+def test_album_remove_takes_several_urls_at_once(client, seed):
+    album_id = _make_album(seed.world_a.id, "Bulk", urls=["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{album_id}/remove", json={"urls": ["/uploads/a.png", "/uploads/c.png"]})
+    assert r.status_code == 200 and r.json()["count"] == 1
+    assert _album_urls(album_id) == ["/uploads/b.png"]
+
+
+def test_album_page_has_selection_and_bulk_buttons(client, seed):
+    album_id = _make_album(seed.world_a.id, "Bulk page", urls=["/uploads/a.png", "/uploads/b.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get(f"/images/albums/{album_id}").text
+    assert page.count('class="album-img-check"') == 2
+    for needle in ("albumToggleAll()", "albumRemoveSelected()", "albumDeleteSelected()", "/images/delete-many"):
+        assert needle in page, needle

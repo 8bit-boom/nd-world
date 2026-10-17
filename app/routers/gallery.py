@@ -528,8 +528,9 @@ async def album_remove_image(album_id: int, request: Request, db: Session = Depe
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
-    url = payload.get("url")
-    current = [u for u in _load_urls(album) if u != url]
+    # one address ("url") or several ("urls": a bulk "Remove selected from album")
+    gone = set(payload["urls"]) if isinstance(payload.get("urls"), list) else {payload.get("url")}
+    current = [u for u in _load_urls(album) if u not in gone]
     album.image_urls_json = json.dumps(current)
     db.commit()
     return {"ok": True, "count": len(current)}

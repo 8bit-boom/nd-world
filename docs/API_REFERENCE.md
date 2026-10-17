@@ -783,7 +783,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | POST | `/images/albums/upload/chunk` | GM / Assistant | Receives one part of a large (>100 MB) album image split client-side; reassembled by `/images/albums/upload/complete`. |
 | POST | `/images/albums/upload/complete` | GM / Assistant | Reassembles a chunked album image upload (converted + thumbnailed) and attaches it to the album; returns `{"url": ...}`. |
 | POST | `/images/albums/{album_id}/add` | GM / Assistant | Adds existing uploaded images to an album. |
-| POST | `/images/albums/{album_id}/remove` | GM / Assistant | Removes an image from an album. |
+| POST | `/images/albums/{album_id}/remove` | GM / Assistant | Removes an image (`{url}`) or several (`{urls:[…]}`) from an album; the files are kept. |
 | POST | `/images/albums/{album_id}/move` | GM / Assistant | Moves an image to a different album. |
 | POST | `/images/delete` | GM / Assistant | Deletes an uploaded image. |
 | POST | `/images/delete-many` | GM / Assistant | `{urls:[…≤500]}` — deletes every selected image that is unused; the rest are skipped and listed. Reply `{deleted, skipped:[{url,reason}]}`. |
