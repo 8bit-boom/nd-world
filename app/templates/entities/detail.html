@@ -23,7 +23,7 @@
   </div>
   <div class="ed-content">
 {% endif %}
-<article class="detail kind-{{ entity.kind }}"{% if request.state.user and request.state.user.is_gm and not view_as_player %} data-markup-entity="{{ entity.id }}"{% endif %}>
+<article class="detail kind-{{ entity.kind }}" data-entity-id="{{ entity.id }}"{% if request.state.user and request.state.user.is_gm and not view_as_player %} data-markup-entity="{{ entity.id }}"{% endif %}>
   {% if view_as_player %}<div class="view-as-banner" role="status">👁 Previewing this page as a player sees it (GM-only text removed). <a href="/entity/{{ entity.id }}">Back to the GM view</a></div>{% endif %}
   {# Where this lives: the kind's list, then each folder and subfolder - every step is a link back up. #}
   <nav class="breadcrumb" aria-label="Where this is filed" id="entity-breadcrumb">

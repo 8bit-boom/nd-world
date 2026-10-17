@@ -1254,6 +1254,7 @@ function _ndFmtLinkItems(a) {
   if (window.ndFloat) items.push({ label: "🪟 Open in a floating window", title: "A small window you can park on another monitor", run: () => window.ndFloat(t.url, { title: name }) });
   items.push({ label: "📺 Show on the second screen", title: "Sends this entity to the players' display window", run: () => _ndFmtShowOnScreen({ kind: "entity", entity_id: t.id }) });
   items.push({ label: "📋 Copy link", title: "", run: () => _ndFmtCopy(location.origin + t.url) });
+  if (window.ndRenameEntity) items.push({ label: "✏ Rename…", title: "Change this entity's name", run: () => window.ndRenameEntity(t.id, name) });
   return items;
 }
 

@@ -794,6 +794,9 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if method == "POST" and re.match(r"^/api/entity/\d+/image$", path):
         # Image Studio's "Set as portrait" — entity content.
         return True
+    if method == "POST" and re.match(r"^/api/entity/\d+/rename$", path):
+        # The right-click "Rename" on an entity link / title — entity content.
+        return True
     if method == "POST" and re.match(r"^/kind/[^/]+/bulk-delete$", path):
         # The list pages' bulk-action bar.
         return True
@@ -6250,6 +6253,32 @@ def api_world_players(request: Request, db: Session = Depends(get_db), active_wo
     if not world:
         raise HTTPException(404)
     return [{"id": u.id, "name": u.display_name} for u in _world_player_list(db, world.id) if not u.is_gm]
+
+
+class EntityRenameBody(BaseModel):
+    name: str
+
+
+@app.post("/api/entity/{entity_id}/rename")
+def api_entity_rename(entity_id: int, body: EntityRenameBody, request: Request,
+                      db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Renames an entity (right-click > Rename on a link or the page title). Returns the old name so the page can offer Undo (which is
+    just another rename). GM or assistant - entity content."""
+    if not deps.can_edit_content(request):
+        raise HTTPException(403)
+    entity = db.get(Entity, entity_id)
+    world = get_active_world(request, db, active_world)
+    if not entity or not world or entity.world_id != world.id:
+        raise HTTPException(404)
+    name = " ".join((body.name or "").split())[:256]
+    if not name:
+        return JSONResponse({"error": "A name cannot be empty."}, status_code=422)
+    old = entity.name
+    if name == old:
+        return JSONResponse({"error": "That is already its name."}, status_code=422)
+    entity.name = name
+    db.commit()
+    return {"ok": True, "id": entity.id, "name": entity.name, "old": old}
 
 
 class EntityAliasBody(BaseModel):

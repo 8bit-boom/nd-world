@@ -254,6 +254,13 @@ tools that require GM access still check `is_gm` at call time.)
   read view. A due reveal appears on the player's next page load (nothing is pushed). Search cannot be used to probe secrets: `retrieval.drop_secret_only_matches` drops, for a non-GM viewer, any entity (search,
   RAG lookups, ILIKE fallback) whose only match is text that viewer cannot see, and note search checks the stripped text.
   An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
+- **Rename an entity from the right-click menu** (`static/js/entity-menu.js`, loaded by base.html for editors only): right-click an entity link
+  (`/entity/ID`) on ANY page - open in tab / floating window / second screen / copy link / ✏ Rename… - or the title of an entity page
+  (`.detail-meta > h1`, `article.detail[data-entity-id]`). Shift+right-click still gives the browser's menu. On an entity page's text the richer
+  menu in text-format-toolbar.js owns links (its `_ndFmtLinkItems` also calls `window.ndRenameEntity`, which fetches the real name from
+  `/api/entity/ID/preview` before opening the dialog). Saves via `POST /api/entity/ID/rename` (allowed for assistants in `_is_assistant_safe`);
+  Undo is another rename; names of links to it on the page follow. Text elsewhere that mentions the old name is left as written and just stops
+  auto-linking.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`
