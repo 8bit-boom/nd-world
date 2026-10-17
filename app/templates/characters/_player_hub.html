@@ -219,7 +219,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     {% if hub_sessions %}
     <div class="pch-sub">📓 Recent sessions</div>
     {% for s in hub_sessions %}
-    <a href="{{ ('/sessions/' + s.id|string)|wq }}" style="display:block;font-size:.85rem;color:var(--text);text-decoration:none;padding:.15rem 0">
+    <a href="{{ ('/session-log/' + s.id|string)|wq }}" style="display:block;font-size:.85rem;color:var(--text);text-decoration:none;padding:.15rem 0">
       #{{ s.session_num }} — {{ s.title or 'Session' }}{% if s.xp_awarded %} <span class="pch-muted">(+{{ s.xp_awarded }} XP)</span>{% endif %}
     </a>
     {% endfor %}

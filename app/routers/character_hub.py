@@ -178,7 +178,8 @@ def journey_context(db: Session, request: Request, pc: PlayerCharacter, world) -
     except ValueError:
         ledger = []
     ctx["hub_xp_ledger"] = list(reversed(ledger))[:5]
-    if world_can_view_section(request, world, "sessions"):
+    # the Session Log (what players get), not the GM's Sessions section: its page is the editable prep view
+    if world_can_view_section(request, world, "session_log"):
         ctx["hub_sessions"] = (
             db.query(GameSession).filter(GameSession.party_id == party.id)
             .order_by(GameSession.session_num.desc()).limit(5).all()

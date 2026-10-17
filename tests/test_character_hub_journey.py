@@ -140,21 +140,23 @@ def test_journey_loot_has_claim_controls(client, seed):
     assert "send('loot'" in html, "the buttons must post to the hub loot route"
 
 
-def test_journey_sessions_respect_the_sessions_section(client, seed):
+def test_journey_sessions_respect_the_session_log_section_and_link_to_the_players_view(client, seed):
+    """The list is the Session Log (what players get): its links open /session-log/ID, never the GM's editable /sessions/ID page."""
     mine, _, party = _scene(seed)
-    _add(GameSession(world_id=seed.world_a.id, title="The Hidden Vault Heist", session_num=3, party_id=party))
-    db = SessionLocal()
-    try:
-        db.get(World, seed.world_a.id).section_access_json = json.dumps({"sessions": {"player": "none"}})
-        db.commit()
-    finally:
-        db.close()
+    sid = _add(GameSession(world_id=seed.world_a.id, title="The Hidden Vault Heist", session_num=3, party_id=party))
+
+    def level(value):
+        db = SessionLocal()
+        try:
+            db.get(World, seed.world_a.id).section_access_json = json.dumps({"session_log": {"player": value}})
+            db.commit()
+        finally:
+            db.close()
+
+    level("none")
     _owner(client, seed)
     assert "The Hidden Vault Heist" not in client.get(f"/characters/{mine}").text
-    db = SessionLocal()
-    try:
-        db.get(World, seed.world_a.id).section_access_json = json.dumps({"sessions": {"player": "read"}})
-        db.commit()
-    finally:
-        db.close()
-    assert "The Hidden Vault Heist" in client.get(f"/characters/{mine}").text
+    level("read")
+    html = client.get(f"/characters/{mine}").text
+    assert "The Hidden Vault Heist" in html
+    assert f'href="/session-log/{sid}' in html and f'href="/sessions/{sid}' not in html
