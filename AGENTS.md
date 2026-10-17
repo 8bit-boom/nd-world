@@ -279,6 +279,12 @@ tools that require GM access still check `is_gm` at call time.)
   PP/MP - read from the sheet, written back by Sync), `used` (action pips), `saves` (N&D death saves / wake-up rolls), `wounds` / `press_on` (Hunt and
   the conversions), `counters` (Legendary Action ...), `notes` (GM only). Conditions stack (a name listed twice) and tick through a confirm panel
   - nothing is applied silently. Asterion: no death saves, Shattered can be executed; Armor never above 3 (4 vs legendary).
+  Also: **Turns** can be overridden per encounter (`turn_json.mode` "initiative" | "fluid" - the Asterion-engine books allow a fixed order);
+  **initiative** is d10 + `init_bonus` (Speed: Dex + Intuition from a sheet, or a creature's speed field), rolled per row or for every
+  enemy without one (Shift re-rolls all); ties are ordered by hand (`tiebreak`, ▲▼); a combatant that cannot act (dead, or down - the
+  ruleset's `skip_down`: enemies / all / none) is skipped by `nextTurn`/`advance` and never holds a fluid round up (`combat_rules.is_out`
+  and `combat-core.js isOut` agree, tested on the same cases); a condition typed "Burn 3" lasts 3 rounds (`cond_dur`, ticked down
+  each new round); Phase Break (boss: shield refreshes, Phase counter up).
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

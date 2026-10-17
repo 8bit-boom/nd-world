@@ -191,4 +191,54 @@ def test_merge3_keeps_my_edits_and_theirs_and_the_turn():
     """)
     assert res["a"]["hp"] == 6 and res["a"]["initiative"] == 12 and res["b"]["hp"] == 9 and res["round"] == 2
     assert res["active"] == "a" and res["ids"] == ["a", "c", "d"]
-    assert res["fluid"] == {"active_id": None, "acted": ["a"], "picker": "a"}
+    assert res["fluid"] == {"active_id": None, "acted": ["a"], "picker": "a", "mode": ""}
+
+
+@needs_node
+def test_the_fallen_are_skipped_the_same_way_in_javascript_and_python():
+    """Initiative: an enemy at 0 HP (or dead) loses its turn; a PC at 0 still takes its dying rolls. Hunt / Asterion: nobody Broken acts."""
+    combatants = [_c("a", 9, source="pc"), _c("b", 5, source="entity", hp=0), _c("c", 3, source="entity"), _c("d", 1, source="pc", hp=0)]
+    js = _node("""
+      const out_ = {};
+      const cb = %s;
+      const walk = (rsId) => { const s = { combatants: JSON.parse(JSON.stringify(cb)), round: 1, active: 0 }, seen = [];
+        for (let i = 0; i < 6; i++) { C.nextTurn(s, RULES[rsId]); seen.push([s.active, s.round]); } return seen; };
+      out.nd = walk('nd'); out.hunt = walk('hunt');
+      out.isOut = cb.map(c => [C.isOut(c, RULES.nd), C.isOut(c, RULES.hunt), C.isOut(c, RULES.generic)]);
+      const dead = { id: 'x', status: 'dead', hp: 5, max_hp: 5, source: 'pc' }; out.dead = C.isOut(dead, RULES.nd);
+    """ % json.dumps(combatants))
+    for ruleset, key in (("nd", "nd"), ("hunt", "hunt")):
+        cs = SimpleNamespace(ruleset=ruleset, turn_json=json.dumps({"mode": "initiative"}), round_num=1, rev=0, active_idx=0)
+        seen = []
+        for _ in range(6):
+            combat_turns.advance(cs, combatants)
+            seen.append([cs.active_idx, cs.round_num])
+        assert seen == js[key], (ruleset, seen, js[key])
+    assert js["isOut"] == [[False, False, False], [True, True, True], [False, False, False], [False, True, False]] and js["dead"] is True
+
+
+@needs_node
+def test_ties_conditions_with_durations_phase_breaks_and_rolled_initiative():
+    res = _node("""
+      const s = { combatants: [{id:'a',initiative:5},{id:'b',initiative:5},{id:'c',initiative:5},{id:'z',initiative:9}] };
+      const names = () => C.order(s.combatants).map(i => s.combatants[i].id).join('');
+      out.start = names();
+      out.up = [C.moveTie(s, 'c', -1), names()];            // c steps ahead of b
+      out.top = [C.moveTie(s, 'c', -1), names()];           // c is already first among the ties: it also steps ahead of a
+      out.edge = C.moveTie(s, 'z', -1);                     // z has no ties
+      out.parse = ['Burn 3', 'Bleeding', 'Daze 2 rounds', 'Level 4 cleric', 'Poisoned,5'].map(C.parseCondition);
+      const c = { id: 'k', name: 'K', conditions: ['Burn', 'Burn', 'Daze'], cond_dur: { Burn: 2, Daze: 1 } };
+      const st = { combatants: [c] };
+      out.t1 = C.tickDurations(st).map(e => e.cond); out.after1 = [c.conditions.slice(), JSON.stringify(c.cond_dur)];
+      out.t2 = C.tickDurations(st).map(e => e.cond); out.after2 = c.conditions;
+      const boss = { res: { sparkShield: { cur: 0, max: 6 } }, counters: { Phase: 1 } };
+      out.pb = [C.phaseBreak(boss, RULES.asterion), boss.res.sparkShield.cur, boss.counters.Phase, C.phaseBreak(boss, RULES.nd)];
+      out.init = [C.rollInitiative({ init_bonus: 3 }, () => 0.5), C.rollInitiative({ init_bonus: -9 }, () => 0).total];
+    """)
+    assert res["start"] == "zabc" and res["up"] == [True, "zacb"] and res["top"] == [True, "zcab"] and res["edge"] is False
+    assert res["parse"] == [{"name": "Burn", "rounds": 3}, {"name": "Bleeding", "rounds": 0}, {"name": "Daze", "rounds": 2},
+                            {"name": "Level 4 cleric", "rounds": 0}, {"name": "Poisoned", "rounds": 5}]
+    assert res["t1"] == ["Daze"] and res["after1"] == [["Burn", "Burn"], '{"Burn":1}']
+    assert res["t2"] == ["Burn"] and res["after2"] == []
+    assert res["pb"][1:3] == [6, 2] and res["pb"][0] == {"shield": True, "phase": 2} and res["pb"][3] is None
+    assert res["init"][0] == {"die": 6, "total": 9} and res["init"][1] == 1

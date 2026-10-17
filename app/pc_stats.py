@@ -109,3 +109,9 @@ def clean_conditions(seq) -> list:
             seen.add(c.lower())
             out.append(c)
     return out[:MAX_CONDITIONS]
+
+
+def speed(pc) -> int:
+    """Initiative = Speed (Dexterity + Intuition) for a Neon & Dragons / Worm sheet; 0 for anyone else."""
+    sv = stat_values(pc)
+    return sv.get("dex", 0) + sv.get("itu", 0)

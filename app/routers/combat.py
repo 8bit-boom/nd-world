@@ -9,7 +9,7 @@ from .. import combat_rules, combat_state, combat_turns, live
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
 from ..models import CombatSession, Entity, GameSession, PlayerCharacter, SheetTemplate, World
-from ..pc_stats import clean_conditions, pc_maxima
+from ..pc_stats import clean_conditions, pc_maxima, speed as pc_speed
 from ..sheet_systems import hp_track, parse_custom_fields, resource_tracks, system_meta, template_fields
 from ..templating import templates
 
@@ -81,6 +81,7 @@ def pc_to_combatant(pc: PlayerCharacter, db=None) -> dict:
         "pc_id": pc.id,
         "entity_id": None,
         "initiative": 0,
+        "init_bonus": pc_speed(pc),
         "max_hp": max_hp,
         "hp": hp,
         "max_shock": m["shock"],
@@ -108,6 +109,7 @@ def entity_to_combatant(entity: Entity) -> dict:
         "pc_id": None,
         "entity_id": entity.id,
         "initiative": 0,
+        "init_bonus": next((_int(fields[k], 0) for k in ("speed", "initiative", "init") if fields.get(k) not in (None, "")), 0),
         "max_hp": health,
         "hp": health,
         "max_shock": 0,
@@ -150,14 +152,14 @@ def _candidates(db: Session, world_id: int):
             "max_shock": m["shock"], "shock": pc.shock_current or 0,
             "conditions": _pc_conditions(pc),
             "portrait_url": pc.portrait_url or "",
-            "res": _extra_tracks(db, pc),
+            "res": _extra_tracks(db, pc), "speed": pc_speed(pc),
         })
     entity_payload = []
     for e in entities:
         prefill = entity_to_combatant(e)
         entity_payload.append({
             "id": e.id, "name": e.name, "kind": e.kind,
-            "max_hp": prefill["max_hp"], "armor": prefill["armor"],
+            "max_hp": prefill["max_hp"], "armor": prefill["armor"], "speed": prefill["init_bonus"],
             "image_url": e.image_url or "",
         })
     return pcs, entities, pc_payload, entity_payload

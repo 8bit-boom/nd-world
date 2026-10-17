@@ -21,6 +21,20 @@
 
   C.rulesOf = function (rules, id) { return (rules && (rules[id] || rules.generic)) || { turns: "initiative", absorb: ["temp"], eco: [], conditions: [], down: {} }; };
   C.isFluid = function (rules, id) { return C.rulesOf(rules, id).turns === "fluid"; };
+  // fluid or fixed order for THIS encounter: its own choice (state.turn.mode - a table may run an Asterion-engine game on fixed initiative) or the ruleset's
+  C.fluidOf = function (rules, state) {
+    var m = state && state.turn && state.turn.mode;
+    return m === "fluid" || m === "initiative" ? m === "fluid" : C.isFluid(rules, state && state.ruleset);
+  };
+
+  // cannot take a turn: dead, or down in a way the ruleset skips ("enemies": a PC at 0 still takes its dying rolls; "all": Broken / Shattered cannot act)
+  C.isOut = function (c, rs) {
+    if (c.status === "dead") return true;
+    var down = num(c.max_hp) > 0 && num(c.hp) <= 0;
+    if (!down) return false;
+    var skip = (rs && rs.skip_down) || "enemies";
+    return skip === "all" || (skip === "enemies" && c.source !== "pc");
+  };
 
   // indices in initiative order: highest initiative, then the higher tiebreak, then the order added (app/combat_turns.py order())
   C.order = function (combatants) {
@@ -42,7 +56,7 @@
   };
 
   function turnOf(state) {
-    if (!state.turn) state.turn = { active_id: null, acted: [], picker: null };
+    if (!state.turn) state.turn = { active_id: null, acted: [], picker: null, mode: "" };
     return state.turn;
   }
 
@@ -110,42 +124,51 @@
   };
 
   // ── turns ──────────────────────────────────────────────────────────────────────────────────────────────────────────
-  // INITIATIVE: end the current turn - the next combatant, a new round after the last
-  C.nextTurn = function (state) {
+  // INITIATIVE: end the current turn - the next combatant (skipping whoever is down or dead: `rs` says who), a new round after the last
+  C.nextTurn = function (state, rs) {
     var n = state.combatants.length;
     if (!n) { state.round = (state.round || 1) + 1; return state; }
-    var nxt = (state.active || 0) + 1;
-    if (nxt >= n) { nxt = 0; state.round = (state.round || 1) + 1; }
-    state.active = nxt;
+    var o = C.order(state.combatants), nxt = (state.active || 0) + 1, found = false;
+    for (var k = 0; k <= n; k++) {
+      if (nxt >= n) { nxt = 0; state.round = (state.round || 1) + 1; }
+      if (!rs || !C.isOut(state.combatants[o[nxt]], rs)) { found = true; break; }
+      nxt += 1;
+    }
+    state.active = found ? nxt : 0;
     return state;
   };
 
   // one turn back (a misclick on Next); before the first turn of round 2 it goes to the last turn of round 1, and stops at round 1
-  C.prevTurn = function (state) {
+  C.prevTurn = function (state, rs) {
     var n = state.combatants.length;
     if (!n) { state.round = Math.max(1, (state.round || 1) - 1); return state; }
-    var prv = (state.active || 0) - 1;
-    if (prv < 0) {
-      if ((state.round || 1) <= 1) return state;
-      prv = n - 1; state.round -= 1;
+    var o = C.order(state.combatants), prv = (state.active || 0) - 1;
+    for (var k = 0; k <= n; k++) {
+      if (prv < 0) {
+        if ((state.round || 1) <= 1) return state;
+        prv = n - 1; state.round -= 1;
+      }
+      if (!rs || !C.isOut(state.combatants[o[prv]], rs)) break;
+      prv -= 1;
     }
-    state.active = prv;
+    state.active = Math.max(prv, 0);
     return state;
   };
 
   // FLUID: the actor has finished; they now choose who goes next. Returns {newRound}.
-  C.endFluidTurn = function (state) {
+  C.endFluidTurn = function (state, rs) {
     var t = turnOf(state), who = t.active_id, newRound = false;
     if (who && t.acted.indexOf(who) < 0) t.acted.push(who);
-    if (ids(state).every(function (i) { return t.acted.indexOf(i) >= 0; })) { t.acted = []; state.round = (state.round || 1) + 1; newRound = true; }
+    var able = state.combatants.filter(function (c) { return !rs || !C.isOut(c, rs); }).map(function (c) { return c.id; });   // the fallen never hold a round up
+    if (able.every(function (i) { return t.acted.indexOf(i) >= 0; })) { t.acted = []; state.round = (state.round || 1) + 1; newRound = true; }
     t.picker = who || t.picker; t.active_id = null;
     return { newRound: newRound, who: who };
   };
 
   // FLUID: the chooser names who goes next - anyone who has not acted this round. False if that is not allowed.
-  C.pickNext = function (state, id) {
-    var t = turnOf(state);
-    if (ids(state).indexOf(id) < 0 || t.acted.indexOf(id) >= 0) return false;
+  C.pickNext = function (state, id, rs) {
+    var t = turnOf(state), c = state.combatants.find(function (x) { return x.id === id; });
+    if (!c || t.acted.indexOf(id) >= 0 || (rs && C.isOut(c, rs))) return false;
     t.active_id = id; t.picker = null;
     return true;
   };
@@ -268,6 +291,64 @@
     return { hp: hp, shock: shock, rolls: rolls };
   };
 
+  // ── initiative: rolling, ties ─────────────────────────────────────────────────────────────────────────────────────────
+  // d10 + the combatant's init_bonus (Speed); returns {total, die}
+  C.rollInitiative = function (c, rng) {
+    var die = C.rollDice("1d10", rng);
+    return { die: die, total: Math.max(1, die + num(c.init_bonus)) };
+  };
+
+  // ties are ordered by the GM: move `id` one place up (-1) or down (+1) among the combatants that share its initiative. Returns false if it cannot move.
+  C.moveTie = function (state, id, dir) {
+    var me = state.combatants.find(function (c) { return c.id === id; });
+    if (!me) return false;
+    var o = C.order(state.combatants).map(function (i) { return state.combatants[i]; });
+    var group = o.filter(function (c) { return init(c) === init(me); });
+    var at = group.indexOf(me), to = at + dir;
+    if (group.length < 2 || to < 0 || to >= group.length) return false;
+    group.splice(at, 1); group.splice(to, 0, me);
+    group.forEach(function (c, i) { c.tiebreak = group.length - i; });          // first in the group gets the highest tiebreak
+    return true;
+  };
+
+  // "Burn 3" -> {name: "Burn", rounds: 3}; a plain name has no duration
+  C.parseCondition = function (text) {
+    var m = /^(.*?)[\s,]+(\d{1,2})\s*(?:rounds?|r|turns?)?$/i.exec(String(text || "").trim());
+    if (m && m[1].trim()) return { name: m[1].trim().slice(0, 40), rounds: Math.min(99, parseInt(m[2], 10)) };
+    return { name: String(text || "").trim().slice(0, 40), rounds: 0 };
+  };
+
+  // a round has passed: every counted-down condition loses one; those that reach 0 end. Returns [{id, name, cond}] of what ended.
+  C.tickDurations = function (state) {
+    var ended = [];
+    state.combatants.forEach(function (c) {
+      var d = c.cond_dur;
+      if (!d) return;
+      Object.keys(d).forEach(function (name) {
+        d[name] -= 1;
+        if (d[name] <= 0) {
+          delete d[name];
+          var before = (c.conditions || []).length;
+          c.conditions = (c.conditions || []).filter(function (x) { return String(x).toLowerCase() !== name.toLowerCase(); });
+          if (before !== c.conditions.length) ended.push({ id: c.id, name: c.name, cond: name });
+        }
+      });
+    });
+    return ended;
+  };
+
+  // Phase Break (Asterion / the conversions): the boss's shield refreshes and the Phase counter goes up. Returns what changed, or null.
+  C.phaseBreak = function (c, rs) {
+    var pb = rs && rs.phase_break;
+    if (!pb) return null;
+    var out = { shield: false };
+    if (pb.refresh && c.res && c.res[pb.refresh]) { c.res[pb.refresh].cur = c.res[pb.refresh].max; out.shield = true; }
+    c.counters = c.counters || {};
+    c.counters.Phase = num(c.counters.Phase) + 1;
+    out.phase = c.counters.Phase;
+    return out;
+  };
+
   // ── bookkeeping ────────────────────────────────────────────────────────────────────────────────────────────────────
   C.clone = function (state) { return JSON.parse(JSON.stringify(state)); };
 
@@ -276,6 +357,7 @@
   // lands alongside the GM's own click instead of one overwriting the other.
   C.merge3 = function (base, mine, theirs, fluid) {
     var out = { combatants: [], round: 1, active: 0, name: theirs.name, log: [], ruleset: theirs.ruleset, turn: null };
+    var modeMine = same(mine.turn && mine.turn.mode, base.turn && base.turn.mode) ? (theirs.turn && theirs.turn.mode) : (mine.turn && mine.turn.mode);
     var byId = function (list) { var m = {}; list.forEach(function (c) { m[c.id] = c; }); return m; };
     var b = byId(base.combatants), m = byId(mine.combatants), t = byId(theirs.combatants);
     var seen = {};
@@ -302,9 +384,9 @@
       var pick = same(mine.turn, base.turn) ? theirs.turn : mine.turn;
       out.turn = { active_id: pick && have[pick.active_id] ? pick.active_id : null,
                    acted: ((pick && pick.acted) || []).filter(function (i) { return have[i]; }),
-                   picker: pick && have[pick.picker] ? pick.picker : null };
+                   picker: pick && have[pick.picker] ? pick.picker : null, mode: modeMine || "" };
     } else {
-      out.turn = theirs.turn;
+      out.turn = Object.assign({}, theirs.turn || { active_id: null, acted: [], picker: null }, { mode: modeMine || "" });
       var wantId = same(C.activeId(mine, false), C.activeId(base, false)) ? C.activeId(theirs, false) : C.activeId(mine, false);
       var o = C.order(out.combatants);
       var at = wantId == null ? -1 : o.findIndex(function (i) { return out.combatants[i].id === wantId; });

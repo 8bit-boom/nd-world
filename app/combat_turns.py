@@ -35,24 +35,39 @@ def order(combatants: list) -> list:
 
 
 def is_fluid(cs) -> bool:
+    """Fluid initiative? The encounter's own choice (turn_json "mode", for a table that wants the other way - the Asterion-engine books
+    allow a fixed order) wins; otherwise what the ruleset says."""
+    mode = _raw_turn(cs).get("mode")
+    if mode in ("initiative", "fluid"):
+        return mode == "fluid"
     return combat_rules.is_fluid(getattr(cs, "ruleset", "") or "")
+
+
+def _raw_turn(cs) -> dict:
+    try:
+        raw = json.loads(getattr(cs, "turn_json", None) or "{}")
+    except ValueError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def is_out(cs, c) -> bool:
+    """Cannot take a turn: dead, or down in a way this ruleset skips (combat_rules.is_out)."""
+    return combat_rules.is_out(c, getattr(cs, "ruleset", "") or "")
 
 
 def turn_state(cs) -> dict:
     """The fluid turn state, always with all three keys."""
-    try:
-        raw = json.loads(getattr(cs, "turn_json", None) or "{}")
-    except ValueError:
-        raw = {}
-    raw = raw if isinstance(raw, dict) else {}
+    raw = _raw_turn(cs)
     return {"active_id": raw.get("active_id") if isinstance(raw.get("active_id"), str) else None,
             "acted": [x for x in raw.get("acted", []) if isinstance(x, str)] if isinstance(raw.get("acted"), list) else [],
-            "picker": raw.get("picker") if isinstance(raw.get("picker"), str) else None}
+            "picker": raw.get("picker") if isinstance(raw.get("picker"), str) else None,
+            "mode": raw.get("mode") if raw.get("mode") in ("initiative", "fluid") else ""}
 
 
 def set_turn_state(cs, state: dict) -> None:
     cs.turn_json = json.dumps({"active_id": state.get("active_id"), "acted": list(state.get("acted") or []),
-                               "picker": state.get("picker")})
+                               "picker": state.get("picker"), "mode": state.get("mode") or ""})
 
 
 def touch(cs) -> None:
@@ -108,7 +123,7 @@ def advance(cs, combatants: list) -> None:
         who = st["active_id"]
         if who and who not in st["acted"]:
             st["acted"].append(who)
-        ids = [c.get("id") for c in combatants]
+        ids = [c.get("id") for c in combatants if not is_out(cs, c)]       # someone who cannot act never holds the round up
         if all(i in st["acted"] for i in ids):
             st["acted"] = []
             cs.round_num = (cs.round_num or 1) + 1
@@ -118,9 +133,16 @@ def advance(cs, combatants: list) -> None:
     if not combatants:
         cs.round_num = (cs.round_num or 1) + 1
         return
+    turn_order = order(combatants)
     nxt = (cs.active_idx or 0) + 1
-    if nxt >= len(combatants):
-        nxt, cs.round_num = 0, (cs.round_num or 1) + 1
+    for _ in range(len(combatants) + 1):                  # past whoever is down or dead (a full lap of nobody able: stop on the first)
+        if nxt >= len(combatants):
+            nxt, cs.round_num = 0, (cs.round_num or 1) + 1
+        if not is_out(cs, combatants[turn_order[nxt]]):
+            break
+        nxt += 1
+    else:
+        nxt = 0
     cs.active_idx = nxt
 
 
@@ -128,7 +150,8 @@ def pick_next(cs, combatants: list, combatant_id: str) -> bool:
     """Fluid: the chooser names who acts next. Only someone who has not acted this round can be picked (at the start of a round anyone
     can). Returns False when the pick is not allowed."""
     st = turn_state(cs)
-    if combatant_id not in [c.get("id") for c in combatants] or combatant_id in st["acted"]:
+    target = next((c for c in combatants if c.get("id") == combatant_id), None)
+    if target is None or combatant_id in st["acted"] or is_out(cs, target):
         return False
     st["active_id"], st["picker"] = combatant_id, None
     set_turn_state(cs, st)

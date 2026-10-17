@@ -500,7 +500,8 @@ def _combat_now(db: Session, pc: PlayerCharacter):
         elif ts["picker"] == me.get("id"):
             out["turn"] = "choose"
             out["choose"] = [{"id": c.get("id"), "name": str(c.get("name") or "")[:60]} for c in combatants
-                             if c.get("source") == "pc" and c.get("visible", True) and c.get("id") not in ts["acted"] and c.get("id") != me.get("id")]
+                             if c.get("source") == "pc" and c.get("visible", True) and c.get("id") not in ts["acted"] and c.get("id") != me.get("id")
+                             and not combat_turns.is_out(cs, c)]
         else:
             picker = next((c for c in combatants if c.get("id") == ts["picker"]), None)
             out["turn"] = "choosing"
@@ -523,11 +524,8 @@ def _combat_now(db: Session, pc: PlayerCharacter):
 
 def _speed(pc: PlayerCharacter) -> int:
     """Initiative = Speed (core rules): Dexterity + Intuition."""
-    try:
-        stats = {str(s.get("id")): int(s.get("value") or 0) for s in json.loads(pc.stats_json or "[]") if isinstance(s, dict)}
-    except (ValueError, TypeError):
-        stats = {}
-    return stats.get("dex", 0) + stats.get("itu", 0)
+    from ..pc_stats import speed
+    return speed(pc)
 
 
 @router.post("/api/characters/{pc_id}/hub/initiative")

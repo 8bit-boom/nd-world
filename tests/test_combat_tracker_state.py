@@ -52,7 +52,7 @@ def test_normalize_state_cleans_and_bounds_what_the_browser_sent():
     assert a["name"] == "Ana Quill" and a["hp"] == 5 and a["initiative"] == 12 and a["conditions"] == ["Burn", "burn", "Daze"]     # a stack, hp capped at max
     assert a["res"]["ichor"]["cur"] == 5 and a["saves"]["ok"] == 3
     assert dup["id"] != "a"                                                                # ids stay unique
-    assert s["round_num"] == 1 and s["active_idx"] == 1 and s["turn"] == {"active_id": "a", "acted": ["a"], "picker": None}
+    assert s["round_num"] == 1 and s["active_idx"] == 1 and s["turn"] == {"active_id": "a", "acted": ["a"], "picker": None, "mode": ""}
     assert s["ruleset"] == "hunt" and s["log"] == [{"t": 1, "round": 1, "text": "x"}]
     for bad in (None, [], {"combatants": "x"}, {"combatants": [1]}, {"combatants": [{}] * 61}):
         try:
@@ -203,7 +203,7 @@ def test_the_gm_page_carries_the_rule_tables_and_the_state(client, seed):
     html = client.get(f"/combat/{cid}").text
     assert "combat-core.js" in html and "const RULES = JSON.parse(" in html and "Hunt in the Moonlight" in html
     state = client.get(f"/api/combat/{cid}/state").json()
-    assert state["ruleset"] == "hunt" and state["rev"] == 0 and state["turn"] == {"active_id": None, "acted": [], "picker": None} and state["active_id"] is None
+    assert state["ruleset"] == "hunt" and state["rev"] == 0 and state["turn"] == {"active_id": None, "acted": [], "picker": None, "mode": ""} and state["active_id"] is None
 
 
 def test_fluid_turns_through_the_player_hub(client, seed):
@@ -218,7 +218,7 @@ def test_fluid_turns_through_the_player_hub(client, seed):
             db.add(pc); db.flush(); pcs.append(pc.id)
         cs = CombatSession(world_id=w.id, name="Pit", ruleset="asterion", combatants_json=json.dumps([
             _cb("k", "Kaidros", "pc", pc_id=pcs[0], notes=""), _cb("s", "Selene", "pc", pc_id=pcs[1], notes=""), _cb("g", "Guard", "entity", notes="")]),
-            turn_json=json.dumps({"active_id": "k", "acted": [], "picker": None}))
+            turn_json=json.dumps({"active_id": "k", "acted": [], "picker": None, "mode": ""}))
         db.add(cs); db.commit(); cid = cs.id
     finally:
         db.close()
@@ -237,7 +237,7 @@ def test_fluid_turns_through_the_player_hub(client, seed):
     db = SessionLocal()
     try:
         cs = db.get(CombatSession, cid)
-        assert json.loads(cs.turn_json) == {"active_id": "s", "acted": ["k"], "picker": None}
+        assert json.loads(cs.turn_json) == {"active_id": "s", "acted": ["k"], "picker": None, "mode": ""}
     finally:
         db.close()
     # Selene passes to "an enemy": the GM then names which one
@@ -245,7 +245,7 @@ def test_fluid_turns_through_the_player_hub(client, seed):
     assert client.post(f"/api/characters/{s}/hub/pass-turn", json={"next": "gm"}).status_code == 200
     db = SessionLocal()
     try:
-        assert json.loads(db.get(CombatSession, cid).turn_json) == {"active_id": None, "acted": ["k", "s"], "picker": None}
+        assert json.loads(db.get(CombatSession, cid).turn_json) == {"active_id": None, "acted": ["k", "s"], "picker": None, "mode": ""}
     finally:
         db.close()
 
@@ -277,3 +277,37 @@ def test_entity_health_is_read_from_whichever_field_the_creature_uses(client, se
     for field, expect in (("health", 7), ("hp", 9), ("flesh", 4), (None, 5)):
         e = Entity(world_id=seed.world_a.id, kind="creature", name="C", custom_fields_json=json.dumps({field: str(expect)} if field else {}))
         assert entity_to_combatant(e)["max_hp"] == expect
+
+
+def test_a_table_can_override_the_turn_order_of_its_ruleset(client, seed):
+    """The Asterion-engine books allow a fixed initiative order; N&D could run fluid. turn_json["mode"] wins over the ruleset."""
+    from app import combat_turns
+    _gm(client, seed)
+    cid = _make(seed.world_a.id, [_cb("a", "A", init=3), _cb("b", "B", init=9)], ruleset="hunt")
+    r = client.post(f"/combat/{cid}/state", json={"combatants": [_cb("a", "A", init=3), _cb("b", "B", init=9)], "ruleset": "hunt",
+                                                  "turn": {"mode": "initiative"}, "active_idx": 0})
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        cs = db.get(CombatSession, cid)
+        assert not combat_turns.is_fluid(cs) and combat_turns.active_combatant_id(cs, combat_turns.load(cs)) == "b"
+    finally:
+        db.close()
+    assert client.get(f"/api/combat/{cid}/state").json()["turn"]["mode"] == "initiative"
+
+
+def test_speed_becomes_the_initiative_bonus_for_pcs_and_entities(client, seed):
+    from app.routers.combat import entity_to_combatant, pc_to_combatant
+    e = Entity(world_id=seed.world_a.id, kind="creature", name="Quick", custom_fields_json=json.dumps({"speed": "4"}))
+    assert entity_to_combatant(e)["init_bonus"] == 4
+    pc = PlayerCharacter(world_id=seed.world_a.id, name="Sable", stats_json=json.dumps([{"id": "dex", "value": 3}, {"id": "itu", "value": 2}]))
+    assert pc_to_combatant(pc)["init_bonus"] == 5
+
+
+def test_a_fallen_ally_is_not_offered_when_the_player_chooses_who_goes_next(client, seed):
+    from app import combat_turns
+    cs = type("CS", (), {"ruleset": "asterion", "turn_json": "{}"})()
+    assert combat_turns.is_out(cs, {"source": "pc", "hp": 0, "max_hp": 5})            # Shattered cannot act
+    nd = type("CS", (), {"ruleset": "nd", "turn_json": "{}"})()
+    assert not combat_turns.is_out(nd, {"source": "pc", "hp": 0, "max_hp": 5})        # a dying N&D character still takes its rolls
+    assert combat_turns.is_out(nd, {"source": "entity", "hp": 0, "max_hp": 5})

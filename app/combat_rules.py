@@ -29,6 +29,11 @@ TURNS_INITIATIVE = "initiative"      # numeric initiative, highest first
 TURNS_FLUID = "fluid"                # the instigator first, then whoever the last actor picks
 
 
+# who is skipped when their turn comes while they are down (0 HP / dead): "enemies" (a PC at 0 still takes its dying rolls), "all" (Broken /
+# Shattered characters cannot act), "none"
+SKIP_ENEMIES, SKIP_ALL, SKIP_NONE = "enemies", "all", "none"
+
+
 def _cond(name, text, stack=False, tick=None, eco=None, expires=None):
     c = {"name": name, "text": text, "stack": stack}
     if tick:
@@ -67,7 +72,7 @@ _FLUID_CONDITIONS_COMMON = [
 RULESETS = {
     "generic": {
         "label": "Generic", "turns": TURNS_INITIATIVE, "hp_label": "HP", "shock_label": "Shock",
-        "absorb": ["temp"], "eco": [], "init_hint": "",
+        "absorb": ["temp"], "eco": [], "init_hint": "", "skip_down": SKIP_ENEMIES,
         "down": {"hp": {"state": "Down", "saves": False}},
         "conditions": [
             _cond("Bleeding", "Takes damage over time."), _cond("Burning", "Takes damage over time."), _cond("Blinded", ""),
@@ -77,7 +82,7 @@ RULESETS = {
     },
     "nd": {
         "label": "Neon & Dragons", "turns": TURNS_INITIATIVE, "hp_label": "Health", "shock_label": "Shock",
-        "absorb": ["temp"],
+        "absorb": ["temp"], "skip_down": SKIP_ENEMIES,
         "eco": [{"id": "A", "label": "Actions", "per": "turn", "max": 2}, {"id": "R", "label": "Reactions", "per": "round", "max": 2}],
         "init_hint": "Initiative = Speed (Dexterity + Intuition) + d10; players roll their own from their character page.",
         "down": {"hp": {"state": "Dying", "saves": True,
@@ -88,7 +93,7 @@ RULESETS = {
     },
     "worm": {
         "label": "Chronicles of the Worm", "turns": TURNS_INITIATIVE, "hp_label": "Health", "shock_label": "Shock",
-        "absorb": ["temp"],
+        "absorb": ["temp"], "skip_down": SKIP_ENEMIES,
         "eco": [{"id": "A", "label": "Actions", "per": "turn", "max": 2}, {"id": "R", "label": "Reactions", "per": "round", "max": 2}],
         "init_hint": "Initiative = Speed + d10.",
         "down": {"hp": {"state": "Dying", "saves": True,
@@ -99,7 +104,7 @@ RULESETS = {
     },
     "hunt": {
         "label": "Hunt in the Moonlight", "turns": TURNS_FLUID, "hp_label": "Health", "shock_label": None,
-        "absorb": ["temp"],
+        "absorb": ["temp"], "skip_down": SKIP_ALL,
         "eco": [{"id": "M", "label": "Movement", "per": "turn", "max": 1}, {"id": "X", "label": "Main Action", "per": "turn", "max": 1},
                 {"id": "T", "label": "Tool Action", "per": "turn", "max": 1}, {"id": "R", "label": "Reaction", "per": "round", "max": 1}],
         "init_hint": "Fluid initiative: whoever starts the violence acts first; after a turn that player chooses who acts next; the last actor of a round picks the first of the next.",
@@ -122,7 +127,8 @@ RULESETS = {
     },
     "asterion": {
         "label": "Game of Gods (Asterion)", "turns": TURNS_FLUID, "hp_label": "Flesh", "shock_label": None,
-        "absorb": ["sparkShield", "temp"],
+        "absorb": ["sparkShield", "temp"], "skip_down": SKIP_ALL,
+        "phase_break": {"refresh": "sparkShield", "text": "Phase Break: below half Flesh the boss's Spark Shield fully refreshes and a new ability or behavior unlocks."},
         "eco": [{"id": "M", "label": "Movement", "per": "turn", "max": 1}, {"id": "X", "label": "Main Action", "per": "turn", "max": 1},
                 {"id": "R", "label": "Reaction", "per": "round", "max": 1}],
         "init_hint": "Fluid initiative: the instigator goes first; after a turn that player chooses who acts next; the last actor of a round chooses the next round's first.",
@@ -172,7 +178,8 @@ _HYBRID_DOWN = {
 
 def _hybrid(label, extra):
     return {
-        "label": label, "turns": TURNS_FLUID, "hp_label": "Health", "shock_label": "Shock", "absorb": ["temp"],
+        "label": label, "turns": TURNS_FLUID, "hp_label": "Health", "shock_label": "Shock", "absorb": ["temp"], "skip_down": SKIP_ALL,
+        "phase_break": {"refresh": None, "text": "Phase Break: below half Health the boss unlocks a new ability or behavior."},
         "eco": [{"id": "M", "label": "Movement", "per": "turn", "max": 1}, {"id": "X", "label": "Main Action", "per": "turn", "max": 1},
                 {"id": "R", "label": "Reaction", "per": "round", "max": 1}],
         "init_hint": "Fluid initiative: whoever starts it acts first, each actor then chooses who goes next, the last actor of a round opens the next. Healing from items is capped at 2 Health per scene.",
@@ -215,6 +222,20 @@ def ruleset_for_slugs(slugs) -> str:
 def get(ruleset: Optional[str]) -> dict:
     """The profile for a stored ruleset id; anything unknown is the generic tracker."""
     return RULESETS.get(ruleset or "", RULESETS["generic"])
+
+
+def is_out(c: dict, ruleset: Optional[str]) -> bool:
+    """True when this combatant cannot take a turn: dead, or down in a way the ruleset says skips the turn (see SKIP_*)."""
+    if (c or {}).get("status") == "dead":
+        return True
+    try:
+        down = int(c.get("max_hp") or 0) > 0 and int(c.get("hp") or 0) <= 0
+    except (TypeError, ValueError):
+        down = False
+    if not down:
+        return False
+    skip = get(ruleset).get("skip_down", SKIP_ENEMIES)
+    return skip == SKIP_ALL or (skip == SKIP_ENEMIES and c.get("source") != "pc")
 
 
 def is_fluid(ruleset: Optional[str]) -> bool:

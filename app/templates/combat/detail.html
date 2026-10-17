@@ -32,10 +32,17 @@
   <div class="ct-panel ct-row">
     <label for="ruleset-select">Rules</label>
     <select id="ruleset-select" class="ct-input" aria-label="Rule system for this fight" style="max-width:18rem"></select>
+    <label for="mode-select">Turns</label>
+    <select id="mode-select" class="ct-input" aria-label="How turns are ordered" style="max-width:15rem">
+      <option value="">As the rules say</option>
+      <option value="initiative">Fixed initiative order</option>
+      <option value="fluid">Fluid: the actor chooses who is next</option>
+    </select>
     <span id="rules-hint" class="ct-hint"></span>
   </div>
   <div class="ct-actions">
     <button type="button" id="ai-tactics-btn" onclick="combatAiTactics()" class="ct-btn ct-ai" title="Suggest NPC tactics and a dramatic beat from the current fight — writes nothing">✨ AI Tactics</button>
+    <button type="button" id="roll-init-btn" class="ct-btn" title="Roll d10 + Speed for every enemy that has no initiative yet (Shift: re-roll all enemies)">🎲 Roll NPC initiative</button>
     <button type="button" id="sync-btn" class="ct-btn">🔄 Sync Characters</button>
     <label class="ct-check"><input type="checkbox" id="compact-toggle"/> Compact</label>
     <button type="button" id="delete-btn" class="ct-btn ct-danger" style="margin-left:auto">🗑 Delete Encounter</button>
@@ -221,7 +228,7 @@ const C = window.ndCombat;
 // S is what the page edits; `base` is the last copy the server is known to have (for merging when someone else saved meanwhile);
 // `rev` is the server's revision of base.
 let S = { combatants: INITIAL.combatants, round: INITIAL.round_num, active: INITIAL.active_idx, name: INITIAL.name,
-          log: INITIAL.log || [], ruleset: INITIAL.ruleset || 'nd', turn: INITIAL.turn || { active_id: null, acted: [], picker: null } };
+          log: INITIAL.log || [], ruleset: INITIAL.ruleset || 'nd', turn: INITIAL.turn || { active_id: null, acted: [], picker: null, mode: '' } };
 let combatants = S.combatants;           // (always the same array as S.combatants; kept as a name for readability)
 let rev = INITIAL.rev;
 let base = C.clone(S);
@@ -233,7 +240,7 @@ try { compact = localStorage.getItem('nd-combat-compact') === '1'; } catch (e) {
 if (window.matchMedia && matchMedia('(max-width:600px)').matches && localStorage.getItem('nd-combat-compact') === null) compact = true;
 
 function rs() { return C.rulesOf(RULES, S.ruleset); }
-function fluid() { return rs().turns === 'fluid'; }
+function fluid() { return C.fluidOf(RULES, S); }
 function byId(id) { return S.combatants.find(c => c.id === id); }
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 function uid() { return 'c-' + Math.random().toString(36).slice(2, 10); }
@@ -291,44 +298,48 @@ function collectTicks(when, onlyId) {
     pendingTicks.push(Object.assign({ key: t.id + ':' + t.cond + ':' + Date.now() }, t, cost));
   });
 }
+function newRoundEffects(s) {              // a round turned over: Reactions come back, counted-down conditions tick, Legendary Actions refresh
+  C.resetRoundEco(s, rs());
+  C.tickDurations(s).forEach(e => addLog(e.name + ': ' + e.cond + ' ended'));
+  addLog('— Round ' + s.round + ' —');
+}
 function endTurn() {
   if (!S.combatants.length) { act('Round ' + (S.round + 1), s => { s.round += 1; }, { turn: true }); return; }
+  const r0 = S.round;
   if (fluid()) {
     const t = S.turn;
-    if (!t.active_id && S.turn.picker == null && S.turn.acted.length === 0) { return; }       // nobody has started yet: choose who opens
+    if (!t.active_id) return;                                  // nobody is acting: the chooser asks who goes next
     const who = byId(t.active_id);
-    const roundEndsAfter = S.combatants.every(c => c.id === t.active_id || t.acted.indexOf(c.id) >= 0);
     act((who ? who.name : 'Turn') + ' ends their turn', s => {
       if (who) { const gone = C.expireTurnConditions(who, rs()); if (gone.length) addLog(who.name + ': ' + gone.join(', ') + ' ended'); }
-      const r = C.endFluidTurn(s);
-      if (r.newRound) { C.resetRoundEco(s, rs()); addLog('— Round ' + s.round + ' —'); }
+      const r = C.endFluidTurn(s, rs());
+      if (r.newRound) newRoundEffects(s);
     }, { turn: true });
-    if (roundEndsAfter) collectTicks('round_end');
+    if (S.round > r0) collectTicks('round_end');
     render();
     return;
   }
   const order = C.order(S.combatants);
   const holder = S.combatants[order[Math.min(S.active, order.length - 1)]];
-  const wraps = S.active + 1 >= order.length;
-  if (wraps) collectTicks('round_end');
   act(holder.name + ' ends their turn', s => {
     const gone = C.expireTurnConditions(holder, rs());
     if (gone.length) addLog(holder.name + ': ' + gone.join(', ') + ' ended');
-    C.nextTurn(s);
-    if (wraps) { C.resetRoundEco(s, rs()); addLog('— Round ' + s.round + ' —'); }
+    C.nextTurn(s, rs());
+    if (s.round > r0) newRoundEffects(s);
   }, { turn: true });
+  if (S.round > r0) collectTicks('round_end');
   const nid = C.activeId(S, false);
   if (nid) startOfTurn(nid);
   render();
 }
 function prevTurn() {
   if (fluid()) { undo(); return; }
-  act('Back one turn', s => { C.prevTurn(s); }, { turn: true });
+  act('Back one turn', s => { C.prevTurn(s, rs()); }, { turn: true });
 }
 function pick(id) {
   const c = byId(id);
   if (!c) return;
-  act((c.name) + ' acts' + (S.turn.picker && byId(S.turn.picker) ? ' (chosen by ' + byId(S.turn.picker).name + ')' : ''), s => { C.pickNext(s, id); }, { turn: true });
+  act((c.name) + ' acts' + (S.turn.picker && byId(S.turn.picker) ? ' (chosen by ' + byId(S.turn.picker).name + ')' : ''), s => { C.pickNext(s, id, rs()); }, { turn: true });
   startOfTurn(id);
   render();
 }
@@ -386,11 +397,16 @@ addSource.addEventListener('change', () => {
 
 rulesetSelect.addEventListener('change', () => {
   const to = rulesetSelect.value;
-  act('Rules: ' + RULES[to].label, s => { s.ruleset = to; s.turn = { active_id: null, acted: [], picker: null }; s.active = 0; }, { turn: true });
+  act('Rules: ' + RULES[to].label, s => { s.ruleset = to; s.turn = { active_id: null, acted: [], picker: null, mode: '' }; s.active = 0; }, { turn: true });
+});
+
+document.getElementById('mode-select').addEventListener('change', (e) => {
+  const v = e.target.value, label = v === 'fluid' ? 'fluid turns' : v === 'initiative' ? 'fixed initiative order' : 'the rules\' turn order';
+  act('Turns: ' + label, s => { s.turn = { active_id: null, acted: [], picker: null, mode: v }; s.active = 0; }, { turn: true });
 });
 
 function newCombatant(base) {
-  return Object.assign({ id: uid(), initiative: 0, tiebreak: 0, max_hp: 10, hp: 10, temp_hp: 0, max_shock: 0, shock: 0, armor: 0,
+  return Object.assign({ id: uid(), initiative: 0, tiebreak: 0, init_bonus: 0, cond_dur: {}, max_hp: 10, hp: 10, temp_hp: 0, max_shock: 0, shock: 0, armor: 0,
     conditions: [], cond_dur: {}, res: {}, used: {}, saves: { ok: 0, fail: 0, ko: 0 }, wounds: 0, press_on: false, counters: {},
     notes: '', status: '', visible: true, name_known: false }, base);
 }
@@ -402,11 +418,11 @@ document.getElementById('add-btn').addEventListener('click', () => {
     const pc = PCS.find(p => p.id === parseInt(pcSelect.value, 10));
     if (!pc) return;
     c = newCombatant({ name: pc.name, source: 'pc', pc_id: pc.id, entity_id: null, max_hp: pc.max_hp, hp: pc.hp, max_shock: pc.max_shock,
-      shock: pc.shock, conditions: (pc.conditions || []).slice(), res: JSON.parse(JSON.stringify(pc.res || {})), name_known: true });
+      shock: pc.shock, init_bonus: n(pc.speed), conditions: (pc.conditions || []).slice(), res: JSON.parse(JSON.stringify(pc.res || {})), name_known: true });
   } else if (src === 'entity') {
     const ent = ENTITIES.find(e => e.id === parseInt(entitySelect.value, 10));
     if (!ent) return;
-    c = newCombatant({ name: ent.name, source: 'entity', pc_id: null, entity_id: ent.id, max_hp: ent.max_hp, hp: ent.max_hp, armor: ent.armor });
+    c = newCombatant({ name: ent.name, source: 'entity', pc_id: null, entity_id: ent.id, max_hp: ent.max_hp, hp: ent.max_hp, armor: ent.armor, init_bonus: n(ent.speed) });
   } else {
     const name = manualInput.value.trim();
     if (!name) return;
@@ -435,8 +451,9 @@ function condChips(c) {
   return order.map(name => {
     const def = (rs().conditions || []).find(d => d.name.toLowerCase() === name.toLowerCase());
     const k = count[name.toLowerCase()];
-    const tip = def && def.text ? def.text : '';
-    return `<span class="cond-chip" title="${esc(tip)} (click to remove one)" role="button" tabindex="0" data-id="${c.id}" data-action="remove-cond" data-name="${esc(name)}" data-k="${c.id}:cond:${esc(name)}">${esc(name)}${k > 1 ? ' ×' + k : ''} ✕</span>`
+    const dur = n((c.cond_dur || {})[name]);
+    const tip = (def && def.text ? def.text : '') + (dur ? ' (' + dur + ' round' + (dur === 1 ? '' : 's') + ' left)' : '');
+    return `<span class="cond-chip" title="${esc(tip)} (click to remove one)" role="button" tabindex="0" data-id="${c.id}" data-action="remove-cond" data-name="${esc(name)}" data-k="${c.id}:cond:${esc(name)}">${esc(name)}${k > 1 ? ' ×' + k : ''}${dur ? ' · ' + dur + 'r' : ''} ✕</span>`
       + (def && def.stack ? `<button type="button" class="cond-plus" data-id="${c.id}" data-action="stack-cond" data-name="${esc(name)}" data-k="${c.id}:stack:${esc(name)}" title="Stack another ${esc(name)}">＋</button>` : '');
   }).join('');
 }
@@ -497,6 +514,9 @@ function counterRows(c) {
       <button type="button" class="stat-btn" data-id="${c.id}" data-action="counter-del" data-label="${esc(label)}" data-k="${c.id}:ctrdel:${esc(label)}" title="Remove this counter">✕</button>
     </div>`;
   });
+  if (R.phase_break && 'Phase' in (c.counters || {})) {
+    out += `<div class="stat-bar-row more"><span class="stat-bar-label"></span><button type="button" class="stat-btn" data-id="${c.id}" data-action="phase" data-k="${c.id}:phase" title="${esc(R.phase_break.text)}">⚡ Phase Break</button></div>`;
+  }
   const presets = (R.counter_presets || []).filter(p => !(p.label in (c.counters || {})));
   out += `<div class="stat-bar-row more"><span class="stat-bar-label">Counters</span>${presets.map(p =>
     `<button type="button" class="stat-btn" data-id="${c.id}" data-action="counter-add" data-label="${esc(p.label)}" data-max="${p.max || 0}" data-k="${c.id}:ctradd:${esc(p.label)}" title="${esc(p.text || '')}">+ ${esc(p.label)}</button>`).join('')}
@@ -512,15 +532,21 @@ function rowHtml(c, pos, activeId) {
   const acted = fluid() && S.turn.acted.indexOf(c.id) >= 0;
   const folded = compact && !isActive ? !collapsed.has('open:' + c.id) : collapsed.has(c.id);
   const k = (f) => `data-k="${c.id}:${f}"`;
-  const badge = isActive ? '<span class="combatant-badge go">▶ acting</span>' : acted ? '<span class="combatant-badge">acted ✓</span>' : '';
-  const goBtn = fluid() && !c.status && !isActive && !acted && S.turn.active_id == null
-    ? `<button type="button" class="ct-btn ct-primary" style="padding:.15rem .5rem" data-id="${c.id}" data-action="pick" ${k('pick')}>▶ Go</button>` : '';
+  const badge = isActive ? '<span class="combatant-badge go">▶ acting</span>' : C.isOut(c, R) ? '<span class="combatant-badge bad" title="Skipped: it cannot take a turn">out</span>' : acted ? '<span class="combatant-badge">acted ✓</span>' : '';
+  const out = C.isOut(c, R);
+  const goBtn = fluid()
+    ? (!out && !isActive && !acted && S.turn.active_id == null ? `<button type="button" class="ct-btn ct-primary" style="padding:.15rem .5rem" data-id="${c.id}" data-action="pick" ${k('pick')}>▶ Go</button>` : '')
+    : (!out && !isActive ? `<button type="button" class="tog" data-id="${c.id}" data-action="go" ${k('go')} title="Give this combatant the turn now (a delayed action, a surprise)">▶</button>` : '');
+  // ties in initiative are ordered by hand
+  const tied = !fluid() && S.combatants.filter(x => n(x.initiative) === n(c.initiative)).length > 1;
+  const tieBtns = tied ? `<button type="button" class="tog" data-id="${c.id}" data-action="tie-up" ${k('tieup')} title="Acts earlier than the others with this initiative" aria-label="Earlier among ties">▲</button><button type="button" class="tog" data-id="${c.id}" data-action="tie-down" ${k('tiedown')} title="Acts later than the others with this initiative" aria-label="Later among ties">▼</button>` : '';
+  const rollBtn = fluid() ? '' : `<button type="button" class="tog" data-id="${c.id}" data-action="roll-init" ${k('rollinit')} title="Roll d10${n(c.init_bonus) ? ' + ' + n(c.init_bonus) : ''} for initiative">🎲</button>`;
   return `<div class="combatant-row${isActive ? ' active-turn' : ''}${acted ? ' acted' : ''}${d ? ' is-down' : ''}${folded ? ' compact' : ''}" data-row="${c.id}">
     <div class="combatant-top">
       <button type="button" class="tog" data-id="${c.id}" data-action="fold" ${k('fold')} aria-expanded="${!folded}" title="Show or hide the details">${folded ? '▸' : '▾'}</button>
       <span class="combatant-badge">${esc(c.source)}</span>${badge}
       <input class="combatant-name" value="${esc(c.name)}" data-id="${c.id}" data-field="name" ${k('name')} aria-label="Name"/>
-      ${fluid() ? '' : `<span class="combatant-init">Init <input type="number" value="${n(c.initiative)}" data-id="${c.id}" data-field="initiative" ${k('init')} aria-label="Initiative"/></span>`}
+      ${fluid() ? '' : `<span class="combatant-init">Init <input type="number" value="${n(c.initiative)}" data-id="${c.id}" data-field="initiative" ${k('init')} aria-label="Initiative"/></span>${rollBtn}${tieBtns}`}
       <span class="combatant-init">Armor <input type="number" value="${n(c.armor)}" data-id="${c.id}" data-field="armor" ${k('armor')} aria-label="Armor" ${R.armor_cap ? `max="${R.armor_cap + 1}" title="Armor never totals more than ${R.armor_cap} (${R.armor_cap + 1} against legendary foes)"` : ''}/></span>
       ${goBtn}
       <button type="button" class="tog" data-id="${c.id}" data-action="vis" ${k('vis')} aria-pressed="${c.visible !== false}" title="${c.visible !== false ? 'Players can see this combatant — click to hide it from them' : 'Hidden from players — click to show it'}">${c.visible !== false ? '👁' : '🚫'}</button>
@@ -611,7 +637,7 @@ function renderChooser() {
   const box = document.getElementById('chooser');
   if (!fluid() || S.turn.active_id || !S.combatants.length) { box.hidden = true; return; }
   const t = S.turn, p = byId(t.picker);
-  const left = S.combatants.filter(c => t.acted.indexOf(c.id) < 0 && !c.status);
+  const left = S.combatants.filter(c => t.acted.indexOf(c.id) < 0 && !C.isOut(c, rs()));
   const all = left.length ? left : S.combatants;
   const title = p ? `${esc(p.name)} chooses who acts next` : (t.acted.length ? 'Who acts next?' : 'Who acts first? <span class="ct-dim">(whoever starts the violence, springs the ambush or takes the first aggressive action)</span>');
   box.hidden = false;
@@ -663,6 +689,8 @@ function render() {
   rulesetSelect.value = S.ruleset;
   document.getElementById('rules-label').textContent = R.label;
   document.getElementById('rules-hint').textContent = R.init_hint || '';
+  document.getElementById('mode-select').value = (S.turn && S.turn.mode) || '';
+  document.getElementById('roll-init-btn').style.display = fluid() ? 'none' : '';
   document.getElementById('prev-btn').style.display = fluid() ? 'none' : '';
   document.getElementById('next-btn').textContent = fluid() ? 'End turn ▶' : 'Next turn ▶';
   document.getElementById('next-btn').disabled = fluid() ? !S.turn.active_id : false;
@@ -714,6 +742,7 @@ document.getElementById('combatants-list').addEventListener('click', (e) => {
     act(c.name + ': −' + t.dataset.name, s => {
       const x = s.combatants.find(y => y.id === id), at = x.conditions.findIndex(v => v.toLowerCase() === t.dataset.name.toLowerCase());
       if (at >= 0) x.conditions.splice(at, 1);
+      if (!x.conditions.some(v => v.toLowerCase() === t.dataset.name.toLowerCase()) && x.cond_dur) delete x.cond_dur[t.dataset.name];
     });
   } else if (action === 'stack-cond') {
     act(c.name + ': +' + t.dataset.name, s => { s.combatants.find(y => y.id === id).conditions.push(t.dataset.name); });
@@ -747,6 +776,19 @@ document.getElementById('combatants-list').addEventListener('click', (e) => {
     act(c.name + ' suffers a Wound', s => { C.addWound(s.combatants.find(y => y.id === id)); });
   } else if (action === 'press-on') {
     act(c.name + ' Presses On (Major Wound, half Health back)', s => { C.pressOn(s.combatants.find(y => y.id === id)); });
+  } else if (action === 'go') {
+    act(c.name + ' takes the turn', s => { const o = C.order(s.combatants); s.active = o.findIndex(i => s.combatants[i].id === id); }, { turn: true });
+    startOfTurn(id); render();
+  } else if (action === 'tie-up' || action === 'tie-down') {
+    act(c.name + ' moved ' + (action === 'tie-up' ? 'earlier' : 'later') + ' among ties', s => { C.moveTie(s, id, action === 'tie-up' ? -1 : 1); });
+  } else if (action === 'roll-init') {
+    act('', s => { const x = s.combatants.find(y => y.id === id), r = C.rollInitiative(x); x.initiative = r.total;
+      addLog(x.name + ' rolls initiative: d10 ' + r.die + (n(x.init_bonus) ? ' + ' + n(x.init_bonus) : '') + ' = ' + r.total); });
+    undoStack[undoStack.length - 1].label = c.name + ': initiative roll';
+  } else if (action === 'phase') {
+    act('', s => { const x = s.combatants.find(y => y.id === id), r = C.phaseBreak(x, rs());
+      addLog(x.name + ' — Phase Break (phase ' + r.phase + ')' + (r.shield ? ': ' + (x.res[rs().phase_break.refresh].label) + ' refreshed' : '')); });
+    undoStack[undoStack.length - 1].label = c.name + ': Phase Break';
   } else if (action === 'execute') {
     act(c.name + ' is executed', s => { const x = s.combatants.find(y => y.id === id); x.status = 'dead'; });
   } else if (action === 'counter') {
@@ -817,8 +859,10 @@ document.getElementById('combatants-list').addEventListener('change', (e) => {
     const v = t.value.trim().slice(0, 40);
     if (v) act(c.name + ': + ' + v, s => { const x = s.combatants.find(y => y.id === id); x.counters = x.counters || {}; x.counters[v] = 0; });
   } else if (f === 'add-cond') {
-    const v = t.value.trim();
-    if (v) act(c.name + ': +' + v, s => { s.combatants.find(x => x.id === id).conditions.push(v.slice(0, 40)); });
+    const pc = C.parseCondition(t.value);                      // "Burn 3" = Burn for 3 rounds
+    if (pc.name) act(c.name + ': +' + pc.name + (pc.rounds ? ' (' + pc.rounds + ' rounds)' : ''), s => {
+      const x = s.combatants.find(y => y.id === id); x.conditions.push(pc.name); x.cond_dur = x.cond_dur || {};
+      if (pc.rounds) x.cond_dur[pc.name] = pc.rounds; });
   }
 });
 
@@ -843,6 +887,19 @@ document.addEventListener('keydown', (e) => {
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'n' || e.key === 'ArrowRight') { e.preventDefault(); if (!document.getElementById('next-btn').disabled) endTurn(); }
   else if (e.key === 'p' || e.key === 'ArrowLeft') { e.preventDefault(); prevTurn(); }
+});
+
+document.getElementById('roll-init-btn').addEventListener('click', (e) => {
+  if (fluid()) return;
+  const all = e.shiftKey;
+  const who = S.combatants.filter(c => c.source !== 'pc' && (all || n(c.initiative) === 0));
+  if (!who.length) { return; }
+  act('', s => {
+    const lines = [];
+    s.combatants.forEach(x => { if (x.source !== 'pc' && (all || n(x.initiative) === 0)) { const r = C.rollInitiative(x); x.initiative = r.total; lines.push(x.name + ' ' + r.total); } });
+    addLog('Rolled initiative: ' + lines.join(', '));
+  });
+  undoStack[undoStack.length - 1].label = 'Rolled NPC initiative';
 });
 
 document.getElementById('sync-btn').addEventListener('click', async () => {

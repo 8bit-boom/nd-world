@@ -106,6 +106,7 @@ def normalize_combatant(c) -> Optional[dict]:
         "entity_id": _opt_id(c.get("entity_id")),
         "initiative": _int(c.get("initiative"), 0, -9999, 9999),
         "tiebreak": _int(c.get("tiebreak"), 0, -9999, 9999),
+        "init_bonus": _int(c.get("init_bonus"), 0, -99, 99),            # added to the d10 when the GM rolls initiative for it (Speed)
         "max_hp": max_hp,
         "hp": _int(c.get("hp"), max_hp, 0, max(max_hp, 0)),
         "temp_hp": _int(c.get("temp_hp"), 0, 0, 9999),
@@ -137,7 +138,8 @@ def normalize_turn(raw, ids: set) -> dict:
         if isinstance(i, str) and i in ids and i not in acted:
             acted.append(i)
     pick = lambda v: v if isinstance(v, str) and v in ids else None
-    return {"active_id": pick(raw.get("active_id")), "acted": acted, "picker": pick(raw.get("picker"))}
+    mode = raw.get("mode") if raw.get("mode") in ("initiative", "fluid") else ""      # "" = whatever the ruleset says
+    return {"active_id": pick(raw.get("active_id")), "acted": acted, "picker": pick(raw.get("picker")), "mode": mode}
 
 
 def normalize_log(raw) -> list:
