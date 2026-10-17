@@ -168,8 +168,9 @@
   function placeBtn(img) {
     var r = img.getBoundingClientRect();
     imgBtn.style.display = 'block';
-    imgBtn.style.top = Math.max(6, r.top + 8) + 'px';
-    imgBtn.style.left = Math.max(6, Math.min(window.innerWidth - imgBtn.offsetWidth - 6, r.right - imgBtn.offsetWidth - 8)) + 'px';
+    // bottom-left of the picture: tiles keep their own buttons (delete, rename, select) in the top corners
+    imgBtn.style.top = Math.max(6, Math.min(window.innerHeight - imgBtn.offsetHeight - 6, r.bottom - imgBtn.offsetHeight - 8)) + 'px';
+    imgBtn.style.left = Math.max(6, Math.min(window.innerWidth - imgBtn.offsetWidth - 6, r.left + 8)) + 'px';
   }
   document.addEventListener('mouseover', function (e) {
     var img = e.target && e.target.tagName === 'IMG' ? e.target : null;

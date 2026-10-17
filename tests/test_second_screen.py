@@ -355,3 +355,10 @@ def test_the_tv_page_has_the_true_scale_controls(client, seed):
     assert "map-viewport.js" in html and "cssPerInch" in html and "trueScale" in html
     assert "/api/live" in html                       # follows the world's change counter
     assert "https://" not in html.replace("http://www.w3.org", "")   # nothing is fetched from elsewhere
+
+
+def test_the_image_hover_button_sits_bottom_left_clear_of_the_tiles_corner_buttons():
+    """Gallery tiles keep delete / rename / select in their top corners; the Send-to-screen button must not cover them."""
+    place = _js().split("function placeBtn(img)", 1)[1].split("document.addEventListener('mouseover'", 1)[0]
+    assert "r.bottom" in place and "r.left" in place
+    assert "r.top" not in place and "r.right" not in place
