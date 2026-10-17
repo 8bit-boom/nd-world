@@ -779,6 +779,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | POST | `/images/albums/{album_id}/remove` | GM / Assistant | Removes an image from an album. |
 | POST | `/images/albums/{album_id}/move` | GM / Assistant | Moves an image to a different album. |
 | POST | `/images/delete` | GM / Assistant | Deletes an uploaded image. |
+| POST | `/images/delete-many` | GM / Assistant | `{urls:[…≤500]}` — deletes every selected image that is unused; the rest are skipped and listed. Reply `{deleted, skipped:[{url,reason}]}`. |
 | POST | `/images/spotlight` | GM / Assistant | Broadcasts an image to every open tab in the world (lightbox popup — players included). Body `{url}` — only an image that belongs to the world (album, portrait, page…) is accepted, else 404. Returns `{ok, version}`; the GM's lightbox **👥 Send to players** button uses it without reloading and tells its own poller the version (`ndSpotlightSeen`). |
 | POST | `/images/spotlight/clear` | GM / Assistant | Stops the current spotlight broadcast. Returns `{ok, version}` (the lightbox button turns into **⏹ Stop showing to players** while the image on screen is the one being broadcast). |
 | GET | `/api/gallery/browse` | GM / Assistant | JSON album/image listing for picker UIs. |

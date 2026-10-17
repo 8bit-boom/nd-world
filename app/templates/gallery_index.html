@@ -58,6 +58,7 @@
           {% endif %}
         </select>
         <button type="button" class="btn-save" onclick="galleryAddSelectedToAlbum()" {% if not albums %}disabled{% endif %}>Add selected to album</button>
+        {% if can_edit(request) %}<button type="button" id="gallery-delete-selected" class="btn-cancel" style="border-color:#c44;color:#c44" onclick="galleryDeleteSelected()">🗑 Delete selected</button>{% endif %}
       </div>
       {% endif %}
     </div>
@@ -234,6 +235,22 @@ function galleryUpdateLoadMoreButton() {
 
 if (typeof NDGalleryRemaining !== 'undefined') {
   galleryUpdateLoadMoreButton();
+}
+
+async function galleryDeleteSelected() {
+  const boxes = Array.from(document.querySelectorAll('.gallery-img-check:checked'));
+  if (!boxes.length) { alert('Select at least one image.'); return; }
+  if (!confirm('Permanently delete ' + boxes.length + ' image' + (boxes.length === 1 ? '' : 's') + '? Images still used by an entity or character are kept.')) return;
+  const res = await fetch('/images/delete-many', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls: boxes.map(b => b.value) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(data.detail || 'Delete failed.'); return; }
+  if (data.skipped && data.skipped.length) {
+    alert('Deleted ' + data.deleted + '. Kept ' + data.skipped.length + ' still in use or missing:\n' +
+      data.skipped.slice(0, 5).map(s => '• ' + s.url.split('/').pop() + ' — ' + s.reason).join('\n'));
+  }
+  location.reload();
 }
 
 async function galleryAddSelectedToAlbum() {

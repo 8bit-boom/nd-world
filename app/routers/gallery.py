@@ -215,6 +215,57 @@ def images_gallery(request: Request, db: Session = Depends(get_db), active_world
     })
 
 
+def _delete_one_image(db, world, url, discovered):
+    """Deletes one unused image of this world (file, album links, label). Returns None, or (status, message) when it must not be deleted.
+    Authorization boundary: only an image already reachable from this world (discovered, or in one of its albums) may be deleted - a GM
+    cannot blindly delete an arbitrary uploaded file by URL - and one still referenced by an entity / character is refused."""
+    entry = discovered.get(url)
+    if entry and entry["uses"]:
+        places = ", ".join(u["label"] for u in entry["uses"][:3])
+        if len(entry["uses"]) > 3:
+            places += f", and {len(entry['uses']) - 3} more"
+        return 400, f"Still used in {len(entry['uses'])} place(s) ({places}) — remove it there first."
+    albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).all()
+    found_in_album = False
+    for album in albums:
+        urls = _load_urls(album)
+        if url in urls:
+            found_in_album = True
+            album.image_urls_json = json.dumps([u for u in urls if u != url])
+    if not found_in_album and not entry:
+        return 404, "Image not found"
+    db.commit()
+    db.query(MediaTitle).filter(MediaTitle.world_id == world.id, MediaTitle.url == url).delete()
+    db.commit()
+    path = _resolve_upload_path(url)
+    if path:
+        path.unlink()
+    return None
+
+
+@router.post("/images/delete-many")
+async def image_delete_many(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Deletes several unused images at once (the All Images page's "Delete selected"). Each one follows the single-image rules; an image that
+    is still used (or not found) is skipped and reported, never blocking the rest. Reply: {deleted, skipped: [{url, reason}]}."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    _require_edit_section(request, world)
+    payload = await request.json()
+    urls = payload.get("urls") if isinstance(payload, dict) else None
+    if not isinstance(urls, list) or not urls or len(urls) > 500 or not all(isinstance(u, str) and u for u in urls):
+        raise HTTPException(400, "Send up to 500 image urls")
+    discovered = {e["url"]: e for e in discover_world_images(db, world)}
+    deleted, skipped = 0, []
+    for url in dict.fromkeys(urls):
+        problem = _delete_one_image(db, world, url, discovered)
+        if problem:
+            skipped.append({"url": url, "reason": problem[1]})
+        else:
+            deleted += 1
+    return {"deleted": deleted, "skipped": skipped}
+
+
 @router.post("/images/delete")
 async def image_delete(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Permanently delete an image file. Only allowed while the image is
@@ -236,34 +287,9 @@ async def image_delete(request: Request, db: Session = Depends(get_db), active_w
         raise HTTPException(400, "Missing url")
 
     discovered = {e["url"]: e for e in discover_world_images(db, world)}
-    entry = discovered.get(url)
-    if entry and entry["uses"]:
-        places = ", ".join(u["label"] for u in entry["uses"][:3])
-        if len(entry["uses"]) > 3:
-            places += f", and {len(entry['uses']) - 3} more"
-        raise HTTPException(400, f"Still used in {len(entry['uses'])} place(s) ({places}) — remove it there first.")
-
-    # Authorization boundary: only an image already reachable from this
-    # world (in one of its albums, since discover_world_images found
-    # nothing above) may be deleted — a GM can't blindly delete an
-    # arbitrary uploaded file by URL.
-    albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).all()
-    found_in_album = False
-    for album in albums:
-        urls = _load_urls(album)
-        if url in urls:
-            found_in_album = True
-            album.image_urls_json = json.dumps([u for u in urls if u != url])
-    if not found_in_album and not entry:
-        raise HTTPException(404, "Image not found")
-    db.commit()
-
-    db.query(MediaTitle).filter(MediaTitle.world_id == world.id, MediaTitle.url == url).delete()
-    db.commit()
-    path = _resolve_upload_path(url)
-    if path:
-        path.unlink()
-
+    problem = _delete_one_image(db, world, url, discovered)
+    if problem:
+        raise HTTPException(problem[0], problem[1])
     return {"ok": True}
 
 

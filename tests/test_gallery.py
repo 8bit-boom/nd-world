@@ -1202,3 +1202,40 @@ def test_gallery_picker_modal_includes_breadcrumb_container(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/new")
     assert 'id="gallery-picker-breadcrumb"' in r.text
+
+
+def test_delete_many_removes_the_unused_ones_and_reports_the_rest(client, seed):
+    from app.main import UPLOADS_DIR
+    album_id = _make_album(seed.world_a.id, "Album")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/images/albums/{album_id}/upload", files=_png_file())
+    client.post(f"/images/albums/{album_id}/upload", files=_png_file())
+    free = _album_urls(album_id)
+    assert len(free) >= 1
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="character", name="Holder", image_url="/uploads/held.png"))
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/images/delete-many", json={"urls": free + ["/uploads/held.png", "/uploads/never-existed.png"]})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["deleted"] == len(set(free))
+    reasons = {s["url"]: s["reason"] for s in data["skipped"]}
+    assert "Holder" in reasons["/uploads/held.png"]
+    assert "never-existed.png" in " ".join(reasons) and reasons["/uploads/never-existed.png"] == "Image not found"
+    assert _album_urls(album_id) == []
+    assert not any((UPLOADS_DIR / "gallery" / u.rsplit("/", 1)[-1]).exists() for u in free)
+
+
+def test_delete_many_validates_input_and_is_editors_only(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    for bad in ({}, {"urls": []}, {"urls": [1]}, {"urls": ["/x"] * 501}):
+        assert client.post("/images/delete-many", json=bad).status_code == 400
+    client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post("/images/delete-many", json={"urls": ["/uploads/a.png"]}).status_code == 403
