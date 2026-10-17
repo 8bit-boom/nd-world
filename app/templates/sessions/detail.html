@@ -838,6 +838,20 @@ async function aiSaveTale() {
 // ── Session media (app/routers/session_media.py, app/routers/session_audio.py) ──────────────────────────────
 const RA_BASE = '/api/sessions/{{ gsession.id }}/recap-audio';
 const SM_BASE = '/api/sessions/{{ gsession.id }}/media';
+// ✏ beside an attached item: name it, and the Session Log shows players that name.
+function smRenameButton(current, label, url) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = '✏'; b.title = 'Rename'; b.setAttribute('aria-label', 'Rename');
+  b.style.cssText = 'min-width:32px;min-height:32px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer';
+  b.addEventListener('click', async () => {
+    const next = prompt(label, current);
+    if (next === null || next.trim() === (current || '').trim()) return;
+    try { raRender(await raCall(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: next }) })); raStatus('Renamed.'); }
+    catch (e) { raStatus('Failed: ' + e.message); }
+  });
+  return b;
+}
+
 let smLast = null;                       // the last panel the server sent: what is attached, and how much room is left
 
 function raStatus(msg) { document.getElementById('ra-status').textContent = msg || ''; }
@@ -922,6 +936,7 @@ function raRender(d) {
         try { raRender(await raCall(SM_BASE + '/image/' + im.uid + '/remove', { method: 'POST' })); raStatus(''); }
         catch (e) { raStatus('Failed: ' + e.message); }
       }));
+    row.prepend(smRenameButton(im.caption || '', 'Caption (players see it in the Session Log)', SM_BASE + '/image/' + im.uid + '/rename'));
     card.append(img, cap, row);
     images.appendChild(card);
   });
@@ -937,7 +952,7 @@ function raRender(d) {
     const name = document.createElement('strong');
     name.textContent = '🎬 ' + v.name;
     head.append(
-      name,
+      name, smRenameButton(v.name, 'Name (players see it in the Session Log and the library)', SM_BASE + '/video/' + v.id + '/rename'),
       smSwitch('players can watch this (also in the Video library)', v.visible_to_players,
                box => smSetVisible(SM_BASE + '/video/' + v.id + '/visibility', box, 'Players can now watch it.')),
       smRemoveButton('Detach it from this session — the video stays in the Video library', async () => {
@@ -963,7 +978,7 @@ function raRender(d) {
     const name = document.createElement('strong');
     name.textContent = '🎵 ' + c.name;
     head.append(
-      name,
+      name, smRenameButton(c.name, 'Name (players see it in the Session Log and the library)', SM_BASE + '/audio/' + c.id + '/rename'),
       smSwitch('players can hear this (also in the Audio library)', c.visible_to_players,
                box => smSetVisible(RA_BASE + '/' + c.id + '/visibility', box, 'Players can now hear it.')),
       smRemoveButton('Detach it from this session — the clip stays in the Audio library', async () => {

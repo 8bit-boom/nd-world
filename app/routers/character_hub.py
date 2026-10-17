@@ -683,6 +683,34 @@ def hub_log_undo(pc_id: int, entry_id: int, request: Request, db: Session = Depe
     return {"ok": True}
 
 
+@router.get("/api/characters/{pc_id}/hub/sessions")
+def hub_sessions(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """The world's Session Log as the PLAYERS get it, for the character's Sessions tab: newest first, with what each has to listen to or look
+    at (names only - the pictures, videos and songs themselves open on the Session Log page). A GM looking in sees the player view, never the
+    GM's. Empty when the Session Log is not shared with players in this world."""
+    from .. import session_media as sm
+    from ..models import Fact
+    _user, pc, world, _is_owner = _hub_pc(request, db, pc_id)
+    if _player_level(world, "session_log") == "none":
+        return {"enabled": False, "sessions": []}
+    rows = (db.query(GameSession).filter(GameSession.world_id == pc.world_id)
+            .order_by(GameSession.session_num.desc()).limit(40).all())
+    ids = [r.id for r in rows]
+    with_facts = {x[0] for x in db.query(Fact.game_session_id).filter(Fact.world_id == pc.world_id, Fact.game_session_id.in_(ids)).all()} if ids else set()
+    out = []
+    for gs in rows:
+        media = sm.viewer_media(db, gs, is_gm=False)
+        published = bool(gs.player_summary_published and (gs.player_summary or "").strip())
+        out.append({
+            "id": gs.id, "num": gs.session_num, "title": gs.title or "Session", "date": gs.session_date or "",
+            "recap": "published" if published else ("auto" if gs.id in with_facts else ""),
+            "href": with_world(f"/session-log/{gs.id}", world),
+            "audio": [c["name"] for c in media["audio"]], "videos": [v["name"] for v in media["videos"]],
+            "images": [i["caption"] or "Picture" for i in media["images"]],
+        })
+    return {"enabled": True, "sessions": out}
+
+
 @router.get("/api/characters/{pc_id}/hub/handouts")
 def hub_handouts(pc_id: int, request: Request, db: Session = Depends(get_db)):
     """Pictures the GM showed the table ("Send to players"), newest first - so a pop-up that was missed is not lost. Marks

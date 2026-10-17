@@ -259,6 +259,37 @@ async def media_visibility(session_id: int, kind: str, ref: str, request: Reques
     return sm.panel(db, gs)
 
 
+@router.post("/api/sessions/{session_id}/media/{kind}/{ref}/rename")
+async def media_rename(session_id: int, kind: str, ref: str, request: Request, db: Session = Depends(get_db),
+                       active_world: str = Cookie(None)):
+    """Name an attached item so the Session Log shows that name to players: a picture's caption, or - for audio and video - the clip's own
+    name (the same one the library shows). A picture's caption may be emptied; a clip's name may not."""
+    world, gs = _require_gm_edit(request, db, session_id, active_world)
+    if kind not in ("audio", "video", "image"):
+        raise HTTPException(404)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str):
+        raise HTTPException(400, "name must be text")
+    name = " ".join(name.split())
+    if kind == "image":
+        items = sm.media_items(gs)
+        hit = next((i for i in items if i["kind"] == "image" and i["uid"] == ref), None)
+        if not hit:
+            raise HTTPException(404)
+        hit["caption"] = name[:sm._MAX_CAPTION]
+        sm.store_media(gs, items)
+    else:
+        if not name:
+            raise HTTPException(400, "A clip needs a name")
+        _clip_for(db, world, gs, kind, ref).name = name[:200]
+    db.commit()
+    return sm.panel(db, gs)
+
+
 @router.post("/api/sessions/{session_id}/media/{kind}/{ref}/remove")
 def media_remove(session_id: int, kind: str, ref: str, request: Request, db: Session = Depends(get_db),
                  active_world: str = Cookie(None)):

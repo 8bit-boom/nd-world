@@ -297,6 +297,10 @@ tools that require GM access still check `is_gm` at call time.)
   and log), "Pull from sheets" (`/pc-state`; the other half of Sync) and the second screen (`display_combat.html`, `/api/display/combat/ID/state`
   - always `_player_state`, so a GM-signed-in TV window never carries enemy names or numbers). AI Tactics sends the ruleset, whose turn it is,
   conditions with stacks, armor, resources and who is out.
+- **Session media can be named, and the character hub has a Sessions tab**: `POST /api/sessions/ID/media/{image|video|audio}/REF/rename` sets a
+  picture's caption or a clip's own name (the ✏ in the session page's media panel) - the Session Log (`session_media.viewer_media`) already shows
+  those names to players. The hub's 📓 Sessions tab (`GET /api/characters/ID/hub/sessions`) lists the world's Session Log through the PLAYER view
+  (`viewer_media(..., is_gm=False)` even for a GM looking in, nothing hidden leaks into names) and opens each session in the pc-viewer.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

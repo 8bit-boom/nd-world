@@ -519,3 +519,71 @@ def test_a_clip_can_be_attached_by_the_address_copied_from_the_library(client, s
         finally:
             db.close()
         assert client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "url": f_url}).status_code == 404
+
+
+# ── naming an attached item, and the player character's Sessions tab ────────────────────────────────────
+
+def test_the_gm_can_name_a_picture_a_video_and_a_song_and_players_see_the_names(client, seed):
+    _gm(client, seed)
+    sid = _session(seed)
+    up = _upload(client, sid, "scene.png", visible_to_players="1").json()
+    uid = up["item"]["uid"] if "uid" in up.get("item", {}) else up["images"][0]["uid"]
+    vid = _video_clip(seed.world_a, "Cutscene", visible=True)
+    aid = _audio_clip(seed.world_a, "Ballad", visible=True)
+    for kind, ref in (("video", vid), ("audio", aid)):
+        client.post(f"/api/sessions/{sid}/media/attach", json={"kind": kind, "id": ref})
+    assert client.post(f"/api/sessions/{sid}/media/image/{uid}/rename", json={"name": "  The   market at dusk "}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/media/video/{vid}/rename", json={"name": "Burning ledger"}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/media/audio/{aid}/rename", json={"name": "Song of the spy"}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/media/audio/{aid}/rename", json={"name": "  "}).status_code == 400   # a clip needs a name
+    assert client.post(f"/api/sessions/{sid}/media/image/nope/rename", json={"name": "x"}).status_code == 404
+    client.cookies.clear()
+    _player(client, seed)
+    page = client.get(f"/session-log/{sid}").text
+    for shown in ("The market at dusk", "Burning ledger", "Song of the spy"):
+        assert shown in page, shown
+
+
+def test_only_the_gm_can_rename_session_media(client, seed):
+    _gm(client, seed)
+    sid = _session(seed)
+    aid = _audio_clip(seed.world_a, "Ballad", visible=True)
+    client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "id": aid})
+    client.cookies.clear()
+    _player(client, seed)
+    assert client.post(f"/api/sessions/{sid}/media/audio/{aid}/rename", json={"name": "Mine now"}).status_code == 403
+
+
+def test_the_character_hub_lists_the_session_log_with_only_what_players_may_see(client, seed):
+    from app.models import PlayerCharacter
+    _gm(client, seed)
+    sid = _session(seed, title="The Night Market", num=4)
+    shown = _audio_clip(seed.world_a, "Shared song", visible=True)
+    hidden = _audio_clip(seed.world_a, "Secret song", visible=False)
+    for a in (shown, hidden):
+        client.post(f"/api/sessions/{sid}/media/attach", json={"kind": "audio", "id": a})
+    for fname, label, vis in (("yes.png", "Seen picture", "1"), ("no.png", "Hidden picture", "")):
+        client.post(f"/api/sessions/{sid}/media/upload", data={"name": label, "visible_to_players": vis},
+                    files={"file": (fname, io.BytesIO(PNG), "application/octet-stream")})
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, owner_user_id=seed.player_a.id, name="Aria")
+        db.add(pc)
+        db.commit()
+        pc_id = pc.id
+    finally:
+        db.close()
+    client.cookies.clear()
+    _player(client, seed)
+    r = client.get(f"/api/characters/{pc_id}/hub/sessions")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["enabled"] is True
+    row = next(s for s in data["sessions"] if s["id"] == sid)
+    assert row["title"] == "The Night Market" and row["num"] == 4 and row["href"].startswith("/session-log/")
+    assert row["audio"] == ["Shared song"] and row["images"] == ["Seen picture"]
+    assert "Secret song" not in r.text and "Hidden picture" not in r.text
+    # someone else's character is a 404, never a peek
+    client.cookies.clear()
+    login(client, seed.player_b.email, PLAYER_PASSWORD)
+    assert client.get(f"/api/characters/{pc_id}/hub/sessions").status_code == 404
