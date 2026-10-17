@@ -90,6 +90,11 @@ class World(Base):
     # rule; the GM raises it so players can make alts / replacements themselves. Never deletes anything when lowered — it
     # only stops NEW ones. Clamped 1..20 where it is set (main.world_edit_post). GM-made characters are not counted against it.
     max_characters_per_player = Column(Integer, default=1)
+    # How many personal files (pictures / songs / videos) each character may keep of its OWN uploading (hub Kept tab). NULL = the default
+    # (app/personal_files.py: 30 / 10 / 5); 0 turns that kind off.
+    personal_images_max = Column(Integer, nullable=True)
+    personal_audio_max = Column(Integer, nullable=True)
+    personal_video_max = Column(Integer, nullable=True)
     # Whether players may use the "Download as .md" button on the Rules page.
     # Off by default — a GM must opt in per world. Independent of whether the
     # rules content itself is visible (it always is; /rules is player-safe).
@@ -717,6 +722,7 @@ class CharacterKeepsake(Base):
     name = Column(String(120), nullable=False)
     description = Column(String(400), default="")
     saved_by = Column(String(8), default="player")       # player | gm
+    own = Column(Boolean, default=False)                 # a file the PLAYER uploaded themselves (not something the table was shown)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 

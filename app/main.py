@@ -39,6 +39,7 @@ from . import map_walls as _map_walls_mod
 from . import map_rooms as _map_rooms_mod
 from . import map_strict as _map_strict
 from . import markup_locator as _markup_locator
+from . import personal_files as _personal_files
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
@@ -1844,6 +1845,9 @@ def world_edit_post(
     ai_chat_rag_notes_limit: str = Form(""),
     obsidian_vault_path: str = Form(""),
     hero_style: str = Form("home"),
+    personal_images_max: Optional[str] = Form(None),
+    personal_audio_max: Optional[str] = Form(None),
+    personal_video_max: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     w = db.get(World, world_id)
@@ -1876,6 +1880,10 @@ def world_edit_post(
     w.obsidian_vault_path = obsidian_vault_path.strip() or None
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
+    # None = not in the form (an older cached page): keep what the GM set. Blank -> the default, a number -> that many (0 = off).
+    for _kind, _raw in (("image", personal_images_max), ("audio", personal_audio_max), ("video", personal_video_max)):
+        if _raw is not None:
+            _personal_files.set_limit(w, _kind, _raw)
     db.commit()
     return RedirectResponse("/worlds", status_code=303)
 

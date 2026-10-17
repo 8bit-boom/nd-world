@@ -63,6 +63,22 @@
         one-character-per-player rule; raise it so players can make an alt or a replacement themselves. Lowering it never deletes
         anything — it only stops new ones. Characters you make for a player aren't blocked by it.</p>
     </div>
+    <div class="form-group">
+      <label>Players' own files (per character)</label>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+        <label style="display:flex;flex-direction:column;font-size:.78rem;color:var(--text-dim)">Pictures
+          <input type="number" name="personal_images_max" min="0" max="500" step="1" inputmode="numeric" placeholder="30" style="width:6rem"
+                 value="{{ edit_world.personal_images_max if edit_world.personal_images_max is not none else '' }}"></label>
+        <label style="display:flex;flex-direction:column;font-size:.78rem;color:var(--text-dim)">Audio
+          <input type="number" name="personal_audio_max" min="0" max="500" step="1" inputmode="numeric" placeholder="10" style="width:6rem"
+                 value="{{ edit_world.personal_audio_max if edit_world.personal_audio_max is not none else '' }}"></label>
+        <label style="display:flex;flex-direction:column;font-size:.78rem;color:var(--text-dim)">Video
+          <input type="number" name="personal_video_max" min="0" max="500" step="1" inputmode="numeric" placeholder="5" style="width:6rem"
+                 value="{{ edit_world.personal_video_max if edit_world.personal_video_max is not none else '' }}"></label>
+      </div>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">How many files of their own each character may keep under Kept &gt; My own files
+        (blank = 30 pictures, 10 audio clips, 5 videos; 0 turns that kind off). Lowering it never deletes anything — it only stops new ones.</p>
+    </div>
     <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-download-rules" name="players_can_download_rules" value="1"
              style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_download_rules %}checked{% endif %}>

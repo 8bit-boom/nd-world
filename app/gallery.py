@@ -100,6 +100,14 @@ def discover_world_images(db: Session, world: World) -> list:
             if it["kind"] == "image":
                 _add(it["url"], f"{gs.title} (session media)", f"/sessions/{gs.id}")
 
+    # Pictures a character kept from what the table was shown (hub > Kept): used there, so the gallery will not delete them. A player's OWN
+    # uploads are not listed here - they are theirs, not part of the world's gallery.
+    from .models import CharacterKeepsake
+    pc_names = {pc.id: pc.name for pc in pcs}
+    for k in db.query(CharacterKeepsake).filter(CharacterKeepsake.world_id == world.id, CharacterKeepsake.kind == "image",
+                                                CharacterKeepsake.own.is_(False)).all():
+        _add(k.url, f"{pc_names.get(k.character_id, 'A character')} (kept)", f"/characters/{k.character_id}")
+
     overrides = title_overrides(db, world.id)
     for entry in found.values():
         entry["name"] = overrides.get(entry["url"]) or image_display_name(entry["url"], entry["uses"])

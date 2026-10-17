@@ -151,3 +151,118 @@ def test_the_hub_has_a_kept_tab_that_fits_a_phone(client, seed):
     page = client.get(f"/characters/{pc}").text
     assert 'data-tab="keepsakes"' in page and 'data-panel="keepsakes"' in page and "loadKeepsakes" in page
     assert "font-size:16px" in page and "@media (max-width:720px) { .pch-modal" in page      # no zoom on focus; a sheet on a narrow screen
+
+
+# ── a player's OWN files, with per-world limits ─────────────────────────────────────────────────────────
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 600
+
+
+def _upload(client, pc, fname, data=PNG, **form):
+    return client.post(f"/api/characters/{pc}/hub/keepsakes/upload", data=form, files={"file": (fname, io.BytesIO(data), "application/octet-stream")})
+
+
+def _set_world_limits(seed, **kw):
+    from app.models import World
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        for k, v in kw.items():
+            setattr(w, k, v)
+        db.commit()
+    finally:
+        db.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_limits(client, seed):
+    _set_world_limits(seed, personal_images_max=None, personal_audio_max=None, personal_video_max=None)
+    yield
+    _set_world_limits(seed, personal_images_max=None, personal_audio_max=None, personal_video_max=None)
+
+
+def test_the_defaults_are_30_pictures_10_audio_and_5_videos():
+    from app import personal_files as pf
+
+    class W:
+        personal_images_max = personal_audio_max = personal_video_max = None
+    assert pf.limits(W) == {"image": 30, "audio": 10, "video": 5}
+    W.personal_audio_max = 0
+    assert pf.limit_for(W, "audio") == 0 and pf.clamp("abc") is None and pf.clamp("9999") == 500 and pf.clamp("-3") == 0
+
+
+def test_a_player_uploads_their_own_file_with_a_name_and_description_and_it_is_kept_separate(client, seed):
+    pc = _pc(seed)
+    _as_player(client, seed)
+    r = _upload(client, pc, "selfie.png", name="Me at the gate", description="Taken before the heist")
+    assert r.status_code == 200, r.text
+    k = r.json()
+    assert (k["kind"], k["name"], k["own"], k["by"]) == ("image", "Me at the gate", True, "player") and k["url"].startswith("/uploads/")
+    listing = client.get(f"/api/characters/{pc}/hub/keepsakes").json()
+    assert listing["own_limits"]["image"] == {"used": 1, "max": 30} and listing["own_limits"]["audio"] == {"used": 0, "max": 10} and listing["is_owner"] is True
+    assert [x["own"] for x in listing["keepsakes"]] == [True]
+    # the description can be changed or added afterwards
+    assert client.post(f"/api/characters/{pc}/hub/keepsakes/{k['id']}", json={"description": "New text"}).json()["description"] == "New text"
+
+
+def test_the_world_limit_per_kind_is_enforced_before_the_file_is_written_and_zero_turns_a_kind_off(client, seed):
+    pc = _pc(seed)
+    _set_world_limits(seed, personal_images_max=2, personal_video_max=0)
+    _as_player(client, seed)
+    assert _upload(client, pc, "a.png").status_code == 200 and _upload(client, pc, "b.png").status_code == 200
+    third = _upload(client, pc, "c.png")
+    assert third.status_code == 400 and "2" in third.json()["detail"]
+    off = _upload(client, pc, "clip.mp4", data=b"\x00\x00\x00\x18ftypmp42")
+    assert off.status_code == 400 and "turned off" in off.json()["detail"]
+    assert _upload(client, pc, "notes.exe").status_code == 400                  # not a picture / audio / video
+    # the table's own keepsakes do not count against the personal limit
+    hid = _add(WorldHandout(world_id=seed.world_a.id, url="/uploads/gallery/z.png", label="z"))
+    assert client.post(f"/api/characters/{pc}/hub/keepsakes", json={"source": {"type": "handout", "id": hid}}).status_code == 200
+
+
+def test_deleting_a_personal_file_removes_it_from_disk_but_a_table_keepsake_never_deletes_its_file(client, seed):
+    from app.routers.gallery import _resolve_upload_path
+    pc = _pc(seed)
+    _as_player(client, seed)
+    mine = _upload(client, pc, "mine.png").json()
+    assert _resolve_upload_path(mine["url"]) is not None
+    assert client.post(f"/api/characters/{pc}/hub/keepsakes/{mine['id']}/delete").status_code == 200
+    assert _resolve_upload_path(mine["url"]) is None
+
+
+def test_only_the_owner_uploads_and_the_gm_cannot_do_it_for_them(client, seed):
+    pc = _pc(seed)
+    _as_gm(client, seed)
+    assert _upload(client, pc, "x.png").status_code == 404                       # not the owner: the same 404 as a stranger
+    _as_player(client, seed, seed.player_b)
+    assert _upload(client, pc, "x.png").status_code == 404
+
+
+def test_the_gm_sets_the_limits_in_edit_world_and_blank_means_the_default(client, seed):
+    from app.models import World
+    _as_gm(client, seed)
+    form = {"name": "World A", "personal_images_max": "12", "personal_audio_max": "0", "personal_video_max": ""}
+    assert client.post(f"/worlds/{seed.world_a.id}/edit", data=form, follow_redirects=False).status_code == 303
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert (w.personal_images_max, w.personal_audio_max, w.personal_video_max) == (12, 0, None)
+    finally:
+        db.close()
+    page = client.get(f"/worlds/{seed.world_a.id}/edit").text
+    assert 'name="personal_images_max"' in page and 'value="12"' in page
+
+
+def test_a_kept_picture_blocks_the_gallery_from_deleting_it(client, seed):
+    from app.gallery import discover_world_images
+    from app.models import World
+    pc = _pc(seed)
+    _add(CharacterKeepsake(world_id=seed.world_a.id, character_id=pc, kind="image", url="/uploads/gallery/kept.png", name="k"))
+    _add(CharacterKeepsake(world_id=seed.world_a.id, character_id=pc, kind="image", url="/uploads/own.png", name="o", own=True))
+    db = SessionLocal()
+    try:
+        urls = {e["url"]: e for e in discover_world_images(db, db.get(World, seed.world_a.id))}
+    finally:
+        db.close()
+    assert "/uploads/gallery/kept.png" in urls and "(kept)" in urls["/uploads/gallery/kept.png"]["uses"][0]["label"]
+    assert "/uploads/own.png" not in urls            # a player's own upload is not part of the world's gallery

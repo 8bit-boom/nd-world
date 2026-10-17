@@ -55,9 +55,10 @@ def test_discover_world_images_query_count_does_not_scale_with_entity_count(clie
         db.close()
 
     # One query for entities, one batched selectinload for their notes, one
-    # for player characters — a small constant, not one-per-entity (which
-    # would be 20+ on its own before even counting the base queries).
-    assert counter.count <= 5, f"expected O(1) queries, got {counter.count}"
+    # for player characters, one for sessions, one for the pictures characters
+    # kept, one for title overrides — a small constant, not one-per-entity
+    # (which would be 20+ on its own before even counting the base queries).
+    assert counter.count <= 7, f"expected O(1) queries, got {counter.count}"
 
 
 def test_images_route_still_finds_note_images_after_the_selectinload_change(client, seed):

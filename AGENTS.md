@@ -307,6 +307,10 @@ tools that require GM access still check `is_gm` at call time.)
   server's copy (notes stripped of `[gmonly]`, Session media through the player view), so nothing a player could not see can be kept. Only a GM may add
   a raw `/uploads/` address or text. Capped at `KEEPSAKE_MAX`, removed with the character (`char_extras.delete_for_character`). The dialog is one sheet
   for keeping and editing: a bottom sheet on a phone, 16px inputs (no zoom), 44px buttons.
+  **A player's own files** (`own=True`, `POST hub/keepsakes/upload`, owner only) are a separate section: limits per CHARACTER and kind come from the
+  world (`World.personal_images_max/audio/video`, `app/personal_files.py`: 30 / 10 / 5 by default, blank = default, 0 = off; set in Edit World) and are
+  checked before the file is written; deleting one deletes its file. Kept pictures (not own uploads) count as "used" in `discover_world_images`, so
+  the gallery cannot delete them; a player's own uploads stay out of the world's gallery.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

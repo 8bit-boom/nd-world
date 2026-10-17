@@ -29,7 +29,9 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -719,7 +721,7 @@ _KEEPSAKE_KINDS = ("image", "video", "audio", "text")
 
 def _keepsake_out(k) -> dict:
     return {"id": k.id, "kind": k.kind, "url": k.url or "", "text": k.text or "", "name": k.name, "description": k.description or "",
-            "by": k.saved_by, "at": k.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if k.created_at else None}
+            "by": k.saved_by, "own": bool(k.own), "at": k.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if k.created_at else None}
 
 
 def _clean_keepsake_text(value, limit: int) -> str:
@@ -816,7 +818,13 @@ def hub_keepsakes(pc_id: int, request: Request, db: Session = Depends(get_db)):
     from ..models import CharacterKeepsake
     user, pc, world, is_owner = _hub_pc(request, db, pc_id)
     rows = db.query(CharacterKeepsake).filter(CharacterKeepsake.character_id == pc.id).order_by(CharacterKeepsake.id.desc()).all()
-    return {"can_edit": True, "is_gm": bool(user.is_gm), "keepsakes": [_keepsake_out(k) for k in rows],
+    from .. import personal_files
+    counts = {kind: 0 for kind in personal_files.DEFAULTS}
+    for k in rows:
+        if k.own and k.kind in counts:
+            counts[k.kind] += 1
+    return {"can_edit": True, "is_gm": bool(user.is_gm), "is_owner": is_owner, "keepsakes": [_keepsake_out(k) for k in rows],
+            "own_limits": {kind: {"used": counts[kind], "max": personal_files.limit_for(world, kind)} for kind in counts},
             "saveable": _saveable(db, pc, world, user, is_owner)}
 
 
@@ -848,6 +856,38 @@ def _keepsake_of(db: Session, pc: PlayerCharacter, kid: int):
     return row
 
 
+@router.post("/api/characters/{pc_id}/hub/keepsakes/upload")
+async def hub_keepsake_upload(pc_id: int, request: Request, file: UploadFile = File(...), name: str = Form(""),
+                              description: str = Form(""), db: Session = Depends(get_db)):
+    """A player's OWN file (picture, song or video) kept on their character - separate from what the table was shown. Owner only. Each
+    kind has a per-character limit the GM sets per world (app/personal_files.py); the limit is checked BEFORE the file is written."""
+    from .. import personal_files
+    from ..models import CharacterKeepsake
+    from .characters import ALLOWED_EXTS, _upload_media
+    from ..uploads import INLINE_AUDIO_EXTS, INLINE_VIDEO_EXTS
+    user, pc, world = _owned_pc(request, db, pc_id)
+    ext = Path(file.filename or "").suffix.lower()
+    kind = "image" if ext in ALLOWED_EXTS else "audio" if ext in INLINE_AUDIO_EXTS else "video" if ext in INLINE_VIDEO_EXTS else None
+    if not kind:
+        raise HTTPException(400, "That file type is not supported - use a picture, an audio clip or a video")
+    cap = personal_files.limit_for(world, kind)
+    have = db.query(CharacterKeepsake).filter(CharacterKeepsake.character_id == pc.id, CharacterKeepsake.own.is_(True),
+                                              CharacterKeepsake.kind == kind).count()
+    if cap == 0:
+        raise HTTPException(400, f"Your GM has turned off your own {kind} files in this world")
+    if have >= cap:
+        raise HTTPException(400, f"This world allows {cap} of your own {kind} files per character - delete one first")
+    url, saved_kind = _upload_media(file, db=db)
+    if not url or saved_kind != kind:
+        raise HTTPException(400, "That file could not be saved")
+    label = _clean_keepsake_text(name, 120) or _clean_keepsake_text(Path(file.filename or "file").stem, 120) or "My file"
+    row = CharacterKeepsake(world_id=pc.world_id, character_id=pc.id, kind=kind, url=url, name=label,
+                            description=_clean_keepsake_text(description, 400), saved_by="player", own=True)
+    db.add(row)
+    db.commit()
+    return _keepsake_out(row)
+
+
 @router.post("/api/characters/{pc_id}/hub/keepsakes/{kid}")
 async def hub_keepsake_edit(pc_id: int, kid: int, request: Request, db: Session = Depends(get_db)):
     """Rename a kept thing / change its description. Body: {name?, description?}."""
@@ -868,8 +908,15 @@ async def hub_keepsake_edit(pc_id: int, kid: int, request: Request, db: Session 
 @router.post("/api/characters/{pc_id}/hub/keepsakes/{kid}/delete")
 def hub_keepsake_delete(pc_id: int, kid: int, request: Request, db: Session = Depends(get_db)):
     _user, pc, _world, _is_owner = _hub_pc(request, db, pc_id)
-    db.delete(_keepsake_of(db, pc, kid))
+    row = _keepsake_of(db, pc, kid)
+    own_file = row.url if row.own else ""
+    db.delete(row)
     db.commit()
+    if own_file:      # a file the player uploaded goes with their copy; what the table was shown never does
+        from .gallery import _resolve_upload_path
+        path = _resolve_upload_path(own_file)
+        if path:
+            path.unlink(missing_ok=True)
     return {"ok": True}
 
 

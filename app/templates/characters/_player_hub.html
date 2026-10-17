@@ -669,15 +669,17 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       desc.value = opts.description || '';
       const extras = (opts.ask || []).map(a => {
         const f = a.type === 'select' ? h('select', {}, a.options.map(o => h('option', { value: o[0], text: o[1] })))
-          : a.type === 'textarea' ? h('textarea', { rows: '4', maxlength: '4000' }) : h('input', { type: 'text', maxlength: '500', placeholder: a.placeholder || '' });
-        return { id: a.id, field: f, wrap: h('label', { text: a.label }, f), when: a.when };
+          : a.type === 'textarea' ? h('textarea', { rows: '4', maxlength: '4000' })
+          : a.type === 'file' ? h('input', { type: 'file', accept: a.accept || '' })
+          : h('input', { type: 'text', maxlength: '500', placeholder: a.placeholder || '' });
+        return { id: a.id, type: a.type, field: f, wrap: h('label', { text: a.label }, f), when: a.when };
       });
       const err = h('div', { class: 'pch-err', hidden: true });
       const close = (v) => { overlay.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
       const onKey = e => { if (e.key === 'Escape') close(null); };
       const save = h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: opts.confirm || 'Save', onclick: async () => {
         const values = { name: name.value, description: desc.value };
-        extras.forEach(x => { values[x.id] = x.field.value; });
+        extras.forEach(x => { values[x.id] = x.type === 'file' ? (x.field.files && x.field.files[0]) : x.field.value; });
         save.disabled = true;
         try { await opts.onSave(values); close(true); } catch (e) { err.textContent = e.message; err.hidden = false; save.disabled = false; }
       } });
@@ -705,18 +707,38 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     try {
       const d = await api('keepsakes');
       const parts = [h('div', { class: 'pch-sub', text: '\ud83d\udcbe Kept on ' + PC_NAME })];
-      if (!d.keepsakes.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing kept yet \u2014 open \u201cKeep something\u201d below to save a picture, song, video or note under your own name.' }));
-      d.keepsakes.forEach(k => {
-        const edit = h('button', { type: 'button', class: 'pch-btn', text: '\u270f Edit', onclick: () => keepDialog({ title: 'Rename', name: k.name, description: k.description, confirm: 'Save',
+      const card = k => {
+        const edit = h('button', { type: 'button', class: 'pch-btn', text: '\u270f Name / description', onclick: () => keepDialog({ title: 'Name and description', name: k.name, description: k.description, confirm: 'Save',
           onSave: async v => { await send('keepsakes/' + k.id, { name: v.name, description: v.description }); } }).then(ok => { if (ok) loadKeepsakes(); }) });
         const del = h('button', { type: 'button', class: 'pch-btn', text: '\ud83d\uddd1 Delete', onclick: async () => {
-          if (!confirm('Delete \u201c' + k.name + '\u201d from this character?')) return;
+          if (!confirm('Delete \u201c' + k.name + '\u201d from this character?' + (k.own ? ' Your uploaded file is deleted too.' : ''))) return;
           try { await send('keepsakes/' + k.id + '/delete'); loadKeepsakes(); } catch (e) { alert(e.message); } } });
-        parts.push(h('div', { class: 'pch-kcard' },
+        return h('div', { class: 'pch-kcard' },
           h('span', { class: 'pch-title', text: (KIND_ICON[k.kind] || '') + ' ' + k.name }),
-          k.description ? h('span', { class: 'pch-muted', text: k.description }) : null,
-          keepsakeMedia(k), h('div', { class: 'pch-krow' }, edit, del)));
-      });
+          k.description ? h('span', { class: 'pch-muted', text: k.description }) : h('span', { class: 'pch-muted', text: 'No description yet', style: 'font-style:italic' }),
+          keepsakeMedia(k), h('div', { class: 'pch-krow' }, edit, del));
+      };
+      const table = d.keepsakes.filter(k => !k.own), mine = d.keepsakes.filter(k => k.own);
+      parts.push(h('div', { class: 'pch-sub', text: '\ud83d\udcec From the table' }));
+      if (!table.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing kept yet \u2014 open \u201cKeep something\u201d below to save a picture, song, video or note under your own name.' }));
+      table.forEach(k => parts.push(card(k)));
+      const lim = d.own_limits || {};
+      const left = kind => (lim[kind] ? lim[kind].used + '/' + lim[kind].max : '0/0');
+      parts.push(h('div', { class: 'pch-sub', text: '\ud83d\udcc1 My own files' }),
+        h('p', { class: 'pch-muted', text: 'Pictures ' + left('image') + ' \u00b7 Audio ' + left('audio') + ' \u00b7 Video ' + left('video') + ' \u2014 yours alone, separate from what the GM shows the table.' }));
+      if (d.is_owner) {
+        parts.push(h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px;margin-bottom:.6rem', text: '\u2b06 Add a file of my own\u2026', onclick: () => keepDialog({ title: 'Add a file of my own', confirm: 'Upload',
+          ask: [{ id: 'file', label: 'A picture, an audio clip or a video', type: 'file', accept: 'image/*,audio/*,video/*' }],
+          onSave: async v => {
+            if (!v.file) throw new Error('Choose a file first');
+            const fd = new FormData(); fd.append('file', v.file); fd.append('name', v.name); fd.append('description', v.description);
+            const r = await fetch(BASE + 'keepsakes/upload', { method: 'POST', body: fd });
+            let data = null; try { data = await r.json(); } catch (e) { /* not JSON */ }
+            if (!r.ok) throw new Error((data && data.detail) || ('HTTP ' + r.status));
+          } }).then(ok => { if (ok) loadKeepsakes(); }) }));
+      }
+      if (!mine.length) parts.push(h('p', { class: 'pch-muted', text: 'No files of your own yet.' }));
+      mine.forEach(k => parts.push(card(k)));
       const s = d.saveable || {};
       const keepRow = (label, kind, source) => h('div', { class: 'pch-row' }, h('span', { class: 'pch-title', text: (KIND_ICON[kind] || '') + ' ' + label }),
         h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: '\ud83d\udcbe Keep\u2026', onclick: () => keepDialog({ title: 'Keep \u201c' + label + '\u201d', name: label, confirm: 'Keep',
