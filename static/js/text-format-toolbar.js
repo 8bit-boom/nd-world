@@ -35,6 +35,8 @@
 const NDFMT_AV_TITLES = new Set(["audio", "video"]);
 const NDFMT_SIZE_TITLE_RE = /^size:(\d{1,3})$/;
 const NDFMT_MIN_SIZE_PCT = 10;
+// What a freshly uploaded/pasted/dropped image is sized to (a percent).
+const NDFMT_DEFAULT_IMAGE_PCT = 30;
 const NDFMT_MAX_SIZE_PCT = 300;
 const NDFMT_RESIZE_PCTS = [50, 75, 100, 150, 200];
 
@@ -162,10 +164,13 @@ async function ndFmtUploadOneImage(ta, file, start, end, alt) {
     if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
     const data = await res.json();
     const at = ta.value.indexOf(placeholder);
-    // Only audio/video get a title marker — a plain image reference stays
-    // exactly the ![alt](url) shape it always was, so every note/entity
-    // saved before this feature existed renders identically.
-    const title = data.kind === "audio" || data.kind === "video" ? ` "${data.kind}"` : "";
+    // Audio/video get their kind as the title marker; a NEW image starts small
+    // (NDFMT_DEFAULT_IMAGE_PCT of the text width - resize it from the toolbar,
+    // 100% clears the marker). Images already in saved text have no marker and
+    // keep rendering at full width.
+    const title = data.kind === "audio" || data.kind === "video"
+      ? ` "${data.kind}"`
+      : ` "size:${NDFMT_DEFAULT_IMAGE_PCT}"`;
     const markdown = `![${alt}](${data.url}${title})`;
     if (at !== -1) {
       ta.value = ta.value.slice(0, at) + markdown + ta.value.slice(at + placeholder.length);
@@ -1258,9 +1263,85 @@ function _ndFmtLinkItems(a) {
   return items;
 }
 
+// Stretch a picture on the read view: hover shows a grip at its corner, dragging it resizes the picture live and, on release, writes
+// the new size into the text ("size:NN" in the picture's title, see the header) through the markup route. 100% removes the marker.
+// The server counts pictures in the source in reading order and refuses when the n-th one is not this address, so a wrong guess
+// changes nothing.
+function _ndFmtSetupImageStretch() {
+  const grip = document.createElement("div");
+  grip.className = "nd-img-grip";
+  grip.title = "Drag to resize this picture";
+  grip.setAttribute("aria-hidden", "true");
+  grip.textContent = "⇲";
+  grip.style.cssText = "position:absolute;display:none;z-index:50;width:22px;height:22px;line-height:22px;text-align:center;" +
+    "background:var(--neon,#0ff);color:#000;border-radius:4px;cursor:nwse-resize;font-size:15px;touch-action:none;user-select:none;opacity:.9";
+  document.body.appendChild(grip);
+  let img = null, drag = null, hideTimer = null;
+  const place = () => {
+    if (!img || !img.isConnected) { grip.style.display = "none"; return; }
+    const r = img.getBoundingClientRect();
+    grip.style.left = (r.right + window.scrollX - 24) + "px";
+    grip.style.top = (r.bottom + window.scrollY - 24) + "px";
+    grip.style.display = "block";
+  };
+  const fieldOf = (el) => el.closest && el.closest("[data-markup-field]");
+  document.addEventListener("pointerover", (e) => {
+    const t = e.target;
+    if (drag || !t || t.tagName !== "IMG" || !fieldOf(t) || !t.closest("[data-markup-entity]")) return;
+    clearTimeout(hideTimer);
+    img = t;
+    place();
+  });
+  document.addEventListener("pointerout", (e) => {
+    if (drag || e.target !== img) return;
+    hideTimer = setTimeout(() => { if (!drag && !grip.matches(":hover")) grip.style.display = "none"; }, 400);
+  });
+  grip.addEventListener("pointerover", () => clearTimeout(hideTimer));
+  grip.addEventListener("pointerout", () => { if (!drag) hideTimer = setTimeout(() => { grip.style.display = "none"; }, 400); });
+  window.addEventListener("scroll", () => { if (!drag) place(); }, { passive: true });
+  grip.addEventListener("pointerdown", (e) => {
+    if (!img) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const box = (img.parentElement || document.body).getBoundingClientRect();
+    drag = { x: e.clientX, w: img.getBoundingClientRect().width, container: Math.max(box.width, 1), before: img.style.width, pct: null };
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const raw = (drag.w + (e.clientX - drag.x)) / drag.container * 100;
+    drag.pct = Math.max(NDFMT_MIN_SIZE_PCT, Math.min(NDFMT_MAX_SIZE_PCT, Math.round(raw / 5) * 5));
+    img.style.width = drag.pct + "%";
+    img.style.maxWidth = "none";
+    place();
+  });
+  const finish = async (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    try { grip.releasePointerCapture(e.pointerId); } catch (err) { /* already released */ }
+    if (d.pct == null) return;
+    const field = fieldOf(img);
+    const all = Array.from(field.querySelectorAll("img"));
+    const src = img.getAttribute("src") || "";
+    const entityId = field.closest("[data-markup-entity]").dataset.markupEntity;
+    const base = _ndFmtReadBase(field);
+    const data = await _ndFmtJson(`/api/entity/${entityId}/markup`,
+      Object.assign({}, base, { action: "imgsize:" + d.pct, index: all.indexOf(img), snippet: src }));
+    if (!data) { img.style.width = d.before; img.style.maxWidth = ""; place(); return; }
+    if (data.undo) _ndFmtNotice(`Picture set to ${d.pct}%.`, false, { label: "Undo", run: async () => {
+      const u = await _ndFmtJson(`/api/entity/${entityId}/markup`,
+        Object.assign({}, base, { action: "restore", previous: data.undo.previous, expected: data.undo.expected }));
+      if (u) location.reload();
+    } });
+  };
+  grip.addEventListener("pointerup", finish);
+  grip.addEventListener("pointercancel", finish);
+}
+
 function ndFmtSetupReadMode() {
   if (window._ndFmtReadReady || !document.querySelector("[data-markup-entity]")) return;
   window._ndFmtReadReady = true;
+  _ndFmtSetupImageStretch();
   _ndFmtShowPendingUndo();
   _ndFmtLabelAccessParts();
   document.addEventListener("contextmenu", (e) => {

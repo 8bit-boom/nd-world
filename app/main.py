@@ -6221,6 +6221,8 @@ def api_entity_markup(
             out = _markup_locator.replace(source, body.text, body.before, body.after, body.replacement)
         elif body.action == "restore":
             out = _markup_locator.restore(source, body.expected, body.previous)
+        elif body.action.startswith("imgsize:") and body.action[8:].isdigit():
+            out = _markup_locator.resize_image(source, body.index, body.snippet, int(body.action[8:]))
         else:
             out = _markup_locator.wrap(source, body.text, body.before, body.after, body.action)
     except _markup_locator.MarkupError as exc:

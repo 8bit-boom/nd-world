@@ -897,3 +897,18 @@ def test_search_does_not_reveal_that_an_entity_mentions_a_word_only_a_secret_con
     client.cookies.clear()
     _gm(client, seed)
     assert "Probe Target" in client.get("/search", params={"q": "zorblax"}).text
+
+
+def test_markup_endpoint_resizes_a_picture_and_undo_puts_it_back(client, seed):
+    eid = _make_entity(seed.world_a.id, body='Look: ![map](/uploads/m.png "size:30") end')
+    _gm(client, seed)
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "imgsize:60", "index": 0, "snippet": "/uploads/m.png"})
+    assert r.status_code == 200, r.text
+    assert _body_of(eid) == 'Look: ![map](/uploads/m.png "size:60") end'
+    undo = r.json()["undo"]
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "imgsize:60", "index": 0, "snippet": "/uploads/other.png"})
+    assert r.status_code == 422                                  # wrong picture: nothing is changed
+    assert _body_of(eid) == 'Look: ![map](/uploads/m.png "size:60") end'
+    r = client.post(f"/api/entity/{eid}/markup", json={"field": "body", "action": "restore", "previous": undo["previous"], "expected": undo["expected"]})
+    assert r.status_code == 200
+    assert _body_of(eid) == 'Look: ![map](/uploads/m.png "size:30") end'

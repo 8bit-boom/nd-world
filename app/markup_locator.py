@@ -289,3 +289,24 @@ def restore(source: str, expected_now: str, previous: str):
     if source != expected_now:
         raise MarkupError("This was edited since - open the editor to change it back.")
     return previous
+
+
+_IMG_REF_RE = re.compile(r'!\[([^\]\n]{0,300})\]\(([^)\s]{1,2000})(?:\s+"([^"\n]{0,20})")?\)')
+
+
+def resize_image(source: str, n: int, url: str, pct: int):
+    """The source with the n-th picture (reading order; audio and video do not count) sized to `pct` percent of the text width. 100 removes the
+    size marker (the plain shape every picture had before sizes existed). Refused when that picture's address is not `url` - the page and the
+    source disagree about which picture it is (one inside a code block, say), and resizing the wrong one is worse than doing nothing."""
+    pct = max(10, min(300, int(pct)))
+    refs = [m for m in _IMG_REF_RE.finditer(source) if m.group(3) not in ("audio", "video")]
+    if not 0 <= n < len(refs):
+        raise MarkupError("Could not find that picture in the text - use the editor.")
+    m = refs[n]
+    found = m.group(2)
+    if url and not (url == found or url.endswith(found) or found.endswith(url) or found in url):
+        raise MarkupError("Could not tell which picture that is - use the editor.")
+    title = "" if pct == 100 else f' "size:{pct}"'
+    if m.group(3) is not None and not m.group(3).startswith("size:") and m.group(3):
+        raise MarkupError("This picture has its own caption - resize it in the editor.")
+    return source[:m.start()] + f"![{m.group(1)}]({found}{title})" + source[m.end():]

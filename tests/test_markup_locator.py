@@ -135,3 +135,24 @@ def test_restore_only_over_exactly_what_the_action_left():
     assert ml.restore("now", "now", "was") == "was"
     with pytest.raises(ml.MarkupError):
         ml.restore("edited since", "now", "was")
+
+
+def test_resize_image_sets_replaces_and_clears_the_size_marker():
+    src = 'Hi ![a](/uploads/x.png "size:30") and ![b](/uploads/y.png) and ![c](/uploads/x.png)'
+    out = ml.resize_image(src, 0, "/uploads/x.png", 55)
+    assert out == 'Hi ![a](/uploads/x.png "size:55") and ![b](/uploads/y.png) and ![c](/uploads/x.png)'
+    assert ml.resize_image(out, 0, "/uploads/x.png", 100) == 'Hi ![a](/uploads/x.png) and ![b](/uploads/y.png) and ![c](/uploads/x.png)'
+    assert ml.resize_image(src, 2, "/uploads/x.png", 20).endswith('![c](/uploads/x.png "size:20")')
+    assert '"size:300"' in ml.resize_image(src, 1, "/uploads/y.png", 9999)
+    assert '"size:10"' in ml.resize_image(src, 1, "/uploads/y.png", 1)
+
+
+def test_resize_image_skips_audio_and_video_and_refuses_a_mismatch_or_a_caption():
+    src = '![s](/uploads/a.mp3 "audio") ![p](/uploads/p.png) ![v](/uploads/v.mp4 "video") ![q](/uploads/q.png "A caption")'
+    assert ml.resize_image(src, 0, "/uploads/p.png", 40).count('"size:40"') == 1
+    with pytest.raises(MarkupError):
+        ml.resize_image(src, 0, "/uploads/other.png", 40)      # the page's n-th picture is not that address
+    with pytest.raises(MarkupError):
+        ml.resize_image(src, 5, "/uploads/p.png", 40)          # no such picture
+    with pytest.raises(MarkupError):
+        ml.resize_image(src, 1, "/uploads/q.png", 40)          # has its own caption - editor only

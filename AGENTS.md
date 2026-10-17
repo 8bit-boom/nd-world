@@ -254,6 +254,13 @@ tools that require GM access still check `is_gm` at call time.)
   read view. A due reveal appears on the player's next page load (nothing is pushed). Search cannot be used to probe secrets: `retrieval.drop_secret_only_matches` drops, for a non-GM viewer, any entity (search,
   RAG lookups, ILIKE fallback) whose only match is text that viewer cannot see, and note search checks the stripped text.
   An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
+- **Pictures in text start small and can be stretched** (`text-format-toolbar.js`): an image uploaded / pasted / dropped through the toolbar is
+  written `![alt](url "size:30")` (`NDFMT_DEFAULT_IMAGE_PCT`; audio/video keep their kind marker; pictures already saved without a marker stay full
+  width). On an entity's read view a GM hovering a picture gets a corner grip (`_ndFmtSetupImageStretch`); dragging it resizes live in steps of 5 %
+  and on release POSTs `action:"imgsize:PCT"` (`index` = the picture's place among the field's pictures, `snippet` = its address) to
+  `/api/entity/ID/markup`, handled by `markup_locator.resize_image` - which refuses (422) when the n-th picture in the source is not that address or
+  has its own caption, and 100 removes the marker. The response carries the usual `undo`. Clicking a picture still opens the lightbox with the ORIGINAL
+  file (the size is only CSS width).
 - **Rename an entity from the right-click menu** (`static/js/entity-menu.js`, loaded by base.html for editors only): right-click an entity link
   (`/entity/ID`) on ANY page - open in tab / floating window / second screen / copy link / ✏ Rename… - or the title of an entity page
   (`.detail-meta > h1`, `article.detail[data-entity-id]`). Shift+right-click still gives the browser's menu. On an entity page's text the richer

@@ -323,3 +323,12 @@ def test_rendered_md_images_use_inline_block_so_small_ones_share_a_row():
     rule = m.group(1)
     assert "display: inline-block" in rule
     assert "display: block" not in rule
+
+
+def test_toolbar_js_new_images_start_small_but_av_keep_their_kind(client, seed):
+    js = _toolbar_js(client)
+    assert "const NDFMT_DEFAULT_IMAGE_PCT = 30;" in js
+    fn_start = js.index("async function ndFmtUploadOneImage")
+    fn_body = js[fn_start:js.index("\n}", fn_start)]
+    assert "size:${NDFMT_DEFAULT_IMAGE_PCT}" in fn_body
+    assert '` "${data.kind}"`' in fn_body
