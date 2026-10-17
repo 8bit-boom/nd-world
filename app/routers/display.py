@@ -154,8 +154,20 @@ def _map_item(db: Session, world, slug) -> dict:
             "source": {"type": "map", "slug": s.slug}}
 
 
+def _combat_item(db: Session, world, combat_id) -> dict:
+    """The turn order of a fight on the TV: a live bare page (like a map's), built from what PLAYERS may see - enemies as "Enemy A", health
+    as a word - however the window is signed in."""
+    from ..models import CombatSession
+    cs = db.get(CombatSession, combat_id) if isinstance(combat_id, int) else None
+    if not cs or cs.world_id != world.id or cs.is_template:
+        raise HTTPException(404, "Encounter not found")
+    return {"kind": "map", "url": f"/display/combat/{cs.id}", "title": _text(cs.name, _TITLE_CAP), "source": {"type": "combat", "id": cs.id}}
+
+
 def _build_item(db: Session, world, body: dict) -> dict:
     kind = body.get("kind")
+    if kind == "combat":
+        return _combat_item(db, world, body.get("combat_id"))
     if kind == "map":
         return _map_item(db, world, body.get("slug"))
     if kind == "entity":
@@ -172,7 +184,7 @@ def _build_item(db: Session, world, body: dict) -> dict:
             raise HTTPException(400, "Nothing to show")
         return {"kind": "text", "title": _text(body.get("title"), _TITLE_CAP), "html": _text_html(text),
                 "source": {"type": "text"}}
-    raise HTTPException(400, "kind must be image, text, entity or map")
+    raise HTTPException(400, "kind must be image, text, entity, map or combat")
 
 
 # ── routes (GM only) ─────────────────────────────────────────────────────────
@@ -231,6 +243,26 @@ def display_map_data(slug: str, request: Request, db: Session = Depends(get_db),
         "grid_config": grid_config if isinstance(grid_config, dict) else {},
         **fog_part,
     }
+
+
+@router.get("/display/combat/{combat_id}", response_class=HTMLResponse)
+def display_combat_page(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The fight's turn order, big, for the table's TV (inside the second screen)."""
+    world, _ = _gm_world(request, db, active_world)
+    item = _combat_item(db, world, combat_id)
+    return templates.TemplateResponse("display_combat.html", {"request": request, "world": world, "combat_id": combat_id, "title": item["title"]})
+
+
+@router.get("/api/display/combat/{combat_id}/state")
+def display_combat_state(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Always the PLAYER view of the encounter - this window is signed in as the GM, but it is what the whole table looks at."""
+    from .combat import _player_state
+    world, _ = _gm_world(request, db, active_world)
+    from ..models import CombatSession
+    cs = db.get(CombatSession, combat_id)
+    if not cs or cs.world_id != world.id or cs.is_template:
+        raise HTTPException(404)
+    return _player_state(cs)
 
 
 @router.get("/api/display/state")

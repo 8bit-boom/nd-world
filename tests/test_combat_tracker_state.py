@@ -311,3 +311,145 @@ def test_a_fallen_ally_is_not_offered_when_the_player_chooses_who_goes_next(clie
     nd = type("CS", (), {"ruleset": "nd", "turn_json": "{}"})()
     assert not combat_turns.is_out(nd, {"source": "pc", "hp": 0, "max_hp": 5})        # a dying N&D character still takes its rolls
     assert combat_turns.is_out(nd, {"source": "entity", "hp": 0, "max_hp": 5})
+
+
+# ── lifecycle: run again, templates, finishing, pulling from sheets, the TV ───
+
+def _fight(world_id, **kw):
+    return _make(world_id, [
+        _cb("p", "Ana", "pc", pc_id=None, hp=3, max_hp=9, conditions=["Burn"], initiative=7),
+        _cb("g", "Goblin", "entity", hp=1, max_hp=6, conditions=["Daze"], initiative=12, used={"A": 2}, saves={"ok": 1, "fail": 2, "ko": 0}, status="dead")],
+        round_num=4, **kw)
+
+
+def test_run_again_starts_the_same_fight_fresh(client, seed):
+    _gm(client, seed)
+    cid = _fight(seed.world_a.id, ruleset="nd")
+    r = client.post(f"/combat/{cid}/duplicate", follow_redirects=False)
+    new = int(r.headers["location"].rsplit("/", 1)[1])
+    assert new != cid
+    state = client.get(f"/api/combat/{new}/state").json()
+    ana, gob = state["combatants"]
+    assert state["name"] == "Neon (again)" or state["name"].endswith("(again)")
+    assert state["round_num"] == 1 and state["ruleset"] == "nd" and state["log"] == []
+    assert gob["hp"] == 6 and gob["conditions"] == [] and gob["initiative"] == 0 and gob["status"] == "" and gob["used"] == {} and gob["saves"]["fail"] == 0
+    assert ana["hp"] == 3 and ana["conditions"] == [] and ana["id"] not in ("p",)           # a PC keeps the HP it has; conditions and spent things reset
+    assert client.get(f"/api/combat/{cid}/state").json()["round_num"] == 4                  # the original is untouched
+
+
+def test_templates_keep_the_enemies_and_run_with_the_whole_party(client, seed):
+    _gm(client, seed)
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, name="Sable", max_hp=12, current_hp=12)
+        db.add(pc); db.commit()
+    finally:
+        db.close()
+    cid = _fight(seed.world_a.id, ruleset="asterion")
+    assert client.post(f"/combat/{cid}/save-template", data={"name": "Goblin ambush"}, follow_redirects=False).status_code == 303
+    page = client.get("/combat").text
+    assert "Goblin ambush" in page and "▶ Run" in page and "1 enemy" in page          # only the NPCs are kept
+    db = SessionLocal()
+    try:
+        tpl = db.query(CombatSession).filter_by(name="Goblin ambush").first()
+        tid = tpl.id
+        assert tpl.is_template and [c["name"] for c in json.loads(tpl.combatants_json)] == ["Goblin"]
+    finally:
+        db.close()
+    r = client.post(f"/combat/templates/{tid}/run", follow_redirects=False)
+    run = int(r.headers["location"].rsplit("/", 1)[1])
+    state = client.get(f"/api/combat/{run}/state").json()
+    assert sorted(c["name"] for c in state["combatants"]) == ["Goblin", "Sable"] and state["ruleset"] == "asterion" and state["round_num"] == 1
+    # a template is not a fight: not in the encounter list's cards of fights, not reachable by a player or the cockpit picker
+    assert tid not in [c["id"] for c in client.get("/api/combat/recent").json()["combats"]]
+    _player(client, seed)
+    assert client.get(f"/combat/{tid}").status_code == 404
+    assert client.get(f"/api/combat/{tid}/state").status_code == 404
+    assert client.post(f"/combat/templates/{tid}/run").status_code == 403
+
+
+def test_ending_an_encounter_writes_a_gm_only_fact_and_it_can_be_reopened(client, seed):
+    from app.models import Fact
+    _gm(client, seed)
+    cid = _fight(seed.world_a.id, ruleset="nd", log_json=json.dumps([{"t": 1, "round": 2, "text": "Goblin is down"}, {"t": 2, "round": 3, "text": "Ana takes 2 — Health 5→3"}]))
+    r = client.post(f"/api/combat/{cid}/finish")
+    assert r.status_code == 200 and r.json()["ok"]
+    db = SessionLocal()
+    try:
+        fact = db.query(Fact).filter(Fact.tags == "combat").first()
+        assert fact.visible_to_players is False and "ended in round 4" in fact.content and "Dead: Goblin" in fact.content
+        assert "Goblin is down" in fact.content and "Standing: Ana" in fact.content
+        assert db.get(CombatSession, cid).finished_at is not None
+    finally:
+        db.close()
+    assert client.post(f"/api/combat/{cid}/finish").json().get("already")                    # no second fact
+    db = SessionLocal()
+    try:
+        assert db.query(Fact).filter(Fact.tags == "combat").count() == 1
+    finally:
+        db.close()
+    assert "Finished" in client.get("/combat").text
+    assert client.post(f"/api/combat/{cid}/reopen").json()["ok"]
+    db = SessionLocal()
+    try:
+        assert db.get(CombatSession, cid).finished_at is None
+    finally:
+        db.close()
+    _player(client, seed)
+    assert client.post(f"/api/combat/{cid}/finish").status_code == 403
+
+
+def test_pull_from_sheets_reads_the_current_numbers(client, seed):
+    _gm(client, seed)
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, name="Sable", max_hp=12, current_hp=9, shock_current=2, pp_current=3, mp_current=4,
+                             conditions_json=json.dumps(["Daze"]),
+                             stats_json=json.dumps([{"id": s, "value": 1} for s in ("str", "dex", "bod", "per", "wil", "int", "cha", "itu")]))
+        db.add(pc); db.commit(); pid = pc.id
+    finally:
+        db.close()
+    cid = _make(seed.world_a.id, [_cb("s", "Sable", "pc", pc_id=pid, hp=4, max_hp=12), _cb("g", "Goblin", "entity")])
+    got = client.get(f"/api/combat/{cid}/pc-state").json()["pcs"]
+    assert list(got) == ["s"] and got["s"]["hp"] == 9 and got["s"]["conditions"] == ["Daze"] and got["s"]["res"]["pp"]["cur"] == 3
+    _player(client, seed)
+    assert client.get(f"/api/combat/{cid}/pc-state").status_code == 403
+
+
+def test_the_second_screen_shows_the_players_view_even_to_a_gm_window(client, seed):
+    _gm(client, seed)
+    cid = _make(seed.world_a.id, [_cb("e", "Hidden Traitor Edmund", "entity", init=9), _cb("p", "Ana", "pc", init=3, hp=4, max_hp=9, conditions=[], notes="")], ruleset="nd")
+    shown = client.post("/api/display/show", json={"kind": "combat", "combat_id": cid})
+    assert shown.status_code == 200 and shown.json()["current"]["url"] == f"/display/combat/{cid}"
+    page = client.get(f"/display/combat/{cid}")
+    assert page.status_code == 200 and "api/display/combat" in page.text
+    state = client.get(f"/api/display/combat/{cid}/state").json()
+    blob = json.dumps(state)
+    assert "Hidden Traitor Edmund" not in blob and "Is the cult leader" not in blob and "Poisoned secretly" not in blob
+    assert [r["name"] for r in state["rows"]] == ["Enemy A", "Ana"]
+    assert client.post("/api/display/show", json={"kind": "combat", "combat_id": 999999}).status_code == 404
+    other = _make(seed.world_b.id, [_cb("x", "X")])
+    assert client.post("/api/display/show", json={"kind": "combat", "combat_id": other}).status_code == 404
+    _player(client, seed)
+    assert client.get(f"/api/display/combat/{cid}/state").status_code == 403
+
+
+def test_the_ai_tactics_prompt_knows_the_rules_conditions_and_whose_turn_it_is(client, seed, monkeypatch):
+    from app.routers import combat as combat_router
+    seen = {}
+
+    async def fake_chat(messages, system="", **kw):
+        seen["user"], seen["system"] = messages[0]["content"], system
+        return json.dumps({"tactics": [{"who": "Stalker", "move": "Flank Kaidros"}], "beat": "The floor cracks."})
+    monkeypatch.setattr(combat_router, "_ai", None, raising=False)
+    from app import ai as ai_module
+    monkeypatch.setattr(ai_module, "generate_chat", fake_chat)
+    monkeypatch.setattr(ai_module, "effective_llm_api_key", lambda: "k")
+    _gm(client, seed)
+    cid = _make(seed.world_a.id, [
+        _cb("k", "Kaidros", "pc", hp=5, max_hp=5, res={"sparkShield": {"cur": 1, "max": 3, "label": "Spark Shield"}}, conditions=["Burning", "Burning"]),
+        _cb("s", "Stalker", "entity", hp=0, max_hp=4)], ruleset="asterion", turn_json=json.dumps({"active_id": "k", "acted": [], "picker": None}))
+    r = client.post(f"/combat/{cid}/ai-tactics")
+    assert r.status_code == 200, r.text
+    assert "Game of Gods (Asterion)" in seen["system"] and "FLUID" in seen["system"]
+    assert "Spark Shield 1/3" in seen["user"] and "Burning x2" in seen["user"] and "ACTING NOW" in seen["user"] and "OUT (cannot act)" in seen["user"]

@@ -21,6 +21,7 @@
     <span id="save-chip" class="ct-chip" role="status" aria-live="polite">Saved</span>
   </div>
   <div id="conflict-note" class="ct-note" hidden></div>
+  <div id="finished-note" class="ct-note" {% if not combat.finished_at %}hidden{% endif %}>🏁 This encounter has ended{% if combat.finished_at %} ({{ combat.finished_at.strftime('%b %d %H:%M') }} UTC){% endif %}. It is kept in the list; “Reopen” to carry on.</div>
 
   <!-- Fluid initiative: whoever just acted chooses who goes next -->
   <div id="chooser" class="ct-panel" hidden></div>
@@ -43,8 +44,14 @@
   <div class="ct-actions">
     <button type="button" id="ai-tactics-btn" onclick="combatAiTactics()" class="ct-btn ct-ai" title="Suggest NPC tactics and a dramatic beat from the current fight — writes nothing">✨ AI Tactics</button>
     <button type="button" id="roll-init-btn" class="ct-btn" title="Roll d10 + Speed for every enemy that has no initiative yet (Shift: re-roll all enemies)">🎲 Roll NPC initiative</button>
-    <button type="button" id="sync-btn" class="ct-btn">🔄 Sync Characters</button>
+    <button type="button" id="sync-btn" class="ct-btn" title="Write HP, Shock, conditions and resources from this fight onto the characters' sheets">🔄 Sync to sheets</button>
+    <button type="button" id="pull-btn" class="ct-btn" title="Read what the sheets say now (a player healed or spent something) into this fight">⬇ Pull from sheets</button>
+    <button type="button" id="screen-btn" class="ct-btn" title="Show the turn order on the second screen (players' view: no enemy names or numbers)">📺 Turn order on screen</button>
     <label class="ct-check"><input type="checkbox" id="compact-toggle"/> Compact</label>
+    <button type="button" id="finish-btn" class="ct-btn" title="End the encounter and note how it went on the session's fact list">🏁 End encounter</button>
+    <button type="button" id="reopen-btn" class="ct-btn" hidden>↩ Reopen</button>
+    <form method="post" action="/combat/{{ combat.id }}/duplicate" style="display:inline"><button type="submit" class="ct-btn" title="The same combatants again, at the start of a fight">⧉ Run again</button></form>
+    <form method="post" action="/combat/{{ combat.id }}/save-template" style="display:inline" id="tpl-form" data-default="{{ combat.name }}"><input type="hidden" name="name"/><button type="submit" class="ct-btn" title="Keep the enemies as a template to run again">📋 Save as template</button></form>
     <button type="button" id="delete-btn" class="ct-btn ct-danger" style="margin-left:auto">🗑 Delete Encounter</button>
     <form id="del-form" method="post" action="/combat/{{ combat.id }}/delete" style="display:none"></form>
   </div>
@@ -900,6 +907,71 @@ document.getElementById('roll-init-btn').addEventListener('click', (e) => {
     addLog('Rolled initiative: ' + lines.join(', '));
   });
   undoStack[undoStack.length - 1].label = 'Rolled NPC initiative';
+});
+
+document.getElementById('pull-btn').addEventListener('click', async () => {
+  await flushSave();
+  const res = await fetch('/api/combat/' + COMBAT_ID + '/pc-state');
+  if (!res.ok) return;
+  const sheets = (await res.json()).pcs || {};
+  const ids = Object.keys(sheets).filter(id => byId(id));
+  if (!ids.length) { addLog('Pull: no player characters in this fight'); render(); return; }
+  act('', s => {
+    const changed = [];
+    ids.forEach(id => {
+      const c = s.combatants.find(x => x.id === id), sh = sheets[id], bits = [];
+      if (n(c.hp) !== n(sh.hp)) bits.push(rs().hp_label + ' ' + n(c.hp) + '→' + n(sh.hp));
+      if (sh.max_hp) c.max_hp = sh.max_hp;
+      c.hp = Math.min(n(sh.hp), n(c.max_hp));
+      if (c.max_shock && n(c.shock) !== n(sh.shock)) bits.push('Shock ' + n(c.shock) + '→' + n(sh.shock));
+      if (sh.max_shock) { c.max_shock = sh.max_shock; c.shock = n(sh.shock); }
+      Object.keys(sh.res || {}).forEach(k => {
+        const old = (c.res || {})[k];
+        if (!old || n(old.cur) !== n(sh.res[k].cur)) bits.push(sh.res[k].label + ' ' + (old ? n(old.cur) : '?') + '→' + n(sh.res[k].cur));
+        c.res = c.res || {}; c.res[k] = Object.assign({}, old || {}, sh.res[k]);
+      });
+      // conditions: the sheet lists each once; keep the fight's stacks of any the sheet still has
+      const have = {}; (c.conditions || []).forEach(x => { have[x.toLowerCase()] = (have[x.toLowerCase()] || 0) + 1; });
+      const next = [];
+      (sh.conditions || []).forEach(x => { const n0 = have[x.toLowerCase()] || 1; for (let i = 0; i < n0; i++) next.push(x); });
+      if (JSON.stringify(next.slice().sort()) !== JSON.stringify((c.conditions || []).slice().sort())) bits.push('conditions: ' + (next.join(', ') || 'none'));
+      c.conditions = next;
+      if (bits.length) changed.push(c.name + ' (' + bits.join('; ') + ')');
+    });
+    addLog('Pulled from the sheets: ' + (changed.join('; ') || 'nothing had changed'));
+  });
+  undoStack[undoStack.length - 1].label = 'Pulled from the sheets';
+});
+
+document.getElementById('tpl-form').addEventListener('submit', (e) => {
+  const f = e.target, name = prompt('Template name', f.dataset.default);
+  if (!name || !name.trim()) { e.preventDefault(); return; }
+  f.name.value = name.trim();
+});
+
+document.getElementById('screen-btn').addEventListener('click', async () => {
+  const res = await fetch('/api/display/show', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'combat', combat_id: COMBAT_ID }) });
+  const note = document.getElementById('conflict-note');
+  note.hidden = false; note.textContent = res.ok ? 'Turn order sent to the second screen.' : 'Could not send it to the second screen.';
+  setTimeout(() => { note.hidden = true; }, 4000);
+});
+
+let finishedAt = {{ 'true' if combat.finished_at else 'false' }};
+function showFinished() {
+  document.getElementById('finished-note').hidden = !finishedAt;
+  document.getElementById('finish-btn').hidden = finishedAt;
+  document.getElementById('reopen-btn').hidden = !finishedAt;
+}
+showFinished();
+document.getElementById('finish-btn').addEventListener('click', async () => {
+  if (!confirm('End this encounter? A GM-only fact with how it went is added to the session.')) return;
+  await flushSave();
+  const res = await fetch('/api/combat/' + COMBAT_ID + '/finish', { method: 'POST' });
+  if (res.ok) { finishedAt = true; showFinished(); } else alert('Could not end the encounter.');
+});
+document.getElementById('reopen-btn').addEventListener('click', async () => {
+  const res = await fetch('/api/combat/' + COMBAT_ID + '/reopen', { method: 'POST' });
+  if (res.ok) { finishedAt = false; showFinished(); }
 });
 
 document.getElementById('sync-btn').addEventListener('click', async () => {

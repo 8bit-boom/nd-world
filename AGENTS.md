@@ -285,6 +285,11 @@ tools that require GM access still check `is_gm` at call time.)
   ruleset's `skip_down`: enemies / all / none) is skipped by `nextTurn`/`advance` and never holds a fluid round up (`combat_rules.is_out`
   and `combat-core.js isOut` agree, tested on the same cases); a condition typed "Burn 3" lasts 3 rounds (`cond_dur`, ticked down
   each new round); Phase Break (boss: shield refreshes, Phase counter up).
+  **Lifecycle**: "Run again" (`_copy_encounter`: NPCs full HP, nothing spent, PCs keep their HP), templates (`is_template` rows: the NPCs only; Run adds
+  the party; hidden from lists, cockpit, maps and players), "End encounter" (`finished_at` + a GM-only `combat` fact written from the stored state
+  and log), "Pull from sheets" (`/pc-state`; the other half of Sync) and the second screen (`display_combat.html`, `/api/display/combat/ID/state`
+  - always `_player_state`, so a GM-signed-in TV window never carries enemy names or numbers). AI Tactics sends the ruleset, whose turn it is,
+  conditions with stacks, armor, resources and who is out.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

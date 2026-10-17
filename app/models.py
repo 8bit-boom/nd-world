@@ -1015,6 +1015,9 @@ class CombatSession(Base):
     # Fluid-initiative turn state (Hunt in the Moonlight, Asterion): {"active_id", "acted": [ids this round], "picker": id of whoever is
     # choosing who acts next}. Unused (and "{}") for initiative-order systems, which keep their position in active_idx.
     turn_json = Column(Text, default="{}")
+    # When the GM ended the encounter (None = still running) and whether this row is a reusable template (its NPCs, ready to run again).
+    finished_at = Column(DateTime, nullable=True)
+    is_template = Column(Boolean, default=False, server_default="0")
     # The encounter's event log (damage, heals, turns, conditions): [{t, round, text}], capped at combat_state.MAX_LOG.
     log_json = Column(Text, default="[]")
     game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)

@@ -15,20 +15,55 @@
   </div>
 </div>
 
-{% if sessions %}
-<div class="card-grid">
-  {% for s in sessions %}
-  <a href="{{ ('/combat/' + s.id|string)|wq }}" class="entity-card">
+{% if sessions or enc_templates %}
+<div style="margin:.2rem 0 .9rem"><input id="enc-filter" type="search" placeholder="Filter encounters…" aria-label="Filter encounters"
+  style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.82rem;border-radius:3px;max-width:100%;width:20rem"/></div>
+{% endif %}
+
+{% if enc_templates %}
+<h2 style="color:var(--neon);font-size:.9rem;margin:.6rem 0 .5rem">📋 Templates <span style="color:var(--text-dim);font-weight:normal">— enemies kept to run again</span></h2>
+<div class="card-grid" id="tpl-grid">
+  {% for t in enc_templates %}
+  <div class="entity-card" data-name="{{ t.name|lower }}" style="cursor:default">
     <div class="entity-card-body">
-      <span class="entity-kind">⚔ Round {{ s.round_num }}{% if s.ruleset %} · {{ rule_labels.get(s.ruleset, s.ruleset) }}{% endif %}</span>
+      <span class="entity-kind">📋 {{ rule_labels.get(t.ruleset, 'Generic') if t.ruleset else 'Template' }}</span>
+      <h3>{{ t.name }}</h3>
+      <p>{{ template_counts.get(t.id, 0) }} enem{{ 'y' if template_counts.get(t.id, 0) == 1 else 'ies' }}</p>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.4rem">
+        <form method="post" action="/combat/templates/{{ t.id }}/run"><button type="submit" class="btn-new" style="padding:.25rem .7rem;font-size:.78rem" title="Starts a fight with these enemies and the whole party">▶ Run</button></form>
+        <form method="post" action="/combat/{{ t.id }}/delete" onsubmit="return confirm('Delete this template?')"><button type="submit" style="background:none;border:1px solid #c44;color:#c44;border-radius:3px;padding:.25rem .6rem;font-size:.78rem;cursor:pointer">🗑</button></form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if sessions %}
+<h2 style="color:var(--neon);font-size:.9rem;margin:1rem 0 .5rem">⚔ Encounters</h2>
+<div class="card-grid" id="enc-grid">
+  {% for s in sessions %}
+  <a href="{{ ('/combat/' + s.id|string)|wq }}" class="entity-card" data-name="{{ s.name|lower }}" style="{{ 'opacity:.6' if s.finished_at else '' }}">
+    <div class="entity-card-body">
+      <span class="entity-kind">{{ '🏁 Finished' if s.finished_at else '⚔ Round ' ~ s.round_num }}{% if s.ruleset %} · {{ rule_labels.get(s.ruleset, s.ruleset) }}{% endif %}</span>
       <h3>{{ s.name }}</h3>
-      <p>{{ combatant_counts.get(s.id, 0) }} combatant{{ 's' if combatant_counts.get(s.id, 0) != 1 }}</p>
+      <p>{{ combatant_counts.get(s.id, 0) }} combatant{{ 's' if combatant_counts.get(s.id, 0) != 1 }}{% if s.finished_at %} · ended {{ s.finished_at.strftime('%b %d') }}{% endif %}</p>
     </div>
   </a>
   {% endfor %}
 </div>
-{% else %}
+{% elif not enc_templates %}
 <p style="color:var(--text-dim);text-align:center;padding:2rem">No encounters yet. Name one above and hit "+ New Encounter".</p>
 {% endif %}
 {% include "_pagination.html" %}
+<script>
+(function () {
+  var f = document.getElementById('enc-filter');
+  if (!f) return;
+  f.addEventListener('input', function () {
+    var q = f.value.trim().toLowerCase();
+    document.querySelectorAll('#enc-grid [data-name], #tpl-grid [data-name]').forEach(function (c) { c.style.display = !q || c.dataset.name.indexOf(q) >= 0 ? '' : 'none'; });
+  });
+})();
+</script>
 {% endblock %}

@@ -464,6 +464,14 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/combat/{combat_id}/ai-tactics` | GM | Suggests NPC tactics (2-4 concrete moves) and one dramatic beat from the live roster/round — a suggestion panel; writes nothing, deterministic combat mechanics untouched. |
 | POST | `/combat/{combat_id}/state` | GM | Saves the tracker. The body is cleaned and bounded (`combat_state.normalize_state`; 422 when unusable, at most 60 combatants). Send the `rev` you last saw: if the encounter moved on (a player's initiative roll, the map's HP push, another tab) nothing is written and the answer is **409** with the current `state`; the page merges its edits onto it. Returns `{ok, rev}`. Only for an encounter of the active world (404 otherwise). |
 | POST | `/combat/{combat_id}/delete` | GM | Deletes a combat session. |
+| POST | `/combat/{combat_id}/duplicate` | GM | "Run again": a copy of the encounter at the start of a fight (NPCs at full HP, no conditions / initiative, PCs keep their HP, round 1). Redirects to it. |
+| POST | `/combat/{combat_id}/save-template` | GM | Keeps the encounter's NPCs as a template (`name`); templates are hidden from the fight list, the cockpit picker, the maps and players. |
+| POST | `/combat/templates/{template_id}/run` | GM | Starts a fight from a template with the whole party added. |
+| POST | `/api/combat/{combat_id}/finish` | GM | Ends the encounter (`finished_at`) and writes a GM-only fact tagged `combat` on the linked session - composed server-side from the stored state and log. Idempotent. |
+| POST | `/api/combat/{combat_id}/reopen` | GM | Clears `finished_at`. |
+| GET | `/api/combat/{combat_id}/pc-state` | GM | What the encounter's player characters look like on their sheets now (`hp`, `max_hp`, `shock`, `max_shock`, `conditions`, `res`) - the page's "Pull from sheets". |
+| GET | `/display/combat/{combat_id}` | GM | The turn order for the second screen (a bare page; shown by `POST /api/display/show {"kind": "combat", "combat_id"}`). |
+| GET | `/api/display/combat/{combat_id}/state` | GM | The PLAYER view of the encounter for that page - enemies as "Enemy A", health as a word - however the window is signed in. |
 | POST | `/combat/{combat_id}/link-session` | GM | Associates this combat with a `GameSession`. |
 | POST | `/combat/{combat_id}/unlink-session` | GM | Removes that association. |
 | POST | `/api/combat/{combat_id}/sync-characters` | GM | Pushes the encounter's HP, Shock, conditions (each once) and - for a custom system - every other resource track (Spark Shield, Ichor, Stamina ...), or PP / MP on a native sheet, onto the player characters' sheets. |

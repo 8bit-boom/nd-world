@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 from .. import combat_rules, combat_state, combat_turns, live
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
-from ..models import CombatSession, Entity, GameSession, PlayerCharacter, SheetTemplate, World
+from ..models import CombatSession, Entity, Fact, GameSession, PlayerCharacter, SheetTemplate, World
 from ..pc_stats import clean_conditions, pc_maxima, speed as pc_speed
 from ..sheet_systems import hp_track, parse_custom_fields, resource_tracks, system_meta, template_fields
 from ..templating import templates
@@ -171,7 +172,9 @@ def _is_gm(request: Request) -> bool:
 
 
 def _scoped(db: Session, request: Request, active_world, combat_id: int):
-    """(world, encounter) for a route that CHANGES an encounter: the encounter must belong to the active world."""
+    """(world, encounter) for a GM route that changes or reads an encounter in full: the encounter must belong to the active world."""
+    if not _is_gm(request):
+        raise HTTPException(403)
     world, _ = get_world_ctx(request, db, active_world)
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
     if not world or not cs or cs.world_id != world.id:
@@ -224,15 +227,19 @@ def combat_list(request: Request, page: int = 1, db: Session = Depends(get_db), 
     world, worlds = get_world_ctx(request, db, active_world)
     if not world_can_view_section(request, world, "combat"):
         raise HTTPException(403)
-    base_q = db.query(CombatSession).filter(
-        CombatSession.world_id == (world.id if world else 1)
-    ).order_by(CombatSession.updated_at.desc())
+    world_id = world.id if world else 1
+    gm = _is_gm(request)
+    base_q = db.query(CombatSession).filter(CombatSession.world_id == world_id, CombatSession.is_template.isnot(True)).order_by(
+        CombatSession.finished_at.isnot(None), CombatSession.updated_at.desc())      # running fights first, finished ones after
     sessions, page, total_pages = paginate(base_q, page)
     combatant_counts = {s.id: len(combat_turns.load(s)) for s in sessions}
+    templates_ = (db.query(CombatSession).filter(CombatSession.world_id == world_id, CombatSession.is_template.is_(True))
+                  .order_by(CombatSession.name).all()) if gm else []
     return templates.TemplateResponse("combat/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "sessions": sessions, "combatant_counts": combatant_counts,
-        "page": page, "total_pages": total_pages,
+        "page": page, "total_pages": total_pages, "is_gm": gm,
+        "enc_templates": templates_, "template_counts": {t.id: len(combat_turns.load(t)) for t in templates_},
         "rule_labels": {k: v["label"] for k, v in combat_rules.RULESETS.items()},
     })
 
@@ -254,7 +261,7 @@ def combat_create(request: Request, name: str = Form("New Encounter"), ruleset: 
 def combat_detail(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
-    if not cs or not world_row_visible(request, db, cs.world_id, "combat"):
+    if not cs or not world_row_visible(request, db, cs.world_id, "combat") or (cs.is_template and not _is_gm(request)):
         raise HTTPException(404)
     if not _is_gm(request):
         # a player gets the read-only view, built from the sanitized state - never the GM's page or its data
@@ -291,8 +298,8 @@ def combat_recent(request: Request, db: Session = Depends(get_db), active_world:
         raise HTTPException(400, "No active world")
     rows = (
         db.query(CombatSession)
-        .filter(CombatSession.world_id == world.id)
-        .order_by(CombatSession.created_at.desc(), CombatSession.id.desc())
+        .filter(CombatSession.world_id == world.id, CombatSession.is_template.isnot(True))
+        .order_by(CombatSession.finished_at.isnot(None), CombatSession.created_at.desc(), CombatSession.id.desc())
         .limit(10)
         .all()
     )
@@ -304,7 +311,7 @@ def combat_recent(request: Request, db: Session = Depends(get_db), active_world:
 @router.get("/api/combat/{combat_id}/state")
 def combat_get_state(combat_id: int, request: Request, db: Session = Depends(get_db)):
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
-    if not cs or not world_row_visible(request, db, cs.world_id, "combat"):
+    if not cs or not world_row_visible(request, db, cs.world_id, "combat") or (cs.is_template and not _is_gm(request)):
         raise HTTPException(404)
     return _full_state(cs) if _is_gm(request) else _player_state(cs)
 
@@ -419,6 +426,147 @@ def combat_sync_characters(combat_id: int, request: Request, db: Session = Depen
     return {"synced": synced, "skipped": skipped}
 
 
+def _fresh(c: dict, keep_hp: bool = False) -> dict:
+    """A combatant as it starts a fight: full HP (a PC keeps what it has), no conditions, nothing spent, no saves, no initiative to speak of."""
+    c = json.loads(json.dumps(c))
+    c["id"] = "c-" + uuid.uuid4().hex[:8]
+    if not keep_hp:
+        c["hp"] = c.get("max_hp", c.get("hp", 0))
+        c["shock"] = c.get("max_shock", 0) if c.get("source") != "pc" else c.get("shock", 0)
+        for r in (c.get("res") or {}).values():
+            if isinstance(r, dict) and r.get("max"):
+                r["cur"] = r["max"]
+    c.update({"temp_hp": 0, "conditions": [], "cond_dur": {}, "used": {}, "saves": {"ok": 0, "fail": 0, "ko": 0}, "status": "", "press_on": False})
+    if c.get("source") != "pc":
+        c["initiative"] = 0
+        c["tiebreak"] = 0
+    return c
+
+
+def _copy_encounter(db: Session, src: CombatSession, name: str, *, npcs_only: bool = False, template: bool = False,
+                    with_party: bool = False) -> CombatSession:
+    rows = [c for c in combat_turns.load(src) if not (npcs_only and c.get("source") == "pc")]
+    combatants = [_fresh(c, keep_hp=(c.get("source") == "pc")) for c in rows]
+    if with_party:
+        have = {c.get("pc_id") for c in combatants if c.get("pc_id")}
+        for pc in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == src.world_id).order_by(PlayerCharacter.name).all():
+            if pc.id not in have:
+                combatants.append(pc_to_combatant(pc, db))
+    cs = CombatSession(world_id=src.world_id, name=name[:256], ruleset=src.ruleset or "", is_template=template,
+                       combatants_json=json.dumps(combat_state.normalize_state({"combatants": combatants})["combatants"]),
+                       party_id=None if template else src.party_id)
+    turn = combat_turns.turn_state(src)
+    combat_turns.set_turn_state(cs, {"active_id": None, "acted": [], "picker": None, "mode": turn.get("mode", "")})
+    db.add(cs)
+    return cs
+
+
+@router.post("/combat/{combat_id}/duplicate")
+def combat_duplicate(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Run it again: the same combatants at the start of a fight (full HP, no conditions, round 1)."""
+    _, cs = _scoped(db, request, active_world, combat_id)
+    new = _copy_encounter(db, cs, f"{cs.name} (again)")
+    db.commit()
+    db.refresh(new)
+    return RedirectResponse(f"/combat/{new.id}", status_code=303)
+
+
+@router.post("/combat/{combat_id}/save-template")
+async def combat_save_template(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Keep this fight's enemies as a template to run again (the player characters are added fresh each time)."""
+    _, cs = _scoped(db, request, active_world, combat_id)
+    form = await request.form()
+    name = " ".join(str(form.get("name") or "").split()) or cs.name
+    _copy_encounter(db, cs, name, npcs_only=True, template=True)
+    db.commit()
+    return RedirectResponse("/combat", status_code=303)
+
+
+@router.post("/combat/templates/{template_id}/run")
+def combat_run_template(template_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    _, tpl = _scoped(db, request, active_world, template_id)
+    if not tpl.is_template:
+        raise HTTPException(404)
+    new = _copy_encounter(db, tpl, tpl.name, with_party=True)
+    new.is_template = False
+    db.commit()
+    db.refresh(new)
+    return RedirectResponse(f"/combat/{new.id}", status_code=303)
+
+
+def _summary_text(cs: CombatSession) -> str:
+    """The fight in a few lines for the session's fact list, written from what is stored (never from what a browser says)."""
+    combatants = combat_turns.load(cs)
+    rules = combat_rules.get(cs.ruleset)
+    standing = [c for c in combatants if not combat_rules.is_out(c, cs.ruleset) and not (int(c.get("hp") or 0) <= 0 and int(c.get("max_hp") or 0) > 0)]
+    down = [c for c in combatants if c not in standing and c.get("status") != "dead"]
+    dead = [c for c in combatants if c.get("status") == "dead"]
+
+    def hp(c):
+        return f"{c.get('name')} ({c.get('hp', 0)}/{c.get('max_hp', 0)} {rules['hp_label']})"
+
+    lines = [f"⚔ {cs.name} — ended in round {cs.round_num or 1} ({rules['label']})."]
+    if standing:
+        lines.append("Standing: " + ", ".join(hp(c) for c in standing) + ".")
+    if down:
+        lines.append("Down: " + ", ".join(str(c.get("name")) for c in down) + ".")
+    if dead:
+        lines.append("Dead: " + ", ".join(str(c.get("name")) for c in dead) + ".")
+    try:
+        log = [e for e in json.loads(cs.log_json or "[]") if isinstance(e, dict) and e.get("text") and not str(e["text"]).startswith(("—", "↶", "↷"))]
+    except ValueError:
+        log = []
+    notable = [e for e in log if any(w in str(e["text"]) for w in (" is down", " is Broken", "Shattered", "dies", "executed", "Wound", "Presses On", "takes "))]
+    if notable:
+        lines.append("Highlights: " + "; ".join(f"R{e.get('round', 1)} {e['text']}" for e in notable[-10:]))
+    return "\n".join(lines)
+
+
+@router.post("/api/combat/{combat_id}/finish")
+def combat_finish(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """End the encounter: it moves to the finished list and a GM-only fact (tagged "combat", on the linked session) records how it went."""
+    world, cs = _scoped(db, request, active_world, combat_id)
+    if cs.is_template:
+        raise HTTPException(400, "A template cannot be finished")
+    if cs.finished_at is not None:
+        return {"ok": True, "already": True}
+    user = getattr(request.state, "user", None)
+    fact = Fact(world_id=world.id, game_session_id=cs.game_session_id, content=_summary_text(cs), visible_to_players=False, tags="combat",
+                author_id=user.id if user else None, updated_at=datetime.utcnow())
+    db.add(fact)
+    cs.finished_at = datetime.utcnow()
+    combat_turns.touch(cs)
+    db.commit()
+    live.touch(cs.world_id)
+    return {"ok": True, "fact_id": fact.id}
+
+
+@router.post("/api/combat/{combat_id}/reopen")
+def combat_reopen(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    _, cs = _scoped(db, request, active_world, combat_id)
+    cs.finished_at = None
+    combat_turns.touch(cs)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/api/combat/{combat_id}/pc-state")
+def combat_pc_state(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """What the player characters in this encounter are like ON THEIR SHEETS right now (HP, Shock, conditions, resource tracks) - the
+    other direction of Sync: the GM can pull in a heal or a spent point a player made on their own page."""
+    _, cs = _scoped(db, request, active_world, combat_id)
+    out = {}
+    for c in combat_turns.load(cs):
+        if c.get("source") != "pc" or not c.get("pc_id"):
+            continue
+        pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == c["pc_id"], PlayerCharacter.world_id == cs.world_id).first()
+        if not pc:
+            continue
+        sheet = pc_to_combatant(pc, db)
+        out[c["id"]] = {k: sheet[k] for k in ("hp", "max_hp", "shock", "max_shock", "conditions", "res")}
+    return {"pcs": out}
+
+
 # ── AI tactics assist ────────────────────────────────────────────────────────
 # Reads the CURRENT combat state (combatants, HP, round — no dice, no
 # math) and proposes NPC tactics + a dramatic beat for the GM to use or
@@ -444,28 +592,56 @@ async def combat_ai_tactics(combat_id: int, request: Request,
     from .. import ai as _ai
     if not _ai.effective_llm_api_key():
         raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System)")
-    try:
-        combatants = json.loads(cs.combatants_json or "[]")
-    except ValueError:
-        combatants = []
+    combatants = combat_turns.load(cs)
+    rules = combat_rules.get(cs.ruleset)
+    fluid = combat_turns.is_fluid(cs)
+    active_id = combat_turns.active_combatant_id(cs, combatants)
+    ts = combat_turns.turn_state(cs)
     roster = []
     for c in combatants[:20]:
         if not isinstance(c, dict):
             continue
-        hp = c.get("hp")
-        roster.append(f"- {c.get('name', '?')}: hp {hp if hp is not None else '?'}"
-                      + (f", {c.get('notes')}" if c.get("notes") else ""))
+        side = "PLAYER CHARACTER" if c.get("source") == "pc" else "NPC/monster"
+        bits = [f"{rules['hp_label']} {c.get('hp', '?')}/{c.get('max_hp', '?')}"]
+        if c.get("temp_hp"):
+            bits.append(f"temp {c['temp_hp']}")
+        if c.get("max_shock"):
+            bits.append(f"Shock {c.get('shock', 0)}/{c['max_shock']}")
+        for rid, r in (c.get("res") or {}).items():
+            if isinstance(r, dict):
+                bits.append(f"{r.get('label') or rid} {r.get('cur', 0)}/{r.get('max', 0)}")
+        if c.get("armor"):
+            bits.append(f"armor {c['armor']}")
+        conds = {}
+        for x in c.get("conditions") or []:
+            conds[x] = conds.get(x, 0) + 1
+        if conds:
+            bits.append("conditions: " + ", ".join(f"{k}{' x' + str(v) if v > 1 else ''}" for k, v in conds.items()))
+        if combat_rules.is_out(c, cs.ruleset):
+            bits.append("OUT (cannot act)")
+        if c.get("id") == active_id:
+            bits.append("ACTING NOW")
+        elif fluid and c.get("id") in ts["acted"]:
+            bits.append("already acted this round")
+        if not fluid:
+            bits.append(f"initiative {c.get('initiative', 0)}")
+        if c.get("notes"):
+            bits.append(f"GM note: {str(c['notes'])[:120]}")
+        roster.append(f"- {c.get('name', '?')} [{side}]: " + "; ".join(bits))
     if not roster:
         raise HTTPException(400, "No combatants in this fight yet")
 
+    turn_rule = ("Initiative is FLUID: after a turn, that combatant chooses who acts next - say which target each NPC should pass the turn to and why."
+                 if fluid else "Initiative order is numeric; act in that order.")
     system = (
-        "You are a tactically sharp TTRGM assistant. From the combat roster and round, "
+        f"You are a tactically sharp TTRPG GM assistant running {rules['label']}. {turn_rule} "
+        "From the combat roster and round, "
         "suggest how the NPCs/monsters should act THIS round and one dramatic beat to keep "
         "the fight exciting. Reply ONLY with JSON, no fences:\n"
         '{"tactics": [{"who": str (combatant name), "move": str (one concrete action, '
         '<=160 chars)}], "beat": str (one dramatic twist/turn of the battle, <=200 chars)}\n'
         "Rules: 2-4 tactics, only for NON-player combatants (names come from the roster; "
-        "PCs are the players' to run); exploit positioning/statuses mentioned; the beat "
+        "PCs are the players' to run); skip anyone marked OUT; use the conditions, armor and resources shown; the beat "
         "should escalate, not end the fight unless it's clearly nearly over."
     )
     try:

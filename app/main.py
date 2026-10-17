@@ -3361,7 +3361,7 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         Entity.world_id == s.world_id, Entity.kind == "item"
     ).order_by(Entity.name).all()
     item_payload = [{"id": e.id, "name": e.name, "summary": e.summary or "", "image_url": e.image_url or ""} for e in item_entities]
-    combat_sessions = db.query(CombatSession).filter(CombatSession.world_id == s.world_id).order_by(CombatSession.updated_at.desc()).all()
+    combat_sessions = db.query(CombatSession).filter(CombatSession.world_id == s.world_id, CombatSession.is_template.isnot(True)).order_by(CombatSession.updated_at.desc()).all()
     linked_combat = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first() if s.combat_session_id else None
     active_combatant_id, combat_round = None, None
     if linked_combat:

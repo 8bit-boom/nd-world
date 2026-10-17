@@ -1,0 +1,74 @@
+<!doctype html>
+{# The turn order of a fight for the table's TV (see app/routers/display.py display_combat_page). A bare document: it shows only the
+   PLAYER view of the encounter (enemies as "Enemy A", health as a word) - the data comes from /api/display/combat/ID/state. #}
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="robots" content="noindex"/>
+<title>{{ title }}</title>
+<style>
+  html, body { margin:0; height:100%; background:#0b0b0e; color:#ece8dd; font-family:Georgia, "Times New Roman", serif; overflow:hidden; }
+  body { display:flex; flex-direction:column; padding:2.2vh 3vw; box-sizing:border-box; }
+  h1 { margin:0; font-weight:normal; letter-spacing:.06em; color:#e6cf9b; font-size:clamp(1.6rem, 4vw, 3.6rem); }
+  #bar { margin:1.2vh 0 2vh; font-size:clamp(1.1rem, 2.6vw, 2.4rem); color:#bdb7a5; }
+  #bar b { color:#fff; }
+  #list { flex:1; display:flex; flex-direction:column; gap:1.1vh; min-height:0; overflow:hidden; }
+  .row { flex:0 1 auto; display:flex; align-items:center; gap:2vw; padding:1.2vh 2vw; border:1px solid #3b3426; border-radius:10px; background:#15130f;
+         font-size:clamp(1.1rem, 2.8vw, 2.8rem); }
+  .row.active { border-color:#e6cf9b; box-shadow:0 0 0 2px #e6cf9b, 0 0 40px rgba(230,207,155,.25); background:#1d1a12; }
+  .row.acted { opacity:.55; }
+  .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { font-size:.55em; padding:.1em .6em; border-radius:.5em; background:#2a2620; color:#cfc7ad; letter-spacing:.08em; text-transform:uppercase; }
+  .tag.go { background:#e6cf9b; color:#000; }
+  .tag.bad { background:#a33; color:#fff; }
+  .bar { width:18vw; height:1.1vh; background:#26231d; border-radius:1vh; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:#d24a4a; }
+  .conds { font-size:.5em; color:#bdb7a5; }
+  #empty { margin:auto; color:#44403a; font-size:clamp(1.2rem, 3vw, 3rem); letter-spacing:.3em; text-transform:uppercase; }
+</style>
+</head>
+<body>
+<h1 id="title">{{ title }}</h1>
+<div id="bar"></div>
+<div id="list"></div>
+<script>
+(function () {
+  var ID = {{ combat_id }}, W = '?w=' + encodeURIComponent({{ world.slug | tojson }});
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function render(s) {
+    document.getElementById('title').textContent = s.name;
+    var bar = document.getElementById('bar'); bar.textContent = '';
+    bar.append('Round ');
+    var b = el('b', null, String(s.round_num)); bar.append(b);
+    var active = (s.rows || []).find(function (r) { return r.active; });
+    if (active) bar.append('  ·  ▶ ' + active.name);
+    else if (s.fluid) bar.append('  ·  ' + (s.picker ? s.picker + ' chooses who acts next' : 'who acts next?'));
+    var list = document.getElementById('list'); list.textContent = '';
+    if (!(s.rows || []).length) { list.append(el('div', null, 'The fight is about to begin')); list.firstChild.id = 'empty'; return; }
+    s.rows.forEach(function (r) {
+      var row = el('div', 'row' + (r.active ? ' active' : '') + (r.acted ? ' acted' : ''));
+      row.append(el('span', 'name', r.name));
+      if (r.active) row.append(el('span', 'tag go', 'acting'));
+      else if (r.acted) row.append(el('span', 'tag', 'acted'));
+      if (r.state === 'Down') row.append(el('span', 'tag bad', 'down'));
+      else if (r.kind === 'enemy') row.append(el('span', 'tag', r.state));
+      if (r.kind === 'pc') {
+        var bar2 = el('span', 'bar'); var fill = el('i'); fill.style.width = (r.max_hp > 0 ? Math.max(0, Math.min(100, r.hp / r.max_hp * 100)) : 0) + '%'; bar2.append(fill); row.append(bar2);
+        if ((r.conditions || []).length) row.append(el('span', 'conds', r.conditions.join(' · ')));
+      }
+      list.append(row);
+    });
+  }
+  function poll() {
+    fetch('/api/display/combat/' + ID + '/state' + W, { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(render).catch(function () { /* the next poll tries again */ });
+  }
+  poll(); setInterval(poll, 2000);
+  window.addEventListener('nd-live', poll);
+  document.addEventListener('keydown', function (e) { if (e.key === 'f' || e.key === 'F') { try { parent.postMessage({ type: 'nd-fullscreen' }, location.origin); } catch (x) {} } });
+})();
+</script>
+</body>
+</html>
