@@ -711,6 +711,168 @@ def hub_sessions(pc_id: int, request: Request, db: Session = Depends(get_db)):
     return {"enabled": True, "sessions": out}
 
 
+# ── Keepsakes: what was shown or sent to the players, kept on a character under a name of its own ──────────
+
+KEEPSAKE_MAX = 100
+_KEEPSAKE_KINDS = ("image", "video", "audio", "text")
+
+
+def _keepsake_out(k) -> dict:
+    return {"id": k.id, "kind": k.kind, "url": k.url or "", "text": k.text or "", "name": k.name, "description": k.description or "",
+            "by": k.saved_by, "at": k.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if k.created_at else None}
+
+
+def _clean_keepsake_text(value, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _saveable(db: Session, pc: PlayerCharacter, world, user, is_owner: bool) -> dict:
+    """Everything the viewer could keep, exactly as a PLAYER sees it: pictures shown to the table, notes the GM sent this player (owner
+    only - they are private to that player), and the pictures / videos / songs players may see on the Session Log."""
+    from .. import session_media as sm
+    from ..models import PrivateNote, WorldHandout
+    handouts = [{"id": h.id, "kind": "image", "url": h.url, "name": h.label or "Handout"}
+                for h in db.query(WorldHandout).filter(WorldHandout.world_id == pc.world_id).order_by(WorldHandout.id.desc()).limit(40).all()]
+    notes = []
+    if is_owner:
+        for n in (db.query(PrivateNote).filter(PrivateNote.world_id == pc.world_id, PrivateNote.player_user_id == user.id,
+                                               PrivateNote.author_id != user.id).order_by(PrivateNote.id.desc()).limit(30).all()):
+            notes.append({"id": n.id, "kind": "text", "name": n.title or "Note", "text": strip_gm_only((n.content or ""), user.id)[:600]})
+    session_items = []
+    if _player_level(world, "session_log") != "none":
+        for gs in db.query(GameSession).filter(GameSession.world_id == pc.world_id).order_by(GameSession.session_num.desc()).limit(15).all():
+            m = sm.viewer_media(db, gs, is_gm=False)
+            label = f"#{gs.session_num} {gs.title or 'Session'}"
+            for i in m["images"]:
+                session_items.append({"session_id": gs.id, "session": label, "kind": "image", "ref": i["uid"], "url": i["url"], "name": i["caption"] or "Picture"})
+            for v in m["videos"]:
+                session_items.append({"session_id": gs.id, "session": label, "kind": "video", "ref": str(v["id"]), "url": v["file_url"], "name": v["name"]})
+            for c in m["audio"]:
+                session_items.append({"session_id": gs.id, "session": label, "kind": "audio", "ref": str(c["id"]), "url": c["file_url"], "name": c["name"]})
+    return {"handouts": handouts, "notes": notes, "session": session_items[:60]}
+
+
+def _resolve_keepsake_source(db: Session, pc: PlayerCharacter, world, user, is_owner: bool, src) -> tuple:
+    """(kind, url, text, default name) for what the caller wants to keep, taken from the SERVER's copy of it - the client only says which
+    one, so nothing a player could not already see can be smuggled in. A GM may also keep a raw file address or a piece of text."""
+    from .. import session_media as sm
+    from ..models import PrivateNote, WorldHandout
+    if not isinstance(src, dict):
+        raise HTTPException(400, "source is required")
+    kind = src.get("type")
+    if kind == "handout":
+        h = db.get(WorldHandout, src.get("id") if isinstance(src.get("id"), int) else 0)
+        if not h or h.world_id != pc.world_id:
+            raise HTTPException(404, "That handout is gone")
+        return "image", h.url, "", h.label or "Handout"
+    if kind == "note":
+        n = db.get(PrivateNote, src.get("id") if isinstance(src.get("id"), int) else 0)
+        if not n or n.world_id != pc.world_id or n.player_user_id != pc.owner_user_id or (user and n.author_id == user.id and is_owner):
+            raise HTTPException(404, "That note is gone")
+        text = strip_gm_only(n.content or "", pc.owner_user_id).strip()
+        if not text:
+            raise HTTPException(404, "That note is empty")
+        return "text", "", text[:4000], n.title or "Note"
+    if kind == "session":
+        gs = db.get(GameSession, src.get("session_id") if isinstance(src.get("session_id"), int) else 0)
+        if not gs or gs.world_id != pc.world_id or _player_level(world, "session_log") == "none":
+            raise HTTPException(404, "That session is gone")
+        m = sm.viewer_media(db, gs, is_gm=False)
+        ref, what = str(src.get("ref") or ""), src.get("kind")
+        if what == "image":
+            hit = next((i for i in m["images"] if i["uid"] == ref), None)
+            if hit:
+                return "image", hit["url"], "", hit["caption"] or "Picture"
+        elif what == "video":
+            hit = next((v for v in m["videos"] if str(v["id"]) == ref), None)
+            if hit:
+                return "video", hit["file_url"], "", hit["name"]
+        elif what == "audio":
+            hit = next((c for c in m["audio"] if str(c["id"]) == ref), None)
+            if hit:
+                return "audio", hit["file_url"], "", hit["name"]
+        raise HTTPException(404, "Players cannot see that item")
+    if kind == "raw":
+        if not (user and user.is_gm):
+            raise HTTPException(403, "Only the GM can add that")
+        what = src.get("kind")
+        if what not in _KEEPSAKE_KINDS:
+            raise HTTPException(400, "kind must be image, video, audio or text")
+        if what == "text":
+            text = str(src.get("text") or "").strip()
+            if not text:
+                raise HTTPException(400, "Write the text to keep")
+            return "text", "", text[:4000], ""
+        url = str(src.get("url") or "").strip()
+        if not url.startswith("/uploads/") or ".." in url or len(url) > 500:
+            raise HTTPException(400, "Pick a file from this site's uploads")
+        return what, url, "", url.rsplit("/", 1)[-1]
+    raise HTTPException(400, "unknown source")
+
+
+@router.get("/api/characters/{pc_id}/hub/keepsakes")
+def hub_keepsakes(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """What this character has kept (newest first) and what could still be kept. Owner, or a GM looking in (who can also keep things)."""
+    from ..models import CharacterKeepsake
+    user, pc, world, is_owner = _hub_pc(request, db, pc_id)
+    rows = db.query(CharacterKeepsake).filter(CharacterKeepsake.character_id == pc.id).order_by(CharacterKeepsake.id.desc()).all()
+    return {"can_edit": True, "is_gm": bool(user.is_gm), "keepsakes": [_keepsake_out(k) for k in rows],
+            "saveable": _saveable(db, pc, world, user, is_owner)}
+
+
+@router.post("/api/characters/{pc_id}/hub/keepsakes")
+async def hub_keepsake_add(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Keep something under a name and a short description. Body: {name, description?, source: {type: handout|note|session|raw, ...}}.
+    The owner keeps what they were shown; the GM may keep it for them (and add a raw file / text)."""
+    from ..models import CharacterKeepsake
+    user, pc, world, is_owner = _hub_pc(request, db, pc_id)
+    body = await _json_body(request)
+    kind, url, text, default_name = _resolve_keepsake_source(db, pc, world, user, is_owner, body.get("source"))
+    name = _clean_keepsake_text(body.get("name"), 120) or _clean_keepsake_text(default_name, 120)
+    if not name:
+        raise HTTPException(400, "Give it a name")
+    if db.query(CharacterKeepsake).filter(CharacterKeepsake.character_id == pc.id).count() >= KEEPSAKE_MAX:
+        raise HTTPException(400, f"A character keeps at most {KEEPSAKE_MAX} things - delete one first")
+    row = CharacterKeepsake(world_id=pc.world_id, character_id=pc.id, kind=kind, url=url, text=text, name=name,
+                            description=_clean_keepsake_text(body.get("description"), 400), saved_by="gm" if (user.is_gm and not is_owner) else "player")
+    db.add(row)
+    db.commit()
+    return _keepsake_out(row)
+
+
+def _keepsake_of(db: Session, pc: PlayerCharacter, kid: int):
+    from ..models import CharacterKeepsake
+    row = db.get(CharacterKeepsake, kid)
+    if not row or row.character_id != pc.id:
+        raise HTTPException(404)
+    return row
+
+
+@router.post("/api/characters/{pc_id}/hub/keepsakes/{kid}")
+async def hub_keepsake_edit(pc_id: int, kid: int, request: Request, db: Session = Depends(get_db)):
+    """Rename a kept thing / change its description. Body: {name?, description?}."""
+    _user, pc, _world, _is_owner = _hub_pc(request, db, pc_id)
+    row = _keepsake_of(db, pc, kid)
+    body = await _json_body(request)
+    if "name" in body:
+        name = _clean_keepsake_text(body.get("name"), 120)
+        if not name:
+            raise HTTPException(400, "Give it a name")
+        row.name = name
+    if "description" in body:
+        row.description = _clean_keepsake_text(body.get("description"), 400)
+    db.commit()
+    return _keepsake_out(row)
+
+
+@router.post("/api/characters/{pc_id}/hub/keepsakes/{kid}/delete")
+def hub_keepsake_delete(pc_id: int, kid: int, request: Request, db: Session = Depends(get_db)):
+    _user, pc, _world, _is_owner = _hub_pc(request, db, pc_id)
+    db.delete(_keepsake_of(db, pc, kid))
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/api/characters/{pc_id}/hub/handouts")
 def hub_handouts(pc_id: int, request: Request, db: Session = Depends(get_db)):
     """Pictures the GM showed the table ("Send to players"), newest first - so a pop-up that was missed is not lost. Marks

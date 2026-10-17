@@ -79,6 +79,19 @@ body.nd-embed .pch-tags { display:none; }
 @keyframes pch-pulse { 50% { box-shadow:0 0 0 4px rgba(0,255,200,.18); } }
 @media (prefers-reduced-motion: reduce) { .pch-pill.turn { animation:none; } }
 
+/* keepsakes (kept pictures / videos / songs / text) - works with a thumb: big targets, 16px inputs (no zoom on a phone), a sheet that fills a narrow screen */
+.pch-kcard { border:1px solid var(--border); border-radius:8px; background:var(--bg3); padding:.6rem .7rem; margin-bottom:.6rem; display:flex; flex-direction:column; gap:.35rem; }
+.pch-kcard img, .pch-kcard video { width:100%; max-height:16rem; object-fit:contain; border-radius:6px; background:#000; display:block; cursor:zoom-in; }
+.pch-kcard audio { width:100%; }
+.pch-kcard pre { white-space:pre-wrap; word-break:break-word; font-family:var(--font); font-size:.85rem; margin:0; max-height:12rem; overflow:auto; }
+.pch-krow { display:flex; gap:.5rem; flex-wrap:wrap; }
+.pch-krow .pch-btn, .pch-kcard .pch-btn { min-height:44px; padding:0 .9rem; }
+.pch-modal { position:fixed; inset:0; z-index:1300; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; }
+.pch-modal-card { width:min(480px,94vw); max-height:92dvh; overflow:auto; background:var(--bg2); border:1px solid var(--neon); border-radius:10px; padding:.9rem 1rem calc(.9rem + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:.55rem; }
+.pch-modal-card label { font-size:.8rem; color:var(--text-dim); display:flex; flex-direction:column; gap:.2rem; }
+.pch-modal-card input, .pch-modal-card textarea, .pch-modal-card select { font-size:16px; min-height:44px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:.4rem .6rem; font-family:var(--font); box-sizing:border-box; width:100%; }
+.pch-modal-card textarea { min-height:5rem; }
+@media (max-width:720px) { .pch-modal { align-items:flex-end; } .pch-modal-card { width:100vw; border-radius:12px 12px 0 0; } }
 /* places launcher */
 .pch-places { display:grid; grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr)); gap:.5rem; margin-bottom:.4rem; }
 .pch-place { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.2rem; min-height:4.2rem; padding:.55rem .4rem; border:1px solid var(--border); border-radius:8px; background:var(--bg3); color:var(--text); font-family:var(--font); font-size:.85rem; text-align:center; cursor:pointer; text-decoration:none; }
@@ -143,6 +156,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="world"><span class="pch-ic">🌍</span><span class="pch-lb">World</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="schedule"><span class="pch-ic">🗓</span><span class="pch-lb">Schedule</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="sessions"><span class="pch-ic">📓</span><span class="pch-lb">Sessions</span></button>
+    <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="keepsakes"><span class="pch-ic">💾</span><span class="pch-lb">Kept</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="handouts"><span class="pch-ic">📬</span><span class="pch-lb">Handouts</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="companions"><span class="pch-ic">🐾</span><span class="pch-lb">Allies</span></button>
     <button type="button" class="pch-tab pch-tab--minor" role="tab" data-tab="log"><span class="pch-ic">📋</span><span class="pch-lb">Log</span></button>
@@ -232,6 +246,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   <section class="pch-panel" data-panel="world" hidden><div data-body="world" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="schedule" hidden><div data-body="schedule" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="sessions" hidden><div data-body="sessions" class="pch-muted">Loading…</div></section>
+  <section class="pch-panel" data-panel="keepsakes" hidden><div data-body="keepsakes" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="handouts" hidden><div data-body="handouts" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="companions" hidden><div data-body="companions" class="pch-muted">Loading…</div></section>
   <section class="pch-panel" data-panel="log" hidden><div data-body="log" class="pch-muted">Loading…</div></section>
@@ -257,8 +272,8 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   const PC_NAME = {{ pc.name | tojson }};
   const BASE = '/api/characters/' + PC_ID + '/hub/';
   const OWNER = hub.dataset.mode === 'owner';   // false = a GM looking in: read-only, no Notes tab
-  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'sessions', 'handouts', 'companions', 'log', 'places']
-                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'sessions', 'handouts', 'companions', 'log', 'places'];
+  const TABS = OWNER ? ['sheet', 'cockpit', 'journey', 'quests', 'notes', 'world', 'schedule', 'sessions', 'keepsakes', 'handouts', 'companions', 'log', 'places']
+                     : ['sheet', 'cockpit', 'journey', 'quests', 'world', 'schedule', 'sessions', 'keepsakes', 'handouts', 'companions', 'log', 'places'];
   const gmNote = document.getElementById('pch-gm-note');
 
   // ── tiny DOM helpers: everything from the server goes in via textContent /
@@ -645,6 +660,85 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       el.replaceChildren(...parts.filter(Boolean));
     } catch (e) { fail(el, e, loadSessions); }
   }
+  // ── Kept: pictures / videos / songs / text shown to the table, kept under a name and a short description ─────
+  function keepDialog(opts) {
+    // opts: {title, name, description, ask?: [{id,label,type,options?}], confirm, onSave(values)} - one sheet for keeping AND editing
+    return new Promise(resolve => {
+      const name = h('input', { type: 'text', maxlength: '120', value: opts.name || '', 'aria-label': 'Name' });
+      const desc = h('textarea', { maxlength: '400', rows: '3', 'aria-label': 'Short description', placeholder: 'A short description (optional)' });
+      desc.value = opts.description || '';
+      const extras = (opts.ask || []).map(a => {
+        const f = a.type === 'select' ? h('select', {}, a.options.map(o => h('option', { value: o[0], text: o[1] })))
+          : a.type === 'textarea' ? h('textarea', { rows: '4', maxlength: '4000' }) : h('input', { type: 'text', maxlength: '500', placeholder: a.placeholder || '' });
+        return { id: a.id, field: f, wrap: h('label', { text: a.label }, f), when: a.when };
+      });
+      const err = h('div', { class: 'pch-err', hidden: true });
+      const close = (v) => { overlay.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+      const onKey = e => { if (e.key === 'Escape') close(null); };
+      const save = h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: opts.confirm || 'Save', onclick: async () => {
+        const values = { name: name.value, description: desc.value };
+        extras.forEach(x => { values[x.id] = x.field.value; });
+        save.disabled = true;
+        try { await opts.onSave(values); close(true); } catch (e) { err.textContent = e.message; err.hidden = false; save.disabled = false; }
+      } });
+      const card = h('div', { class: 'pch-modal-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': opts.title },
+        h('b', { text: opts.title }), ...extras.map(x => x.wrap),
+        h('label', { text: 'Name' }, name), h('label', { text: 'Short description' }, desc), err,
+        h('div', { class: 'pch-krow' }, save, h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: 'Cancel', onclick: () => close(null) })));
+      const overlay = h('div', { class: 'pch-modal', onclick: e => { if (e.target === overlay) close(null); } }, card);
+      document.body.append(overlay);
+      document.addEventListener('keydown', onKey);
+      const sync = () => extras.forEach(x => { if (x.when) x.wrap.hidden = !x.when(extras); });
+      extras.forEach(x => x.field.addEventListener('input', sync)); sync();
+      name.focus();
+    });
+  }
+  const KIND_ICON = { image: '\ud83d\uddbc', video: '\ud83c\udfac', audio: '\ud83c\udfb5', text: '\ud83d\udcdd' };
+  function keepsakeMedia(k) {
+    if (k.kind === 'image') return h('img', { src: k.url, alt: k.name, loading: 'lazy', onclick: () => { if (window.openLightbox) openLightbox(k.url, k.name); else window.open(k.url, '_blank'); } });
+    if (k.kind === 'video') return h('video', { src: k.url, controls: true, preload: 'none', playsinline: true });
+    if (k.kind === 'audio') return h('audio', { src: k.url, controls: true, preload: 'none' });
+    return h('pre', { text: k.text });
+  }
+  async function loadKeepsakes() {
+    const el = body('keepsakes');
+    try {
+      const d = await api('keepsakes');
+      const parts = [h('div', { class: 'pch-sub', text: '\ud83d\udcbe Kept on ' + PC_NAME })];
+      if (!d.keepsakes.length) parts.push(h('p', { class: 'pch-muted', text: 'Nothing kept yet \u2014 open \u201cKeep something\u201d below to save a picture, song, video or note under your own name.' }));
+      d.keepsakes.forEach(k => {
+        const edit = h('button', { type: 'button', class: 'pch-btn', text: '\u270f Edit', onclick: () => keepDialog({ title: 'Rename', name: k.name, description: k.description, confirm: 'Save',
+          onSave: async v => { await send('keepsakes/' + k.id, { name: v.name, description: v.description }); } }).then(ok => { if (ok) loadKeepsakes(); }) });
+        const del = h('button', { type: 'button', class: 'pch-btn', text: '\ud83d\uddd1 Delete', onclick: async () => {
+          if (!confirm('Delete \u201c' + k.name + '\u201d from this character?')) return;
+          try { await send('keepsakes/' + k.id + '/delete'); loadKeepsakes(); } catch (e) { alert(e.message); } } });
+        parts.push(h('div', { class: 'pch-kcard' },
+          h('span', { class: 'pch-title', text: (KIND_ICON[k.kind] || '') + ' ' + k.name }),
+          k.description ? h('span', { class: 'pch-muted', text: k.description }) : null,
+          keepsakeMedia(k), h('div', { class: 'pch-krow' }, edit, del)));
+      });
+      const s = d.saveable || {};
+      const keepRow = (label, kind, source) => h('div', { class: 'pch-row' }, h('span', { class: 'pch-title', text: (KIND_ICON[kind] || '') + ' ' + label }),
+        h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: '\ud83d\udcbe Keep\u2026', onclick: () => keepDialog({ title: 'Keep \u201c' + label + '\u201d', name: label, confirm: 'Keep',
+          onSave: async v => { await send('keepsakes', { name: v.name, description: v.description, source }); } }).then(ok => { if (ok) loadKeepsakes(); }) }));
+      const more = h('details', {}, h('summary', { text: '\u2795 Keep something', style: 'min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--neon)' }));
+      const group = (title, rows) => { if (rows.length) more.append(h('div', { class: 'pch-sub', text: title }), ...rows); };
+      group('\ud83d\udcec Shown to the table', (s.handouts || []).map(x => keepRow(x.name, 'image', { type: 'handout', id: x.id })));
+      group('\u2709 Notes your GM sent you', (s.notes || []).map(x => keepRow(x.name, 'text', { type: 'note', id: x.id })));
+      group('\ud83d\udcd3 From the Session Log', (s.session || []).map(x => keepRow(x.name + '  \u00b7  ' + x.session, x.kind, { type: 'session', session_id: x.session_id, kind: x.kind, ref: x.ref })));
+      if (d.is_gm) {
+        more.append(h('div', { class: 'pch-sub', text: '\ud83c\udfb2 GM: add something' }),
+          h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: '\u2795 A file or a text\u2026', onclick: () => keepDialog({ title: 'Keep for ' + PC_NAME, confirm: 'Keep',
+            ask: [
+              { id: 'kind', label: 'What is it?', type: 'select', options: [['text', 'Text'], ['image', 'Picture'], ['video', 'Video'], ['audio', 'Song / audio']] },
+              { id: 'url', label: 'Its address (a file on this site, like /uploads/gallery/map.png)', type: 'text', when: xs => xs[0].field.value !== 'text' },
+              { id: 'text', label: 'The text', type: 'textarea', when: xs => xs[0].field.value === 'text' }],
+            onSave: async v => { await send('keepsakes', { name: v.name, description: v.description, source: { type: 'raw', kind: v.kind, url: v.url, text: v.text } }); } }).then(ok => { if (ok) loadKeepsakes(); }) }));
+      }
+      if (more.children.length > 1) parts.push(more);
+      el.replaceChildren(...parts);
+    } catch (e) { fail(el, e, loadKeepsakes); }
+  }
   // ── Handouts: pictures the GM showed the table, kept for whoever missed the pop-up ─────────────────────────
   async function loadHandouts() {
     const el = body('handouts');
@@ -962,7 +1056,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   document.addEventListener('click', ev => { if (!moreSheet.hidden && !moreSheet.contains(ev.target)) closeMore(); });
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
-  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog, sessions: loadSessions, handouts: loadHandouts, companions: loadCompanions };
+  const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog, sessions: loadSessions, keepsakes: loadKeepsakes, handouts: loadHandouts, companions: loadCompanions };
   if (OWNER) loaders.notes = loadNotes;
   // The embedded Player Cockpit only starts loading once its tab is opened. The loader (cockpit-frames.js) also gives
   // its page back - the cockpit AND its windows - after a minute on another tab, and loads it again when you return:

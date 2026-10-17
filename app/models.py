@@ -702,6 +702,24 @@ class CharacterCompanion(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CharacterKeepsake(Base):
+    """Something shown or sent to a player that they (or the GM, for them) kept on ONE character under their own name and a short
+    description: a picture, a video, a song or a piece of text. The content is copied here (a text) or referenced (an /uploads/ file), so
+    it stays when the handout list moves on."""
+    __tablename__ = "character_keepsakes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=False, index=True)
+    kind = Column(String(8), nullable=False)             # image | video | audio | text
+    url = Column(String(512), default="")
+    text = Column(Text, default="")
+    name = Column(String(120), nullable=False)
+    description = Column(String(400), default="")
+    saved_by = Column(String(8), default="player")       # player | gm
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class CharacterShare(Base):
     """A read-only link to ONE character's sheet that anyone holding the token can open without an account; the owner (or a
     GM) can revoke it. The token is the only secret and is never logged."""

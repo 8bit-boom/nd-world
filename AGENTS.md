@@ -301,6 +301,12 @@ tools that require GM access still check `is_gm` at call time.)
   picture's caption or a clip's own name (the ✏ in the session page's media panel) - the Session Log (`session_media.viewer_media`) already shows
   those names to players. The hub's 📓 Sessions tab (`GET /api/characters/ID/hub/sessions`) lists the world's Session Log through the PLAYER view
   (`viewer_media(..., is_gm=False)` even for a GM looking in, nothing hidden leaks into names) and opens each session in the pc-viewer.
+- **Keepsakes** (`CharacterKeepsake`, the hub's 💾 Kept tab, `character_hub.py` "Keepsakes" block): a picture / video / song / text that was shown or sent to
+  the players, kept on ONE character under the player's own name and a 400-character description - by the owner, or by the GM for them. The client
+  only says WHICH thing (`source`: handout, a note the GM sent that player, a Session Log item); `_resolve_keepsake_source` takes the content from the
+  server's copy (notes stripped of `[gmonly]`, Session media through the player view), so nothing a player could not see can be kept. Only a GM may add
+  a raw `/uploads/` address or text. Capped at `KEEPSAKE_MAX`, removed with the character (`char_extras.delete_for_character`). The dialog is one sheet
+  for keeping and editing: a bottom sheet on a phone, 16px inputs (no zoom), 44px buttons.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`
