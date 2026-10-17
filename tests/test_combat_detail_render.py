@@ -75,4 +75,4 @@ def test_combat_detail_renders_combatant_data(client, seed):
     r = client.get(f"/combat/{combat_id}")
     assert r.status_code == 200
     assert "Chrome Syndicate Thug" in r.text
-    assert "let combatants = JSON.parse(" in r.text
+    assert "const INITIAL = JSON.parse(" in r.text

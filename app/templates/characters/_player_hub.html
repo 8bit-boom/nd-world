@@ -828,10 +828,10 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     nowBusy = false;
     renderNow();
   }
-  async function combatAct(what) {
+  async function combatAct(what, body) {
     if (nowBusy) return;
     nowBusy = true;
-    try { await send(what); nowData.err = ''; } catch (e) { nowData.err = e.message; }
+    try { await send(what, body); nowData.err = ''; } catch (e) { nowData.err = e.message; }
     nowBusy = false;
     await refreshNow();
     renderNow();
@@ -846,10 +846,17 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     const c = d.combat;
     if (c) {
       const rnd = [h('span', { class: 'pch-long', text: ' · round ' + c.round }), h('span', { class: 'pch-short', text: ' · R' + c.round })];
-      const kind = c.turn === 'me' ? 'turn' : c.next_is_me ? 'soon' : '';
+      const kind = c.turn === 'me' || c.turn === 'choose' ? 'turn' : c.next_is_me ? 'soon' : '';
       const lead = c.turn === 'me' ? '⚔ YOUR TURN' : c.next_is_me ? '⚔ You’re up next'
+        : c.turn === 'choose' ? '⚔ Choose who acts next'
+        : c.turn === 'choosing' ? '⚔ ' + (c.name ? c.name + ' is choosing who acts next' : 'The enemy is choosing who acts next')
         : '⚔ ' + (c.turn === 'pc' ? c.name + '’s turn' : 'Enemy turn');
       top.push(h('span', { class: 'pch-pill ' + kind, role: 'status' }, lead, rnd));
+      // fluid initiative: whoever just acted picks the next actor - an ally who has not gone yet, or the enemy side (the GM names which)
+      if (ed && c.turn === 'choose') {
+        (c.choose || []).forEach(a => top.push(h('button', { type: 'button', class: 'pch-btn', text: '▶ ' + a.name, onclick: () => combatAct('pass-turn', { next: a.id }) })));
+        top.push(h('button', { type: 'button', class: 'pch-btn', text: '▶ An enemy', onclick: () => combatAct('pass-turn', { next: 'gm' }) }));
+      }
     }
     if (c && ed && c.turn === 'me') top.push(h('button', { type: 'button', class: 'pch-btn', text: '\u2705 End turn', onclick: () => combatAct('end-turn') }));
     if (me.max_hp > 0 || me.hp != null) top.push(vit(me.hp_label || 'HP', me.native ? 'hp' : 'res:' + me.hp_id, me.hp || 0, me.max_hp || 0, ed && (me.native || !!me.hp_id), me.down, true));

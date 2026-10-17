@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ combat.name }} — Combat{% endblock %}
+{% block content %}
+<div class="pc-wrap">
+  <div class="pc-head">
+    <h1>⚔ <span id="pc-name">{{ combat.name }}</span></h1>
+    <a href="{{ '/combat'|wq }}" class="pc-back">← Combat</a>
+  </div>
+  <div id="pc-bar" class="pc-bar" role="status" aria-live="polite"></div>
+  <div id="pc-list" class="pc-list"></div>
+  <p id="pc-empty" class="pc-empty" hidden>The fight has not started yet.</p>
+</div>
+
+<style>
+.pc-wrap { max-width:640px; margin:0 auto; padding:1.2rem 1rem 3rem; }
+.pc-head { display:flex; justify-content:space-between; align-items:baseline; gap:.5rem; flex-wrap:wrap; }
+.pc-head h1 { color:var(--neon); font-size:1.25rem; margin:0; }
+.pc-back { color:var(--text-dim); font-size:.82rem; text-decoration:none; }
+.pc-bar { margin:.8rem 0; padding:.55rem .8rem; background:var(--bg2); border:1px solid var(--border); border-radius:6px; font-weight:bold; }
+.pc-bar small { font-weight:normal; color:var(--text-dim); }
+.pc-list { display:flex; flex-direction:column; gap:.5rem; }
+.pc-row { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.55rem .8rem; }
+.pc-row.active { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
+.pc-row.acted { opacity:.7; }
+.pc-top { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+.pc-name { font-weight:bold; flex:1; min-width:120px; }
+.pc-tag { font-size:.68rem; padding:.1rem .45rem; border-radius:3px; background:var(--bg3); color:var(--text-dim); text-transform:uppercase; }
+.pc-tag.go { background:var(--neon); color:#000; font-weight:bold; }
+.pc-tag.bad { background:#a33; color:#fff; }
+.pc-bar2 { height:8px; background:var(--bg3); border-radius:4px; overflow:hidden; margin-top:.4rem; max-width:240px; }
+.pc-bar2 > div { height:100%; background:#e04444; }
+.pc-sub { font-size:.78rem; color:var(--text-dim); margin-top:.25rem; }
+.pc-chip { display:inline-block; margin:.15rem .25rem 0 0; font-size:.72rem; padding:.1rem .5rem; border-radius:10px; border:1px solid var(--border); }
+.pc-empty { text-align:center; color:var(--text-dim); font-style:italic; padding:1.5rem; }
+</style>
+
+<script>
+const COMBAT_ID = {{ combat.id }};
+const RULES = JSON.parse({{ rules_json | tojson }});
+let state = JSON.parse({{ state_json | tojson }});
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+function render() {
+  const bar = document.getElementById('pc-bar'), list = document.getElementById('pc-list');
+  document.getElementById('pc-name').textContent = state.name;
+  const rows = state.rows || [];
+  document.getElementById('pc-empty').hidden = rows.length > 0;
+  const active = rows.find(r => r.active);
+  bar.replaceChildren(document.createTextNode('Round ' + state.round_num + ' · '));
+  if (active) bar.append('▶ ' + active.name);
+  else if (state.fluid) bar.append(state.picker ? state.picker + ' chooses who acts next' : 'Waiting for the next turn to be chosen');
+  else bar.append('—');
+  const small = el('small', null, '  ' + ((RULES[state.ruleset] || {}).label || ''));
+  bar.append(small);
+  list.replaceChildren(...rows.map(r => {
+    const row = el('div', 'pc-row' + (r.active ? ' active' : '') + (r.acted ? ' acted' : ''));
+    const top = el('div', 'pc-top');
+    top.append(el('span', 'pc-name', r.name));
+    if (r.active) top.append(el('span', 'pc-tag go', '▶ acting'));
+    else if (r.acted) top.append(el('span', 'pc-tag', 'acted ✓'));
+    if (r.state === 'Down') top.append(el('span', 'pc-tag bad', 'Down'));
+    else if (r.kind === 'enemy') top.append(el('span', 'pc-tag', r.state));
+    row.append(top);
+    if (r.kind === 'pc') {
+      const pct = r.max_hp > 0 ? Math.max(0, Math.min(100, r.hp / r.max_hp * 100)) : 0;
+      const bar2 = el('div', 'pc-bar2'); bar2.append(el('div')); bar2.firstChild.style.width = pct + '%';
+      row.append(bar2);
+      row.append(el('div', 'pc-sub', (((RULES[state.ruleset] || {}).hp_label) || 'HP') + ' ' + r.hp + '/' + r.max_hp + (r.max_shock ? ' · Shock ' + r.shock + '/' + r.max_shock : '')));
+      (r.conditions || []).forEach(c => row.append(el('span', 'pc-chip', c)));
+    }
+    return row;
+  }));
+}
+
+let _t = null;
+window.addEventListener('nd-live', () => {
+  clearTimeout(_t);
+  _t = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/combat/' + COMBAT_ID + '/state');
+      if (r.ok) { state = await r.json(); render(); }
+    } catch (e) { /* the next change tries again */ }
+  }, 400);
+});
+render();
+</script>
+{% endblock %}

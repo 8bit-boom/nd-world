@@ -2507,8 +2507,7 @@ async function refreshCombat() {
   const r = await fetch(`/api/combat/{{ linked_combat.id if linked_combat else 0 }}/state`);
   if (!r.ok) return;
   const data = await r.json();
-  const ordered = [...data.combatants].sort((a,b) => (b.initiative||0) - (a.initiative||0));
-  activeCombatantId = ordered[data.active_idx] ? ordered[data.active_idx].id : null;
+  activeCombatantId = data.active_id || null;
   redraw();
 }
 

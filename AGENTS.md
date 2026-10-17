@@ -261,6 +261,24 @@ tools that require GM access still check `is_gm` at call time.)
   `/api/entity/ID/preview` before opening the dialog). Saves via `POST /api/entity/ID/rename` (allowed for assistants in `_is_assistant_safe`);
   Undo is another rename; names of links to it on the page follow. Text elsewhere that mentions the old name is left as written and just stops
   auto-linking.
+- **Combat tracker** (`app/routers/combat.py`, `combat/detail.html` GM page, `combat/player.html`, `app/combat_rules.py`, `combat_state.py`,
+  `combat_turns.py`, `static/js/combat-core.js`). Rule-system aware: an encounter has a `ruleset` (nd, worm, hunt, asterion, nd_asterion,
+  worm_asterion, generic - written against the four rule books and the two Asterion-engine conversions) and `combat_rules.RULESETS` is the ONE
+  table of how each runs (initiative vs fluid turns, action economy pips, HP/Shock/shield labels and damage absorbers, what 0 HP means, conditions
+  with stacks / ticks / action penalties, armor caps, counter presets); the page gets it as `RULES_JSON`. **Initiative** systems (N&D, Worm,
+  generic): numeric initiative, `active_idx` is a POSITION in initiative order (then `tiebreak`, then added order) - `combat-core.js` `keepActive`
+  re-finds the active combatant by id after every change, and `combat_turns.order` sorts identically (tests/test_combat_core.py runs both).
+  **Fluid** systems (Hunt, Asterion, the conversions): `turn_json` `{active_id, acted, picker}`; the actor ends the turn and CHOOSES who goes next
+  (the GM page's chooser, or a player through `/hub/pass-turn`); the last actor of a round opens the next. Every consumer of "whose turn" (maps, hub,
+  cockpit chip) goes through `combat_turns.active_combatant_id`. **Saving**: `normalize_state` cleans the body; every writer bumps `rev`
+  (`combat_turns.touch`); a save carrying a stale `rev` gets 409 + the current state and the page three-way merges (`merge3`, per combatant and
+  field) instead of overwriting; the page shows Saved / Saving / Not saved (retrying) and warns before leaving unsaved. **Undo/redo** is
+  client-side (your own recent edits; cleared when others' changes arrive); the persisted event log is `log_json`. **Players** never get the GM
+  page or data: `combat_state.player_view` (enemies as "Enemy A" unless `name_known`, a word for their health, no armor/conditions/notes, `visible:false`
+  combatants omitted) feeds both the player page and `/api/combat/ID/state`. Per combatant extras: `temp_hp`, `res` (Spark Shield, Ichor, Stamina,
+  PP/MP - read from the sheet, written back by Sync), `used` (action pips), `saves` (N&D death saves / wake-up rolls), `wounds` / `press_on` (Hunt and
+  the conversions), `counters` (Legendary Action ...), `notes` (GM only). Conditions stack (a name listed twice) and tick through a confirm panel
+  - nothing is applied silently. Asterion: no death saves, Shattered can be executed; Armor never above 3 (4 vs legendary).
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

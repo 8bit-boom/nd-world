@@ -1006,6 +1006,17 @@ class CombatSession(Base):
     combatants_json = Column(Text, default="[]")
     round_num = Column(Integer, default=1)
     active_idx = Column(Integer, default=0)
+    # Revision: bumped by EVERY writer (the tracker, the player hub, the map sync) so a tracker whose copy is stale finds out when it
+    # saves (see routers/combat.py combat_save_state) instead of silently overwriting what the others did.
+    rev = Column(Integer, default=0, nullable=False, server_default="0")
+    # Which rule system runs this fight (app/combat_rules.py): "" = not chosen yet (the tracker picks from the party's sheets), "nd",
+    # "worm", "hunt", "asterion" or "generic".
+    ruleset = Column(String(24), default="", server_default="")
+    # Fluid-initiative turn state (Hunt in the Moonlight, Asterion): {"active_id", "acted": [ids this round], "picker": id of whoever is
+    # choosing who acts next}. Unused (and "{}") for initiative-order systems, which keep their position in active_idx.
+    turn_json = Column(Text, default="{}")
+    # The encounter's event log (damage, heals, turns, conditions): [{t, round, text}], capped at combat_state.MAX_LOG.
+    log_json = Column(Text, default="[]")
     game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
     # The party this encounter was launched from (party detail's history
     # section reads this back). Nullable — manual encounters have no party.

@@ -299,7 +299,8 @@ worlds they've been invited into (`WorldMembership`).
 | PATCH | `/api/characters/{pc_id}/hub/companions/{id}` | Owner | Change any of those, or `hp_delta` (+/-) - HP stays within 0 and the max. |
 | DELETE | `/api/characters/{pc_id}/hub/companions/{id}` | Owner | Remove one. |
 | POST | `/api/characters/{pc_id}/hub/initiative` | Owner | Roll the character's initiative (Speed = Dex + Itu, plus a d10; logged to the dice log as "Initiative — name") into the live encounter that includes it. Once only (409 afterwards); the active combatant keeps the turn after the re-sort. N&D characters only. |
-| POST | `/api/characters/{pc_id}/hub/end-turn` | Owner | Pass the turn on - 409 unless it is this character's turn; wraps to the next round after the last combatant. |
+| POST | `/api/characters/{pc_id}/hub/end-turn` | Owner | Pass the turn on - 409 unless it is this character's turn; wraps to the next round after the last combatant. In a fluid-initiative fight (Hunt, Asterion) the character becomes the one who CHOOSES who acts next. |
+| POST | `/api/characters/{pc_id}/hub/pass-turn` | Owner | Fluid initiative: the character who just acted chooses the next actor - `{"next": <ally combatant id>}` (one who has not acted this round) or `{"next": "gm"}` (the GM names which enemy). 409 when it is not their choice. |
 | POST | `/api/characters/{pc_id}/hub/rest` | Owner | Take a Rest by the character's own system's rules (what the party Rest does, for one character): `{kind: "short"\|"long"}`; `hub/now` lists the `rest_kinds` the system has. Returns `{kind, result, snapshot}`. |
 | POST | `/api/characters/{pc_id}/hub/rest/undo` | Owner | Undo that Rest: body `{snapshot}` exactly as `hub/rest` returned it (must be this character's). |
 | GET | `/api/characters/{pc_id}/hub/log` | Owner / GM (read-only) | The character's change log, newest first (HP / Shock / PP / MP / XP / level / conditions / coins / equipment / custom tracks / rests): `{actor, kind, text, at, undone, can_undo}`. Kept: the newest 200. |
@@ -456,16 +457,16 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/combat` | GM | Combat encounter list. |
-| POST | `/combat/new` | GM | Creates a `CombatSession`. |
-| GET | `/combat/{combat_id}` | GM | Initiative tracker UI. |
+| POST | `/combat/new` | GM | Creates a `CombatSession` (`name`, optional `ruleset`: nd / worm / hunt / asterion / nd_asterion / worm_asterion / generic; default the party's system). |
+| GET | `/combat/{combat_id}` | GM / Player (when Combat is open to players) | The GM gets the tracker (rules-aware, with undo, a save indicator and live merging); a player gets a READ-ONLY page built from the sanitized state: enemies as "Enemy A" (the real name only when the GM marked it known) with a word for their health (Unhurt / Hurt / Bloodied / Down), no HP numbers, armor, conditions or notes, and GM-hidden combatants not mentioned at all. |
 | GET | `/api/combat/recent` | GM | Recent combat sessions as JSON for the GM Cockpit's combat panel picker. |
-| GET | `/api/combat/{combat_id}/state` | GM | Current combat state JSON (combatants, initiative order, round). |
+| GET | `/api/combat/{combat_id}/state` | GM / Player | GM: the full state `{combatants, round_num, active_idx, active_id, rev, name, ruleset, turn, log}`. Player: the sanitized view `{rows, active_id, picker, round_num, rev, fluid, combatants:[{id, initiative}]}` - never names, numbers or notes of enemies. |
 | POST | `/combat/{combat_id}/ai-tactics` | GM | Suggests NPC tactics (2-4 concrete moves) and one dramatic beat from the live roster/round — a suggestion panel; writes nothing, deterministic combat mechanics untouched. |
-| POST | `/combat/{combat_id}/state` | GM | Saves combat state (HP, conditions, turn order). |
+| POST | `/combat/{combat_id}/state` | GM | Saves the tracker. The body is cleaned and bounded (`combat_state.normalize_state`; 422 when unusable, at most 60 combatants). Send the `rev` you last saw: if the encounter moved on (a player's initiative roll, the map's HP push, another tab) nothing is written and the answer is **409** with the current `state`; the page merges its edits onto it. Returns `{ok, rev}`. Only for an encounter of the active world (404 otherwise). |
 | POST | `/combat/{combat_id}/delete` | GM | Deletes a combat session. |
 | POST | `/combat/{combat_id}/link-session` | GM | Associates this combat with a `GameSession`. |
 | POST | `/combat/{combat_id}/unlink-session` | GM | Removes that association. |
-| POST | `/api/combat/{combat_id}/sync-characters` | GM | Pulls current HP/stats from linked `PlayerCharacter` rows into the combatant list. |
+| POST | `/api/combat/{combat_id}/sync-characters` | GM | Pushes the encounter's HP, Shock, conditions (each once) and - for a custom system - every other resource track (Spark Shield, Ichor, Stamina ...), or PP / MP on a native sheet, onto the player characters' sheets. |
 
 ## Live Sync
 

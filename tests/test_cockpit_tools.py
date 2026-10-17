@@ -241,7 +241,7 @@ def test_the_combat_status_follows_the_picked_combat_through_the_live_bus_and_is
     fn = js.split("async function refreshCombatStatus() {", 1)[1].split("const combatChip", 1)[0]
     assert "PLAYER ? null" in fn and "q.type === 'combat' && q.ref" in fn
     assert "'/api/combat/' + encodeURIComponent(cp.ref) + '/state'" in fn
-    assert "d.active_idx" in fn and "d.round_num" in fn
+    assert "d.active_id" in fn and "d.round_num" in fn      # the turn is found by id: the list is in the order added, not turn order
     # it refreshes with the other live panels, when a combat window is added / picked / closed, and on a slow timer
     live = js.split("function scheduleLiveRefresh() {", 1)[1].split("function saveNow", 1)[0]
     assert "refreshCombatStatus();" in live

@@ -479,11 +479,33 @@ def _pc_encounter(db: Session, pc: PlayerCharacter):
 def _combat_now(db: Session, pc: PlayerCharacter):
     """Where this character stands in a live encounter, or None. Deliberately minimal: the round, and whether the turn is
     this character's, another player character's (named), or "the enemy" (never named - a GM-run combatant's name can be
-    a spoiler)."""
+    a spoiler). In a FLUID-initiative fight (Hunt in the Moonlight, Asterion) the turn can also be "choose" (this character just
+    acted and picks who goes next - `choose` lists the allies who may still be picked) or "choosing" (another player character is
+    picking, named)."""
     found = _pc_encounter(db, pc)
     if not found:
         return None
     cs, combatants, mine = found
+    fluid = combat_turns.is_fluid(cs)
+    cur_i = combat_turns.current_index(cs, combatants)
+    cur = combatants[cur_i] if cur_i is not None else None
+    out = {"round": cs.round_num or 1, "fluid": fluid, "next_is_me": False, "my_initiative": combat_turns._init(combatants[mine]),
+           "can_roll_initiative": (not fluid) and combat_turns._init(combatants[mine]) == 0, "name": None, "choose": []}
+    if fluid:
+        ts = combat_turns.turn_state(cs)
+        me = combatants[mine]
+        if cur is not None:
+            out["turn"] = "me" if cur.get("pc_id") == pc.id else "pc" if cur.get("source") == "pc" else "enemy"
+            out["name"] = str(cur.get("name") or "")[:60] if out["turn"] == "pc" else None
+        elif ts["picker"] == me.get("id"):
+            out["turn"] = "choose"
+            out["choose"] = [{"id": c.get("id"), "name": str(c.get("name") or "")[:60]} for c in combatants
+                             if c.get("source") == "pc" and c.get("visible", True) and c.get("id") not in ts["acted"] and c.get("id") != me.get("id")]
+        else:
+            picker = next((c for c in combatants if c.get("id") == ts["picker"]), None)
+            out["turn"] = "choosing"
+            out["name"] = str(picker.get("name") or "")[:60] if picker and picker.get("source") == "pc" else None
+        return out
     turn_order = combat_turns.order(combatants)
     n = len(combatants)
     pos = (cs.active_idx or 0) % n
@@ -495,8 +517,8 @@ def _combat_now(db: Session, pc: PlayerCharacter):
         turn, name = "pc", str(cur.get("name") or "")[:60]
     else:
         turn, name = "enemy", None
-    return {"round": cs.round_num or 1, "turn": turn, "name": name, "next_is_me": nxt.get("pc_id") == pc.id and turn != "me",
-            "my_initiative": combat_turns._init(combatants[mine]), "can_roll_initiative": combat_turns._init(combatants[mine]) == 0}
+    out.update({"turn": turn, "name": name, "next_is_me": nxt.get("pc_id") == pc.id and turn != "me"})
+    return out
 
 
 def _speed(pc: PlayerCharacter) -> int:
@@ -520,6 +542,8 @@ def hub_roll_initiative(pc_id: int, request: Request, db: Session = Depends(get_
     if not found:
         raise HTTPException(409, "No encounter is running for this character")
     cs, combatants, mine = found
+    if combat_turns.is_fluid(cs):
+        raise HTTPException(409, "This system has no initiative roll - whoever starts the violence acts first, then each turn's owner picks the next")
     if combat_turns._init(combatants[mine]):
         raise HTTPException(409, "Initiative is already rolled - ask your GM to change it")
     speed = _speed(pc)
@@ -541,6 +565,40 @@ def hub_end_turn(pc_id: int, request: Request, db: Session = Depends(get_db)):
     if combat_turns.current_index(cs, combatants) != combat_turns.find_pc(combatants, pc.id):
         raise HTTPException(409, "It is not this character's turn")
     combat_turns.advance(cs, combatants)
+    db.commit()
+    live.touch(pc.world_id)
+    return {"ok": True, "round": cs.round_num, "combat": _combat_now(db, pc)}
+
+
+@router.post("/api/characters/{pc_id}/hub/pass-turn")
+async def hub_pass_turn(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """Fluid initiative: this character has just acted and chooses who goes next - an ally who has not acted yet ({"next": combatant id}),
+    or the enemy side ({"next": "gm"}: the GM then names which enemy)."""
+    _user, pc, _world = _owned_pc(request, db, pc_id)
+    found = _pc_encounter(db, pc)
+    if not found:
+        raise HTTPException(409, "No encounter is running for this character")
+    cs, combatants, mine = found
+    if not combat_turns.is_fluid(cs):
+        raise HTTPException(409, "This fight runs on initiative order")
+    ts = combat_turns.turn_state(cs)
+    if ts["active_id"] is not None or ts["picker"] != combatants[mine].get("id"):
+        raise HTTPException(409, "It is not this character's choice")
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    choice = str(body.get("next") or "") if isinstance(body, dict) else ""
+    if choice == "gm":
+        ts["picker"] = None                        # the GM picks which enemy goes
+        combat_turns.set_turn_state(cs, ts)
+        combat_turns.touch(cs)
+    else:
+        target = next((c for c in combatants if c.get("id") == choice), None)
+        if not target or target.get("source") != "pc":
+            raise HTTPException(400, "Pass the turn to an ally, or to the enemy side")
+        if not combat_turns.pick_next(cs, combatants, choice):
+            raise HTTPException(409, "That ally has already acted this round")
     db.commit()
     live.touch(pc.world_id)
     return {"ok": True, "round": cs.round_num, "combat": _combat_now(db, pc)}

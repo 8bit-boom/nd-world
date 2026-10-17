@@ -1395,7 +1395,7 @@
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const d = await r.json();
       const list = d.combatants || [];
-      const cur = list[d.active_idx || 0];
+      const cur = list.find(function (x) { return x.id === d.active_id; });     // by id: the list is in the order added, not turn order
       el.textContent = '⚔ Round ' + (d.round_num || 1) + (cur && cur.name ? ' · ▶ ' + cur.name : '');
       el.title = fullTitle(cp) + ' — click to bring the combat window forward';
       el.dataset.pid = cp.id;

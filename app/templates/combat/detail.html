@@ -1,123 +1,181 @@
 {% extends "base.html" %}
 {% block title %}{{ combat.name }} — Combat Tracker{% endblock %}
 {% block content %}
-<div style="max-width:920px;margin:0 auto;padding:1.5rem 1rem">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+<div class="ct-wrap">
+  <div class="ct-head">
     <div>
-      <h1 style="color:var(--neon);font-size:1.3rem;margin:0">⚔ {{ combat.name }}</h1>
-      <div style="color:var(--text-dim);font-size:.82rem;margin-top:.2rem">Round <span id="round-display">{{ combat.round_num }}</span></div>
+      <h1>⚔ <span id="enc-name">{{ combat.name }}</span></h1>
+      <div class="ct-sub"><span id="rules-label"></span></div>
     </div>
-    <a href="{{ '/combat'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Combat Tracker</a>
+    <a href="{{ '/combat'|wq }}" class="ct-back">← Combat Tracker</a>
   </div>
 
-  <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1rem">
-    <button type="button" id="next-round-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Next Round</button>
-    <button type="button" id="ai-tactics-btn" onclick="combatAiTactics()"
-            style="background:rgba(239,68,68,.12);border:1px solid #ef4444;color:#f87171;padding:.5rem .9rem;font-size:.85rem;border-radius:3px;cursor:pointer"
-            title="Suggest NPC tactics and a dramatic beat from the current fight — writes nothing">✨ AI Tactics</button>
-    <div id="ai-tactics-panel" style="display:none;margin-top:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .8rem;font-size:.85rem;max-width:640px"></div>
-    <script>
-      async function combatAiTactics() {
-        const btn = document.getElementById('ai-tactics-btn');
-        const panel = document.getElementById('ai-tactics-panel');
-        btn.disabled = true; btn.textContent = '✨ thinking…';
-        panel.style.display = ''; panel.innerHTML = '<span style="color:var(--text-dim)">Asking the AI about this round…</span>';
-        try {
-          const res = await ndAiFetch(window.location.pathname + '/ai-tactics', { method: 'POST' });
-          const d = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
-          panel.innerHTML = '';
-          (d.tactics || []).forEach(t => {
-            const div = document.createElement('div');
-            div.style.margin = '.25rem 0';
-            div.innerHTML = '<strong style="color:var(--neon)"></strong>: ';
-            div.firstChild.textContent = t.who;
-            div.append(t.move);
-            panel.appendChild(div);
-          });
-          if (d.beat) {
-            const b = document.createElement('div');
-            b.style.cssText = 'margin-top:.4rem;font-style:italic;color:var(--text-dim)';
-            b.textContent = '🎭 ' + d.beat;
-            panel.appendChild(b);
-          }
-        } catch (e) {
-          panel.innerHTML = '<span style="color:#e07070">⚠ ' + e.message + '</span>';
-        } finally {
-          btn.disabled = false; btn.textContent = '✨ AI Tactics';
-        }
-      }
-    </script>
-    <button type="button" id="sync-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer">🔄 Sync Characters</button>
-    <button type="button" id="delete-btn" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer;margin-left:auto">🗑 Delete Encounter</button>
+  <!-- Turn bar: sticks to the top while the list scrolls -->
+  <div id="turn-bar" class="ct-bar" role="toolbar" aria-label="Turn controls">
+    <button type="button" id="prev-btn" class="ct-btn" title="One turn back (P or ←)">◀ Prev</button>
+    <div id="turn-label" class="ct-turn" role="status" aria-live="polite"></div>
+    <button type="button" id="next-btn" class="ct-btn ct-primary" title="End this turn (N or →)">Next turn ▶</button>
+    <span class="ct-spacer"></span>
+    <button type="button" id="undo-btn" class="ct-btn" title="Undo your last change (Ctrl+Z)" aria-label="Undo">↶</button>
+    <button type="button" id="redo-btn" class="ct-btn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
+    <span id="save-chip" class="ct-chip" role="status" aria-live="polite">Saved</span>
+  </div>
+  <div id="conflict-note" class="ct-note" hidden></div>
+
+  <!-- Fluid initiative: whoever just acted chooses who goes next -->
+  <div id="chooser" class="ct-panel" hidden></div>
+  <!-- Conditions that tick at the end of the round / the start of a turn -->
+  <div id="tick-panel" class="ct-panel" hidden></div>
+
+  <details id="setup" class="ct-setup" open>
+  <summary>Setup &amp; tools</summary>
+  <div class="ct-panel ct-row">
+    <label for="ruleset-select">Rules</label>
+    <select id="ruleset-select" class="ct-input" aria-label="Rule system for this fight" style="max-width:18rem"></select>
+    <span id="rules-hint" class="ct-hint"></span>
+  </div>
+  <div class="ct-actions">
+    <button type="button" id="ai-tactics-btn" onclick="combatAiTactics()" class="ct-btn ct-ai" title="Suggest NPC tactics and a dramatic beat from the current fight — writes nothing">✨ AI Tactics</button>
+    <button type="button" id="sync-btn" class="ct-btn">🔄 Sync Characters</button>
+    <label class="ct-check"><input type="checkbox" id="compact-toggle"/> Compact</label>
+    <button type="button" id="delete-btn" class="ct-btn ct-danger" style="margin-left:auto">🗑 Delete Encounter</button>
     <form id="del-form" method="post" action="/combat/{{ combat.id }}/delete" style="display:none"></form>
   </div>
-
-  <div id="sync-result" style="display:none;margin-bottom:1rem;padding:.6rem 1rem;background:var(--bg2);border:1px solid var(--neon);border-radius:4px;font-size:.82rem"></div>
+  <div id="ai-tactics-panel" class="ct-panel" style="display:none"></div>
+  <div id="sync-result" class="ct-panel" style="display:none"></div>
 
   <!-- Link to session -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;font-size:.82rem">
-    <span style="color:var(--text-dim)">Session:</span>
+  <div class="ct-panel ct-row">
+    <span class="ct-dim">Session:</span>
     {% if linked_session %}
       <a href="{{ ('/sessions/' + linked_session.id|string)|wq }}" style="color:var(--neon)">{{ linked_session.title }}</a>
       <form method="post" action="/combat/{{ combat.id }}/unlink-session" style="display:inline">
-        <button type="submit" style="background:none;border:none;color:var(--text-dim);cursor:pointer;text-decoration:underline;font-size:.8rem">unlink</button>
+        <button type="submit" class="ct-link">unlink</button>
       </form>
     {% else %}
-      <form method="post" action="/combat/{{ combat.id }}/link-session" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
-        <select name="game_session_id" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+      <form method="post" action="/combat/{{ combat.id }}/link-session" class="ct-row">
+        <select name="game_session_id" class="ct-input" aria-label="Session">
           <option value="">— none —</option>
           {% for gs in game_sessions %}<option value="{{ gs.id }}">#{{ gs.session_num }} {{ gs.title }}</option>{% endfor %}
         </select>
-        <button type="submit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .7rem;font-size:.8rem;border-radius:3px;cursor:pointer">Link</button>
+        <button type="submit" class="ct-btn">Link</button>
       </form>
     {% endif %}
   </div>
 
   <!-- Add combatant -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem">
-    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .6rem">+ Add Combatant</h2>
-    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
-      <select id="add-source" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+  <div class="ct-panel">
+    <h2>+ Add Combatant</h2>
+    <div class="ct-row">
+      <select id="add-source" class="ct-input" aria-label="What to add">
         <option value="pc">Player Character</option>
         <option value="entity">Entity (NPC/Creature)</option>
         <option value="manual">Manual</option>
       </select>
-      <select id="add-pc-select" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;min-width:180px"></select>
-      <select id="add-entity-select" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;min-width:180px"></select>
-      <input id="add-manual-name" style="display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px" placeholder="Combatant name"/>
-      <button type="button" id="add-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">+ Add</button>
+      <select id="add-pc-select" class="ct-input" style="min-width:180px" aria-label="Character"></select>
+      <select id="add-entity-select" class="ct-input" style="display:none;min-width:180px" aria-label="Entity"></select>
+      <input id="add-manual-name" class="ct-input" style="display:none" placeholder="Combatant name" aria-label="Name"/>
+      <button type="button" id="add-btn" class="ct-btn ct-primary">+ Add</button>
     </div>
   </div>
 
+  </details>
+
   <!-- Combatants -->
-  <div id="combatants-list" style="display:flex;flex-direction:column;gap:.6rem"></div>
-  <p id="no-combatants-msg" style="color:var(--text-dim);font-size:.85rem;text-align:center;padding:1.5rem;font-style:italic;display:none">No combatants yet — add one above.</p>
+  <div id="combatants-list" class="ct-list"></div>
+  <p id="no-combatants-msg" class="ct-empty" style="display:none">No combatants yet — add one above.</p>
+
+  <details id="log-box" class="ct-panel">
+    <summary>Event log <span id="log-count" class="ct-dim"></span></summary>
+    <ol id="log-list" class="ct-log"></ol>
+  </details>
 </div>
 
 <style>
-.combatant-row { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.75rem 1rem; }
+.ct-wrap { max-width:920px; margin:0 auto; padding:1.2rem 1rem 3rem; }
+.ct-head { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:.7rem; flex-wrap:wrap; gap:.5rem; }
+.ct-head h1 { color:var(--neon); font-size:1.3rem; margin:0; }
+.ct-sub { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-top:.35rem; font-size:.8rem; color:var(--text-dim); }
+.ct-hint { font-size:.74rem; color:var(--text-dim); max-width:46ch; }
+.ct-setup { margin-bottom:.8rem; }
+.ct-setup > summary { cursor:pointer; font-size:.8rem; color:var(--text-dim); margin-bottom:.5rem; }
+#rules-label { color:var(--neon); font-size:.78rem; }
+.ct-back { color:var(--text-dim); font-size:.82rem; text-decoration:none; }
+.ct-bar { position:sticky; top:0; z-index:40; display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; padding:.45rem .6rem; margin:0 0 .8rem;
+  background:var(--bg2); border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 14px rgba(0,0,0,.35); }
+.ct-turn { flex:1; min-width:150px; font-size:.9rem; font-weight:bold; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ct-turn small { font-weight:normal; color:var(--text-dim); }
+.ct-spacer { flex:0 0 0; }
+.ct-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .75rem; font-size:.82rem; border-radius:4px; cursor:pointer; font-family:var(--font); }
+.ct-btn:hover:not(:disabled), .ct-btn:focus-visible { border-color:var(--neon); color:var(--neon); outline:none; }
+.ct-btn:disabled { opacity:.4; cursor:default; }
+.ct-primary { background:var(--neon); color:#000; border-color:var(--neon); font-weight:bold; }
+.ct-primary:hover:not(:disabled), .ct-primary:focus-visible { color:#000; filter:brightness(1.12); }
+.ct-ai { background:rgba(239,68,68,.12); border-color:#ef4444; color:#f87171; }
+.ct-danger { border-color:#c44; color:#c44; }
+.ct-link { background:none; border:none; color:var(--text-dim); cursor:pointer; text-decoration:underline; font-size:.8rem; }
+.ct-chip { font-size:.72rem; padding:.2rem .55rem; border-radius:10px; border:1px solid var(--border); color:var(--text-dim); white-space:nowrap; }
+.ct-chip.saving { color:var(--neon); border-color:var(--neon); }
+.ct-chip.bad { color:#fff; background:#a33; border-color:#a33; cursor:pointer; }
+.ct-note { margin:0 0 .8rem; padding:.55rem .8rem; border:1px solid var(--neon2); border-radius:6px; background:var(--bg2); font-size:.82rem; }
+.ct-panel { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.75rem 1rem; margin-bottom:.8rem; font-size:.84rem; }
+.ct-panel h2 { color:var(--neon); font-size:.9rem; margin:0 0 .6rem; }
+.ct-panel[hidden] { display:none; }
+.ct-row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+.ct-actions { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom:.8rem; }
+.ct-check { font-size:.8rem; color:var(--text-dim); display:inline-flex; gap:.3rem; align-items:center; }
+.ct-dim { color:var(--text-dim); }
+.ct-input { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.35rem .55rem; font-family:var(--font); font-size:.82rem; border-radius:3px; }
+.ct-empty { color:var(--text-dim); font-size:.85rem; text-align:center; padding:1.5rem; font-style:italic; }
+.ct-list { display:flex; flex-direction:column; gap:.6rem; }
+.ct-pick { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.5rem; }
+.ct-tick { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; padding:.3rem 0; border-top:1px solid var(--border); }
+.ct-tick:first-of-type { border-top:0; }
+.ct-log { margin:.5rem 0 0; padding-left:1.1rem; max-height:260px; overflow:auto; font-size:.78rem; color:var(--text-dim); }
+.ct-log li { margin:.1rem 0; }
+
+.combatant-row { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.65rem .9rem; }
 .combatant-row.active-turn { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
-.combatant-top { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; }
-.combatant-name { font-weight:bold; font-size:.95rem; flex:1; min-width:120px; }
-.combatant-badge { font-size:.68rem; padding:.1rem .45rem; border-radius:3px; background:var(--bg3); color:var(--text-dim); text-transform:uppercase; }
-.combatant-init { display:flex; align-items:center; gap:.3rem; font-size:.78rem; color:var(--text-dim); }
-.combatant-init input { width:48px; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.25rem .4rem; font-family:var(--font); font-size:.82rem; border-radius:3px; text-align:center; }
+.combatant-row.acted { opacity:.72; }
+.combatant-row.is-down { border-color:#a33; }
+.combatant-top { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+.combatant-name { font-weight:bold; font-size:.95rem; flex:1; min-width:110px; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; border-radius:3px; font-family:var(--font); }
+.combatant-badge { font-size:.66rem; padding:.1rem .45rem; border-radius:3px; background:var(--bg3); color:var(--text-dim); text-transform:uppercase; }
+.combatant-badge.go { background:var(--neon); color:#000; font-weight:bold; }
+.combatant-badge.bad { background:#a33; color:#fff; }
+.combatant-init { display:flex; align-items:center; gap:.3rem; font-size:.76rem; color:var(--text-dim); }
+.combatant-init input { width:48px; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.25rem .35rem; font-family:var(--font); font-size:.82rem; border-radius:3px; text-align:center; }
 .combatant-remove { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .2rem; }
-.stat-bar-row { display:flex; align-items:center; gap:.4rem; margin-top:.5rem; font-size:.78rem; }
-.stat-bar-label { width:44px; color:var(--text-dim); }
-.stat-bar-track { flex:1; height:8px; background:var(--bg3); border-radius:4px; overflow:hidden; min-width:60px; max-width:220px; }
+.tog { background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); border-radius:3px; cursor:pointer; padding:.15rem .4rem; font-size:.78rem; }
+.tog[aria-pressed="true"] { color:var(--neon); border-color:var(--neon); }
+.stat-bar-row { display:flex; align-items:center; gap:.35rem; margin-top:.45rem; font-size:.78rem; flex-wrap:wrap; }
+.stat-bar-label { width:52px; color:var(--text-dim); }
+.stat-bar-track { flex:1; height:8px; background:var(--bg3); border-radius:4px; overflow:hidden; min-width:60px; max-width:220px; position:relative; }
 .stat-bar-fill { height:100%; }
 .stat-bar-fill.hp { background:#e04444; }
 .stat-bar-fill.shock { background:#4488ff; }
-.stat-bar-val { min-width:64px; white-space:nowrap; text-align:right; color:var(--text-dim); }
-.stat-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:.72rem; padding:.15rem .4rem; border-radius:3px; cursor:pointer; }
-.stat-btn:hover { border-color:var(--neon); color:var(--neon); }
-.cond-chips { display:flex; gap:.3rem; flex-wrap:wrap; margin-top:.5rem; align-items:center; }
-.cond-chip { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; cursor:pointer; }
+.stat-bar-fill.res { background:#a070ff; }
+.stat-bar-fill.shield { background:#38bdf8; }
+.stat-bar-val { min-width:64px; white-space:nowrap; color:var(--text-dim); display:inline-flex; align-items:center; gap:.15rem; }
+.stat-bar-val input { width:42px; background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); border-radius:3px; font-size:.75rem; padding:.1rem .2rem; }
+.stat-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:.72rem; padding:.15rem .4rem; border-radius:3px; cursor:pointer; font-family:var(--font); }
+.stat-btn:hover, .stat-btn:focus-visible { border-color:var(--neon); color:var(--neon); outline:none; }
+.amt { width:52px; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:3px; padding:.15rem .3rem; font-size:.78rem; text-align:center; }
+.pip { width:14px; height:14px; border-radius:50%; border:1px solid var(--neon); background:var(--neon); cursor:pointer; padding:0; }
+.pip.used { background:transparent; }
+.pip.lost { border-color:#a33; background:#a33; opacity:.35; cursor:default; }
+.cond-chips { display:flex; gap:.3rem; flex-wrap:wrap; margin-top:.45rem; align-items:center; }
+.cond-chip { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; cursor:pointer; font-family:var(--font); }
 .cond-chip:hover { border-color:#c44; color:#c44; }
-.cond-add { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; width:90px; }
+.cond-plus { background:none; border:none; color:var(--text-dim); cursor:pointer; padding:0 .2rem; font-size:.8rem; }
+.cond-add { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; width:104px; }
 .cond-preset { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.1rem .3rem; border-radius:10px; font-family:var(--font); }
+.down-banner { margin-top:.45rem; padding:.35rem .55rem; border:1px solid #a33; border-radius:4px; background:rgba(170,51,51,.12); font-size:.78rem; display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }
+.notes-box > summary { cursor:pointer; font-size:.74rem; color:var(--text-dim); margin-top:.45rem; }
+.notes-box textarea { width:100%; min-height:54px; margin-top:.3rem; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:3px; font-family:var(--font); font-size:.8rem; padding:.3rem .45rem; box-sizing:border-box; }
+.combatant-row.compact .more { display:none; }
+.ct-wrap input.amt, .ct-wrap .stat-bar-val input, .ct-wrap .cond-add, .ct-wrap .combatant-init input { min-height:0; height:1.9rem; box-sizing:border-box; font-size:.85rem; }
+.ct-wrap .stat-bar-val { flex-wrap:nowrap; }
 
 /* ── Touch / small-screen: larger hit targets — same (pointer:coarse)
    pattern the schematic editor uses (matches touchscreen input
@@ -130,9 +188,23 @@
   .cond-chip { padding:.35rem .65rem; }
   .combatant-init input { min-height:36px; }
   .stat-bar-row { flex-wrap:wrap; row-gap:.3rem; }
+  .ct-btn { min-height:40px; }
+  .pip { width:22px; height:22px; }
+  .tog { min-height:34px; min-width:34px; }
+}
+@media (max-width:600px) {
+  .ct-wrap { padding:.6rem .5rem 4rem; }
+  .ct-bar { gap:.3rem; padding:.35rem .4rem; }
+  .ct-btn { padding:.4rem .55rem; }
+  .ct-turn { order:-1; flex-basis:100%; }
+  .ct-hint { display:none; }
+  .combatant-row { padding:.5rem .6rem; }
+  .stat-bar-label { width:auto; min-width:34px; }
+  .stat-bar-track { min-width:48px; }
 }
 </style>
 
+<script src="/static/js/combat-core.js?v={{ asset_v('js/combat-core.js') }}"></script>
 <script>
 const COMBAT_ID = {{ combat.id }};
 // JSON.parse(...|tojson) — not |safe — so a PC/entity name containing a
@@ -141,21 +213,170 @@ const COMBAT_ID = {{ combat.id }};
 // string does not).
 const PCS = JSON.parse({{ pc_payload_json | tojson }});
 const ENTITIES = JSON.parse({{ entity_payload_json | tojson }});
-let combatants = JSON.parse({{ combatants_json | tojson }});
-let roundNum = {{ combat.round_num }};
-let activeIdx = {{ combat.active_idx }};
-const CONDITION_PRESETS = ['Burn','Freeze','Toxin','Bleeding','Blind','Charm','Daze','Stunned','Prone','Restrained'];
+const RULES = JSON.parse({{ rules_json | tojson }});
+const INITIAL = JSON.parse({{ state_json | tojson }});
+const C = window.ndCombat;
 
+// ── state ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// S is what the page edits; `base` is the last copy the server is known to have (for merging when someone else saved meanwhile);
+// `rev` is the server's revision of base.
+let S = { combatants: INITIAL.combatants, round: INITIAL.round_num, active: INITIAL.active_idx, name: INITIAL.name,
+          log: INITIAL.log || [], ruleset: INITIAL.ruleset || 'nd', turn: INITIAL.turn || { active_id: null, acted: [], picker: null } };
+let combatants = S.combatants;           // (always the same array as S.combatants; kept as a name for readability)
+let rev = INITIAL.rev;
+let base = C.clone(S);
+const undoStack = [], redoStack = [];
+const amounts = {};                       // typed damage/heal amounts per combatant, kept across re-renders
+const collapsed = new Set();              // combatant ids whose secondary controls are folded away
+let compact = false;
+try { compact = localStorage.getItem('nd-combat-compact') === '1'; } catch (e) { /* storage blocked */ }
+if (window.matchMedia && matchMedia('(max-width:600px)').matches && localStorage.getItem('nd-combat-compact') === null) compact = true;
+
+function rs() { return C.rulesOf(RULES, S.ruleset); }
+function fluid() { return rs().turns === 'fluid'; }
+function byId(id) { return S.combatants.find(c => c.id === id); }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function uid() { return 'c-' + Math.random().toString(36).slice(2, 10); }
+function n(v) { const x = parseInt(v, 10); return isNaN(x) ? 0 : x; }
+
+function addLog(text) {
+  S.log.push({ t: Date.now(), round: S.round, text: String(text).slice(0, 200) });
+  if (S.log.length > 300) S.log.splice(0, S.log.length - 300);
+}
+
+// ── every change goes through act(): undo snapshot, keep the turn with its owner, log, redraw, save ─────────────────────
+function snap() { return { combatants: C.clone(S.combatants), round: S.round, active: S.active, turn: C.clone(S.turn), ruleset: S.ruleset }; }
+function restore(sn) {
+  S.combatants = sn.combatants; combatants = S.combatants; S.round = sn.round; S.active = sn.active; S.turn = sn.turn; S.ruleset = sn.ruleset;
+}
+function act(label, fn, opts) {
+  opts = opts || {};
+  undoStack.push({ label: label || 'change', snap: snap() });
+  if (undoStack.length > 60) undoStack.shift();
+  redoStack.length = 0;
+  if (opts.turn) fn(S); else C.keepActive(S, fn, fluid());
+  combatants = S.combatants;
+  if (label) addLog(label);
+  render();
+  scheduleSave();
+}
+function undo() {
+  const e = undoStack.pop();
+  if (!e) return;
+  redoStack.push({ label: e.label, snap: snap() });
+  restore(e.snap);
+  addLog('↶ Undid: ' + e.label);
+  render(); scheduleSave();
+}
+function redo() {
+  const e = redoStack.pop();
+  if (!e) return;
+  undoStack.push({ label: e.label, snap: snap() });
+  restore(e.snap);
+  addLog('↷ Redid: ' + e.label);
+  render(); scheduleSave();
+}
+
+// ── turns ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+let pendingTicks = [];                    // conditions waiting for the GM to apply them: [{id, cond, ...cost}]
+function startOfTurn(id) {                 // a combatant's turn begins
+  const c = byId(id);
+  if (!c) return;
+  C.resetTurnEco(c, rs());
+  collectTicks('turn_start', id);
+}
+function collectTicks(when, onlyId) {
+  C.pendingTicks(S, rs(), when, onlyId).forEach(t => {
+    const cost = C.tickCost(t);
+    pendingTicks.push(Object.assign({ key: t.id + ':' + t.cond + ':' + Date.now() }, t, cost));
+  });
+}
+function endTurn() {
+  if (!S.combatants.length) { act('Round ' + (S.round + 1), s => { s.round += 1; }, { turn: true }); return; }
+  if (fluid()) {
+    const t = S.turn;
+    if (!t.active_id && S.turn.picker == null && S.turn.acted.length === 0) { return; }       // nobody has started yet: choose who opens
+    const who = byId(t.active_id);
+    const roundEndsAfter = S.combatants.every(c => c.id === t.active_id || t.acted.indexOf(c.id) >= 0);
+    act((who ? who.name : 'Turn') + ' ends their turn', s => {
+      if (who) { const gone = C.expireTurnConditions(who, rs()); if (gone.length) addLog(who.name + ': ' + gone.join(', ') + ' ended'); }
+      const r = C.endFluidTurn(s);
+      if (r.newRound) { C.resetRoundEco(s, rs()); addLog('— Round ' + s.round + ' —'); }
+    }, { turn: true });
+    if (roundEndsAfter) collectTicks('round_end');
+    render();
+    return;
+  }
+  const order = C.order(S.combatants);
+  const holder = S.combatants[order[Math.min(S.active, order.length - 1)]];
+  const wraps = S.active + 1 >= order.length;
+  if (wraps) collectTicks('round_end');
+  act(holder.name + ' ends their turn', s => {
+    const gone = C.expireTurnConditions(holder, rs());
+    if (gone.length) addLog(holder.name + ': ' + gone.join(', ') + ' ended');
+    C.nextTurn(s);
+    if (wraps) { C.resetRoundEco(s, rs()); addLog('— Round ' + s.round + ' —'); }
+  }, { turn: true });
+  const nid = C.activeId(S, false);
+  if (nid) startOfTurn(nid);
+  render();
+}
+function prevTurn() {
+  if (fluid()) { undo(); return; }
+  act('Back one turn', s => { C.prevTurn(s); }, { turn: true });
+}
+function pick(id) {
+  const c = byId(id);
+  if (!c) return;
+  act((c.name) + ' acts' + (S.turn.picker && byId(S.turn.picker) ? ' (chosen by ' + byId(S.turn.picker).name + ')' : ''), s => { C.pickNext(s, id); }, { turn: true });
+  startOfTurn(id);
+  render();
+}
+
+// ── damage and healing ────────────────────────────────────────────────────────────────────────────────────────────────
+function describeDamage(c, r, before) {
+  const bits = [];
+  Object.keys(r.soaked).forEach(k => bits.push((k === 'temp' ? 'temp HP' : (c.res && c.res[k] && c.res[k].label) || k) + ' ' + r.soaked[k]));
+  return c.name + ' takes ' + r.amount + (bits.length ? ' (' + bits.join(', ') + ' soaked)' : '') + ' — ' + rs().hp_label + ' ' + before + '→' + c.hp
+    + (r.failedSave ? ' · failed a death save' : '');
+}
+function hurt(id, amount, opts) {
+  const c0 = byId(id);
+  if (!c0 || !(amount > 0)) return;
+  act('', s => {
+    const c = s.combatants.find(x => x.id === id);
+    const before = c.hp;
+    const r = C.damage(c, amount, rs(), opts);
+    addLog(describeDamage(c, r, before) + (opts && opts.armor && c.armor ? ' · armor ' + c.armor : ''));
+    if (before > 0 && c.hp <= 0) addLog(c.name + ' is ' + (rs().down.hp ? rs().down.hp.state : 'down'));
+  });
+  undoStack[undoStack.length - 1].label = c0.name + ' took damage';
+}
+function mend(id, amount) {
+  const c0 = byId(id);
+  if (!c0 || !(amount > 0)) return;
+  act('', s => {
+    const c = s.combatants.find(x => x.id === id);
+    const before = c.hp, r = C.heal(c, amount);
+    addLog(c.name + ' heals ' + r.gained + ' — ' + rs().hp_label + ' ' + before + '→' + c.hp);
+  });
+  undoStack[undoStack.length - 1].label = c0.name + ' healed';
+}
+
+// ── rendering ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 const addSource = document.getElementById('add-source');
 const pcSelect = document.getElementById('add-pc-select');
 const entitySelect = document.getElementById('add-entity-select');
 const manualInput = document.getElementById('add-manual-name');
+const rulesetSelect = document.getElementById('ruleset-select');
 
 function populateSelects() {
   pcSelect.innerHTML = PCS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('') || '<option value="">No characters in this world</option>';
-  entitySelect.innerHTML = ENTITIES.map(e => `<option value="${e.id}">${esc(e.name)} (${e.kind})</option>`).join('') || '<option value="">No NPCs/creatures in this world</option>';
+  entitySelect.innerHTML = ENTITIES.map(e => `<option value="${e.id}">${esc(e.name)} (${esc(e.kind)})</option>`).join('') || '<option value="">No NPCs/creatures in this world</option>';
+  rulesetSelect.innerHTML = Object.keys(RULES).map(k => `<option value="${k}">${esc(RULES[k].label)}</option>`).join('');
 }
 populateSelects();
+if (window.matchMedia && matchMedia('(max-width:600px)').matches) document.getElementById('setup').open = false;
 
 addSource.addEventListener('change', () => {
   pcSelect.style.display = addSource.value === 'pc' ? '' : 'none';
@@ -163,199 +384,615 @@ addSource.addEventListener('change', () => {
   manualInput.style.display = addSource.value === 'manual' ? '' : 'none';
 });
 
-function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
-function uid() { return 'c-' + Math.random().toString(36).slice(2, 10); }
+rulesetSelect.addEventListener('change', () => {
+  const to = rulesetSelect.value;
+  act('Rules: ' + RULES[to].label, s => { s.ruleset = to; s.turn = { active_id: null, acted: [], picker: null }; s.active = 0; }, { turn: true });
+});
 
-document.getElementById('add-btn').addEventListener('click', async () => {
+function newCombatant(base) {
+  return Object.assign({ id: uid(), initiative: 0, tiebreak: 0, max_hp: 10, hp: 10, temp_hp: 0, max_shock: 0, shock: 0, armor: 0,
+    conditions: [], cond_dur: {}, res: {}, used: {}, saves: { ok: 0, fail: 0, ko: 0 }, wounds: 0, press_on: false, counters: {},
+    notes: '', status: '', visible: true, name_known: false }, base);
+}
+
+document.getElementById('add-btn').addEventListener('click', () => {
   const src = addSource.value;
+  let c = null;
   if (src === 'pc') {
-    const id = parseInt(pcSelect.value, 10);
-    const pc = PCS.find(p => p.id === id);
+    const pc = PCS.find(p => p.id === parseInt(pcSelect.value, 10));
     if (!pc) return;
-    combatants.push({ id: uid(), name: pc.name, source: 'pc', pc_id: pc.id, entity_id: null,
-      initiative: 0, max_hp: pc.max_hp, hp: pc.hp, max_shock: pc.max_shock, shock: pc.shock,
-      armor: 0, conditions: (pc.conditions || []).slice(), notes: '' });
+    c = newCombatant({ name: pc.name, source: 'pc', pc_id: pc.id, entity_id: null, max_hp: pc.max_hp, hp: pc.hp, max_shock: pc.max_shock,
+      shock: pc.shock, conditions: (pc.conditions || []).slice(), res: JSON.parse(JSON.stringify(pc.res || {})), name_known: true });
   } else if (src === 'entity') {
-    const id = parseInt(entitySelect.value, 10);
-    const ent = ENTITIES.find(e => e.id === id);
+    const ent = ENTITIES.find(e => e.id === parseInt(entitySelect.value, 10));
     if (!ent) return;
-    combatants.push({ id: uid(), name: ent.name, source: 'entity', pc_id: null, entity_id: ent.id,
-      initiative: 0, max_hp: ent.max_hp, hp: ent.max_hp, max_shock: 0, shock: 0,
-      armor: ent.armor, conditions: [], notes: '' });
+    c = newCombatant({ name: ent.name, source: 'entity', pc_id: null, entity_id: ent.id, max_hp: ent.max_hp, hp: ent.max_hp, armor: ent.armor });
   } else {
     const name = manualInput.value.trim();
     if (!name) return;
-    combatants.push({ id: uid(), name, source: 'manual', pc_id: null, entity_id: null,
-      initiative: 0, max_hp: 10, hp: 10, max_shock: 0, shock: 0, armor: 0, conditions: [], notes: '' });
+    c = newCombatant({ name, source: 'manual', pc_id: null, entity_id: null });
     manualInput.value = '';
   }
-  render();
-  save();
+  act('Added ' + c.name, s => { s.combatants.push(c); if (fluid() === false && false) return; });
 });
 
-function sortedIndices() {
-  return combatants.map((c, i) => i).sort((a, b) => (combatants[b].initiative||0) - (combatants[a].initiative||0));
+function pips(c, e) {
+  const max = C.ecoMax(c, rs())[e.id];
+  const used = Math.min(n((c.used || {})[e.id]), e.max);
+  let out = '';
+  for (let k = 0; k < e.max; k++) {
+    const lost = k >= max;                      // taken away by a condition (Daze, Stunned ...)
+    const spent = k < used;
+    out += `<button type="button" class="pip ${lost ? 'lost' : spent ? 'used' : ''}" data-id="${c.id}" data-action="pip" data-eco="${e.id}" data-k="${c.id}:pip:${e.id}:${k}"
+      aria-pressed="${spent}" ${lost ? 'disabled' : ''} title="${esc(e.label)} ${k + 1}${lost ? ' (lost to a condition)' : spent ? ' (used)' : ''}"></button>`;
+  }
+  return `<span class="stat-bar-label" title="${esc(e.label)} — ${e.per === 'round' ? 'refreshes each round' : 'refreshes at the start of its turn'}">${esc(e.label)}</span><span>${out}</span>`;
 }
+
+function condChips(c) {
+  const count = {}, order = [];
+  (c.conditions || []).forEach(x => { const k = x.toLowerCase(); if (!count[k]) { count[k] = 0; order.push(x); } count[k] += 1; });
+  return order.map(name => {
+    const def = (rs().conditions || []).find(d => d.name.toLowerCase() === name.toLowerCase());
+    const k = count[name.toLowerCase()];
+    const tip = def && def.text ? def.text : '';
+    return `<span class="cond-chip" title="${esc(tip)} (click to remove one)" role="button" tabindex="0" data-id="${c.id}" data-action="remove-cond" data-name="${esc(name)}" data-k="${c.id}:cond:${esc(name)}">${esc(name)}${k > 1 ? ' ×' + k : ''} ✕</span>`
+      + (def && def.stack ? `<button type="button" class="cond-plus" data-id="${c.id}" data-action="stack-cond" data-name="${esc(name)}" data-k="${c.id}:stack:${esc(name)}" title="Stack another ${esc(name)}">＋</button>` : '');
+  }).join('');
+}
+
+function downBanner(c) {
+  const d = C.downState(c, rs());
+  if (!d) return '';
+  let btns = '';
+  const sv = c.saves || { ok: 0, fail: 0, ko: 0 };
+  if (d.kind === 'hp' && d.saves) {
+    btns = `<span>Saves ✔${sv.ok}/3 ✖${sv.fail}/3</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="save-ok" data-k="${c.id}:sok">✔ success</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="save-fail" data-k="${c.id}:sfail">✖ failure</button>`;
+  } else if (d.kind === 'shock' && d.ko) {
+    btns = `<span>Failed wake-ups ${sv.ko}/3</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="save-ko" data-k="${c.id}:sko">✖ failed roll</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="wake" data-k="${c.id}:wake">wakes (+1 Shock)</button>`;
+  } else if (d.kind === 'hp' && d.wound) {
+    btns = `<span>Wounds: ${n(c.wounds)}</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="wound" data-k="${c.id}:wound">+ Wound</button>
+      ${d.press_on ? `<button type="button" class="stat-btn" data-id="${c.id}" data-action="press-on" data-k="${c.id}:press" ${c.press_on ? 'disabled' : ''} title="Once per session: a Major Wound, regain half max Health">Press On</button>` : ''}`;
+  }
+  const exec = d.kind === 'hp' && d.execute ? `<button type="button" class="stat-btn" data-id="${c.id}" data-action="execute" data-k="${c.id}:exec" title="An enemy may execute a Shattered character with a Main Action - no roll">☠ Execute</button>` : '';
+  const dead = d.kind === 'dead' ? `<button type="button" class="stat-btn" data-id="${c.id}" data-action="revive" data-k="${c.id}:revive">revive</button>` : '';
+  return `<div class="down-banner" role="status"><strong>${esc(d.label)}</strong>${d.text ? `<span class="ct-dim">${esc(d.text)}</span>` : ''}${btns}${exec}${dead}</div>`;
+}
+
+function resRows(c) {
+  let out = '';
+  Object.keys(c.res || {}).forEach(id => {
+    const r = c.res[id], isShield = id === rs().shield_id;
+    const pct = r.max > 0 ? Math.max(0, Math.min(100, r.cur / r.max * 100)) : 0;
+    out += `<div class="stat-bar-row more">
+      <span class="stat-bar-label" title="${esc(r.label)}">${esc(r.label)}</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="res" data-res="${esc(id)}" data-delta="-1" data-k="${c.id}:res:${esc(id)}:-1">-1</button>
+      <div class="stat-bar-track"><div class="stat-bar-fill ${isShield ? 'shield' : 'res'}" style="width:${pct}%"></div></div>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="res" data-res="${esc(id)}" data-delta="1" data-k="${c.id}:res:${esc(id)}:1">+1</button>
+      <span class="stat-bar-val">${r.cur}/<input type="number" value="${r.max}" data-id="${c.id}" data-field="res-max" data-res="${esc(id)}" data-k="${c.id}:resmax:${esc(id)}" aria-label="${esc(r.label)} max"/></span>
+    </div>`;
+  });
+  const defs = rs().res_defaults || {};
+  Object.keys(defs).forEach(id => {
+    if (!(c.res || {})[id]) out += `<div class="stat-bar-row more"><button type="button" class="stat-btn" data-id="${c.id}" data-action="res-add" data-res="${esc(id)}" data-k="${c.id}:resadd:${esc(id)}">+ ${esc(defs[id].label)}</button></div>`;
+  });
+  return out;
+}
+
+function counterRows(c) {
+  const R = rs();
+  let out = '';
+  Object.keys(c.counters || {}).forEach(label => {
+    const pre = (R.counter_presets || []).find(p => p.label === label);
+    out += `<div class="stat-bar-row more">
+      <span class="stat-bar-label" title="${esc((pre && pre.text) || label)}">${esc(label)}</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="counter" data-label="${esc(label)}" data-delta="-1" data-k="${c.id}:ctr:${esc(label)}:-1">-1</button>
+      <strong>${n(c.counters[label])}${pre && pre.max ? '<span class="ct-dim">/' + pre.max + '</span>' : ''}</strong>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="counter" data-label="${esc(label)}" data-delta="1" data-k="${c.id}:ctr:${esc(label)}:1">+1</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="counter-del" data-label="${esc(label)}" data-k="${c.id}:ctrdel:${esc(label)}" title="Remove this counter">✕</button>
+    </div>`;
+  });
+  const presets = (R.counter_presets || []).filter(p => !(p.label in (c.counters || {})));
+  out += `<div class="stat-bar-row more"><span class="stat-bar-label">Counters</span>${presets.map(p =>
+    `<button type="button" class="stat-btn" data-id="${c.id}" data-action="counter-add" data-label="${esc(p.label)}" data-max="${p.max || 0}" data-k="${c.id}:ctradd:${esc(p.label)}" title="${esc(p.text || '')}">+ ${esc(p.label)}</button>`).join('')}
+    <input class="cond-add" placeholder="+ counter…" data-id="${c.id}" data-field="add-counter" data-k="${c.id}:addctr" aria-label="Add a counter"/></div>`;
+  return out;
+}
+
+function rowHtml(c, pos, activeId) {
+  const R = rs(), isActive = c.id === activeId;
+  const d = C.downState(c, R);
+  const hpPct = c.max_hp > 0 ? Math.max(0, Math.min(100, (c.hp / c.max_hp) * 100)) : 0;
+  const shockPct = c.max_shock > 0 ? Math.max(0, Math.min(100, (c.shock / c.max_shock) * 100)) : 0;
+  const acted = fluid() && S.turn.acted.indexOf(c.id) >= 0;
+  const folded = compact && !isActive ? !collapsed.has('open:' + c.id) : collapsed.has(c.id);
+  const k = (f) => `data-k="${c.id}:${f}"`;
+  const badge = isActive ? '<span class="combatant-badge go">▶ acting</span>' : acted ? '<span class="combatant-badge">acted ✓</span>' : '';
+  const goBtn = fluid() && !c.status && !isActive && !acted && S.turn.active_id == null
+    ? `<button type="button" class="ct-btn ct-primary" style="padding:.15rem .5rem" data-id="${c.id}" data-action="pick" ${k('pick')}>▶ Go</button>` : '';
+  return `<div class="combatant-row${isActive ? ' active-turn' : ''}${acted ? ' acted' : ''}${d ? ' is-down' : ''}${folded ? ' compact' : ''}" data-row="${c.id}">
+    <div class="combatant-top">
+      <button type="button" class="tog" data-id="${c.id}" data-action="fold" ${k('fold')} aria-expanded="${!folded}" title="Show or hide the details">${folded ? '▸' : '▾'}</button>
+      <span class="combatant-badge">${esc(c.source)}</span>${badge}
+      <input class="combatant-name" value="${esc(c.name)}" data-id="${c.id}" data-field="name" ${k('name')} aria-label="Name"/>
+      ${fluid() ? '' : `<span class="combatant-init">Init <input type="number" value="${n(c.initiative)}" data-id="${c.id}" data-field="initiative" ${k('init')} aria-label="Initiative"/></span>`}
+      <span class="combatant-init">Armor <input type="number" value="${n(c.armor)}" data-id="${c.id}" data-field="armor" ${k('armor')} aria-label="Armor" ${R.armor_cap ? `max="${R.armor_cap + 1}" title="Armor never totals more than ${R.armor_cap} (${R.armor_cap + 1} against legendary foes)"` : ''}/></span>
+      ${goBtn}
+      <button type="button" class="tog" data-id="${c.id}" data-action="vis" ${k('vis')} aria-pressed="${c.visible !== false}" title="${c.visible !== false ? 'Players can see this combatant — click to hide it from them' : 'Hidden from players — click to show it'}">${c.visible !== false ? '👁' : '🚫'}</button>
+      ${c.source !== 'pc' ? `<button type="button" class="tog" data-id="${c.id}" data-action="known" ${k('known')} aria-pressed="${!!c.name_known}" title="${c.name_known ? 'Players see its real name — click to call it “Enemy A”' : 'Players see “Enemy A” — click to show its real name'}">🏷</button>` : ''}
+      <button type="button" class="combatant-remove" data-id="${c.id}" data-action="remove" ${k('remove')} title="Remove">✕</button>
+    </div>
+    ${downBanner(c)}
+    <div class="stat-bar-row">
+      <span class="stat-bar-label">${esc(R.hp_label)}</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="hp" data-delta="-5" ${k('hp-5')}>-5</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="hp" data-delta="-1" ${k('hp-1')}>-1</button>
+      <div class="stat-bar-track" title="${c.hp}/${c.max_hp}"><div class="stat-bar-fill hp" style="width:${hpPct}%"></div></div>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="hp" data-delta="1" ${k('hp+1')}>+1</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="hp" data-delta="5" ${k('hp+5')}>+5</button>
+      <span class="stat-bar-val">${c.hp}/<input type="number" value="${n(c.max_hp)}" data-id="${c.id}" data-field="max_hp" ${k('maxhp')} aria-label="Max ${esc(R.hp_label)}"/></span>
+      ${n(c.temp_hp) > 0 ? `<span class="combatant-badge" title="Temporary HP soaks damage first">+${n(c.temp_hp)} temp</span>` : ''}
+    </div>
+    <div class="stat-bar-row more">
+      <span class="stat-bar-label"></span>
+      <input type="number" min="0" class="amt" placeholder="amt" value="${esc(amounts[c.id] || '')}" data-id="${c.id}" data-field="amount" ${k('amt')} aria-label="Amount to apply"/>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="dmg" ${k('dmg')} title="Take this much damage (Enter)">Damage</button>
+      ${n(c.armor) > 0 ? `<button type="button" class="stat-btn" data-id="${c.id}" data-action="hit" ${k('hit')} title="Damage reduced by Armor ${n(c.armor)}">Hit −armor</button>` : ''}
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="heal" ${k('heal')} title="Heal this much (Shift+Enter)">Heal</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="temp" ${k('temp')} title="Set temporary HP to this amount">+Temp</button>
+    </div>
+    ${R.shock_label ? (c.max_shock > 0 ? `
+    <div class="stat-bar-row more">
+      <span class="stat-bar-label">${esc(R.shock_label)}</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="shock" data-delta="-5" ${k('sh-5')}>-5</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="shock" data-delta="-1" ${k('sh-1')}>-1</button>
+      <div class="stat-bar-track"><div class="stat-bar-fill shock" style="width:${shockPct}%"></div></div>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="shock" data-delta="1" ${k('sh+1')}>+1</button>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="shock" data-delta="5" ${k('sh+5')}>+5</button>
+      <span class="stat-bar-val">${c.shock}/${c.max_shock}</span>
+    </div>` : `
+    <div class="stat-bar-row more">
+      <span class="stat-bar-label">${esc(R.shock_label)}</span>
+      <button type="button" class="stat-btn" data-id="${c.id}" data-action="enable-shock" ${k('shock-on')}>enable</button>
+    </div>`) : ''}
+    ${resRows(c)}
+    ${counterRows(c)}
+    ${(R.eco || []).length ? `<div class="stat-bar-row">${(R.eco).map(e => pips(c, e)).join('<span style="width:.6rem"></span>')}</div>` : ''}
+    <div class="cond-chips">
+      ${condChips(c)}
+      <span class="more cond-chips" style="margin:0">
+      <input class="cond-add" list="cond-list-${c.id}" placeholder="+ condition" data-id="${c.id}" data-field="add-cond" ${k('addcond')} aria-label="Add a condition"/>
+      <datalist id="cond-list-${c.id}">${(R.conditions || []).map(x => `<option value="${esc(x.name)}">`).join('')}</datalist>
+      </span>
+    </div>
+    <details class="notes-box more" ${c.notes ? 'open' : ''}><summary>Notes${c.notes ? ' ●' : ''}</summary>
+      <textarea data-id="${c.id}" data-field="notes" ${k('notes')} aria-label="Notes (never shown to players)">${esc(c.notes || '')}</textarea></details>
+  </div>`;
+}
+
+let _focusKey = null;
+function rememberFocus() {
+  const ae = document.activeElement;
+  if (ae && ae.dataset && ae.dataset.k) {
+    _focusKey = { k: ae.dataset.k, start: ae.selectionStart, end: ae.selectionEnd };
+  } else _focusKey = null;
+}
+function restoreFocus() {
+  if (!_focusKey) return;
+  const el = document.querySelector('[data-k="' + (window.CSS && CSS.escape ? CSS.escape(_focusKey.k) : _focusKey.k) + '"]');
+  if (el) {
+    el.focus({ preventScroll: true });
+    try { if (_focusKey.start != null && el.setSelectionRange) el.setSelectionRange(_focusKey.start, _focusKey.end); } catch (e) { /* number inputs have no selection */ }
+  }
+}
+
+function turnLabel() {
+  const el = document.getElementById('turn-label');
+  const R = rs();
+  const rd = 'Round ' + S.round;
+  if (!S.combatants.length) { el.innerHTML = rd + ' <small>— add combatants to begin</small>'; return; }
+  if (fluid()) {
+    const t = S.turn, a = byId(t.active_id), p = byId(t.picker);
+    if (a) el.innerHTML = `${rd} · ▶ ${esc(a.name)} <small>${t.acted.length}/${S.combatants.length} acted</small>`;
+    else if (p) el.innerHTML = `${rd} · ${esc(p.name)} chooses who acts next`;
+    else el.innerHTML = `${rd} · choose who acts ${t.acted.length ? 'next' : 'first'}`;
+  } else {
+    const id = C.activeId(S, false), a = byId(id);
+    el.innerHTML = `${rd} · ▶ ${a ? esc(a.name) : '—'} <small>turn ${S.active + 1}/${S.combatants.length}</small>`;
+  }
+}
+
+function renderChooser() {
+  const box = document.getElementById('chooser');
+  if (!fluid() || S.turn.active_id || !S.combatants.length) { box.hidden = true; return; }
+  const t = S.turn, p = byId(t.picker);
+  const left = S.combatants.filter(c => t.acted.indexOf(c.id) < 0 && !c.status);
+  const all = left.length ? left : S.combatants;
+  const title = p ? `${esc(p.name)} chooses who acts next` : (t.acted.length ? 'Who acts next?' : 'Who acts first? <span class="ct-dim">(whoever starts the violence, springs the ambush or takes the first aggressive action)</span>');
+  box.hidden = false;
+  box.innerHTML = `<strong>${title}</strong><div class="ct-pick">${all.map(c => `<button type="button" class="ct-btn" data-id="${c.id}" data-action="pick" data-k="${c.id}:choose">${esc(c.name)}</button>`).join('')}</div>`;
+}
+
+function renderTicks() {
+  const box = document.getElementById('tick-panel');
+  pendingTicks = pendingTicks.filter(t => byId(t.id));
+  if (!pendingTicks.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<strong>⏱ Conditions to apply</strong>` + pendingTicks.map(t => {
+    const parts = [];
+    if (t.hp) parts.push(t.hp + ' ' + (rs().hp_label) + (t.def.tick.bypass ? ' (ignores armor)' : ''));
+    if (t.shock) parts.push(t.shock + ' ' + (rs().shock_label || 'Shock'));
+    if (t.rolls && t.rolls.length) parts.push('rolled ' + t.rolls.join(' + '));
+    return `<div class="ct-tick"><span><strong>${esc(t.name)}</strong> — ${esc(t.cond)}${t.stacks > 1 ? ' ×' + t.stacks : ''}: ${esc(parts.join(', ') || t.def.tick.note || 'see the rule')}${t.def.tick.note && parts.length ? ' <span class="ct-dim">(' + esc(t.def.tick.note) + ')</span>' : ''}</span>
+      <button type="button" class="stat-btn" data-action="tick-apply" data-key="${esc(t.key)}" data-k="tick:${esc(t.key)}:apply">Apply</button>
+      <button type="button" class="stat-btn" data-action="tick-skip" data-key="${esc(t.key)}" data-k="tick:${esc(t.key)}:skip">Skip</button></div>`;
+  }).join('') + (pendingTicks.length > 1 ? `<div class="ct-row" style="margin-top:.4rem"><button type="button" class="stat-btn" data-action="tick-all" data-k="tick:all">Apply all</button></div>` : '');
+}
+
+function applyTick(t) {
+  const c = byId(t.id);
+  if (!c) return;
+  act('', s => {
+    const cc = s.combatants.find(x => x.id === t.id);
+    const before = cc.hp;
+    if (t.hp) C.damage(cc, t.hp, rs(), { bypass: true });
+    if (t.shock) cc.shock = Math.max(0, n(cc.shock) - t.shock);
+    addLog(cc.name + ': ' + t.cond + (t.stacks > 1 ? ' ×' + t.stacks : '') + ' — ' + (t.hp ? rs().hp_label + ' ' + before + '→' + cc.hp : '') + (t.shock ? ' Shock −' + t.shock : ''));
+  });
+  undoStack[undoStack.length - 1].label = c.name + ': ' + t.cond + ' tick';
+}
+
+function renderLog() {
+  document.getElementById('log-count').textContent = S.log.length ? '(' + S.log.length + ')' : '';
+  const box = document.getElementById('log-box');
+  if (!box.open) return;
+  document.getElementById('log-list').innerHTML = S.log.slice(-80).reverse().map(e => `<li>R${e.round} · ${esc(e.text)}</li>`).join('');
+}
+document.getElementById('log-box').addEventListener('toggle', renderLog);
 
 function render() {
+  rememberFocus();
   const list = document.getElementById('combatants-list');
   const msg = document.getElementById('no-combatants-msg');
+  const R = rs();
+  rulesetSelect.value = S.ruleset;
+  document.getElementById('rules-label').textContent = R.label;
+  document.getElementById('rules-hint').textContent = R.init_hint || '';
+  document.getElementById('prev-btn').style.display = fluid() ? 'none' : '';
+  document.getElementById('next-btn').textContent = fluid() ? 'End turn ▶' : 'Next turn ▶';
+  document.getElementById('next-btn').disabled = fluid() ? !S.turn.active_id : false;
+  document.getElementById('undo-btn').disabled = !undoStack.length;
+  document.getElementById('redo-btn').disabled = !redoStack.length;
+  document.getElementById('compact-toggle').checked = compact;
+  turnLabel();
+  renderChooser();
+  renderTicks();
   list.innerHTML = '';
-  document.getElementById('round-display').textContent = roundNum;
-  if (combatants.length === 0) { msg.style.display = 'block'; return; }
+  if (!S.combatants.length) { msg.style.display = 'block'; renderLog(); return; }
   msg.style.display = 'none';
-  const order = sortedIndices();
-  order.forEach((i, pos) => {
-    const c = combatants[i];
-    const row = document.createElement('div');
-    row.className = 'combatant-row' + (pos === activeIdx ? ' active-turn' : '');
-    const hpPct = c.max_hp > 0 ? Math.max(0, Math.min(100, (c.hp / c.max_hp) * 100)) : 0;
-    const shockPct = c.max_shock > 0 ? Math.max(0, Math.min(100, (c.shock / c.max_shock) * 100)) : 0;
-    row.innerHTML = `
-      <div class="combatant-top">
-        <span class="combatant-badge">${c.source}</span>
-        <input class="combatant-name" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;border-radius:3px;font-family:var(--font)" value="${esc(c.name)}" data-i="${i}" data-field="name"/>
-        <span class="combatant-init">Init <input type="number" value="${c.initiative||0}" data-i="${i}" data-field="initiative"/></span>
-        <span class="combatant-init">Armor <input type="number" value="${c.armor||0}" data-i="${i}" data-field="armor"/></span>
-        <button type="button" class="combatant-remove" data-i="${i}" data-action="remove" title="Remove">✕</button>
-      </div>
-      <div class="stat-bar-row">
-        <span class="stat-bar-label">HP</span>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="hp" data-delta="-5">-5</button>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="hp" data-delta="-1">-1</button>
-        <div class="stat-bar-track"><div class="stat-bar-fill hp" style="width:${hpPct}%"></div></div>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="hp" data-delta="1">+1</button>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="hp" data-delta="5">+5</button>
-        <span class="stat-bar-val">${c.hp}/<input type="number" value="${c.max_hp||0}" data-i="${i}" data-field="max_hp" style="width:40px;background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);border-radius:3px;font-size:.75rem"/></span>
-      </div>
-      ${c.max_shock > 0 ? `
-      <div class="stat-bar-row">
-        <span class="stat-bar-label">Shock</span>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="shock" data-delta="-5">-5</button>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="shock" data-delta="-1">-1</button>
-        <div class="stat-bar-track"><div class="stat-bar-fill shock" style="width:${shockPct}%"></div></div>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="shock" data-delta="1">+1</button>
-        <button type="button" class="stat-btn" data-i="${i}" data-field="shock" data-delta="5">+5</button>
-        <span class="stat-bar-val">${c.shock}/${c.max_shock}</span>
-      </div>` : `
-      <div class="stat-bar-row">
-        <span class="stat-bar-label">Shock</span>
-        <button type="button" class="stat-btn" data-i="${i}" data-action="enable-shock">enable</button>
-      </div>`}
-      <div class="cond-chips">
-        ${(c.conditions||[]).map((cond, ci) => `<span class="cond-chip" data-i="${i}" data-ci="${ci}" data-action="remove-cond">${esc(cond)} ✕</span>`).join('')}
-        <input class="cond-add" placeholder="+ condition" data-i="${i}" data-field="add-cond"/>
-        <select class="cond-preset" data-i="${i}" data-action="add-preset-cond">
-          <option value="">+ preset…</option>
-          ${CONDITION_PRESETS.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
-        </select>
-      </div>
-    `;
-    list.appendChild(row);
-  });
+  const activeId = C.activeId(S, fluid());
+  const order = C.displayOrder(S, fluid());
+  list.innerHTML = order.map((i, pos) => rowHtml(S.combatants[i], pos, activeId)).join('');
+  renderLog();
+  restoreFocus();
 }
 
+// ── events ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+function amountOf(id) { return n(amounts[id]); }
+
 document.getElementById('combatants-list').addEventListener('click', (e) => {
-  const t = e.target;
-  const i = t.dataset.i !== undefined ? parseInt(t.dataset.i, 10) : null;
-  if (t.dataset.action === 'remove') {
-    const name = combatants[i] ? combatants[i].name : 'this combatant';
+  const t = e.target.closest('[data-action]');
+  if (!t) return;
+  const id = t.dataset.id, c = id ? byId(id) : null, action = t.dataset.action;
+  if (action === 'remove') {
+    const name = c ? c.name : 'this combatant';
     if (!confirm(`Remove ${name} from the encounter?`)) return;
-    combatants.splice(i, 1);
-    if (activeIdx >= sortedIndices().length) activeIdx = 0;
-    render(); save();
-  } else if (t.dataset.action === 'enable-shock') {
-    combatants[i].max_shock = 10;
-    render(); save();
-  } else if (t.dataset.action === 'remove-cond') {
-    const ci = parseInt(t.dataset.ci, 10);
-    combatants[i].conditions.splice(ci, 1);
-    render(); save();
-  } else if (t.dataset.field && t.dataset.delta) {
-    const field = t.dataset.field;
-    const delta = parseInt(t.dataset.delta, 10);
-    const c = combatants[i];
-    const maxKey = field === 'hp' ? 'max_hp' : 'max_shock';
-    c[field] = Math.max(0, Math.min(c[maxKey] || 0, (c[field] || 0) + delta));
-    render(); save();
+    act('Removed ' + name, s => { s.combatants = s.combatants.filter(x => x.id !== id); });
+  } else if (action === 'fold') {
+    if (compact && id !== C.activeId(S, fluid())) { collapsed.has('open:' + id) ? collapsed.delete('open:' + id) : collapsed.add('open:' + id); }
+    else { collapsed.has(id) ? collapsed.delete(id) : collapsed.add(id); }
+    render();
+  } else if (action === 'enable-shock') {
+    act(c.name + ': Shock enabled', s => { const x = s.combatants.find(y => y.id === id); x.max_shock = 10; });
+  } else if (action === 'res-add') {
+    const def = rs().res_defaults[t.dataset.res];
+    act(c.name + ': +' + def.label, s => { const x = s.combatants.find(y => y.id === id); x.res = x.res || {}; x.res[t.dataset.res] = { cur: def.max, max: def.max, label: def.label }; });
+  } else if (action === 'res') {
+    const rid = t.dataset.res, d = parseInt(t.dataset.delta, 10);
+    act('', s => {
+      const x = s.combatants.find(y => y.id === id), r = x.res[rid], before = r.cur;
+      r.cur = Math.max(0, Math.min(r.max, r.cur + d));
+      addLog(x.name + ': ' + r.label + ' ' + before + '→' + r.cur);
+    });
+    undoStack[undoStack.length - 1].label = c.name + ': ' + (c.res[t.dataset.res] || {}).label;
+  } else if (action === 'remove-cond') {
+    act(c.name + ': −' + t.dataset.name, s => {
+      const x = s.combatants.find(y => y.id === id), at = x.conditions.findIndex(v => v.toLowerCase() === t.dataset.name.toLowerCase());
+      if (at >= 0) x.conditions.splice(at, 1);
+    });
+  } else if (action === 'stack-cond') {
+    act(c.name + ': +' + t.dataset.name, s => { s.combatants.find(y => y.id === id).conditions.push(t.dataset.name); });
+  } else if (action === 'hp') {
+    const d = parseInt(t.dataset.delta, 10);
+    d < 0 ? hurt(id, -d) : mend(id, d);
+  } else if (action === 'dmg') { hurt(id, amountOf(id)); }
+  else if (action === 'hit') { hurt(id, amountOf(id), { armor: true }); }
+  else if (action === 'heal') { mend(id, amountOf(id)); }
+  else if (action === 'temp') {
+    const v = amountOf(id);
+    if (v > 0) act(c.name + ': ' + v + ' temp HP', s => { s.combatants.find(y => y.id === id).temp_hp = v; });
+  } else if (action === 'shock') {
+    const d = parseInt(t.dataset.delta, 10);
+    act(c.name + ': Shock ' + (d > 0 ? '+' : '') + d, s => { const x = s.combatants.find(y => y.id === id); x.shock = Math.max(0, Math.min(x.max_shock, x.shock + d)); });
+  } else if (action === 'vis') {
+    act(c.name + (c.visible !== false ? ' hidden from players' : ' shown to players'), s => { const x = s.combatants.find(y => y.id === id); x.visible = x.visible === false; });
+  } else if (action === 'known') {
+    act(c.name + (c.name_known ? ' is “Enemy” again' : '’s name shown to players'), s => { const x = s.combatants.find(y => y.id === id); x.name_known = !x.name_known; });
+  } else if (action === 'pip') {
+    act('', s => { const x = s.combatants.find(y => y.id === id); x.used = x.used || {}; const eid = t.dataset.eco;
+      const e = rs().eco.find(z => z.id === eid), cur = n(x.used[eid]), k = [...t.parentNode.children].indexOf(t);
+      x.used[eid] = k < cur ? k : Math.min(e.max, k + 1); });
+    undoStack[undoStack.length - 1].label = c.name + ': ' + t.dataset.eco;
+  } else if (action === 'save-ok' || action === 'save-fail' || action === 'save-ko') {
+    act('', s => { const x = s.combatants.find(y => y.id === id); addLog(x.name + ' ' + C.recordSave(x, action.slice(5))); });
+    undoStack[undoStack.length - 1].label = c.name + ': save';
+  } else if (action === 'wake') {
+    act(c.name + ' wakes (+1 Shock)', s => { const x = s.combatants.find(y => y.id === id); x.shock = Math.min(x.max_shock, x.shock + 1); x.saves.ko = 0; });
+  } else if (action === 'wound') {
+    act(c.name + ' suffers a Wound', s => { C.addWound(s.combatants.find(y => y.id === id)); });
+  } else if (action === 'press-on') {
+    act(c.name + ' Presses On (Major Wound, half Health back)', s => { C.pressOn(s.combatants.find(y => y.id === id)); });
+  } else if (action === 'execute') {
+    act(c.name + ' is executed', s => { const x = s.combatants.find(y => y.id === id); x.status = 'dead'; });
+  } else if (action === 'counter') {
+    const lab = t.dataset.label, d = parseInt(t.dataset.delta, 10);
+    act('', s => { const x = s.combatants.find(y => y.id === id); const pre = (rs().counter_presets || []).find(p => p.label === lab);
+      const top = pre && pre.max ? pre.max : 99; const before = n(x.counters[lab]); x.counters[lab] = Math.max(0, Math.min(top, before + d));
+      addLog(x.name + ': ' + lab + ' ' + before + '→' + x.counters[lab]); });
+    undoStack[undoStack.length - 1].label = c.name + ': ' + lab;
+  } else if (action === 'counter-add') {
+    act(c.name + ': + ' + t.dataset.label, s => { const x = s.combatants.find(y => y.id === id); x.counters = x.counters || {}; x.counters[t.dataset.label] = n(t.dataset.max); });
+  } else if (action === 'counter-del') {
+    act(c.name + ': − ' + t.dataset.label, s => { delete s.combatants.find(y => y.id === id).counters[t.dataset.label]; });
+  } else if (action === 'revive') {
+    act(c.name + ' is back on their feet', s => { const x = s.combatants.find(y => y.id === id); x.status = ''; x.saves = { ok: 0, fail: 0, ko: 0 }; if (x.hp <= 0) x.hp = 1; });
+  } else if (action === 'pick') {
+    pick(id);
+  } else if (action === 'tick-apply') {
+    const i = pendingTicks.findIndex(x => x.key === t.dataset.key);
+    if (i >= 0) { const tk = pendingTicks.splice(i, 1)[0]; applyTick(tk); }
+  } else if (action === 'tick-skip') {
+    pendingTicks = pendingTicks.filter(x => x.key !== t.dataset.key); render();
   }
+});
+document.getElementById('chooser').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-action="pick"]');
+  if (t) pick(t.dataset.id);
+});
+document.getElementById('tick-panel').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-action]');
+  if (!t) return;
+  if (t.dataset.action === 'tick-apply') {
+    const i = pendingTicks.findIndex(x => x.key === t.dataset.key);
+    if (i >= 0) { const tk = pendingTicks.splice(i, 1)[0]; applyTick(tk); }
+  } else if (t.dataset.action === 'tick-skip') {
+    pendingTicks = pendingTicks.filter(x => x.key !== t.dataset.key); render();
+  } else if (t.dataset.action === 'tick-all') {
+    const all = pendingTicks.splice(0, pendingTicks.length);
+    all.forEach(tk => applyTick(tk));
+  }
+});
+
+document.getElementById('combatants-list').addEventListener('input', (e) => {
+  if (e.target.dataset.field === 'amount') amounts[e.target.dataset.id] = e.target.value;
+});
+document.getElementById('combatants-list').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.dataset.field === 'amount') {
+    e.preventDefault();
+    const id = e.target.dataset.id;
+    amounts[id] = e.target.value;
+    e.shiftKey ? mend(id, amountOf(id)) : hurt(id, amountOf(id));
+  } else if (e.key === 'Enter' && e.target.dataset.action === 'remove-cond') { e.target.click(); }
 });
 
 document.getElementById('combatants-list').addEventListener('change', (e) => {
-  const t = e.target;
-  const i = t.dataset.i !== undefined ? parseInt(t.dataset.i, 10) : null;
-  if (i === null) return;
-  if (t.dataset.field === 'name') combatants[i].name = t.value;
-  else if (t.dataset.field === 'initiative') { combatants[i].initiative = parseInt(t.value, 10) || 0; render(); save(); return; }
-  else if (t.dataset.field === 'armor') combatants[i].armor = parseInt(t.value, 10) || 0;
-  else if (t.dataset.field === 'max_hp') combatants[i].max_hp = Math.max(0, parseInt(t.value, 10) || 0);
-  else if (t.dataset.field === 'add-cond') {
-    const val = t.value.trim();
-    if (val) { combatants[i].conditions = combatants[i].conditions || []; combatants[i].conditions.push(val); t.value = ''; render(); }
-  } else if (t.dataset.action === 'add-preset-cond') {
-    const val = t.value;
-    if (val) { combatants[i].conditions = combatants[i].conditions || []; combatants[i].conditions.push(val); render(); }
-    save(); return;
+  const t = e.target, id = t.dataset.id, c = id ? byId(id) : null;
+  if (!c) return;
+  const f = t.dataset.field;
+  if (f === 'name') { const v = t.value.trim() || c.name; if (v !== c.name) act('Renamed ' + c.name + ' → ' + v, s => { s.combatants.find(x => x.id === id).name = v; }); }
+  else if (f === 'initiative') { act(c.name + ': initiative ' + n(t.value), s => { s.combatants.find(x => x.id === id).initiative = n(t.value); }); }
+  else if (f === 'armor') {
+    const cap = rs().armor_cap, v = Math.max(0, Math.min(n(t.value), cap ? cap + 1 : 999));   // these books cap Armor at 3 (4 against legendary foes)
+    act(c.name + ': armor ' + v + (cap && n(t.value) > cap + 1 ? ' (capped — the rules stop at ' + cap + ', ' + (cap + 1) + ' vs legendary foes)' : ''), s => { s.combatants.find(x => x.id === id).armor = v; });
   }
-  save();
+  else if (f === 'max_hp') { act(c.name + ': max ' + rs().hp_label + ' ' + n(t.value), s => { const x = s.combatants.find(y => y.id === id); x.max_hp = Math.max(0, n(t.value)); x.hp = Math.min(x.hp, x.max_hp); }); }
+  else if (f === 'res-max') { act(c.name + ': ' + t.dataset.res + ' max ' + n(t.value), s => { const r = s.combatants.find(y => y.id === id).res[t.dataset.res]; r.max = Math.max(0, n(t.value)); r.cur = Math.min(r.cur, r.max); }); }
+  else if (f === 'notes') { act('', s => { s.combatants.find(x => x.id === id).notes = t.value; }); undoStack.pop(); scheduleSave(); }
+  else if (f === 'add-counter') {
+    const v = t.value.trim().slice(0, 40);
+    if (v) act(c.name + ': + ' + v, s => { const x = s.combatants.find(y => y.id === id); x.counters = x.counters || {}; x.counters[v] = 0; });
+  } else if (f === 'add-cond') {
+    const v = t.value.trim();
+    if (v) act(c.name + ': +' + v, s => { s.combatants.find(x => x.id === id).conditions.push(v.slice(0, 40)); });
+  }
 });
 
-document.getElementById('next-round-btn').addEventListener('click', () => {
-  const order = sortedIndices();
-  if (order.length === 0) { roundNum += 1; render(); save(); return; }
-  activeIdx += 1;
-  if (activeIdx >= order.length) { activeIdx = 0; roundNum += 1; }
-  render();
-  save();
+document.getElementById('next-btn').addEventListener('click', endTurn);
+document.getElementById('prev-btn').addEventListener('click', prevTurn);
+document.getElementById('undo-btn').addEventListener('click', undo);
+document.getElementById('redo-btn').addEventListener('click', redo);
+document.getElementById('compact-toggle').addEventListener('change', (e) => {
+  compact = e.target.checked;
+  try { localStorage.setItem('nd-combat-compact', compact ? '1' : '0'); } catch (x) { /* storage blocked */ }
+  collapsed.clear(); render();
+});
+
+document.addEventListener('keydown', (e) => {
+  const tg = e.target, typing = tg && /^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName);
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
+    if (typing && tg.dataset.field === 'notes') return;
+    e.preventDefault();
+    (e.shiftKey || e.key === 'y') ? redo() : undo();
+    return;
+  }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'n' || e.key === 'ArrowRight') { e.preventDefault(); if (!document.getElementById('next-btn').disabled) endTurn(); }
+  else if (e.key === 'p' || e.key === 'ArrowLeft') { e.preventDefault(); prevTurn(); }
 });
 
 document.getElementById('sync-btn').addEventListener('click', async () => {
-  await save();
+  await flushSave();
   const res = await fetch('/api/combat/' + COMBAT_ID + '/sync-characters', { method: 'POST' });
-  const data = await res.json();
+  const data = await res.json().catch(() => ({ synced: [], skipped: [] }));
   const box = document.getElementById('sync-result');
   box.style.display = 'block';
-  box.innerHTML = `<strong>Synced:</strong> ${data.synced.map(esc).join(', ') || '—'}` +
-    (data.skipped.length ? `<br><strong style="color:var(--text-dim)">Skipped (not player characters):</strong> ${data.skipped.map(esc).join(', ')}` : '');
+  box.innerHTML = `<strong>Synced:</strong> ${(data.synced || []).map(esc).join(', ') || '—'}` +
+    ((data.skipped || []).length ? `<br><strong style="color:var(--text-dim)">Skipped (not player characters):</strong> ${data.skipped.map(esc).join(', ')}` : '');
 });
 
 document.getElementById('delete-btn').addEventListener('click', () => {
   if (confirm('Delete this encounter?')) document.getElementById('del-form').submit();
 });
 
-let saveTimer = null;
-
-// A player rolling their initiative or ending their turn (from their character page) changes this encounter on the
-// server: pick it up here, unless a save of ours is pending or the GM is typing in a field.
-let _liveTimer = null;
-window.addEventListener('nd-live', () => {
-  clearTimeout(_liveTimer);
-  _liveTimer = setTimeout(async () => {
-    const ae = document.activeElement;
-    if (saveTimer || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
-    try {
-      const r = await fetch('/api/combat/' + COMBAT_ID + '/state');
-      if (!r.ok) return;
-      const d = await r.json();
-      if (JSON.stringify(d.combatants) === JSON.stringify(combatants) && d.round_num === roundNum && d.active_idx === activeIdx) return;
-      combatants = d.combatants; roundNum = d.round_num; activeIdx = d.active_idx;
-      render();
-    } catch (e) { /* the next change tries again */ }
-  }, 500);
-});
-function save() {
+// ── saving: debounced, with a visible state, retried when it fails, merged when someone else saved meanwhile ───────────
+const chip = document.getElementById('save-chip');
+let saveTimer = null, inFlight = null, retryTimer = null, retryMs = 2000, dirtyMsg = '';
+function isDirty() { return JSON.stringify(S) !== JSON.stringify(base); }
+function setChip(kind, text) {
+  chip.className = 'ct-chip' + (kind ? ' ' + kind : '');
+  chip.textContent = text;
+  chip.title = kind === 'bad' ? 'Click to try again' : '';
+}
+function scheduleSave() {
+  setChip('saving', 'Saving…');
   clearTimeout(saveTimer);
-  return new Promise(resolve => {
-    saveTimer = setTimeout(async () => {
-      await fetch('/combat/' + COMBAT_ID + '/state', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ combatants, round_num: roundNum, active_idx: activeIdx }),
-      });
-      resolve();
-    }, 300);
-  });
+  saveTimer = setTimeout(() => { saveTimer = null; doSave(); }, 300);
+}
+function flushSave() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; return doSave(); }
+  return inFlight || Promise.resolve();
+}
+function save() { return flushSave(); }
+async function doSave() {
+  if (inFlight) { await inFlight; if (!isDirty()) return; }
+  const sent = C.clone(S);
+  const payload = { combatants: sent.combatants, round_num: sent.round, active_idx: sent.active, name: sent.name, log: sent.log,
+                    ruleset: sent.ruleset, turn: sent.turn, rev };
+  inFlight = (async () => {
+    try {
+      const res = await fetch('/combat/' + COMBAT_ID + '/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res.status === 409) {
+        const d = await res.json();
+        mergeTheirs(d.state);
+        return;
+      }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        const why = typeof d.detail === 'string' ? d.detail : 'HTTP ' + res.status;
+        if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) { setChip('bad', '⚠ Not saved: ' + why); return; }   // retrying will not help
+        throw new Error(why);
+      }
+      const d = await res.json();
+      rev = d.rev; base = sent; retryMs = 2000; clearTimeout(retryTimer);
+      if (isDirty()) scheduleSave(); else setChip('', 'Saved ✓');
+    } catch (e) {
+      setChip('bad', '⚠ Not saved — retrying…');
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => doSave(), retryMs);
+      retryMs = Math.min(retryMs * 2, 15000);
+    }
+  })();
+  try { await inFlight; } finally { inFlight = null; }
+}
+chip.addEventListener('click', () => { if (chip.classList.contains('bad')) { retryMs = 2000; doSave(); } });
+
+function toLocalState(d) {
+  return { combatants: d.combatants, round: d.round_num, active: d.active_idx, name: d.name, log: d.log || [], ruleset: d.ruleset || S.ruleset, turn: d.turn || { active_id: null, acted: [], picker: null } };
+}
+// someone else saved (a player rolled initiative, the map pushed HP, another tab): their changes and mine are combined, field by field
+function mergeTheirs(state) {
+  const theirs = toLocalState(state);
+  const merged = C.merge3(base, S, theirs, fluid());
+  S = merged; combatants = S.combatants; rev = state.rev; base = C.clone(theirs);
+  undoStack.length = 0; redoStack.length = 0;      // undo only covers your own recent edits; history clears when others' changes arrive
+  const note = document.getElementById('conflict-note');
+  note.hidden = false; note.textContent = 'Someone else changed this encounter (a player, the map, another tab) — their changes were merged with yours.';
+  setTimeout(() => { note.hidden = true; }, 8000);
+  render();
+  scheduleSave();
+}
+
+// A player rolling initiative or ending their turn, or the map pushing HP, changes this encounter on the server.
+let _liveTimer = null, _liveWaiting = false;
+async function refreshFromServer() {
+  const ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) { _liveWaiting = true; return; }   // not under the GM's cursor: when focus leaves
+  _liveWaiting = false;
+  try {
+    const r = await fetch('/api/combat/' + COMBAT_ID + '/state');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.rev === rev) return;
+    if (!isDirty() && !saveTimer && !inFlight) {
+      const theirs = toLocalState(d);
+      S = theirs; combatants = S.combatants; rev = d.rev; base = C.clone(theirs);
+      undoStack.length = 0; redoStack.length = 0;
+      render(); setChip('', 'Saved ✓');
+    } else mergeTheirs(d);
+  } catch (e) { /* the next change tries again */ }
+}
+window.addEventListener('nd-live', () => { clearTimeout(_liveTimer); _liveTimer = setTimeout(refreshFromServer, 500); });
+document.addEventListener('focusout', () => { if (_liveWaiting) setTimeout(refreshFromServer, 50); });
+window.addEventListener('beforeunload', (e) => { if (saveTimer || inFlight || (isDirty() && chip.classList.contains('bad'))) { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
+
+// keep the turn bar just under the site's own sticky top bar
+function placeBar() {
+  const nav = document.querySelector('.topbar');
+  document.getElementById('turn-bar').style.top = (nav && nav.offsetHeight ? nav.offsetHeight : 0) + 'px';
+}
+window.addEventListener('resize', placeBar); placeBar();
+
+async function combatAiTactics() {
+  const btn = document.getElementById('ai-tactics-btn');
+  const panel = document.getElementById('ai-tactics-panel');
+  btn.disabled = true; btn.textContent = '✨ thinking…';
+  panel.style.display = ''; panel.innerHTML = '<span class="ct-dim">Asking the AI about this round…</span>';
+  try {
+    await flushSave();
+    const res = await ndAiFetch(window.location.pathname + '/ai-tactics', { method: 'POST' });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.detail || ('HTTP ' + res.status));
+    panel.innerHTML = '';
+    (d.tactics || []).forEach(t => {
+      const div = document.createElement('div');
+      div.style.margin = '.25rem 0';
+      div.innerHTML = '<strong style="color:var(--neon)"></strong>: ';
+      div.firstChild.textContent = t.who;
+      div.append(t.move);
+      panel.appendChild(div);
+    });
+    if (d.beat) {
+      const b = document.createElement('div');
+      b.style.cssText = 'margin-top:.4rem;font-style:italic;color:var(--text-dim)';
+      b.textContent = '🎭 ' + d.beat;
+      panel.appendChild(b);
+    }
+  } catch (e) {
+    panel.textContent = '⚠ ' + e.message;
+    panel.style.color = '#e07070';
+  } finally {
+    btn.disabled = false; btn.textContent = '✨ AI Tactics';
+  }
 }
 
 render();
+// a fluid fight with nobody chosen yet: the chooser asks who opens; an initiative fight's first turn needs no ceremony
+if (!fluid() && S.combatants.length) startOfTurn(C.activeId(S, false));
 </script>
 {% endblock %}

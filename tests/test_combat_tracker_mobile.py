@@ -31,12 +31,12 @@ def test_remove_combatant_confirms_before_removing(client, seed):
     combat_id = _make_combat(seed.world_a.id)
     r = client.get(f"/combat/{combat_id}")
     assert r.status_code == 200
-    handler = r.text.split("dataset.action === 'remove') {", 1)[1].split("} else if", 1)[0]
+    handler = r.text.split("if (action === 'remove') {", 1)[1].split("} else if", 1)[0]
     assert "confirm(" in handler
     # The condition-remove ("remove-cond") handler is deliberately left
     # alone — removing a status-effect chip is trivial and quick to redo
     # mid-fight, unlike losing a whole combatant's tracked stats.
-    cond_handler = r.text.split("dataset.action === 'remove-cond') {", 1)[1].split("} else if", 1)[0]
+    cond_handler = r.text.split("action === 'remove-cond') {", 1)[1].split("} else if", 1)[0]
     assert "confirm(" not in cond_handler
 
 

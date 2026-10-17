@@ -30,6 +30,7 @@ from pathlib import Path
 from . import ai_instructions as _ai_instructions
 from . import ai_queue as _ai_queue
 from . import deps
+from . import combat_turns as _combat_turns
 from .theme_presets import THEME_PRESETS
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
@@ -3364,10 +3365,7 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
     linked_combat = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first() if s.combat_session_id else None
     active_combatant_id, combat_round = None, None
     if linked_combat:
-        combatants = json.loads(linked_combat.combatants_json or "[]")
-        ordered = sorted(combatants, key=lambda c: -(c.get("initiative") or 0))
-        if ordered and 0 <= linked_combat.active_idx < len(ordered):
-            active_combatant_id = ordered[linked_combat.active_idx].get("id")
+        active_combatant_id = _combat_turns.active_combatant_id(linked_combat, _combat_turns.load(linked_combat))
         combat_round = linked_combat.round_num
     gallery_images = _gallery_module.all_world_image_urls(db, world) if world else []
     return templates.TemplateResponse("schematic.html", {
@@ -3508,6 +3506,7 @@ def schematic_push_combat(slug: str, db: Session = Depends(get_db)):
             c["conditions"] = list(el.get("conditions", []))
             synced.append(c.get("name"))
         cs.combatants_json = json.dumps(combatants)
+        _combat_turns.touch(cs)          # a tracker open elsewhere learns its copy is stale
         db.commit()
         _live_module.touch(s.world_id)   # players' maps refresh at once instead of waiting for the next poll
         return {"synced": synced}
@@ -3542,10 +3541,7 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
     if s.combat_session_id:
         cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
         if cs:
-            combatants = json.loads(cs.combatants_json or "[]")
-            ordered = sorted(combatants, key=lambda c: -(c.get("initiative") or 0))
-            if ordered and 0 <= cs.active_idx < len(ordered):
-                active_combatant_id = ordered[cs.active_idx].get("id")
+            active_combatant_id = _combat_turns.active_combatant_id(cs, _combat_turns.load(cs))
             combat_round = cs.round_num
     return elements, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round, own_pc_ids, image_url, fog_part
 
