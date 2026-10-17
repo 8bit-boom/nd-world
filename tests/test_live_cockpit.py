@@ -834,17 +834,17 @@ def test_player_hub_on_own_sheet(client, seed):
     assert 'data-claim="unclaim"' in html and "Rope" in html
     assert 'data-claim="claim"' in html and "Gem" in html
     assert "+50 XP" in html                             # ledger
-    # Sessions is closed to players by default, so the tab must NOT list session titles...
-    assert "The Tavern" not in html
-    # ...until the world opens that section to them
+    # the list is the Session Log (open to players by default) and links to the players' page, never the GM's Sessions page
+    assert "The Tavern" in html and 'href="/session-log/' in html
+    # ...and disappears when the world closes the Session Log to players
     from app.models import World
     db = SessionLocal()
     try:
-        db.get(World, seed.world_a.id).section_access_json = json.dumps({"sessions": {"player": "read"}})
+        db.get(World, seed.world_a.id).section_access_json = json.dumps({"session_log": {"player": "none"}})
         db.commit()
     finally:
         db.close()
-    assert "The Tavern" in client.get(f"/characters/{pc_id}").text  # recent session
+    assert "The Tavern" not in client.get(f"/characters/{pc_id}").text
 
     # a GM viewing the same sheet gets NO hub (it's the player's surface)
     login(client, seed.gm.email, GM_PASSWORD)
