@@ -254,6 +254,11 @@ tools that require GM access still check `is_gm` at call time.)
   read view. A due reveal appears on the player's next page load (nothing is pushed). Search cannot be used to probe secrets: `retrieval.drop_secret_only_matches` drops, for a non-GM viewer, any entity (search,
   RAG lookups, ILIKE fallback) whose only match is text that viewer cannot see, and note search checks the stripped text.
   An entity page's breadcrumb (`#entity-breadcrumb`) links back through its folder and every subfolder.
+- **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
+  data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
+  - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`
+  (never empty). Images: a `MediaTitle` label beside the URL - the file is never renamed - and an empty name resets it to the automatic one.
+  Buttons are on the audio and video libraries, the album image tiles and the All Images tiles (including the "Load more" ones), editors only.
 - **Cockpit keyboard** (`static/js/cockpit-keys.js` - pure, tested in `tests/test_cockpit_keys.py`): ONE table (`SHORTCUTS`) is both the
   handler (`shortcutFor`) and the F1 help (`helpRows`), so they cannot drift apart. Keys match by `e.code`, never by character
   (Russian / Hebrew layouts), use Alt + letter/digit (never Ctrl+Alt: that is AltGr and types characters), skip the browser's own
