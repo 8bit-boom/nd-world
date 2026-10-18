@@ -46,7 +46,10 @@
     return c || textOf(a.name).localeCompare(textOf(b.name), undefined, { numeric: true }) || a.index - b.index;
   }
 
+  const VISIBLE = "Visible to players", HIDDEN = "Hidden from players";
+
   function groupLabel(meta, group) {
+    if (group === "visibility") return meta.vis === "hidden" ? HIDDEN : VISIBLE;
     if (group === "usage") return num(meta.uses) > 0 ? "Used" : "Unused";
     if (group === "source") return meta.source ? meta.source : "Unused";
     return "";
@@ -64,6 +67,13 @@
         return keep;
       });
     }
+    if (state.filters.includes("hidden")) {
+      shown = shown.filter((m) => {
+        const keep = m.vis === "hidden";
+        if (!keep) hidden.push(m.index);
+        return keep;
+      });
+    }
     shown.sort((a, b) => compareItems(a, b, state.sort));
     if (!state.group) return { hidden, entries: shown.map((m) => ({ item: m.index })) };
     const buckets = new Map();
@@ -74,6 +84,7 @@
     });
     const order = [...buckets.keys()].sort((x, y) => {
       if (state.group === "usage") return (x === "Used" ? 0 : 1) - (y === "Used" ? 0 : 1);
+      if (state.group === "visibility") return (x === VISIBLE ? 0 : 1) - (y === VISIBLE ? 0 : 1);
       if (x === "Unused") return 1;           // "Unused" last
       if (y === "Unused") return -1;
       return x.localeCompare(y, undefined, { numeric: true });
@@ -141,7 +152,7 @@
 
   function metaOf(item, index) {
     const d = item.dataset;
-    return { index, name: d.name || "", uses: num(d.uses), date: num(d.date), size: num(d.size), source: d.source || "" };
+    return { index, name: d.name || "", uses: num(d.uses), date: num(d.date), size: num(d.size), source: d.source || "", vis: d.vis || "" };
   }
 
   function attach(bar) {
@@ -264,7 +275,7 @@
       Object.entries(modeBtns).forEach(([id, b]) => b.setAttribute("aria-checked", id === state.mode ? "true" : "false"));
       slider.value = String(state.size);
       slider.title = SIZE_NAMES[state.size];
-      sizeWrap.hidden = state.mode === "list";
+      sizeWrap.hidden = !(spec.size_modes || spec.modes.map((m) => m.id)).includes(state.mode);
       const desc = state.sort.startsWith("-");
       sortSel.value = desc ? state.sort.slice(1) : state.sort;
       dirBtn.textContent = desc ? "↓" : "↑";
@@ -280,6 +291,8 @@
       } else if (film) {
         film.root.hidden = true;
       }
+      // pages with layout-specific behaviour (the soundboard's pads, the playlist's shared player) listen for this
+      collection.dispatchEvent(new CustomEvent("nd-view-change", { bubbles: true, detail: { ...state } }));
     }
 
     // In the filmstrip a click on a picture selects it instead of doing what the picture does elsewhere (open the lightbox ...). Capture phase,

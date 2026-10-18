@@ -39,6 +39,7 @@ from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_
 from .. import deps as _deps
 from ..models import VideoAlbum, VideoClip, VideoJob
 from ..templating import templates
+from .audio import _clip_facts
 from ..uploads import (
     copy_upload_bounded,
     effective_upload_bytes,
@@ -415,7 +416,7 @@ def video_library(request: Request, db: Session = Depends(get_db), active_world:
     kind_icons = _deps.effective_kinds(world)[1]
     return templates.TemplateResponse("video_library.html", {
         "request": request, "world": world, "worlds": worlds,
-        "clips": clips,
+        "clips": clips, "clip_facts": _clip_facts(clips),
         "album": None, "albums": albums, "breadcrumb": [],
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
@@ -439,7 +440,7 @@ def video_album_detail(album_id: int, request: Request, db: Session = Depends(ge
     album_ids = [a.id for a in albums]
     return templates.TemplateResponse("video_library.html", {
         "request": request, "world": world, "worlds": worlds,
-        "clips": clips,
+        "clips": clips, "clip_facts": _clip_facts(clips),
         "album": album, "albums": albums, "breadcrumb": _breadcrumb(db, album),
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),

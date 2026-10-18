@@ -14,6 +14,10 @@ MODE_LABELS = {
     "list": ("☰", "List"),
     "compact": ("≡", "Compact"),
     "filmstrip": ("🎞", "Filmstrip"),
+    "rows": ("☰", "Rows"),
+    "playlist": ("▶", "Playlist"),
+    "pads": ("🎛", "Soundboard"),
+    "posters": ("🎬", "Posters"),
 }
 
 SORT_LABELS = {
@@ -26,10 +30,12 @@ SORT_LABELS = {
 GROUP_LABELS = {
     "usage": "Used / unused",
     "source": "First place used",
+    "visibility": "Visible / hidden to players",
 }
 
 FILTER_LABELS = {
     "unused": "Unused only",
+    "hidden": "Hidden from players only",
 }
 
 SECTIONS = {
@@ -40,6 +46,12 @@ SECTIONS = {
     # an album's pictures: no "used in" data on its tiles
     "album": {"modes": ["grid", "masonry", "list", "filmstrip"], "default": "grid",
               "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []},
+    # the Audio library (/audio and an audio album): rows (today's layout), compact rows, a playlist with one shared player, a soundboard of pads
+    "audio": {"modes": ["rows", "compact", "playlist", "pads"], "default": "rows", "size_modes": ["pads"],
+              "sorts": ["name", "date", "size"], "default_sort": "name", "groups": ["visibility"], "filters": ["hidden"]},
+    # the Video library (/video and a video album): rows (today's layout), compact rows, a grid of posters
+    "video": {"modes": ["rows", "compact", "posters"], "default": "rows", "size_modes": ["posters"],
+              "sorts": ["name", "date", "size"], "default_sort": "name", "groups": ["visibility"], "filters": ["hidden"]},
 }
 
 SIZES = (1, 2, 3)
@@ -54,6 +66,8 @@ def spec(section: str) -> dict:
     return {
         "section": section,
         "default": s["default"], "default_sort": s["default_sort"], "default_size": DEFAULT_SIZE,
+        # the layouts the size slider means something in (the picture layouts all; a list of rows has no size)
+        "size_modes": s.get("size_modes") or [m for m in s["modes"] if m != "list"],
         "modes": [{"id": m, "icon": MODE_LABELS[m][0], "label": MODE_LABELS[m][1]} for m in s["modes"]],
         "sorts": [{"id": k, "label": SORT_LABELS[k]} for k in s["sorts"]],
         "groups": [{"id": k, "label": GROUP_LABELS[k]} for k in s["groups"]],

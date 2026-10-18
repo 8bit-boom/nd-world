@@ -316,6 +316,8 @@ tools that require GM access still check `is_gm` at call time.)
   keyed on `.nd-collection[data-view][data-size]`. Items are `.nd-item` with `data-name/uses/date/size/source`; a page that adds items later calls
   `container.ndViews.refresh()`. A choice is URL > account (`user_view_prefs`, `/api/view-prefs`) > this browser (`nd_view:<section>`) > default, and a hidden
   item is always unchecked so bulk actions never act on what is not shown. Never add a per-page grid / toggle again - register the section.
+  Audio has two layouts with behaviour of their own in `static/js/audio-views.js` (soundboard pads, playlist bar; every clip still uses its own
+  `<audio id=audio-el-ID>`, so Loop / Pop out / subtitles are untouched); they listen for the engine's `nd-view-change` event on the collection.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

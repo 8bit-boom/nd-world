@@ -19,7 +19,7 @@ read-only pages too; the soundboard is a priority for table use.
 |---|---|---|
 | 0 | Engine, registry, macro, CSS, account saving, tests | done |
 | 1 | Images: grid (S/M/L), masonry, list, filmstrip; sort by name / used-in / date / size; group by used / first place used; "unused only" filter (All Images and albums) | done |
-| 2 | Audio: rows (today), playlist, soundboard (pads), table; Video: poster grid, list, theater | next |
+| 2 | Audio: rows, compact, playlist (shared bar, shuffle / repeat), soundboard (pads: tap, keys 1-9, volume, loop, fade, one-at-a-time, stop / fade all); Video: rows, compact, poster grid; group by visibility, "hidden only" filter | done (audio table and video theater still to come) |
 | 3 | Entities: compact, portrait wall, split browse, board by field, web of relations | planned |
 | 4 | Notes (cards, reader, outline, group by tag / entity / session), quests kanban, sessions timeline, facts, characters, maps | planned |
 | 5 | Saved named views, world defaults the GM sets, cockpit-window layouts | planned |

@@ -2193,3 +2193,74 @@ a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .nd-collection[data-view="filmstrip"] .nd-group-head { display: none; }
 @media (max-width: 720px) { .nd-film { grid-template-columns: 36px minmax(0, 1fr) 36px; } .nd-film-full { right: 44px; } }
 @media (prefers-reduced-motion: reduce) { .nd-collection .nd-item { transition: none; } }
+
+/* ── Audio layouts (static/js/audio-views.js): compact rows, playlist, soundboard ─────────────────────────────────────────────────────────── */
+.av-controls { display: none; }
+.nd-collection[data-view="compact"] .audio-clip-row { padding: .3rem .7rem; gap: .5rem; }
+.nd-collection[data-view="compact"] .audio-clip-desc, .nd-collection[data-view="compact"] .audio-clip-edit-form { display: none; }
+.nd-collection[data-view="compact"] .audio-player-slot audio { max-width: 240px; height: 32px; }
+
+/* playlist: a line per clip with a play button; the clip's own <audio> stays but is hidden - the shared bar at the bottom plays */
+.nd-collection[data-view="playlist"] { gap: .25rem; }
+.nd-collection[data-view="playlist"] .audio-clip-row { padding: .25rem .6rem; gap: .6rem; }
+.nd-collection[data-view="playlist"] .audio-clip-desc, .nd-collection[data-view="playlist"] .audio-clip-edit-form,
+.nd-collection[data-view="playlist"] .audio-clip-actions { display: none; }
+.nd-collection[data-view="playlist"] .audio-player-slot { display: none !important; }   /* it has an inline display:flex */
+.nd-collection[data-view="playlist"] .audio-clip-info { order: 2; }
+.nd-collection[data-view="playlist"] .av-controls { display: flex; order: 1; align-items: center; gap: .5rem; flex: 0 0 auto; }
+.nd-collection[data-view="playlist"] .av-bar, .nd-collection[data-view="playlist"] .av-vol, .nd-collection[data-view="playlist"] .av-fade, .nd-collection[data-view="playlist"] .av-key { display: none; }
+.av-play { min-width: 44px; min-height: 44px; border-radius: 50%; background: var(--bg2); color: var(--neon); border: 1px solid var(--neon); font-size: 1.05rem; cursor: pointer; }
+.audio-clip-row.av-playing { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon); }
+.audio-clip-row.av-playing .av-play { background: var(--neon); color: #000; }
+.av-bar { flex: 1 1 auto; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; min-width: 40px; }
+.av-fill { height: 100%; width: 0; background: var(--neon); }
+.av-now { position: fixed; left: 50%; transform: translateX(-50%); bottom: .8rem; z-index: 520; width: min(640px, calc(100vw - 1.2rem)); display: flex; gap: .4rem; align-items: center; padding: .5rem .7rem; background: var(--bg2); border: 1px solid var(--neon); border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.55); }
+.av-now[hidden] { display: none; }
+.av-now-main { flex: 1 1 auto; min-width: 0; }
+.av-now-title { font-size: .85rem; font-weight: 600; color: var(--neon); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: .25rem; }
+.av-now-btn { min-width: 44px; min-height: 44px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 1rem; }
+.av-now-btn[aria-pressed="true"] { border-color: var(--neon); color: var(--neon); }
+body.av-has-now { padding-bottom: 5.5rem; }
+
+/* soundboard: big pads */
+.av-padbar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: 0 0 .7rem; }
+.av-padbar[hidden] { display: none; }
+.av-padbar .btn-cancel { min-height: 44px; }
+.av-one { display: inline-flex; gap: .35rem; align-items: center; min-height: 44px; color: var(--text); cursor: pointer; }
+.av-hint { color: var(--text-dim); font-size: .75rem; }
+.nd-collection[data-view="pads"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 40px), 1fr)); gap: .7rem; }
+.nd-collection[data-view="pads"] .audio-clip-row { min-width: 0; overflow: hidden; flex-direction: column; align-items: stretch; justify-content: space-between; min-height: calc(var(--nd-tile) * .95); padding: .6rem; gap: .4rem; border-width: 2px; position: relative; }
+.nd-collection[data-view="pads"] .audio-clip-row::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 5px; background: hsl(var(--av-hue, 190) 70% 55%); border-radius: 3px 3px 0 0; }
+.nd-collection[data-view="pads"] .audio-clip-desc, .nd-collection[data-view="pads"] .audio-clip-edit-form, .nd-collection[data-view="pads"] .audio-clip-actions,
+.nd-collection[data-view="pads"] .audio-clip-transcript, .nd-collection[data-view="pads"] .audio-clip-info > button { display: none; }
+.nd-collection[data-view="pads"] .audio-clip-info { flex: 0 0 auto; min-width: 0; padding-right: 1.6rem; }
+.nd-collection[data-view="pads"] .audio-clip-name { font-size: .88rem; line-height: 1.25; overflow-wrap: anywhere; padding-top: .2rem; }
+.nd-collection[data-view="pads"] .audio-player-slot audio, .nd-collection[data-view="pads"] .audio-player-slot > button:not([onclick^="audioToggleLoop"]):not([onclick^="audioPlayForPlayers"]) { display: none; }
+.nd-collection[data-view="pads"] .audio-player-slot { gap: .3rem !important; }
+.nd-collection[data-view="pads"] .audio-player-slot { flex-wrap: wrap; min-width: 0; }
+.nd-collection[data-view="pads"] .audio-player-slot > button { min-height: 36px; flex: 1 1 auto; font-size: .72rem !important; padding: .2rem .4rem !important; }
+.nd-collection[data-view="pads"] .av-controls { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) 44px; grid-template-areas: "play play" "bar fade" "vol vol"; gap: .4rem; align-items: center; }
+.nd-collection[data-view="pads"] .av-play { grid-area: play; width: 100%; border-radius: 8px; min-height: 52px; font-size: 1.4rem; }
+.nd-collection[data-view="pads"] .av-bar { grid-area: bar; }
+.nd-collection[data-view="pads"] .av-vol { grid-area: vol; width: 100%; min-width: 0; accent-color: var(--neon); }
+.nd-collection[data-view="pads"] .av-fade { grid-area: fade; min-height: 36px; background: var(--bg2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.nd-collection[data-view="pads"] .av-key { position: absolute; z-index: 1; top: .5rem; right: .55rem; font-size: .75rem; color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 .35rem; }
+.nd-collection[data-view="pads"] .av-key:empty { display: none; }
+.nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+1) { --av-hue: 190; } .nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+2) { --av-hue: 330; }
+.nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+3) { --av-hue: 45; } .nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+4) { --av-hue: 130; }
+.nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+5) { --av-hue: 270; } .nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+6) { --av-hue: 20; }
+.nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+7) { --av-hue: 210; } .nd-collection[data-view="pads"] .audio-clip-row:nth-child(8n+8) { --av-hue: 80; }
+@media (max-width: 720px) { .nd-collection[data-view="pads"] { grid-template-columns: repeat(2, minmax(0, 1fr)); } .av-now { bottom: .4rem; } }
+
+/* ── Video layouts: compact rows and a poster grid (the <video> has an inline max-width, hence the !important) ───────────────────────────── */
+.nd-collection[data-view="compact"] .video-clip-row { padding: .3rem .7rem; gap: .5rem; }
+.nd-collection[data-view="compact"] .video-clip-desc, .nd-collection[data-view="compact"] .video-clip-edit-form { display: none; }
+.nd-collection[data-view="compact"] .video-clip-row video { max-width: 200px !important; }
+.nd-collection[data-view="posters"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 90px), 1fr)); gap: .8rem; }
+.nd-collection[data-view="posters"] .video-clip-row { min-width: 0; flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: .4rem; padding: .5rem; }
+.nd-collection[data-view="posters"] .video-clip-row video { order: -1; width: 100% !important; max-width: none !important; aspect-ratio: 16 / 9; object-fit: cover; }
+.nd-collection[data-view="posters"] .video-clip-desc, .nd-collection[data-view="posters"] .video-clip-edit-form, .nd-collection[data-view="posters"] .video-clip-info > button,
+.nd-collection[data-view="posters"] .video-clip-transcript { display: none; }
+.nd-collection[data-view="posters"] .video-clip-actions { flex-wrap: wrap; }
+.nd-collection[data-view="posters"] .video-clip-name { font-size: .88rem; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .nd-collection[data-view="posters"] { grid-template-columns: 1fr; } }

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block title %}{{ album.name if album else 'Video' }} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="form-page" style="max-width:900px">
@@ -222,9 +223,10 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">🗂 Clips ({{ clips|length }})</h2>
     {% if clips %}
-    <div class="video-clip-list">
+    {{ view_bar("video", "video-clips", request) }}
+    <div id="video-clips" class="video-clip-list nd-collection" data-view="rows">
       {% for c in clips %}
-      <div class="video-clip-row">
+      <div class="video-clip-row nd-item" data-clip-id="{{ c.id }}" data-name="{{ c.name|lower }}" data-date="{{ clip_facts[c.id].date }}" data-size="{{ clip_facts[c.id].size }}" data-vis="{{ '' if c.visible_to_players else 'hidden' }}">
         <div class="video-clip-info">
           <div class="video-clip-name">
             <span data-rename-label="video:{{ c.id }}">{{ c.name }}</span>
@@ -307,6 +309,7 @@
 .video-clip-edit-form { flex-basis:100%; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
 .video-clip-transcript { white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:.8rem; color:var(--text-dim); background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .6rem; margin:.3rem 0 0; max-height:240px; overflow:auto; }
 </style>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
 <script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
 <script>
 function videoToggleEdit(id) {

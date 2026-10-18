@@ -205,6 +205,17 @@ def api_audio_clips(request: Request, db: Session = Depends(get_db), active_worl
     return [{"id": c.id, "name": c.name, "description": c.description or "", "album_id": c.album_id} for c in clips]
 
 
+def _clip_facts(clips) -> dict:
+    """{clip id: {size, mtime}} - the file's size and the clip's date, for the layouts' sort keys (static/js/nd-views.js)."""
+    from .gallery import _file_facts
+    out = {}
+    for c in clips:
+        facts = _file_facts(c.file_url)
+        made = c.created_at.timestamp() if c.created_at else facts["mtime"]
+        out[c.id] = {"size": facts["size"], "date": int(made)}
+    return out
+
+
 @router.get("/audio", response_class=HTMLResponse)
 def audio_library(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -230,6 +241,7 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
         "clip_counts": _clip_counts(db, request, album_ids),
         "max_audio_mb": _effective_audio_bytes(db) // (1024 * 1024),
         "entities": entities, "kind_icons": kind_icons,
+        "clip_facts": _clip_facts(clips),
     })
 
 
@@ -253,6 +265,7 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
         "max_audio_mb": _effective_audio_bytes(db) // (1024 * 1024),
+        "clip_facts": _clip_facts(clips),
     })
 
 
