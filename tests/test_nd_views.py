@@ -30,7 +30,7 @@ def test_clean_falls_back_field_by_field():
 def test_every_section_offers_only_known_labels():
     for name, s in view_prefs.SECTIONS.items():
         sp = view_prefs.spec(name)
-        assert s["default"] in s["modes"] and s["default_sort"] in s["sorts"], name
+        assert s["default"] in s["modes"] and s["default_sort"].lstrip("-") in s["sorts"], name
         assert [m["id"] for m in sp["modes"]] == s["modes"]
 
 

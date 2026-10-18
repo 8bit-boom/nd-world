@@ -88,6 +88,8 @@
       if (state.group === "visibility") return (x === VISIBLE ? 0 : 1) - (y === VISIBLE ? 0 : 1);
       if (x === "Unused" || x === NONE) return 1;           // "Unused" / "None" last
       if (y === "Unused" || y === NONE) return -1;
+      // months follow the sort's direction (newest month first when the notes are newest-first); other groups are alphabetical
+      if (state.group === "month") return state.sort.startsWith("-") ? y.localeCompare(x) : x.localeCompare(y);
       return x.localeCompare(y, undefined, { numeric: true });
     });
     const entries = [];

@@ -2326,3 +2326,36 @@ body.av-has-now { padding-bottom: 5.5rem; }
   .nd-collection[data-view="split"] { display: flex; flex-direction: column; align-items: stretch; }
   .nd-collection[data-view="split"] .ev-preview { display: none; }
 }
+
+/* ── Notes layouts (static/js/notes-views.js): timeline (today's), cards, outline, reader ─────────────────────────────────────────────────── */
+.nv-line { display: none; }
+.nv-reader { display: none; }
+.nd-collection[data-view="cards"] { display: block; column-width: calc(var(--nd-tile) + 120px); column-gap: .8rem; }
+.nd-collection[data-view="cards"] .pn-note { break-inside: avoid; margin-bottom: .8rem; padding: .8rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.nd-collection[data-view="cards"] .pn-note:nth-child(5n+1) { border-top: 4px solid var(--neon); } .nd-collection[data-view="cards"] .pn-note:nth-child(5n+2) { border-top: 4px solid var(--neon2, #ff2d78); }
+.nd-collection[data-view="cards"] .pn-note:nth-child(5n+3) { border-top: 4px solid #e0b050; } .nd-collection[data-view="cards"] .pn-note:nth-child(5n+4) { border-top: 4px solid #4c9; } .nd-collection[data-view="cards"] .pn-note:nth-child(5n+5) { border-top: 4px solid #a7f; }
+.nd-collection[data-view="outline"] .pn-note-title, .nd-collection[data-view="outline"] .pn-note-date { display: none; }
+.nd-collection[data-view="outline"] .nv-line, .nd-collection[data-view="split"] .nv-line { display: flex; gap: .8rem; align-items: baseline; justify-content: space-between; min-height: 44px; align-items: center; cursor: pointer; }
+.nd-collection[data-view="outline"] .nv-line:focus-visible, .nd-collection[data-view="split"] .nv-line:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
+.nd-collection[data-view="outline"] .nv-line-title, .nd-collection[data-view="split"] .nv-line-title { font-weight: bold; color: var(--neon); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nd-collection[data-view="outline"] .nv-line-date, .nd-collection[data-view="split"] .nv-line-date { font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
+.nd-collection[data-view="outline"] .pn-note-content, .nd-collection[data-view="outline"] .pn-del-form { display: none; }
+.nd-collection[data-view="outline"] .pn-note.nv-open .pn-note-content, .nd-collection[data-view="outline"] .pn-note.nv-open .pn-del-form { display: block; }
+.nd-collection[data-view="outline"] .pn-note.nv-open .nv-line::after { content: "▾"; color: var(--neon); }
+.nd-collection[data-view="outline"] .pn-note:not(.nv-open) .nv-line::after { content: "▸"; color: var(--text-dim); }
+.nd-collection[data-view="split"] { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 0 1rem; align-items: start; }
+.nd-collection[data-view="split"] > .pn-note { grid-column: 1; padding: .1rem .6rem; }
+.nd-collection[data-view="split"] > .nd-group-head { grid-column: 1; }
+/* only the LIST rows lose their body - the reader beside them is in the same container and keeps its own */
+.nd-collection[data-view="split"] > .pn-note .pn-note-title, .nd-collection[data-view="split"] > .pn-note .pn-note-date, .nd-collection[data-view="split"] > .pn-note .pn-note-content, .nd-collection[data-view="split"] > .pn-note .pn-del-form { display: none; }
+.nd-collection[data-view="split"] .pn-note.nd-current { background: var(--bg3); border-left: 3px solid var(--neon); }
+.nd-collection[data-view="split"] .nv-reader { display: block; grid-column: 2; grid-row: 1 / span 400; position: sticky; top: .8rem; align-self: start; max-height: calc(100vh - 1.6rem); overflow: auto; padding: 1rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; }
+.nv-reader[hidden] { display: none !important; }
+.nv-title { margin: 0 0 .2rem; color: var(--neon); font-size: 1.15rem; }
+@media (max-width: 720px) {
+  /* on a phone the reader is the outline: no room for two columns */
+  .nd-collection[data-view="split"] { display: block; }
+  .nd-collection[data-view="split"] .nv-reader { display: none; }
+  .nd-collection[data-view="split"] > .pn-note.nv-open .pn-note-content, .nd-collection[data-view="split"] > .pn-note.nv-open .pn-del-form { display: block; }
+  .nd-collection[data-view="split"] .pn-note { padding: .1rem .2rem; border-bottom: 1px solid var(--border); }
+}

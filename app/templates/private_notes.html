@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% import '_ai_assist_panel.html' as _aa %}
 {% block title %}Notes — {{ target_user.display_name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
@@ -52,8 +53,10 @@
 
     <div class="pn-section">
       {% if notes %}
+        {{ view_bar("notes", "pn-notes", request) }}
+        <div id="pn-notes" class="pn-notes nd-collection" data-view="timeline">
         {% for n in notes %}
-        <div class="pn-note" id="note-{{ n.id }}">
+        <div class="pn-note nd-item" id="note-{{ n.id }}" data-name="{{ toc[loop.index0].text|lower }}" data-date="{{ n.created_at.timestamp()|int if n.created_at else 0 }}" data-g-month="{{ n.created_at.strftime('%Y-%m') if n.created_at else '' }}" data-title="{{ toc[loop.index0].text }}">
           {% if n.title %}<div class="pn-note-title">{{ n.title }}</div>{% endif %}
           <div class="pn-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</div>
           <div class="pn-note-content rendered-md">{{ n.content_html | safe }}</div>
@@ -65,6 +68,8 @@
           {% endif %}
         </div>
         {% endfor %}
+          <aside id="nv-reader" class="nv-reader" aria-live="polite" hidden></aside>
+        </div>
       {% else %}
         <p style="color:var(--text-dim);font-size:.85rem;">No notes yet.</p>
       {% endif %}
@@ -98,6 +103,8 @@
 .pn-field textarea { min-height:100px; resize:vertical; }
 .pn-del-form { display:inline; }
 </style>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
+<script src="/static/js/notes-views.js?v={{ asset_v('js/notes-views.js') }}"></script>
 <script src="/static/js/text-format-toolbar.js?v={{ asset_v('js/text-format-toolbar.js') }}"></script>
 <script>
 // Search: hides non-matching notes and highlights matches — same shape as

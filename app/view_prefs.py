@@ -20,6 +20,9 @@ MODE_LABELS = {
     "posters": ("🎬", "Posters"),
     "wall": ("🖼", "Portrait wall"),
     "split": ("◫", "Split"),
+    "timeline": ("📜", "Timeline"),
+    "cards": ("🗒", "Cards"),
+    "outline": ("≣", "Outline"),
 }
 
 SORT_LABELS = {
@@ -35,6 +38,7 @@ GROUP_LABELS = {
     "visibility": "Visible / hidden to players",
     "subtype": "Subtype",
     "tag": "First tag",
+    "month": "Month",
 }
 
 FILTER_LABELS = {
@@ -59,6 +63,9 @@ SECTIONS = {
     # an entity list's cards (/kind/<kind>): cards (today's), compact rows, a portrait wall, and a split view - the list beside a live preview
     "entities": {"modes": ["grid", "compact", "wall", "split"], "default": "grid", "size_modes": ["grid", "wall"],
                  "sorts": ["name", "date"], "default_sort": "name", "groups": ["subtype", "tag"], "filters": []},
+    # a player's private notes page: the timeline (today's), sticky-note cards, a collapsed outline, and a reader (the list beside one full note)
+    "notes": {"modes": ["timeline", "cards", "outline", "split"], "default": "timeline", "size_modes": ["cards"],
+              "labels": {"split": "Reader"}, "sorts": ["date", "name"], "default_sort": "-date", "groups": ["month"], "filters": []},
 }
 
 SIZES = (1, 2, 3)
@@ -75,7 +82,7 @@ def spec(section: str) -> dict:
         "default": s["default"], "default_sort": s["default_sort"], "default_size": DEFAULT_SIZE,
         # the layouts the size slider means something in (the picture layouts all; a list of rows has no size)
         "size_modes": s.get("size_modes") or [m for m in s["modes"] if m != "list"],
-        "modes": [{"id": m, "icon": MODE_LABELS[m][0], "label": MODE_LABELS[m][1]} for m in s["modes"]],
+        "modes": [{"id": m, "icon": MODE_LABELS[m][0], "label": s.get("labels", {}).get(m, MODE_LABELS[m][1])} for m in s["modes"]],
         "sorts": [{"id": k, "label": SORT_LABELS[k]} for k in s["sorts"]],
         "groups": [{"id": k, "label": GROUP_LABELS[k]} for k in s["groups"]],
         "filters": [{"id": k, "label": FILTER_LABELS[k]} for k in s["filters"]],

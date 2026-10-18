@@ -320,7 +320,8 @@ tools that require GM access still check `is_gm` at call time.)
   `<audio id=audio-el-ID>`, so Loop / Pop out / subtitles are untouched); they listen for the engine's `nd-view-change` event on the collection. The entity list's card grid (`/kind/<kind>`, `view=grid`) uses the same
   engine (`entities` section; cards are `.entity-card-wrap.nd-item` with `data-g-subtype` / `data-g-tag` - any `data-g-<key>` is a usable group key): compact,
   portrait wall, and a split view whose preview (`static/js/entity-views.js`) is `GET /api/entity/ID/preview`, so it shows exactly what that viewer may see.
-  The table view stays server-rendered (`?view=table`, its columns come from the field template).
+  The table view stays server-rendered (`?view=table`, its columns come from the field template). The private-notes page uses it too (`notes` section,
+  `static/js/notes-views.js`: outline toggles in place, the reader copies the server-rendered note; on a phone the reader is the outline).
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`
