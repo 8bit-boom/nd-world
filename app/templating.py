@@ -19,6 +19,7 @@ from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
 from . import deps
+from . import view_prefs
 from . import nav_menus as _nav_menus
 from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .database import SessionLocal, get_app_settings_flags_cached
@@ -122,6 +123,28 @@ templates.env.globals["asset_v"] = asset_v
 # checks. The middleware guarantees request.state.is_assistant always exists,
 # so this never needs a getattr dance in templates.
 templates.env.globals["can_edit"] = deps.can_edit_content
+templates.env.globals["view_spec"] = view_prefs.spec
+
+
+def _saved_view(request, section: str):
+    """The signed-in user's saved layout for a section as {} / a cleaned choice, or None when nobody is signed in (so the page knows whether
+    it can save at all). One small query per layout bar."""
+    user = getattr(getattr(request, "state", None), "user", None)
+    if not user:
+        return None
+    from .models import UserViewPref
+    db = SessionLocal()
+    try:
+        row = db.query(UserViewPref).filter(UserViewPref.user_id == user.id, UserViewPref.section == section).first()
+        try:
+            return view_prefs.clean(section, json.loads(row.prefs_json)) if row else {}
+        except ValueError:
+            return {}
+    finally:
+        db.close()
+
+
+templates.env.globals["saved_view"] = _saved_view
 # Last-resort default for the (nonexistent today) case of a template
 # rendered outside any request — real renders get the per-world merged
 # values from the context processor above.

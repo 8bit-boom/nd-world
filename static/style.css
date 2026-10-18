@@ -2126,3 +2126,70 @@ a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .for-only-text.gm-inline::before, .reveal-later-text.gm-inline::before { display: inline; margin: 0 .35em 0 0; }
 .for-only-text::before { color: var(--neon); }
 .reveal-later-text::before { color: #d9a400; }
+
+/* ── View layouts (static/js/nd-views.js, app/view_prefs.py, templates/_views.html) ───────────────────────────────────────────────────────────
+   A container `.nd-collection[data-view][data-size]` holds `.nd-item`s; the engine sets data-view (grid | masonry | list | filmstrip) and data-size
+   (1..3) and only the rules below do the laying out, so switching never reloads the page. */
+.nd-collection { --nd-tile: 130px; --nd-thumb: 56px; }
+.nd-collection[data-size="1"] { --nd-tile: 96px; --nd-thumb: 40px; }
+.nd-collection[data-size="3"] { --nd-tile: 210px; --nd-thumb: 88px; }
+.nd-collection .nd-item[hidden] { display: none !important; }
+.nd-group-head { grid-column: 1 / -1; column-span: all; flex: 0 0 100%; margin: .9rem 0 .2rem; padding-bottom: .25rem; border-bottom: 1px solid var(--border); color: var(--neon); font-size: .85rem; font-weight: bold; }
+.nd-group-head:first-child { margin-top: 0; }
+.nd-group-count { color: var(--text-dim); font-weight: normal; font-size: .75rem; }
+
+.nd-viewbar { display: flex; gap: .5rem .8rem; align-items: center; flex-wrap: wrap; margin: 0 0 .8rem; padding: .4rem .6rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; font-size: .8rem; }
+.nd-vb-modes { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+.nd-vb-mode { min-height: 36px; padding: 0 .65rem; background: var(--bg3); color: var(--text-dim); border: 0; border-right: 1px solid var(--border); cursor: pointer; font-family: var(--font); font-size: .8rem; display: inline-flex; gap: .35rem; align-items: center; }
+.nd-vb-mode:last-child { border-right: 0; }
+.nd-vb-mode[aria-checked="true"] { background: var(--neon); color: #000; }
+.nd-vb-mode:focus-visible, .nd-vb-dir:focus-visible { outline: 2px solid var(--neon); outline-offset: 1px; }
+.nd-vb-size { display: inline-flex; gap: .35rem; align-items: center; color: var(--text-dim); }
+.nd-vb-size input { width: 90px; accent-color: var(--neon); }
+.nd-vb-sort { display: inline-flex; gap: .25rem; align-items: center; }
+.nd-viewbar select { min-height: 36px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0 .4rem; font-family: var(--font); font-size: .8rem; }
+.nd-vb-dir { min-width: 36px; min-height: 36px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.nd-vb-filter { display: inline-flex; gap: .3rem; align-items: center; color: var(--text); cursor: pointer; min-height: 36px; }
+.nd-vb-count { margin-left: auto; color: var(--text-dim); }
+@media (max-width: 720px) {
+  .nd-vb-mode-label { display: none; }
+  .nd-vb-mode { min-width: 44px; min-height: 44px; justify-content: center; }
+  .nd-viewbar select, .nd-vb-dir, .nd-vb-filter { min-height: 44px; }
+  .nd-vb-count { margin-left: 0; width: 100%; }
+}
+
+/* grid: the tile size is the slider's; the picture keeps its own proportions inside the tile */
+.nd-collection[data-view="grid"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--nd-tile), 1fr)); gap: .6rem; }
+.nd-collection[data-view="grid"] .nd-item img { height: var(--nd-tile); }
+
+/* masonry: columns of natural-height pictures */
+.nd-collection[data-view="masonry"] { display: block; column-width: var(--nd-tile); column-gap: .6rem; }
+.nd-collection[data-view="masonry"] .nd-item { display: block; break-inside: avoid; margin-bottom: .6rem; }
+.nd-collection[data-view="masonry"] .nd-item img { height: auto; max-height: none; object-fit: cover; }
+
+/* list: a row per picture - thumbnail, name (+ where it is used), actions */
+.nd-collection[data-view="list"] { display: flex; flex-direction: column; gap: .35rem; }
+.nd-collection[data-view="list"] .nd-item { display: grid; grid-template-columns: 28px var(--nd-thumb) minmax(0, 1fr) auto; grid-template-areas: "check img name actions" "check img uses actions"; align-items: center; gap: 0 .7rem; padding: .3rem .6rem; }
+.nd-collection[data-view="list"] .nd-item img { grid-area: img; width: var(--nd-thumb); height: var(--nd-thumb); }
+.nd-collection[data-view="list"] .nd-item > input[type="checkbox"] { grid-area: check; position: static; width: 20px; height: 20px; }
+.nd-collection[data-view="list"] .nd-item .gallery-img-actions { grid-area: actions; position: static; }
+.nd-collection[data-view="list"] .nd-item .gallery-img-name { grid-area: name; background: none; padding: .1rem 0; font-size: .85rem; }
+.nd-collection[data-view="list"] .nd-item .gallery-img-uses { grid-area: uses; background: none; padding: 0; }
+.nd-collection[data-view="list"] .nd-group-head { margin-top: .6rem; }
+
+/* filmstrip: one big preview (made by the engine, above the strip) and a row of thumbnails below */
+.nd-film { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: .5rem; align-items: center; margin: 0 0 .6rem; position: relative; }
+.nd-film[hidden] { display: none; }
+.nd-film-stage { text-align: center; min-width: 0; }
+.nd-film-img { max-width: 100%; max-height: min(62vh, 640px); object-fit: contain; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.nd-film-cap { margin-top: .3rem; color: var(--text-dim); font-size: .85rem; overflow-wrap: anywhere; }
+.nd-film-nav { min-height: 64px; background: var(--bg2); color: var(--neon); border: 1px solid var(--border); border-radius: 6px; font-size: 1.6rem; cursor: pointer; }
+.nd-film-nav:hover { border-color: var(--neon); }
+.nd-film-full { position: absolute; top: .4rem; right: 52px; min-height: 36px; padding: 0 .7rem; background: rgba(0,0,0,.65); color: #fff; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: .78rem; }
+.nd-collection[data-view="filmstrip"] { display: flex; gap: .5rem; overflow-x: auto; padding-bottom: .4rem; scroll-snap-type: x proximity; }
+.nd-collection[data-view="filmstrip"] .nd-item { flex: 0 0 var(--nd-tile); scroll-snap-align: center; opacity: .75; }
+.nd-collection[data-view="filmstrip"] .nd-item img { height: calc(var(--nd-tile) * .7); cursor: pointer; }
+.nd-collection[data-view="filmstrip"] .nd-item.nd-current { opacity: 1; border-color: var(--neon); box-shadow: 0 0 0 2px var(--neon); }
+.nd-collection[data-view="filmstrip"] .nd-group-head { display: none; }
+@media (max-width: 720px) { .nd-film { grid-template-columns: 36px minmax(0, 1fr) 36px; } .nd-film-full { right: 44px; } }
+@media (prefers-reduced-motion: reduce) { .nd-collection .nd-item { transition: none; } }

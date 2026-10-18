@@ -311,6 +311,11 @@ tools that require GM access still check `is_gm` at call time.)
   world (`World.personal_images_max/audio/video`, `app/personal_files.py`: 30 / 10 / 5 by default, blank = default, 0 = off; set in Edit World) and are
   checked before the file is written; deleting one deletes its file. Kept pictures (not own uploads) count as "used" in `discover_world_images`, so
   the gallery cannot delete them; a player's own uploads stay out of the world's gallery.
+- **View layouts** (docs/VIEW_LAYOUTS_PLAN.md): a list page offers several layouts through ONE engine - `app/view_prefs.py` (registry + `clean`), `_views.html`
+  (`view_bar(section, target, request)`), `static/js/nd-views.js` (controls, apply, remember, account save; pure decisions tested under Node), CSS in style.css
+  keyed on `.nd-collection[data-view][data-size]`. Items are `.nd-item` with `data-name/uses/date/size/source`; a page that adds items later calls
+  `container.ndViews.refresh()`. A choice is URL > account (`user_view_prefs`, `/api/view-prefs`) > this browser (`nd_view:<section>`) > default, and a hidden
+  item is always unchecked so bulk actions never act on what is not shown. Never add a per-page grid / toggle again - register the section.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

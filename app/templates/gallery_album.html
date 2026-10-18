@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block title %}{{ album.name }} — Images — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="form-page" style="max-width:1100px">
@@ -84,9 +85,10 @@
     <button type="button" class="btn-cancel" id="album-remove-selected" onclick="albumRemoveSelected()" disabled>✕ Remove selected from album</button>
     {% if can_edit(request) %}<button type="button" class="btn-cancel" id="album-delete-selected" style="border-color:#c44;color:#c44" onclick="albumDeleteSelected()" disabled>🗑 Delete selected</button>{% endif %}
   </div>
-  <div class="gallery-img-grid">
+  {{ view_bar("album", "album-grid", request) }}
+  <div id="album-grid" class="gallery-img-grid nd-collection" data-view="grid">
     {% for url in image_urls %}
-    <div class="gallery-album-img-cell">
+    <div class="gallery-album-img-cell nd-item" data-name="{{ image_names.get(url, url)|lower }}" data-uses="0" data-date="{{ image_facts[url].mtime }}" data-size="{{ image_facts[url].size }}">
       <input type="checkbox" class="album-img-check" value="{{ url }}" aria-label="Select {{ image_names.get(url, url) }}" onchange="albumSelChanged()"/>
       <img src="{{ url|thumb }}" data-full="{{ url }}" data-rename-img="{{ url }}" alt="{{ image_names.get(url, url) }}" loading="lazy" onclick="openLightbox(this.dataset.full, this.alt)"/>
       <div class="gallery-img-actions">
@@ -131,6 +133,7 @@
 .gallery-img-name { padding:.3rem .4rem; font-size:.7rem; color:var(--text-dim); background:var(--bg2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>
 
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
 <script src="/static/js/chunked-upload.js?v={{ asset_v('js/chunked-upload.js') }}"></script>
 <script>
 async function ndSendSpotlight(url) {
@@ -153,7 +156,7 @@ function albumSelChanged() {
   ['album-remove-selected', 'album-delete-selected'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = !n; });
 }
 function albumToggleAll() {
-  const boxes = Array.from(document.querySelectorAll('.album-img-check'));
+  const boxes = Array.from(document.querySelectorAll('.album-img-check')).filter(b => !b.closest('.nd-item[hidden]'));
   const anyUnchecked = boxes.some(b => !b.checked);
   boxes.forEach(b => b.checked = anyUnchecked);
   albumSelChanged();

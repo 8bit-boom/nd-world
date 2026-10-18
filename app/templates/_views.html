@@ -1,0 +1,10 @@
+{# The layout switcher for a collection (static/js/nd-views.js builds the controls; app/view_prefs.py is the registry of what a section offers).
+   Put it above a container with class "nd-collection" and an id, whose children are ".nd-item"s with data-name / data-uses / data-date / data-size /
+   data-source:
+     {% from "_views.html" import view_bar %}   {{ view_bar("images", "my-grid", request) }}   <div id="my-grid" class="nd-collection"> ...items... </div>
+   and load the script once:  <script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script> #}
+{% macro view_bar(section, target, request) %}
+{% set sp = view_spec(section) %}
+{% set saved = saved_view(request, section) %}
+{% if sp %}<div class="nd-viewbar" data-for="{{ target }}" data-spec='{{ sp|tojson }}' data-account="{{ '1' if saved is not none else '' }}" data-saved='{{ (saved or {})|tojson }}' role="toolbar" aria-label="Layout"></div>{% endif %}
+{% endmacro %}

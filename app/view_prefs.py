@@ -1,0 +1,82 @@
+"""Layouts a list page can be shown in ("view layouts"): the ONE registry of which sections have which modes, sort keys and group keys.
+
+A leaf module (no router imports). The page macro `view_bar(section)` (templates/_views.html) renders the switcher from `spec(section)`, and
+static/js/nd-views.js - the engine that applies a layout, a size, a sort and a grouping to a collection of items - receives the same spec as JSON,
+so the buttons, the validation of a stored / URL-given choice and the server can never disagree. See docs/VIEW_LAYOUTS_PLAN.md.
+
+A choice is {mode, size (1..3 = S / M / L), sort ("key" or "-key" for descending), group ("" or a key), filters: [keys]}. It is stored per browser
+(localStorage "nd_view:<section>") and may be given in the URL (?view= &size= &sort= &group=); `clean` is the tolerant reader both use.
+"""
+
+MODE_LABELS = {
+    "grid": ("⊞", "Grid"),
+    "masonry": ("▥", "Masonry"),
+    "list": ("☰", "List"),
+    "compact": ("≡", "Compact"),
+    "filmstrip": ("🎞", "Filmstrip"),
+}
+
+SORT_LABELS = {
+    "name": "Name",
+    "uses": "Used in",
+    "date": "Date",
+    "size": "File size",
+}
+
+GROUP_LABELS = {
+    "usage": "Used / unused",
+    "source": "First place used",
+}
+
+FILTER_LABELS = {
+    "unused": "Unused only",
+}
+
+SECTIONS = {
+    # All Images (/images): the gallery of every picture the world uses or keeps in an album
+    "images": {"modes": ["grid", "masonry", "list", "filmstrip"], "default": "grid",
+               "sorts": ["name", "uses", "date", "size"], "default_sort": "name",
+               "groups": ["usage", "source"], "filters": ["unused"]},
+    # an album's pictures: no "used in" data on its tiles
+    "album": {"modes": ["grid", "masonry", "list", "filmstrip"], "default": "grid",
+              "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []},
+}
+
+SIZES = (1, 2, 3)
+DEFAULT_SIZE = 2
+
+
+def spec(section: str) -> dict:
+    """The section's spec as the page and the engine use it: ids plus the labels to show. Unknown section -> {}."""
+    s = SECTIONS.get(section)
+    if not s:
+        return {}
+    return {
+        "section": section,
+        "default": s["default"], "default_sort": s["default_sort"], "default_size": DEFAULT_SIZE,
+        "modes": [{"id": m, "icon": MODE_LABELS[m][0], "label": MODE_LABELS[m][1]} for m in s["modes"]],
+        "sorts": [{"id": k, "label": SORT_LABELS[k]} for k in s["sorts"]],
+        "groups": [{"id": k, "label": GROUP_LABELS[k]} for k in s["groups"]],
+        "filters": [{"id": k, "label": FILTER_LABELS[k]} for k in s["filters"]],
+    }
+
+
+def clean(section: str, raw) -> dict:
+    """A stored or URL-given choice as a usable one: anything unknown falls back to the section's default, field by field (never all at once)."""
+    s = SECTIONS.get(section)
+    if not s:
+        return {}
+    raw = raw if isinstance(raw, dict) else {}
+    mode = raw.get("mode") if raw.get("mode") in s["modes"] else s["default"]
+    try:
+        size = int(raw.get("size"))
+    except (TypeError, ValueError):
+        size = DEFAULT_SIZE
+    size = size if size in SIZES else DEFAULT_SIZE
+    sort = str(raw.get("sort") or "")
+    desc = sort.startswith("-")
+    key = sort[1:] if desc else sort
+    sort = ("-" if desc else "") + key if key in s["sorts"] else s["default_sort"]
+    group = raw.get("group") if raw.get("group") in s["groups"] else ""
+    filters = [f for f in (raw.get("filters") if isinstance(raw.get("filters"), list) else []) if f in s["filters"]]
+    return {"mode": mode, "size": size, "sort": sort, "group": group, "filters": filters}

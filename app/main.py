@@ -56,6 +56,7 @@ from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_li
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from .routers.live_jobs import router as live_jobs_router
+from .routers.view_prefs_api import router as view_prefs_router
 from . import ai_background as _ai_background
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -174,6 +175,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
 app.include_router(ai_tasks_router)
 app.include_router(live_jobs_router)
+app.include_router(view_prefs_router)
 app.include_router(account_router)
 # character_ai BEFORE characters: its /characters/ai-new and /api/characters/ai/*
 # paths would otherwise be swallowed by characters.py's /characters/{pc_id}
@@ -483,6 +485,9 @@ def _is_player_safe(method: str, path: str) -> bool:
     if re.match(r"^/api/entity/\d+/preview$", path):
         return True
     if path == "/account" or path.startswith("/account/"):
+        return True
+    # saved layouts: every signed-in user reads and writes only their own (routers/view_prefs_api.py)
+    if path == "/api/view-prefs" or re.match(r"^/api/view-prefs/[a-z_]{1,32}$", path):
         return True
     if re.match(r"^/api/worlds/\d+/characters/sync$", path):
         return True

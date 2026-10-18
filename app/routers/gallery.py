@@ -183,6 +183,16 @@ def _move_target_options(db: Session, world_id: int, album: ImageAlbum) -> list:
     return [{"id": a.id, "path": path_for(a)} for a in all_albums if a.id not in excluded]
 
 
+def _file_facts(url: str) -> dict:
+    """{size (bytes), mtime (epoch seconds)} of an /uploads/ picture for the layouts' sort keys; zeros when the file is not there."""
+    path = _resolve_upload_path(url)
+    try:
+        st = path.stat() if path else None
+    except OSError:
+        st = None
+    return {"size": int(st.st_size) if st else 0, "mtime": int(st.st_mtime) if st else 0}
+
+
 @router.get("/images", response_class=HTMLResponse)
 def images_gallery(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -190,7 +200,7 @@ def images_gallery(request: Request, db: Session = Depends(get_db), active_world
         raise HTTPException(404)
     if not world_can_view_section(request, world, "images"):
         raise HTTPException(403)
-    images = discover_world_images(db, world)
+    images = [{**img, **_file_facts(img["url"])} for img in discover_world_images(db, world)]
     albums = (
         db.query(ImageAlbum)
         .filter(ImageAlbum.world_id == world.id, ImageAlbum.parent_id.is_(None))
@@ -429,6 +439,7 @@ def album_detail(album_id: int, request: Request, db: Session = Depends(get_db),
     return templates.TemplateResponse("gallery_album.html", {
         "request": request, "world": world, "worlds": worlds,
         "album": album, "image_urls": urls, "image_names": image_names,
+        "image_facts": {u: _file_facts(u) for u in urls},
         "breadcrumb": _breadcrumb(db, album),
         "child_albums": child_albums, "child_album_urls": child_album_urls,
         "move_targets": _move_target_options(db, world.id, album),

@@ -726,6 +726,19 @@ class CharacterKeepsake(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class UserViewPref(Base):
+    """A person's chosen layout (view mode, size, sort, grouping, filters) for one list page - saved to the ACCOUNT so it follows them across
+    devices. One row per (user, section); the content is always run through app.view_prefs.clean before it is stored or returned."""
+    __tablename__ = "user_view_prefs"
+    __table_args__ = (UniqueConstraint("user_id", "section", name="uq_user_view_prefs_user_section"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    section = Column(String(32), nullable=False)
+    prefs_json = Column(Text, default="{}")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class CharacterShare(Base):
     """A read-only link to ONE character's sheet that anyone holding the token can open without an account; the owner (or a
     GM) can revoke it. The token is the only secret and is never logged."""
