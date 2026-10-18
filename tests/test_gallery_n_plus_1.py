@@ -120,7 +120,7 @@ def test_over_the_batch_threshold_ships_the_remainder_as_json(client, seed, monk
     # match the CSS rules (.gallery-img-cell {...}) or JS string literals
     # ('gallery-img-cell', single-quoted) that legitimately appear elsewhere
     # on the same page.
-    assert r.text.count('class="gallery-img-cell"') == 2
+    assert r.text.count('class="gallery-img-cell nd-item"') == 2
     # ...and all 5 portraits are present SOMEWHERE on the page — either in
     # the server-rendered batch or the embedded JSON for the rest.
     for i in range(5):
