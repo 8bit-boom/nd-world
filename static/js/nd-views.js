@@ -226,7 +226,9 @@
           el("button", { type: "button", class: "nd-film-nav", "aria-label": "Previous", text: "‹", onclick: () => step(-1) }),
           el("div", { class: "nd-film-stage" }, img, cap),
           el("button", { type: "button", class: "nd-film-nav", "aria-label": "Next", text: "›", onclick: () => step(1) }),
-          el("button", { type: "button", class: "nd-film-full", text: "⤢ Full size", onclick: () => { if (current && window.openLightbox) openLightbox(srcOf(current), current.dataset.name || ""); } })),
+          el("div", { class: "nd-film-tools" },
+            window.ndStage ? el("button", { type: "button", class: "nd-film-full", title: "Show on the second screen", text: "📺", onclick: () => { if (current) window.ndStage.showImage(srcOf(current), (current.querySelector("img") || {}).alt || ""); } }) : null,
+            el("button", { type: "button", class: "nd-film-full", text: "⤢ Full size", onclick: () => { if (current && window.openLightbox) openLightbox(srcOf(current), current.dataset.name || ""); } }))),
         img, cap,
       };
       collection.parentNode.insertBefore(film.root, collection);
@@ -306,6 +308,38 @@
       e.stopPropagation();
       show(item);
     }, true);
+    // The strip of thumbnails can be dragged sideways with the mouse and scrolled with the wheel (a touch screen scrolls it natively). A drag
+    // that moved is not a click: the click that ends it is swallowed so it does not select a picture by accident.
+    let drag = null;
+    collection.addEventListener("pointerdown", (e) => {
+      if (state.mode !== "filmstrip" || e.pointerType === "touch" || e.button !== 0) return;
+      if (e.target.closest && e.target.closest("button, input, a, label.nd-keep")) return;
+      drag = { x: e.clientX, left: collection.scrollLeft, moved: false };
+    });
+    window.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      if (!drag.moved && Math.abs(dx) < 5) return;
+      if (!drag.moved) { drag.moved = true; collection.classList.add("nd-dragging"); }
+      collection.scrollLeft = drag.left - dx;
+    });
+    window.addEventListener("pointerup", () => {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      collection.classList.remove("nd-dragging");
+      if (moved) {
+        const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+        collection.addEventListener("click", swallow, { capture: true, once: true });
+        setTimeout(() => collection.removeEventListener("click", swallow, true), 0);
+      }
+    });
+    collection.addEventListener("wheel", (e) => {
+      if (state.mode !== "filmstrip" || collection.scrollWidth <= collection.clientWidth || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+      e.preventDefault();                           // the wheel moves the strip sideways, not the page
+      collection.scrollLeft += e.deltaY;
+    }, { passive: false });
+
     document.addEventListener("keydown", (e) => {
       if (state.mode !== "filmstrip" || e.altKey || e.ctrlKey || e.metaKey) return;
       if (e.target.closest && e.target.closest("input, textarea, select, [contenteditable]")) return;

@@ -93,6 +93,7 @@
       <img src="{{ url|thumb }}" data-full="{{ url }}" data-rename-img="{{ url }}" alt="{{ image_names.get(url, url) }}" loading="lazy" onclick="openLightbox(this.dataset.full, this.alt)"/>
       <div class="gallery-img-actions">
         <button type="button" class="gallery-icon-btn" title="Send to players" onclick="ndSendSpotlight('{{ url|e }}')">📤</button>
+        {% if can_edit(request) %}<button type="button" class="gallery-icon-btn gallery-screen-btn" title="Show on the second screen" onclick="galleryShowOnScreen(this)">📺</button>{% endif %}
         {% if can_edit(request) %}<button type="button" class="gallery-icon-btn" title="Rename" data-nd-rename data-kind="image" data-url="{{ url }}" data-name="{{ image_names.get(url, url) }}">✏</button>{% endif %}
         <button type="button" class="gallery-icon-btn" title="Delete image permanently" onclick="galleryDeleteImage('{{ url|e }}')">🗑</button>
         <button type="button" class="gallery-icon-btn" title="Remove from album" onclick="galleryRemoveFromAlbum('{{ url|e }}')">✕</button>
@@ -136,6 +137,12 @@
 <script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
 <script src="/static/js/chunked-upload.js?v={{ asset_v('js/chunked-upload.js') }}"></script>
 <script>
+// the 📺 tile button: the same action the floating "Send to screen" label used to offer, as a button like the others
+function galleryShowOnScreen(btn) {
+  const img = btn.closest('.nd-item').querySelector('img');
+  if (window.ndStage) ndStage.showImage(img.dataset.full || img.src, img.alt || '');
+}
+
 async function ndSendSpotlight(url) {
   const res = await fetch('/images/spotlight', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),

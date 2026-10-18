@@ -72,6 +72,7 @@
         <div class="gallery-img-actions">
           <button type="button" class="gallery-img-send" title="Send to players"
                   onclick="event.preventDefault(); event.stopPropagation(); ndSendSpotlight('{{ img.url|e }}');">📤</button>
+          {% if can_edit(request) %}<button type="button" class="gallery-img-expand" title="Show on the second screen" onclick="event.preventDefault(); event.stopPropagation(); galleryShowOnScreen(this);">📺</button>{% endif %}
           {% if can_edit(request) %}<button type="button" class="gallery-img-expand" title="Rename" data-nd-rename data-kind="image" data-url="{{ img.url }}" data-name="{{ img.name }}">✏</button>{% endif %}
           <button type="button" class="gallery-img-expand" title="View full size"
                   onclick="event.preventDefault(); event.stopPropagation(); const img = this.closest('.gallery-img-cell').querySelector('img'); openLightbox(img.dataset.full, img.alt);">🔍</button>
@@ -118,6 +119,12 @@
 </style>
 
 <script>
+// the 📺 tile button: the same action the floating "Send to screen" label used to offer, as a button like the others
+function galleryShowOnScreen(btn) {
+  const img = btn.closest('.nd-item').querySelector('img');
+  if (window.ndStage) ndStage.showImage(img.dataset.full || img.src, img.alt || '');
+}
+
 async function ndSendSpotlight(url) {
   const res = await fetch('/images/spotlight', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
@@ -181,6 +188,12 @@ function galleryBuildCell(img) {
     openLightbox(cellImg.dataset.full, cellImg.alt);
   };
   if (window.NDGalleryCanRename) {
+    const screenBtn = document.createElement('button');
+    screenBtn.type = 'button';
+    screenBtn.className = 'gallery-img-expand';
+    screenBtn.title = 'Show on the second screen';
+    screenBtn.textContent = '📺';
+    screenBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); galleryShowOnScreen(screenBtn); };
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
     renameBtn.className = 'gallery-img-expand';
@@ -190,7 +203,7 @@ function galleryBuildCell(img) {
     renameBtn.dataset.kind = 'image';
     renameBtn.dataset.url = img.url;
     renameBtn.dataset.name = img.name;
-    actions.append(sendBtn, renameBtn, expandBtn);
+    actions.append(sendBtn, screenBtn, renameBtn, expandBtn);
   } else {
     actions.append(sendBtn, expandBtn);
   }

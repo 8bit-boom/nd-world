@@ -136,3 +136,22 @@ def test_album_page_items_carry_the_sort_data_and_players_get_the_bar(client, se
     _login(client, seed)
     page = client.get(f"/images/albums/{aid}").text
     assert page.count('class="gallery-album-img-cell nd-item"') == 2 and 'data-size="' in page and 'data-for="album-grid"' in page
+
+
+def test_second_screen_is_a_tile_button_not_a_floating_label_on_gallery_tiles(client, seed):
+    js = open("static/js/nd-stage.js", encoding="utf-8").read()
+    assert ".nd-item, .nd-film" in js                       # the hover label skips layout tiles and the filmstrip preview
+    db = SessionLocal()
+    try:
+        album = ImageAlbum(world_id=seed.world_a.id, name="Screens", image_urls_json=json.dumps(["/uploads/s.png"]))
+        db.add(album)
+        db.add(Entity(world_id=seed.world_a.id, kind="character", name="Holder", image_url="/uploads/s.png"))
+        db.commit()
+        aid = album.id
+    finally:
+        db.close()
+    _login(client, seed)
+    assert 'class="gallery-icon-btn gallery-screen-btn"' in client.get(f"/images/albums/{aid}").text
+    assert "galleryShowOnScreen(this)" in client.get("/images").text
+    engine = open("static/js/nd-views.js", encoding="utf-8").read()
+    assert "nd-film-tools" in engine and "wheel" in engine and "nd-dragging" in engine      # draggable / wheel-scrollable strip

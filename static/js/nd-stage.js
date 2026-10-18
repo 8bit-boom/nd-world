@@ -152,7 +152,7 @@
     if (!img || img.tagName !== 'IMG' || !img.currentSrc && !img.src) return false;
     var r = img.getBoundingClientRect();
     if (r.width < 110 || r.height < 70) return false;
-    if (img.closest('#nd-stage-panel, #lightbox-overlay, nav, .topbar, header.topbar, [data-nd-stage="off"], .nd-embed')) return false;
+    if (img.closest('#nd-stage-panel, #lightbox-overlay, nav, .topbar, header.topbar, [data-nd-stage="off"], .nd-embed, .nd-item, .nd-film')) return false;
     return true;
   }
   function fullSrc(img) {
