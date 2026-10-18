@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block title %}{{ kind_icons[kind] }} {{ kind|capitalize }}s — {{ world.name }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -228,9 +229,11 @@
     {% endif %}
 
     {% else %}
-    {# ── Card grid view ── #}
-    <div class="card-grid">
+    {# ── Card grid view (with the layout switcher: cards / compact / portrait wall / split) ── #}
+    {{ view_bar("entities", "entity-cards", request) }}
+    <div id="entity-cards" class="card-grid nd-collection" data-view="grid">
       {% for e in entities %}{% include "entities/_card.html" %}{% endfor %}
+      <aside id="ev-preview" class="ev-preview" aria-live="polite" hidden></aside>
     </div>
     {% endif %}
 
@@ -721,4 +724,6 @@ document.getElementById('bulk-folder-apply-btn').addEventListener('click', async
   }
 });
 </script>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
+<script src="/static/js/entity-views.js?v={{ asset_v('js/entity-views.js') }}"></script>
 {% endblock %}

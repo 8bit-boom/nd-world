@@ -2270,3 +2270,59 @@ body.av-has-now { padding-bottom: 5.5rem; }
 .nd-collection[data-view="posters"] .video-clip-actions { flex-wrap: wrap; }
 .nd-collection[data-view="posters"] .video-clip-name { font-size: .88rem; overflow-wrap: anywhere; }
 @media (max-width: 720px) { .nd-collection[data-view="posters"] { grid-template-columns: 1fr; } }
+
+/* ── Entity layouts (static/js/entity-views.js): cards (the default grid), compact rows, a portrait wall, a split list + preview ─────────────────── */
+.entity-noimg { display: none; }
+.ev-preview { display: none; }
+.nd-collection[data-view="grid"] .entity-card-wrap { min-width: 0; }
+.nd-collection[data-view="grid"] { grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 90px), 1fr)); }
+.nd-collection[data-view="grid"] .entity-card img { height: auto; max-height: 260px; }
+
+/* compact: one line per entity - a small picture or icon, the name, its subtype and a one-line summary */
+.nd-collection[data-view="compact"] { display: flex; flex-direction: column; gap: .25rem; }
+.nd-collection[data-view="compact"] .entity-card { flex-direction: row; align-items: center; gap: .6rem; padding: .25rem .6rem .25rem 2.2rem; }
+.nd-collection[data-view="compact"] .entity-card:hover { transform: none; }
+.nd-collection[data-view="compact"] .entity-card img { width: 38px; height: 38px; max-height: none; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+.nd-collection[data-view="compact"] .entity-noimg { display: flex; width: 38px; height: 38px; align-items: center; justify-content: center; background: var(--bg3); border-radius: 4px; flex: 0 0 auto; }
+.nd-collection[data-view="compact"] .entity-card-body { padding: 0; display: flex; align-items: baseline; gap: .6rem; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.nd-collection[data-view="compact"] .entity-card-body h3 { margin: 0; font-size: .9rem; white-space: nowrap; }
+.nd-collection[data-view="compact"] .entity-card-body p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-collection[data-view="compact"] .entity-kind, .nd-collection[data-view="compact"] .tags { display: none; }
+.nd-collection[data-view="compact"] .entity-sub { white-space: nowrap; }
+.nd-collection[data-view="compact"] .card-cb, .nd-collection[data-view="split"] .card-cb { top: 50%; transform: translateY(-50%); left: .6rem; }
+
+/* portrait wall: the picture fills the tile, the name sits over its foot */
+.nd-collection[data-view="wall"] { grid-template-columns: repeat(auto-fill, minmax(var(--nd-tile), 1fr)); gap: .5rem; }
+.nd-collection[data-view="wall"] .entity-card { position: relative; aspect-ratio: 3 / 4; }
+.nd-collection[data-view="wall"] .entity-card img { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; object-fit: cover; }
+.nd-collection[data-view="wall"] .entity-noimg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 2.6rem; background: var(--bg3); }
+.nd-collection[data-view="wall"] .entity-card-body { position: absolute; left: 0; right: 0; bottom: 0; padding: 1.6rem .5rem .4rem; background: linear-gradient(transparent, rgba(0,0,0,.85)); flex: none; }
+.nd-collection[data-view="wall"] .entity-card-body h3 { margin: 0; font-size: .85rem; color: #fff; overflow-wrap: anywhere; }
+.nd-collection[data-view="wall"] .entity-card-body p, .nd-collection[data-view="wall"] .entity-kind, .nd-collection[data-view="wall"] .entity-sub, .nd-collection[data-view="wall"] .tags { display: none; }
+
+/* split: the list on the left (like compact), the chosen entity on the right, kept in view while the list scrolls */
+.nd-collection[data-view="split"] { display: grid; grid-template-columns: minmax(220px, 340px) minmax(0, 1fr); gap: .25rem .9rem; align-items: start; }
+.nd-collection[data-view="split"] > .nd-item { grid-column: 1; }
+.nd-collection[data-view="split"] > .nd-group-head { grid-column: 1; }
+.nd-collection[data-view="split"] .entity-card { flex-direction: row; align-items: center; gap: .5rem; padding: .25rem .5rem .25rem 2.2rem; }
+.nd-collection[data-view="split"] .entity-card:hover { transform: none; }
+.nd-collection[data-view="split"] .entity-card img { width: 32px; height: 32px; max-height: none; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+.nd-collection[data-view="split"] .entity-noimg { display: flex; width: 32px; height: 32px; align-items: center; justify-content: center; background: var(--bg3); border-radius: 4px; flex: 0 0 auto; }
+.nd-collection[data-view="split"] .entity-card-body { padding: 0; min-width: 0; }
+.nd-collection[data-view="split"] .entity-card-body h3 { margin: 0; font-size: .88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-collection[data-view="split"] .entity-card-body p, .nd-collection[data-view="split"] .tags, .nd-collection[data-view="split"] .entity-sub { display: none; }
+.nd-collection[data-view="split"] .entity-kind { font-size: .66rem; }
+.nd-collection[data-view="split"] .nd-item.nd-current .entity-card { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon); }
+.nd-collection[data-view="split"] .ev-preview { display: block; grid-column: 2; grid-row: 1 / span 400; position: sticky; top: .8rem; align-self: start; max-height: calc(100vh - 1.6rem); overflow: auto; padding: 1rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+.ev-preview[hidden] { display: none !important; }
+.ev-img { max-width: 100%; max-height: 320px; object-fit: contain; border-radius: 6px; background: var(--bg); display: block; margin-bottom: .6rem; }
+.ev-kind { font-size: .75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.ev-title { margin: .2rem 0 .4rem; color: var(--neon); font-size: 1.2rem; }
+.ev-summary { color: var(--text-dim); font-size: .9rem; }
+.ev-open { display: inline-block; margin-top: .8rem; min-height: 44px; line-height: 44px; color: var(--neon); }
+.ev-wait { color: var(--text-dim); font-style: italic; }
+@media (max-width: 720px) {
+  /* a phone has no room for two columns: the split view is the compact list and the entity opens as usual */
+  .nd-collection[data-view="split"] { display: flex; flex-direction: column; align-items: stretch; }
+  .nd-collection[data-view="split"] .ev-preview { display: none; }
+}

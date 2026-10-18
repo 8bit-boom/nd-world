@@ -46,13 +46,14 @@
     return c || textOf(a.name).localeCompare(textOf(b.name), undefined, { numeric: true }) || a.index - b.index;
   }
 
-  const VISIBLE = "Visible to players", HIDDEN = "Hidden from players";
+  const VISIBLE = "Visible to players", HIDDEN = "Hidden from players", NONE = "None";
 
   function groupLabel(meta, group) {
     if (group === "visibility") return meta.vis === "hidden" ? HIDDEN : VISIBLE;
     if (group === "usage") return num(meta.uses) > 0 ? "Used" : "Unused";
     if (group === "source") return meta.source ? meta.source : "Unused";
-    return "";
+    // any other group key reads the item's data-g-<key> (a subtype, the first tag ...); an item without one goes under "None"
+    return (meta.g && meta.g[group]) || NONE;
   }
 
   // What to show: which items are hidden by the filters, and the entries (group headings + items, in order) to lay out.
@@ -85,8 +86,8 @@
     const order = [...buckets.keys()].sort((x, y) => {
       if (state.group === "usage") return (x === "Used" ? 0 : 1) - (y === "Used" ? 0 : 1);
       if (state.group === "visibility") return (x === VISIBLE ? 0 : 1) - (y === VISIBLE ? 0 : 1);
-      if (x === "Unused") return 1;           // "Unused" last
-      if (y === "Unused") return -1;
+      if (x === "Unused" || x === NONE) return 1;           // "Unused" / "None" last
+      if (y === "Unused" || y === NONE) return -1;
       return x.localeCompare(y, undefined, { numeric: true });
     });
     const entries = [];
@@ -152,7 +153,9 @@
 
   function metaOf(item, index) {
     const d = item.dataset;
-    return { index, name: d.name || "", uses: num(d.uses), date: num(d.date), size: num(d.size), source: d.source || "", vis: d.vis || "" };
+    const g = {};
+    Object.keys(d).forEach((k) => { if (k.startsWith("g") && k.length > 1 && k[1] === k[1].toUpperCase()) g[k[1].toLowerCase() + k.slice(2)] = d[k]; });   // data-g-subtype -> g.subtype
+    return { index, name: d.name || "", uses: num(d.uses), date: num(d.date), size: num(d.size), source: d.source || "", vis: d.vis || "", g };
   }
 
   function attach(bar) {

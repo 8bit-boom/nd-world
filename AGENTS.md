@@ -317,7 +317,10 @@ tools that require GM access still check `is_gm` at call time.)
   `container.ndViews.refresh()`. A choice is URL > account (`user_view_prefs`, `/api/view-prefs`) > this browser (`nd_view:<section>`) > default, and a hidden
   item is always unchecked so bulk actions never act on what is not shown. Never add a per-page grid / toggle again - register the section.
   Audio has two layouts with behaviour of their own in `static/js/audio-views.js` (soundboard pads, playlist bar; every clip still uses its own
-  `<audio id=audio-el-ID>`, so Loop / Pop out / subtitles are untouched); they listen for the engine's `nd-view-change` event on the collection.
+  `<audio id=audio-el-ID>`, so Loop / Pop out / subtitles are untouched); they listen for the engine's `nd-view-change` event on the collection. The entity list's card grid (`/kind/<kind>`, `view=grid`) uses the same
+  engine (`entities` section; cards are `.entity-card-wrap.nd-item` with `data-g-subtype` / `data-g-tag` - any `data-g-<key>` is a usable group key): compact,
+  portrait wall, and a split view whose preview (`static/js/entity-views.js`) is `GET /api/entity/ID/preview`, so it shows exactly what that viewer may see.
+  The table view stays server-rendered (`?view=table`, its columns come from the field template).
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

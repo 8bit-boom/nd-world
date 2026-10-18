@@ -1,7 +1,7 @@
-<div class="entity-card-wrap">
+<div class="entity-card-wrap nd-item" data-name="{{ e.name|lower }}" data-date="{{ e.updated_at.timestamp()|int if e.updated_at else 0 }}" data-g-subtype="{{ e.subtype or '' }}" data-g-tag="{{ (e.tags or '').split(',')[0]|trim }}" data-entity-id="{{ e.id }}">
   <input type="checkbox" class="row-cb card-cb" data-id="{{ e.id }}" onclick="event.stopPropagation()"/>
   <a href="{{ ('/entity/' + e.id|string)|wq }}" class="entity-card kind-{{ e.kind }}">
-    {% if e.image_url %}<img src="{{ e.image_url|thumb }}" alt="{{ e.name }}" loading="lazy"/>{% endif %}
+    {% if e.image_url %}<img src="{{ e.image_url|thumb }}" alt="{{ e.name }}" loading="lazy"/>{% else %}<div class="entity-noimg" aria-hidden="true">{{ kind_icons[e.kind] }}</div>{% endif %}
     <div class="entity-card-body">
       <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
       {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}

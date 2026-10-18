@@ -18,6 +18,8 @@ MODE_LABELS = {
     "playlist": ("▶", "Playlist"),
     "pads": ("🎛", "Soundboard"),
     "posters": ("🎬", "Posters"),
+    "wall": ("🖼", "Portrait wall"),
+    "split": ("◫", "Split"),
 }
 
 SORT_LABELS = {
@@ -31,6 +33,8 @@ GROUP_LABELS = {
     "usage": "Used / unused",
     "source": "First place used",
     "visibility": "Visible / hidden to players",
+    "subtype": "Subtype",
+    "tag": "First tag",
 }
 
 FILTER_LABELS = {
@@ -52,6 +56,9 @@ SECTIONS = {
     # the Video library (/video and a video album): rows (today's layout), compact rows, a grid of posters
     "video": {"modes": ["rows", "compact", "posters"], "default": "rows", "size_modes": ["posters"],
               "sorts": ["name", "date", "size"], "default_sort": "name", "groups": ["visibility"], "filters": ["hidden"]},
+    # an entity list's cards (/kind/<kind>): cards (today's), compact rows, a portrait wall, and a split view - the list beside a live preview
+    "entities": {"modes": ["grid", "compact", "wall", "split"], "default": "grid", "size_modes": ["grid", "wall"],
+                 "sorts": ["name", "date"], "default_sort": "name", "groups": ["subtype", "tag"], "filters": []},
 }
 
 SIZES = (1, 2, 3)
