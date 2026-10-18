@@ -23,6 +23,7 @@ MODE_LABELS = {
     "timeline": ("📜", "Timeline"),
     "cards": ("🗒", "Cards"),
     "outline": ("≣", "Outline"),
+    "board": ("▦", "Board"),
 }
 
 SORT_LABELS = {
@@ -60,8 +61,8 @@ SECTIONS = {
     # the Video library (/video and a video album): rows (today's layout), compact rows, a grid of posters
     "video": {"modes": ["rows", "compact", "posters"], "default": "rows", "size_modes": ["posters"],
               "sorts": ["name", "date", "size"], "default_sort": "name", "groups": ["visibility"], "filters": ["hidden"]},
-    # an entity list's cards (/kind/<kind>): cards (today's), compact rows, a portrait wall, and a split view - the list beside a live preview
-    "entities": {"modes": ["grid", "compact", "wall", "split"], "default": "grid", "size_modes": ["grid", "wall"],
+    # an entity list's cards (/kind/<kind>): cards (today's), compact rows, a portrait wall, a split view (the list beside a live preview) and a board (a column per subtype)
+    "entities": {"modes": ["grid", "compact", "wall", "split", "board"], "default": "grid", "size_modes": ["grid", "wall"],
                  "sorts": ["name", "date"], "default_sort": "name", "groups": ["subtype", "tag"], "filters": []},
     # a player's private notes page: the timeline (today's), sticky-note cards, a collapsed outline, and a reader (the list beside one full note)
     "notes": {"modes": ["timeline", "cards", "outline", "split"], "default": "timeline", "size_modes": ["cards"],

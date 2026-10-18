@@ -1,4 +1,8 @@
 "use strict";
+// The entity list's Board layout, too: a column per subtype (or per first tag); a card can be dragged to another column - which changes its
+// subtype through POST /api/entity/ID/field - or moved with the little menu on the card (a touch screen cannot drag). Every change shows a toast
+// with Undo. The cards stay the very same elements (checkboxes and bulk actions keep working); the engine puts them back before it re-sorts.
+//
 // The entity list's Split layout (templates/entities/list.html; the other layouts are CSS from static/js/nd-views.js): the cards become a
 // compact list on the left and the entity you pick is shown on the right without leaving the page - name, picture, summary, tags and its text.
 //
@@ -67,8 +71,103 @@
     }
   }
 
+  // ── board ───────────────────────────────────────────────────────────────────────────────────────
+  const canEdit = list.dataset.canEdit === "1";
+  let boardEl = null, toast = null, toastTimer = null;
+  const cap = (k) => k.charAt(0).toUpperCase() + k.slice(1);
+  const boardKey = () => { const st = list.ndViews && list.ndViews.state(); return (st && st.group) || "subtype"; };
+  const valueOf = (item, key) => item.dataset["g" + cap(key)] || "";
+
+  function say(text, undo) {
+    if (!toast) { toast = el("div", { class: "ev-toast", role: "status" }); document.body.appendChild(toast); }
+    toast.replaceChildren(text + " ");
+    if (undo) toast.append(el("button", { type: "button", class: "ev-toast-undo", text: "Undo" }));
+    if (undo) toast.lastChild.addEventListener("click", () => { toast.hidden = true; undo(); });
+    toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.hidden = true; }, 9000);
+  }
+
+  async function setSubtype(item, value, quiet) {
+    const old = item.dataset.gSubtype || "";
+    if (old === value) return;
+    try {
+      const res = await fetch("/api/entity/" + encodeURIComponent(item.dataset.entityId) + "/field", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ field: "subtype", value }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { say(d.error || "Could not move it (" + res.status + ")."); return; }
+      item.dataset.gSubtype = d.value || "";
+      placeInColumn(item);
+      if (!quiet) say("Moved " + (item.dataset.name || "it") + " to " + (d.value || "None") + ".", () => setSubtype(item, old, true));
+    } catch (e) { say("Could not reach the server."); }
+  }
+
+  function column(value) {
+    let col = boardEl.querySelector('.ev-col[data-value="' + CSS.escape(value) + '"]');
+    if (col) return col;
+    col = el("div", { class: "ev-col", "data-value": value },
+      el("div", { class: "ev-col-head" }, el("span", { class: "ev-col-name", text: value || "None" }), el("span", { class: "ev-col-count" })),
+      el("div", { class: "ev-col-body" }));
+    if (canEdit && boardKey() === "subtype") {
+      const body = col.querySelector(".ev-col-body");
+      body.addEventListener("dragover", (e) => { e.preventDefault(); col.classList.add("ev-over"); });
+      body.addEventListener("dragleave", () => col.classList.remove("ev-over"));
+      body.addEventListener("drop", (e) => {
+        e.preventDefault(); col.classList.remove("ev-over");
+        const id = e.dataTransfer.getData("text/plain");
+        const item = boardEl.querySelector('.nd-item[data-entity-id="' + CSS.escape(id) + '"]');
+        if (item) setSubtype(item, value);
+      });
+    }
+    boardEl.appendChild(col);
+    return col;
+  }
+  function recount() { boardEl.querySelectorAll(".ev-col").forEach((c) => { c.querySelector(".ev-col-count").textContent = String(c.querySelectorAll(".nd-item").length); }); }
+  function placeInColumn(item) { column(valueOf(item, boardKey())).querySelector(".ev-col-body").appendChild(item); if (boardEl) recount(); }
+
+  function buildBoard() {
+    flattenBoard();
+    const key = boardKey(), its = items();
+    boardEl = el("div", { class: "ev-board" });
+    list.insertBefore(boardEl, list.firstChild);
+    if (key === "subtype") { try { JSON.parse(list.dataset.subtypes || "[]").forEach((v) => column(v)); } catch (e) { /* no suggested columns */ } }
+    its.forEach(placeInColumn);
+    // columns with cards first (by name), then the empty ones a card could be dropped into
+    const cols = Array.from(boardEl.querySelectorAll(".ev-col"));
+    cols.sort((x, y) => (x.querySelector(".nd-item") ? 0 : 1) - (y.querySelector(".nd-item") ? 0 : 1) || x.dataset.value.localeCompare(y.dataset.value))
+      .forEach((c) => boardEl.appendChild(c));
+    if (canEdit && key === "subtype") {
+      const values = cols.map((c) => c.dataset.value);
+      its.forEach((item) => {
+        item.draggable = true;
+        item.addEventListener("dragstart", item._evDrag = (e) => { e.dataTransfer.setData("text/plain", item.dataset.entityId); e.dataTransfer.effectAllowed = "move"; });
+        const sel = el("select", { class: "ev-move", "aria-label": "Move to a column" }, el("option", { value: "", text: "Move to…" }),
+          values.map((v) => el("option", { value: v, text: v || "None" })));
+        sel.addEventListener("change", () => { if (sel.selectedIndex > 0) setSubtype(item, sel.value); sel.selectedIndex = 0; });
+        item.appendChild(sel);
+      });
+    } else {
+      cols.forEach((c) => { if (!c.querySelector(".nd-item")) c.remove(); });
+    }
+    recount();
+  }
+  function flattenBoard() {
+    if (!boardEl) return;
+    boardEl.querySelectorAll(".nd-item").forEach((item) => {
+      list.appendChild(item);
+      item.draggable = false;
+      if (item._evDrag) { item.removeEventListener("dragstart", item._evDrag); item._evDrag = null; }
+      const sel = item.querySelector(":scope > .ev-move");
+      if (sel) sel.remove();
+    });
+    boardEl.remove();
+    boardEl = null;
+  }
+  list.addEventListener("nd-view-before", flattenBoard);
+
   function onMode(m) {
     mode = m;
+    if (m === "board") buildBoard();
     pane.hidden = m !== "split";
     if (m !== "split" || narrow()) { token++; return; }
     const vis = items();
@@ -94,4 +193,5 @@
   });
   list.addEventListener("nd-view-change", (e) => onMode(e.detail.mode));
   if (list.dataset.view && list.dataset.view !== "grid") onMode(list.dataset.view);
+  window.addEventListener("pagehide", flattenBoard);
 })(typeof window !== "undefined" ? window : globalThis);

@@ -801,7 +801,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if method == "POST" and re.match(r"^/api/entity/\d+/image$", path):
         # Image Studio's "Set as portrait" — entity content.
         return True
-    if method == "POST" and re.match(r"^/api/entity/\d+/rename$", path):
+    if method == "POST" and re.match(r"^/api/entity/\d+/(rename|field)$", path):
         # The right-click "Rename" on an entity link / title — entity content.
         return True
     if method == "POST" and re.match(r"^/kind/[^/]+/bulk-delete$", path):
@@ -6264,6 +6264,33 @@ def api_world_players(request: Request, db: Session = Depends(get_db), active_wo
     if not world:
         raise HTTPException(404)
     return [{"id": u.id, "name": u.display_name} for u in _world_player_list(db, world.id) if not u.is_gm]
+
+
+class EntityFieldBody(BaseModel):
+    field: str
+    value: str = ""
+
+
+@app.post("/api/entity/{entity_id}/field")
+def api_entity_field(entity_id: int, body: EntityFieldBody, request: Request,
+                     db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Changes ONE simple field of an entity without opening its form - today `subtype` (the entity list's board view moves a card to another
+    column this way). Returns the old value so the page can offer Undo (which is just another call). GM or assistant - entity content."""
+    if not deps.can_edit_content(request):
+        raise HTTPException(403)
+    entity = db.get(Entity, entity_id)
+    world = get_active_world(request, db, active_world)
+    if not entity or not world or entity.world_id != world.id:
+        raise HTTPException(404)
+    if body.field != "subtype":
+        return JSONResponse({"error": "That field cannot be changed here."}, status_code=422)
+    value = " ".join((body.value or "").split())[:64] or None
+    old = entity.subtype
+    if value == old:
+        return {"ok": True, "id": entity.id, "field": "subtype", "value": old or "", "old": old or ""}
+    entity.subtype = value
+    db.commit()
+    return {"ok": True, "id": entity.id, "field": "subtype", "value": value or "", "old": old or ""}
 
 
 class EntityRenameBody(BaseModel):

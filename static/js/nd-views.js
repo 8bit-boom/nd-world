@@ -261,6 +261,8 @@
 
     // ── applying the choice ─────────────────────────────────────────────────────────────────────────
     function apply() {
+      // a page that moved the items into containers of its own (the entity board's columns) puts them back first
+      collection.dispatchEvent(new CustomEvent("nd-view-before"));
       const list = items();
       const result = plan(list.map(metaOf), state);
       const hide = new Set(result.hidden);

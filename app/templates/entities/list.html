@@ -231,7 +231,7 @@
     {% else %}
     {# ── Card grid view (with the layout switcher: cards / compact / portrait wall / split) ── #}
     {{ view_bar("entities", "entity-cards", request) }}
-    <div id="entity-cards" class="card-grid nd-collection" data-view="grid">
+    <div id="entity-cards" class="card-grid nd-collection" data-view="grid" data-can-edit="{{ '1' if can_edit(request) else '' }}" data-subtypes='{{ (subtypes.get(kind) or [])|tojson }}'>
       {% for e in entities %}{% include "entities/_card.html" %}{% endfor %}
       <aside id="ev-preview" class="ev-preview" aria-live="polite" hidden></aside>
     </div>

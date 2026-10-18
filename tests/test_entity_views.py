@@ -22,9 +22,9 @@ def _run(file, script):
     return json.loads(out.stdout)
 
 
-def test_the_entities_section_offers_cards_compact_wall_and_split():
+def test_the_entities_section_offers_cards_compact_wall_split_and_board():
     sp = view_prefs.spec("entities")
-    assert [m["id"] for m in sp["modes"]] == ["grid", "compact", "wall", "split"]
+    assert [m["id"] for m in sp["modes"]] == ["grid", "compact", "wall", "split", "board"]
     assert sp["size_modes"] == ["grid", "wall"] and [g["id"] for g in sp["groups"]] == ["subtype", "tag"]
     assert view_prefs.clean("entities", {"mode": "wall", "group": "tag", "sort": "-date"}) == {"mode": "wall", "size": 2, "sort": "-date", "group": "tag", "filters": []}
     assert view_prefs.clean("entities", {"mode": "pads"})["mode"] == "grid"
@@ -73,3 +73,36 @@ def test_entity_list_cards_carry_layout_data_and_players_get_the_switcher(client
 def test_the_split_preview_never_writes_empty_parts_into_the_pane():
     js = open("static/js/entity-views.js", encoding="utf-8").read()
     assert ".filter(Boolean))" in js           # replaceChildren(null) would print the word "null"
+
+
+def test_board_mode_and_the_field_route(client, seed):
+    assert "board" in [m["id"] for m in view_prefs.spec("entities")["modes"]]
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="Mara", subtype="Spy")
+        db.add(e)
+        db.commit()
+        eid = e.id
+    finally:
+        db.close()
+    _login(client, seed)
+    r = client.post(f"/api/entity/{eid}/field", json={"field": "subtype", "value": "  Guard   captain "})
+    assert r.status_code == 200 and r.json() == {"ok": True, "id": eid, "field": "subtype", "value": "Guard captain", "old": "Spy"}
+    undo = client.post(f"/api/entity/{eid}/field", json={"field": "subtype", "value": "Spy"})
+    assert undo.json()["value"] == "Spy" and undo.json()["old"] == "Guard captain"
+    assert client.post(f"/api/entity/{eid}/field", json={"field": "subtype", "value": ""}).json()["value"] == ""     # blank = no subtype
+    assert client.post(f"/api/entity/{eid}/field", json={"field": "name", "value": "x"}).status_code == 422          # only the subtype can change here
+    assert client.post("/api/entity/999999/field", json={"field": "subtype", "value": "x"}).status_code == 404
+    db = SessionLocal()
+    try:
+        assert db.get(Entity, eid).subtype is None and db.get(Entity, eid).name == "Mara"
+    finally:
+        db.close()
+    _login(client, seed, player=True)
+    assert client.post(f"/api/entity/{eid}/field", json={"field": "subtype", "value": "Hacked"}).status_code == 403
+    _login(client, seed)
+    # the card list carries what the board needs, whichever listing the page chose
+    for url in ("/kind/character", "/kind/character?view=grid"):
+        page = client.get(url).text
+        if 'id="entity-cards"' in page:
+            assert 'data-can-edit="1"' in page and "data-subtypes=" in page

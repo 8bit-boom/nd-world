@@ -2359,3 +2359,32 @@ body.av-has-now { padding-bottom: 5.5rem; }
   .nd-collection[data-view="split"] > .pn-note.nv-open .pn-note-content, .nd-collection[data-view="split"] > .pn-note.nv-open .pn-del-form { display: block; }
   .nd-collection[data-view="split"] .pn-note { padding: .1rem .2rem; border-bottom: 1px solid var(--border); }
 }
+
+/* board (static/js/entity-views.js): a column per subtype / first tag, cards stacked in them, draggable to another column */
+.nd-collection[data-view="board"] { display: block; }
+.nd-collection[data-view="board"] .nd-group-head { display: none; }
+.ev-board { display: flex; gap: .8rem; align-items: flex-start; overflow-x: auto; padding-bottom: .7rem; scrollbar-color: var(--neon) var(--bg3); }
+.ev-col { flex: 0 0 270px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: .5rem; }
+.ev-col.ev-over { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon); }
+.ev-col-head { display: flex; justify-content: space-between; align-items: baseline; padding: .15rem .3rem .45rem; color: var(--neon); font-weight: bold; font-size: .85rem; }
+.ev-col-count { color: var(--text-dim); font-weight: normal; font-size: .75rem; }
+.ev-col-body { display: flex; flex-direction: column; gap: .4rem; min-height: 56px; }
+.ev-col .entity-card-wrap { position: relative; }
+.ev-col .entity-card { flex-direction: row; align-items: center; gap: .5rem; padding: .3rem .5rem .3rem 2rem; }
+.ev-col .entity-card:hover { transform: none; }
+.ev-col .entity-card img { width: 34px; height: 34px; max-height: none; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+.ev-col .entity-noimg { display: flex; width: 34px; height: 34px; align-items: center; justify-content: center; background: var(--bg3); border-radius: 4px; flex: 0 0 auto; }
+.ev-col .entity-card-body { padding: 0; min-width: 0; }
+.ev-col .entity-card-body h3 { margin: 0; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-col .entity-card-body p, .ev-col .tags, .ev-col .entity-sub, .ev-col .entity-kind { display: none; }
+.ev-col .card-cb { top: 50%; transform: translateY(-50%); left: .5rem; }
+.ev-col .nd-item[draggable="true"] { cursor: grab; }
+.ev-move { width: 100%; margin-top: .25rem; min-height: 36px; background: var(--bg3); color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; font-family: var(--font); font-size: .75rem; }
+.ev-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 1rem; z-index: 1200; background: var(--bg2); border: 1px solid var(--neon); border-radius: 8px; padding: .55rem .9rem; box-shadow: 0 4px 16px rgba(0,0,0,.5); font-size: .85rem; }
+.ev-toast[hidden] { display: none; }
+.ev-toast-undo { margin-left: .5rem; min-height: 36px; padding: 0 .8rem; background: var(--neon); color: #000; border: 0; border-radius: 4px; cursor: pointer; font-family: var(--font); font-weight: bold; }
+@media (max-width: 720px) { .ev-board { scroll-snap-type: x mandatory; } .ev-col { flex-basis: 84vw; scroll-snap-align: start; } }
+@media (hover: hover) and (pointer: fine) {
+  .ev-move { display: none; }                                      /* a mouse drags; the menu is for touch, and appears on hover / keyboard focus */
+  .ev-col .nd-item:hover .ev-move, .ev-col .nd-item:focus-within .ev-move { display: block; }
+}
