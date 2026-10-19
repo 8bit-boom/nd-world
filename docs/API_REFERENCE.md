@@ -687,6 +687,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | GET | `/boards/new` | GM / Assistant | New board form. |
 | POST | `/boards/new` | GM / Assistant | Creates a blank board. |
 | GET | `/boards/{slug}` | GM / Assistant | Board canvas (nodes/edges editor). |
+| GET | `/boards/{slug}/notes` | Anyone who may see the board | The board's nodes as notes to read (list / cards / outline / reader); plain escaped text. |
 | POST | `/boards/{slug}/save` | GM / Assistant | Saves the node/edge layout. |
 | POST | `/boards/{slug}/delete` | GM / Assistant | Deletes a board. |
 | GET | `/boards/{slug}/export` | GM / Assistant | Exports the board as JSON. |
