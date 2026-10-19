@@ -26,6 +26,8 @@ MODE_LABELS = {
     "board": ("▦", "Board"),
     "web": ("🕸", "Web"),
     "tabs": ("🗂", "Tabs"),
+    "free": ("◫", "Free windows"),
+    "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
 }
 
@@ -122,6 +124,11 @@ SECTIONS["hub"] = {
     # `filters` holds the PINNED tabs - the ones in the phone's bottom bar (empty = the default four); at most `max_filters`.
     "modes": ["tabs", "play"], "default": "tabs", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [],
     "filters": list(HUB_TABS), "max_filters": 4}
+
+SECTIONS["cockpit"] = {
+    # the cockpit's layout STYLE: free windows (today's), a stage with a rail of windows beside it, tabs (one window at a time), a tiled grid
+    "modes": ["free", "rail", "tabs", "grid"], "default": "free", "size_modes": ["none"], "labels": {"grid": "Tiled grid"},
+    "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2

@@ -22,6 +22,25 @@
   if (!viewport) return;
 
   const welcome = document.getElementById('ck-welcome');
+  // Layout STYLE: Free windows (drag and resize anywhere) or an arrangement the cockpit keeps for you - Stage + rail, Tabs, Tiled grid.
+  // The choice is the person's own: URL (?layout=) > the account (/api/view-prefs/cockpit) > this browser > Free windows.
+  const STYLE_LS = 'nd_view:cockpit';
+  const STYLE_INFO = [
+    { id: 'free', icon: '\u25EB', label: 'Free windows', sub: 'drag and resize windows anywhere' },
+    { id: 'rail', icon: '\u25A5', label: 'Stage + rail', sub: 'one big window with the others stacked beside it' },
+    { id: 'tabs', icon: '\u{1F5C2}', label: 'Tabs', sub: 'one window at a time, the dock chips are the tabs' },
+    { id: 'grid', icon: '\u25A6', label: 'Tiled grid', sub: 'every window the same size, nothing overlapping' },
+  ];
+  let style = (function () {
+    const ok = function (m) { return STYLE_INFO.some(function (x) { return x.id === m; }) ? m : ''; };
+    const url = ok(new URLSearchParams(location.search).get('layout') || '');
+    if (url) return url;
+    const acct = ok((typeof CK_STYLE_SAVED === 'object' && CK_STYLE_SAVED && CK_STYLE_SAVED.mode) || '');
+    if (acct) return acct;
+    try { return ok((JSON.parse(localStorage.getItem(STYLE_LS) || 'null') || {}).mode || '') || 'free'; } catch (e) { return 'free'; }
+  })();
+  let tabActive = '';                     // Tabs: the window showing
+  let stageId = '';                       // Stage + rail: the window made the stage by hand ('' = the last used map / combat window)
   let currentScene = '';                  // the scene applied last (lit in the scene bar, named in the status bar); any saved layout / reset clears it
   const addOverlay = document.getElementById('ck-add-overlay');
   const addTypes = document.getElementById('ck-add-types');
@@ -270,6 +289,7 @@
     panels.forEach(function (p) { p.id = newId(); });
     currentPreset = '';
     currentScene = '';
+    reflow(true);
     renderLayoutsMenu();
     render();
   }
@@ -1173,6 +1193,8 @@
       setTimeout(function () { win.remove(); }, 130);
     }
     cleanupPanel(p.id);
+    if (tabActive === p.id) tabActive = '';
+    if (stageId === p.id) stageId = '';
     if (welcome) welcome.style.display = panels.length ? 'none' : '';
     undoStack.push({ panel: p, index: idx === -1 ? panels.length : idx });
     if (undoStack.length > 8) undoStack.shift();
@@ -1240,7 +1262,7 @@
     const items = [];
     if (p.parked) items.push(['👁 Show', function () { showPanel(p); }]);
     else {
-      if (LAPTOP()) items.push(['★ Make main window', function () { makeMainPanel(p); }]);
+      if (LAPTOP() || style === 'rail') items.push(['★ ' + (style === 'rail' ? 'Make the stage' : 'Make main window'), function () { makeMainPanel(p); }]);
       items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
     }
     if (!locked()) {
@@ -1281,7 +1303,7 @@
       items.push(['◧ Dock left', function () { win.classList.remove('maxed'); dockPanel(win, p, false); save(); }]);
       items.push(['◨ Dock right', function () { win.classList.remove('maxed'); dockPanel(win, p, true); save(); }]);
     }
-    if (LAPTOP()) items.push(['★ Make main window', function () { makeMainPanel(p); }]);
+    if (LAPTOP() || style === 'rail') items.push(['★ ' + (style === 'rail' ? 'Make the stage' : 'Make main window'), function () { makeMainPanel(p); }]);
     items.push(['⊟ Put in the dock', function () { parkPanel(p); }]);
     items.push('hr');
     items.push(['🔍＋ Zoom in  (Alt +)', function () { stepZoom(p, 1); }]);
@@ -1422,6 +1444,7 @@
     const m = document.getElementById('ck-stat-mid');
     if (m) { const sc = SCENES.find(function (x) { return x.id === currentScene; }); m.textContent = currentPreset ? '\u{1F4CB} ' + currentPreset : (sc ? '\u{1F9E9} ' + sc.label : ''); }
     renderDock();
+    scheduleReflow();                                // a managed layout style arranges again after every change
     scheduleScrollUi();                              // a window was added, closed or put in the dock: the workspace's height changed
   }
   function refreshSavedLabel() {
@@ -1996,6 +2019,7 @@
   function wireDrag(handle, win, p) {
     handle.addEventListener('pointerdown', function (e) {
       if (e.target.closest('.ck-wbtn') || COMPACT.matches || win.classList.contains('maxed') || locked()) return;
+      if (style !== 'free') { noteManaged(); return; }
       e.preventDefault();
       handle.setPointerCapture(e.pointerId);
       // Y math includes scrollTop on both ends: the workspace scrolls
@@ -2056,6 +2080,7 @@
   function wireResize(handle, win, p, dir) {
     handle.addEventListener('pointerdown', function (e) {
       if (COMPACT.matches || win.classList.contains('maxed') || win.classList.contains('collapsed') || locked()) return;
+      if (style !== 'free') return;
       e.preventDefault();
       e.stopPropagation();
       handle.setPointerCapture(e.pointerId);
@@ -2367,6 +2392,7 @@
       x: at.x, y: at.y, w: size.w, h: size.h, z: ++zTop, collapsed: false, data: {},
     };
     panels.push(p);
+    tabActive = p.id;
     if (LAPTOP()) {
       // the big screen's place for it (a laptop-made window still opens sensibly there) ...
       const wvp = otherVp || WIDE_NOMINAL_VP;
@@ -2533,6 +2559,8 @@
     }
     if (!ids.length) { toast(sc.label + ': nothing to show yet - add a map, a party or a combat first.'); return; }
     LAYOUT.applyScene(panels, ids, { klass: klass, vp: vpNow() || refVp || LAPTOP_FALLBACK_VP, slots: LAPTOP() ? slotsNow() : Infinity, pref: prefHeight, stage: ids[0] });
+    tabActive = ids[0]; stageId = ids[0];
+    reflow(true);
     currentScene = sc.id; currentPreset = '';
     paintSceneBar();
     const keep = panels.filter(function (q) { return q.parked; }).length;
@@ -2820,6 +2848,7 @@
     });
     out.push({ label: '📌 Auto-arrange the windows', sub: 'layout', kw: 'tidy grid tile', run: clickEl('ck-pin-btn') });
     out.push({ label: '💾 Save this layout…', sub: 'layout', run: clickEl('ck-save-preset') });
+    STYLE_INFO.forEach(function (x) { out.push({ label: 'Layout style: ' + x.label, sub: x.sub, kw: 'arrange windows tabs grid stage rail free', run: function () { setStyle(x.id); } }); });
     if (!PLAYER) SCENES.forEach(function (sc) {
       out.push({ label: 'Scene: ' + sc.label, sub: sc.sub, kw: 'layout view arrange', run: function () { applyScene(sc); } });
     });
@@ -3046,6 +3075,7 @@
     if (COMPACT.matches || !panels.length) return;
     const vp = vpNow();
     if (!vp) return;
+    if (style !== 'free') { reflow(); scrollWorkspaceTo(0, true); return; }     // a managed style is always tidy: arrange again
     if (LAPTOP()) {      // the main window big, the others beside it, as many as fit (the dock keeps the rest)
       LAYOUT.retileLaptop(panels, vp, slotsNow(), prefHeight);
       refVp = vp;
@@ -3201,6 +3231,8 @@
   function showPanel(p) {
     if (LAPTOP()) LAYOUT.showLaptop(panels, p.id, lapVp(), slotsNow(), prefHeight);
     else LAYOUT.showWide(panels, p.id);
+    tabActive = p.id;
+    reflow(true);
     applyDockState();
     revealChip(p);
     revealWin(p);
@@ -3211,10 +3243,12 @@
     if (LAPTOP()) {
       if (!LAYOUT.parkLaptop(panels, p.id, lapVp(), prefHeight)) { toast('One window has to stay on screen.'); return; }
     } else if (!LAYOUT.parkWide(panels, p.id)) return;
+    reflow(true);
     applyDockState();
     save();
   }
   function makeMainPanel(p) {
+    if (style === 'rail') { stageId = p.id; reflow(); return; }          // Stage + rail: this window becomes the stage
     if (!LAPTOP() || !LAYOUT.makeMain(panels, p.id)) return;
     applyDockState();
     save();
@@ -3224,6 +3258,7 @@
     setPref(SLOTS_KEY, v);
     if (LAPTOP()) {
       LAYOUT.retileLaptop(panels, lapVp(), slotsNow(), prefHeight);
+      reflow(true);
       applyDockState();
       scrollWorkspaceTo(0, true);
       save();
@@ -3281,6 +3316,7 @@
     });
     otherVp = klass === 'wide' ? lapRef : wideVp;
     adaptToScreen(klass === 'wide' ? wideVp : (r.derived ? lapVp() : lapRef));
+    reflow(true);
     applyDockState();
     if (klass === 'laptop' && pref(HINT_KEY, '') !== '1') {
       setPref(HINT_KEY, '1');
@@ -3309,6 +3345,7 @@
       if (MOBILE() || !panels.length || !refVp) return;
       adaptToScreen(refVp);
       syncWindowStyles(false);
+      reflow();
     }, 150);
   }
 
@@ -3325,6 +3362,84 @@
     } else reclass();      // a plain resize: has the window crossed the line between the laptop and the desktop layout?
   }
   window.addEventListener('resize', function () { fitViewport(); syncMode(); });
+  // ── layout styles: arrange again after every change, switch between them ──────────────────────────────────────────────────
+  function styleInfo(id) { return STYLE_INFO.find(function (x) { return x.id === id; }); }
+  function reflow(quiet) {
+    if (style === 'free' || MOBILE() || !panels.length) return false;
+    const vp = vpNow();
+    if (!vp) return false;
+    const moved = LAYOUT.arrangeStyle(panels, style, { klass: klass, vp: vp, slots: LAPTOP() ? slotsNow() : Infinity, pref: prefHeight, active: tabActive, stage: stageId });
+    if (!moved) return false;
+    refVp = vp;
+    applyDockState();
+    scheduleScrollUi();
+    if (!quiet) save();
+    return true;
+  }
+  let reflowTimer = 0;
+  function scheduleReflow() {
+    if (style === 'free' || reflowTimer) return;
+    reflowTimer = setTimeout(function () { reflowTimer = 0; reflow(); }, 0);
+  }
+  let managedToldAt = 0;
+  function noteManaged() {
+    if (Date.now() - managedToldAt < 60000) return;
+    managedToldAt = Date.now();
+    toast(styleInfo(style).label + ' arranges the windows for you. Choose ◫ Free windows (the buttons in the header) to move them by hand.');
+  }
+  function paintStyleBar() {
+    document.body.classList.toggle('ck-managed', style !== 'free');
+    STYLE_INFO.forEach(function (x) { document.body.classList.toggle('ck-style-' + x.id, x.id === style); });
+    Array.prototype.forEach.call(document.querySelectorAll('#ck-stylebar .ck-style'), function (b) {
+      const on = b.dataset.style === style;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  function saveStyle() {
+    try { localStorage.setItem(STYLE_LS, JSON.stringify({ mode: style })); } catch (e) { /* not remembered in this browser */ }
+    fetch('/api/view-prefs/cockpit', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: style }) })
+      .catch(function () { /* the browser copy still holds */ });
+  }
+  function setStyle(next) {
+    if (!styleInfo(next) || next === style) return;
+    const was = style;
+    style = next;
+    paintStyleBar();
+    saveStyle();
+    if (MOBILE() || !panels.length) return;
+    if (style === 'free') {
+      if (was === 'tabs') {                      // leaving tabs: the windows all sit full-size in one spot - tile them so the free layout is usable
+        panels.forEach(function (p) { delete p.parked; });
+        if (LAPTOP()) LAYOUT.retileLaptop(panels, lapVp(), slotsNow(), prefHeight); else autoArrange();
+        applyDockState();
+        save();
+      }
+    } else {
+      if (!tabActive) { const vis = LAYOUT.visibleOf(panels); tabActive = (vis.sort(function (a, b) { return (b.z || 0) - (a.z || 0); })[0] || panels[0]).id; }
+      if (style !== 'tabs' && was === 'tabs') panels.forEach(function (p) { if (!LAPTOP()) delete p.parked; });   // a desktop shows everything again
+      reflow();
+      scrollWorkspaceTo(0, true);
+    }
+    updateStatus();
+    toast(styleInfo(style).label + ' — ' + styleInfo(style).sub + '.');
+  }
+  function renderStyleBar() {
+    const bar = document.getElementById('ck-stylebar');
+    if (!bar) return;
+    bar.textContent = '';
+    STYLE_INFO.forEach(function (x) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'ck-style'; b.dataset.style = x.id;
+      b.title = x.label + ' — ' + x.sub;
+      b.setAttribute('aria-label', 'Layout style: ' + x.label);
+      b.textContent = x.icon;
+      b.addEventListener('click', function () { setStyle(x.id); });
+      bar.appendChild(b);
+    });
+    paintStyleBar();
+  }
+
   applyChrome();           // before the first measure: the laptop layout hides the site's top bar, so the workspace is taller
   applyLock();
   applyWheelRow();
@@ -3332,6 +3447,7 @@
   fitViewport();
   buildWelcomeTiles();
   renderSceneBar();
+  renderStyleBar();
   updateStatus();
   const mAddBtn = document.getElementById('ck-m-add');
   if (mAddBtn) mAddBtn.addEventListener('click', openAdd);

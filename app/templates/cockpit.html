@@ -6,6 +6,7 @@
     <span id="ck-title">🎛<span class="ck-title-text"> {{ 'Player Cockpit' if player_mode else 'GM Cockpit' }}</span></span>
     <span id="ck-world">{{ world.name }}</span>
     {% if not player_mode %}<div id="ck-scenebar" role="group" aria-label="Scenes"></div>{% endif %}
+    <div id="ck-stylebar" role="group" aria-label="Layout style"></div>
     {# Laptop layout (cockpit.js, window narrower than ~1700px): a few windows show at a time, the rest wait here as chips. #}
     <div id="ck-dock" role="region" aria-label="Windows">
       <div id="ck-dock-chips"></div>
@@ -400,6 +401,18 @@ body.ck-mobile #nd-stage-panel, body.ck-mobile #nd-logger-panel { display: none 
 #ck-ctx button:hover { background: var(--bg3); }
 #ck-ctx hr { border: 0; border-top: 1px solid var(--border); margin: .2rem 0; }
 
+/* layout style: Free windows / Stage + rail / Tabs / Tiled grid (managed styles arrange the windows themselves) */
+#ck-stylebar { display: flex; flex: none; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.ck-style { background: var(--bg2); border: 0; border-left: 1px solid var(--border); color: var(--text-dim); font-family: inherit; font-size: .9rem;
+  padding: .15rem .5rem; cursor: pointer; min-width: 30px; min-height: 26px; }
+.ck-style:first-child { border-left: 0; }
+.ck-style:hover { color: var(--neon); }
+.ck-style.on { background: var(--neon); color: #000; font-weight: bold; }
+body.ck-mobile #ck-stylebar { display: none; }
+body.ck-managed .ck-resize, body.ck-managed .ck-rz { display: none !important; }
+body.ck-managed .ck-win .ck-head2 { cursor: default; }
+body.ck-style-tabs #ck-dock-slots { opacity: .45; pointer-events: none; }   /* one window shows, whatever the slot count says */
+
 /* scenes one click away: chips in the header, tiles on the empty cockpit */
 #ck-scenebar { display: flex; flex: none; gap: .25rem; align-items: center; }
 .ck-scene { background: var(--bg2); border: 1px solid var(--border); color: var(--text-dim); border-radius: 999px; font-family: inherit;
@@ -647,6 +660,7 @@ body.ck-keep .ck-win.ck-parked { display: flex; visibility: hidden; pointer-even
 </style>
 
 <script>
+const CK_STYLE_SAVED = {{ (saved_view(request, 'cockpit') or {}) | tojson }};   // this person's saved layout style ({} = none yet)
 const CK_MAPS = {{ maps_json | tojson }};
 const CK_WORLD_MAPS = {{ world_maps_json | tojson }};
 const CK_PARTIES = {{ parties_json | tojson }};

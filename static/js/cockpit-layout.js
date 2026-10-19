@@ -137,7 +137,8 @@
     var out = panels.map(copy);
 
     var stage = -1;
-    if (opts && opts.stage != null && opts.stage >= 0 && opts.stage < n) stage = opts.stage;   // the caller names the main window
+    if (opts && opts.noStage) stage = -1;                                                       // a plain grid, whatever the windows are
+    else if (opts && opts.stage != null && opts.stage >= 0 && opts.stage < n) stage = opts.stage;   // the caller names the main window
     else for (var i = 0; i < n; i++) if (STAGE[panels[i].type]) { stage = i; break; }
 
     if (n === 1) { place(out[0], GAP, GAP, inner, innerH); return out; }
@@ -476,6 +477,85 @@
     return panels;
   }
 
+
+  // ── layout styles ────────────────────────────────────────────────────────────────────────────
+  //
+  // Free windows are the cockpit as it always was: drag, resize, snap. The other styles are ARRANGEMENTS the cockpit keeps for you - after
+  // every change (a window added, closed, brought in from the dock, the screen resized) it lays the windows out again:
+  //   rail  - Stage + rail: one big STAGE (a map / combat window, else the one you used last, or the one you made main) and a narrow
+  //           column of the others stacked beside it;
+  //   tabs  - one window fills the workspace, every other waits in the dock, whose chips are the tabs;
+  //   grid  - Tiled grid: every window the same size, no stage, nothing overlapping.
+  // `arrangeStyle` does it to panels[] in place and says whether anything moved (so the caller saves and repaints only then).
+  var STYLES = ['free', 'rail', 'tabs', 'grid'];
+  var RAIL_MIN = 280, RAIL_MAX = 480, RAIL_SHARE = 0.3;
+
+  // list[0] is the stage. Wide enough: stage left, rail right (each rail window as tall as it likes, never under the floor, the
+  // workspace scrolls past the screen); narrow: the stage on top and the rail below it.
+  function railLayout(list, vp, opts) {
+    var pref = (opts && opts.pref) || function () { return 300; };
+    var minH = Math.max(MIN_CELL_H, typeof pref.minH === 'function' ? Math.round(pref.minH(vp)) || 0 : 0);
+    var n = list.length, out = list.map(copy);
+    if (!n) return out;
+    var W = Math.max(MIN_W, vp.w), H = Math.max(MIN_H, vp.h), inner = W - 2 * GAP, innerH = H - 2 * GAP;
+    if (n === 1) { place(out[0], GAP, GAP, inner, innerH); return out; }
+    var rest = [];
+    for (var i = 1; i < n; i++) rest.push(i);
+    if (W < 900) {
+      var sh = Math.max(MIN_H * 2, Math.round(innerH * 0.62));
+      place(out[0], GAP, GAP, inner, sh);
+      fillColumn(out, list, rest, GAP, GAP + sh + GAP, inner, Math.max(rest.length * minH, innerH - sh - GAP), pref, minH);
+      return out;
+    }
+    var railW = clamp(Math.round(inner * RAIL_SHARE), RAIL_MIN, RAIL_MAX);
+    var stageW = inner - GAP - railW;
+    place(out[0], GAP, GAP, stageW, innerH);
+    fillColumn(out, list, rest, GAP + stageW + GAP, GAP, railW, innerH, pref, minH);
+    return out;
+  }
+
+  function lastUsed(list) { return list.slice().sort(recent)[0]; }
+
+  function arrangeStyle(panels, style, opts) {
+    if (STYLES.indexOf(style) < 1 || !panels.length || !vpOk(opts && opts.vp)) return false;
+    var vp = opts.vp, pref = opts.pref;
+    var before = panels.map(function (p) { return [p.x, p.y, p.w, p.h, !!p.parked, !!p.collapsed].join(); }).join('|');
+    var by = {};
+    panels.forEach(function (p) { by[p.id] = p; });
+
+    if (style === 'tabs') {
+      var vis0 = visibleOf(panels);
+      var active = (opts.active && by[opts.active]) || (vis0.length ? lastUsed(vis0) : lastUsed(panels));
+      var box = { x: GAP, y: GAP, w: Math.max(MIN_W, vp.w - 2 * GAP), h: Math.max(MIN_H, vp.h - 2 * GAP) };
+      panels.forEach(function (p) {
+        p.parked = p !== active;
+        if (p === active) delete p.swapped;
+        putBox(p, box);                  // the ones in the dock keep the same box, so bringing one in needs no thinking
+        p.collapsed = false;
+      });
+    } else {
+      var vis = visibleOf(panels);
+      if (!vis.length) { lastUsed(panels).parked = false; vis = visibleOf(panels); }
+      var pick = function (list) {       // the stage: the one named, else the last used map / combat window, else the last used window
+        if (opts.stage && by[opts.stage] && list.indexOf(by[opts.stage]) >= 0) return by[opts.stage];
+        var st = list.filter(function (p) { return STAGE[p.type]; });
+        return lastUsed(st.length ? st : list);
+      };
+      if (opts.klass === 'laptop' && opts.slots !== Infinity && vis.length > opts.slots) {   // a laptop shows a few at a time: the stage and the most recent
+        var keep = pick(vis);
+        vis.filter(function (p) { return p !== keep; }).sort(recent).slice(Math.max(0, opts.slots - 1)).forEach(function (p) { p.parked = true; });
+        vis = visibleOf(panels);
+      }
+      var stage = pick(vis);
+      var ordered = [stage].concat(vis.filter(function (p) { return p !== stage; }));   // the others in the order they were added
+      if (style === 'grid') ordered = vis;                  // a grid has no stage: the windows keep the order they were added in
+      var boxes = style === 'rail' ? railLayout(ordered, vp, { pref: pref }) : tilePanels(ordered, vp, { pref: pref, noStage: true });
+      ordered.forEach(function (p, i) { putBox(p, boxes[i]); p.collapsed = false; });
+      panels.forEach(function (p) { if (p.parked) putBox(p, ordered[0]); });
+    }
+    return panels.map(function (p) { return [p.x, p.y, p.w, p.h, !!p.parked, !!p.collapsed].join(); }).join('|') !== before;
+  }
+
   // ── per-window zoom ──────────────────────────────────────────────────────────────────────────
   // A window can show its page at 50-200 %: scaled from the top-left corner and given the inverse size, so it still fills the
   // window exactly (scale 1.5 on a box 66.67 % as wide and tall).
@@ -638,6 +718,7 @@
     retileLaptop: retileLaptop, showLaptop: showLaptop, parkLaptop: parkLaptop, makeMain: makeMain,
     deriveLaptop: deriveLaptop, toWorking: toWorking, toSaved: toSaved,
     showWide: showWide, parkWide: parkWide, applyScene: applyScene,
+    STYLES: STYLES, railLayout: railLayout, arrangeStyle: arrangeStyle,
     ZOOMS: ZOOMS, zoomStep: zoomStep, zoomBox: zoomBox,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
