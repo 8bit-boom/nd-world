@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block title %}Session Log — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
@@ -7,13 +8,14 @@
     Recaps here are written fresh from what your party actually knows — nothing the GM hasn't revealed shows up.
   </p>
   {% if sessions %}
-  <div style="display:flex;flex-direction:column;gap:.5rem">
+  {% if sessions|length > 1 %}{{ view_bar("session_log", "sl-list", request) }}{% endif %}
+  <div id="sl-list" class="sl-list nd-collection" data-view="timeline">
     {% for s in sessions %}
-    <a href="{{ ('/session-log/' + s.id|string)|wq }}"
+    {% set marker = recap_markers.get(s.id) if recap_markers else None %}
+    <a href="{{ ('/session-log/' + s.id|string)|wq }}" class="sl-card nd-item" data-name="{{ s.title|lower }}" data-num="{{ s.session_num or 0 }}" data-g-recap="{{ 'Published recap' if marker == 'published' else ('Recap from facts' if marker == 'auto' else 'No recap yet') }}"
        style="display:block;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;text-decoration:none;color:var(--text);transition:border-color .15s">
       <div style="font-weight:bold">#{{ s.session_num }} {{ s.title }}</div>
       {% if s.session_date %}<div style="font-size:.78rem;color:var(--text-dim);margin-top:.2rem">{{ s.session_date }}</div>{% endif %}
-      {% set marker = recap_markers.get(s.id) if recap_markers else None %}
       {% if marker == 'published' %}
       <div style="font-size:.75rem;color:var(--neon);margin-top:.2rem">📢 Published recap</div>
       {% elif marker == 'auto' %}
@@ -32,4 +34,12 @@
   <p class="empty-small">No sessions logged yet.</p>
   {% endif %}
 </div>
+<style>
+.sl-list { display:flex; flex-direction:column; gap:.5rem; }
+.nd-collection[data-view="grid"].sl-list { display:grid; grid-template-columns:repeat(auto-fill, minmax(calc(var(--nd-tile) + 90px), 1fr)); }
+.nd-collection[data-view="compact"].sl-list { gap:.25rem; }
+.nd-collection[data-view="compact"].sl-list .sl-card { display:flex !important; gap:.8rem; align-items:baseline; padding:.4rem .8rem !important; flex-wrap:wrap; }
+.nd-collection[data-view="compact"].sl-list .sl-card > div { margin:0 !important; }
+</style>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
 {% endblock %}

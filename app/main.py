@@ -676,7 +676,7 @@ def _is_player_safe(method: str, path: str) -> bool:
     # only, matching /boards/new's POST counterpart (create is "full"-level
     # only, unlike quests/tables/calendar) and unlike a real board slug
     # (board_view), which IS gated (world_row_visible(..., "boards")).
-    if path == "/boards" or re.match(r"^/boards/(?!new$)[^/]+$", path):
+    if path == "/boards" or re.match(r"^/boards/(?!new$)[^/]+(/notes)?$", path):
         return True
     if path == "/combat" or re.match(r"^/combat/\d+$", path) or re.match(r"^/api/combat/\d+/state$", path):
         return True
@@ -5208,6 +5208,35 @@ def board_view(slug: str, request: Request, db: Session = Depends(get_db), activ
         "nodes_json": json.dumps(nodes_payload),
         "edges_json": json.dumps(edges),
         "entity_list_json": json.dumps(entity_list),
+    })
+
+@app.get("/boards/{slug}/notes", response_class=HTMLResponse)
+def board_notes(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The board's nodes as a READING list (cards / outline / reader) instead of the canvas - same access as the board itself."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
+    if not b or not world_row_visible(request, db, b.world_id, "boards"):
+        raise HTTPException(404)
+    raw = json.loads(b.nodes_json or "[]")
+    nodes = raw if isinstance(raw, list) else raw.get("nodes", [])
+    edges = json.loads(b.edges_json or "[]")
+    names = {n.get("id"): (n.get("title") or "Untitled") for n in nodes}
+    links: dict = {}
+    for e in edges:
+        a, c = e.get("from"), e.get("to")
+        if a in names and c in names:
+            links.setdefault(a, []).append(names[c])
+            links.setdefault(c, []).append(names[a])
+    notes = [{
+        "index": i + 1, "title": n.get("title") or "Untitled", "type": n.get("type") or "note", "status": n.get("status") or "unknown",
+        "body": n.get("body") or "", "tags": [t for t in (n.get("tags") or []) if isinstance(t, str)],
+        "links": sorted(set(links.get(n.get("id"), []))), "entity_id": n.get("entity_id"),
+    } for i, n in enumerate(n for n in nodes if isinstance(n, dict))]
+    return templates.TemplateResponse("board_notes.html", {
+        "request": request, "world": world, "worlds": worlds, "board": b, "notes": notes,
+        "type_icons": {"person": "👤", "location": "📍", "event": "⚡", "clue": "🔍", "faction": "🏛", "note": "📝"},
+        "status_marks": {"verified": "✔ verified", "suspect": "? suspect", "dismissed": "— dismissed", "confirmed_false": "✗ false"},
+        "status_names": {"verified": "Verified", "suspect": "Suspect", "dismissed": "Dismissed", "confirmed_false": "False"},
     })
 
 @app.post("/boards/{slug}/save")

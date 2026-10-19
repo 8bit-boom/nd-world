@@ -19,7 +19,7 @@
   root.notesViewsCore = core;
   if (typeof document === "undefined") return;
 
-  const list = document.getElementById("pn-notes") || document.getElementById("en-notes");   // the private notes page, or an entity page's notes
+  const list = document.getElementById("pn-notes") || document.getElementById("en-notes") || document.getElementById("bn-notes");   // the private notes page, an entity page's notes, or a board's
   const reader = document.getElementById("nv-reader");
   if (!list || !reader) return;
   let mode = "timeline", current = null;

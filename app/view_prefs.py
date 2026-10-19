@@ -48,6 +48,8 @@ GROUP_LABELS = {
     "owner": "Player",
     "system": "Sheet type",
     "dir": "Direction",
+    "recap": "Recap",
+    "type": "Type",
     "kind": "Kind",
 }
 
@@ -95,6 +97,16 @@ SECTIONS["entity_notes"] = {
     # an entity page's NOTES: the list (today's), sticky cards, a collapsed outline, a reader - the same layouts as the private notes page
     "modes": ["timeline", "cards", "outline", "split"], "default": "timeline", "size_modes": ["cards"],
     "labels": {"timeline": "List", "split": "Reader"}, "sorts": ["date", "name"], "default_sort": "date", "groups": ["month", "visibility"], "filters": []}
+
+SECTIONS["board_notes"] = {
+    # an investigation board's nodes as notes to READ: the list, sticky cards, an outline, a reader - sorted by board order or title, grouped by type / status
+    "modes": ["timeline", "cards", "outline", "split"], "default": "timeline", "size_modes": ["cards"],
+    "labels": {"timeline": "List", "split": "Reader"}, "sorts": ["date", "name"], "default_sort": "date", "sort_labels": {"date": "Board order"},
+    "groups": ["type", "status"], "filters": []}
+SECTIONS["session_log"] = {
+    # the players' Session Log: today's list, cards, compact rows - newest first by number, grouped by what the recap offers
+    "modes": ["timeline", "grid", "compact"], "default": "timeline", "size_modes": ["grid"], "labels": {"timeline": "List", "grid": "Cards"},
+    "sorts": ["num", "name"], "default_sort": "-num", "groups": ["recap"], "filters": []}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2

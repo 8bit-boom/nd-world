@@ -69,6 +69,7 @@
           onsubmit="return confirm('Delete this board?')">
       <button type="submit" class="tb" style="color:#ff5555">✕ Delete</button>
     </form>
+    <a href="{{ ('/boards/' + board.slug + '/notes')|wq }}" class="brd-tool-btn tb" title="Read the board's notes as a list, cards, outline or reader" style="text-decoration:none">📋 Notes</a>
     <a href="{{ ('/boards/' + board.slug + '/export')|wq }}" class="brd-tool-btn tb" title="Export HTML" style="text-decoration:none">⬇ Export</a>
     <button class="tb tb-save" id="save-btn" onclick="save()">💾 Save</button>
   </div>

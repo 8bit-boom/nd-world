@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_views.html" import view_bar %}
+{% block title %}{{ board.name }} — notes{% endblock %}
+{% block content %}
+<div style="max-width:900px;margin:0 auto;padding:1.5rem 1rem">
+  <a href="{{ ('/boards/' + board.slug)|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Back to the board</a>
+  <h1 style="color:var(--neon);font-size:1.3rem;margin:.5rem 0 .2rem">📌 {{ board.name }} — notes</h1>
+  {% if board.description %}<p style="color:var(--text-dim);font-size:.85rem;margin:0 0 .8rem">{{ board.description }}</p>{% endif %}
+  {% if notes %}
+  {{ view_bar("board_notes", "bn-notes", request) }}
+  {# the notes layouts are the private notes page's (static/js/notes-views.js): .pn-note / .pn-note-content / .pn-note-date are its hooks #}
+  <div id="bn-notes" class="bn-notes nd-collection" data-view="timeline">
+    {% for n in notes %}
+    <div class="pn-note nd-item" id="bn-{{ n.index }}" data-name="{{ n.title|lower }}" data-title="{{ n.title }}" data-date="{{ n.index }}" data-g-type="{{ n.type|capitalize }}" data-g-status="{{ status_names.get(n.status, 'Unknown') }}">
+      <div class="pn-note-title">{{ type_icons.get(n.type, '📝') }} {{ n.title }}{% if n.entity_id %} <a href="{{ ('/entity/' + n.entity_id|string)|wq }}" class="bn-entity" title="Open the entity this note is about">↗</a>{% endif %}</div>
+      <div class="pn-note-date">{{ n.type|capitalize }}{% if status_marks.get(n.status) %} · {{ status_marks[n.status] }}{% endif %}</div>
+      <div class="pn-note-content">
+        {% if n.body %}<p class="bn-body">{{ n.body }}</p>{% else %}<p class="bn-body" style="color:var(--text-dim)">(no text)</p>{% endif %}
+        {% if n.tags %}<div class="tags">{% for t in n.tags %}<span class="tag">{{ t }}</span>{% endfor %}</div>{% endif %}
+        {% if n.links %}<p class="bn-links">Connected to: {{ n.links|join(', ') }}</p>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    <aside id="nv-reader" class="nv-reader" aria-live="polite" hidden></aside>
+  </div>
+  {% else %}
+  <p class="empty-small">This board has no notes yet.</p>
+  {% endif %}
+</div>
+<style>
+.pn-note { border-bottom:1px solid var(--border); padding:.8rem 0; }
+.pn-note-title { font-weight:bold; color:var(--neon); margin-bottom:.2rem; }
+.pn-note-date { font-size:.7rem; color:var(--text-dim); margin-bottom:.4rem; }
+.pn-note-content { font-size:.9rem; }
+.bn-body { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 .4rem; }
+.bn-links { font-size:.78rem; color:var(--text-dim); margin:.3rem 0 0; }
+.bn-entity { text-decoration:none; }
+</style>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
+<script src="/static/js/notes-views.js?v={{ asset_v('js/notes-views.js') }}"></script>
+{% endblock %}
