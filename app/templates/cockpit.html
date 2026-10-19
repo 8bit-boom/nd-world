@@ -5,6 +5,7 @@
   <header id="ck-head">
     <span id="ck-title">🎛<span class="ck-title-text"> {{ 'Player Cockpit' if player_mode else 'GM Cockpit' }}</span></span>
     <span id="ck-world">{{ world.name }}</span>
+    {% if not player_mode %}<div id="ck-scenebar" role="group" aria-label="Scenes"></div>{% endif %}
     {# Laptop layout (cockpit.js, window narrower than ~1700px): a few windows show at a time, the rest wait here as chips. #}
     <div id="ck-dock" role="region" aria-label="Windows">
       <div id="ck-dock-chips"></div>
@@ -31,7 +32,10 @@
 
   <div id="ck-viewport">
     <div id="ck-welcome">
-      <p><strong>Empty cockpit — pin your first panels:</strong></p>
+      <p><strong>{{ 'Empty cockpit' if not player_mode else 'Empty cockpit — pin your first panels:' }}</strong></p>
+      {% if not player_mode %}<p style="margin:.2rem 0"><strong>Start from a scene</strong> — it adds what is missing and arranges it:</p>
+      <div id="ck-welcome-scenes"></div>
+      <p style="margin:.4rem 0 0">or pin single panels:</p>{% endif %}
       <div id="ck-welcome-tiles"></div>
       <p style="font-size:.75rem">Everything stays live and saves automatically;
       🧩 Layouts has scenes and your named layouts. Right-click a window's title bar for its menu.
@@ -395,6 +399,18 @@ body.ck-mobile #nd-stage-panel, body.ck-mobile #nd-logger-panel { display: none 
   padding: .35rem .5rem; border-radius: 4px; cursor: pointer; text-align: left; }
 #ck-ctx button:hover { background: var(--bg3); }
 #ck-ctx hr { border: 0; border-top: 1px solid var(--border); margin: .2rem 0; }
+
+/* scenes one click away: chips in the header, tiles on the empty cockpit */
+#ck-scenebar { display: flex; flex: none; gap: .25rem; align-items: center; }
+.ck-scene { background: var(--bg2); border: 1px solid var(--border); color: var(--text-dim); border-radius: 999px; font-family: inherit;
+  font-size: .78rem; padding: .2rem .65rem; cursor: pointer; white-space: nowrap; }
+.ck-scene:hover { color: var(--neon); border-color: var(--neon); }
+.ck-scene.on { color: var(--text); border-color: var(--neon); background: rgba(0, 240, 255, .12); }
+body.ck-laptop .ck-scene { padding: .2rem .5rem; }
+body.ck-mobile #ck-scenebar { display: none; }
+@media (min-width: 1500px) { body.ck-laptop #ck-scenebar .ck-bl { display: inline; } }   /* room for the names on a 1080p screen */
+#ck-welcome-scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .5rem; width: 100%; max-width: 560px; margin: .5rem 0; }
+.ck-scene-tile small { color: var(--text-dim); font-size: .62rem; line-height: 1.2; }
 
 /* welcome quick-start tiles */
 #ck-welcome-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

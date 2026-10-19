@@ -22,6 +22,7 @@
   if (!viewport) return;
 
   const welcome = document.getElementById('ck-welcome');
+  let currentScene = '';                  // the scene applied last (lit in the scene bar, named in the status bar); any saved layout / reset clears it
   const addOverlay = document.getElementById('ck-add-overlay');
   const addTypes = document.getElementById('ck-add-types');
   const addPicker = document.getElementById('ck-add-picker');
@@ -268,6 +269,7 @@
     // build saved a workspace with duplicate ids (its counter-reset bug).
     panels.forEach(function (p) { p.id = newId(); });
     currentPreset = '';
+    currentScene = '';
     renderLayoutsMenu();
     render();
   }
@@ -1418,7 +1420,7 @@
     const combatRef = (panels.find(function (q) { return q.type === 'combat' && q.ref; }) || {}).ref || '';
     if (combatRef !== lastCombatRef) { lastCombatRef = combatRef; refreshCombatStatus(); }     // a combat window was added, picked or closed
     const m = document.getElementById('ck-stat-mid');
-    if (m) m.textContent = currentPreset ? '\u{1F4CB} ' + currentPreset : '';
+    if (m) { const sc = SCENES.find(function (x) { return x.id === currentScene; }); m.textContent = currentPreset ? '\u{1F4CB} ' + currentPreset : (sc ? '\u{1F9E9} ' + sc.label : ''); }
     renderDock();
     scheduleScrollUi();                              // a window was added, closed or put in the dock: the workspace's height changed
   }
@@ -2469,6 +2471,7 @@
     const pr = presets[name];
     const from = workingFrom(stripTimers(clone(pr)).panels, LAYOUT.vpOk(pr.vp) ? pr.vp : null, LAYOUT.vpOk(pr.lvp) ? pr.lvp : null);
     currentPreset = name;
+    currentScene = '';
     recomputeSeq();
     panels.forEach(function (p) { p.id = newId(); });
     adaptToScreen(from);   // arranged on another screen? scale it
@@ -2497,6 +2500,7 @@
     const now = vpNow(); if (now) refVp = now;
     presets[name] = stripTimers(clone(savedLayout()));
     currentPreset = name;
+    currentScene = '';
     renderLayoutsMenu();
     updateStatus();
     save();
@@ -2529,6 +2533,8 @@
     }
     if (!ids.length) { toast(sc.label + ': nothing to show yet - add a map, a party or a combat first.'); return; }
     LAYOUT.applyScene(panels, ids, { klass: klass, vp: vpNow() || refVp || LAPTOP_FALLBACK_VP, slots: LAPTOP() ? slotsNow() : Infinity, pref: prefHeight, stage: ids[0] });
+    currentScene = sc.id; currentPreset = '';
+    paintSceneBar();
     const keep = panels.filter(function (q) { return q.parked; }).length;
     applyDockState();
     updateStatus();
@@ -2536,6 +2542,49 @@
     ids.forEach(function (id) { const q = panels.find(function (x) { return x.id === id; }); if (q && !q.parked) flash(winEl(q)); });
     save();
     toast(sc.label + ' — ' + (panels.length - keep) + ' window' + (panels.length - keep === 1 ? '' : 's') + ' showing' + (keep ? ', ' + keep + ' in the dock' : ''));
+  }
+
+  // The scenes one click away: chips in the header (icon only on a laptop) and tiles on the empty cockpit; Alt + Shift + 1-4 as well.
+  function paintSceneBar() {
+    Array.prototype.forEach.call(document.querySelectorAll('#ck-scenebar .ck-scene'), function (b) {
+      const on = b.dataset.scene === currentScene;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  function renderSceneBar() {
+    if (PLAYER) return;
+    const bar = document.getElementById('ck-scenebar');
+    if (bar) {
+      bar.textContent = '';
+      SCENES.forEach(function (sc, i) {
+        const at = sc.label.indexOf(' ');
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'ck-scene'; b.dataset.scene = sc.id;
+        b.title = sc.label + ' \u2014 ' + sc.sub + '  (Alt + Shift + ' + (i + 1) + ')';
+        b.setAttribute('aria-label', 'Scene: ' + sc.label.slice(at + 1));
+        const ic = document.createElement('span'); ic.textContent = sc.label.slice(0, at);
+        const tx = document.createElement('span'); tx.className = 'ck-bl'; tx.textContent = ' ' + sc.label.slice(at + 1);
+        b.append(ic, tx);
+        b.addEventListener('click', function () { applyScene(sc); });
+        bar.appendChild(b);
+      });
+    }
+    const host = document.getElementById('ck-welcome-scenes');
+    if (host && !host.children.length) {
+      SCENES.forEach(function (sc) {
+        const at = sc.label.indexOf(' ');
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'ck-tile ck-scene-tile';
+        const ic = document.createElement('span'); ic.className = 'ck-tile-ic'; ic.textContent = sc.label.slice(0, at);
+        const nm = document.createElement('span'); nm.textContent = sc.label.slice(at + 1);
+        const sub = document.createElement('small'); sub.textContent = sc.sub;
+        b.append(ic, nm, sub);
+        b.addEventListener('click', function () { applyScene(sc); });
+        host.appendChild(b);
+      });
+    }
+    paintSceneBar();
   }
 
   layoutsBtn.addEventListener('click', function () { if (layoutsOpen()) closeLayouts(false); else openLayouts(); });
@@ -2642,6 +2691,7 @@
     if (k.action === 'add') openAdd();
     else if (k.action === 'windows') windowsBtn.click();
     else if (k.action === 'layouts') layoutsBtn.click();
+    else if (k.action === 'scene') { const sc = SCENES[(k.n || 1) - 1]; if (sc) applyScene(sc); }
     else if (k.action === 'lock') toggleLock();
     else if (k.action === 'zoomin' || k.action === 'zoomout' || k.action === 'zoomreset') {
       const p = activePanel();
@@ -3281,6 +3331,7 @@
   applyRoomyRow();
   fitViewport();
   buildWelcomeTiles();
+  renderSceneBar();
   updateStatus();
   const mAddBtn = document.getElementById('ck-m-add');
   if (mAddBtn) mAddBtn.addEventListener('click', openAdd);

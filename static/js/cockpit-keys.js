@@ -23,6 +23,8 @@
     { keys: 'Alt + L', code: 'KeyL', alt: true, action: 'layouts', what: 'Scenes (Combat, Exploration, Roleplay, Prep) and saved layouts' },
     { keys: 'Alt + 1 … 9', codes: DIGITS, alt: true, action: 'show',
       what: 'Bring window 1-9 forward, in the order of the Windows list (on a laptop it swaps in from the dock)' },
+    { keys: 'Alt + Shift + 1 … 4', codes: DIGITS.slice(0, 4), alt: true, shift: true, action: 'scene',
+      what: 'Scene: Combat / Exploration / Roleplay / Prep (the chips in the header do the same)' },
     { keys: 'Alt + M', code: 'KeyM', alt: true, action: 'maximize', what: 'Fill the cockpit with the active window / give it back' },
     { keys: 'Alt + +  /  Alt + −  /  Alt + 0', codes: ['Equal', 'NumpadAdd'], alt: true, anyShift: true, action: 'zoomin',
       what: 'Zoom the active window in / out (50-200%) / back to 100%' },

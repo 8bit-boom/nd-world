@@ -31,7 +31,7 @@ Character page
 
 GM Cockpit
 1. **First open is empty.** One-panel tiles are offered, but the four scenes (the thing most GMs want first) are hidden in the 🧩 menu.
-2. **The header is icon-only at laptop width** (☰ 💻 🗂 🧩 🔍 ＋ ⛶ and two ✕-looking buttons at the end); you can't tell which scene you are in.
+2. **The header is icon-only at laptop width** (☰ 💻 🗂 🧩 🔍 ＋ ⛶ ...); you can't tell which scene you are in. (The "two ✕ buttons" I first noted are the ⚔ Combat link, drawn as ✕ by the headless browser's font - not a bug.)
 3. **Only one arrangement style: free floating windows.** Fine on a big monitor; on a laptop it needs the dock; there is no "stage + side rail"
    or "tabs" style, which is what most tables actually use (map in the middle, party and dice on the side).
 4. **Phone/tablet:** one panel at a time, tab titles cut at 12 characters, no quick actions (next turn, HP ±) without opening the combat panel.
@@ -68,7 +68,7 @@ layout read-only; the choice is saved to the account (`/api/view-prefs/hub`) lik
 
 Features: **scene bar** in the header (⚔ 🧭 🎭 📖 as chips, current one lit, keys 1-4) and the scenes offered on first open; **remember the arrangement
 per scene** (so Combat reopens the way you left it); an opt-in "suggest the Combat scene when a combat starts"; header labels collapse into one
-"More" menu at laptop width and the doubled ✕ is fixed; the Player Cockpit gets the same layouts read-only.
+"More" menu at laptop width; the Player Cockpit gets the same layouts read-only.
 
 ### C. Cross-cutting
 - One shared **layout switcher** control for the hub and the cockpit (same look as the list pages' bar).
