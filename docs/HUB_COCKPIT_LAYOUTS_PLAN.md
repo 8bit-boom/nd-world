@@ -1,6 +1,6 @@
 # Layouts for the character page (the "hub") and the GM Cockpit - audit and plan
 
-Status: a plan, nothing built yet. Written after reading the code (`_player_hub.html`, `sheet.html`, `cockpit.html`, `cockpit.js`,
+Status: phase 1 (the character page: Tabs / Play layouts, tidied header, pinned phone tabs, chosen by each player and saved to their account) is built; the cockpit work follows. Answers given: GM on a laptop, players on phones; floating windows stay; each player chooses their own layout - so stage + rail / tabs / tiled grid are dropped for now. Written after reading the code (`_player_hub.html`, `sheet.html`, `cockpit.html`, `cockpit.js`,
 `cockpit-layout.js`) and looking at both pages in Chromium at 1600x900, 1280x700 and 390x800 (a fresh world with three characters, so the
 cockpit was empty). Not tested on a real iPhone.
 

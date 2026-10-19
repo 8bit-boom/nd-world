@@ -25,6 +25,8 @@ MODE_LABELS = {
     "outline": ("≣", "Outline"),
     "board": ("▦", "Board"),
     "web": ("🕸", "Web"),
+    "tabs": ("🗂", "Tabs"),
+    "play": ("🎲", "Play"),
 }
 
 SORT_LABELS = {
@@ -53,7 +55,14 @@ GROUP_LABELS = {
     "kind": "Kind",
 }
 
+# the character page's tabs: a "filter" of the hub section is a PINNED tab (the ones the phone's bottom bar shows)
+HUB_TABS = {
+    "sheet": "Sheet", "cockpit": "Cockpit", "journey": "Journey", "quests": "Quests", "notes": "Notes", "world": "World", "schedule": "Schedule",
+    "sessions": "Sessions", "keepsakes": "Kept", "handouts": "Handouts", "companions": "Allies", "log": "Log", "places": "Pages",
+}
+
 FILTER_LABELS = {
+    **HUB_TABS,
     "unused": "Unused only",
     "hidden": "Hidden from players only",
 }
@@ -108,6 +117,12 @@ SECTIONS["session_log"] = {
     "modes": ["timeline", "grid", "compact"], "default": "timeline", "size_modes": ["grid"], "labels": {"timeline": "List", "grid": "Cards"},
     "sorts": ["num", "name"], "default_sort": "-num", "groups": ["recap"], "filters": []}
 
+SECTIONS["hub"] = {
+    # the character page: its tabs (today's layout, tidied) or Play (the phone at the table: no edit chrome, big targets, swipe between sheet pages).
+    # `filters` holds the PINNED tabs - the ones in the phone's bottom bar (empty = the default four); at most `max_filters`.
+    "modes": ["tabs", "play"], "default": "tabs", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [],
+    "filters": list(HUB_TABS), "max_filters": 4}
+
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2
 
@@ -147,4 +162,5 @@ def clean(section: str, raw) -> dict:
     sort = ("-" if desc else "") + key if key in s["sorts"] else s["default_sort"]
     group = raw.get("group") if raw.get("group") in s["groups"] else ""
     filters = [f for f in (raw.get("filters") if isinstance(raw.get("filters"), list) else []) if f in s["filters"]]
+    filters = list(dict.fromkeys(filters))[: s.get("max_filters", len(filters))]      # no repeats; a section may cap how many
     return {"mode": mode, "size": size, "sort": sort, "group": group, "filters": filters}
