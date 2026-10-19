@@ -269,7 +269,7 @@ def test_players_get_the_layouts_menu_without_scenes(client, seed):
 
 def test_scenes_reuse_windows_add_what_is_missing_and_are_a_gm_feature():
     js = (ROOT / "static/js/cockpit.js").read_text()
-    for needle in ("const SCENES = [", "async function applyScene(sc)", "async function sceneWindow(type)", "LAYOUT.applyScene(panels, ids,",
+    for needle in ("const SCENES = [", "async function applyScene(sc, opts)", "async function sceneWindow(type)", "LAYOUT.applyScene(panels, ids,",
                    "{ scene: true }", "if (MOBILE() || PLAYER) return;"):
         assert needle in js, needle
     for sid in ("combat", "explore", "roleplay", "prep"):

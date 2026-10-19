@@ -314,7 +314,7 @@ def test_a_window_is_brought_into_sight_when_it_is_shown_added_or_reopened_and_a
     assert "LAYOUT.cascade(panels.length, size, vp, MOBILE() ? 0 : viewport.scrollTop)" in add, "opens where you are looking"
     assert "{ revealWin(p); save(); }" in add
     assert "revealWin(item.panel);" in js.split("function undoClose() {", 1)[1].split("document.addEventListener('keydown'", 1)[0]
-    for name, after in (("function applyPreset(name) {", "function deletePreset"), ("async function applyScene(sc) {", "layoutsBtn.addEventListener"),
+    for name, after in (("function applyPreset(name) {", "function deletePreset"), ("async function applyScene(sc, opts) {", "layoutsBtn.addEventListener"),
                         ("function autoArrange() {", "pinBtn.addEventListener"), ("function setSlots(v) {", "if (dockSlots)")):
         body = js.split(name, 1)[1].split(after, 1)[0]
         assert "scrollWorkspaceTo(0," in body, name
