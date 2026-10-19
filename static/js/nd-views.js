@@ -157,7 +157,7 @@
     const d = item.dataset;
     const g = {};
     Object.keys(d).forEach((k) => { if (k.startsWith("g") && k.length > 1 && k[1] === k[1].toUpperCase()) g[k[1].toLowerCase() + k.slice(2)] = d[k]; });   // data-g-subtype -> g.subtype
-    return { index, name: d.name || "", uses: num(d.uses), date: num(d.date), size: num(d.size), source: d.source || "", vis: d.vis || "", g };
+    return { index, name: d.name || "", uses: num(d.uses), date: num(d.date), size: num(d.size), num: num(d.num), source: d.source || "", vis: d.vis || "", g };
   }
 
   function attach(bar) {

@@ -21,7 +21,8 @@ read-only pages too; the soundboard is a priority for table use.
 | 1 | Images: grid (S/M/L), masonry, list, filmstrip; sort by name / used-in / date / size; group by used / first place used; "unused only" filter (All Images and albums) | done |
 | 2 | Audio: rows, compact, playlist (shared bar, shuffle / repeat), soundboard (pads: tap, keys 1-9, volume, loop, fade, one-at-a-time, stop / fade all); Video: rows, compact, poster grid; group by visibility, "hidden only" filter | done (audio table and video theater still to come) |
 | 3 | Entities: cards (today's), compact list, portrait wall, split browse (list + live preview, j / k); group by subtype / first tag; sort by name / date. Board (a column per subtype / first tag, drag a card to change its subtype, a move menu on touch, Undo); the web of relations still to come | mostly done |
-| 4 | Notes: private notes page - timeline, sticky cards, outline, reader (list + full note, j / k), group by month, sort by date / title (done); entity / session / board notes, quests kanban, sessions timeline, facts, characters, maps | partly done |
+| 4 | Notes: private notes page - timeline, sticky cards, outline, reader (list + full note, j / k), group by month, sort by date / title (done); entity / session / board notes, facts, maps still to come | partly done |
+| 4b | Quests: board (a column per status, drag or move menu, Undo; shared `static/js/nd-board.js`), list, cards, group by status / category; Sessions: cards, list, sort by number / name, group by party; Characters: cards, roster, wall, sort by name / level, group by party / owner / system | done |
 | 5 | Saved named views, world defaults the GM sets, cockpit-window layouts | planned |
 
 ## Layout catalogue

@@ -31,6 +31,7 @@ SORT_LABELS = {
     "uses": "Used in",
     "date": "Date",
     "size": "File size",
+    "num": "Session number",
 }
 
 GROUP_LABELS = {
@@ -40,6 +41,11 @@ GROUP_LABELS = {
     "subtype": "Subtype",
     "tag": "First tag",
     "month": "Month",
+    "status": "Status",
+    "category": "Category",
+    "party": "Party",
+    "owner": "Player",
+    "system": "Sheet type",
 }
 
 FILTER_LABELS = {
@@ -67,6 +73,15 @@ SECTIONS = {
     # a player's private notes page: the timeline (today's), sticky-note cards, a collapsed outline, and a reader (the list beside one full note)
     "notes": {"modes": ["timeline", "cards", "outline", "split"], "default": "timeline", "size_modes": ["cards"],
               "labels": {"split": "Reader"}, "sorts": ["date", "name"], "default_sort": "-date", "groups": ["month"], "filters": []},
+    # the quest list: a board (a column per status - drag a quest to change it), rows grouped by status, or cards
+    "quests": {"modes": ["board", "compact", "grid"], "default": "board", "size_modes": ["grid"], "labels": {"compact": "List", "grid": "Cards"},
+               "sorts": ["name", "date"], "default_sort": "name", "groups": ["status", "category"], "filters": []},
+    # the session list: cards (today's) or compact rows, by session number / title, grouped by party
+    "sessions": {"modes": ["grid", "compact"], "default": "grid", "size_modes": ["grid"], "labels": {"compact": "List", "grid": "Cards"},
+                 "sorts": ["num", "name"], "default_sort": "-num", "groups": ["party"], "filters": []},
+    # the character roster: cards (today's), compact rows, a portrait wall - grouped by party, player or sheet type
+    "characters": {"modes": ["grid", "compact", "wall"], "default": "grid", "size_modes": ["grid", "wall"], "labels": {"compact": "Roster", "wall": "Portrait wall"},
+                   "sorts": ["name", "num"], "default_sort": "name", "sort_labels": {"num": "Level"}, "groups": ["party", "owner", "system"], "filters": []},
 }
 
 SIZES = (1, 2, 3)
@@ -84,7 +99,7 @@ def spec(section: str) -> dict:
         # the layouts the size slider means something in (the picture layouts all; a list of rows has no size)
         "size_modes": s.get("size_modes") or [m for m in s["modes"] if m != "list"],
         "modes": [{"id": m, "icon": MODE_LABELS[m][0], "label": s.get("labels", {}).get(m, MODE_LABELS[m][1])} for m in s["modes"]],
-        "sorts": [{"id": k, "label": SORT_LABELS[k]} for k in s["sorts"]],
+        "sorts": [{"id": k, "label": s.get("sort_labels", {}).get(k, SORT_LABELS[k])} for k in s["sorts"]],
         "groups": [{"id": k, "label": GROUP_LABELS[k]} for k in s["groups"]],
         "filters": [{"id": k, "label": FILTER_LABELS[k]} for k in s["filters"]],
     }

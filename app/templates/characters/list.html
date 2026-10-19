@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block main_attrs %} class="mp"{% endblock %}
 {% block title %}Characters — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
@@ -57,13 +58,14 @@
   <a href="{{ '/characters/new'|wq }}" class="btn-primary">Create First Character</a>
 </div>
 {% else %}
-<div class="pc-grid">
+{{ view_bar("characters", "pc-roster", request) }}
+<div id="pc-roster" class="pc-grid nd-collection" data-view="grid">
   {% for pc in pcs %}
   {% set d = derived[pc.id] %}
   {% set ppt = pc_party.get(pc.id) %}
   {# The card is a <div> with ONE stretched link (.pc-card-main::after covers it). Links inside
      a link (the party badge) are invalid HTML and browsers tear the card apart. #}
-  <div class="pc-card"
+  <div class="pc-card nd-item" data-name="{{ pc.name|lower }}" data-num="{{ pc.level or 0 }}" data-g-party="{{ ppt.name if ppt else '' }}" data-g-owner="{{ owner_names.get(pc.owner_user_id, '') if (user and user.is_gm and pc.owner_user_id) else '' }}" data-g-system="{{ pc.sheet_template.name if pc.sheet_template else 'N&D sheet' }}"
      {% if pc.id in my_character_ids %}style="outline:2px solid var(--neon);outline-offset:-2px"{% endif %}>
     <div class="pc-card-portrait">
       {# The initial is ALWAYS the backdrop and the image overlays it when
@@ -124,4 +126,5 @@
   {% endfor %}
 </div>
 {% endif %}
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
 {% endblock %}

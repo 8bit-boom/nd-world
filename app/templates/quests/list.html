@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block title %}Quests — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -27,6 +28,58 @@
     <button type="submit" class="btn-secondary" style="font-size:.8rem">Search</button>
   </form>
 </div>
+
+{% if can_create and sessions %}
+<details style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.9rem 1.1rem;margin-bottom:1.2rem">
+  <summary style="cursor:pointer;color:var(--neon);font-size:.9rem">✨ AI sync from session</summary>
+  <p style="font-size:.75rem;color:var(--text-dim);margin:.5rem 0 .6rem">
+    Pick a session — the AI reads its summary, transcript, and facts, diffs them against this
+    quest board, and drafts suggestions: quests to complete/fail/update and new quests to add.
+    You review everything before anything is applied.
+  </p>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <select id="ai-session-id" style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+      {% for s in sessions %}<option value="{{ s.id }}">#{{ s.session_num }} — {{ s.title }}</option>{% endfor %}
+    </select>
+    <button type="button" id="ai-suggest-btn" class="btn-secondary" style="font-size:.8rem">✨ Generate suggestions</button>
+  </div>
+  <div style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:center;margin-top:.5rem;font-size:.78rem;color:var(--text-dim)">
+    <label style="display:flex;gap:.4rem;align-items:center">Model
+      <select id="ai-model" title="Model — blank = the configured default" style="max-width:280px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:.78rem;border-radius:3px;padding:.25rem .3rem">
+        <option value="">— default model —</option>
+      </select>
+    </label>
+    <label style="display:flex;gap:.35rem;align-items:center;cursor:pointer">
+      <input type="checkbox" id="ai-think" checked style="width:auto"> 🧠 Thinking
+    </label>
+    <label style="display:flex;gap:.35rem;align-items:center;cursor:pointer" title="Ground the suggestions in this world's entities and notes">
+      <input type="checkbox" id="ai-rag" checked style="width:auto"> 🔍 RAG <span>(this world's defaults)</span>
+    </label>
+  </div>
+  <div id="ai-suggest-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.4rem"></div>
+  <form id="ai-apply-form" style="display:none;margin-top:.7rem">
+    <div id="ai-suggestions"></div>
+    <button type="button" id="ai-apply-btn" class="btn-primary" style="margin-top:.6rem;font-size:.82rem">Apply selected</button>
+  </form>
+</details>
+{% endif %}
+
+{% set any_quest = namespace(n=0) %}
+{% for status in statuses %}{% set any_quest.n = any_quest.n + grouped.get(status, [])|length %}{% endfor %}
+{% if any_quest.n %}
+{{ view_bar("quests", "quest-cards", request) }}
+<div id="quest-cards" class="nd-collection quest-list" data-view="board" data-can-edit="{{ '1' if can_create else '' }}" data-statuses='{{ statuses|tojson }}'>
+  {% for status in statuses %}{% for q in grouped.get(status, []) %}
+  <a href="{{ ('/quests/' + q.id|string)|wq }}" class="quest-card nd-item" data-id="{{ q.id }}" data-name="{{ q.title|lower }}" data-date="{{ q.created_at.timestamp()|int if q.created_at else 0 }}" data-g-status="{{ status }}" data-g-category="{{ q.category or '' }}">
+    <div class="quest-title">{{ q.title }}</div>
+    <div class="quest-meta">{{ q.category }}{% if q.parent_id %} · sub-quest{% endif %}{% if subs_total.get(q.id) %} · ⬆ {{ subs_done.get(q.id, 0) }}/{{ subs_total[q.id] }} sub-quests done{% endif %}</div>
+    {% if q.summary %}<div class="quest-summary">{{ q.summary }}</div>{% endif %}
+  </a>
+  {% endfor %}{% endfor %}
+</div>
+{% else %}
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No quests yet.</p>
+{% endif %}
 
 {% if can_create and sessions %}
 <details style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.9rem 1.1rem;margin-bottom:1.2rem">
@@ -236,4 +289,7 @@
 })();
 </script>
 {% endif %}
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
+<script src="/static/js/nd-board.js?v={{ asset_v('js/nd-board.js') }}"></script>
+<script src="/static/js/quest-views.js?v={{ asset_v('js/quest-views.js') }}"></script>
 {% endblock %}

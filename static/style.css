@@ -2363,28 +2363,68 @@ body.av-has-now { padding-bottom: 5.5rem; }
 /* board (static/js/entity-views.js): a column per subtype / first tag, cards stacked in them, draggable to another column */
 .nd-collection[data-view="board"] { display: block; }
 .nd-collection[data-view="board"] .nd-group-head { display: none; }
-.ev-board { display: flex; gap: .8rem; align-items: flex-start; overflow-x: auto; padding-bottom: .7rem; scrollbar-color: var(--neon) var(--bg3); }
-.ev-col { flex: 0 0 270px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: .5rem; }
-.ev-col.ev-over { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon); }
-.ev-col-head { display: flex; justify-content: space-between; align-items: baseline; padding: .15rem .3rem .45rem; color: var(--neon); font-weight: bold; font-size: .85rem; }
-.ev-col-count { color: var(--text-dim); font-weight: normal; font-size: .75rem; }
-.ev-col-body { display: flex; flex-direction: column; gap: .4rem; min-height: 56px; }
-.ev-col .entity-card-wrap { position: relative; }
-.ev-col .entity-card { flex-direction: row; align-items: center; gap: .5rem; padding: .3rem .5rem .3rem 2rem; }
-.ev-col .entity-card:hover { transform: none; }
-.ev-col .entity-card img { width: 34px; height: 34px; max-height: none; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
-.ev-col .entity-noimg { display: flex; width: 34px; height: 34px; align-items: center; justify-content: center; background: var(--bg3); border-radius: 4px; flex: 0 0 auto; }
-.ev-col .entity-card-body { padding: 0; min-width: 0; }
-.ev-col .entity-card-body h3 { margin: 0; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ev-col .entity-card-body p, .ev-col .tags, .ev-col .entity-sub, .ev-col .entity-kind { display: none; }
-.ev-col .card-cb { top: 50%; transform: translateY(-50%); left: .5rem; }
-.ev-col .nd-item[draggable="true"] { cursor: grab; }
-.ev-move { width: 100%; margin-top: .25rem; min-height: 36px; background: var(--bg3); color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; font-family: var(--font); font-size: .75rem; }
-.ev-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 1rem; z-index: 1200; background: var(--bg2); border: 1px solid var(--neon); border-radius: 8px; padding: .55rem .9rem; box-shadow: 0 4px 16px rgba(0,0,0,.5); font-size: .85rem; }
-.ev-toast[hidden] { display: none; }
-.ev-toast-undo { margin-left: .5rem; min-height: 36px; padding: 0 .8rem; background: var(--neon); color: #000; border: 0; border-radius: 4px; cursor: pointer; font-family: var(--font); font-weight: bold; }
-@media (max-width: 720px) { .ev-board { scroll-snap-type: x mandatory; } .ev-col { flex-basis: 84vw; scroll-snap-align: start; } }
+.nb-board { display: flex; gap: .8rem; align-items: flex-start; overflow-x: auto; padding-bottom: .7rem; scrollbar-color: var(--neon) var(--bg3); }
+.nb-col { flex: 0 0 270px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: .5rem; }
+.nb-col.nb-over { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon); }
+.nb-col-head { display: flex; justify-content: space-between; align-items: baseline; padding: .15rem .3rem .45rem; color: var(--neon); font-weight: bold; font-size: .85rem; }
+.nb-col-count { color: var(--text-dim); font-weight: normal; font-size: .75rem; }
+.nb-col-body { display: flex; flex-direction: column; gap: .4rem; min-height: 56px; }
+.nb-col .entity-card-wrap { position: relative; }
+.nb-col .entity-card { flex-direction: row; align-items: center; gap: .5rem; padding: .3rem .5rem .3rem 2rem; }
+.nb-col .entity-card:hover { transform: none; }
+.nb-col .entity-card img { width: 34px; height: 34px; max-height: none; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+.nb-col .entity-noimg { display: flex; width: 34px; height: 34px; align-items: center; justify-content: center; background: var(--bg3); border-radius: 4px; flex: 0 0 auto; }
+.nb-col .entity-card-body { padding: 0; min-width: 0; }
+.nb-col .entity-card-body h3 { margin: 0; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nb-col .entity-card-body p, .nb-col .tags, .nb-col .entity-sub, .nb-col .entity-kind { display: none; }
+.nb-col .card-cb { top: 50%; transform: translateY(-50%); left: .5rem; }
+.nb-col .nd-item[draggable="true"] { cursor: grab; }
+.nb-move { width: 100%; margin-top: .25rem; min-height: 36px; background: var(--bg3); color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; font-family: var(--font); font-size: .75rem; }
+.nb-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 1rem; z-index: 1200; background: var(--bg2); border: 1px solid var(--neon); border-radius: 8px; padding: .55rem .9rem; box-shadow: 0 4px 16px rgba(0,0,0,.5); font-size: .85rem; }
+.nb-toast[hidden] { display: none; }
+.nb-toast-undo { margin-left: .5rem; min-height: 36px; padding: 0 .8rem; background: var(--neon); color: #000; border: 0; border-radius: 4px; cursor: pointer; font-family: var(--font); font-weight: bold; }
+@media (max-width: 720px) { .nb-board { scroll-snap-type: x mandatory; } .nb-col { flex-basis: 84vw; scroll-snap-align: start; } }
 @media (hover: hover) and (pointer: fine) {
-  .ev-move { display: none; }                                      /* a mouse drags; the menu is for touch, and appears on hover / keyboard focus */
-  .ev-col .nd-item:hover .ev-move, .ev-col .nd-item:focus-within .ev-move { display: block; }
+  .nb-move { display: none; }                                      /* a mouse drags; the menu is for touch, and appears on hover / keyboard focus */
+  .nb-col .nd-item:hover .nb-move, .nb-col .nd-item:focus-within .nb-move { display: block; }
 }
+
+/* ── Quest layouts (static/js/quest-views.js): board (a column per status), list, cards ──────────────────────────────────────────────────── */
+.quest-card { display: block; background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; padding: .6rem .75rem; text-decoration: none; color: var(--text); min-width: 0; }
+.quest-card:hover { border-color: var(--neon); }
+.quest-title { font-weight: bold; font-size: .88rem; overflow-wrap: anywhere; }
+.quest-meta { font-size: .75rem; color: var(--text-dim); margin-top: .15rem; }
+.quest-summary { font-size: .78rem; color: var(--text-dim); margin-top: .3rem; }
+.nd-collection[data-view="board"].quest-list { display: block; }
+.nb-col .quest-card { position: relative; }
+.nd-collection[data-view="compact"].quest-list { display: flex; flex-direction: column; gap: .3rem; }
+.nd-collection[data-view="compact"].quest-list .quest-card { display: flex; gap: .8rem; align-items: baseline; padding: .4rem .7rem; }
+.nd-collection[data-view="compact"].quest-list .quest-title { flex: 0 1 auto; }
+.nd-collection[data-view="compact"].quest-list .quest-meta { margin: 0; white-space: nowrap; }
+.nd-collection[data-view="compact"].quest-list .quest-summary { margin: 0; flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-collection[data-view="grid"].quest-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 110px), 1fr)); gap: .7rem; align-items: start; }
+
+/* ── Session list layouts: cards (today's) and compact rows ──────────────────────────────────────────────────────────────────────────────── */
+.nd-collection[data-view="grid"].session-list { grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 90px), 1fr)); }
+.nd-collection[data-view="compact"].session-list { display: flex; flex-direction: column; gap: .3rem; }
+.nd-collection[data-view="compact"].session-list .entity-card:hover { transform: none; }
+.nd-collection[data-view="compact"].session-list .entity-card-body { display: flex; gap: .8rem; align-items: baseline; padding: .45rem .8rem; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.nd-collection[data-view="compact"].session-list .entity-card-body h3 { margin: 0; font-size: .9rem; white-space: nowrap; }
+.nd-collection[data-view="compact"].session-list .entity-card-body p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-collection[data-view="compact"].session-list .entity-card-body > div { margin: 0; flex: 0 0 auto; }
+
+/* ── Character roster layouts: cards (today's), a compact roster, a portrait wall ───────────────────────────────────────────────────────── */
+.nd-collection[data-view="grid"].pc-grid { grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 80px), 1fr)); }
+.nd-collection[data-view="compact"].pc-grid { display: flex; flex-direction: column; gap: .35rem; }
+.nd-collection[data-view="compact"].pc-grid .pc-card { display: flex; flex-direction: row; align-items: center; gap: .7rem; padding: .3rem .7rem; min-height: 0; }
+.nd-collection[data-view="compact"].pc-grid .pc-card-portrait { flex: 0 0 44px; width: 44px; height: 44px; aspect-ratio: auto; border-radius: 6px; overflow: hidden; }
+.nd-collection[data-view="compact"].pc-grid .pc-card-body { padding: 0; display: flex; gap: .4rem .9rem; align-items: center; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.nd-collection[data-view="compact"].pc-grid .pc-card-scores, .nd-collection[data-view="compact"].pc-grid .pc-card-xp { display: none; }
+.nd-collection[data-view="compact"].pc-grid .pc-card-player { position: static; margin-left: auto; white-space: nowrap; }
+.nd-collection[data-view="wall"].pc-grid { grid-template-columns: repeat(auto-fill, minmax(var(--nd-tile), 1fr)); gap: .5rem; }
+.nd-collection[data-view="wall"].pc-grid .pc-card { position: relative; aspect-ratio: 3 / 4; overflow: hidden; padding: 0; }
+.nd-collection[data-view="wall"].pc-grid .pc-card-portrait { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; }
+.nd-collection[data-view="wall"].pc-grid .pc-card-portrait img { width: 100%; height: 100%; object-fit: cover; }
+.nd-collection[data-view="wall"].pc-grid .pc-card-body { position: absolute; left: 0; right: 0; bottom: 0; padding: 1.6rem .5rem .4rem; background: linear-gradient(transparent, rgba(0,0,0,.88)); }
+.nd-collection[data-view="wall"].pc-grid .pc-card-meta, .nd-collection[data-view="wall"].pc-grid .pc-card-stats, .nd-collection[data-view="wall"].pc-grid .pc-card-scores,
+.nd-collection[data-view="wall"].pc-grid .pc-card-xp, .nd-collection[data-view="wall"].pc-grid .pc-card-tracks, .nd-collection[data-view="wall"].pc-grid .pc-card-player { display: none; }

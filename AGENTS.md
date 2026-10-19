@@ -322,6 +322,8 @@ tools that require GM access still check `is_gm` at call time.)
   portrait wall, and a split view whose preview (`static/js/entity-views.js`) is `GET /api/entity/ID/preview`, so it shows exactly what that viewer may see.
   The table view stays server-rendered (`?view=table`, its columns come from the field template). The private-notes page uses it too (`notes` section,
   `static/js/notes-views.js`: outline toggles in place, the reader copies the server-rendered note; on a phone the reader is the outline).
+  Boards are the shared `static/js/nd-board.js` (`ndBoard.attach(collection,{key,columns,editable,idOf,move})`): entity subtype board and the quest status board;
+  quests (`quest-views.js`), sessions (`sessions` section, group by party) and characters (`characters` section, roster / wall) are registered sections too.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable
   - the notice offers Undo), then rewrites every `[data-rename-label="kind:ref"]` / `[data-rename-img]` on the page. Clips: their own `name`

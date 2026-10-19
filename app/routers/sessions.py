@@ -203,9 +203,10 @@ def sessions_list(request: Request, page: int = 1, db: Session = Depends(get_db)
         GameSession.world_id == (world.id if world else 1)
     ).order_by(GameSession.session_num.desc())
     sessions, page, total_pages = paginate(base_q, page)
+    party_names = {p.id: p.name for p in db.query(Party).filter(Party.world_id == (world.id if world else 1)).all()}
     return templates.TemplateResponse("sessions/list.html", {
         "request": request, "world": world, "worlds": worlds, "sessions": sessions,
-        "page": page, "total_pages": total_pages,
+        "page": page, "total_pages": total_pages, "party_names": party_names,
     })
 
 
