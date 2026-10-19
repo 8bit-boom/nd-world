@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import '_ai_assist_panel.html' as _aa %}
+{% from "_views.html" import view_bar %}
 {% block title %}{{ entity.name }} — N&D World{% endblock %}
 {% block content %}
 {% if toc %}
@@ -149,13 +150,16 @@
   <section class="entity-notes">
     <h2>// NOTES</h2>
     {% if entity_notes %}
-    <div class="en-list">
+    {% if entity_notes|length > 1 %}{{ view_bar("entity_notes", "en-notes", request) }}{% endif %}
+    {# the notes layouts are the private notes page's (static/js/notes-views.js): .pn-note / .pn-note-content / .pn-note-date / .pn-del-form are its hooks #}
+    <div class="en-list nd-collection" id="en-notes" data-view="timeline">
       {% for n in entity_notes %}
-      <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}" id="en-note-{{ n.id }}">
+      {% set first_line = ((n.content or '').strip().splitlines() or [''])[0]|replace('#', '')|replace('*', '')|trim %}
+      <div class="en-note pn-note nd-item{% if not n.visible_to_players %} en-hidden{% endif %}" id="en-note-{{ n.id }}" data-name="{{ first_line|lower|truncate(80, True, '') }}" data-title="{{ first_line|truncate(60, True) or 'Note' }}" data-date="{{ n.created_at.timestamp()|int if n.created_at else 0 }}" data-g-month="{{ n.created_at.strftime('%Y-%m') if n.created_at else '' }}" data-vis="{{ 'visible' if n.visible_to_players else 'hidden' }}">
         <div id="en-view-{{ n.id }}">
-          <div class="en-note-content rendered-md"{% if n.content_is_html %} data-html-content="1"{% else %} data-markup-field="note" data-note-id="{{ n.id }}"{% endif %}>{{ n.content_html | safe }}</div>
-          <div class="en-note-footer">
-            <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
+          <div class="en-note-content pn-note-content rendered-md"{% if n.content_is_html %} data-html-content="1"{% else %} data-markup-field="note" data-note-id="{{ n.id }}"{% endif %}>{{ n.content_html | safe }}</div>
+          <div class="en-note-footer pn-del-form">
+            <span class="en-note-date pn-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
             {% if can_edit(request) %}
             <span class="en-note-vis">{% if n.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
             <button type="button" class="en-btn" onclick="toggleNoteEdit({{ n.id }})">Edit</button>
@@ -183,6 +187,7 @@
         {% endif %}
       </div>
       {% endfor %}
+      <aside id="nv-reader" class="nv-reader" aria-live="polite" hidden></aside>
     </div>
     {% else %}
     <p class="empty-small">No notes yet.</p>
@@ -383,10 +388,11 @@
 
   <section class="relations">
     <h2>// CONNECTIONS</h2>
-    {% if visible_related %}
-    <div class="card-grid small">
+    {% if visible_related or backlinks %}
+    {{ view_bar("connections", "conn-items", request) }}
+    <div id="conn-items" class="card-grid small nd-collection" data-view="grid" data-center-icon="{{ kind_icons[entity.kind] }}" data-center-name="{{ entity.name }}">
       {% for r in visible_related %}
-      <div class="entity-card kind-{{ r.kind }} rel-card">
+      <div class="entity-card kind-{{ r.kind }} rel-card nd-item" data-name="{{ r.name|lower }}" data-label="{{ r.name }}" data-dir="out" data-icon="{{ kind_icons[r.kind] }}" data-g-dir="Links to" data-g-kind="{{ r.kind }}">
         <a href="{{ ('/entity/' + r.id|string)|wq }}" class="rel-link">
           <span class="entity-kind">{{ kind_icons[r.kind] }}</span>
           <span>{{ r.name }}</span>
@@ -397,24 +403,18 @@
         </form>
       </div>
       {% endfor %}
+      {% for r in backlinks %}
+      <div class="entity-card kind-{{ r.kind }} rel-card nd-item rel-back" data-name="{{ r.name|lower }}" data-label="{{ r.name }}" data-dir="in" data-icon="{{ kind_icons[r.kind] }}" data-g-dir="Referenced by" data-g-kind="{{ r.kind }}">
+        <a href="{{ ('/entity/' + r.id|string)|wq }}" class="rel-link" title="Links to {{ entity.name }}">
+          <span class="entity-kind">{{ kind_icons[r.kind] }}</span>
+          <span>{{ r.name }}</span>
+          <span class="entity-sub">↩ links here</span>
+        </a>
+      </div>
+      {% endfor %}
     </div>
     {% else %}
     <p class="empty-small">No connections yet.</p>
-    {% endif %}
-
-    {% if backlinks %}
-    <details class="conn-section" open>
-      <summary>🔗 Referenced by ({{ backlinks|length }})</summary>
-      <div class="rel-grid">
-        {% for r in backlinks %}
-        <a href="{{ ('/entity/' + r.id|string)|wq }}" class="rel-card">
-          <span class="rel-icon">{{ kind_icons[r.kind] }}</span>
-          <span class="rel-name">{{ r.name }}</span>
-          {% if r.subtype %}<span class="rel-sub">{{ r.subtype }}</span>{% endif %}
-        </a>
-        {% endfor %}
-      </div>
-    </details>
     {% endif %}
 
     <details class="add-link-panel" id="add-link-panel">
@@ -629,6 +629,9 @@
 <script src="/static/js/audio-jobs.js?v={{ asset_v('js/audio-jobs.js') }}"></script>
 <script src="/static/js/ai-attachments.js?v={{ asset_v('js/ai-attachments.js') }}"></script>
 <script src="/static/js/entity-picker.js?v={{ asset_v('js/entity-picker.js') }}"></script>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
+<script src="/static/js/notes-views.js?v={{ asset_v('js/notes-views.js') }}"></script>
+<script src="/static/js/connections-web.js?v={{ asset_v('js/connections-web.js') }}"></script>
 <script>
 // "Add connection" panel — lazy-loads GET /api/entities/picker (visibility-
 // filtered for a player, unfiltered for a GM, same as every other entity

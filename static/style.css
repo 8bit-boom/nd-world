@@ -2428,3 +2428,39 @@ body.av-has-now { padding-bottom: 5.5rem; }
 .nd-collection[data-view="wall"].pc-grid .pc-card-body { position: absolute; left: 0; right: 0; bottom: 0; padding: 1.6rem .5rem .4rem; background: linear-gradient(transparent, rgba(0,0,0,.88)); }
 .nd-collection[data-view="wall"].pc-grid .pc-card-meta, .nd-collection[data-view="wall"].pc-grid .pc-card-stats, .nd-collection[data-view="wall"].pc-grid .pc-card-scores,
 .nd-collection[data-view="wall"].pc-grid .pc-card-xp, .nd-collection[data-view="wall"].pc-grid .pc-card-tracks, .nd-collection[data-view="wall"].pc-grid .pc-card-player { display: none; }
+
+/* ── Entity notes in the private-notes layouts: the note's own footer (date, Edit / Hide / Delete) is what the outline / reader hide ─────────── */
+.nd-collection[data-view="outline"] .en-note.nv-open .en-note-footer, .nd-collection[data-view="split"] > .en-note.nv-open .en-note-footer { display: flex; }
+.nd-collection[data-view="outline"] .en-note-footer .pn-note-date { display: inline; margin: 0; }
+.nd-collection[data-view="cards"] .en-note { background: var(--bg3); }
+.nd-collection[data-view="outline"] .en-note, .nd-collection[data-view="split"] > .en-note { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
+.nd-collection[data-view="split"] > .en-note.nd-current { border-left: 3px solid var(--neon); }
+.nd-collection.en-list[data-view="cards"], .nd-collection.en-list[data-view="split"], .nd-collection.en-list[data-view="outline"] { gap: 0; }
+
+/* ── Connections web (static/js/connections-web.js) ──────────────────────────────────────────────────────────────────────────────────────── */
+.cw-web { display: none; }
+.nd-collection[data-view="web"] { display: block; }
+.nd-collection[data-view="web"] > .nd-item, .nd-collection[data-view="web"] > .nd-group-head { display: none; }
+.nd-collection[data-view="web"] > .cw-web { display: block; }
+.rel-back .entity-sub { color: var(--text-dim); }
+.cw-svg { width: 100%; max-width: 760px; height: auto; display: block; margin: 0 auto; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
+.cw-edge { stroke: var(--neon); stroke-width: 1.4; opacity: .65; }
+.cw-edge.cw-in, .cw-node.cw-in circle { stroke-dasharray: 5 4; }
+.cw-node circle { fill: var(--bg3); stroke: var(--neon); stroke-width: 1.6; }
+.cw-node.cw-in circle { stroke: var(--neon2, #ff2d78); }
+.cw-node:hover circle, .cw-node:focus circle { fill: var(--neon); }
+.cw-node { cursor: pointer; outline: none; }
+.cw-node:focus-visible circle { stroke-width: 3.5; }
+.cw-icon { font-size: 18px; pointer-events: none; }
+.cw-label { font-size: 12px; fill: var(--text); pointer-events: none; }
+.cw-centre circle { fill: var(--neon); fill-opacity: .18; stroke: var(--neon); stroke-width: 2.5; }
+.cw-centre-label { font-weight: bold; font-size: 13px; fill: var(--neon); }
+.cw-legend { text-align: center; color: var(--text-dim); font-size: .75rem; margin: .4rem 0 0; }
+@media (max-width: 720px) {
+  /* no room for the web on a phone: the cards stay */
+  .nd-collection[data-view="web"] > .cw-web { display: none; }
+  .nd-collection[data-view="web"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+  .nd-collection[data-view="web"] > .nd-item { display: flex; }
+  .nd-collection[data-view="web"] > .nd-group-head { display: block; grid-column: 1 / -1; }
+}
+.nd-viewbar [hidden] { display: none !important; }   /* the size slider of a layout it means nothing in (a display rule must not undo `hidden`) */

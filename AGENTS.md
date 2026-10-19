@@ -323,6 +323,7 @@ tools that require GM access still check `is_gm` at call time.)
   The table view stays server-rendered (`?view=table`, its columns come from the field template). The private-notes page uses it too (`notes` section,
   `static/js/notes-views.js`: outline toggles in place, the reader copies the server-rendered note; on a phone the reader is the outline).
   Boards are the shared `static/js/nd-board.js` (`ndBoard.attach(collection,{key,columns,editable,idOf,move})`): entity subtype board and the quest status board;
+  an entity page's CONNECTIONS (`connections` section, `#conn-items`: related + backlinks are one collection of `.nd-item`s with `data-dir`; the web is `static/js/connections-web.js`, SVG built from those cards, hidden on a phone) and NOTES (`entity_notes`, the private notes' `.pn-note` hooks on `.en-note`, same `notes-views.js`) use it too;
   quests (`quest-views.js`), sessions (`sessions` section, group by party) and characters (`characters` section, roster / wall) are registered sections too.
 - **Quick rename of media** (`static/js/media-rename.js`, loaded by base.html): a ✏ button with `data-nd-rename data-kind="audio|video|image"
   data-id|data-url data-name` opens a dialog and saves through `/api/media-rename/apply` (the AI renamer's route, so it is logged and undoable

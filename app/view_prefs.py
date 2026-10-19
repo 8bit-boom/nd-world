@@ -24,6 +24,7 @@ MODE_LABELS = {
     "cards": ("🗒", "Cards"),
     "outline": ("≣", "Outline"),
     "board": ("▦", "Board"),
+    "web": ("🕸", "Web"),
 }
 
 SORT_LABELS = {
@@ -46,6 +47,8 @@ GROUP_LABELS = {
     "party": "Party",
     "owner": "Player",
     "system": "Sheet type",
+    "dir": "Direction",
+    "kind": "Kind",
 }
 
 FILTER_LABELS = {
@@ -83,6 +86,15 @@ SECTIONS = {
     "characters": {"modes": ["grid", "compact", "wall"], "default": "grid", "size_modes": ["grid", "wall"], "labels": {"compact": "Roster", "wall": "Portrait wall"},
                    "sorts": ["name", "num"], "default_sort": "name", "sort_labels": {"num": "Level"}, "groups": ["party", "owner", "system"], "filters": []},
 }
+
+SECTIONS["connections"] = {
+    # an entity page's CONNECTIONS: cards (today's; the ones it links to first, then the ones that link to it) or a web - the entity in the middle, the others around it
+    "modes": ["grid", "web"], "default": "grid", "size_modes": ["none"], "labels": {"grid": "Cards"},
+    "sorts": ["name"], "default_sort": "name", "groups": ["dir", "kind"], "filters": []}
+SECTIONS["entity_notes"] = {
+    # an entity page's NOTES: the list (today's), sticky cards, a collapsed outline, a reader - the same layouts as the private notes page
+    "modes": ["timeline", "cards", "outline", "split"], "default": "timeline", "size_modes": ["cards"],
+    "labels": {"timeline": "List", "split": "Reader"}, "sorts": ["date", "name"], "default_sort": "date", "groups": ["month", "visibility"], "filters": []}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2

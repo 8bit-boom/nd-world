@@ -1,5 +1,5 @@
 "use strict";
-// The private-notes page's two layouts that behave (templates/private_notes.html; the others are CSS from static/js/nd-views.js):
+// The private-notes page's (and an entity page's notes) two layouts that behave (templates/private_notes.html, entities/detail.html; the others are CSS from static/js/nd-views.js):
 //
 //   Outline: every note is one line (title + date); a click opens it in place, a second click closes it. Enter / Space on the line do the same
 //     and the line says whether it is open (aria-expanded).
@@ -19,7 +19,7 @@
   root.notesViewsCore = core;
   if (typeof document === "undefined") return;
 
-  const list = document.getElementById("pn-notes");
+  const list = document.getElementById("pn-notes") || document.getElementById("en-notes");   // the private notes page, or an entity page's notes
   const reader = document.getElementById("nv-reader");
   if (!list || !reader) return;
   let mode = "timeline", current = null;
