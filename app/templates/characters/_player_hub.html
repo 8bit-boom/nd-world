@@ -100,6 +100,19 @@ body.pch-hub-page { overflow-x:clip; }   /* belt and braces: nothing may make th
 .pch-tab-layout { order:-1; position:sticky; left:0; z-index:2; background:var(--bg2); padding-inline:.6rem; }
 .pch-tab-layout .pch-lb { display:none; }   /* just the cog on a desktop strip; the title says what it is */
 .pch-tab-layout .pch-ic { margin-right:0; }
+/* Dashboard / Split (a wide screen, the Sheet tab): the pinned tabs in a rail beside the sheet */
+#pch-rail { display:none; }
+body.pch-side-dashboard { --pch-rail-w:360px; }
+body.pch-side-split { --pch-rail-w:440px; }
+body.pch-side-on #pch-rail { display:flex; flex-direction:column; gap:.6rem; position:fixed; right:1rem; top:calc(var(--pch-top, 0px) + var(--pch-now-h, 0px) + .6rem); bottom:1rem; width:var(--pch-rail-w); overflow-y:auto; z-index:60; }
+body.pch-side-on #pch-rail[hidden] { display:none; }
+body.pch-side-on #pc-hub, body.pch-side-on .cs, body.pch-side-on .cx, body.pch-side-on #pc-ai, body.pch-side-on .pch-now, body.pch-side-on .pch-tags { max-width:none; margin-left:1rem; margin-right:calc(var(--pch-rail-w) + 2rem); }
+.pch-rcard { border:1px solid var(--border); border-radius:8px; background:var(--bg2); }
+.pch-rhead { display:flex; align-items:center; gap:.5rem; width:100%; box-sizing:border-box; background:none; border:0; border-bottom:1px solid var(--border); color:var(--neon); font-family:var(--font); font-size:.82rem; padding:.55rem .75rem; text-align:left; min-height:40px; }
+button.pch-rhead { cursor:pointer; }
+.pch-rcard.closed .pch-rhead { border-bottom:0; }
+.pch-rhead select { margin-left:auto; max-width:60%; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:.3rem .4rem; font-family:var(--font); font-size:.8rem; }
+.pch-rcard .pch-panel { border:0; border-radius:0 0 8px 8px; background:none; }
 /* Play layout (body.pch-play): the sheet without its edit chrome, bigger touch targets, the page strip kept in reach */
 body.pch-play .cs-actions .cs-more, body.pch-play .cx-actions .cs-more, body.pch-play .cs-actions > a:first-child, body.pch-play .cx-actions > a:first-child,
 body.pch-play #pc-ai, body.pch-play .cs-owner-form { display:none !important; }
@@ -196,6 +209,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     <button type="button" class="pch-tab pch-tab-more" id="pch-more-btn" aria-haspopup="true" aria-expanded="false" aria-controls="pch-more"><span class="pch-ic">☰</span><span class="pch-lb">More</span></button>
   </div>
   <div class="pch-more" id="pch-more" hidden></div>
+  <aside id="pch-rail" hidden aria-label="Beside the sheet"></aside>
 
   {% if not own %}
   {# A GM looking in: same shared tabs, the player's point of view, read-only. The
@@ -1136,10 +1150,10 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     let st = { mode: hub.dataset.layout || 'tabs', filters: [] };
     try { st.filters = JSON.parse(hub.dataset.pins || '[]'); } catch (e) { /* none */ }
     if (hub.dataset.account !== '1') {
-      try { const b = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null'); if (b && (b.mode === 'tabs' || b.mode === 'play')) st = { mode: b.mode, filters: Array.isArray(b.filters) ? b.filters : [] }; } catch (e) { /* none */ }
+      try { const b = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null'); if (b && ['tabs', 'play', 'dashboard', 'split'].indexOf(b.mode) >= 0) st = { mode: b.mode, filters: Array.isArray(b.filters) ? b.filters : [] }; } catch (e) { /* none */ }
     }
     const q = new URLSearchParams(location.search).get('view');
-    if (q === 'play' || q === 'tabs') st.mode = q;
+    if (['play', 'tabs', 'dashboard', 'split'].indexOf(q) >= 0) st.mode = q;
     return st;
   })();
   function applyLayout() {
@@ -1149,6 +1163,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     MINOR = Array.from(hub.querySelectorAll('.pch-tab--minor'));
     const sel = hub.querySelector('.pch-tab[aria-selected="true"]');
     moreBtn.setAttribute('aria-selected', String(!!sel && MINOR.indexOf(sel) >= 0));
+    if (typeof syncSide === 'function' && sel) syncSide(sel.dataset.tab);
   }
   function saveLayout() {
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) { /* not remembered here */ }
@@ -1159,7 +1174,10 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     const labelOf = {}; hub.querySelectorAll('.pch-tab[data-tab]').forEach(b => { labelOf[b.dataset.tab] = b.textContent.trim().replace(/\s+/g, ' '); });
     let mode = layout.mode;
     const pinned = new Set(HL.pinsFor(layout.filters, TABS, 4));
-    const radios = [['tabs', '🗂 Tabs', 'All the tabs, the sheet with its buttons.'], ['play', '🎲 Play', 'The sheet without edit buttons, bigger controls, swipe left / right between sheet pages.']].map(([id, name, hint]) => {
+    const radios = [['tabs', '\ud83d\uddc2 Tabs', 'All the tabs, the sheet with its buttons.'],
+      ['play', '\ud83c\udfb2 Play', 'The sheet without edit buttons, bigger controls, swipe left / right between sheet pages.'],
+      ['dashboard', '\u25a4 Dashboard', 'Wide screens: the tabs you pinned sit in a column beside the sheet. (Tabs on a phone.)'],
+      ['split', '\u25eb Split', 'Wide screens: the sheet and one of your pinned tabs side by side. (Tabs on a phone.)']].map(([id, name, hint]) => {
       const r = h('input', { type: 'radio', name: 'pch-layout', value: id, checked: mode === id ? true : null, style: 'width:auto;min-height:0' });
       r.addEventListener('change', () => { mode = id; });
       return h('label', { style: 'flex-direction:row;align-items:flex-start;gap:.5rem' }, r, h('span', {}, h('b', { text: name }), h('br'), h('span', { class: 'pch-muted', text: hint })));
@@ -1180,7 +1198,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       layout.mode = 'tabs'; layout.filters = []; applyLayout(); saveLayout(); close(); } });
     const card = h('div', { class: 'pch-modal-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Layout and tabs' },
       h('b', { text: 'Layout' }), ...radios,
-      h('b', { text: 'Tabs in the phone’s bottom bar' }), h('span', { class: 'pch-muted' }, 'Pick up to four (the rest are under “More”). ', count),
+      h('b', { text: 'Pinned tabs' }), h('span', { class: 'pch-muted' }, 'Up to four: the phone\u2019s bottom bar (the rest are under \u201cMore\u201d) and the column beside the sheet in Dashboard / Split. ', count),
       ...boxes.map(b => b.el),
       h('div', { class: 'pch-krow' }, save, h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: 'Cancel', onclick: close }), reset));
     const overlay = h('div', { class: 'pch-modal', onclick: e => { if (e.target === overlay) close(); } }, card);
@@ -1226,7 +1244,63 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     const to = HL.stepPage(ids, cur, dir);
     if (to !== cur) { btns.find(b => b.dataset.sp === to).click(); window.scrollTo(0, 0); }
   }, { passive: true });
+
+  // Dashboard / Split on a wide screen: the pinned tabs' own panels move beside the sheet (they stay inside #pc-hub, so their loaders keep working)
+  const rail = document.getElementById('pch-rail');
+  const wideMq = window.matchMedia ? window.matchMedia('(min-width: 1100px)') : { matches: false };
+  const SIDE_KEY = 'nd_hub_side', CLOSED_KEY = 'nd_hub_rail_closed';
+  const readJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') || d; } catch (e) { return d; } };
+  const writeJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* not remembered */ } };
+  const currentTab = () => { const b = hub.querySelector('.pch-tab[aria-selected="true"]'); return b ? b.dataset.tab : ''; };
+  function unmountSide() {
+    rail.querySelectorAll('.pch-panel').forEach(sec => { sec.hidden = true; hub.appendChild(sec); });
+    rail.replaceChildren();
+    rail.hidden = true;
+    document.body.classList.remove('pch-side-on', 'pch-side-dashboard', 'pch-side-split');
+  }
+  function mountSide() {
+    const tabs = HL.railTabs(HL.pinsFor(layout.filters, TABS, 4), TABS);
+    if (!tabs.length) return;
+    const section = t => hub.querySelector('.pch-panel[data-panel="' + t + '"]');
+    const labelOf = t => { const b = hub.querySelector('.pch-tab[data-tab="' + t + '"]'); return b ? b.textContent.trim().replace(/\s+/g, ' ') : t; };
+    const load = t => { if (loaders[t] && !loaded[t]) { loaded[t] = true; loaders[t](); } };
+    if (layout.mode === 'split') {
+      let pick = null;
+      try { pick = localStorage.getItem(SIDE_KEY); } catch (e) { /* none */ }
+      if (tabs.indexOf(pick) < 0) pick = tabs[0];
+      const sel = h('select', { 'aria-label': 'Beside the sheet' }, tabs.map(t => h('option', { value: t, text: labelOf(t), selected: t === pick ? true : null })));
+      const card = h('div', { class: 'pch-rcard' }, h('div', { class: 'pch-rhead' }, h('span', { text: 'Beside the sheet' }), sel));
+      const show1 = t => { card.querySelectorAll('.pch-panel').forEach(sec => { sec.hidden = true; hub.appendChild(sec); }); const sec = section(t); card.append(sec); sec.hidden = false; load(t); };
+      sel.addEventListener('change', () => { try { localStorage.setItem(SIDE_KEY, sel.value); } catch (e) { /* ok */ } show1(sel.value); });
+      rail.append(card);
+      show1(pick);
+    } else {
+      const closed = new Set(readJson(CLOSED_KEY, []));
+      tabs.forEach(t => {
+        const sec = section(t);
+        const head = h('button', { type: 'button', class: 'pch-rhead', 'aria-expanded': String(!closed.has(t)), text: (closed.has(t) ? '▸ ' : '▾ ') + labelOf(t) });
+        const card = h('div', { class: 'pch-rcard' + (closed.has(t) ? ' closed' : '') }, head);
+        head.addEventListener('click', () => {
+          const off = !card.classList.contains('closed');
+          card.classList.toggle('closed', off); sec.hidden = off; head.setAttribute('aria-expanded', String(!off));
+          head.textContent = (off ? '▸ ' : '▾ ') + labelOf(t);
+          if (off) closed.add(t); else { closed.delete(t); load(t); }
+          writeJson(CLOSED_KEY, Array.from(closed));
+        });
+        card.append(sec);
+        rail.append(card);                          // in the page first: a loader finds its element through the hub
+        sec.hidden = closed.has(t);
+        if (!closed.has(t)) load(t);
+      });
+    }
+    rail.hidden = false;
+    document.body.classList.add('pch-side-on', layout.mode === 'split' ? 'pch-side-split' : 'pch-side-dashboard');
+  }
+  function maybeMountSide(tab) { if (rail && tab === 'sheet' && wideMq.matches && (layout.mode === 'dashboard' || layout.mode === 'split')) mountSide(); }
+  function syncSide(tab) { if (!rail) return; unmountSide(); maybeMountSide(tab); }
+  if (wideMq.addEventListener) wideMq.addEventListener('change', () => syncSide(currentTab()));
   applyLayout();
+  syncSide(currentTab());
 
   // ── Tabs ───────────────────────────────────────────────────────────────────
   const loaders = { quests: loadQuests, world: () => loadWorld(''), schedule: loadSchedule, places: loadPlaces, log: loadLog, sessions: loadSessions, keepsakes: loadKeepsakes, handouts: loadHandouts, companions: loadCompanions };
@@ -1256,11 +1330,13 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
     moreBtn.setAttribute('aria-selected', String(MINOR.some(b => b.dataset.tab === tab)));
     closeMore();
     keepTabInView();
+    if (rail) unmountSide();                         // the rail's panels go back in the hub BEFORE the tab's own panel is chosen
     window.scrollTo(0, 0);
     hub.querySelectorAll('.pch-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
     sheetNodes().forEach(n => n.classList.toggle('away-from-sheet', tab !== 'sheet'));
     if (gmNote) gmNote.hidden = tab === 'sheet';
     if (loaders[tab] && !loaded[tab]) { loaded[tab] = true; loaders[tab](); }
+    maybeMountSide(tab);
     try { history.replaceState(null, '', tab === 'sheet' ? location.pathname + location.search : '#hub-' + tab); } catch (e) { /* ignore */ }
   }
 

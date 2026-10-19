@@ -5,6 +5,7 @@
 //   pinsFor      - which tabs the phone's bottom bar shows: the player's pins (Sheet is always one), or the default four, at most `max`
 //   swipePage    - a finger drag over the sheet in the Play layout -> -1 (previous page), +1 (next page) or 0 (not a swipe)
 //   stepPage     - the sheet page to show after a swipe, clamped (the "All" page is not part of the swipe order)
+//   railTabs     - Dashboard / Split on a wide screen: the pinned tabs that sit beside the sheet (not the heavy ones: the Cockpit and Pages)
 //   scrollHints  - which edges of a scrolling tab strip still have tabs hidden behind them (for the fade and the arrows)
 
 (function (root) {
@@ -32,12 +33,17 @@
     return order[Math.max(0, Math.min(order.length - 1, at + dir))];
   }
 
+  const NOT_BESIDE = ["sheet", "cockpit", "places"];
+  function railTabs(pins, tabs) {
+    return (Array.isArray(pins) ? pins : []).filter((t, i, a) => NOT_BESIDE.indexOf(t) < 0 && tabs.indexOf(t) >= 0 && a.indexOf(t) === i);
+  }
+
   function scrollHints(scrollLeft, clientWidth, scrollWidth) {
     const slack = 4;
     return { left: scrollLeft > slack, right: scrollLeft + clientWidth < scrollWidth - slack };
   }
 
-  const core = { DEFAULT_PINS, pinsFor, swipePage, stepPage, scrollHints };
+  const core = { DEFAULT_PINS, pinsFor, swipePage, stepPage, railTabs, scrollHints };
   if (typeof module !== "undefined" && module.exports) module.exports = core;
   root.hubLayout = core;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -29,6 +29,7 @@ MODE_LABELS = {
     "free": ("◫", "Free windows"),
     "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
+    "dashboard": ("▤", "Dashboard"),
 }
 
 SORT_LABELS = {
@@ -120,9 +121,10 @@ SECTIONS["session_log"] = {
     "sorts": ["num", "name"], "default_sort": "-num", "groups": ["recap"], "filters": []}
 
 SECTIONS["hub"] = {
-    # the character page: its tabs (today's layout, tidied) or Play (the phone at the table: no edit chrome, big targets, swipe between sheet pages).
-    # `filters` holds the PINNED tabs - the ones in the phone's bottom bar (empty = the default four); at most `max_filters`.
-    "modes": ["tabs", "play"], "default": "tabs", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [],
+    # the character page: its tabs (today's layout, tidied), Play (the phone at the table: no edit chrome, big targets, swipe between sheet pages),
+    # Dashboard (on a wide screen the pinned tabs sit in a rail beside the sheet) or Split (the sheet and ONE pinned tab side by side).
+    # `filters` holds the PINNED tabs - the ones in the phone's bottom bar and in the wide screen's rail (empty = the default four); at most `max_filters`.
+    "modes": ["tabs", "play", "dashboard", "split"], "default": "tabs", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [],
     "filters": list(HUB_TABS), "max_filters": 4}
 
 SECTIONS["cockpit"] = {
