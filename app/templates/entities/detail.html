@@ -154,7 +154,8 @@
     {# the notes layouts are the private notes page's (static/js/notes-views.js): .pn-note / .pn-note-content / .pn-note-date / .pn-del-form are its hooks #}
     <div class="en-list nd-collection" id="en-notes" data-view="timeline">
       {% for n in entity_notes %}
-      {% set first_line = ((n.content or '').strip().splitlines() or [''])[0]|replace('#', '')|replace('*', '')|trim %}
+      {# the title comes from the RENDERED note (already stripped of what this viewer may not see), never from the raw text #}
+      {% set first_line = ((n.content_html|striptags|trim).splitlines() or [''])[0]|trim %}
       <div class="en-note pn-note nd-item{% if not n.visible_to_players %} en-hidden{% endif %}" id="en-note-{{ n.id }}" data-name="{{ first_line|lower|truncate(80, True, '') }}" data-title="{{ first_line|truncate(60, True) or 'Note' }}" data-date="{{ n.created_at.timestamp()|int if n.created_at else 0 }}" data-g-month="{{ n.created_at.strftime('%Y-%m') if n.created_at else '' }}" data-vis="{{ 'visible' if n.visible_to_players else 'hidden' }}">
         <div id="en-view-{{ n.id }}">
           <div class="en-note-content pn-note-content rendered-md"{% if n.content_is_html %} data-html-content="1"{% else %} data-markup-field="note" data-note-id="{{ n.id }}"{% endif %}>{{ n.content_html | safe }}</div>
