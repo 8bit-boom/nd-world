@@ -151,6 +151,9 @@ def test_the_hub_has_a_kept_tab_that_fits_a_phone(client, seed):
     page = client.get(f"/characters/{pc}").text
     assert 'data-tab="keepsakes"' in page and 'data-panel="keepsakes"' in page and "loadKeepsakes" in page
     assert "font-size:16px" in page and "@media (max-width:720px) { .pch-modal" in page      # no zoom on focus; a sheet on a narrow screen
+    # what can be kept is SHOWN (the picture, a player for a song / video), not just a file name; a long name must not widen the page
+    assert "pch-kopt" in page and "pch-kgrid" in page and "controls: true" in page
+    assert "overflow-wrap:anywhere" in page and "body.pch-hub-page { overflow-x:clip; }" in page
 
 
 # ── a player's OWN files, with per-world limits ─────────────────────────────────────────────────────────

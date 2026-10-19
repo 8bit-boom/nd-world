@@ -79,6 +79,18 @@ body.nd-embed .pch-tags { display:none; }
 @keyframes pch-pulse { 50% { box-shadow:0 0 0 4px rgba(0,255,200,.18); } }
 @media (prefers-reduced-motion: reduce) { .pch-pill.turn { animation:none; } }
 
+.pch-kmore, .pch-kcard, .pch-kopt { min-width:0; }
+.pch-kgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(14rem,1fr)); gap:.6rem; margin-bottom:.6rem; }
+.pch-kopt { border:1px solid var(--border); border-radius:8px; background:var(--bg3); padding:.55rem .6rem; display:flex; flex-direction:column; gap:.35rem; }
+.pch-kopt img, .pch-kopt video { width:100%; max-height:11rem; object-fit:contain; border-radius:6px; background:#000; display:block; cursor:zoom-in; }
+.pch-kopt audio { width:100%; }
+.pch-kopt pre { white-space:pre-wrap; word-break:break-word; font-family:var(--font); font-size:.82rem; margin:0; max-height:7rem; overflow:auto; }
+.pch-kopt .pch-btn { min-height:44px; align-self:flex-start; }
+/* a long unbroken file name must wrap, or the page grows wider than the phone and iOS widens the layout (the bottom tab bar is lost) */
+.pch-panel, .pch-title, .pch-muted, .pch-kcard .pch-title { overflow-wrap:anywhere; min-width:0; }
+.pch-panel { max-width:100%; }
+body.pch-hub-page { overflow-x:clip; }   /* belt and braces: nothing may make this page scroll sideways (iOS then widens the layout and the phone layout is lost) */
+@media (max-width:720px) { .pch-kgrid { grid-template-columns:1fr; } }
 /* keepsakes (kept pictures / videos / songs / text) - works with a thumb: big targets, 16px inputs (no zoom on a phone), a sheet that fills a narrow screen */
 .pch-kcard { border:1px solid var(--border); border-radius:8px; background:var(--bg3); padding:.6rem .7rem; margin-bottom:.6rem; display:flex; flex-direction:column; gap:.35rem; }
 .pch-kcard img, .pch-kcard video { width:100%; max-height:16rem; object-fit:contain; border-radius:6px; background:#000; display:block; cursor:zoom-in; }
@@ -740,17 +752,34 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
       if (!mine.length) parts.push(h('p', { class: 'pch-muted', text: 'No files of your own yet.' }));
       mine.forEach(k => parts.push(card(k)));
       const s = d.saveable || {};
-      const keepRow = (label, kind, source) => h('div', { class: 'pch-row' }, h('span', { class: 'pch-title', text: (KIND_ICON[kind] || '') + ' ' + label }),
-        h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: '\ud83d\udcbe Keep\u2026', onclick: () => keepDialog({ title: 'Keep \u201c' + label + '\u201d', name: label, confirm: 'Keep',
-          onSave: async v => { await send('keepsakes', { name: v.name, description: v.description, source }); } }).then(ok => { if (ok) loadKeepsakes(); }) }));
-      const more = h('details', {}, h('summary', { text: '\u2795 Keep something', style: 'min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--neon)' }));
-      const group = (title, rows) => { if (rows.length) more.append(h('div', { class: 'pch-sub', text: title }), ...rows); };
-      group('\ud83d\udcec Shown to the table', (s.handouts || []).map(x => keepRow(x.name, 'image', { type: 'handout', id: x.id })));
-      group('\u2709 Notes your GM sent you', (s.notes || []).map(x => keepRow(x.name, 'text', { type: 'note', id: x.id })));
-      group('\ud83d\udcd3 From the Session Log', (s.session || []).map(x => keepRow(x.name + '  \u00b7  ' + x.session, x.kind, { type: 'session', session_id: x.session_id, kind: x.kind, ref: x.ref })));
+      const kept = new Set(d.keepsakes.map(k => k.url).filter(Boolean));
+      // an option the viewer can keep: what it IS (the picture, a player for the song / video, the text) and a big Keep button
+      const option = (it, source) => {
+        const preview = it.kind === 'image' ? h('img', { src: it.url, alt: it.name, loading: 'lazy', onclick: () => { if (window.openLightbox) openLightbox(it.url, it.name); else window.open(it.url, '_blank'); } })
+          : it.kind === 'video' ? h('video', { src: it.url, controls: true, preload: 'none', playsinline: true })
+          : it.kind === 'audio' ? h('audio', { src: it.url, controls: true, preload: 'none' })
+          : h('pre', { text: it.text || '' });
+        const done = it.url && kept.has(it.url);
+        const keep = h('button', { type: 'button', class: 'pch-btn', disabled: done || null, text: done ? '✔ Kept' : '💾 Keep…', onclick: () => keepDialog({ title: 'Keep “' + it.name + '”', name: it.name, confirm: 'Keep',
+          onSave: async v => { await send('keepsakes', { name: v.name, description: v.description, source }); } }).then(ok => { if (ok) loadKeepsakes(); }) });
+        return h('div', { class: 'pch-kopt' }, preview, h('span', { class: 'pch-title', text: (KIND_ICON[it.kind] || '') + ' ' + it.name }),
+          it.session ? h('span', { class: 'pch-muted', text: it.session }) : null, keep);
+      };
+      const more = h('section', { class: 'pch-kmore' }, h('div', { class: 'pch-sub', text: '➕ Keep something' }));
+      const group = (title, items, toSource) => {
+        if (!items.length) return;
+        const grid = h('div', { class: 'pch-kgrid' }), SHOW = 6;
+        const draw = all => { grid.replaceChildren(...(all ? items : items.slice(0, SHOW)).map(it => option(it, toSource(it)))); };
+        draw(false);
+        more.append(h('div', { class: 'pch-sub', text: title + ' · ' + items.length }), grid);
+        if (items.length > SHOW) { const btn = h('button', { type: 'button', class: 'pch-btn', text: 'Show all ' + items.length, onclick: () => { draw(true); btn.remove(); } }); more.append(btn); }
+      };
+      group('📬 Shown to the table', s.handouts || [], x => ({ type: 'handout', id: x.id }));
+      group('✉ Notes your GM sent you', s.notes || [], x => ({ type: 'note', id: x.id }));
+      group('📓 From the Session Log', s.session || [], x => ({ type: 'session', session_id: x.session_id, kind: x.kind, ref: x.ref }));
       if (d.is_gm) {
-        more.append(h('div', { class: 'pch-sub', text: '\ud83c\udfb2 GM: add something' }),
-          h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: '\u2795 A file or a text\u2026', onclick: () => keepDialog({ title: 'Keep for ' + PC_NAME, confirm: 'Keep',
+        more.append(h('div', { class: 'pch-sub', text: '🎲 GM: add something' }),
+          h('button', { type: 'button', class: 'pch-btn', style: 'min-height:44px', text: '➕ A file or a text…', onclick: () => keepDialog({ title: 'Keep for ' + PC_NAME, confirm: 'Keep',
             ask: [
               { id: 'kind', label: 'What is it?', type: 'select', options: [['text', 'Text'], ['image', 'Picture'], ['video', 'Video'], ['audio', 'Song / audio']] },
               { id: 'url', label: 'Its address (a file on this site, like /uploads/gallery/map.png)', type: 'text', when: xs => xs[0].field.value !== 'text' },
