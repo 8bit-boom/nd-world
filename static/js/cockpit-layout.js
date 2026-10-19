@@ -478,6 +478,37 @@
   }
 
 
+
+  // ── scene memory ─────────────────────────────────────────────────────────────────────────────
+  //
+  // A scene tiles its windows; the GM then drags them where they like them. The next time the scene is applied the windows go back to
+  // THAT arrangement instead of a fresh tiling. Window ids change on every load, so a window is remembered by what it shows (its type and
+  // page: two windows of the same kind are told apart by their order). `recallRects` only applies a memory that covers every window
+  // that is showing - a new kind of window would otherwise land on top of the remembered ones - and scales it when the screen differs.
+  function sceneKeys(list) {
+    var seen = {};
+    return list.map(function (p) {
+      var base = p.type + ':' + (p.ref || '');
+      seen[base] = (seen[base] || 0) + 1;
+      return seen[base] > 1 ? base + '#' + seen[base] : base;
+    });
+  }
+  function rememberRects(panels, vp) {
+    var vis = visibleOf(panels), keys = sceneKeys(vis), rects = {};
+    vis.forEach(function (p, i) { rects[keys[i]] = { x: p.x, y: p.y, w: p.w, h: p.h }; });
+    return { v: 1, vp: vpOk(vp) ? { w: vp.w, h: vp.h } : null, rects: rects };
+  }
+  function recallRects(panels, mem, vp) {
+    if (!mem || !mem.rects || !panels.length) return false;
+    var vis = visibleOf(panels), keys = sceneKeys(vis);
+    if (!keys.every(function (k) { return mem.rects[k]; })) return false;
+    var boxes = vis.map(function (p, i) { return Object.assign({}, mem.rects[keys[i]]); });
+    if (vpOk(mem.vp) && vpOk(vp) && needsScale(mem.vp, vp)) boxes = scalePanels(boxes, mem.vp, vp);
+    else if (vpOk(vp)) boxes = fitPanels(boxes, vp);
+    vis.forEach(function (p, i) { putBox(p, boxes[i]); p.collapsed = false; });
+    return true;
+  }
+
   // ── layout styles ────────────────────────────────────────────────────────────────────────────
   //
   // Free windows are the cockpit as it always was: drag, resize, snap. The other styles are ARRANGEMENTS the cockpit keeps for you - after
@@ -719,6 +750,7 @@
     deriveLaptop: deriveLaptop, toWorking: toWorking, toSaved: toSaved,
     showWide: showWide, parkWide: parkWide, applyScene: applyScene,
     STYLES: STYLES, railLayout: railLayout, arrangeStyle: arrangeStyle,
+    sceneKeys: sceneKeys, rememberRects: rememberRects, recallRects: recallRects,
     ZOOMS: ZOOMS, zoomStep: zoomStep, zoomBox: zoomBox,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

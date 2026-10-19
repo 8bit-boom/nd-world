@@ -305,6 +305,7 @@ def combat_recent(request: Request, db: Session = Depends(get_db), active_world:
     )
     return {"combats": [{
         "id": cs.id, "name": cs.name, "round_num": cs.round_num or 1,
+        "running": cs.finished_at is None,         # the cockpit offers the Combat scene when a new one starts running
     } for cs in rows]}
 
 

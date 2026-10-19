@@ -39,6 +39,7 @@
     if (acct) return acct;
     try { return ok((JSON.parse(localStorage.getItem(STYLE_LS) || 'null') || {}).mode || '') || 'free'; } catch (e) { return 'free'; }
   })();
+  const SCENEMEM = 'nd_cockpit_scene:';       // + world:scene:class - what the windows of a scene looked like when you last arranged them (this browser)
   let tabActive = '';                     // Tabs: the window showing
   let stageId = '';                       // Stage + rail: the window made the stage by hand ('' = the last used map / combat window)
   let currentScene = '';                  // the scene applied last (lit in the scene bar, named in the status bar); any saved layout / reset clears it
@@ -204,6 +205,7 @@
     userTouched = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, 400);
+    rememberScene();                                 // (a scene that is showing keeps the arrangement you give it)
   }
   // Live-sync refreshes collapse into ONE pass: a burst of changes (bulk XP,
   // a loot spree) would otherwise fire one fetch per panel in parallel.
@@ -2415,6 +2417,63 @@
     return p;
   }
 
+  // ── offer the Combat scene when a fight starts (opt-in, this browser) ────────────────────────────────────────────────────
+  // Checked after live-sync pulses and once a minute: a combat that is running now and was not when the cockpit opened (or when this was
+  // switched on) is offered once, as a message with a button - nothing moves by itself.
+  const COMBAT_HINT_KEY = 'nd_cockpit_combat_hint';
+  let knownRunning = null;
+  const combatOffered = new Set();
+  let combatCheckTimer = 0;
+  function combatHintOn() { return !PLAYER && pref(COMBAT_HINT_KEY, '') === '1'; }
+  async function checkCombatStart() {
+    if (!combatHintOn() || MOBILE() || document.hidden) return;
+    let list = [];
+    try { const r = await fetch('/api/combat/recent'); if (r.ok) list = (await r.json()).combats || []; } catch (e) { return; }
+    const running = list.filter(function (c) { return c.running; });
+    if (knownRunning === null) { knownRunning = new Set(running.map(function (c) { return c.id; })); return; }   // what was already running is not news
+    const fresh = running.filter(function (c) { return !knownRunning.has(c.id) && !combatOffered.has(c.id); });
+    running.forEach(function (c) { knownRunning.add(c.id); });
+    if (!fresh.length || currentScene === 'combat') return;
+    combatOffered.add(fresh[0].id);
+    toast('\u2694 A fight has started: ' + fresh[0].name, 'Switch to Combat', function () { applyScene(SCENES[0]); });
+  }
+  function scheduleCombatCheck() {
+    if (!combatHintOn() || combatCheckTimer) return;
+    combatCheckTimer = setTimeout(function () { combatCheckTimer = 0; checkCombatStart(); }, 1500);
+  }
+  function applyCombatHintRow() {
+    const row = document.getElementById('ck-combathint-row');
+    if (row) { row.setAttribute('aria-pressed', combatHintOn() ? 'true' : 'false'); row.firstElementChild.textContent = (combatHintOn() ? '\u2611 ' : '\u2610 ') + '\u2694 Offer Combat when a fight starts'; }
+  }
+  function toggleCombatHint() {
+    setPref(COMBAT_HINT_KEY, combatHintOn() ? '' : '1');
+    knownRunning = null;
+    applyCombatHintRow();
+    if (combatHintOn()) { checkCombatStart(); toast('You will be offered the Combat scene when a new fight starts.'); }
+    else toast('The Combat scene is no longer offered.');
+  }
+  window.addEventListener('nd-live', scheduleCombatCheck);
+  setInterval(checkCombatStart, 60000);
+  const combatHintRow = document.getElementById('ck-combathint-row');
+  if (combatHintRow) combatHintRow.addEventListener('click', function () { closeLayouts(false); toggleCombatHint(); });
+
+  // ── a scene remembers how you arranged it ─────────────────────────────────────────────────────────────────────────────
+  function sceneMemKey(id) { return SCENEMEM + CK_WORLD + ':' + id + ':' + klass; }
+  let sceneMemTimer = 0;
+  function rememberScene() {                         // called after every save: while a scene is showing, keep its arrangement
+    if (!currentScene || style !== 'free' || MOBILE() || sceneMemTimer) return;
+    sceneMemTimer = setTimeout(function () {
+      sceneMemTimer = 0;
+      const vp = vpNow();
+      if (!currentScene || style !== 'free' || !vp) return;
+      try { localStorage.setItem(sceneMemKey(currentScene), JSON.stringify(LAYOUT.rememberRects(panels, vp))); } catch (e) { /* not remembered */ }
+    }, 400);
+  }
+  function recallScene(id) {
+    try { return LAYOUT.recallRects(panels, JSON.parse(localStorage.getItem(sceneMemKey(id)) || 'null'), vpNow()); } catch (e) { return false; }
+  }
+  function forgetScene(id) { try { localStorage.removeItem(sceneMemKey(id)); } catch (e) { /* nothing to forget */ } }
+
   // ── layouts: scenes, saved layouts, auto-arrange (the 🧩 menu) ────────────────────────────────────────────────────────
   // A SAVED LAYOUT is a snapshot of the windows (both screens' arrangement, who waits in the dock); a SCENE is a recipe - show
   // these kinds of window, tile them, and put every other window in the dock - so it adapts to whatever is open and costs nothing:
@@ -2550,8 +2609,10 @@
     } else if (type === 'entity') return null;
     return addPanel(type, ref, title, { scene: true });
   }
-  async function applyScene(sc) {
+  async function applyScene(sc, opts) {
     if (MOBILE() || PLAYER) return;
+    const fresh = !!(opts && opts.fresh);            // the lit chip clicked again: forget the arrangement and tile afresh
+    if (fresh) forgetScene(sc.id);
     const ids = [];
     for (let i = 0; i < sc.wants.length; i++) {
       const p = await sceneWindow(sc.wants[i]);
@@ -2560,6 +2621,7 @@
     if (!ids.length) { toast(sc.label + ': nothing to show yet - add a map, a party or a combat first.'); return; }
     LAYOUT.applyScene(panels, ids, { klass: klass, vp: vpNow() || refVp || LAPTOP_FALLBACK_VP, slots: LAPTOP() ? slotsNow() : Infinity, pref: prefHeight, stage: ids[0] });
     tabActive = ids[0]; stageId = ids[0];
+    const recalled = style === 'free' && !fresh && recallScene(sc.id);     // your own arrangement of this scene, when it covers the windows
     reflow(true);
     currentScene = sc.id; currentPreset = '';
     paintSceneBar();
@@ -2569,7 +2631,7 @@
     scrollWorkspaceTo(0, true);                      // a scene is tiled from the top
     ids.forEach(function (id) { const q = panels.find(function (x) { return x.id === id; }); if (q && !q.parked) flash(winEl(q)); });
     save();
-    toast(sc.label + ' — ' + (panels.length - keep) + ' window' + (panels.length - keep === 1 ? '' : 's') + ' showing' + (keep ? ', ' + keep + ' in the dock' : ''));
+    toast(sc.label + ' — ' + (panels.length - keep) + ' window' + (panels.length - keep === 1 ? '' : 's') + ' showing' + (keep ? ', ' + keep + ' in the dock' : '') + (recalled ? ' — as you arranged it (click the scene again to tile afresh)' : (fresh ? ' — tiled afresh' : '')));
   }
 
   // The scenes one click away: chips in the header (icon only on a laptop) and tiles on the empty cockpit; Alt + Shift + 1-4 as well.
@@ -2594,7 +2656,7 @@
         const ic = document.createElement('span'); ic.textContent = sc.label.slice(0, at);
         const tx = document.createElement('span'); tx.className = 'ck-bl'; tx.textContent = ' ' + sc.label.slice(at + 1);
         b.append(ic, tx);
-        b.addEventListener('click', function () { applyScene(sc); });
+        b.addEventListener('click', function () { applyScene(sc, { fresh: sc.id === currentScene }); });
         bar.appendChild(b);
       });
     }
@@ -3444,6 +3506,8 @@
   applyLock();
   applyWheelRow();
   applyRoomyRow();
+  applyCombatHintRow();
+  checkCombatStart();
   fitViewport();
   buildWelcomeTiles();
   renderSceneBar();
