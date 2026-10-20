@@ -57,6 +57,9 @@ MODE_LABELS = {
     "dashboard": ("▤", "Dashboard"),
     "month": ("🗓", "Month"),
     "week": ("▭", "Week"),
+    "mapfull": ("🗺", "Map only"),
+    "withside": ("◧", "Chat + side panel"),
+    "panel": ("◧", "Map + list"),
 }
 
 SORT_LABELS = {
@@ -178,7 +181,7 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
@@ -218,6 +221,8 @@ for _id, _modes, _labels in (
     ("worlds", ["grid", "list"], {"grid": "Cards"}),
     ("templates", ["grid", "list"], {"grid": "Cards"}),
     ("calendar_view", ["month", "week"], {}),
+    ("ai_chat", ["withside", "focus"], {"focus": "Chat only"}),
+    ("map_viewer", ["mapfull", "panel"], {"mapfull": "Map only", "panel": "Map + list"}),
 ):
     SECTIONS[_id] = {"modes": _modes, "default": _modes[0], "size_modes": ["none"], "labels": _labels, "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 

@@ -2709,3 +2709,28 @@ body.home-night-on .home-edit-link { display: none; }
 .rs-fold[open] > summary::before { content: "▾"; }
 .rs-fold > :not(summary) { margin-left: .9rem; margin-right: .9rem; }
 .rs-fold > :last-child { margin-bottom: .8rem; }
+
+/* ── Phase 6 list layouts (maps / boards / parties, nd-pagelayout.js) ── */
+.maps-grid[data-view="list"] { grid-template-columns: 1fr; gap: .5rem; }
+.maps-grid[data-view="list"] .map-card { flex-direction: row; align-items: center; }
+.maps-grid[data-view="list"] .map-img-wrap { width: 72px; min-width: 72px; height: 72px; aspect-ratio: auto; }
+.maps-grid[data-view="list"] .map-card-body { flex: 1; min-width: 0; }
+.maps-grid[data-view="large"] { grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); }
+.maps-grid[data-view="large"] .map-img-wrap { aspect-ratio: 16/10; }
+.boards-list[data-view="list"], .parties-list[data-view="table"] { display: flex; flex-direction: column; gap: .35rem; }
+.boards-list[data-view="list"] .board-card { min-height: 0; }
+.boards-list[data-view="list"] .board-card-body { flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: .3rem .9rem; padding: .5rem .8rem; }
+.boards-list[data-view="list"] .board-card-meta { margin: 0 0 0 auto; }
+.parties-list[data-view="table"] .entity-card-body { display: flex; align-items: baseline; gap: .9rem; padding: .45rem .8rem; }
+.parties-list[data-view="table"] .entity-card-body h3 { margin: 0; font-size: 1rem; flex: 1; min-width: 0; }
+.parties-list[data-view="table"] .entity-card-body p { margin: 0; }
+.party-page[data-view="dashboard"] { max-width: 1280px !important; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 1rem; align-items: start; }
+.party-page[data-view="dashboard"] > * { margin-bottom: 0 !important; min-width: 0; }
+.party-page[data-view="dashboard"] > :first-child, .party-page[data-view="dashboard"] > .pp-bar, .party-page[data-view="dashboard"] > #party-vitals { grid-column: 1 / -1; }
+.party-page[data-view="dashboard"] > form { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 1rem; align-items: start; }
+.party-page[data-view="dashboard"] > form > * { margin-bottom: 0 !important; min-width: 0; }
+.cal-weeknav { display: flex; align-items: center; justify-content: center; gap: .8rem; margin: .4rem 0; }
+.cal-weeknav[hidden], .cal-cell[hidden] { display: none !important; }
+.cal-weeknav-label { font-size: .85rem; color: var(--text-dim); min-width: 8rem; text-align: center; }
+.cal-grid.cal-week .cal-cell { min-height: 14rem; }
+.party-page[data-view="dashboard"] > :not(form):not([style*="--bg2"]) { grid-column: 1 / -1; }   /* banners and the action row stay full width; the cards tile */

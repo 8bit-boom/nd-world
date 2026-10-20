@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Maps — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 {# _can_edit = content management (new/upload/rename/delete + the schematic
@@ -16,7 +17,8 @@
   {% endif %}
 </div>
 
-<div class="maps-grid">
+{{ pl_bar("maps") }}
+<div class="maps-grid" {{ pl_attrs("maps", request) }}>
   {% for m in maps %}
   <div class="map-card">
     <div class="map-img-wrap">

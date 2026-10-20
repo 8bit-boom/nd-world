@@ -1,14 +1,16 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}{{ map_data.name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/static/vendor/leaflet/leaflet-1.9.4.css"/>
 <script src="/static/vendor/leaflet/leaflet-1.9.4.js"></script>
 
-<div id="map-wrap">
+<div id="map-wrap" {{ pl_attrs("map_viewer", request) }}>
   <div id="map-toolbar">
     <a href="{{ '/maps'|wq }}" class="tb-btn" title="Back">← Maps</a>
     <span id="map-title">{{ map_data.name }}</span>
     <div class="tb-spacer"></div>
+    {% if image_url %}{{ pl_bar("map_viewer") }}{% endif %}
     <button id="btn-toggle-kanka" class="tb-btn active" onclick="toggleLayer('kanka')" title="Toggle imported pins">📍 Pins</button>
     {# Overlay editing (markers/regions/pins + save) is map CONTENT — a
        GM-Assistant gets the toolbar via can_edit (POST /api/maps/{slug}/
@@ -35,7 +37,13 @@
     <p>No map image found for this map.<br>Upload one on the <a href="{{ '/maps'|wq }}">Maps page</a>.</p>
   </div>
   {% else %}
-  <div id="map"></div>
+  <div id="map-body">
+    <div id="map"></div>
+    <aside id="map-side" aria-label="Pins on this map">
+      <input type="search" id="map-side-q" placeholder="Find a pin…" aria-label="Find a pin"/>
+      <ul id="map-side-list"></ul>
+    </aside>
+  </div>
   {% endif %}
 </div>
 
@@ -149,7 +157,17 @@
 .tb-save { border-color:#44ff88; color:#44ff88; }
 .tb-save:hover { background:#44ff88; color:#000; }
 #edit-tools { display:flex; gap:.3rem; align-items:center; }
-#map { flex:1; background:#111; }
+#map { flex:1; background:#111; min-width:0; }
+#map-body { flex:1; display:flex; min-height:0; }
+#map-side { display:none; width:280px; flex-shrink:0; flex-direction:column; gap:.4rem; padding:.5rem; background:var(--bg2); border-left:1px solid var(--border); overflow:hidden; }
+#map-wrap[data-view="panel"] #map-side { display:flex; }
+#map-side-q { width:100%; box-sizing:border-box; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .55rem; border-radius:3px; font-family:var(--font); }
+#map-side-list { list-style:none; margin:0; padding:0; overflow-y:auto; flex:1; }
+#map-side-list button { width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--border); color:var(--text); padding:.45rem .3rem; cursor:pointer; font-family:var(--font); font-size:.85rem; min-height:36px; }
+#map-side-list button:hover, #map-side-list button:focus-visible { color:var(--neon); }
+#map-side-list .ms-kind { color:var(--text-dim); font-size:.72rem; margin-left:.3rem; }
+#map-toolbar .ep-layoutbar { margin:0; }
+@media (max-width: 700px) { #map-body { flex-direction:column; } #map-side { width:auto; max-height:38vh; border-left:0; border-top:1px solid var(--border); } }
 #no-image-msg { flex:1; display:flex; align-items:center; justify-content:center; opacity:.5; text-align:center; }
 
 /* Dialogs */
@@ -697,6 +715,42 @@ async function saveOverlay() {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function closeDlg(id) { document.getElementById(id).style.display = 'none'; }
+
+// ── Side list (layout "Map + list", section map_viewer) ─────────────────────
+// Lists the pins already on the map (imported, custom, parties) from their layers; a click flies there and opens the pin's popup.
+(function () {
+  const wrap = document.getElementById('map-wrap'), list = document.getElementById('map-side-list'), q = document.getElementById('map-side-q');
+  if (!wrap || !list) return;
+  const groups = [[kankaLayer, '📍'], [customMarkersLayer, '📌'], [partyPinsLayer, '🧑‍🤝‍🧑']];
+  function pins() {
+    const out = [];
+    groups.forEach(([layer, icon]) => layer.eachLayer(m => {
+      const t = m.getTooltip && m.getTooltip();
+      const div = document.createElement('div'); div.innerHTML = t ? String(t.getContent() || '') : '';
+      const name = (div.textContent || '').trim();
+      if (name && m.getLatLng) out.push({ m, icon, name });
+    }));
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function render() {
+    if (wrap.dataset.view !== 'panel') return;
+    const needle = (q.value || '').trim().toLowerCase();
+    list.innerHTML = '';
+    const found = pins().filter(p => !needle || p.name.toLowerCase().includes(needle));
+    found.forEach(p => {
+      const li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.textContent = p.icon + ' ' + p.name;
+      b.addEventListener('click', () => { map.flyTo(p.m.getLatLng(), Math.max(map.getZoom(), map.getMinZoom() + 1)); p.m.openPopup(); });
+      li.appendChild(b); list.appendChild(li);
+    });
+    if (!found.length) { const li = document.createElement('li'); li.style.cssText = 'color:var(--text-dim);font-size:.82rem;padding:.4rem .3rem'; li.textContent = needle ? 'No pin matches.' : 'No named pins on this map.'; list.appendChild(li); }
+  }
+  const relayout = () => { setTimeout(() => { map.invalidateSize(); render(); }, 0); };
+  wrap.addEventListener('nd-pl-ready', relayout);
+  wrap.addEventListener('nd-pl-change', relayout);
+  q.addEventListener('input', render);
+  map.on('layeradd layerremove', () => { clearTimeout(render._t); render._t = setTimeout(render, 150); });
+})();
 </script>
 {% endif %}
 {% endblock %}

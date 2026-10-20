@@ -3,7 +3,8 @@
 {% import '_ai_assist_panel.html' as _aa %}
 {% block title %}{{ party.name }} — Parties{% endblock %}
 {% block content %}
-<div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
+{% from "_views.html" import pl_bar, pl_attrs %}
+<div class="party-page" {{ pl_attrs("party_page", request) }} style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }}</h1>
     {# GM-only: the endpoint 403s everyone else, so a player/assistant button would just error #}
@@ -96,6 +97,7 @@
     </div>
   </div>
 
+  <div class="pp-bar">{{ pl_bar("party_page") }}</div>
   <!-- Live member vitals — the GM's at-a-glance strip. The wrapper id is
        the nd-live refetch target: when anyone's HP/XP/conditions change,
        the live-sync bus re-fetches this page and swaps just this block. -->

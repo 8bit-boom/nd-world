@@ -770,3 +770,12 @@
 #ig-progress-bar-track { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
 #ig-progress-bar { height: 100%; width: 0%; background: var(--neon); border-radius: 2px; transition: width .3s; }
 #ig-preview-thumb { max-height: 120px; border-radius: 4px; border: 1px solid var(--border); margin-top: .4rem; display: none; }
+
+/* ── Layout "Chat only" (section ai_chat, nd-pagelayout.js): the side panel becomes the ☰ drawer at every width ── */
+.ai-layout-pick { margin-left: auto; }
+.ai-layout-pick .ep-layoutbar { margin: 0; }
+#ai-chat-shell[data-view="focus"] .ai-model-bar { display: flex; }
+#ai-chat-shell[data-view="focus"] .ai-sidebar-toggle { display: inline-flex; align-items: center; justify-content: center; background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); border-radius: 4px; width: 2rem; height: 2rem; cursor: pointer; font-family: inherit; }
+#ai-chat-shell[data-view="focus"] .ai-sidebar { position: fixed; top: 0; left: 0; bottom: 0; z-index: 1001; width: 84vw; max-width: 320px; box-shadow: 4px 0 24px rgba(0, 0, 0, .6); transform: translateX(-100%); transition: transform .25s ease; }
+#ai-chat-shell[data-view="focus"] .ai-sidebar.open { transform: translateX(0); }
+#ai-chat-shell[data-view="focus"] #ai-sidebar-backdrop.open { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, .55); z-index: 1000; }

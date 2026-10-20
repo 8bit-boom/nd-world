@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "calendar/_nav.html" import navbtn %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Calendar — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:900px;margin:0 auto;padding:1.5rem 1rem">
@@ -140,12 +141,13 @@
     </div>
   </div>
 
+  {{ pl_bar("calendar_view") }}
   {% if weekday_names %}
   <div class="cal-weekdays" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)" aria-hidden="true">
     {% for n in weekday_names %}<div class="cal-weekday" title="{{ n }}"><span class="cal-weekday-full">{{ n }}</span><span class="cal-weekday-short">{{ n[:3] }}</span></div>{% endfor %}
   </div>
   {% endif %}
-  <div class="cal-grid" id="cal-grid" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
+  <div class="cal-grid" id="cal-grid" {{ pl_attrs("calendar_view", request) }} data-per-week="{{ days_per_week }}" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
     {% for _ in lead_pad %}
     <div class="cal-cell cal-cell-pad"></div>
     {% endfor %}
@@ -513,4 +515,5 @@ if (CAN_MANAGE) {
   });
 })();
 </script>
+<script src="/static/js/calendar-week.js?v={{ asset_v('js/calendar-week.js') }}"></script>
 {% endblock %}

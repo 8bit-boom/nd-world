@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}AI Chat — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/static/css/ai-chat.css">
@@ -11,13 +12,16 @@
   <button class="ai-tab"        id="tab-starred" onclick="switchTab('starred')">⭐ Starred</button>
   <span id="ig-dot" title="Image gen unavailable"
         style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle;flex-shrink:0"></span>
+  <span class="ai-layout-pick">{{ pl_bar("ai_chat") }}</span>
 </div>
 <div id="ai-auth-banner" style="display:none;border:1px solid #a33;background:rgba(170,51,51,.12);border-radius:6px;padding:.7rem .9rem;margin:.6rem 1.2rem;font-size:.85rem">
   <strong style="color:#e07070">🔑 Studio rejected the API key.</strong>
   <span id="ai-auth-banner-text" style="color:var(--text-dim)"></span>
   <a href="/settings#system" style="color:var(--neon);margin-left:.4rem">Fix it in Settings → System</a>
 </div>
+<div id="ai-chat-shell" {{ pl_attrs("ai_chat", request) }}>
 {% include "ai_chat/_tab_chat.html" %}
+</div>
 {% include "ai_chat/_tab_image.html" %}
 {% include "ai_chat/_tab_models.html" %}
 {% include "ai_chat/_tab_speech.html" %}
