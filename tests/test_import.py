@@ -356,7 +356,7 @@ def test_concurrent_schematic_elements_import_and_move_token_dont_clobber(client
             user = db.query(User).filter(User.email == seed.player_a.email).first()
             req = _FakeRequest(user, {"token_id": "tok1", "x": 99, "y": 99})
             try:
-                body = asyncio.run(main_module.schematic_move_own_token(s.slug, req, db))
+                body = main_module.schematic_move_own_token(s.slug, req, db, json.dumps(req._body).encode())  # a plain-def route now: the body comes in as bytes
                 results["move"] = (200, body)
             except HTTPException as e:
                 results["move"] = (e.status_code, None)

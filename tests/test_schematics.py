@@ -278,7 +278,7 @@ def test_concurrent_buy_item_no_oversell(client, seed, monkeypatch):
             user = db.query(User).filter(User.email == email).first()
             req = _FakeRequest(user, {"token_id": "merch1", "stock_id": "stock1"})
             try:
-                body = asyncio.run(main_module.schematic_buy_item(s.slug, req, db))
+                body = main_module.schematic_buy_item(s.slug, req, db, json.dumps(req._body).encode())  # a plain-def route now: the body comes in as bytes
                 results[key] = (200, body)
             except HTTPException as e:
                 results[key] = (e.status_code, None)
@@ -343,7 +343,7 @@ def test_concurrent_pickup_item_no_duplication(client, seed, monkeypatch):
             user = db.query(User).filter(User.email == email).first()
             req = _FakeRequest(user, {"token_id": "item1"})
             try:
-                body = asyncio.run(main_module.schematic_pickup_item(s.slug, req, db))
+                body = main_module.schematic_pickup_item(s.slug, req, db, json.dumps(req._body).encode())  # a plain-def route now: the body comes in as bytes
                 results[key] = (200, body)
             except HTTPException as e:
                 results[key] = (e.status_code, None)
