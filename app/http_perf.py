@@ -59,6 +59,11 @@ class PerfMiddleware:
             if "accept-encoding" in headers:
                 del headers["accept-encoding"]
 
+        if path.startswith("/static/") and scope.get("method") in ("GET", "HEAD"):
+            pre = _precompressed(path, _MutableHeaders(scope=scope).get("accept-encoding", ""))
+            if pre is not None:
+                await pre(scope, receive, send)
+                return
         timed = not path.startswith("/static/") and not _is_sse_path(path)
         rec = _perf_log.begin() if timed else None
         started = _time.perf_counter()
@@ -78,6 +83,35 @@ class PerfMiddleware:
             if timed:
                 route = getattr(scope.get("route"), "path", None) or _re.sub(r"\d+", "{n}", path)      # the route template, never the real URL
                 _perf_log.finish(rec, scope.get("method", "GET"), route, status["code"], started)
+
+
+# ── pre-compressed static files ──────────────────────────────────────────────
+# scripts/precompress_static.py (run at image build) writes name.js.br / name.js.gz next to every text asset. A request that accepts br or gzip is
+# answered straight from that file: no compression work per request (GZipMiddleware re-compressed cockpit.js and style.css on EVERY load), and
+# brotli is smaller than gzip. Anything without a pre-compressed twin (a dev checkout, a new file) falls through to the normal path.
+_STATIC_DIR = _Path(__file__).resolve().parent.parent / "static"
+_PRE_ENCODINGS = (("br", ".br"), ("gzip", ".gz"))
+
+
+def _precompressed(path: str, accept_encoding: str):
+    import mimetypes
+    from starlette.responses import FileResponse
+    rel = path[len("/static/"):]
+    try:
+        src = (_STATIC_DIR / rel).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not src.is_relative_to(_STATIC_DIR) or not src.is_file() or src.suffix in (".br", ".gz"):
+        return None
+    accepted = {p.split(";")[0].strip().lower() for p in accept_encoding.split(",") if p.strip()}
+    for token, ext in _PRE_ENCODINGS:
+        twin = src.with_name(src.name + ext)
+        if token in accepted and twin.is_file() and twin.stat().st_mtime_ns >= src.stat().st_mtime_ns:
+            media = mimetypes.guess_type(src.name)[0] or "application/octet-stream"
+            return FileResponse(twin, media_type=media, headers={
+                "Content-Encoding": token, "Vary": "Accept-Encoding", "Cache-Control": "public, max-age=31536000, immutable",
+            })
+    return None
 
 
 # ── maps JSON cache ──────────────────────────────────────────────────────────
