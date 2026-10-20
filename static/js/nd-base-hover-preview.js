@@ -12,13 +12,16 @@
   var currentAnchor = null;
   var popupEl = null;
 
-  fetch('/api/hover-preview/config').then(r => r.json()).then(d => {
+  function applyCfg(d) {
     cfg.enabled = !!d.enabled;
     cfg.delayMs = d.delay_ms || 5000;
     cfg.hideDelayMs = d.hide_delay_ms != null ? d.hide_delay_ms : 400;
     cfg.widthPx = d.width_px || 340;
     cfg.maxHeightPx = d.max_height_px || 420;
-  }).catch(() => {});
+  }
+  // base.html carries the settings (window.ND_HOVER_CFG); a page rendered without them asks /api/hover-preview/config as before
+  if (window.ND_HOVER_CFG) applyCfg(window.ND_HOVER_CFG);
+  else fetch('/api/hover-preview/config').then(r => r.json()).then(applyCfg).catch(() => {});
 
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 

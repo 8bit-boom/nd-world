@@ -54,7 +54,22 @@ def test_entity_page_falls_back_to_the_original_when_there_is_no_thumbnail(clien
     assert 'class="detail-img" src="/uploads/old-upload.png"' in html
     assert "_thumb.webp" not in html.split('class="detail-img"')[1].split(">")[0]
     eid = _entity(seed, "/static/races/standard/high-elveselves_6988428.png")
-    assert 'class="detail-img" src="/static/races/standard/high-elveselves_6988428.png"' in client.get(f"/entity/{eid}").text
+    tag = client.get(f"/entity/{eid}").text.split('class="detail-img"')[1].split(">")[0]
+    # a bundled picture shows its thumbnail once one exists (app/static_thumbs.py) and the original until then; the full picture is data-full
+    assert 'src="/static/races/standard/high-elveselves_6988428' in tag and 'data-full="/static/races/standard/high-elveselves_6988428.png"' in tag
+
+
+def test_bundled_pictures_get_fresh_thumbnails_and_never_leave_static(tmp_path):
+    import os
+    from app import static_thumbs, templating
+    from PIL import Image
+    pic = tmp_path / "m.png"
+    Image.new("RGB", (1200, 900), "red").save(pic)
+    assert static_thumbs.ensure(tmp_path) == 1 and static_thumbs.is_fresh(pic) and static_thumbs.ensure(tmp_path) == 0
+    os.utime(pic, (2_000_000_000, 2_000_000_000))                      # the picture was replaced: its thumbnail is stale again
+    assert not static_thumbs.is_fresh(pic) and static_thumbs.ensure(tmp_path) == 1
+    assert templating.thumb_url("/static/maps/../../app/main.py") == "/static/maps/../../app/main.py"
+    assert templating.thumb_url("/static/js/cockpit.js") == "/static/js/cockpit.js"
 
 
 def test_hover_preview_offers_the_thumbnail_but_keeps_image_url_for_image_studio(client, seed):

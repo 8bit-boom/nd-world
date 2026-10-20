@@ -341,7 +341,20 @@ def _sync_ollama_server_env() -> None:
         pass
 
 
+def _warm_static_thumbnails():
+    """Background, best effort: thumbnails for the bundled map / race pictures and for map images (app/static_thumbs.py). The image build
+    already made the bundled ones, so normally this only finds map images replaced since the last start."""
+    from . import static_thumbs
+    def run():
+        try:
+            static_thumbs.ensure(BASE_DIR / "static" / "maps", BASE_DIR / "static" / "races", UPLOADS_DIR / "maps")
+        except Exception:
+            logging.getLogger("nd.static_thumbs").debug("startup thumbnails failed", exc_info=True)
+    threading.Thread(target=run, name="nd-static-thumbs", daemon=True).start()
+
+
 def _startup_tasks():
+    _warm_static_thumbnails()
     # The TestClient re-enters this lifespan once per test (~1000x in the
     # full suite) — the stopping flag from one test's shutdown must not
     # leak into the next test's boot, or a chunk loop would see stopping()

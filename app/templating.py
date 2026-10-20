@@ -57,6 +57,7 @@ def _kinds_context_processor(request: Request) -> dict:
             "kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world),
             "dreamlands_enabled": flags["dreamlands_enabled"],
             "king_in_yellow_enabled": flags["king_in_yellow_enabled"],
+            "hover_cfg": flags["hover"],
             "nav_menus": nav_menus, "nav_ungrouped_items": nav_ungrouped_items,
             "world_theme": _parse_world_theme(world),
             "theme_presets": THEME_PRESETS,
@@ -209,21 +210,49 @@ templates.env.filters["wq"] = _wq
 _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
 
 
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+# bundled pictures (and replaceable map images) get thumbnails too - see app/static_thumbs.py
+_THUMBABLE_STATIC = ("/static/maps/", "/static/races/")
+
+
 def thumb_url(url: str) -> str:
     """A grid/list preview's `src` — the small WebP make_thumbnail() writes
-    alongside an upload, if one exists on disk, else `url` unchanged
+    alongside a picture, if a fresh one exists on disk, else `url` unchanged
     (a pre-existing upload from before this feature shipped, an svg, or any
     other non-thumbnailable source — see app/imaging.py's own docstrings for
     why those are skipped). Deliberately checks the filesystem rather than
     trusting a DB flag: thumbnails are a derived, best-effort artifact with
     no column of their own, so "does the file exist" is the only source of
-    truth and is one cheap local stat() per image, not a network call."""
-    if not url or not url.startswith("/uploads/"):
+    truth and is one cheap local stat() per image, not a network call.
+    Bundled pictures (/static/maps, /static/races) and map images (stable
+    names, replaced in place - hence the freshness check) are covered too:
+    a missing one is queued and the original is shown this once."""
+    if not url:
         return url
-    thumb = thumbnail_path_for(_UPLOADS_DIR / url[len("/uploads/"):])
+    path = url.split("?", 1)[0]
+    if path.startswith("/uploads/"):
+        root, prefix = _UPLOADS_DIR, "/uploads/"
+    elif path.startswith(_THUMBABLE_STATIC):
+        root, prefix = _STATIC_DIR, "/static/"
+    else:
+        return url
+    try:
+        src = (root / path[len(prefix):]).resolve()
+    except (OSError, ValueError):
+        return url
+    if not src.is_relative_to(root.resolve()):
+        return url
+    thumb = thumbnail_path_for(src)
+    if prefix == "/static/" or path.startswith("/uploads/maps/"):
+        from . import static_thumbs
+        if not static_thumbs.is_fresh(src):
+            if src.is_file():
+                static_thumbs.request(src)
+            return url
+        return prefix + thumb.relative_to(root.resolve()).as_posix() + "?v=" + str(thumb.stat().st_mtime_ns // 1000000)
     if not thumb.is_file():
         return url
-    return "/uploads/" + thumb.relative_to(_UPLOADS_DIR).as_posix()
+    return "/uploads/" + thumb.relative_to(_UPLOADS_DIR.resolve()).as_posix()
 
 
 templates.env.filters["thumb"] = thumb_url

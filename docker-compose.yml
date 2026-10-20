@@ -5,6 +5,9 @@ services:
     build: .
     image: nd-world:latest
     container_name: nd-world
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     # Budget for a clean shutdown to checkpoint in-flight background jobs
     # (see app/job_shutdown.py) before Docker sends SIGKILL: up to ~10s for
@@ -70,6 +73,9 @@ services:
     profiles: ["ollama"]
     image: ollama/ollama
     container_name: ollama
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     ports:
       - "11434:11434"
@@ -211,6 +217,9 @@ services:
     # works for you, pin it: UNSLOTH_IMAGE=unsloth/unsloth:<tag> in .env.
     image: ${UNSLOTH_IMAGE:-unsloth/unsloth:latest}   # sm_75+ (Turing T4/T10 and newer): :latest is fine; V100 owners pin an older tag
     container_name: nd-world-unsloth
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     stop_grace_period: 60s               # model unload can be slow
     ipc: host                            # required per Unsloth's own docker docs
@@ -246,6 +255,9 @@ services:
     profiles: ["swarmui"]
     image: ghcr.io/mcmonkeyprojects/swarmui:latest
     container_name: swarmui
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     ports:
       - "7801:7801"
@@ -279,6 +291,9 @@ services:
     profiles: ["android"]
     image: budtmo/docker-android:emulator_11.0
     container_name: nd-world-android
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     privileged: true   # required by the image to run the emulator (KVM/binder access)
     devices:
@@ -312,6 +327,9 @@ services:
     build: ./NeonDragonsEditor
     image: nd-editor:latest
     container_name: nd-world-editor
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     ports:
       - "${EDITOR_VNC_PORT:-6081}:6080"

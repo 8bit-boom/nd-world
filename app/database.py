@@ -131,6 +131,14 @@ def get_app_settings_flags_cached(db) -> dict:
     flags = {
         "dreamlands_enabled": bool(s.dreamlands_enabled),
         "king_in_yellow_enabled": bool(s.king_in_yellow_enabled),
+        # the hover-preview settings ride along so base.html can carry them (no GET /api/hover-preview/config per page view)
+        "hover": {
+            "enabled": bool(s.hover_preview_enabled),
+            "delay_ms": s.hover_preview_delay_ms or 5000,
+            "hide_delay_ms": s.hover_preview_hide_delay_ms if s.hover_preview_hide_delay_ms is not None else 400,
+            "width_px": s.hover_preview_width_px or 340,
+            "max_height_px": s.hover_preview_max_height_px or 420,
+        },
     }
     _app_settings_flags_cache = (now, flags)
     return flags

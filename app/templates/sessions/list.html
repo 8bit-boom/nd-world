@@ -21,7 +21,7 @@
       {% if s.summary %}<p style="color:var(--text-dim);font-size:.78rem">{{ s.summary|strip_md|truncate(160) }}</p>{% endif %}
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.3rem">
         {% if s.xp_awarded %}<span class="tag" style="font-size:.68rem">{{ s.xp_awarded }} XP</span>{% endif %}
-        {% if s.live_transcript %}<span class="tag" style="font-size:.68rem">📝 transcript</span>{% endif %}
+        {% if s.has_live_transcript %}<span class="tag" style="font-size:.68rem">📝 transcript</span>{% endif %}
         {% if s.summary %}<span class="tag" style="font-size:.68rem">📓 recap</span>{% endif %}
       </div>
     </div>

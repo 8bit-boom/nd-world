@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey, Float, Index, UniqueConstraint
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy import func
+from sqlalchemy.orm import column_property, deferred, relationship, declarative_base
 
 Base = declarative_base()
 
@@ -194,7 +195,7 @@ class World(Base):
     # (worlds.whisper_glossary / whisper_language / whisper_denoise columns
     # from the whisper.cpp era may still exist in an older database; nothing
     # reads or writes them any more and they are harmless.)
-    recap_instructions = Column(Text, nullable=True)
+    recap_instructions = deferred(Column(Text, nullable=True))        # big, rarely read: loaded on use (efficiency plan, step 6)
     # Durable watermark for recap-affecting content mutations that leave no
     # per-Fact row behind to timestamp: a recap-instructions save (the text is
     # baked into every generated recap, but isn't Fact data) and a Fact
@@ -233,7 +234,7 @@ class World(Base):
     # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.
-    rules_md = Column(Text, nullable=True)
+    rules_md = deferred(Column(Text, nullable=True))                  # loaded on use: every request reads the World rows
     # Optional per-world rules-page overlay (JSON string) — pure UI metadata
     # layered on top of the RENDERED rules, never part of the rules document
     # itself (so /rules/download.md keeps serving the pure MD source). Schema
@@ -249,7 +250,7 @@ class World(Base):
     # NULL/"" = no overlay, plain single-page flow. Invalid JSON is ignored at
     # render time (logged) and rejected with a 400 at save time so the GM sees
     # the parse error immediately.
-    rules_json = Column(Text, default="")
+    rules_json = deferred(Column(Text, default=""))
     # GM Cockpit workspace (app/routers/cockpit.py): the GM's saved panel
     # layouts as JSON — {"current": {"panels": [...]}, "presets": {name:
     # {"panels": [...]}}} — where each panel is a draggable/resizable
@@ -258,11 +259,11 @@ class World(Base):
     # arrange different tooling), GM-only surface; written only through the
     # sanitizing save route, never raw. NULL = never arranged (the cockpit
     # builds a sensible default from the world's first map/party).
-    cockpit_ws_json = Column(Text, nullable=True)
+    cockpit_ws_json = deferred(Column(Text, nullable=True))
     # GM-authored blurb shown at the top of the world's home page (/),
     # Markdown, rendered with the same `md` Jinja filter as rules_md/entity
     # bodies. NULL = no blurb.
-    home_welcome_md = Column(Text, nullable=True)
+    home_welcome_md = deferred(Column(Text, nullable=True))
     # Ordered list of GM-defined home page tabs/sections, each holding its
     # own ordered list of curated links:
     # [{name, visible_to_players, links: [{label, icon, target_type,
@@ -1351,7 +1352,8 @@ class GameSession(Base):
     # audio lost. Separate from `summary`, which is the polished recap a GM
     # writes/applies an AI draft into — this is the messy raw material that
     # feeds it, via summarize_transcript.
-    live_transcript = Column(Text, default="")
+    # deferred (efficiency plan, step 6): a few hundred KB per recorded session, loaded only by the code that reads it - never by lists
+    live_transcript = deferred(Column(Text, default=""))
     # JSON array of the raw segment files saved alongside a live recording
     # (opt-in via the recording panel's "Save raw audio" checkbox): relative
     # paths under the uploads dir, "live/<session_id>/<recording_id>/<6-digit
@@ -1365,7 +1367,7 @@ class GameSession(Base):
     # (the default, and every upload made with "Save raw audio" unchecked).
     # game_sessions IS in database._migrate's _heal_table_from_model list,
     # so existing installs get this column automatically on next boot.
-    live_audio_files_json = Column(Text, default="")
+    live_audio_files_json = deferred(Column(Text, default=""))
     # JSON array of "<recording_id>:<segment_index>" keys already folded into
     # live_transcript — makes /live-transcript/append idempotent per segment,
     # the same way live_audio_files_json above already is for the raw file.
@@ -1375,7 +1377,9 @@ class GameSession(Base):
     # the server already transcribed and committed, and the second success
     # duplicates that chunk's text in the transcript. Same
     # database._migrate heal-list coverage as live_audio_files_json above.
-    live_transcript_segments_json = Column(Text, default="")
+    live_transcript_segments_json = deferred(Column(Text, default=""))
+    # "is there a transcript" for lists, computed in SQL so the transcript itself is never loaded for it
+    has_live_transcript = column_property(func.coalesce(live_transcript.expression if hasattr(live_transcript, "expression") else live_transcript, "") != "")
     # The GM-curated PLAYER-facing recap for this session — what the Session
     # Log (the player-visible pages) shows. This closes the "two parallel
     # recap worlds" gap: `summary` above has always been the GM's own

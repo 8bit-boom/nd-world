@@ -465,6 +465,7 @@ async function ndNowPlayingStop() {
 </script>
 {% endif %}
 
+<script>window.ND_HOVER_CFG = {{ (hover_cfg if hover_cfg is defined else none) | tojson }};</script>
 <script src="/static/js/nd-base-hover-preview.js?v={{ asset_v('js/nd-base-hover-preview.js') }}"></script>
 
 <script src="/static/js/nd-base-dropdowns.js?v={{ asset_v('js/nd-base-dropdowns.js') }}"></script>

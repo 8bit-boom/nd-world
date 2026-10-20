@@ -350,7 +350,7 @@
       <span id="live-mic-warning" style="color:#e0b050"></span>
     </div>
     <div id="live-stt-warning" style="display:none;font-size:.78rem;color:#e0b050;margin-bottom:.6rem;line-height:1.45"></div>
-    <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ gsession.live_transcript or '(nothing recorded yet)' }}</div>
+    <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ 'Loading the transcript…' if gsession.has_live_transcript else '(nothing recorded yet)' }}</div>
   </div>
 
   <!-- Facts — logged directly against this session, or drafted from a
@@ -553,7 +553,13 @@
 let _aiRecapDraft = '';
 ndUpdateTokenCount('summary-field', 'summary-token-count');
 {% if gsession %}
-liveSetTranscriptDisplay({{ (gsession.live_transcript or '')|tojson }});
+// The transcript (often hundreds of KB) is not embedded in the page: it is fetched once, after the page is up (efficiency plan, step 6).
+let _liveTranscriptShown = false;
+{% if gsession.has_live_transcript %}
+fetch('/sessions/{{ gsession.id }}/transcript.md').then(r => r.ok ? r.text() : '').then(t => { if (!_liveTranscriptShown) liveSetTranscriptDisplay(t); }).catch(() => {});
+{% else %}
+liveSetTranscriptDisplay('');
+{% endif %}
 
 // ── Embedded Facts panel — see the "🗒 Facts" section below. Shares its
 // Recap→Facts parse/draft-review logic with the standalone /facts page via
@@ -1902,6 +1908,7 @@ function liveNoteTranscriptionSpeed(file, tookSeconds) {
 }
 
 function liveSetTranscriptDisplay(text) {
+  _liveTranscriptShown = true;
   const el = document.getElementById('live-transcript-text');
   el.textContent = text && text.trim() ? text : '(nothing recorded yet)';
   el.scrollTop = el.scrollHeight;

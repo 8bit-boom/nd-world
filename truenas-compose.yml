@@ -2,6 +2,9 @@ version: "3.9"
 services:
   world:
     image: ghcr.io/8bit-boom/nd-world:latest
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     # See docker-compose.yml's identical setting for the full budget
     # breakdown — a clean shutdown needs room to checkpoint in-flight
@@ -81,6 +84,9 @@ services:
   swarmui:
     profiles: ["swarmui"]
     image: ghcr.io/mcmonkeyprojects/swarmui:latest
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     ports:
       - "7801:7801"
@@ -133,6 +139,9 @@ services:
   ollama:
     profiles: ["ollama"]
     image: ollama/ollama
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     ports:
       - "11434:11434"
@@ -270,6 +279,9 @@ services:
     # works for you, pin it: UNSLOTH_IMAGE=unsloth/unsloth:<tag> in .env.
     image: ${UNSLOTH_IMAGE:-unsloth/unsloth:latest}   # sm_75+ (Turing T4/T10 and newer): :latest is fine; V100 owners pin an older tag
     container_name: nd-world-unsloth
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     stop_grace_period: 60s               # model unload can be slow
     ipc: host                            # required per Unsloth's own docker docs
@@ -309,6 +321,9 @@ services:
   android:
     profiles: ["android"]
     image: budtmo/docker-android:emulator_11.0
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     privileged: true   # required by the image to run the emulator (KVM/binder access)
     devices:
@@ -339,6 +354,9 @@ services:
     profiles: ["editor"]
     build: https://github.com/8bit-boom/UoY-Neon-Dragons.git#main:NeonDragonsEditor
     image: nd-editor:latest
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     ports:
       - "6081:6080"
@@ -360,6 +378,9 @@ services:
   # name/flags otherwise) — see https://github.com/nicholas-fedor/watchtower.
   watchtower:
     image: nickfedor/watchtower
+    logging:                             # bounded logs: Docker's json-file keeps everything forever by default
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

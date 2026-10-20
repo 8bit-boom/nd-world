@@ -2,26 +2,35 @@
   var dot=document.getElementById('ai-dot');
   var dotStatus=document.getElementById('ai-dot-status');
   if(dot){
-    fetch('/api/ai/status',{method:'POST'})
-      .then(r=>r.json())
-      .then(d=>{
+    var showStatus=function(d){
         var label = d.status==='ok' ? ('AI ready — '+d.model) : 'AI unavailable';
         if(d.status==='ok'){dot.style.background='#4f4';}
         else{dot.style.background='#888';}
         dot.title=label;
         if(dotStatus) dotStatus.textContent=label;
-      }).catch(()=>{});
+    };
+    // One status check per minute per tab, not one per page view: the last answer is kept in this tab's sessionStorage
+    var cached=null;
+    try{ cached=JSON.parse(sessionStorage.getItem('nd_ai_status')||'null'); }catch(e){}
+    if(cached && cached.d && Date.now()-cached.at < 60000){ showStatus(cached.d); }
+    else{
+      fetch('/api/ai/status',{method:'POST'})
+        .then(r=>r.json())
+        .then(d=>{ showStatus(d); try{ sessionStorage.setItem('nd_ai_status', JSON.stringify({at:Date.now(), d:d})); }catch(e){} })
+        .catch(()=>{});
+    }
   }
   var THEMES=['dark','dim','light','contrast'];
   var THEME_LABELS={dark:'🌑 Dark',dim:'🌗 Dim',light:'☀ Light',contrast:'◐ Contrast'};
   var themeBtn=document.getElementById('theme-toggle');
   if(themeBtn){
-    var setTheme=function(t){
+    var setTheme=function(t, save){
+      if(save===false){ themeBtn.textContent=THEME_LABELS[t]||THEME_LABELS.dark; return; }   // page load: show it, the page already applied it
       if(window.ndSite){ window.ndSite.set({theme:t}); }       // this browser, and the account when signed in
       else{ document.documentElement.dataset.theme=t; try{localStorage.setItem('nd_theme',t);}catch(e){} }
       themeBtn.textContent=THEME_LABELS[t]||THEME_LABELS.dark;
     };
-    setTheme(document.documentElement.dataset.theme||'dark');
+    setTheme(document.documentElement.dataset.theme||'dark', false);   // label only - saving here wrote the account on every page view
     themeBtn.addEventListener('click',function(){
       var idx=THEMES.indexOf(document.documentElement.dataset.theme);
       setTheme(THEMES[(idx+1)%THEMES.length]);

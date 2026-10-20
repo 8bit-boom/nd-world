@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 # .br / .gz twins of every text asset, served as-is by app/http_perf.py (no per-request compression of the same files)
-RUN python -m app.precompress
+RUN python -m app.static_thumbs && python -m app.precompress
 
 # The commit this image was built from (set by .github/workflows/docker-publish.yml), shown by /health and
 # Settings > System so "is the new image actually the one running?" has a one-glance answer. Declared
@@ -40,4 +40,6 @@ EXPOSE 8000
 # stop_grace_period) straight to SIGKILL, and the lifespan shutdown —
 # the part that checkpoints in-flight background jobs — would never run
 # at all.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]
+# --no-access-log: one line per request (including the polls) is noise and unbounded disk; app/perf_log.py keeps route timings and the
+# slow-request log, and errors are still logged.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10", "--no-access-log"]
