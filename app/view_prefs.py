@@ -29,6 +29,9 @@ MODE_LABELS = {
     "web": ("🕸", "Web"),
     "tabs": ("🗂", "Tabs"),
     "site": ("⚙", "Site"),
+    "classic": ("☰", "Long page"),
+    "cols": ("◧", "Two columns"),
+    "reader": ("📖", "Reader"),
     "free": ("◫", "Free windows"),
     "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
@@ -154,8 +157,12 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page",
 }
+
+SECTIONS["entity_page"] = {
+    # an entity's own page: the long page (today's), tabs (Overview / Details / Notes / Connections / Media), two columns (text | a sticky side) or a reader
+    "modes": ["classic", "tabs", "cols", "reader"], "default": "classic", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2

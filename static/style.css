@@ -2560,3 +2560,23 @@ html[data-nav="compact"] .nav-kind, html[data-nav="compact"] .tools-btn { font-s
   .nd-bn small { font-size: .64rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nd-bn.active { color: var(--neon); background: var(--bg3); }
 }
+
+/* ── Entity page layouts (static/js/entity-page.js): Long page / Tabs / Two columns / Reader ─────────────────────────────────────────────── */
+.ep-layoutbar { display: flex; gap: .3rem; flex-wrap: wrap; margin: .2rem 0 .8rem; }
+.ep-mode { background: var(--bg2); border: 1px solid var(--border); color: var(--text-dim); border-radius: 999px; font-family: inherit; font-size: .74rem; padding: .25rem .7rem; cursor: pointer; min-height: 30px; }
+.ep-mode:hover { color: var(--neon); border-color: var(--neon); }
+.ep-mode[aria-pressed="true"] { color: var(--text); border-color: var(--neon); background: rgba(0, 240, 255, .1); }
+.ep-off { display: none !important; }
+.ep-tabs { display: flex; gap: .3rem; overflow-x: auto; border-bottom: 1px solid var(--border); margin: 0 0 1rem; padding-bottom: .4rem; scrollbar-width: none; }
+.ep-tabs::-webkit-scrollbar { display: none; }
+.ep-tab { flex: none; background: var(--bg2); border: 1px solid var(--border); color: var(--text-dim); border-radius: 6px; font-family: inherit; font-size: .84rem; padding: .4rem .85rem; cursor: pointer; min-height: 40px; white-space: nowrap; }
+.ep-tab:hover { color: var(--text); border-color: var(--neon); }
+.ep-tab[aria-selected="true"] { color: var(--neon); border-color: var(--neon); background: var(--bg3); }
+.ep-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 1.2rem; align-items: start; }
+.ep-cols > .ep-side { position: sticky; top: 4.5rem; max-height: calc(100vh - 5.5rem); overflow-y: auto; }
+.ep-cols .ep-side > * { margin-top: 0; }
+article.detail.ep-reader { max-width: 48rem; margin-inline: auto; }
+article.detail.ep-reader .detail-body { font-size: 1.02rem; line-height: 1.7; }
+.ep-readcol > .ep-side { margin-top: 1.4rem; border: 1px solid var(--border); border-radius: 8px; padding: .3rem .9rem .9rem; }
+.ep-readcol > .ep-side > summary { cursor: pointer; padding: .6rem 0; color: var(--neon); min-height: 40px; display: flex; align-items: center; }
+@media (max-width: 899px) { .ep-cols { display: block; } .ep-cols > .ep-side { position: static; max-height: none; } }

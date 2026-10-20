@@ -24,7 +24,8 @@
   </div>
   <div class="ed-content">
 {% endif %}
-<article class="detail kind-{{ entity.kind }}" data-entity-id="{{ entity.id }}"{% if request.state.user and request.state.user.is_gm and not view_as_player %} data-markup-entity="{{ entity.id }}"{% endif %}>
+{% set _ep = saved_view(request, 'entity_page') %}
+<article class="detail kind-{{ entity.kind }}" data-entity-id="{{ entity.id }}" data-ep-saved="{{ (_ep.mode if _ep else '') }}" data-ep-kind="{{ entity.kind }}"{% if request.state.user and request.state.user.is_gm and not view_as_player %} data-markup-entity="{{ entity.id }}"{% endif %}>
   {% if view_as_player %}<div class="view-as-banner" role="status">👁 Previewing this page as a player sees it (GM-only text removed). <a href="/entity/{{ entity.id }}">Back to the GM view</a></div>{% endif %}
   {# Where this lives: the kind's list, then each folder and subfolder - every step is a link back up. #}
   <nav class="breadcrumb" aria-label="Where this is filed" id="entity-breadcrumb">
@@ -80,11 +81,12 @@
       {% endif %}
     </div>
   </header>
+  <div id="ep-layoutbar" class="ep-layoutbar" role="group" aria-label="Page layout"></div>
 
   {% if entity.kind in ('item', 'feat') and safe_body %}
   {% set stats = safe_body | parse_stats %}
   {% if stats %}
-  <div class="stat-block">
+  <div class="stat-block" data-ep="overview">
     <div class="stat-block-header">
       {% if entity.kind == 'item' %}⚙ Attributes{% else %}✦ Details{% endif %}
     </div>
@@ -99,7 +101,7 @@
   {% endif %}
 
   {% if safe_body %}
-  <div class="detail-body prose" id="ed-body" data-markup-field="body">
+  <div class="detail-body prose" id="ed-body" data-markup-field="body" data-ep="overview">
     {% for s in body_sections %}
     <section class="ed-section" data-section-id="{{ s.id or '' }}">{{ s.html|safe }}</section>
     {% endfor %}
@@ -107,7 +109,7 @@
   {% endif %}
 
   {% if custom_sections %}
-  <section class="entity-fields">
+  <section class="entity-fields" data-ep="details">
     {% for section_name, fields in custom_sections %}
     <div class="ef-section">
       <div class="ef-section-title">{{ section_name }}</div>
@@ -147,7 +149,7 @@
   </section>
   {% endif %}
 
-  <section class="entity-notes">
+  <section class="entity-notes" data-ep="notes">
     <h2>// NOTES</h2>
     {% if entity_notes %}
     {% if entity_notes|length > 1 %}{{ view_bar("entity_notes", "en-notes", request) }}{% endif %}
@@ -387,7 +389,7 @@
   </script>
   {% endif %}
 
-  <section class="relations">
+  <section class="relations" data-ep="links">
     <h2>// CONNECTIONS</h2>
     {% if visible_related or backlinks %}
     {{ view_bar("connections", "conn-items", request) }}
@@ -430,7 +432,7 @@
   </section>
 
   {% if entity_media_audio or entity_media_video %}
-  <section style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin:1rem 0">
+  <section data-ep="media" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin:1rem 0">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">🎧 Media</h2>
     {% for clip in entity_media_audio %}
     <div style="margin-bottom:.7rem">
@@ -462,7 +464,7 @@
        title="Open a saved, in-character conversation with {{ entity.name }} on the NPC Talk page">💬 Talk with {{ entity.name }}…</a>
   </div>
   {% endif %}
-  <details class="ai-panel" id="ep-panel" data-dropzone>
+  <details class="ai-panel" id="ep-panel" data-dropzone data-ep="ai">
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">
       <div class="ep-mode-row" style="display:flex;align-items:center;gap:.4rem;margin-bottom:.5rem">
@@ -631,6 +633,7 @@
 <script src="/static/js/ai-attachments.js?v={{ asset_v('js/ai-attachments.js') }}"></script>
 <script src="/static/js/entity-picker.js?v={{ asset_v('js/entity-picker.js') }}"></script>
 <script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
+<script src="/static/js/entity-page.js?v={{ asset_v('js/entity-page.js') }}"></script>
 <script src="/static/js/notes-views.js?v={{ asset_v('js/notes-views.js') }}"></script>
 <script src="/static/js/connections-web.js?v={{ asset_v('js/connections-web.js') }}"></script>
 <script>
