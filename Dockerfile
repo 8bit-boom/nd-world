@@ -1,15 +1,17 @@
+# ffmpeg/ffprobe — used to split a long session recording into chunks before sending each to Unsloth Studio's speech-to-text
+# (app.ai._split_audio_into_chunks / _probe_audio_duration), to re-encode a recording over Studio's 25 MiB request limit, to assemble the
+# live-recording archive, and for video posters, remuxes and the optional AV1 conversion. Every caller degrades gracefully when they are
+# missing, so an image without them still works - just without those extras.
+#
+# They come as two static binaries from mwader/static-ffmpeg, pinned to one release by its multi-arch digest (docs/LEFTOVERS_PLAN.md,
+# step 8): Debian's `ffmpeg` package pulled in ~448 MB of shared libraries (53% of the image), the two binaries are ~280 MB and carry
+# every encoder the app uses (libsvtav1, libopus, libmp3lame, libx264). Every ffmpeg command the app runs was checked against this build.
+# To update: pick a newer tag, take the digest of its manifest list, re-run those checks.
+FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
+
 FROM python:3.13-slim
 
-# ffmpeg/ffprobe — used to split a long session recording into chunks
-# before sending each to Unsloth Studio's speech-to-text
-# (app.ai._split_audio_into_chunks / _probe_audio_duration), to re-encode a
-# recording over Studio's 25 MiB request limit, and to assemble the live-
-# recording archive. The splitting code degrades gracefully (falls back to
-# transcribing the whole file in one call) if either binary is missing, so
-# an image built without this layer still works — just without the extra
-# resilience.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
 
 WORKDIR /app
 

@@ -89,3 +89,13 @@ jobs:
             docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE" | grep -v '^0B' \
               | awk -F'\t' '{ c=$2; gsub(/\|/, "\\|", c); if (length(c) > 160) c = substr(c, 1, 160) "..."; printf "| %s | `%s` |\n", $1, c }'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The image's own ffmpeg (a pinned static build - see the Dockerfile) runs and has the encoders the app uses.
+      - name: Check ffmpeg in the image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
+        run: |
+          docker run --rm "$IMAGE" ffprobe -version | head -1
+          enc=$(docker run --rm "$IMAGE" ffmpeg -hide_banner -encoders)
+          for e in libsvtav1 libopus libmp3lame libx264; do echo "$enc" | grep -q " $e " || { echo "missing encoder $e"; exit 1; }; done
+          docker run --rm -e DB_PATH=/tmp/smoke.db -e SECRET_KEY=ci-smoke-check-not-a-real-secret-0000 "$IMAGE" python -c "import app.main" && echo "app imports"
