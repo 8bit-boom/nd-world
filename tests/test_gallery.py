@@ -1124,7 +1124,7 @@ def test_base_html_poller_present_for_gm_and_player(client, seed):
         # shared visibility-aware ndPoll helper, not a bare setInterval that
         # keeps firing at full cadence in a backgrounded tab.
         assert re.search(r'<script src="/static/js/nd-poll\.js\?v=[0-9a-f]+"></script>', r.text)
-        assert "ndPoll(pollSpotlight, 4000)" in r.text
+        assert "ndPoll(pollSpotlight, 60000)" in r.text and "nd-signal" in r.text   # a slow fallback; the live "spot" signal triggers it at once
         assert "setInterval(pollSpotlight, 4000)" not in r.text
 
 
