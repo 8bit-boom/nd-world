@@ -139,23 +139,34 @@ def test_convert_image_none_format_is_a_noop(tmp_path):
 
 # ── make_thumbnail / thumbnail_path_for ─────────────────────────────────────
 
-def test_thumbnail_path_for_is_pure_string_manipulation(tmp_path):
-    src = tmp_path / "abc123.avif"
-    assert thumbnail_path_for(src) == tmp_path / "abc123_thumb.webp"
-    # No filesystem access — works even for a path that doesn't exist yet.
-    assert not thumbnail_path_for(src).exists()
+def test_thumbnail_path_for_names_the_existing_thumbnail_or_the_one_to_make(tmp_path):
+    from app import imaging
+    src = tmp_path / "abc123.png"
+    assert imaging.preview_format() == "avif"
+    assert thumbnail_path_for(src) == tmp_path / "abc123_thumb.avif"           # none yet: the name make_thumbnail would write
+    (tmp_path / "abc123_thumb.webp").write_bytes(b"x")
+    assert thumbnail_path_for(src) == tmp_path / "abc123_thumb.webp"           # one made before AVIF thumbnails is still found
+    (tmp_path / "abc123_thumb.avif").write_bytes(b"x")
+    assert thumbnail_path_for(src) == tmp_path / "abc123_thumb.avif"
 
 
-def test_make_thumbnail_writes_a_bounded_webp_alongside_the_source(tmp_path):
-    src = _write_image(tmp_path / "src.png", size=(2000, 1000))
-    thumb = make_thumbnail(src)
-    assert thumb == thumbnail_path_for(src)
-    assert thumb.is_file()
-    assert src.exists()  # unlike convert_image, the source is never removed
-    with Image.open(thumb) as img:
-        assert img.format == "WEBP"
-        assert max(img.size) <= THUMBNAIL_MAX_DIM
-        assert img.size[0] / img.size[1] == pytest.approx(2000 / 1000, rel=0.02)  # aspect ratio preserved
+@pytest.mark.parametrize("fmt, pil, suffix", [("avif", "AVIF", "_thumb.avif"), ("webp", "WEBP", "_thumb.webp"), ("original", "WEBP", "_thumb.webp")])
+def test_make_thumbnail_writes_a_bounded_preview_in_the_chosen_format(tmp_path, fmt, pil, suffix):
+    from app import imaging
+    try:
+        imaging.set_preview_format(fmt)
+        src = _write_image(tmp_path / "src.png", size=(2000, 1000))
+        (tmp_path / ("src_thumb.webp" if fmt == "avif" else "src_thumb.avif")).write_bytes(b"stale")
+        thumb = make_thumbnail(src)
+        assert thumb == tmp_path / ("src" + suffix) == thumbnail_path_for(src)
+        assert [p.name for p in imaging.thumbnail_paths_for(src) if p.exists()] == [thumb.name], "the other format's thumbnail is removed"
+        assert src.exists()  # unlike convert_image, the source is never removed
+        with Image.open(thumb) as img:
+            assert img.format == pil
+            assert max(img.size) <= THUMBNAIL_MAX_DIM
+            assert img.size[0] / img.size[1] == pytest.approx(2000 / 1000, rel=0.02)  # aspect ratio preserved
+    finally:
+        imaging.set_preview_format("avif")
 
 
 def test_make_thumbnail_is_a_noop_for_an_image_already_smaller_than_max_dim(tmp_path):

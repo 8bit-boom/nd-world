@@ -43,6 +43,19 @@
           <option value="none" {% if settings.animated_format == 'none' %}selected{% endif %}>Don't convert</option>
         </select>
       </div>
+      <div class="form-group">
+        <label for="preview-format">Thumbnails and opened pictures</label>
+        <select id="preview-format" name="preview_format">
+          <option value="avif" {% if (settings.preview_format or 'avif') == 'avif' %}selected{% endif %}>AVIF - smallest (recommended)</option>
+          <option value="webp" {% if settings.preview_format == 'webp' %}selected{% endif %}>WebP</option>
+          <option value="original" {% if settings.preview_format == 'original' %}selected{% endif %}>Original - an opened picture is the uploaded file</option>
+        </select>
+        <p style="font-size:.78rem;color:var(--text-dim);margin:.35rem 0 0">
+          The small previews in grids and lists, and the 2,560 px copy shown when a large picture is opened ("Full size" always opens the
+          original). AVIF is about a fifth smaller than WebP at the same quality; WebP works in older browsers. With "Original", grids still use
+          small WebP previews. Applies to pictures made or opened from now on; existing previews stay until their picture is replaced.
+        </p>
+      </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Entity hover preview</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Hovering over a link to any entity (character, item, feat, race — everything)

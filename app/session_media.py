@@ -230,10 +230,10 @@ def delete_picture_file(url: str) -> None:
     if not path:
         return
     try:
-        from .imaging import thumbnail_path_for
-        thumb = thumbnail_path_for(path)
+        from .imaging import derived_paths_for
         path.unlink()
-        thumb.unlink(missing_ok=True)
+        for copy in derived_paths_for(path):
+            copy.unlink(missing_ok=True)
     except OSError:
         _log.warning("could not delete session picture %s", url, exc_info=True)
 

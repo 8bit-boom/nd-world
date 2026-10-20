@@ -281,7 +281,7 @@
     }
     const srcOf = (item) => { const i = item.querySelector("img"); return i ? (i.dataset.full || i.currentSrc || i.src) : ""; };
     // the big preview shows an upload at display size (?display=1, 2,560 px - the lightbox's rule); "Full size" and the second screen keep the original
-    const displayOf = (src) => (/^\/uploads\/(?!maps\/)[^?#]+\.(jpe?g|png|webp|avif)$/i.test(src) && !/_(thumb|display)\.webp$/i.test(src)) ? src + "?display=1" : src;
+    const displayOf = (src) => (/^\/uploads\/(?!maps\/)[^?#]+\.(jpe?g|png|webp|avif)$/i.test(src) && !/_(thumb|display)\.(webp|avif)$/i.test(src)) ? src + "?display=1" : src;
     const visibleItems = () => items().filter((i) => !i.hidden);
     function show(item) {
       if (!item) return;

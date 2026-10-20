@@ -243,7 +243,7 @@ function openLightbox(src, alt) {
   _lightboxReturnFocus = document.activeElement;
   // An upload is shown at display size (2,560 px, ?display=1 - a large original can be 5-10x the bytes); "Full size" opens the original.
   var full = document.getElementById('lightbox-full');
-  var big = /^\/uploads\/(?!maps\/)[^?#]+\.(jpe?g|png|webp|avif)$/i.test(src) && !/_(thumb|display)\.webp$/i.test(src);
+  var big = /^\/uploads\/(?!maps\/)[^?#]+\.(jpe?g|png|webp|avif)$/i.test(src) && !/_(thumb|display)\.(webp|avif)$/i.test(src);
   document.getElementById('lightbox-img').src = big ? src + '?display=1' : src;
   if (full) { full.hidden = !big; full.href = src; }
   document.getElementById('lightbox-img').alt = alt || '';

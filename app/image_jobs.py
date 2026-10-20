@@ -14,7 +14,7 @@ from . import ai as _ai_module
 from . import ai_queue as _ai_queue
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
-from .imaging import thumbnail_path_for
+from .imaging import derived_paths_for
 from .models import ImageJob, StarredImage
 
 _log = logging.getLogger("nd.image_jobs")
@@ -178,7 +178,7 @@ def _delete_job_image_files(db, job: ImageJob) -> None:
         if not fname or "/" in fname or "\\" in fname:
             continue
         path = ai_img_dir / fname
-        for candidate in (path, thumbnail_path_for(path)):
+        for candidate in (path, *derived_paths_for(path)):
             try:
                 candidate.unlink(missing_ok=True)
             except OSError:

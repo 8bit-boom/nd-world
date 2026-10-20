@@ -16,15 +16,61 @@ def test_a_large_picture_gets_a_display_copy_and_a_small_one_does_not(tmp_path):
     assert imaging.make_display(small) is None and imaging.make_display(d) is None
 
 
-def test_the_upload_route_serves_the_copy_only_when_asked(client, seed):
+import pytest
+
+
+@pytest.mark.parametrize("fmt, ctype", [("avif", "image/avif"), ("webp", "image/webp"), ("original", "image/png")])
+def test_the_upload_route_serves_the_copy_only_when_asked(client, seed, fmt, ctype):
+    from app.main import UPLOADS_DIR
+    login(client, seed.gm.email, GM_PASSWORD)
+    try:
+        imaging.set_preview_format(fmt)
+        (UPLOADS_DIR / "p").mkdir(parents=True, exist_ok=True)
+        pic = Image.merge("RGB", [Image.radial_gradient("L").resize((3200, 2000)), Image.linear_gradient("L").resize((3200, 2000)),
+                                  Image.effect_noise((3200, 2000), 30)])
+        pic.save(UPLOADS_DIR / "p" / f"huge_{fmt}.png")
+        orig = client.get(f"/uploads/p/huge_{fmt}.png")
+        shown = client.get(f"/uploads/p/huge_{fmt}.png?display=1")
+        assert orig.headers["content-type"] == "image/png" and shown.headers["content-type"] == ctype
+        assert "private" in shown.headers["cache-control"]
+        if fmt == "original":
+            assert shown.content == orig.content
+        else:
+            assert len(shown.content) < len(orig.content) * 0.7
+    finally:
+        imaging.set_preview_format("avif")
+
+
+def test_a_guessed_thumbnail_name_finds_the_thumbnail_in_the_other_format(client, seed):
+    """Pages that build a thumbnail's address ask for <name>_thumb.webp; an AVIF one answers (and the other way round)."""
     from app.main import UPLOADS_DIR
     login(client, seed.gm.email, GM_PASSWORD)
     (UPLOADS_DIR / "p").mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (3200, 2000), "red").save(UPLOADS_DIR / "p" / "huge.png")
-    orig = client.get("/uploads/p/huge.png")
-    shown = client.get("/uploads/p/huge.png?display=1")
-    assert orig.headers["content-type"] == "image/png" and shown.headers["content-type"] == "image/webp"
-    assert len(shown.content) < len(orig.content) and "private" in shown.headers["cache-control"]
+    src = UPLOADS_DIR / "p" / "guess.png"
+    Image.new("RGB", (900, 600), "green").save(src)
+    assert imaging.make_thumbnail(src).name == "guess_thumb.avif"
+    r = client.get("/uploads/p/guess_thumb.webp")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/avif"
+    assert client.get("/uploads/p/nothing_thumb.webp").status_code == 404
+    assert client.get("/uploads/../world.db_thumb.webp").status_code in (400, 404)
+
+
+def test_the_setting_is_saved_and_applied(client, seed):
+    from app.database import SessionLocal, get_app_settings
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/settings").text
+    assert 'name="preview_format"' in page and 'value="original"' in page
+    try:
+        for choice, expect in (("webp", "webp"), ("original", "original"), ("nonsense", "avif"), ("avif", "avif")):
+            assert client.post("/settings", data={"preview_format": choice}, follow_redirects=False).status_code == 303
+            db = SessionLocal()
+            try:
+                assert get_app_settings(db).preview_format == expect
+            finally:
+                db.close()
+            assert imaging.preview_format() == expect
+    finally:
+        imaging.set_preview_format("avif")
 
 
 def test_the_lightbox_offers_the_original():

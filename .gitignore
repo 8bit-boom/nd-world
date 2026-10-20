@@ -13,4 +13,5 @@ tests/_data/
 static/**/*.br
 static/**/*.gz
 static/**/*_thumb.webp
+static/**/*_thumb.avif
 static/map_tiles/

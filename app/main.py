@@ -357,6 +357,18 @@ def _warm_static_thumbnails():
     threading.Thread(target=run, name="nd-static-thumbs", daemon=True).start()
 
 
+def _load_preview_format():
+    """The "Thumbnails and opened pictures" setting into app/imaging.py, which makes those copies outside any request."""
+    from . import imaging as _imaging
+    db = SessionLocal()
+    try:
+        _imaging.set_preview_format(getattr(get_app_settings(db), "preview_format", None) or "avif")
+    except Exception:
+        _log.warning("could not read the preview format setting; using AVIF", exc_info=True)
+    finally:
+        db.close()
+
+
 def _startup_tasks():
     _warm_static_thumbnails()
     from . import db_upkeep as _db_upkeep
@@ -370,6 +382,7 @@ def _startup_tasks():
     # there (the flag starts False anyway).
     _job_shutdown.clear_stop()
     init_db()
+    _load_preview_format()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
     _refresh_settings_overrides()
@@ -1520,6 +1533,12 @@ def serve_upload(filepath: str, request: Request):
         path = (root / filepath).resolve()
     except (OSError, RuntimeError):
         raise HTTPException(404)
+    if path.is_relative_to(root) and not path.is_file() and path.name.endswith(("_thumb.webp", "_thumb.avif")):
+        # pages that build a thumbnail's address themselves ask for "<name>_thumb.webp"; it may be AVIF (Settings -> Thumbnails and opened
+        # pictures), or the other way round for one made before the setting changed
+        other = path.with_name(path.name[:-4] + ("avif" if path.name.endswith(".webp") else "webp"))
+        if other.is_file():
+            path = other
     if not path.is_relative_to(root) or not path.is_file():
         raise HTTPException(404)
     # The live-recording archive (uploads/live/<session>/<recording>/NNNNNN.webm)
@@ -1574,10 +1593,11 @@ def serve_upload(filepath: str, request: Request):
     # shows up as mangled text days later.
     media_type = "text/html; charset=utf-8" if path.suffix.lower() in (".html", ".htm") else None
     if request.query_params.get("display") and not filepath.startswith("maps/"):
-        # the lightbox's display-size copy (app/imaging.py make_display): a 2,560 px WebP of a large picture, the original when it is small
+        # the lightbox's display-size copy (app/imaging.py make_display): a 2,560 px AVIF / WebP of a large picture, the original when it is
+        # small or the setting is "original"
         shown = make_display(path)
         if shown is not None:
-            return FileResponse(shown, headers=headers, media_type="image/webp")
+            return FileResponse(shown, headers=headers, media_type="image/avif" if shown.suffix == ".avif" else "image/webp")
     return FileResponse(path, headers=headers, media_type=media_type)
 
 # ── Worlds management ─────────────────────────────────────────────────────────
@@ -4791,6 +4811,7 @@ def admin_diagnostics_dump(name: str):
 def settings_save(
     static_format: str = Form("avif"),
     animated_format: str = Form("avif"),
+    preview_format: str = Form("avif"),
     hover_preview_enabled: Optional[str] = Form(None),
     hover_preview_delay_seconds: float = Form(5.0),
     hover_preview_hide_delay_seconds: float = Form(0.4),
@@ -4801,6 +4822,9 @@ def settings_save(
     settings = get_app_settings(db)
     settings.static_format = static_format if static_format in ("none", "avif", "webp") else "avif"
     settings.animated_format = animated_format if animated_format in ("none", "avif", "webp") else "avif"
+    from . import imaging as _imaging
+    settings.preview_format = preview_format if preview_format in _imaging.PREVIEW_FORMATS else "avif"
+    _imaging.set_preview_format(settings.preview_format)
     settings.hover_preview_enabled = hover_preview_enabled is not None
     # Clamped rather than rejected with an error page — a GM fat-fingering
     # "0" or "9999" should just get a sane bound, not a round trip to fix a form.

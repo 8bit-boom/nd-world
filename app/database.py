@@ -1018,6 +1018,7 @@ def _migrate():
                 ("llm_context_tokens", "INTEGER"),
                 ("character_import_max_chars", "INTEGER"),
                 ("session_media_max", "INTEGER"),
+                ("preview_format", "VARCHAR(16) DEFAULT 'avif'"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

@@ -2169,6 +2169,8 @@ class AppSettings(Base):
     id = Column(Integer, primary_key=True, default=1)
     static_format = Column(String(16), default="avif")    # "none" | "avif" | "webp"
     animated_format = Column(String(16), default="avif")  # "none" | "avif" | "webp"
+    # The format of thumbnails and of the copy an opened picture shows (app/imaging.py preview_format): "avif" | "webp" | "original"
+    preview_format = Column(String(16), default="avif")
     # Blank = fall back to the OLLAMA_MODEL/OLLAMA_URL/SWARMUI_EXTERNAL_URL env vars
     # (see app.ai.effective_ollama_*() and main.py's imagestudio()).
     ollama_model = Column(String(256), default="")

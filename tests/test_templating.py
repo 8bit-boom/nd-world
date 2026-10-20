@@ -42,7 +42,7 @@ def test_thumb_url_resolves_to_the_thumbnail_when_one_exists(tmp_path, monkeypat
     thumb = make_thumbnail(src)
     assert thumb.is_file()
 
-    assert thumb_url("/uploads/portraits/real.png") == "/uploads/portraits/real_thumb.webp"
+    assert thumb_url("/uploads/portraits/real.png") == "/uploads/portraits/real_thumb.avif"
 
 
 def test_thumb_url_is_a_render_template_helper_end_to_end(tmp_path, monkeypatch):
@@ -52,7 +52,7 @@ def test_thumb_url_is_a_render_template_helper_end_to_end(tmp_path, monkeypatch)
     make_thumbnail(src)
 
     tmpl = templates.env.from_string('<img src="{{ thumb_url(url) }}">')
-    assert tmpl.render(url="/uploads/gen.png") == '<img src="/uploads/gen_thumb.webp">'
+    assert tmpl.render(url="/uploads/gen.png") == '<img src="/uploads/gen_thumb.avif">'
 
     tmpl2 = templates.env.from_string('<img src="{{ url|thumb }}">')
-    assert tmpl2.render(url="/uploads/gen.png") == '<img src="/uploads/gen_thumb.webp">'
+    assert tmpl2.render(url="/uploads/gen.png") == '<img src="/uploads/gen_thumb.avif">'

@@ -14,7 +14,43 @@ THUMBNAIL_QUALITY = 74
 # bytes than a full SwarmUI/ComfyUI generation (often several MB) or an
 # unresized phone-camera upload.
 THUMBNAIL_MAX_DIM = 440
-THUMBNAIL_SUFFIX = "_thumb.webp"
+THUMBNAIL_SUFFIX = "_thumb.webp"            # a WebP thumbnail (the format of every thumbnail made before AVIF ones)
+THUMBNAIL_SUFFIXES = ("_thumb.avif", "_thumb.webp")
+
+# ── the format of the copies this module makes (Settings -> "Thumbnails and opened pictures", AppSettings.preview_format) ─────────────────
+# "avif" (the default) - measured ~20-25 % smaller than WebP at the same fidelity: thumbnails 178 KB at 31.2 dB PSNR against 232 KB at
+# 30.7 dB, opened pictures 6.8 MB at 37.4 dB against 8.5 MB at 37.8 dB (eight bundled maps and race pictures); encoding takes ~2x longer, once
+# per picture. "webp" - the widest support. "original" - an opened picture is the uploaded file itself; grids still get thumbnails (WebP),
+# since a page of full-size pictures is what made the home page 25 MB. The app sets this at startup and when the setting is saved.
+PREVIEW_FORMATS = ("avif", "webp", "original")
+_SPEC = {  # format -> (Pillow name, thumbnail suffix, thumbnail quality, display suffix, display quality)
+    "avif": ("AVIF", "_thumb.avif", 60, "_display.avif", 80),
+    "webp": ("WEBP", "_thumb.webp", 74, "_display.webp", 90),
+}
+_preview_format = "avif"
+
+
+def set_preview_format(fmt: str) -> None:
+    global _preview_format
+    _preview_format = fmt if fmt in PREVIEW_FORMATS else "avif"
+
+
+def preview_format() -> str:
+    return _preview_format
+
+
+def _copy_spec(for_display: bool = False):
+    """(Pillow format, suffix, quality) for a thumbnail or a display copy in the chosen format - WebP when this Pillow cannot write AVIF,
+    and for thumbnails when the choice is "original"."""
+    fmt = _preview_format
+    if fmt == "avif":
+        from PIL import features
+        if not features.check("avif"):
+            fmt = "webp"
+    if fmt == "original":
+        fmt = "webp"
+    pil, tsuf, tq, dsuf, dq = _SPEC[fmt]
+    return (pil, dsuf, dq) if for_display else (pil, tsuf, tq)
 
 # Only rasterized formats get converted at all. SVG is vector — re-saving
 # would rasterize it, losing scalability — so it's excluded outright. GIF,
@@ -129,12 +165,23 @@ def convert_image_to(path: Path, target_format: str, quality: int = CONVERT_QUAL
 
 
 def thumbnail_path_for(path: Path) -> Path:
-    """The predictable sibling filename make_thumbnail() writes/would write
-    for `path` — e.g. .../abc123.avif -> .../abc123_thumb.webp. Pure string
-    manipulation, no filesystem access, so callers (including the Jinja
-    thumb_url() global in app/main.py) can compute this for any known image
-    path without needing a DB column to remember it."""
-    return path.with_name(path.stem + THUMBNAIL_SUFFIX)
+    """The thumbnail of `path`: the one that exists (`<name>_thumb.avif`, else `<name>_thumb.webp`), or, when there is none yet, the name
+    make_thumbnail() would write in the chosen format."""
+    for suf in THUMBNAIL_SUFFIXES:
+        cand = path.with_name(path.stem + suf)
+        if cand.is_file():
+            return cand
+    return path.with_name(path.stem + _copy_spec()[1])
+
+
+def thumbnail_paths_for(path: Path) -> list:
+    """Every thumbnail name `path` can have."""
+    return [path.with_name(path.stem + suf) for suf in THUMBNAIL_SUFFIXES]
+
+
+def derived_paths_for(path: Path) -> list:
+    """Every copy this module can make of `path` - thumbnails and display copies in either format - to delete them with it."""
+    return thumbnail_paths_for(path) + [path.with_name(path.stem + suf) for suf in ("_display.avif", "_display.webp")]
 
 
 def make_thumbnail(path: Path, max_dim: int = THUMBNAIL_MAX_DIM, quality: int = THUMBNAIL_QUALITY) -> Optional[Path]:
@@ -145,51 +192,58 @@ def make_thumbnail(path: Path, max_dim: int = THUMBNAIL_MAX_DIM, quality: int = 
     back to the full image" rather than an error, same graceful-degradation
     convention as convert_image.
 
-    Always WebP regardless of the source's own format/AppSettings choice —
-    a preview grid doesn't need to match the source's format, just be small
-    and universally displayable, so there's no reason to duplicate the
-    avif/webp static_format branching convert_image already does for the
-    real asset. Always the first frame only, even for an animated source —
+    In the format of the "Thumbnails and opened pictures" setting (AVIF by
+    default, see preview_format above), whatever the source's own format.
+    Always the first frame only, even for an animated source —
     a moving thumbnail in a dense grid is more distracting than useful, and
     decoding/re-encoding every frame at preview time would multiply the
     encode cost for no benefit a small static frame doesn't already give."""
     if path.suffix.lower() not in _CONVERTIBLE_EXTS:
         return None
-    dest = thumbnail_path_for(path)
+    pil, suffix, q = _copy_spec()
+    dest = path.with_name(path.stem + suffix)
     try:
         img = Image.open(path)
         img.load()
-        frame = img.convert(_frame_mode(img, "WEBP"))
+        frame = img.convert(_frame_mode(img, pil))
         frame.thumbnail((max_dim, max_dim), Image.LANCZOS)
-        frame.save(dest, format="WEBP", quality=quality)
+        frame.save(dest, format=pil, quality=q if quality == THUMBNAIL_QUALITY else quality)
     except Exception:
         return None
+    for other in thumbnail_paths_for(path):        # a thumbnail in the other format is now stale
+        if other != dest:
+            other.unlink(missing_ok=True)
     return dest
 
 
 # ── Display-size copies (efficiency plan, step 13) ─────────────────────────────
-# What the lightbox shows: a 2,560 px WebP of a large upload, made on the first request for it (GET /uploads/...?display=1) and kept beside
-# the original. The original is untouched and one click away ("Full size" in the lightbox).
-# 2,560 px at quality 90: the first version (1,600 px at quality 82, decoded with JPEG's fast downscale) looked over-compressed on a sharp
-# screen - 32 dB PSNR on a detailed map against 37 dB now, at ~60 % of the original's bytes. A copy that would not save at least
-# DISPLAY_MIN_SAVING of the original is not kept: the original is shown instead.
+# What the lightbox shows: a 2,560 px copy of a large upload in the chosen format (AVIF at quality 80 or WebP at quality 90 - see
+# preview_format), made on the first request for it (GET /uploads/...?display=1) and kept beside the original. With "original" there is no
+# copy. The original is untouched and one click away ("Full size" in the lightbox).
+# 2,560 px: the first version (1,600 px WebP at quality 82, decoded with JPEG's fast downscale) looked over-compressed on a sharp
+# screen - 32 dB PSNR on a detailed map against 37 dB now. A copy that would not save at least DISPLAY_MIN_SAVING of the original is not
+# kept: the original is shown instead.
 DISPLAY_MAX_DIM = 2560
-DISPLAY_QUALITY = 90
+DISPLAY_QUALITY = 90                      # WebP; AVIF uses _SPEC's 80 (the same fidelity)
 DISPLAY_MIN_SAVING = 0.3
 DISPLAY_SUFFIX = "_display.webp"
 
 
 def display_path_for(path: Path) -> Path:
-    return path.with_name(path.stem + DISPLAY_SUFFIX)
+    """The name of `path`'s display copy in the chosen format."""
+    return path.with_name(path.stem + _copy_spec(for_display=True)[1])
 
 
-def make_display(path: Path, max_dim: int = DISPLAY_MAX_DIM, quality: int = DISPLAY_QUALITY) -> Optional[Path]:
+def make_display(path: Path, max_dim: int = DISPLAY_MAX_DIM, quality: Optional[int] = None) -> Optional[Path]:
     """The display copy of `path` (made now if missing, older than the original, or made at an older, smaller size), or None when the
-    original is small enough to show as it is, is animated, can't be read, or the copy would barely be smaller - callers then serve the
-    original."""
+    setting is "original", the original is small enough to show as it is, is animated, can't be read, or the copy would barely be smaller -
+    callers then serve the original."""
+    if _preview_format == "original":
+        return None
     if path.suffix.lower() not in _CONVERTIBLE_EXTS or path.suffix.lower() == ".gif" or path.stem.endswith(("_thumb", "_display")):
         return None
-    dest = display_path_for(path)
+    pil, suffix, q = _copy_spec(for_display=True)
+    dest = path.with_name(path.stem + suffix)
     try:
         if dest.is_file() and dest.stat().st_mtime_ns >= path.stat().st_mtime_ns:
             with Image.open(dest) as made:
@@ -200,9 +254,9 @@ def make_display(path: Path, max_dim: int = DISPLAY_MAX_DIM, quality: int = DISP
             if max(img.size) <= max_dim or getattr(img, "is_animated", False):
                 dest.unlink(missing_ok=True)
                 return None
-            frame = img.convert(_frame_mode(img, "WEBP"))
+            frame = img.convert(_frame_mode(img, pil))
             frame.thumbnail((max_dim, max_dim), Image.LANCZOS)
-            frame.save(dest, format="WEBP", quality=quality, method=4)
+            frame.save(dest, format=pil, quality=quality or q, **({"method": 4} if pil == "WEBP" else {}))
         if dest.stat().st_size > path.stat().st_size * (1 - DISPLAY_MIN_SAVING):
             dest.unlink(missing_ok=True)
             return None
