@@ -27,7 +27,7 @@
     const desc = sortRaw.startsWith("-");
     const key = desc ? sortRaw.slice(1) : sortRaw;
     const sort = sorts.includes(key) ? (desc ? "-" : "") + key : spec.default_sort;
-    const group = groups.includes(raw.group) ? raw.group : "";
+    const group = groups.includes(raw.group) ? raw.group : (raw.group === "" ? "" : (spec.default_group || ""));     // (a section may open grouped; "" is a person choosing none)
     const chosen = Array.isArray(raw.filters) ? raw.filters.filter((f) => filters.includes(f)) : [];
     return { mode, size, sort, group, filters: chosen };
   }

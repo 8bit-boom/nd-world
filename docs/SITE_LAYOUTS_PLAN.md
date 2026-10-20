@@ -1,6 +1,6 @@
 # Optional layouts for all of nd-world - plan
 
-Status: phases 1 (the site shell, on the Account page) and 2 (the entity page) are built; the other phases follow in the order of section 6. It continues `docs/VIEW_LAYOUTS_PLAN.md` (list pages) and
+Status: phases 1 (the site shell, on the Account page), 2 (the entity page) and 3 (dice, random tables, combat tracker) are built; the other phases follow in the order of section 6. It continues `docs/VIEW_LAYOUTS_PLAN.md` (list pages) and
 `docs/HUB_COCKPIT_LAYOUTS_PLAN.md` (character page, GM Cockpit), which are done. Written from the code as of `e4a1819`.
 Known setup: the GM uses a laptop (1280-1536 px), players use phones; every layout is the viewer's own choice, saved to their account.
 

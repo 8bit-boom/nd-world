@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ combat.name }} — Combat Tracker{% endblock %}
 {% block content %}
-<div class="ct-wrap">
+{% set _cv = saved_view(request, 'combat') %}
+<div class="ct-wrap" data-layout="rows" data-ep-view="{{ (_cv.mode if _cv else '') }}">
   <div class="ct-head">
     <div>
       <h1>⚔ <span id="enc-name">{{ combat.name }}</span></h1>
@@ -9,6 +10,7 @@
     </div>
     <a href="{{ '/combat'|wq }}" class="ct-back">← Combat Tracker</a>
   </div>
+  <div id="ct-layoutbar" class="ep-layoutbar" role="group" aria-label="Tracker layout"></div>
 
   <!-- Turn bar: sticks to the top while the list scrolls -->
   <div id="turn-bar" class="ct-bar" role="toolbar" aria-label="Turn controls">
@@ -1124,4 +1126,5 @@ render();
 // a fluid fight with nobody chosen yet: the chooser asks who opens; an initiative fight's first turn needs no ceremony
 if (!fluid() && S.combatants.length) startOfTurn(C.activeId(S, false));
 </script>
+<script src="/static/js/combat-layouts.js?v={{ asset_v('js/combat-layouts.js') }}"></script>
 {% endblock %}

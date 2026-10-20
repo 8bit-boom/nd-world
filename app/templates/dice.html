@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Dice — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div class="dice-page" style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
+{% set _dv = saved_view(request, 'dice') %}
+<div class="dice-page" data-view="tray" data-ep-view="{{ (_dv.mode if _dv else '') }}" style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
   <div class="dice-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🎲 Dice</h1>
     <div style="display:flex;gap:.35rem">
@@ -12,11 +13,26 @@
     </div>
   </div>
 
+  <div id="dice-layoutbar" class="ep-layoutbar" role="group" aria-label="Dice layout"></div>
+
   {% if not world %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;color:var(--text-dim);font-size:.9rem">
     No active world yet — rolls are world-scoped, so create or switch to a world first.
   </div>
   {% else %}
+
+  <section id="dq" class="dq" hidden aria-label="Quick dice">
+    <div id="dq-last" class="dq-last" aria-live="polite"><small>No rolls yet</small></div>
+    <div class="dq-dice">
+      {% for s in [4, 6, 8, 10, 12, 20, 100] %}<button type="button" data-sides="{{ s }}" class="dq-die" title="Roll a d{{ s }}">d{{ s }}</button>{% endfor %}
+    </div>
+    <div class="dq-mods">
+      <span class="dq-step"><button type="button" id="dq-count-down" aria-label="Fewer dice">−</button><b id="dq-count">1×</b><button type="button" id="dq-count-up" aria-label="More dice">＋</button></span>
+      <span class="dq-step"><button type="button" id="dq-mod-down" aria-label="Lower the modifier">−</button><b id="dq-mod">0</b><button type="button" id="dq-mod-up" aria-label="Raise the modifier">＋</button></span>
+      <button type="button" id="dq-reset" class="dq-link">reset</button>
+    </div>
+    <div class="dq-savedrow"><span class="dq-label">Saved formulas</span> <span id="dq-saved" class="dq-saved"></span> <button type="button" id="dq-save" class="dq-link" title="Keep the formula in the box below (or 1d20) as a one-tap button on this browser">＋ save the formula below</button></div>
+  </section>
 
   <div id="dice-tray-box" style="display:none;margin-bottom:.8rem">
     <div id="dice-tray" style="width:100%;aspect-ratio:18/11;max-height:380px;min-height:210px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
@@ -70,6 +86,7 @@
     </div>
   </div>
 
+  <script src="/static/js/dice-layouts.js?v={{ asset_v('js/dice-layouts.js') }}"></script>
   <script src="/static/js/dice-geometry.js?v={{ asset_v('js/dice-geometry.js') }}"></script>
   <script type="module" src="/static/js/dice-tray.js?v={{ asset_v('js/dice-tray.js') }}"></script>
   <script>

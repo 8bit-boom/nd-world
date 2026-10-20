@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import view_bar %}
 {% block title %}Random Tables — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -25,27 +26,28 @@
 </div>
 
 {% if grouped %}
+{{ view_bar("tables", "table-cards", request) }}
+<aside id="tbl-log" class="tbl-log" hidden aria-live="polite"><div class="tbl-log-head">Results <button type="button" id="tbl-log-clear" class="tbl-log-clear">clear</button></div><ol id="tbl-log-list"></ol></aside>
+<div id="table-cards" class="card-grid nd-collection tbl-list" data-view="grid">
 {% for category, tables in grouped.items() %}
-<div class="folder-section-label">{{ category|capitalize }}</div>
-<div class="card-grid" style="margin-bottom:1.5rem">
   {% for t in tables %}
-  <div class="entity-card" style="cursor:default">
+  <div class="entity-card nd-item tbl-card" style="cursor:default" data-name="{{ t.name|lower }}" data-g-category="{{ category|capitalize }}" data-title="{{ t.name }}">
     <div class="entity-card-body">
       <span class="entity-kind">🎲 {{ t.category }}{% if t.is_builtin %} · built-in{% endif %}</span>
       <h3>{{ t.name }}</h3>
-      {% if t.description %}<p>{{ t.description }}</p>{% endif %}
-      <div style="display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;align-items:center">
+      {% if t.description %}<p class="tbl-desc">{{ t.description }}</p>{% endif %}
+      <div class="tbl-actions" style="display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;align-items:center">
         <button type="button" class="roll-btn" data-id="{{ t.id }}" style="background:var(--neon);color:#000;border:none;padding:.35rem .8rem;font-size:.8rem;font-weight:bold;border-radius:3px;cursor:pointer">🎲 Roll</button>
         {% if can_edit_table(t) %}
-        <a href="{{ ('/tables/' + t.id|string + '/edit')|wq }}" style="color:var(--text-dim);font-size:.8rem;text-decoration:none">Edit →</a>
+        <a href="{{ ('/tables/' + t.id|string + '/edit')|wq }}" class="tbl-edit" style="color:var(--text-dim);font-size:.8rem;text-decoration:none">Edit →</a>
         {% endif %}
       </div>
       <div class="roll-result" id="roll-result-{{ t.id }}" style="display:none;margin-top:.6rem;padding:.5rem .65rem;background:var(--bg3);border:1px solid var(--neon);border-radius:3px;font-size:.85rem"></div>
     </div>
   </div>
   {% endfor %}
-</div>
 {% endfor %}
+</div>
 {% else %}
 <p style="color:var(--text-dim);text-align:center;padding:2rem">
   No random tables yet.
@@ -54,7 +56,22 @@
 {% endif %}
 
 <script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
+<script src="/static/js/nd-views.js?v={{ asset_v('js/nd-views.js') }}"></script>
 <script>
+// the Roll board's log: every result of this visit, newest first (the cards show their own last result as ever)
+function logRoll(btn, data) {
+  const list = document.getElementById('tbl-log-list');
+  if (!list) return;
+  const card = btn.closest('.tbl-card');
+  const li = document.createElement('li');
+  const who = document.createElement('b'); who.textContent = (card && card.dataset.title) || 'Table';
+  const res = document.createElement('span'); res.textContent = ' \u2014 ' + data.result;
+  li.append(who, res);
+  list.prepend(li);
+  while (list.children.length > 30) list.lastChild.remove();
+  document.getElementById('tbl-log').dataset.has = '1';
+}
+document.getElementById('tbl-log-clear') && document.getElementById('tbl-log-clear').addEventListener('click', () => { document.getElementById('tbl-log-list').textContent = ''; delete document.getElementById('tbl-log').dataset.has; });
 document.querySelectorAll('.roll-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const id = btn.dataset.id;
@@ -66,6 +83,7 @@ document.querySelectorAll('.roll-btn').forEach(btn => {
       const data = await res.json();
       if (!res.ok) { out.textContent = data.detail || 'Error'; return; }
       out.innerHTML = '<strong>' + data.result + '</strong> <span style="color:var(--text-dim)">(rolled ' + data.roll + '/' + data.total + ')</span>';
+      logRoll(btn, data);
     } catch (e) {
       out.textContent = 'Error rolling table.';
     }

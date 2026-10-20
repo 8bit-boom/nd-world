@@ -2580,3 +2580,76 @@ article.detail.ep-reader .detail-body { font-size: 1.02rem; line-height: 1.7; }
 .ep-readcol > .ep-side { margin-top: 1.4rem; border: 1px solid var(--border); border-radius: 8px; padding: .3rem .9rem .9rem; }
 .ep-readcol > .ep-side > summary { cursor: pointer; padding: .6rem 0; color: var(--neon); min-height: 40px; display: flex; align-items: center; }
 @media (max-width: 899px) { .ep-cols { display: block; } .ep-cols > .ep-side { position: static; max-height: none; } }
+
+/* ── Dice layouts (static/js/dice-layouts.js): 3D tray / Quick buttons / History first ─────────────────────────────────────────────────────── */
+.dq { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; margin-bottom: .8rem; }
+.dq[hidden] { display: none; }
+.dq-last { display: flex; flex-direction: column; align-items: center; min-height: 5rem; justify-content: center; margin-bottom: .8rem; }
+.dq-last small { color: var(--text-dim); font-size: .8rem; }
+.dq-last strong { color: var(--neon); font-size: 3rem; line-height: 1.1; }
+.dq-dice { display: grid; grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr)); gap: .5rem; }
+.dq-die { background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 8px; font-family: monospace; font-size: 1.3rem; min-height: 64px; cursor: pointer; }
+.dq-die:hover, .dq-die:focus-visible { border-color: var(--neon); color: var(--neon); }
+.dq-die:active { background: var(--neon); color: #000; }
+.dq-mods { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: .8rem 0 .4rem; }
+.dq-step { display: inline-flex; align-items: center; gap: .3rem; }
+.dq-step button { background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px; width: 44px; min-height: 44px; font-size: 1.1rem; cursor: pointer; }
+.dq-step b { min-width: 2.6rem; text-align: center; font-family: monospace; font-size: 1.1rem; }
+.dq-link { background: none; border: 0; color: var(--text-dim); font-family: inherit; font-size: .78rem; cursor: pointer; text-decoration: underline; min-height: 36px; }
+.dq-savedrow { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.dq-label { font-size: .75rem; color: var(--text-dim); }
+.dq-saved { display: contents; }
+.dq-chip { display: inline-flex; align-items: stretch; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.dq-roll { background: var(--bg3); border: 0; color: var(--text); font-family: monospace; font-size: .9rem; padding: .3rem .8rem; min-height: 44px; cursor: pointer; }
+.dq-roll:hover { color: var(--neon); }
+.dq-x { background: var(--bg3); border: 0; border-left: 1px solid var(--border); color: var(--text-dim); width: 34px; cursor: pointer; }
+.dice-page[data-view="quick"] #dice-tray-box { display: none !important; }
+.dice-page[data-view="log"] { display: flex; flex-direction: column; }
+.dice-page[data-view="log"] > .dice-head { order: -3; }
+.dice-page[data-view="log"] > #dice-layoutbar { order: -2; }
+.dice-page[data-view="log"] > .dice-card:not(#dice-form) { order: -1; }
+.dice-page[data-view="log"] #dice-tray-box { display: none !important; }
+.dice-page[data-view="log"] #dice-log { max-height: 60vh; overflow-y: auto; }
+.dice-page[data-view="log"] .dice-row span:last-child { font-size: 1.3rem !important; }
+
+/* ── Random tables layouts: Cards / List / Roll board ──────────────────────────────────────────────────────────────────────────────────── */
+.tbl-log { background: var(--bg2); border: 1px solid var(--neon); border-radius: 8px; padding: .6rem .9rem; margin: .6rem 0 1rem; }
+.tbl-log-head { color: var(--neon); font-size: .8rem; display: flex; justify-content: space-between; }
+.tbl-log-clear { background: none; border: 0; color: var(--text-dim); font-family: inherit; font-size: .74rem; cursor: pointer; text-decoration: underline; }
+.tbl-log ol { list-style: none; margin: .4rem 0 0; padding: 0; max-height: 14rem; overflow-y: auto; font-size: .88rem; display: flex; flex-direction: column; gap: .3rem; }
+.tbl-log ol li { border-top: 1px solid var(--border); padding-top: .3rem; }
+.tbl-log ol li:first-child { border-top: 0; padding-top: 0; font-size: 1rem; }
+.tbl-log ol li b { color: var(--text-dim); font-weight: normal; }
+body:has(.tbl-list[data-view="roll"]) #tbl-log[data-has="1"] { display: block; }
+body:not(:has(.tbl-list[data-view="roll"])) #tbl-log { display: none !important; }
+.nd-collection[data-view="grid"].tbl-list { grid-template-columns: repeat(auto-fill, minmax(calc(var(--nd-tile) + 80px), 1fr)); }
+.nd-collection[data-view="compact"].tbl-list { display: flex; flex-direction: column; gap: .3rem; }
+.nd-collection[data-view="compact"].tbl-list .entity-card-body { display: flex; align-items: center; gap: .8rem; padding: .35rem .7rem; flex-wrap: nowrap; }
+.nd-collection[data-view="compact"].tbl-list .entity-card-body h3 { margin: 0; flex: 1; font-size: .92rem; }
+.nd-collection[data-view="compact"].tbl-list .entity-kind, .nd-collection[data-view="compact"].tbl-list .tbl-desc { display: none; }
+.nd-collection[data-view="compact"].tbl-list .tbl-actions { margin: 0 !important; }
+.nd-collection[data-view="compact"].tbl-list .roll-result { margin: 0 0 0 .6rem !important; flex: 1; }
+.nd-collection[data-view="roll"].tbl-list { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .6rem; }
+.nd-collection[data-view="roll"].tbl-list .entity-card-body { padding: .7rem; display: flex; flex-direction: column; gap: .5rem; height: 100%; box-sizing: border-box; }
+.nd-collection[data-view="roll"].tbl-list .entity-kind, .nd-collection[data-view="roll"].tbl-list .tbl-desc, .nd-collection[data-view="roll"].tbl-list .tbl-edit, .nd-collection[data-view="roll"].tbl-list .roll-result { display: none !important; }
+.nd-collection[data-view="roll"].tbl-list h3 { margin: 0; font-size: .95rem; flex: 1; }
+.nd-collection[data-view="roll"].tbl-list .tbl-actions { margin: 0 !important; }
+.nd-collection[data-view="roll"].tbl-list .roll-btn { width: 100%; min-height: 56px; font-size: 1.05rem !important; border-radius: 8px !important; }
+
+/* ── Combat tracker layouts (static/js/combat-layouts.js): Standard / Compact / Cards / Turn view / Big screen ─────────────────────────────── */
+.ct-wrap[data-layout="cards"] #combatants-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }
+.ct-wrap[data-layout="turn"] #setup, .ct-wrap[data-layout="turn"] #log-box, .ct-wrap[data-layout="turn"] #ai-tactics-panel, .ct-wrap[data-layout="turn"] #sync-result,
+.ct-wrap[data-layout="turn"] .combatant-remove, .ct-wrap[data-layout="turn"] .notes-box { display: none !important; }
+.ct-wrap[data-layout="turn"]:not(.show-all) #combatants-list > .combatant-row:not(.active-turn):not(.ct-next) { display: none; }
+.ct-wrap[data-layout="turn"] .combatant-row.ct-next::before { content: "Next up"; display: block; font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); margin-bottom: .2rem; }
+.ct-wrap[data-layout="turn"] #turn-bar .ct-btn { min-height: 56px; font-size: 1.05rem; padding-inline: 1.2rem; }
+.ct-wrap[data-layout="turn"] .stat-btn { min-height: 44px; min-width: 44px; font-size: .95rem; }
+.ct-wrap[data-layout="big"] { font-size: 1.3rem; }
+.ct-wrap[data-layout="big"] #setup, .ct-wrap[data-layout="big"] #log-box, .ct-wrap[data-layout="big"] #ai-tactics-panel, .ct-wrap[data-layout="big"] #sync-result,
+.ct-wrap[data-layout="big"] .combatant-remove, .ct-wrap[data-layout="big"] .notes-box, .ct-wrap[data-layout="big"] .more, .ct-wrap[data-layout="big"] .ct-add,
+.ct-wrap[data-layout="big"] #undo-btn, .ct-wrap[data-layout="big"] #redo-btn { display: none !important; }
+.ct-wrap[data-layout="big"] #turn-label { font-size: 1.6rem; }
+.ct-wrap[data-layout="big"] .combatant-name { font-size: 1.5rem; }
+.ct-wrap[data-layout="big"] .stat-bar-track { height: 16px; max-width: none; }
+.ct-wrap[data-layout="big"] .combatant-row.acted { opacity: .5; }
+.ct-wrap[data-layout="big"] .combatant-row.active-turn { transform: scale(1.01); }

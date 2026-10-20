@@ -32,6 +32,12 @@ MODE_LABELS = {
     "classic": ("☰", "Long page"),
     "cols": ("◧", "Two columns"),
     "reader": ("📖", "Reader"),
+    "tray": ("🎲", "3D tray"),
+    "quick": ("⚡", "Quick buttons"),
+    "log": ("📜", "History first"),
+    "turn": ("🎯", "Turn view"),
+    "big": ("🖥", "Big screen"),
+    "roll": ("🎲", "Roll board"),
     "free": ("◫", "Free windows"),
     "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
@@ -157,12 +163,24 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
     # an entity's own page: the long page (today's), tabs (Overview / Details / Notes / Connections / Media), two columns (text | a sticky side) or a reader
     "modes": ["classic", "tabs", "cols", "reader"], "default": "classic", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
+
+SECTIONS["dice"] = {
+    # the dice page: the 3D tray (today's), one-tap quick buttons with saved formulas (no animation), or the shared roll log first
+    "modes": ["tray", "quick", "log"], "default": "tray", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
+SECTIONS["combat"] = {
+    # the combat tracker: standard rows (today's), compact rows, cards, a turn view (who acts now and next, big buttons), a big-screen view
+    "modes": ["rows", "compact", "cards", "turn", "big"], "default": "rows", "size_modes": ["none"], "labels": {"rows": "Standard"},
+    "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
+SECTIONS["tables"] = {
+    # random tables: cards (today's), compact rows, a roll board (every table a big roll button, the results stack in a log beside it)
+    "modes": ["grid", "compact", "roll"], "default": "grid", "size_modes": ["grid"], "labels": {"grid": "Cards", "compact": "List"},
+    "sorts": ["name"], "default_sort": "name", "groups": ["category"], "default_group": "category", "filters": []}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2
@@ -181,6 +199,7 @@ def spec(section: str) -> dict:
         "modes": [{"id": m, "icon": MODE_LABELS[m][0], "label": s.get("labels", {}).get(m, MODE_LABELS[m][1])} for m in s["modes"]],
         "sorts": [{"id": k, "label": s.get("sort_labels", {}).get(k, SORT_LABELS[k])} for k in s["sorts"]],
         "groups": [{"id": k, "label": GROUP_LABELS[k]} for k in s["groups"]],
+        "default_group": s.get("default_group", ""),
         "filters": [{"id": k, "label": FILTER_LABELS[k]} for k in s["filters"]],
         **({"options": s["options"]} if s.get("options") else {}),
     }
@@ -202,7 +221,9 @@ def clean(section: str, raw) -> dict:
     desc = sort.startswith("-")
     key = sort[1:] if desc else sort
     sort = ("-" if desc else "") + key if key in s["sorts"] else s["default_sort"]
-    group = raw.get("group") if raw.get("group") in s["groups"] else ""
+    g = raw.get("group")
+    # a section may open grouped (`default_group`); an explicit "" is the person choosing "no grouping" and is kept
+    group = g if g in s["groups"] else ("" if g == "" else s.get("default_group", ""))
     filters = [f for f in (raw.get("filters") if isinstance(raw.get("filters"), list) else []) if f in s["filters"]]
     filters = list(dict.fromkeys(filters))[: s.get("max_filters", len(filters))]      # no repeats; a section may cap how many
     out = {"mode": mode, "size": size, "sort": sort, "group": group, "filters": filters}
