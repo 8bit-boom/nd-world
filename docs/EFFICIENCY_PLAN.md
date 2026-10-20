@@ -1,6 +1,6 @@
 # Making nd-world lighter - efficiency plan
 
-Status: plan only, not built. It follows `docs/PERFORMANCE_PLAN.md` (built: one DB connection per request, lazy heavy lists, render gate,
+Status: BUILT - section 5 has what was done, the before / after numbers, and what was left out. It follows `docs/PERFORMANCE_PLAN.md` (built: one DB connection per request, lazy heavy lists, render gate,
 pre-compressed static files). That work was about **speed under load**; this plan is about **using less**: bytes over the network (players are on
 phones), browser memory, server memory and CPU, database work per request, disk, and startup. The rule for every item: **no feature is removed or
 changed for the user** - the same pages, the same content, the same full-resolution images when someone asks for them.
@@ -92,3 +92,44 @@ pauses in hidden tabs; entity, rules, facts, calendar, cockpit pages are 20-100 
 - Rewriting in another language, a JavaScript framework or a different database: none of the measurements point there (see `PERFORMANCE_PLAN.md`).
 - Deleting old jobs, recordings or history to save disk: that would lose data people may want.
 - Lower image quality for what people look at: thumbnails, tiles and display copies are additions; the originals stay.
+
+
+## 5. What was built, and what it measured
+
+Before = `86c9780`, after = this commit; same seeded world, same Chromium and timing scripts.
+
+| | Before | After |
+|---|---|---|
+| Home page, first view | **25.8 MB** (map strip at full size) | **~0.3 MB** of pictures (thumbnails) |
+| `/maps`, first view | 22.7 MB (laptop) / 9.4 MB (phone) | **347 KB / 194 KB** |
+| Opening the Dreamlands map | 9.4 MB, 273 MB decoded in the browser | **1.0-1.8 MB of tiles**, only what is in view; full detail kept |
+| API calls in 5 page views | GM 30, player 12 (one a database write each page) | **GM 15, player 6**, no write |
+| Spotlight / dice log | polled every 4 s / 5 s per tab | announced over the existing live stream; 60 s fallback poll |
+| `/sessions` with recorded transcripts | 75 ms | **33 ms** |
+| Search with transcripts | 96 ms | **34 ms** |
+| Session page with a transcript | 651 KB | **242 KB** (the transcript is fetched after the page is up) |
+| JavaScript / CSS shipped (gzip) | 423 KB / 32 KB | **270 KB / 21 KB** (minified in the image build) |
+| `/dice` in Quick buttons | three.js + cannon-es loaded | not loaded (only for the 3-D tray) |
+| Memory after `import app.main` | 124 MB | **103 MB** |
+| Startup to first response | 3.6 s | **2.0 s** |
+| After 16 browsers at once | 211 MB, 26 pages/s | **189 MB, 26 pages/s** |
+| Logs | a line per request, kept forever | no access log (perf log + slow-request log stay), 3 x 10 MB per container |
+| Response headers | `Set-Cookie` on every response | only when the session changed or the cookie is 6 h old |
+
+### Step by step
+1. **Thumbnails for bundled pictures - done** (`app/static_thumbs.py`; made in the image build and checked again at startup; replaced map images get a fresh one).
+2. **Theme write per page view - fixed.**
+3. **Tiled map viewer - done** (`app/map_tiles.py`, `GET /map-tiles/...`). Bundled maps are cut in the image build (cutting the 10k-pixel Dreamlands map needs about 1.1 GB of memory once, so it is not done on the server); a GM's own map uploads are cut in the background on first view, and the single picture is shown until then. Pins and regions keep their coordinates (screenshot diff against the old overlay: the same picture within resampling noise).
+4. **Live channel instead of polling - done** for the spotlight / now playing and the dice log. **Not changed:** the TV combat display's 2 s poll (`display_combat.html`) - it is a separate full-screen page without the live script.
+5. **Settings in the page - done** (hover-preview settings rendered into `base.html`; AI status remembered for a minute per tab).
+6. **Only the columns a page shows - done** for session transcripts (deferred; lists use a computed `has_live_transcript`) and the World's rules / cockpit / home / recap texts. **Not changed:** `Entity.body` on cards - the cards use it for their excerpt when there is no summary, and the gain measured small.
+7. **Load-on-first-use - done** for `ollama`, `qrcode`, the MCP server and the login-timing hash. **Not done:** a schema-version stamp for `init_db` - measured at 0.1 s, not worth the risk.
+8. **Logs - done** (`--no-access-log`, `logging` limits on every compose service).
+9. **Smaller JavaScript - done** (`python -m app.precompress --minify` in the image build, every minified file checked with `node --check` in the tests; the 3-D dice module loads only for the tray layouts).
+10. **Cookie only when needed - done** (`app/session_cookie.py`).
+11. **Database memory - done** (pool keeps 10 idle, up to 40; 8 MB page cache each; throughput unchanged).
+12. **Lighter image - partly.** Bundled JPEG/PNG maps are stored as WebP q90 in the image (33 -> 23 MB; old `.jpg` links redirect) and bytecode is compiled at build. **Not done:** replacing Debian's `ffmpeg` with a static build (a downloaded binary at build time is a supply-chain risk this plan did not justify; no Docker daemon here to measure the gain). The prebuilt map tiles add about 45 MB to the image.
+13. **Display-size copies - done** for the lightbox (`?display=1`, 1,600 px WebP made on first request, "Full size" link to the original). Other large-picture places (handout print, gallery album) still use the original.
+14. **Database upkeep - done** (`app/db_upkeep.py`: daily `PRAGMA optimize`, on shutdown too; a file more than a quarter free pages is switched once to incremental auto-vacuum, then trimmed daily). Nothing is deleted.
+
+Not measured: real phones, the Cloudflare path, the Docker image size, AI-heavy nights.

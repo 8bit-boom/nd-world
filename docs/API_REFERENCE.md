@@ -98,7 +98,8 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/health` | Public | Liveness probe — used by Docker/Compose healthchecks. Also reports `build`: the commit id the image was built from (`dev` outside a published image). |
-| GET | `/uploads/{filepath}` | Player | Serves an uploaded file (portraits, note/entity images, map images) from the `/data/uploads` volume. |
+| GET | `/uploads/{filepath}` | Player | Serves an uploaded file (portraits, note/entity images, map images) from the `/data/uploads` volume. `?display=1` on a large picture returns its 1,600 px WebP display copy (made on first request) instead of the original. |
+| GET | `/map-tiles/{key}/{z}/{tile}` | any signed-in user | `{tile}` is `{x}_{y}.webp`: one 256 px tile of a map picture's tile pyramid (`app/map_tiles.py`); the key carries the picture's fingerprint, so a tile never changes at its URL (`private, immutable`). 404 for a pyramid that is not finished. |
 
 ## Auth
 

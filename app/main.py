@@ -358,6 +358,9 @@ def _warm_static_thumbnails():
 
 def _startup_tasks():
     _warm_static_thumbnails()
+    from . import db_upkeep as _db_upkeep
+    from .database import DB_PATH as _DB_PATH
+    _db_upkeep.start(_DB_PATH)                     # daily PRAGMA optimize + free-page release (app/db_upkeep.py)
     # The TestClient re-enters this lifespan once per test (~1000x in the
     # full suite) — the stopping flag from one test's shutdown must not
     # leak into the next test's boot, or a chunk loop would see stopping()
@@ -397,6 +400,9 @@ async def _shutdown_tasks():
     for the three phases and why waiting for a job to actually FINISH is
     not the mechanism (one speech-to-text chunk can take minutes; no Docker stop
     grace period covers that)."""
+    from . import db_upkeep as _db_upkeep
+    from .database import DB_PATH as _DB_PATH
+    _db_upkeep.optimize_now(_DB_PATH)
     await _ai_background.shutdown()
     _job_shutdown.request_stop()
     tasks = (_audio_jobs.live_tasks() + _image_jobs.live_tasks()
