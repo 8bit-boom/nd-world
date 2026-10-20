@@ -1,6 +1,6 @@
 # Leftovers plan - what the earlier plans did not do
 
-Status: PLAN ONLY, nothing here is built. It collects every item that `docs/PERFORMANCE_PLAN.md` (section 7), `docs/EFFICIENCY_PLAN.md`
+Status: BUILT (section 16 has what was done, what was measured and what was decided against). Written as a plan first. It collects every item that `docs/PERFORMANCE_PLAN.md` (section 7), `docs/EFFICIENCY_PLAN.md`
 (section 5) and the layout plans (`docs/VIEW_LAYOUTS_PLAN.md`, `docs/SITE_LAYOUTS_PLAN.md`) left as "not done", "partly" or "later", says
 what each would take, and gives a recommendation. Each item lists **why it was left**, **how to do it**, **how to check it**, **effort** and
 **risk**. Numbers are from the measurements those plans already made unless the item says otherwise.
@@ -232,3 +232,27 @@ From `docs/VIEW_LAYOUTS_PLAN.md`; its status table is partly out of date (the en
 
 **Check:** the existing `tests/test_nd_views.py` (Node) pattern for the pure decisions, a template test per page, and `docs/API_REFERENCE.md`
 rows for any new route. **Risk:** low.
+
+## 16. What was built, and what it measured
+
+Every step was carried out; the ones the plan made conditional were measured first and decided on the numbers. Commits on `main`:
+8bc57ae (steps 1, 2, 3, 5, 6), then the map-tiling, async-routes, layouts and ffmpeg commits after it.
+
+| # | Step | Result |
+|---|---|---|
+| 1 | Measure the real host | **Done where it can be done from here.** The Docker job now writes the image size per layer to its summary. First reading (8bc57ae): **852 MB**, of which Debian's `ffmpeg` layer was **448 MB**, pip 144 MB, `static/` 68 MB, the build-time step (AVIF maps, thumbnails, tiles, minified + compressed files) 67 MB. **Not done:** `docker stats` on your host, a real phone, the Cloudflare path - they need your machines (the steps are in section 1). |
+| 2 | TV combat display | **Done.** Every committed change to an encounter (`combat_turns.touch`) sends a "combat" signal (after the commit; a rollback sends nothing); the display stream turns it into a `combat` event, the TV page passes it into its frame, the turn order re-reads at once. Poll 2 s -> 30 s safety net: 1,800 -> 120 requests an hour per TV. |
+| 3 | Session page script | **Done.** Two cacheable files (`session-detail-common.js`, also used by the New Session form, and `session-detail.js`) and one JSON block of the page's values. The saved session page's HTML: **195 KB -> 87 KB**, the 108 KB of script now cached and minified. Checked in Chromium against the old page: same values, same functions, no new errors, on both pages. |
+| 4 | Async routes on the event loop | **Done for 137 routes** (an AST script converted them; every skip has a reason): those whose only awaits were reading the form / JSON body are plain `def` now, the body read by an async dependency. Left async on purpose: 46 that await AI calls or file reads, 24 that start background jobs or use the event loop, 4 that call a helper that does. Measured (a cheap API call while 8 clients save a 60-combatant encounter in a loop): median **55 -> 37 ms**, 95th percentile **78 -> 54 ms**, worst **190 -> 130 ms**; the save route itself does ~25% fewer saves a second (128 -> 95 - still far beyond a table's needs). Smaller than the plan's "a few ms": the work in threads still shares Python's interpreter lock. The race tests (buy / pick up / move token) now run against the plain routes on two real threads and pass. |
+| 5 | Pictures at display size | **Done** for the album filmstrip's big preview and the handout print page (`display` template filter; a 1,600 px copy prints at ~270 dpi at the page's ~15 cm). The plan was wrong about the handouts gallery: it shows no pictures. |
+| 6 | Python 3.13 in CI | **Done.** `docker-publish` tests on 3.13 like `tests.yml`. The "plugin mismatch" was a pytest 8.4 in a scratch venv; with the pinned 8.3.4 the suite passes on 3.13. Two async tests had never run anywhere (no `pytest.mark.asyncio`); they run and pass now. |
+| 7 | Runtime tiling memory | **Done differently from the plan, without a new library.** The deepest level is usually larger than the picture and was made as one upscaled image; its tiles are now resampled straight from the picture. 72 MP map: peak memory **1,363 -> 670 MB**, same time, same tiles (deepest level 51 dB PSNR against the old tiles). |
+| 8 | Lighter `ffmpeg` | **Done** (the layer was 448 MB, over the plan's 150 MB line): two static binaries from `mwader/static-ffmpeg:8.0.1`, pinned by its multi-arch digest - about 280 MB, **~168 MB smaller**. Every ffmpeg / ffprobe command the app runs was run against this build first (segment, mp3 and opus re-encodes, concat, SVT-AV1 with scaling, remux, x264 / AAC, poster frames, AV1 decode, ffprobe JSON): all succeed, outputs match. CI checks the image's encoders and that the app imports. A compiled minimal build would be smaller still but risks a missing codec on a real recording, so it was not done. |
+| 9 | Cockpit with many windows | **Done:** `scripts/cockpit_trace.py`. Results (60 s after load): cockpit with 1 / 3 / 6 / 10 windows - **one** live connection, 5 / 7 / 10 / 16 requests a minute (mostly windows loading once); cockpit + 2 / 5 / 9 pop-out tabs - one connection stays open (two more opened during the tabs' start-up election and closed again, as designed). Nothing polls fast. |
+| 10 | AI contention matrix | **Not done - needs your server** (no AI backend here). Run `scripts/perf_smoke.py` as described in section 10. |
+| 11 | `Entity.body` on cards | **Measured, not built.** 200 entities of 20 KB each: loading the full body costs 3-7 ms a page (cards 36 vs 32.5 ms, table 25.6 vs 18.3, search 19.3 vs 15.9, home 20.6 vs 15.6). No page is slow, so the change to every card template is not worth it. |
+| 12 | Nav menu / world caching | **Measured, not built.** The per-page context processor (world, kinds, nav menus) costs 0.4-0.5 ms a page, 2-5 % - a cache would buy almost nothing and add a stale-menu risk. |
+| 13 | `init_db` schema stamp | **Not built**, as recommended (0.1 s of startup against the risk of skipping a migration). |
+| 14 | `orjson` | **Not built**, as recommended (nothing in the perf log points at JSON encoding). |
+| 15 | Layouts | **Done:** audio Table (sortable columns), video Theater (one stage, a strip), pictures Justified rows (shapes read in the browser, so no stored sizes or backfill were needed) and Compare (two panes, swap, zoom together - wheel or buttons), and saved named views in every layout bar (`saved_views` table, `/api/saved-views/{section}`). Checked in Chromium at 1280 and 390 px. |
+

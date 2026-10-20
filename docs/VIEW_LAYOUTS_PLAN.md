@@ -19,16 +19,16 @@ read-only pages too; the soundboard is a priority for table use.
 |---|---|---|
 | 0 | Engine, registry, macro, CSS, account saving, tests | done |
 | 1 | Images: grid (S/M/L), masonry, list, filmstrip; sort by name / used-in / date / size; group by used / first place used; "unused only" filter (All Images and albums) | done |
-| 2 | Audio: rows, compact, playlist (shared bar, shuffle / repeat), soundboard (pads: tap, keys 1-9, volume, loop, fade, one-at-a-time, stop / fade all); Video: rows, compact, poster grid; group by visibility, "hidden only" filter | done (audio table and video theater still to come) |
-| 3 | Entities: cards (today's), compact list, portrait wall, split browse (list + live preview, j / k); group by subtype / first tag; sort by name / date. Board (a column per subtype / first tag, drag a card to change its subtype, a move menu on touch, Undo); the web of relations still to come | mostly done |
-| 4 | Notes: private notes page - timeline, sticky cards, outline, reader (list + full note, j / k), group by month, sort by date / title (done); facts, maps still to come | partly done |
+| 2 | Audio: rows, compact, playlist (shared bar, shuffle / repeat), soundboard (pads: tap, keys 1-9, volume, loop, fade, one-at-a-time, stop / fade all); Video: rows, compact, poster grid; group by visibility, "hidden only" filter | done (the audio table and the video theater were added later - docs/LEFTOVERS_PLAN.md, step 15) |
+| 3 | Entities: cards (today's), compact list, portrait wall, split browse (list + live preview, j / k); group by subtype / first tag; sort by name / date. Board (a column per subtype / first tag, drag a card to change its subtype, a move menu on touch, Undo); the web of relations (built in phase 4c) | done |
+| 4 | Notes: private notes page - timeline, sticky cards, outline, reader (list + full note, j / k), group by month, sort by date / title (done); facts and maps were built through docs/SITE_LAYOUTS_PLAN.md | done |
 | 4d | Board notes (`/boards/<slug>/notes`, linked from the board toolbar): the nodes as a list / cards / outline / reader, grouped by type / status, sorted by board order / title; Session Log (players' list): list, cards, compact, grouped by what the recap offers | done |
 | 4c | Entity page: CONNECTIONS as cards or a web (this entity in the middle, links solid, backlinks dashed; group by direction / kind; a phone keeps the cards); NOTES in the private-notes layouts (list, cards, outline, reader; sort by date / title; group by month / visibility) | done |
 | 4b | Quests: board (a column per status, drag or move menu, Undo; shared `static/js/nd-board.js`), list, cards, group by status / category; Sessions: cards, list, sort by number / name, group by party; Characters: cards, roster, wall, sort by name / level, group by party / owner / system | done |
-| 5 | Saved named views, world defaults the GM sets, cockpit-window layouts | planned |
+| 5 | Saved named views (every layout bar's Views menu), world defaults the GM sets (site layouts phase 7), cockpit-window layouts (docs/HUB_COCKPIT_LAYOUTS_PLAN.md) | done |
 
 ## Layout catalogue
-* **Images** - grid, masonry, list (thumbnail, name, used-in), filmstrip (big preview, arrows, full size). Later: compare 2-up, justified rows (needs stored dimensions).
+* **Images** - grid, masonry, list (thumbnail, name, used-in), filmstrip (big preview, arrows, full size). Later, now built: compare (two pictures side by side) and justified rows (the shapes are read in the browser, no stored dimensions).
 * **Audio** - rows, playlist (one line per clip, one shared player, queue, shuffle), soundboard (big pads, one tap play / stop, hotkeys 1-9, per-pad volume + loop, fades, long-press "play for players"), table.
 * **Video** - poster grid, list, theater (big player + playlist sidebar), table.
 * **Notes** - timeline, sticky cards, reader (list + full note), outline; group by tag / entity / session / month.
