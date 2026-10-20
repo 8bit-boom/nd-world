@@ -32,6 +32,16 @@ MODE_LABELS = {
     "classic": ("☰", "Long page"),
     "cols": ("◧", "Two columns"),
     "reader": ("📖", "Reader"),
+    "scroll": ("📜", "Scroll"),
+    "book": ("📕", "Book"),
+    "wide": ("↔", "Reading column"),
+    "grouped": ("☰", "Grouped"),
+    "flat": ("≣", "One list"),
+    "groups": ("🗂", "By session"),
+    "table": ("▦", "Table"),
+    "full": ("📄", "Full text"),
+    "sections": ("§", "Sections"),
+    "large": ("🖼", "Large"),
     "night": ("🌙", "Session night"),
     "focus": ("◎", "Focus"),
     "widgets": ("🧩", "My widgets"),
@@ -45,6 +55,8 @@ MODE_LABELS = {
     "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
     "dashboard": ("▤", "Dashboard"),
+    "month": ("🗓", "Month"),
+    "week": ("▭", "Week"),
 }
 
 SORT_LABELS = {
@@ -166,7 +178,7 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
@@ -190,6 +202,24 @@ SECTIONS["home"] = {
     # (reorder and hide the blocks - `order` and `hidden` are lists of block ids)
     "modes": ["classic", "night", "focus", "widgets"], "default": "classic", "size_modes": ["none"], "labels": {"classic": "Classic"},
     "sorts": ["name"], "default_sort": "name", "groups": [], "filters": [], "lists": {"order": 16, "hidden": 16}}
+
+# Pages whose layouts are CSS (plus a little JS where the behaviour changes): each is a plain choice of one mode, applied by static/js/nd-pagelayout.js
+for _id, _modes, _labels in (
+    ("rules", ["scroll", "book", "wide"], {}),
+    ("search_results", ["grouped", "flat", "cards"], {"cards": "Cards"}),
+    ("facts", ["groups", "timeline", "table"], {"timeline": "Timeline"}),
+    ("recap", ["full", "sections"], {}),
+    ("maps", ["grid", "list", "large"], {}),
+    ("parties", ["grid", "table"], {"grid": "Cards"}),
+    ("party_page", ["classic", "dashboard"], {"classic": "Long page"}),
+    ("boards", ["grid", "list"], {"grid": "Cards"}),
+    ("catalog", ["grid", "table", "compact"], {"grid": "Cards", "compact": "Compact"}),
+    ("handouts", ["grid", "list"], {}),
+    ("worlds", ["grid", "list"], {"grid": "Cards"}),
+    ("templates", ["grid", "list"], {"grid": "Cards"}),
+    ("calendar_view", ["month", "week"], {}),
+):
+    SECTIONS[_id] = {"modes": _modes, "default": _modes[0], "size_modes": ["none"], "labels": _labels, "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2

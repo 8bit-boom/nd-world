@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Rules — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div class="rules-layout">
+<div class="rules-layout" {{ pl_attrs("rules", request) }}>
 
   <!-- Sidebar TOC -->
   <div id="rules-toc-wrap" class="rules-toc-wrap">
@@ -23,6 +24,7 @@
   <div class="rules-content">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
       <h1>📖 {{ 'Rules' if is_custom_rules else 'Core Rules' }}</h1>
+      {{ pl_bar("rules") }}
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
         <a href="/rules/download.md" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .8rem;font-size:.8rem;border-radius:4px;text-decoration:none">⬇ Download .md</a>
         {% if can_edit_rules and world %}
@@ -281,4 +283,5 @@ function copyFallback(text) {
   return ok;
 }
 </script>
+<script src="/static/js/rules-book.js?v={{ asset_v('js/rules-book.js') }}"></script>
 {% endblock %}

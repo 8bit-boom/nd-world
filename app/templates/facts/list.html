@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Facts — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
@@ -160,7 +161,8 @@
     <button type="button" class="en-btn" onclick="factsSetAllGroups(false)">Collapse all</button>
     <span style="font-size:.78rem;color:var(--text-dim)">{{ fact_count }} fact{{ 's' if fact_count != 1 else '' }} in {{ groups|length }} session{{ 's' if groups|length != 1 else '' }}</span>
   </div>
-  <div style="display:flex;flex-direction:column;gap:.6rem">
+  {{ pl_bar("facts") }}
+  <div class="facts-list" {{ pl_attrs("facts", request) }} style="display:flex;flex-direction:column;gap:.6rem">
     {% for group in groups %}
     <details class="facts-group" data-facts-group {% if loop.first %}open{% endif %}
               style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.15rem .9rem">
@@ -228,6 +230,14 @@ function toggleFactEdit(id) {
 function factsSetAllGroups(open) {
   document.querySelectorAll('[data-facts-group]').forEach(g => { g.open = open; });
 }
+// Timeline and Table read every session at once: open them all when the layout is chosen (By session keeps the accordions as they were)
+(function () {
+  const list = document.querySelector('.facts-list');
+  if (!list) return;
+  const sync = e => { if (e.detail && e.detail.mode !== 'groups') factsSetAllGroups(true); };
+  list.addEventListener('nd-pl-ready', sync);
+  list.addEventListener('nd-pl-change', sync);
+})();
 
 // Filters fact cards across every session group by content text — hides a
 // card that doesn't match, hides a whole group once every one of its cards

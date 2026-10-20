@@ -29,6 +29,7 @@
   {% endif %}
   {# The site shell's layout (navigation, width, density ...) - everyone, embedded pages included (they hide the chrome anyway). #}
   <script src="/static/js/nd-site.js?v={{ asset_v('js/nd-site.js') }}"></script>
+  <script src="/static/js/nd-pagelayout.js?v={{ asset_v('js/nd-pagelayout.js') }}" defer></script>
   {# AI tasks run in the background: ndAiFetch is the drop-in fetch that polls for the result (app/ai_background.py).
      Loaded before any page script (no defer) so inline handlers can use it; its page-corner tray only mounts when a
      task from a previous page is still pending. #}

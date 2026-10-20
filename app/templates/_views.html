@@ -8,3 +8,8 @@
 {% set saved = saved_view(request, section) %}
 {% if sp %}<div class="nd-viewbar" data-for="{{ target }}" data-spec='{{ sp|tojson }}' data-account="{{ '1' if saved is not none else '' }}" data-saved='{{ (saved or {})|tojson }}' role="toolbar" aria-label="Layout"></div>{% endif %}
 {% endmacro %}
+
+{# A page layout that is one plain choice of a mode (static/js/nd-pagelayout.js): put {{ pl_bar("rules") }} where the buttons go and
+   {{ pl_attrs("rules", request) }} on the element that should get data-view; load nd-pagelayout.js once. #}
+{% macro pl_bar(section) %}<div class="ep-layoutbar" data-pl-bar="{{ section }}" role="group" aria-label="Layout"></div>{% endmacro %}
+{% macro pl_attrs(section, request) %}{% set sp = view_spec(section) %}{% set saved = saved_view(request, section) %}data-pl="{{ section }}" data-pl-modes='{{ sp.modes|tojson }}' data-pl-default="{{ sp.default }}" data-pl-saved="{{ (saved.mode if saved else '') }}" data-view="{{ sp.default }}"{% endmacro %}

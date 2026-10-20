@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Search — {{ world.name }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -23,7 +24,8 @@
   </p>
 
   {% if grouped or other_grouped %}
-  <div class="search-results">
+  {{ pl_bar("search_results") }}
+  <div class="search-results" {{ pl_attrs("search_results", request) }}>
     {% for kind, items in grouped.items() %}
     <details class="folder-group" open>
       <summary class="folder-group-title">
