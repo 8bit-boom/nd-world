@@ -71,6 +71,22 @@ def tile_range(map_w: int, map_h: int, z: int) -> tuple:
     return (0, math.ceil(map_w * s / TILE) - 1), (math.floor(-map_h * s / TILE), -1)
 
 
+def _cut(zdir: Path, xr, yr, oy: int, lw: int, lh: int, region) -> int:
+    """Write one level's tiles; `region((x0, y0, x1, y1))` gives that part of the level (in level pixels) as an image."""
+    n = 0
+    for tx in range(xr[0], xr[1] + 1):
+        for ty in range(yr[0], yr[1] + 1):
+            box = (tx * TILE, ty * TILE + oy, tx * TILE + TILE, ty * TILE + oy + TILE)
+            inner = (max(0, box[0]), max(0, box[1]), min(lw, box[2]), min(lh, box[3]))
+            if inner[2] <= inner[0] or inner[3] <= inner[1]:
+                continue
+            tile = Image.new("RGBA", (TILE, TILE), (0, 0, 0, 0))
+            tile.paste(region(inner), (max(0, -box[0]), max(0, -box[1])))
+            tile.save(zdir / f"{tx}_{ty}.webp", format="WEBP", quality=82, method=4)
+            n += 1
+    return n
+
+
 def build(slug: str, src: Path, map_w: int, map_h: int, out_root: Optional[Path] = None) -> Optional[dict]:
     """Cut the pyramid now (blocking). Returns its meta dict, or None if the picture could not be read."""
     found = _find(_key(slug, src))
@@ -97,25 +113,24 @@ def build(slug: str, src: Path, map_w: int, map_h: int, out_root: Optional[Path]
     for z in range(native, zmin - 1, -1):
         s = 2.0 ** z
         lw, lh = max(1, round(map_w * s)), max(1, round(map_h * s))
-        # each level is made from the one above it (half the size), and the bigger one is let go: memory stays near one full picture
-        level = prev.resize((lw, lh), Image.LANCZOS) if (lw, lh) != prev.size else prev
-        if prev is not level:
-            prev.close()
-        prev = level
         (xr, yr) = tile_range(map_w, map_h, z)
         oy = lh                                    # picture row 0 sits at Leaflet pixel y = -lh
         zdir = tmp / str(z)
         zdir.mkdir(parents=True, exist_ok=True)
-        for tx in range(xr[0], xr[1] + 1):
-            for ty in range(yr[0], yr[1] + 1):
-                box = (tx * TILE, ty * TILE + oy, tx * TILE + TILE, ty * TILE + oy + TILE)
-                tile = Image.new("RGBA", (TILE, TILE), (0, 0, 0, 0))
-                crop = level.crop((max(0, box[0]), max(0, box[1]), min(lw, box[2]), min(lh, box[3])))
-                if crop.width <= 0 or crop.height <= 0:
-                    continue
-                tile.paste(crop, (max(0, -box[0]), max(0, -box[1])))
-                tile.save(zdir / f"{tx}_{ty}.webp", format="WEBP", quality=82, method=4)
-                n += 1
+        if lw > prev.width or lh > prev.height:
+            # The deepest level is usually LARGER than the picture (levels go in powers of two, rounded up so no detail is lost). It is
+            # never made as one image - for a 72 MP map that was a 170 MP copy, ~0.5 GB more memory - each tile is resampled straight from
+            # its own part of the picture instead (the same filter; Pillow reads the pixels around the box, so tiles meet without seams).
+            fx, fy = prev.width / lw, prev.height / lh
+            n += _cut(zdir, xr, yr, oy, lw, lh, lambda b: prev.resize((b[2] - b[0], b[3] - b[1]), Image.LANCZOS,
+                                                                      box=(b[0] * fx, b[1] * fy, b[2] * fx, b[3] * fy)))
+            continue
+        # every other level is made from the one above it (half the size), and the bigger one is let go: memory stays near one picture
+        level = prev.resize((lw, lh), Image.LANCZOS) if (lw, lh) != prev.size else prev
+        if prev is not level:
+            prev.close()
+        prev = level
+        n += _cut(zdir, xr, yr, oy, lw, lh, lambda b: level.crop(b))
     prev.close()
     meta = {"key": out.name, "w": map_w, "h": map_h, "zmin": zmin, "native": native, "tile": TILE, "tiles": n}
     (tmp / "meta.json").write_text(json.dumps(meta))
