@@ -19,3 +19,5 @@ html2text==2025.4.15
 nh3==0.3.6
 reportlab==4.2.5
 brotli==1.1.0
+rjsmin==1.2.4
+rcssmin==1.2.1

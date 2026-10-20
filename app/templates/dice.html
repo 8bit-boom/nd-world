@@ -86,9 +86,18 @@
     </div>
   </div>
 
-  <script src="/static/js/dice-layouts.js?v={{ asset_v('js/dice-layouts.js') }}"></script>
   <script src="/static/js/dice-geometry.js?v={{ asset_v('js/dice-geometry.js') }}"></script>
-  <script type="module" src="/static/js/dice-tray.js?v={{ asset_v('js/dice-tray.js') }}"></script>
+  <script>
+  // The 3-D tray's module pulls in three.js and cannon-es (about 1 MB of script): load it only for a layout that shows the tray, not for
+  // Quick buttons (efficiency plan, step 9). dice-layouts.js calls this whenever the layout is applied.
+  window.ndLoadDiceTray = function () {
+    if (window.ndLoadDiceTray.done) return;
+    window.ndLoadDiceTray.done = true;
+    var s = document.createElement('script'); s.type = 'module'; s.src = "/static/js/dice-tray.js?v={{ asset_v('js/dice-tray.js') }}";
+    document.head.appendChild(s);
+  };
+  </script>
+  <script src="/static/js/dice-layouts.js?v={{ asset_v('js/dice-layouts.js') }}"></script>
   <script>
   (function(){
     // Rolling is fetch-based (no page navigation): a roll from ANY window —

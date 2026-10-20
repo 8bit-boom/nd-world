@@ -59,3 +59,28 @@ def test_the_twin_lookup_cannot_leave_the_static_folder(client):
     assert r.status_code in (404, 400) or b"FastAPI" not in r.content
     r = client.get("/static/js/does-not-exist.js", headers={"Accept-Encoding": "gzip, br"})
     assert r.status_code == 404
+
+
+def test_the_image_builds_minifier_keeps_every_script_valid(tmp_path):
+    """The Docker build minifies static/ in place (python -m app.precompress --minify). Every minified script must still parse."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("node is not installed")
+    shutil.copytree(STATIC / "js", tmp_path / "js")
+    shutil.copy(STATIC / "style.css", tmp_path / "style.css")
+    st = precompress.minify_tree(tmp_path)
+    assert st["files"] > 50 and st["bytes_out"] < st["bytes_in"] * 0.8
+    bad = []
+    for f in sorted((tmp_path / "js").rglob("*.js")):
+        text = f.read_text(encoding="utf-8")
+        target = f.with_suffix(".mjs") if ("import " in text and " from " in text) or text.lstrip().startswith("export ") else f
+        if target != f:
+            f.rename(target)
+        r = subprocess.run([node, "--check", str(target)], capture_output=True, text=True)
+        if r.returncode:
+            bad.append((f.name, r.stderr[-200:]))
+    assert not bad, bad
+    assert "{" in (tmp_path / "style.css").read_text() and "/*" not in (tmp_path / "style.css").read_text()

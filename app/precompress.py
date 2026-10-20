@@ -45,6 +45,29 @@ def compress_tree(root: Path) -> dict:
     return stats
 
 
+def minify_tree(root: Path) -> dict:
+    """Minify every .js (not *.min.js) and .css under `root` IN PLACE - for the image build only (efficiency plan, step 9): comments and
+    white space go, nothing is renamed or rewritten, so behaviour is unchanged (every file is checked with `node --check` in the tests).
+    The repository keeps the readable sources. Returns {"files", "bytes_in", "bytes_out"}."""
+    import rcssmin
+    import rjsmin
+    st = {"files": 0, "bytes_in": 0, "bytes_out": 0}
+    for src in sorted(root.rglob("*")):
+        if not src.is_file() or src.name.endswith(".min.js") or src.suffix not in (".js", ".css"):
+            continue
+        text = src.read_text(encoding="utf-8")
+        out = rjsmin.jsmin(text) if src.suffix == ".js" else rcssmin.cssmin(text)
+        if len(out) < len(text):
+            src.write_text(out, encoding="utf-8")
+        st["files"] += 1
+        st["bytes_in"] += len(text.encode())
+        st["bytes_out"] += len(out.encode())
+    return st
+
+
 if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "static"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    target = Path(args[0]) if args else Path(__file__).resolve().parent.parent / "static"
+    if "--minify" in sys.argv:
+        print("minify:", minify_tree(target))
     print("precompress:", compress_tree(target))

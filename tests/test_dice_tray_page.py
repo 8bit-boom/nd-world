@@ -20,7 +20,9 @@ def _page(client, seed):
 def test_the_page_loads_the_geometry_script_and_the_tray_module(client, seed):
     page = _page(client, seed)
     assert re.search(r'<script src="/static/js/dice-geometry\.js\?v=[0-9a-f]+"></script>', page)
-    assert re.search(r'<script type="module" src="/static/js/dice-tray\.js\?v=[0-9a-f]+"></script>', page)
+    # the tray module (three.js + cannon-es) is loaded on demand by window.ndLoadDiceTray - for every layout but Quick buttons
+    assert re.search(r"s\.type = 'module'; s\.src = \"/static/js/dice-tray\.js\?v=[0-9a-f]+\"", page) and "window.ndLoadDiceTray" in page
+    assert "window.ndLoadDiceTray()" in (ROOT / "static/js/dice-layouts.js").read_text(encoding="utf-8")
     assert page.index("/static/js/dice-geometry.js?v=") < page.index("/static/js/dice-tray.js?v=")
     # the inline script reads window.ndDiceGeometry as it runs, so the classic geometry script must come first
     assert page.index("/static/js/dice-geometry.js?v=") < page.index("var G = window.ndDiceGeometry")

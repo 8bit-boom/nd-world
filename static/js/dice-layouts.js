@@ -95,6 +95,7 @@
     page.dataset.view = mode;
     if (bar) bar.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
     if (pad) pad.hidden = mode !== "quick";
+    if (mode !== "quick" && window.ndLoadDiceTray) window.ndLoadDiceTray();      // the 3-D tray's heavy scripts, only when it is shown
   }
   function save() {
     put(LS, JSON.stringify({ mode }));
