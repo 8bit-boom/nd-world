@@ -254,7 +254,7 @@ def test_floated_dice_page_uses_fetch_rolling(client, seed):
     assert 'id="dice-form"' in html
     # The tray re-renders from /api/dice/history via the shared ndPoll
     # helper — no full-page reload in the dice script itself.
-    assert "ndPoll(refresh, 5000)" in html
+    assert "ndPoll(refresh, 60000)" in html and "nd-signal" in html     # a slow fallback; the live "dice" signal refreshes at once
     assert "renderLog" in html
 
 

@@ -247,7 +247,8 @@
     }
     if (window.ndDiceTray) bootTray(); else window.addEventListener('nd-dice-tray-ready', bootTray);
 
-    ndPoll(refresh, 5000);
+    ndPoll(refresh, 60000);                 // fallback; the live stream's "dice" signal triggers a refresh at once
+    window.addEventListener('nd-signal', function (e) { if (e.detail && e.detail.name === 'dice') refresh(); });
   })();
   </script>
   {% endif %}

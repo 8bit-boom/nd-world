@@ -56,6 +56,33 @@ def version(world_id) -> int:
     return _VERSIONS.get(world_id, 0)
 
 
+# Named signals (efficiency plan, step 4): "spot" = the spotlight / now playing changed, "dice" = the shared dice log got a roll. Pages used to
+# poll for these every 4-5 s per open tab; the open live stream now says so instead and the page fetches once. Keyed by world, with a
+# "every world" counter for changes that are cheapest to announce to everyone (a spotlight cache clear).
+_SIGNALS: dict = {}
+_GLOBAL_SIGNALS: dict = {}
+
+
+def signal(world_id, name: str) -> None:
+    if world_id is None:
+        return
+    key = (world_id, name)
+    _SIGNALS[key] = _SIGNALS.get(key, 0) + 1
+
+
+def signal_all(name: str) -> None:
+    _GLOBAL_SIGNALS[name] = _GLOBAL_SIGNALS.get(name, 0) + 1
+
+
+def signals(world_id) -> dict:
+    """{name: (every-world counter, this world's counter)} - compared as a whole, so a change in either is news."""
+    out = {name: (v, 0) for name, v in _GLOBAL_SIGNALS.items()}
+    for (w, name), v in list(_SIGNALS.items()):
+        if w == world_id:
+            out[name] = (out.get(name, (0, 0))[0], v)
+    return out
+
+
 async def stream_world_events(world_id) -> AsyncIterator[str]:
     """The SSE event body: `event: version` frames whenever the counter
     moves, `: keep-alive` comments every _HEARTBEAT_EVERY seconds so
@@ -64,15 +91,23 @@ async def stream_world_events(world_id) -> AsyncIterator[str]:
     closure so tests can drive it directly — a TestClient streaming test
     of an infinite generator leaves the portal thread stuck."""
     last = None
+    last_sig = signals(world_id)          # signals are news only from now on: the page fetched its state when it loaded
     since_beat = 0.0
     # retry: reconnect quickly if the proxy drops us; nd-live.js's leader
     # election means only one connection per browser pays this cost.
     yield "retry: 3000\n\n"
     while True:
         v = version(world_id)
+        sig = signals(world_id)
+        changed = [n for n, c in sig.items() if last_sig.get(n) != c]
+        last_sig = sig
+        for name in changed:
+            yield f"event: signal\ndata: {name}\n\n"
         if v != last:
             last = v
             yield f"event: version\ndata: {v}\n\n"
+            since_beat = 0.0
+        elif changed:
             since_beat = 0.0
         else:
             since_beat += _POLL_EVERY

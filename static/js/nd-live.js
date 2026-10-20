@@ -74,6 +74,11 @@
       dispatch(e.data);
       try { channel.postMessage({ type: 'version', version: e.data }); } catch (err) {}
     });
+    // named signals ("spot", "dice"): a page that used to poll for them listens for window 'nd-signal' instead
+    es.addEventListener('signal', function (e) {
+      window.dispatchEvent(new CustomEvent('nd-signal', { detail: { name: e.data } }));
+      try { channel.postMessage({ type: 'signal', name: e.data }); } catch (err) {}
+    });
     // EventSource auto-reconnects on error; nothing to do.
   }
 
@@ -98,6 +103,8 @@
       if (!decided) { decided = true; becomeFollower(); }
     } else if (m.type === 'version') {
       dispatch(m.version);
+    } else if (m.type === 'signal') {
+      window.dispatchEvent(new CustomEvent('nd-signal', { detail: { name: m.name } }));
     }
   };
 

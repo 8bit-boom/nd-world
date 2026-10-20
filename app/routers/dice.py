@@ -147,6 +147,8 @@ def _save_roll(db: Session, request: Request, world, notation: str, breakdown: l
     )
     db.add(roll)
     db.commit()
+    from .. import live as _live
+    _live.signal(world.id, "dice")        # open dice pages fetch the log once instead of polling it
     return roll
 
 

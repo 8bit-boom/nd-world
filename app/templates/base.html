@@ -341,7 +341,9 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
       else { ndNowPlayingHide(); }
     }
   }
-  ndPoll(pollSpotlight, 4000);
+  // The live stream announces a change ("spot" signal) and the page asks once; a slow poll stays as the fallback if the stream is down.
+  ndPoll(pollSpotlight, 60000);
+  window.addEventListener('nd-signal', function (e) { if (e.detail && e.detail.name === 'spot') pollSpotlight(); });
 })();
 
 function ndSpotlightSuppressNextPoll() {

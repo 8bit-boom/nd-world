@@ -6518,7 +6518,16 @@ def hover_preview_config(db: Session = Depends(get_db)):
 # feature already polled every 4s. Bounded in practice by real users ×
 # worlds for a self-hosted app, so no eviction is needed.
 _SPOTLIGHT_CACHE_TTL = 2.0
-_spotlight_cache: dict[tuple, tuple[float, dict]] = {}
+class _SpotlightCache(dict):
+    """The spotlight answer cache; every route that changes the spotlight or now playing clears it - which is also the moment to tell the open
+    pages (the "spot" signal on /api/live) instead of having them poll every few seconds."""
+    def clear(self):
+        super().clear()
+        from . import live as _live
+        _live.signal_all("spot")
+
+
+_spotlight_cache: "dict[tuple, tuple[float, dict]]" = _SpotlightCache()
 
 
 @app.get("/api/spotlight")
