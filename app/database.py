@@ -620,9 +620,9 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     # durable across an app crash, which is the failure mode that matters for
     # a self-hosted single-writer app, and meaningfully faster on slow disks.
     cursor.execute("PRAGMA synchronous=NORMAL")
-    # Read-side tuning (per connection): a 64 MB page cache instead of the 2 MB default, up to 256 MB of the file memory-mapped (reads skip a
+    # Read-side tuning (per connection): a 16 MB page cache per connection instead of the 2 MB default, up to 256 MB of the file memory-mapped (reads skip a
     # copy), and temp tables / sort spills (ORDER BY on a big list) in memory. All of them only change speed, never what is stored.
-    cursor.execute("PRAGMA cache_size=-65536")
+    cursor.execute("PRAGMA cache_size=-16384")
     cursor.execute("PRAGMA mmap_size=268435456")
     cursor.execute("PRAGMA temp_store=MEMORY")
     cursor.close()

@@ -19,15 +19,23 @@ from .conftest import GM_PASSWORD, login
 REPO_ROOT = Path(__file__).parent.parent
 
 
+def _base_js():
+    """The page-wide scripts base.html used to carry inline (dropdowns, AI status dot, hover previews): they are cacheable files now
+    (static/js/nd-base-*.js, performance plan step 6), so their behaviour is checked in the files the page loads."""
+    return "\n".join(p.read_text() for p in sorted((REPO_ROOT / "static" / "js").glob("nd-base-*.js")))
+
+
 def test_dropdown_buttons_have_aria_haspopup_and_expanded(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert r.status_code == 200
     assert 'class="world-btn" aria-haspopup="true" aria-expanded="false"' in r.text
-    assert "function ndToggleDropdown(btn)" in r.text
-    assert "function ndCloseDropdowns(returnFocus)" in r.text
-    assert "e.key === 'Escape'" in r.text
+    js = _base_js()
+    assert "function ndToggleDropdown(btn)" in js
+    assert "function ndCloseDropdowns(returnFocus)" in js
+    assert "e.key === 'Escape'" in js
+    assert "/static/js/nd-base-dropdowns.js" in r.text                       # and the page does load that file
 
 
 def test_ai_dot_has_visually_hidden_status_text(client, seed):
@@ -36,7 +44,7 @@ def test_ai_dot_has_visually_hidden_status_text(client, seed):
     r = client.get("/")
     assert r.status_code == 200
     assert 'id="ai-dot-status" class="sr-only"' in r.text
-    assert "dotStatus.textContent" in r.text
+    assert "dotStatus.textContent" in _base_js()
 
 
 def test_icon_only_buttons_have_aria_labels(client, seed):
@@ -90,10 +98,11 @@ def test_hover_preview_mirrored_via_focusin_focusout(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert r.status_code == 200
-    assert "function handleAnchorEnter(a)" in r.text
-    assert "function handleAnchorLeave(a)" in r.text
-    assert "document.addEventListener('focusin'" in r.text
-    assert "document.addEventListener('focusout'" in r.text
+    js = _base_js()
+    assert "function handleAnchorEnter(a)" in js
+    assert "function handleAnchorLeave(a)" in js
+    assert "document.addEventListener('focusin'" in js
+    assert "document.addEventListener('focusout'" in js
 
 
 def test_rag_status_line_is_a_live_region_not_the_token_counter(client, seed):

@@ -9,7 +9,7 @@ from app.database import SessionLocal
 from app.main import UPLOADS_DIR
 from app.models import Entity, PlayerCharacter, SheetTemplate
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, base_js, login
 
 pytestmark = pytest.mark.usefixtures("client")
 
@@ -64,7 +64,7 @@ def test_hover_preview_offers_the_thumbnail_but_keeps_image_url_for_image_studio
     assert d["image_url"] == "/uploads/hovered.png" and d["thumb_url"] == "/uploads/hovered_thumb.webp"
     none = client.get(f"/api/entity/{_entity(seed, None)}/preview").json()
     assert not none["image_url"] and not none["thumb_url"]
-    assert "data.thumb_url || data.image_url" in client.get("/").text
+    assert "data.thumb_url || data.image_url" in client.get("/").text + base_js()
 
 
 def test_character_sheets_use_the_thumbnail_portrait(client, seed):

@@ -21,9 +21,12 @@
    (path, mtime_ns, size) so edits (rename/upload rewrite the file) bust
    it automatically and nothing can serve a stale map.
 """
+import asyncio as _asyncio
 import json as _json
+import os
 import re as _re
 import time as _time
+import weakref as _weakref
 from pathlib import Path as _Path
 
 from . import perf_log as _perf_log
@@ -33,6 +36,22 @@ from starlette.datastructures import MutableHeaders as _MutableHeaders
 
 # Paths whose responses are server-sent events — never gzip these.
 _SSE_EXACT = {"/api/live", "/api/chronicler/ask"}
+
+
+# Building a page is CPU work that holds Python's GIL, so more of them in flight than a couple only take turns slowly: measured on this app (home page,
+# 4 cores) 16 browsers at once gave 6 pages/s with 8-40 worker threads against 28 pages/s with 2, and a median wait of 4.8 s against 0.6 s.
+# So at most RENDER_SLOTS HTML page requests run at once (env ND_RENDERS, default 2); the rest wait their turn in the event loop, which costs nothing.
+# API calls, uploads, streams and static files are not gated.
+RENDER_SLOTS = max(1, int(os.environ.get("ND_RENDERS", "2") or 2))
+_GATES: "_weakref.WeakKeyDictionary" = _weakref.WeakKeyDictionary()      # one gate per event loop (a semaphore must not be shared between loops)
+
+
+def _gate():
+    loop = _asyncio.get_running_loop()
+    g = _GATES.get(loop)
+    if g is None:
+        g = _GATES[loop] = _asyncio.Semaphore(RENDER_SLOTS)
+    return g
 
 
 def _is_sse_path(path: str) -> bool:
@@ -68,9 +87,23 @@ class PerfMiddleware:
         rec = _perf_log.begin() if timed else None
         started = _time.perf_counter()
         status = {"code": 500}
+        # Page renders take turns (see RENDER_SLOTS): hold a slot from the request's arrival until its response STARTS (the headers go out when the
+        # page is built), so a slow download or a stream that runs on afterwards never keeps one.
+        gated = (timed and scope.get("method") == "GET" and not path.startswith(("/uploads/", "/api/"))
+                 and "text/html" in _MutableHeaders(scope=scope).get("accept", ""))
+        gate = _gate() if gated else None
+        if gate is not None:
+            await gate.acquire()
+        held = {"gate": gated}
+
+        def release():
+            if held["gate"]:
+                held["gate"] = False
+                gate.release()
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
+                release()
                 status["code"] = message["status"]
                 if path.startswith("/static/"):
                     headers = _MutableHeaders(scope=message)
@@ -80,6 +113,7 @@ class PerfMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
+            release()
             if timed:
                 route = getattr(scope.get("route"), "path", None) or _re.sub(r"\d+", "{n}", path)      # the route template, never the real URL
                 _perf_log.finish(rec, scope.get("method", "GET"), route, status["code"], started)

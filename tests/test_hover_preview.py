@@ -6,7 +6,7 @@ Settings > Options), and the POST /settings save round-trip for both.
 from app.database import SessionLocal
 from app.models import AppSettings, Entity
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, base_js, login
 
 
 def _make_entity(world_id, **kwargs):
@@ -281,7 +281,7 @@ def test_base_template_wires_up_hover_listener():
     handlers and the config fetch are present, matching the established
     style of source-string checks elsewhere in this suite for frontend-only
     behavior with no JS test runner."""
-    html = open("app/templates/base.html", encoding="utf-8").read()
+    html = open("app/templates/base.html", encoding="utf-8").read() + base_js()
     assert "/api/hover-preview/config" in html
     assert "a[href^=\"/entity/\"]" in html
     assert "addEventListener('mouseover'" in html
@@ -295,7 +295,7 @@ def test_base_template_has_hide_grace_period_not_immediate_hide():
     firing hidePopup() directly, is the old broken behavior this was
     fixed from. scheduleHide/cancelHide must both exist and mouseout must
     go through scheduleHide rather than calling hidePopup() immediately."""
-    html = open("app/templates/base.html", encoding="utf-8").read()
+    html = open("app/templates/base.html", encoding="utf-8").read() + base_js()
     assert "function scheduleHide" in html
     assert "function cancelHide" in html
     assert "popupEl.addEventListener('mouseenter', cancelHide)" in html

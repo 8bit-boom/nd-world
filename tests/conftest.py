@@ -264,3 +264,10 @@ def assert_no_nested_forms(html_text: str) -> None:
     checker = _FormNestingChecker()
     checker.feed(html_text)
     assert checker.max_depth <= 1, "a <form> is nested inside another <form> — browsers drop the inner one"
+
+
+def base_js():
+    """The page-wide scripts base.html used to carry inline - dropdowns, the AI status dot, the fetch guard with ndMicRecorder, hover previews. They are
+    cacheable files now (static/js/nd-base-*.js, performance plan step 6); a test that checks what every page ships reads them with the page."""
+    from pathlib import Path
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted((Path(__file__).parent.parent / "static" / "js").glob("nd-base-*.js")))

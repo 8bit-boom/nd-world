@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # ffmpeg/ffprobe — used to split a long session recording into chunks
 # before sending each to Unsloth Studio's speech-to-text

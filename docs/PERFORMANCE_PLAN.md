@@ -1,6 +1,6 @@
 # Making nd-world faster - plan
 
-Status: plan only, nothing here is built yet. It builds on the research note the user supplied (`nd-world_performance_research.md`,
+Status: BUILT (section 7 has what was done, what was measured, and what was not done). Written as a plan first; the numbers in section 2 are from before the fixes. It builds on the research note the user supplied (`nd-world_performance_research.md`,
 reviewed at `87ca2a9`) and adds my own measurements on `4db7dac`. Known setup: one container (`uvicorn app.main:app`, one process, Python
 3.12, SQLite in WAL mode on `/data`), the GM on a laptop (often with the cockpit open), 3-6 players on phones, and AI jobs (Ollama, image
 generation, transcription) on the same host.
@@ -120,3 +120,45 @@ HTML, blocking the event loop), not from Python being slow. A rewrite would carr
    an entity, search, maps, and your usual cockpit layout.
 3. A Chromium trace of your usual cockpit layout during a game night.
 4. The stress matrix with AI jobs running (research note, "Isolate AI contention").
+
+
+## 7. What was built, and what it measured
+
+Same machine, same seeded world (5,000 entities, 3,000 facts, 150 sessions), same harness (`scratchpad` copy of `scripts/perf_smoke.py`'s method).
+Single requests are the median of 5 in-process runs; the load numbers are a real `uvicorn` with `httpx` clients on the same 4-core machine.
+
+| Page (GM) | Before | After |
+|---|---|---|
+| `/facts` (3,000 facts) | 4,604 ms, 25 MB | **64 ms, 262 KB** |
+| `/sessions/<id>` | 621 ms, 477 KB | **67 ms, 241 KB** (about 200 KB of that is the page's own script) |
+| `/maps` | 569 ms | **52 ms** |
+| `/settings` | 244 ms, 1.7 MB | **20 ms, 137 KB** |
+| `/api/entities/picker` | 167 ms | **50 ms** (and a 304 with an ETag when nothing changed) |
+| `/` (home) | 66 ms, 80 KB | 58 ms, 57 KB |
+| entity page, lists, search, rules | 30-55 ms | 13-48 ms (10-30 % faster; 20-30 KB smaller) |
+
+| Under load (home page, 16 browsers at once) | Before | After |
+|---|---|---|
+| Pages per second | 2.7 (and `QueuePool limit ... reached` errors) | **26** |
+| Median wait | 30 s (the pool timeout) | **0.6 s** |
+| A cheap API call while two `/facts` pages render | 266 ms (worst 418) | **10 ms** (worst 15) |
+| Static CSS while four `/settings` pages render | worst 185 ms | worst 18 ms |
+
+### Step by step
+1. **Pool deadlock - done.** A request holds one connection (`get_db` parks the session on `request.state.db`; the template context processor, `saved_view` and the site layout read through it; every saved layout of a viewer is read in one query). The pool is 20 + 20 with a 10 s timeout. `tests/test_db_pool_budget.py` fails on the old code (2 connections at once) and passes now.
+2. **`/facts` - done.** One shared session list for the edit forms, the first group inline and the other groups fetched from `GET /facts/fragment` (all of them in one request when you search, expand all, or pick Timeline / Table), plus an LRU cache of rendered markdown.
+3. **The other heavy pages - done.** The NPC picker list loads on first use (`GET /sessions/{id}/npc-candidates`; saved picks ride along as hidden fields until it does, so saving never drops them), Settings > Visibility rows load when the tab opens (`GET /settings/visibility-rows`), the gallery scan reads plain columns and only text that contains an image, the entity picker reads four columns with an ETag.
+4. **Blocking work off the event loop - done in part.** The login/membership lookup on every request now runs in the worker threadpool; 30 route handlers that contained no `await` became plain `def` (run in threads). The other 63 awaitless handlers were left alone on purpose: they start background jobs with `asyncio.create_task`, stream, or call helpers that need the event loop, and a thread has none. 179 handlers that `await request.form()` / `.json()` and then do database work were not touched (splitting them is a larger, riskier change). **New in this step:** the render gate - at most 2 HTML page requests are built at once (`ND_RENDERS`); building a page holds Python's GIL, and more threads only took turns slowly (home page at 16 browsers: 6 pages/s with 8-40 threads, 28 with 2).
+5. **Caches - partly.** Rendered markdown is cached; nav menus and kinds were already cached per request or flag-cached, and measured as cheap, so they were not changed.
+6. **Static delivery - done.** `python -m app.precompress` (run in the Docker build) writes `.br` / `.gz` twins and `PerfMiddleware` serves them directly (no per-request compression); about 24 KB of inline script moved out of `base.html` into four cacheable files. Not measured end to end on a real phone.
+7. **Upload cache headers - done.** `private, max-age=31536000, immutable` for uploads (a shared cache such as Cloudflare must not keep a login-only picture), `private, no-cache` for map images.
+8. **SQLite tuning - done, measured neutral.** 16 MB page cache per connection, 256 MB `mmap_size`, in-memory temp storage. Removing them changed nothing measurable on this machine; they matter more on a slow disk and cost memory only as pages are read.
+9. **Runtime - done.** Python 3.13 in the Docker image and in CI (the suite passes on 3.13 except two tests that are skipped on 3.11 and fail on 3.13 only because of a pytest plugin mismatch in my scratch environment). `uvloop` and `httptools` were already in use. **Not done:** `orjson` (changing every JSON response is a bigger risk than the gain).
+10. **Measure all the time - done.** `app/perf_log.py` (route template, status, milliseconds, SQL count and database time; no URLs, query strings, names or bodies) behind `GET /api/perf/summary` and `/api/perf/recent`, a table on the System Monitor page, a slow-request log line above `ND_SLOW_MS` (800), `tests/test_perf_budgets.py` (size and query budgets on a seeded world) and `scripts/perf_smoke.py` for your own host.
+11. **Browser side - measured, nothing to change.** An idle cockpit with one window made 13 requests in 30 s (spotlight every 4 s, dice history every 5 s, both already paused in a hidden tab). I could not trace six or more live windows here, so a real trace of your normal layout is still worth doing.
+12. **AI contention - not measurable here.** There is no AI backend in this environment. `scripts/perf_smoke.py` is the tool to run three times on your server (AI idle, chat generating, image generating); what I could do from the code is size the pool for the worker threads and keep a page from holding a second connection, which is done.
+
+### Not done, and why
+- The stress matrix with real AI jobs (no AI here), a real-phone or Cloudflare timing run, and a real-host `docker stats` reading.
+- `orjson`, `--workers N`, PostgreSQL, a faster markdown library: the measurements did not call for them.
+- Splitting the 107 KB inline script of the session page into a cacheable file (it contains template values).
