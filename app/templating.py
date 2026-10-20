@@ -149,6 +149,7 @@ templates.env.globals["saved_view"] = _saved_view
 templates.env.globals["site_layout"] = site_layout.for_request
 templates.env.globals["view_titles"] = lambda: view_prefs.SECTION_TITLES
 templates.env.globals["all_view_specs"] = lambda: {k: view_prefs.spec(k) for k in view_prefs.SECTIONS}
+templates.env.globals["layout_presets"] = view_prefs.PRESETS
 # Last-resort default for the (nonexistent today) case of a template
 # rendered outside any request — real renders get the per-world merged
 # values from the context processor above.

@@ -58,6 +58,32 @@ async def view_prefs_save(section: str, request: Request, db: Session = Depends(
     return cleaned
 
 
+def apply_preset(db: Session, user_id: int, preset_id: str) -> dict:
+    """Save every layout a preset sets for one user (merged onto what they had); returns {section: cleaned}. KeyError if unknown."""
+    current = saved_for(db, user_id)
+    choices = view_prefs.preset_choices(preset_id, current)
+    for section, cleaned in choices.items():
+        row = db.query(UserViewPref).filter(UserViewPref.user_id == user_id, UserViewPref.section == section).first()
+        if row:
+            row.prefs_json = json.dumps(cleaned)
+        else:
+            db.add(UserViewPref(user_id=user_id, section=section, prefs_json=json.dumps(cleaned)))
+    db.commit()
+    return choices
+
+
+@router.post("/api/view-prefs/preset/{preset_id}")
+def view_prefs_preset(preset_id: str, request: Request, db: Session = Depends(get_db)):
+    """One click, several layouts (view_prefs.PRESETS) - each person's own, like every saved layout."""
+    user = _user(request)
+    if preset_id not in view_prefs.PRESETS:
+        raise HTTPException(404, "Unknown preset")
+    choices = apply_preset(db, user.id, preset_id)
+    if "site" in choices:
+        site_layout.remember(request, user.id, choices["site"])
+    return choices
+
+
 @router.delete("/api/view-prefs/{section}")
 def view_prefs_reset(section: str, request: Request, db: Session = Depends(get_db)):
     """Forget one saved layout (the page goes back to its default for this person)."""

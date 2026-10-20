@@ -366,6 +366,9 @@ class World(Base):
     # graph_context calls) alongside the existing FTS5 path when this is
     # set. NULL/"" = hybrid retrieval is off for this world.
     obsidian_vault_path = Column(String(1024), nullable=True)
+    # The layout preset (app.view_prefs.PRESETS) a player starts with when they join this world - applied once, only to someone with no
+    # saved layouts; blank = none. Each player can change everything afterwards.
+    layout_preset = Column(String(32), nullable=True)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")
 

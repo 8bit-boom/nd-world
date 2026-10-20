@@ -1208,6 +1208,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN font_size INTEGER DEFAULT 100"))
             if "obsidian_vault_path" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN obsidian_vault_path VARCHAR(1024)"))
+            if "layout_preset" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN layout_preset VARCHAR(32)"))
         # audio_clips table — add album_id if missing (added after the
         # table's initial ship in a prior release; existing clips get
         # NULL = top-level/unfiled, same as any newly-uploaded clip that

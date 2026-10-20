@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Races — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <style>
@@ -141,6 +142,8 @@
 </div>
 
 <!-- World races grids -->
+<div class="catalog-bar">{{ pl_bar("catalog") }}</div>
+<div class="catalog-wrap" {{ pl_attrs("catalog", request) }}>
 {% for tier in ['standard', 'advanced', 'exceptional'] + (['unsorted'] if world_by_tier.unsorted else []) %}
 <div id="tier-{{ tier }}" class="races-grid" style="{{ 'display:none' if not loop.first else '' }}">
   {% for e in world_by_tier[tier] %}
@@ -170,6 +173,7 @@
   {% endfor %}
 </div>
 {% endfor %}
+</div>
 
 <!-- Available built-in races -->
 {% if can_edit(request) and available_builtin %}

@@ -1,11 +1,13 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Worlds — N&D World{% endblock %}
 {% block content %}
 <div class="list-header">
   <h1>🌐 WORLDS</h1>
 </div>
 
-<div class="worlds-grid">
+{{ pl_bar("worlds") }}
+<div class="worlds-grid" {{ pl_attrs("worlds", request) }}>
   {% for w in worlds %}
   <div class="world-card {% if current and current.id == w.id %}active{% endif %}" style="--w-accent: {{ w.accent }};position:relative">
     <div class="world-card-accent"></div>

@@ -40,6 +40,7 @@ from . import map_rooms as _map_rooms_mod
 from . import map_strict as _map_strict
 from . import markup_locator as _markup_locator
 from . import personal_files as _personal_files
+from . import view_prefs
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
@@ -487,7 +488,7 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path == "/account" or path.startswith("/account/"):
         return True
     # saved layouts: every signed-in user reads and writes only their own (routers/view_prefs_api.py)
-    if path == "/api/view-prefs" or re.match(r"^/api/view-prefs/[a-z_]{1,32}$", path):
+    if path == "/api/view-prefs" or re.match(r"^/api/view-prefs/(preset/)?[a-z_]{1,32}$", path):
         return True
     if re.match(r"^/api/worlds/\d+/characters/sync$", path):
         return True
@@ -1853,6 +1854,7 @@ def world_edit_post(
     personal_images_max: Optional[str] = Form(None),
     personal_audio_max: Optional[str] = Form(None),
     personal_video_max: Optional[str] = Form(None),
+    layout_preset: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     w = db.get(World, world_id)
@@ -1885,6 +1887,8 @@ def world_edit_post(
     w.obsidian_vault_path = obsidian_vault_path.strip() or None
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
+    if layout_preset is not None:                       # None = not in the form (an older cached page): keep it
+        w.layout_preset = layout_preset if layout_preset in view_prefs.PRESETS else None
     # None = not in the form (an older cached page): keep what the GM set. Blank -> the default, a number -> that many (0 = off).
     for _kind, _raw in (("image", personal_images_max), ("audio", personal_audio_max), ("video", personal_video_max)):
         if _raw is not None:

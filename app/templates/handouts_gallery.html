@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Handouts — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="padding:1.5rem 2rem;max-width:940px">
@@ -16,7 +17,8 @@
     <button onclick="selectAll()" class="btn-cancel" style="font-size:.75rem;padding:.2rem .5rem">Select All</button>
     <button onclick="clearSel()" class="btn-cancel" style="font-size:.75rem;padding:.2rem .5rem">Clear</button>
   </div>
-  <div id="entity-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.6rem">
+  {{ pl_bar("handouts") }}
+  <div id="entity-grid" class="ho-grid" {{ pl_attrs("handouts", request) }}>
     {% for e in entities %}
     <div class="ho-ent-card" data-kind="{{ e.kind }}" data-id="{{ e.id }}"
       onclick="toggleSel(this)"

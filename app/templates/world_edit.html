@@ -50,6 +50,14 @@
       </div>
       <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">The world-wide baseline everyone sees — a player's own personal UI-scale zoom (Settings ▸ Options) still applies on top of this.</p>
     </div>
+    <div class="form-group">
+      <label for="layout-preset">Starting layout for new players</label>
+      <select id="layout-preset" name="layout_preset">
+        <option value="">None - the app's defaults</option>
+        {% for pid, p in layout_presets.items() %}<option value="{{ pid }}" {% if edit_world.layout_preset == pid %}selected{% endif %}>{{ p.label }}</option>{% endfor %}
+      </select>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Set once for a player who joins this world with no saved layouts of their own; each player can change every layout afterwards (Account ▸ Layout &amp; appearance).</p>
+    </div>
     <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-see-party" name="players_see_party" value="1"
              style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_see_party %}checked{% endif %}>

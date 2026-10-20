@@ -6,6 +6,13 @@
   <script type="application/json" id="site-titles">{{ view_titles()|tojson }}</script>
   <div id="sl-groups" style="display:flex;flex-direction:column;gap:1rem"></div>
 
+  <h3 style="font-size:.82rem;color:var(--text-dim);margin:1.4rem 0 .4rem">Presets</h3>
+  <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 .5rem">One click sets several layouts at once (your theme, size and pinned pages stay). Change any of them afterwards.</p>
+  <div id="sl-presets" style="display:flex;flex-wrap:wrap;gap:.4rem">
+    {% for pid, p in layout_presets.items() %}<button type="button" class="btn-secondary" data-preset="{{ pid }}" title="{% for sec, val in p.sets.items() %}{{ view_titles().get(sec, sec) }}: {{ val.values()|join(', ') if val is mapping else val }}{% if not loop.last %} · {% endif %}{% endfor %}">{{ p.label }}</button>{% endfor %}
+  </div>
+  <p id="sl-preset-msg" role="status" style="font-size:.78rem;color:var(--text-dim);margin:.3rem 0 0"></p>
+
   <h3 style="font-size:.82rem;color:var(--text-dim);margin:1.4rem 0 .4rem">Your saved layouts</h3>
   <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 .5rem">Each list page, the character page and the cockpit remember the layout you last picked there. Reset one to go back to how it was.</p>
   <div id="sl-saved" style="display:flex;flex-direction:column;gap:.35rem"></div>
@@ -32,6 +39,16 @@
   const h = (tag, props, ...kids) => { const e = document.createElement(tag); Object.entries(props || {}).forEach(([k, v]) => { if (v == null || v === false) return; if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v === true ? '' : v); }); kids.flat().forEach(c => { if (c != null) e.append(c.nodeType ? c : document.createTextNode(String(c))); }); return e; };
   const specs = JSON.parse(document.getElementById('site-specs').textContent), titles = JSON.parse(document.getElementById('site-titles').textContent);
   const groups = document.getElementById('sl-groups');
+  document.querySelectorAll('#sl-presets [data-preset]').forEach(b => b.addEventListener('click', async () => {
+    const msg = document.getElementById('sl-preset-msg');
+    b.disabled = true; msg.textContent = 'Applying ' + b.textContent + '…';
+    try {
+      const r = await fetch('/api/view-prefs/preset/' + encodeURIComponent(b.dataset.preset), { method: 'POST' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      try { localStorage.removeItem('nd_site'); } catch (e) {}
+      location.reload();                              // the shell and every saved layout below are rendered from the account
+    } catch (e) { b.disabled = false; msg.textContent = '⚠ ' + e.message; }
+  }));
 
   const radios = (legend, key, choices) => {
     const fs = h('fieldset', {}, h('legend', { text: legend }));

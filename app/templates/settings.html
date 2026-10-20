@@ -1,8 +1,12 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Settings — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div class="form-page" style="max-width:{{ '960px' if active_tab in ('visibility', 'navigation', 'diagnostics') else '640px' }}">
+<div class="form-page" {{ pl_attrs("settings_page", request) }} style="max-width:{{ '960px' if active_tab in ('visibility', 'navigation', 'diagnostics') else '640px' }}">
   <h1>⚙ Settings</h1>
+  {{ pl_bar("settings_page") }}
+  <input type="search" id="settings-q" class="settings-q" placeholder="Find a setting…" aria-label="Find a setting"/>
+  <p id="settings-q-none" class="settings-q-none" hidden>No setting matches.</p>
 
   <div class="settings-tab-bar">
     <button type="button" class="settings-tab {% if active_tab == 'options' %}active{% endif %}" id="tab-options" onclick="switchSettingsTab('options')">Options</button>
@@ -1649,4 +1653,5 @@ function ndCopyRestartCmd() {
   syncSectionAccessHidden();
 })();
 </script>
+<script src="/static/js/settings-onepage.js?v={{ asset_v('js/settings-onepage.js') }}"></script>
 {% endblock %}

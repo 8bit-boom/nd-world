@@ -2734,3 +2734,33 @@ body.home-night-on .home-edit-link { display: none; }
 .cal-weeknav-label { font-size: .85rem; color: var(--text-dim); min-width: 8rem; text-align: center; }
 .cal-grid.cal-week .cal-cell { min-height: 14rem; }
 .party-page[data-view="dashboard"] > :not(form):not([style*="--bg2"]) { grid-column: 1 / -1; }   /* banners and the action row stay full width; the cards tile */
+
+/* ── Phase 7: races / professions catalog (section "catalog") ── */
+.catalog-bar { padding: 0 1.5rem; }
+.catalog-wrap[data-view="table"] :is(.races-grid, .professions-grid) { display: flex; flex-direction: column; gap: .3rem; }
+.catalog-wrap[data-view="table"] :is(.race-card, .profession-card) { display: flex; align-items: center; gap: .8rem; }
+.catalog-wrap[data-view="table"] :is(.race-card-img, .race-card-placeholder, .profession-card-img, .profession-card-placeholder) { width: 56px; min-width: 56px; height: 56px; font-size: 1.4rem; }
+.catalog-wrap[data-view="table"] :is(.race-card-body, .profession-card-body) { flex: 1; min-width: 0; }
+.catalog-wrap[data-view="table"] :is(.race-card-actions, .profession-card-actions) { position: static; opacity: 1; }
+.catalog-wrap[data-view="compact"] :is(.races-grid, .professions-grid) { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .4rem; }
+.catalog-wrap[data-view="compact"] :is(.race-card-img, .race-card-placeholder, .race-card-summary, .profession-card-img, .profession-card-placeholder, .profession-card-summary) { display: none; }
+.catalog-wrap[data-view="compact"] :is(.race-card-body, .profession-card-body) { padding: .45rem .6rem; }
+.worlds-grid[data-view="list"] { grid-template-columns: 1fr; gap: .5rem; }
+.worlds-grid[data-view="list"] .world-card-body { padding: .55rem .9rem; }
+.ho-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .6rem; }
+.ho-grid[data-view="list"] { grid-template-columns: 1fr; gap: .3rem; }
+.ho-grid[data-view="list"] .ho-ent-card { display: flex; gap: .8rem; align-items: baseline; padding: .4rem .8rem !important; }
+.tpl-list { display: flex; flex-direction: column; gap: .75rem; }
+.tpl-list[data-view="grid"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); align-items: start; }
+
+/* ── Settings: One page + search (section "settings_page", static/js/settings-onepage.js) ── */
+.settings-q, .settings-q-none, .sp-head { display: none; }
+.form-page[data-view="onepage"] { max-width: 960px !important; }
+.form-page[data-view="onepage"] [id^="pane-"] { display: block !important; }
+.form-page[data-view="onepage"] .sp-head { display: block; color: var(--neon); font-size: 1.05rem; margin: 1.6rem 0 .4rem; padding-top: .6rem; border-top: 1px solid var(--border); scroll-margin-top: 7rem; }
+.form-page[data-view="onepage"] [id^="pane-"] { scroll-margin-top: 7rem; }
+.form-page[data-view="onepage"] .settings-tab-bar { position: sticky; top: 0; z-index: 5; background: var(--bg); }
+.form-page[data-view="onepage"] .settings-tab.active { border-color: var(--border); color: inherit; }
+.form-page[data-view="onepage"] .settings-q { display: block; width: 100%; box-sizing: border-box; margin: .5rem 0; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .5rem .7rem; border-radius: 4px; font-family: var(--font); }
+.form-page[data-view="onepage"] .settings-q-none:not([hidden]) { display: block; color: var(--text-dim); }
+.form-page[data-view="onepage"] .sp-miss { display: none !important; }

@@ -58,6 +58,7 @@ MODE_LABELS = {
     "month": ("🗓", "Month"),
     "week": ("▭", "Week"),
     "mapfull": ("🗺", "Map only"),
+    "onepage": ("📜", "One page + search"),
     "withside": ("◧", "Chat + side panel"),
     "panel": ("◧", "Map + list"),
 }
@@ -181,7 +182,7 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "settings_page": "Settings", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
@@ -219,8 +220,9 @@ for _id, _modes, _labels in (
     ("catalog", ["grid", "table", "compact"], {"grid": "Cards", "compact": "Compact"}),
     ("handouts", ["grid", "list"], {}),
     ("worlds", ["grid", "list"], {"grid": "Cards"}),
-    ("templates", ["grid", "list"], {"grid": "Cards"}),
+    ("templates", ["list", "grid"], {"grid": "Cards"}),
     ("calendar_view", ["month", "week"], {}),
+    ("settings_page", ["tabs", "onepage"], {}),
     ("ai_chat", ["withside", "focus"], {"focus": "Chat only"}),
     ("map_viewer", ["mapfull", "panel"], {"mapfull": "Map only", "panel": "Map + list"}),
 ):
@@ -279,4 +281,28 @@ def clean(section: str, raw) -> dict:
         out["options"] = {k: (str(given.get(k)) if str(given.get(k)) in allowed else allowed[0]) for k, allowed in s["options"].items()}
         pins = raw.get("pins") if isinstance(raw.get("pins"), list) else []
         out["pins"] = list(dict.fromkeys(p for p in pins if isinstance(p, str) and re.fullmatch(r"[a-z0-9_-]{1,40}", p)))[: s.get("max_pins", 6)]
+    return out
+
+
+# Presets: one click sets several layouts (Account -> Layout & appearance, POST /api/view-prefs/preset/{id}). "site" lists only the options the
+# preset changes - the person's theme, scale and pins stay; every other entry is a mode. A world may name one as the starting point for players
+# who join it (World.layout_preset, applied once when they join and have no saved layouts of their own).
+PRESETS = {
+    "table_night": {"label": "Table night (GM laptop)", "sets": {"site": {"nav": "rail", "density": "compact"}, "cockpit": "rail", "combat": "compact"}},
+    "prep": {"label": "Prep (GM)", "sets": {"site": {"width": "wide"}, "entity_page": "cols", "facts": "table"}},
+    "player_phone": {"label": "Player phone", "sets": {"site": {"nav": "bottom", "density": "touch"}, "hub": "play", "entity_page": "tabs", "recap": "sections"}},
+    "reading": {"label": "Reading", "sets": {"site": {"width": "reading"}, "entity_page": "reader", "rules": "book"}},
+}
+
+
+def preset_choices(preset_id: str, current: dict) -> dict:
+    """{section: cleaned choice} a preset saves, merged onto the person's `current` saved choices ({section: cleaned}). KeyError if unknown."""
+    out = {}
+    for section, val in PRESETS[preset_id]["sets"].items():
+        base = dict(current.get(section) or clean(section, {}))
+        if section == "site":
+            base["options"] = {**base.get("options", {}), **val}
+        else:
+            base["mode"] = val
+        out[section] = clean(section, base)
     return out

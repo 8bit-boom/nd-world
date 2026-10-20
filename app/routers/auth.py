@@ -7,10 +7,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import auth
-from .. import site_layout
+from .. import site_layout, view_prefs
 from .. import totp as _totp
 from ..database import get_db
-from ..models import InviteCode, TrustedDevice, User, World, WorldMembership
+from ..models import InviteCode, TrustedDevice, User, UserViewPref, World, WorldMembership
+from .view_prefs_api import apply_preset
 from ..templating import templates
 
 router = APIRouter()
@@ -410,6 +411,18 @@ def _invite_error(invite):
     return None
 
 
+def _start_with_world_layout(request: Request, db: Session, user: User, world_id: int) -> None:
+    """A world's starting layout preset (World.layout_preset), for a player with no saved layouts yet - never over their own choices."""
+    world = db.get(World, world_id)
+    if not world or world.layout_preset not in view_prefs.PRESETS:
+        return
+    if db.query(UserViewPref).filter(UserViewPref.user_id == user.id).first():
+        return
+    choices = apply_preset(db, user.id, world.layout_preset)
+    if "site" in choices:
+        site_layout.remember(request, user.id, choices["site"])
+
+
 def _redeem(request: Request, db: Session, invite: InviteCode):
     user_id = request.session.get("user_id")
     user = db.query(User).filter(User.id == user_id).first()
@@ -425,6 +438,7 @@ def _redeem(request: Request, db: Session, invite: InviteCode):
             db.add(WorldMembership(world_id=invite.world_id, user_id=user.id, role="player"))
             invite.uses_count = (invite.uses_count or 0) + 1
             db.commit()
+            _start_with_world_layout(request, db, user, invite.world_id)
     world = db.query(World).filter(World.id == invite.world_id).first()
     resp = RedirectResponse("/", status_code=303)
     if world:
