@@ -31,7 +31,7 @@ def _current_user_id(request: Request):
 
 
 @router.get("/api/quests/board")
-async def quests_board(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def quests_board(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Active top-level quests as JSON for the GM Cockpit's quests panel —
     the same slice the old fixed cockpit rendered server-side. GM-only
     (not in _is_player_safe; the handler re-checks)."""
@@ -414,7 +414,7 @@ async def quests_suggest_start(request: Request, db: Session = Depends(get_db), 
 
 
 @router.get("/api/quests/suggest/{job_id}")
-async def quests_suggest_poll(job_id: int):
+def quests_suggest_poll(job_id: int):
     """Poll a quest-sync job: running (with elapsed seconds), done (with the
     draft suggestions), or error (with the reason)."""
     job = _QUEST_SUGGEST_JOBS.get(job_id)

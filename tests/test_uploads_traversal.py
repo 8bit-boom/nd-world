@@ -48,7 +48,8 @@ def test_legitimate_upload_gets_immutable_cache_control(client, seed):
     (portraits / "legit.png").write_bytes(b"\x89PNG\r\n\x1a\nfake-but-fine")
     r = client.get("/uploads/portraits/legit.png")
     assert r.status_code == 200
-    assert r.headers.get("cache-control") == "public, max-age=31536000, immutable"
+    # `private`: the route needs a login, so a shared cache (a CDN in front of the app) must never keep a copy of a possibly GM-only picture
+    assert r.headers.get("cache-control") == "private, max-age=31536000, immutable"
 
 
 def test_map_upload_is_not_cached_immutably(client, seed):
@@ -63,6 +64,7 @@ def test_map_upload_is_not_cached_immutably(client, seed):
     r = client.get("/uploads/maps/some-world.webp")
     assert r.status_code == 200
     assert "immutable" not in r.headers.get("cache-control", "")
+    assert r.headers.get("cache-control") == "private, no-cache"       # revalidated every time, and never in a shared cache
 
 
 def test_legacy_svg_forced_to_download(client, seed):

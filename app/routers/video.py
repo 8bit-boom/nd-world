@@ -596,7 +596,7 @@ async def video_attach(clip_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/video/upload/chunk")
-async def video_upload_chunk(
+def video_upload_chunk(
     request: Request, file: UploadFile = File(...),
     upload_id: str = Form(...), chunk_index: int = Form(...),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
@@ -662,7 +662,7 @@ async def video_upload_complete(
 
 
 @router.post("/video/{clip_id}/edit")
-async def video_edit(
+def video_edit(
     clip_id: int, request: Request, name: str = Form(""), description: str = Form(""),
     visible_to_players: Optional[str] = Form(None), album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),

@@ -4,7 +4,9 @@ import os
 import shutil
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from fastapi import Request
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from .models import (
@@ -583,7 +585,11 @@ def _upgrade_builtin_sheet_fields(db):
             row.fields_json = json.dumps(fields)
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+# pool: one connection per worker thread (Starlette's threadpool has 40 tokens) with a short wait, so a stall shows up as an error in seconds
+# instead of every request hanging for the default 30 s
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}, pool_size=20, max_overflow=20, pool_timeout=10)
+from . import perf_log as _perf_log   # per-request statement counts and database time (app/perf_log.py)
+_perf_log.install(engine)
 
 # Where app.main's POST /admin/backup/restore extracts an uploaded Full
 # Backup zip to. Staging (rather than swapping the live database in place
@@ -614,6 +620,11 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     # durable across an app crash, which is the failure mode that matters for
     # a self-hosted single-writer app, and meaningfully faster on slow disks.
     cursor.execute("PRAGMA synchronous=NORMAL")
+    # Read-side tuning (per connection): a 64 MB page cache instead of the 2 MB default, up to 256 MB of the file memory-mapped (reads skip a
+    # copy), and temp tables / sort spills (ORDER BY on a big list) in memory. All of them only change speed, never what is stored.
+    cursor.execute("PRAGMA cache_size=-65536")
+    cursor.execute("PRAGMA mmap_size=268435456")
+    cursor.execute("PRAGMA temp_store=MEMORY")
     cursor.close()
 
 
@@ -1479,7 +1490,26 @@ def _seed():
     finally:
         db.close()
 
-def get_db():
+def get_db(request: Request = None):
+    """The route's session. It is also parked on `request.state.db` so the things that run while the page renders (the template context
+    processor, `saved_view`, the site layout) read through THIS session instead of opening a second one: a request used to hold two pool
+    connections at once, and with enough renders in flight every thread held one and waited for another until the pool timeout."""
+    db = SessionLocal()
+    if request is not None:
+        request.state.db = db
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def request_session(request):
+    """The request's own session when a route has one (see get_db), else a short-lived session that is closed afterwards."""
+    db = getattr(getattr(request, "state", None), "db", None)
+    if db is not None:
+        yield db
+        return
     db = SessionLocal()
     try:
         yield db

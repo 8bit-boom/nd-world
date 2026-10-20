@@ -1,0 +1,1 @@
+{% for group in groups %}<div data-frag="{{ group.session.id if group.session else 'none' }}">{% include "facts/_cards.html" %}</div>{% endfor %}

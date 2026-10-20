@@ -18,11 +18,10 @@ def defaults() -> dict:
     return {"options": c["options"], "pins": c["pins"]}
 
 
-def _from_db(user_id: int) -> dict:
-    from .database import SessionLocal
+def _from_db(user_id: int, request=None) -> dict:
+    from .database import request_session
     from .models import UserViewPref
-    db = SessionLocal()
-    try:
+    with request_session(request) as db:
         row = db.query(UserViewPref).filter(UserViewPref.user_id == user_id, UserViewPref.section == "site").first()
         if not row:
             return defaults()
@@ -31,13 +30,11 @@ def _from_db(user_id: int) -> dict:
         except ValueError:
             return defaults()
         return {"options": c["options"], "pins": c["pins"]}
-    finally:
-        db.close()
 
 
 def remember(request, user_id: int, cleaned: dict | None = None) -> dict:
     """Put the person's site layout in the session (from `cleaned` - what was just saved - or from the database)."""
-    value = {"options": cleaned["options"], "pins": cleaned["pins"]} if cleaned else _from_db(user_id)
+    value = {"options": cleaned["options"], "pins": cleaned["pins"]} if cleaned else _from_db(user_id, request)
     try:
         request.session[SESSION_KEY] = {**value, "at": int(time.time()), "uid": user_id}
     except Exception:       # no session middleware (a bare test render): nothing to remember it in

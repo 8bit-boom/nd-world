@@ -507,7 +507,7 @@ def api_characters_catalog():
 
 
 @router.post("/api/characters/upload-image")
-async def character_upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def character_upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Backs the shared formatting toolbar's image button on the
     backstory/notes textareas (app/templates/characters/form.html) — a
     player-reachable equivalent of main.py's /api/upload-image, since a
@@ -535,7 +535,7 @@ def _upload_media(file: UploadFile, db: Optional[Session] = None):
 
 
 @router.post("/api/characters/upload-media")
-async def character_upload_media(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def character_upload_media(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Backs the shared formatting toolbar's media button/drag-drop/paste on
     the backstory/notes textareas — see api_upload_media (app/main.py) for
     the GM-only equivalent this mirrors."""

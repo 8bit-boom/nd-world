@@ -197,7 +197,7 @@ async def template_ai_start(request: Request,
 
 
 @router.get("/api/sheet-templates/ai/{job_id}")
-async def template_ai_poll(job_id: int, request: Request):
+def template_ai_poll(job_id: int, request: Request):
     """Poll a template-draft job. GM only."""
     if not _is_gm(request):
         raise HTTPException(403)

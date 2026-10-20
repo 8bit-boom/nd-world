@@ -6,9 +6,9 @@ app/models.py) without having to hunt through individual entities."""
 import json
 import re
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
-from .models import Entity, ImageAlbum, MediaTitle, PlayerCharacter, World
+from .models import Entity, EntityNote, ImageAlbum, MediaTitle, PlayerCharacter, World
 
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 
@@ -67,19 +67,32 @@ def discover_world_images(db: Session, world: World) -> list:
     # lazy-loads once per entity — one extra SQL query per entity in the
     # world, every single /images page load. This batches all of them into
     # one additional query (a single `WHERE entity_id IN (...)`) instead.
-    entities = (
-        db.query(Entity).options(selectinload(Entity.notes))
-        .filter(Entity.world_id == world.id).all()
-    )
-    for e in entities:
-        href = f"/entity/{e.id}"
-        if e.image_url:
-            _add(e.image_url, e.name, href)
-        for url in _extract_md_images(e.body):
-            _add(url, e.name, href)
-        for note in e.notes:
-            for url in _extract_md_images(note.content):
-                _add(url, f"{e.name} (note)", href)
+    # Plain columns, not Entity objects: only the portrait, the body text and the notes matter here, and the text is pre-filtered in SQL to rows that
+    # contain a markdown image at all ("![") - building 5,000 ORM objects and regex-scanning every body made this the slowest part of /maps for a GM.
+    names = {}
+    portraits = {}
+    for eid, name, image_url in db.query(Entity.id, Entity.name, Entity.image_url).filter(Entity.world_id == world.id).order_by(Entity.id).all():
+        names[eid] = name
+        if image_url:
+            portraits[eid] = image_url
+    body_urls = {eid: body for eid, body in db.query(Entity.id, Entity.body).filter(Entity.world_id == world.id, Entity.body.contains("![")).all()}
+    note_rows: dict = {}
+    for eid, content in (
+        db.query(EntityNote.entity_id, EntityNote.content)
+        .join(Entity, Entity.id == EntityNote.entity_id)
+        .filter(Entity.world_id == world.id, EntityNote.content.contains("!["))
+        .order_by(EntityNote.id).all()
+    ):
+        note_rows.setdefault(eid, []).append(content)
+    for eid, name in names.items():
+        href = f"/entity/{eid}"
+        if eid in portraits:
+            _add(portraits[eid], name, href)
+        for url in _extract_md_images(body_urls.get(eid)):
+            _add(url, name, href)
+        for content in note_rows.get(eid, ()):
+            for url in _extract_md_images(content):
+                _add(url, f"{name} (note)", href)
 
     pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id).all()
     for pc in pcs:

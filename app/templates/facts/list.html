@@ -175,39 +175,7 @@
         {% endif %}
       </summary>
       <div style="display:flex;flex-direction:column;gap:.5rem;padding-bottom:.75rem">
-        {% for f in group.facts %}
-        <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
-          <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md_for(request) | safe }}</div>
-          {% if f.tags %}
-          <div class="tags">{% for t in f.tags.split(',') if t.strip() %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
-          {% endif %}
-          <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
-            <textarea name="content" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
-            <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem;flex-wrap:wrap">
-              <select name="game_session_id">
-                <option value="">— none —</option>
-                {% for s in sessions.values() %}<option value="{{ s.id }}" {% if f.game_session_id == s.id %}selected{% endif %}>#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
-              </select>
-              <input name="tags" placeholder="tags, comma, separated" value="{{ f.tags or '' }}"
-                     style="flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
-              <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
-                <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
-                Visible to players
-              </label>
-              <button type="submit" class="en-btn">Save</button>
-              <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Cancel</button>
-            </div>
-          </form>
-          <div class="en-note-footer">
-            <span class="en-note-date">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at else '' }}</span>
-            <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
-            <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
-            <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
-              <button type="submit" class="en-btn en-btn-del">Delete</button>
-            </form>
-          </div>
-        </div>
-        {% endfor %}
+        {% if loop.first %}{% include "facts/_cards.html" %}{% else %}<div data-facts-lazy="{{ group.session.id if group.session else 'none' }}" style="color:var(--text-dim);font-size:.82rem">Loading {{ group.facts|length }} fact{{ 's' if group.facts|length != 1 else '' }}…</div>{% endif %}
       </div>
     </details>
     {% endfor %}
@@ -219,16 +187,47 @@
 
 <script src="/static/js/facts-recap-parser.js?v={{ asset_v('js/facts-recap-parser.js') }}"></script>
 <script>
+const FACT_SESSIONS = {{ session_options | tojson }};      // the session list once, for every fact's edit form (filled when it is opened)
 function toggleFactEdit(id) {
   const view = document.getElementById('fact-view-' + id);
   const form = document.getElementById('fact-edit-' + id);
   const editing = form.style.display !== 'none';
+  if (!editing) {
+    const sel = form.querySelector('select[data-fact-session]');
+    if (sel && sel.options.length < 2) {
+      FACT_SESSIONS.forEach(o => { const opt = document.createElement('option'); opt.value = o.id; opt.textContent = o.label; sel.appendChild(opt); });
+      sel.value = sel.dataset.factSession || '';
+    }
+  }
   form.style.display = editing ? 'none' : 'block';
   view.style.display = editing ? '' : 'none';
 }
 
+// Groups other than the first arrive on demand: GET /facts/fragment?keys=<session ids or none> returns their cards (same access, same GM-only filtering).
+const FACTS_WQ = {{ (('?w=' ~ world.slug) if world else '') | tojson }};
+function factsPending() { return Array.from(document.querySelectorAll('[data-facts-lazy]')); }
+let _factsLoading = null;
+function factsLoad(keys) {
+  const want = keys.filter(k => document.querySelector('[data-facts-lazy="' + k + '"]'));
+  if (!want.length) return Promise.resolve();
+  const url = '/facts/fragment?keys=' + encodeURIComponent(want.join(',')) + (FACTS_WQ ? '&' + FACTS_WQ.slice(1) : '');
+  return fetch(url).then(r => r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))).then(html => {
+    const tpl = document.createElement('template'); tpl.innerHTML = html;
+    tpl.content.querySelectorAll('[data-frag]').forEach(frag => {
+      const slot = document.querySelector('[data-facts-lazy="' + frag.dataset.frag + '"]');
+      if (slot) slot.replaceWith(...frag.childNodes);
+    });
+    want.forEach(k => { const left = document.querySelector('[data-facts-lazy="' + k + '"]'); if (left) left.remove(); });   // a group with no visible facts left
+  }).catch(e => { want.forEach(k => { const el = document.querySelector('[data-facts-lazy="' + k + '"]'); if (el) el.textContent = '⚠ Could not load these facts (' + e.message + ') - reopen the group to retry.'; }); });
+}
+function factsLoadAll() { return factsLoad(factsPending().map(el => el.dataset.factsLazy)); }
+document.querySelectorAll('[data-facts-group]').forEach(g => g.addEventListener('toggle', () => {
+  if (g.open) factsLoad(Array.from(g.querySelectorAll('[data-facts-lazy]')).map(el => el.dataset.factsLazy));
+}));
+
 function factsSetAllGroups(open) {
   document.querySelectorAll('[data-facts-group]').forEach(g => { g.open = open; });
+  if (open) factsLoadAll();
 }
 // Timeline and Table read every session at once: open them all when the layout is chosen (By session keeps the accordions as they were)
 (function () {
@@ -250,6 +249,7 @@ function factsSetAllGroups(open) {
 let _factsPreSearchOpen = null;
 function factsSearch(v) {
   const q = (v || '').trim().toLowerCase();
+  if (q && factsPending().length) { factsLoadAll().then(() => factsSearch(v)); return; }       // searching reads every fact: fetch the groups still unloaded first
   const groups = Array.from(document.querySelectorAll('[data-facts-group]'));
   const countEl = document.getElementById('facts-search-count');
   if (!q) {

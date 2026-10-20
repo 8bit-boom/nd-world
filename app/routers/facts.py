@@ -98,7 +98,7 @@ def _bump_recap_content_touch(world) -> None:
     world.recap_content_touch = datetime.utcnow()
 
 
-def _fact_groups(db: Session, world_id: int, sessions: dict, visible_only: bool = False) -> list:
+def _fact_groups(db: Session, world_id: int, sessions: dict, visible_only: bool = False, only=None) -> list:
     """Buckets every Fact in the world by its game_session — the flat,
     single reverse-chronological list this used to build became unusable
     once a world had more than one session's worth of facts logged: every
@@ -120,6 +120,13 @@ def _fact_groups(db: Session, world_id: int, sessions: dict, visible_only: bool 
         # (player or assistant) must not get it listed at all, matching
         # EntityNote's visible_to_players.is_(True) filter on entity notes.
         q = q.filter(Fact.visible_to_players.isnot(False))
+    if only is not None:                                   # GET /facts/fragment: just these groups ("none" = facts without a session)
+        ids = [k for k in only if isinstance(k, int)]
+        cond = Fact.game_session_id.in_(ids) if ids else None
+        if "none" in only:
+            unfiled = Fact.game_session_id.is_(None) | ~Fact.game_session_id.in_(list(sessions) or [-1])
+            cond = unfiled if cond is None else cond | unfiled
+        q = q.filter(cond) if cond is not None else q.filter(False)
     facts = q.order_by(Fact.created_at.asc(), Fact.id.asc()).all()
     by_session: dict = {}
     unsessioned = []
@@ -199,9 +206,30 @@ def facts_list(request: Request, db: Session = Depends(get_db), active_world: st
     return templates.TemplateResponse("facts/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "groups": groups, "sessions": sessions,
+        "session_options": [{"id": s.id, "label": f"#{s.session_num} {s.title}"} for s in sessions.values()],
         "fact_count": sum(len(g["facts"]) for g in groups),
         "top_tags": top_tags,
     })
+
+
+@router.get("/facts/fragment", response_class=HTMLResponse)
+def facts_fragment(request: Request, keys: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The fact cards of some groups of GET /facts, for the groups that page leaves closed and unloaded: `keys` is comma-separated session ids
+    and / or "none". Same access and the same GM-only filtering as the page itself; every group comes back as <div data-frag="key">."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "facts"):
+        raise HTTPException(403)
+    want = []
+    for k in keys.split(","):
+        k = k.strip()
+        if k == "none":
+            want.append("none")
+        elif k.isdigit():
+            want.append(int(k))
+    world_id = world.id if world else 1
+    sessions = {s.id: s for s in db.query(GameSession).filter(GameSession.world_id == world_id).all()}
+    groups = _fact_groups(db, world_id, sessions, visible_only=not is_gm(request), only=set(want))
+    return templates.TemplateResponse("facts/_fragment.html", {"request": request, "world": world, "groups": groups, "sessions": sessions})
 
 
 @router.post("/facts/new")

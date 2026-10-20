@@ -548,7 +548,7 @@ async def album_remove_image(album_id: int, request: Request, db: Session = Depe
 
 
 @router.post("/images/albums/{album_id}/upload")
-async def album_upload_image(
+def album_upload_image(
     album_id: int, request: Request, file: UploadFile = File(...),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
@@ -569,7 +569,7 @@ async def album_upload_image(
 
 
 @router.post("/images/albums/upload/chunk")
-async def album_upload_chunk(
+def album_upload_chunk(
     request: Request, file: UploadFile = File(...), upload_id: str = Form(...),
     chunk_index: int = Form(...),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
@@ -594,7 +594,7 @@ async def album_upload_chunk(
 
 
 @router.post("/images/albums/upload/complete")
-async def album_upload_chunk_complete(
+def album_upload_chunk_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), album_id: int = Form(...),
     db: Session = Depends(get_db), active_world: str = Cookie(None),

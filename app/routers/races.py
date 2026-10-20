@@ -170,7 +170,7 @@ def races_new_page(request: Request, db: Session = Depends(get_db), active_world
 
 
 @router.post("/races/new")
-async def races_new(
+def races_new(
     request: Request,
     name: str = Form(...),
     tier: str = Form("standard"),

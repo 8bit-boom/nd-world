@@ -334,7 +334,7 @@ def audio_album_delete(album_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.post("/audio/upload")
-async def audio_upload(
+def audio_upload(
     request: Request, file: UploadFile = File(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
     album_id: str = Form(""), entity_id: str = Form(""),
@@ -392,7 +392,7 @@ async def audio_attach(clip_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/audio/upload/chunk")
-async def audio_upload_chunk(
+def audio_upload_chunk(
     request: Request, file: UploadFile = File(...),
     upload_id: str = Form(...), chunk_index: int = Form(...),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
@@ -421,7 +421,7 @@ async def audio_upload_chunk(
 
 
 @router.post("/audio/upload/complete")
-async def audio_upload_complete(
+def audio_upload_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
@@ -498,7 +498,7 @@ async def audio_upload_complete(
 
 
 @router.post("/audio/{clip_id}/edit")
-async def audio_edit(
+def audio_edit(
     clip_id: int, request: Request, name: str = Form(""), description: str = Form(""),
     visible_to_players: Optional[str] = Form(None), album_id: str = Form(""),
     entity_id: str = Form(""),

@@ -7,6 +7,7 @@ import was the root cause of every router building its own copy-pasted
 Jinja2Templates instance instead of sharing one (see app/templating.py).
 """
 import codecs
+import functools
 import html as _html
 import re
 from collections import OrderedDict
@@ -284,7 +285,22 @@ def _mark_prose_code_blocks(html: str) -> str:
     return _PRE_BLOCK_RE.sub(mark, html)
 
 
+@functools.lru_cache(maxsize=4096)
+def _render_md_cached(text):
+    return _render_md(text)
+
+
 def render_md(text):
+    """Markdown to safe HTML. A pure function of the text, so repeats (the same recap or fact on every page view) come from a small LRU cache;
+    very long texts skip it so one huge document can't pin memory."""
+    if not text:
+        return ""
+    if len(text) > 20000:
+        return _render_md(text)
+    return _render_md_cached(text)
+
+
+def _render_md(text):
     if not text:
         return ""
     # safe_mode="escape": raw HTML typed into markdown-authored fields (character

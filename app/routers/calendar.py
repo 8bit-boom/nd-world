@@ -824,7 +824,7 @@ async def calendar_set_date(request: Request, db: Session = Depends(get_db), act
 
 
 @router.post("/api/calendar/days/{day}/icons")
-async def calendar_day_icon_add(
+def calendar_day_icon_add(
     day: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
     file: UploadFile = File(...), label: str = Form(""),
 ):

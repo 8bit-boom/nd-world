@@ -1,0 +1,15 @@
+{# Rows of Settings > Visibility: included by settings.html when that tab is the open one, else served by GET /settings/visibility-rows #}
+{% for e in vis_entities %}
+          <tr class="vis-row" data-search="{{ (e.name ~ ' ' ~ e.kind)|lower }}">
+            <td><input type="checkbox" class="vis-row-cb" data-id="{{ e.id }}"></td>
+            <td>{{ e.name }}</td>
+            <td>{{ kind_icons.get(e.kind, '') }} {{ e.kind }}</td>
+            <td>
+              {% if e.visible_to_players %}🌐 Everyone
+              {% elif allowed_by_entity.get(e.id) %}👥 {{ allowed_by_entity[e.id]|length }} player(s)
+              {% else %}🔒 GM only{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" style="color:var(--text-dim);font-size:.82rem">No entities in this world yet.</td></tr>
+          {% endfor %}

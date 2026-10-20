@@ -453,7 +453,7 @@ async def pc_ai_start(request: Request,
 
 
 @router.get("/api/characters/ai/{job_id}")
-async def pc_ai_poll(job_id: int, request: Request):
+def pc_ai_poll(job_id: int, request: Request):
     """Poll a character-draft job — starter or GM only."""
     job = _PC_AI_JOBS.get(job_id)
     if not job:
@@ -691,7 +691,7 @@ async def pc_analyze_start(pc_id: int, request: Request,
 
 
 @router.get("/api/characters/{pc_id}/analyze/{job_id}")
-async def pc_analyze_poll(pc_id: int, job_id: int, request: Request):
+def pc_analyze_poll(pc_id: int, job_id: int, request: Request):
     """Poll an analysis job — the caller who started it, or a GM."""
     job = _ANALYSIS_JOBS.get(job_id)
     user = getattr(request.state, "user", None)

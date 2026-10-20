@@ -23,7 +23,7 @@ from . import view_prefs
 from . import nav_menus as _nav_menus
 from . import site_layout
 from .constants import KIND_ICONS, KINDS, SUBTYPES
-from .database import SessionLocal, get_app_settings_flags_cached
+from .database import SessionLocal, get_app_settings_flags_cached, request_session
 from .imaging import thumbnail_path_for
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_gm_only, strip_md
 from .theme_presets import GAME_PRESET_KEYS, GENRE_PRESET_KEYS, THEME_PRESETS
@@ -46,8 +46,7 @@ def _kinds_context_processor(request: Request) -> dict:
 
     One extra small World lookup per request — same per-request cost
     profile as auth_gate's own independent SessionLocal() user lookup."""
-    db = SessionLocal()
-    try:
+    with request_session(request) as db:
         world, _ = deps.get_world_ctx(request, db, request.cookies.get(_ACTIVE_WORLD_COOKIE))
         kinds, kind_icons = deps.effective_kinds(world)
         flags = get_app_settings_flags_cached(db)
@@ -64,8 +63,6 @@ def _kinds_context_processor(request: Request) -> dict:
             "genre_preset_keys": GENRE_PRESET_KEYS,
             "game_preset_keys": GAME_PRESET_KEYS,
         }
-    finally:
-        db.close()
 
 
 def _parse_world_theme(world) -> dict:
@@ -134,15 +131,18 @@ def _saved_view(request, section: str):
     if not user:
         return None
     from .models import UserViewPref
-    db = SessionLocal()
+    rows = getattr(request.state, "_view_pref_rows", None)
+    if rows is None:                                  # every layout of this viewer in ONE query, kept for the rest of the render
+        with request_session(request) as db:
+            rows = {r.section: r.prefs_json for r in db.query(UserViewPref).filter(UserViewPref.user_id == user.id).all()}
+        request.state._view_pref_rows = rows
+    raw = rows.get(section)
+    if raw is None:
+        return {}
     try:
-        row = db.query(UserViewPref).filter(UserViewPref.user_id == user.id, UserViewPref.section == section).first()
-        try:
-            return view_prefs.clean(section, json.loads(row.prefs_json)) if row else {}
-        except ValueError:
-            return {}
-    finally:
-        db.close()
+        return view_prefs.clean(section, json.loads(raw))
+    except ValueError:
+        return {}
 
 
 templates.env.globals["saved_view"] = _saved_view

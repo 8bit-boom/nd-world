@@ -172,7 +172,7 @@ def professions_new_page(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/professions/new")
-async def professions_new(
+def professions_new(
     request: Request,
     name: str = Form(...),
     tier: str = Form("standard"),

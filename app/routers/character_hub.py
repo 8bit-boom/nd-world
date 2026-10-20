@@ -858,7 +858,7 @@ def _keepsake_of(db: Session, pc: PlayerCharacter, kid: int):
 
 
 @router.post("/api/characters/{pc_id}/hub/keepsakes/upload")
-async def hub_keepsake_upload(pc_id: int, request: Request, file: UploadFile = File(...), name: str = Form(""),
+def hub_keepsake_upload(pc_id: int, request: Request, file: UploadFile = File(...), name: str = Form(""),
                               description: str = Form(""), db: Session = Depends(get_db)):
     """A player's OWN file (picture, song or video) kept on their character - separate from what the table was shown. Owner only. Each
     kind has a per-character limit the GM sets per world (app/personal_files.py); the limit is checked BEFORE the file is written."""

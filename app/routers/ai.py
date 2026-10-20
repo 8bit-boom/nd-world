@@ -1197,7 +1197,7 @@ async def ai_attachment_upload(
 
 
 @router.post("/attachments/upload/chunk")
-async def ai_attachment_upload_chunk(
+def ai_attachment_upload_chunk(
     request: Request,
     file: UploadFile = File(...),
     upload_id: str = Form(...),
@@ -1301,7 +1301,7 @@ async def ai_attachment_audio_job_create(
 
 
 @router.post("/attachments/audio-jobs/chunk")
-async def ai_attachment_audio_job_chunk(
+def ai_attachment_audio_job_chunk(
     request: Request,
     file: UploadFile = File(...),
     upload_id: str = Form(...),
@@ -1718,7 +1718,7 @@ async def ai_unload_model(body: UnloadModelBody):
 
 
 @router.get("/defaults")
-async def ai_get_defaults():
+def ai_get_defaults():
     return _ai.get_defaults()
 
 
@@ -1728,7 +1728,7 @@ class SetDefaultBody(BaseModel):
 
 
 @router.post("/defaults")
-async def ai_set_default(body: SetDefaultBody):
+def ai_set_default(body: SetDefaultBody):
     if body.surface not in _ai.DEFAULT_SURFACES:
         raise HTTPException(400, f"unknown surface {body.surface!r}")
     _ai.set_default(body.surface, body.model_id.strip())
@@ -1743,12 +1743,12 @@ class PresetBody(BaseModel):
 
 
 @router.get("/presets")
-async def ai_list_presets():
+def ai_list_presets():
     return {"presets": _ai.list_presets()}
 
 
 @router.post("/presets")
-async def ai_save_preset(body: PresetBody):
+def ai_save_preset(body: PresetBody):
     label = body.label.strip()
     if not label:
         raise HTTPException(400, "label is required")
@@ -1760,7 +1760,7 @@ async def ai_save_preset(body: PresetBody):
 
 
 @router.delete("/presets/{label}")
-async def ai_delete_preset(label: str):
+def ai_delete_preset(label: str):
     _ai.delete_preset(label)
     return {"ok": True, "presets": _ai.list_presets()}
 
@@ -1789,7 +1789,7 @@ class AddModelBody(BaseModel):
 
 
 @router.post("/models/add")
-async def ai_models_add(body: AddModelBody):
+def ai_models_add(body: AddModelBody):
     model_id = body.id.strip()
     if not model_id:
         from fastapi import HTTPException
@@ -1831,7 +1831,7 @@ async def ai_models_remove(body: RemoveModelBody):
 
 
 @router.post("/models/reset")
-async def ai_models_reset():
+def ai_models_reset():
     """Restore all built-in models (clears hidden list)."""
     _ai.reset_hidden()
     _log.info("model list reset to defaults")
@@ -1843,7 +1843,7 @@ class PullBody(BaseModel):
 
 
 @router.post("/pull")
-async def ai_pull(body: PullBody):
+def ai_pull(body: PullBody):
     _log.info("pull model=%r", body.model_id)
 
     async def _gen():
@@ -2022,7 +2022,7 @@ async def api_ollama_upload_direct(file: UploadFile = File(...), model_name: str
 
 
 @router.post("/ollama/upload/chunk")
-async def api_ollama_upload_chunk(
+def api_ollama_upload_chunk(
     file: UploadFile = File(...), upload_id: str = Form(...), chunk_index: int = Form(...),
 ):
     save_upload_chunk(_model_upload_chunks_root(), upload_id, chunk_index, file, max_bytes=_MAX_MODEL_UPLOAD_BYTES)
@@ -2262,7 +2262,7 @@ class SwarmuiModelDownloadBody(BaseModel):
 
 
 @router.post("/imagegen/models/download")
-async def api_imagegen_model_download(body: SwarmuiModelDownloadBody):
+def api_imagegen_model_download(body: SwarmuiModelDownloadBody):
     """Streams a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's
     own Models folder (see SWARMUI_MODELS_DIR's docstring in app/ai.py for
     the shared-volume mechanics) — same SSE progress shape as the other model downloads."""
@@ -2448,7 +2448,7 @@ def _load_tags_for(source_id: str) -> list[list]:
 
 
 @router.get("/imagegen/tags/sources")
-async def api_tags_sources():
+def api_tags_sources():
     active = _get_active_source_id()
     result = []
     for s in _all_sources():
@@ -2468,7 +2468,7 @@ async def api_tags_sources():
 
 
 @router.get("/imagegen/tags/status")
-async def api_tags_status():
+def api_tags_status():
     active = _get_active_source_id()
     if active:
         count = len(_load_tags_for(active))
@@ -2546,7 +2546,7 @@ class ActivateTagBody(BaseModel):
 
 
 @router.post("/imagegen/tags/activate")
-async def api_tags_activate(body: ActivateTagBody):
+def api_tags_activate(body: ActivateTagBody):
     if not _tag_file_for(body.source_id).exists():
         from fastapi import HTTPException
         raise HTTPException(400, f"Source '{body.source_id}' not downloaded yet")
@@ -2560,7 +2560,7 @@ class DeleteTagSourceBody(BaseModel):
 
 
 @router.post("/imagegen/tags/delete")
-async def api_tags_delete(body: DeleteTagSourceBody):
+def api_tags_delete(body: DeleteTagSourceBody):
     tf = _tag_file_for(body.source_id)
     if tf.exists():
         tf.unlink()
@@ -2578,7 +2578,7 @@ async def api_tags_delete(body: DeleteTagSourceBody):
 
 
 @router.get("/imagegen/tags")
-async def api_tags_search(q: str = "", limit: int = 25):
+def api_tags_search(q: str = "", limit: int = 25):
     if len(q) < 1:
         return {"tags": []}
     active = _get_active_source_id()
@@ -2620,7 +2620,7 @@ class StarBody(BaseModel):
 
 
 @router.post("/imagegen/star")
-async def api_imagegen_star(body: StarBody, db=Depends(get_db)):
+def api_imagegen_star(body: StarBody, db=Depends(get_db)):
     from ..models import StarredImage
     existing = db.query(StarredImage).filter(StarredImage.url == body.url).first()
     if existing:
@@ -2639,7 +2639,7 @@ class UnstarBody(BaseModel):
 
 
 @router.post("/imagegen/unstar")
-async def api_imagegen_unstar(body: UnstarBody, db=Depends(get_db)):
+def api_imagegen_unstar(body: UnstarBody, db=Depends(get_db)):
     from ..models import StarredImage
     db.query(StarredImage).filter(StarredImage.url == body.url).delete()
     db.commit()
@@ -2647,7 +2647,7 @@ async def api_imagegen_unstar(body: UnstarBody, db=Depends(get_db)):
 
 
 @router.get("/imagegen/starred")
-async def api_imagegen_starred(db=Depends(get_db)):
+def api_imagegen_starred(db=Depends(get_db)):
     from ..models import StarredImage
     images = db.query(StarredImage).order_by(StarredImage.created_at.desc()).all()
     return {"images": [
@@ -2783,7 +2783,7 @@ def _custom_template_to_dict(preset) -> dict:
 
 
 @router.get("/imagegen/model-templates")
-async def ai_imagegen_model_templates(
+def ai_imagegen_model_templates(
     request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None),
 ):
     """Built-in per-model prompt/generation templates (see
@@ -2866,7 +2866,7 @@ async def ai_imagegen_custom_template_save(
 
 
 @router.delete("/imagegen/model-templates/custom/{template_id}")
-async def ai_imagegen_custom_template_delete(
+def ai_imagegen_custom_template_delete(
     template_id: int, request: Request,
     db=Depends(get_db), active_world: Optional[str] = Cookie(None),
 ):
@@ -3780,7 +3780,7 @@ async def auto_tag_start(request: Request, db: Session = Depends(get_db),
 
 
 @router.get("/auto-tag/{job_id}")
-async def auto_tag_poll(job_id: int):
+def auto_tag_poll(job_id: int):
     """Poll an auto-tag job: running (processed/total/tagged), done, or
     error (with the reason)."""
     job = _AUTO_TAG_JOBS.get(job_id)

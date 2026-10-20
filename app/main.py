@@ -12,7 +12,9 @@ from typing import List, Optional
 from urllib.parse import quote
 import asyncio
 import contextlib
+import hashlib
 import re
+from starlette.concurrency import run_in_threadpool
 import html
 import logging
 import os
@@ -683,7 +685,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/sessions" or re.match(r"^/sessions/\d+(/summary\.md|/transcript\.md)?$", path):
         return True
-    if path == "/facts":
+    if path == "/facts" or path == "/facts/fragment":
         return True
     if path == "/images":
         return True
@@ -1101,6 +1103,25 @@ async def auth_gate(request: Request, call_next):
             return JSONResponse({"detail": "Login required"}, status_code=401)
         return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
 
+    # The lookups are blocking SQLite calls: run them in the worker threadpool so a slow disk never stalls the event loop (every other request,
+    # live streams and static files share it).
+    user, is_assistant, is_world_owner, active_world_id = await run_in_threadpool(_auth_lookup, request, user_id)
+    if not user:
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    if request.session.get("session_version") != user.session_version:
+        # Either this session predates session_version existing, or a password
+        # change elsewhere bumped it — either way, the cookie no longer represents
+        # a currently-valid session.
+        request.session.clear()
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Session expired — please log in again."}, status_code=401)
+        return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
+    return await _auth_gate_rest(request, call_next, path, user, is_assistant, is_world_owner, active_world_id)
+
+
+def _auth_lookup(request: Request, user_id):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
@@ -1125,19 +1146,11 @@ async def auth_gate(request: Request, call_next):
         is_world_owner = active_role == "owner"
     finally:
         db.close()
-    if not user:
-        request.session.clear()
-        return RedirectResponse("/login", status_code=303)
+    return user, is_assistant, is_world_owner, active_world_id
 
-    if request.session.get("session_version") != user.session_version:
-        # Either this session predates session_version existing, or a password
-        # change elsewhere bumped it — either way, the cookie no longer represents
-        # a currently-valid session.
-        request.session.clear()
-        if path.startswith("/api/"):
-            return JSONResponse({"detail": "Session expired — please log in again."}, status_code=401)
-        return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
 
+async def _auth_gate_rest(request: Request, call_next, path: str, user, is_assistant: bool, is_world_owner: bool, active_world_id):
+    """The rest of auth_gate once the user is known and the session is valid: publish the identity on request.state, enforce the allowlists."""
     request.state.user = user
     # Always present so templates can read it unconditionally (a GM renders
     # the same controls via can_edit()'s is_gm half — always False here).
@@ -1509,8 +1522,12 @@ def serve_upload(filepath: str, request: Request):
     # one. Everything else can never legitimately change at the same URL,
     # so a long, immutable cache is safe and cuts a full re-fetch/
     # re-validate per view for every grid/gallery/thumbnail on the site.
+    # `private`, not `public`: /uploads/ needs a login (a GM-only picture lives here too), so a shared cache - a CDN or proxy such as Cloudflare in
+    # front of the app - must never keep a copy and hand it to someone who is not signed in. The browser still keeps it for a year.
     if not filepath.startswith("maps/"):
-        headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    else:
+        headers["Cache-Control"] = "private, no-cache"          # replaceable map images: always revalidate (FileResponse sends an ETag)
     # Explicit charset for uploaded HTML — mimetypes.guess_type would infer
     # "text/html" either way, but not the charset, and a mis-guessed
     # encoding on user-uploaded content is the kind of thing that only
@@ -2612,7 +2629,7 @@ def map_new_form(request: Request, db: Session = Depends(get_db), active_world: 
     })
 
 @app.post("/maps/new")
-async def map_new(
+def map_new(
     request: Request,
     name: str = Form(...),
     width: int = Form(3072),
@@ -2716,7 +2733,7 @@ def map_delete(slug: str, request: Request, db: Session = Depends(get_db), activ
     return RedirectResponse("/maps", status_code=303)
 
 @app.post("/maps/{slug}/upload")
-async def map_upload_image(slug: str, request: Request, file: UploadFile = File(...),
+def map_upload_image(slug: str, request: Request, file: UploadFile = File(...),
                             db: Session = Depends(get_db), active_world: str = Cookie(None)):
     # Unlike its rename/delete siblings, this route previously took no db/world
     # params at all — it would happily write to any slug, map or no map,
@@ -2913,7 +2930,7 @@ async def map_ai_markers_start(slug: str, request: Request, db: Session = Depend
 
 
 @app.get("/api/maps/{slug}/ai-markers/{job_id}")
-async def map_ai_markers_poll(slug: str, job_id: int, request: Request):
+def map_ai_markers_poll(slug: str, job_id: int, request: Request):
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm):
         raise HTTPException(403)
@@ -3188,7 +3205,7 @@ def world_rules_edit_post(world_id: int, rules_md: str = Form(""), rules_json: s
 
 
 @app.post("/worlds/{world_id}/rules/import")
-async def world_rules_import(world_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def world_rules_import(world_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Import rules from a JSON file. Two shapes are accepted:
     {"rules_md": "...markdown..."} (a "name" key is accepted too but only
     rules_md is used) — an alternative to pasting the whole document into
@@ -4056,7 +4073,7 @@ async def schematic_save_elements(slug: str, request: Request, db: Session = Dep
 
 
 @app.post("/maps/schematic/{slug}/upload")
-async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
@@ -4076,7 +4093,7 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
 
 @app.post("/maps/schematic/{slug}/embed-image")
-async def schematic_embed_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def schematic_embed_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     """The editor's 🖼 Embed Image tool used to read the picked file as a
     base64 data: URI client-side (FileReader.readAsDataURL) and stuff the
     whole thing directly into the new element's `href` — which then landed
@@ -4577,26 +4594,45 @@ _UPLOAD_LIMIT_FIELDS = (
 )
 
 
+def _visibility_rows(db: Session, world_id: int):
+    """Just the columns the Visibility table shows (not every entity's full text) and who each restricted entity is open to."""
+    vis_entities = (
+        db.query(Entity.id, Entity.name, Entity.kind, Entity.visible_to_players)
+        .filter(Entity.world_id == world_id)
+        .order_by(Entity.kind, Entity.name)
+        .all()
+    )
+    allowed_by_entity = {}
+    if vis_entities:
+        for eid, uid in db.query(entity_player_access.c.entity_id, entity_player_access.c.user_id).filter(
+            entity_player_access.c.entity_id.in_([e.id for e in vis_entities])
+        ).all():
+            allowed_by_entity.setdefault(eid, set()).add(uid)
+    return vis_entities, allowed_by_entity
+
+
+@app.get("/settings/visibility-rows", response_class=HTMLResponse)
+def settings_visibility_rows(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The rows of Settings > Visibility (GM only, like the page): fetched when the tab opens instead of being part of every Settings view."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    vis_entities, allowed_by_entity = _visibility_rows(db, world.id)
+    return templates.TemplateResponse("settings_vis_rows.html", {
+        "request": request, "vis_entities": vis_entities, "allowed_by_entity": allowed_by_entity, "kind_icons": deps.effective_kinds(world)[1],
+    })
+
+
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
-    vis_entities = []
+    vis_entities = None            # the Visibility tab's rows (one per entity) are fetched when the tab opens: GET /settings/visibility-rows
     world_players = []
-    if world:
-        vis_entities = (
-            db.query(Entity)
-            .filter(Entity.world_id == world.id)
-            .order_by(Entity.kind, Entity.name)
-            .all()
-        )
-        world_players = _world_player_list(db, world.id)
     allowed_by_entity = {}
-    if vis_entities:
-        rows = db.query(entity_player_access.c.entity_id, entity_player_access.c.user_id).filter(
-            entity_player_access.c.entity_id.in_([e.id for e in vis_entities])
-        ).all()
-        for eid, uid in rows:
-            allowed_by_entity.setdefault(eid, set()).add(uid)
+    if world:
+        world_players = _world_player_list(db, world.id)
+        if tab == "visibility":
+            vis_entities, allowed_by_entity = _visibility_rows(db, world.id)
     try:
         ollama_server_env = json.loads(settings.ollama_server_env_json or "{}")
     except (TypeError, ValueError):
@@ -6175,8 +6211,15 @@ def api_entities_picker(
     q = db.query(Entity).filter(Entity.world_id == world.id)
     if exclude_id is not None:
         q = q.filter(Entity.id != exclude_id)
-    entities = _filter_visible_entities(q, request).order_by(Entity.kind, Entity.folder, Entity.name).all()
-    return {"entities": [{"id": e.id, "name": e.name, "kind": e.kind, "folder": e.folder or ""} for e in entities]}
+    # Only the four columns the picker shows (not every entity's full text), and the browser keeps what it already has when nothing changed (ETag)
+    rows = (_filter_visible_entities(q, request).with_entities(Entity.id, Entity.name, Entity.kind, Entity.folder)
+            .order_by(Entity.kind, Entity.folder, Entity.name).all())
+    payload = json.dumps({"entities": [{"id": r.id, "name": r.name, "kind": r.kind, "folder": r.folder or ""} for r in rows]}, separators=(",", ":"))
+    etag = '"' + hashlib.md5(payload.encode()).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(payload, media_type="application/json", headers=headers)
 
 
 class SetEntityImageBody(BaseModel):
@@ -6864,7 +6907,7 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
     })
 
 @app.post("/entity/{entity_id}/edit")
-async def update(
+def update(
     entity_id: int,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
     folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), roleplay_personality: str = Form(""), image_url: str = Form(""),
@@ -7505,14 +7548,14 @@ def api_import(payload: dict, db: Session = Depends(get_db)):
     return {"created": created}
 
 @app.post("/api/upload-image")
-async def api_upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def api_upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     uploaded = save_upload(file, db=db)
     if not uploaded:
         raise HTTPException(400, "Unsupported file type")
     return {"url": uploaded}
 
 @app.post("/api/upload-media")
-async def api_upload_media(file: UploadFile = File(...), db: Session = Depends(get_db)):
+def api_upload_media(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Backs the shared formatting toolbar's media button/drag-drop/paste
     (static/js/text-format-toolbar.js) — accepts image, audio, or video and
     reports back which one it saved (`kind`) so the client can build the
@@ -7527,7 +7570,7 @@ async def api_upload_media(file: UploadFile = File(...), db: Session = Depends(g
     return {"url": url, "kind": kind}
 
 @app.post("/api/import/images")
-async def api_import_images(
+def api_import_images(
     request: Request,
     files: List[UploadFile] = File(...),
     entity_ids: List[str] = Form(...),
@@ -8128,7 +8171,7 @@ async def schematic_ai_build_start(
 
 
 @app.get("/maps/schematic/{slug}/ai-build/{job_id}")
-async def schematic_ai_build_poll(slug: str, job_id: int):
+def schematic_ai_build_poll(slug: str, job_id: int):
     """Poll an AI Build job: {status: running|done|error}; done carries the
     appended count, the authoritative total, and the new elements."""
     job = _AI_BUILD_JOBS.get(job_id)

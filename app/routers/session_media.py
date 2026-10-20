@@ -137,7 +137,7 @@ async def media_upload(session_id: int, request: Request, file: UploadFile = Fil
 
 
 @router.post("/api/sessions/{session_id}/media/upload/chunk")
-async def media_upload_chunk(session_id: int, request: Request, file: UploadFile = File(...), upload_id: str = Form(...),
+def media_upload_chunk(session_id: int, request: Request, file: UploadFile = File(...), upload_id: str = Form(...),
                              chunk_index: int = Form(...), db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """One part of a large file (static/js/chunked-upload.js); /media/upload/complete puts them together."""
     _require_gm_edit(request, db, session_id, active_world)

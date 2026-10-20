@@ -114,7 +114,7 @@ async def recap_audio_attach(session_id: int, request: Request, db: Session = De
 
 
 @router.post("/api/sessions/{session_id}/recap-audio/upload")
-async def recap_audio_upload(session_id: int, request: Request, file: UploadFile = File(...), name: str = Form(""),
+def recap_audio_upload(session_id: int, request: Request, file: UploadFile = File(...), name: str = Form(""),
                              lyrics: str = Form(""), visible_to_players: str = Form(""),
                              db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Upload a new audio file (a song made elsewhere), add it to the library and attach it."""

@@ -280,7 +280,9 @@
             🔍 Check all mentioned
           </button>
         </div>
-        <div id="npc-picker-tree" style="max-height:220px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem"></div>
+        <div id="npc-picker-tree" style="max-height:220px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem"><span style="color:var(--text-dim);font-size:.82rem">{% if npc_names %}Picked: {{ npc_names|join(', ') }}. {% endif %}The full list loads when you click here or search.</span></div>
+        {# until the list is loaded, the saved picks ride along as hidden fields so saving the form never drops them #}
+        <div id="npc-hidden">{% for v in npc_selected_json %}<input type="hidden" name="npc_entity_ids" value="{{ v }}"/>{% endfor %}</div>
       </div>
       {% endif %}
     </div>
@@ -1280,21 +1282,34 @@ function playerRecapPublish(publish) {
 // form rather than a full page — the search filters the already-rendered
 // DOM client-side (no reload) so the rest of the recap form's unsaved
 // state (Summary, etc.) is never disturbed while picking NPCs.
-const NPC_CANDIDATES = {{ npc_candidates_json | tojson }};
+// The candidate list (every entity of the world) is NOT embedded in the page - it is fetched the first time the picker is used.
 // A PlayerCharacter pick's id is "pc:N" (see _PC_ID_PREFIX in
 // routers/sessions.py) — computed server-side (npc_selected_json), not
 // via a plain map(attribute='entity_id') here, since that alone can't
 // distinguish a PlayerCharacter pick from an Entity one.
 const NPC_SELECTED = {{ npc_selected_json | tojson }};
 
-ndEntityPicker(
-  document.getElementById('npc-picker-tree'),
-  document.getElementById('npc-search-input'),
-  {
-    entities: NPC_CANDIDATES, mode: 'multi', selected: NPC_SELECTED, fieldName: 'npc_entity_ids',
-    emptyText: 'No eligible entities in this world yet.',
-  },
-);
+let _npcLoad = null;
+function npcPickerLoad() {
+  if (_npcLoad) return _npcLoad;
+  const tree = document.getElementById('npc-picker-tree');
+  tree.textContent = 'Loading…';
+  _npcLoad = fetch('/sessions/{{ gsession.id }}/npc-candidates{{ ("?w=" ~ world.slug) if world else "" }}').then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))).then(d => {
+    tree.textContent = '';
+    const hidden = document.getElementById('npc-hidden'); if (hidden) hidden.remove();      // the real checkboxes take over from the hidden copies
+    ndEntityPicker(tree, document.getElementById('npc-search-input'), {
+      entities: d.candidates, mode: 'multi', selected: NPC_SELECTED, fieldName: 'npc_entity_ids',
+      emptyText: 'No eligible entities in this world yet.',
+    });
+  }).catch(e => { _npcLoad = null; tree.textContent = '⚠ Could not load the list (' + e.message + ') - click to retry. Your saved picks are kept.'; });
+  return _npcLoad;
+}
+(function () {
+  const tree = document.getElementById('npc-picker-tree'), q = document.getElementById('npc-search-input');
+  tree.addEventListener('click', npcPickerLoad);
+  q.addEventListener('focus', npcPickerLoad);
+  q.addEventListener('input', npcPickerLoad);          // typing before the list arrives: the search is applied once it is built (entity-picker wires the input itself)
+})();
 
 // QoL 3.4 — deterministic exact-name-match scan of the Summary field
 // against every candidate's name, offered as a one-click "check all
@@ -1304,7 +1319,8 @@ ndEntityPicker(
 // actually rendered. Deliberately dumb (whole-word substring match, no
 // AI) — the value here is speed and 100% predictability for names that
 // did get typed verbatim, not fuzzy recall.
-function checkMentionedEntities() {
+async function checkMentionedEntities() {
+  await npcPickerLoad();
   const text = (document.getElementById('summary-field').value || '').toLowerCase();
   if (!text.trim()) { alert('Summary is empty — nothing to scan.'); return; }
   let matched = 0;

@@ -67,7 +67,37 @@
   </div>
 </section>
 
+<section id="sm-perf-section" style="margin-top:1rem">
+  <h2 class="sm-h">How fast the app answers <small class="sm-dim" id="sm-perf-note"></small></h2>
+  <div class="sm-card" style="overflow-x:auto">
+    <table class="stat-table" style="width:100%">
+      <thead><tr><th>Route</th><th>Calls</th><th>Median ms</th><th>95th ms</th><th>Worst ms</th><th>Most queries</th><th>Avg DB ms</th></tr></thead>
+      <tbody id="sm-perf-rows"><tr><td colspan="7" class="sm-dim">Loading…</td></tr></tbody>
+    </table>
+    <p class="sm-limit-msg" style="margin:.5rem 0 0">The last 1,000 page and API requests since the server started (route templates only - no addresses, names or content). Requests slower than the slow-request limit are also written to the server log.</p>
+  </div>
+</section>
+<script>
+(function () {
+  const rows = document.getElementById('sm-perf-rows');
+  function cell(t, cls) { const td = document.createElement('td'); td.textContent = t; if (cls) td.className = cls; return td; }
+  async function load() {
+    try {
+      const d = await (await fetch('/api/perf/summary', { cache: 'no-store' })).json();
+      document.getElementById('sm-perf-note').textContent = '(slow = ' + d.slow_ms + ' ms or more)';
+      rows.replaceChildren(...(d.routes.length ? d.routes.slice(0, 40).map(r => {
+        const tr = document.createElement('tr');
+        tr.append(cell(r.method + ' ' + r.route), cell(r.calls), cell(r.p50_ms), cell(r.p95_ms, r.p95_ms >= d.slow_ms ? 'sm-warn-text' : ''), cell(r.max_ms), cell(r.max_queries), cell(r.avg_db_ms));
+        return tr;
+      }) : [Object.assign(document.createElement('tr'), { innerHTML: '<td colspan="7" class="sm-dim">Nothing timed yet.</td>' })]));
+    } catch (e) { rows.innerHTML = '<tr><td colspan="7" class="sm-dim">Could not load (' + e.message + ').</td></tr>'; }
+  }
+  load(); setInterval(() => { if (!document.hidden) load(); }, 15000);
+})();
+</script>
+
 <style>
+.sm-warn-text { color:#e0a030; font-weight:bold; }
 .sm-rows > [hidden], .sm-warn[hidden], .sm-limit[hidden] { display:none !important; }
 .sm-note { color:var(--text-dim); font-size:.85rem; margin:-.5rem 0 1rem; }
 .sm-status { font-size:.78rem; color:var(--text-dim); }

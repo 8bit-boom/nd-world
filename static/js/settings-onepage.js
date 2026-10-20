@@ -26,6 +26,7 @@
   });
   const one = () => page.dataset.view === "onepage";
   function filter() {
+    if (one() && window.ndVisLoad) window.ndVisLoad();        // every pane shows: fetch the Visibility rows too
     const needle = one() && q ? q.value : "";
     let shown = 0;
     panes.forEach((p) => {

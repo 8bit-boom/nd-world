@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from .. import fan_control, system_stats
+from .. import fan_control, perf_log, system_stats
 from ..database import get_db
 from ..deps import get_world_ctx
 from ..templating import templates
@@ -34,6 +34,22 @@ def system_stats_json(request: Request):
     """One reading: {time, cpu: {percent, cores, per_core, load, temp_c, model}, memory: {...}, gpu: {available, reason?, devices: [...]}}."""
     _gm(request)
     return JSONResponse(system_stats.snapshot(), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/api/perf/summary")
+def perf_summary(request: Request):
+    """How the app itself is doing: per route (the template, e.g. /entity/{entity_id}, never the real URL) the calls since the server started
+    (the last 1,000), median / 95th percentile / worst milliseconds, the most SQL statements one call ran and the average time in the database.
+    GM-only; holds no query strings, bodies, cookies or names (app/perf_log.py)."""
+    _gm(request)
+    return JSONResponse({"slow_ms": perf_log.SLOW_MS, "routes": perf_log.summary()}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/api/perf/recent")
+def perf_recent(request: Request, limit: int = 200):
+    """The newest timed requests, oldest first: {t, method, route, status, ms, queries, db_ms}. GM-only."""
+    _gm(request)
+    return JSONResponse({"requests": perf_log.recent(max(1, min(limit, perf_log.RING_SIZE)))}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/system/gpu-power")

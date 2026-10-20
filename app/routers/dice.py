@@ -202,7 +202,7 @@ class RollBody(BaseModel):
 
 
 @router.post("/api/dice/roll")
-async def api_dice_roll(body: RollBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_dice_roll(body: RollBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
@@ -221,7 +221,7 @@ class RecordBody(BaseModel):
 
 
 @router.post("/api/dice/record")
-async def api_dice_record(body: RecordBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_dice_record(body: RecordBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Log a roll thrown on the 3D tray: the browser reports the faces the dice showed, checked against the notation."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:

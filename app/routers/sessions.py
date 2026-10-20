@@ -302,11 +302,21 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
         "gallery_images": (_gallery_module.all_world_image_urls(db, world) if world and _user and _user.is_gm else []),  # GM only, like the other pages that offer the picker
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
         "npc_names": npc_names, "party_pcs": party_pcs,
-        "npc_candidates_json": _featured_entity_candidates(db, gs.world_id),
         "npc_selected_json": npc_selected,
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
         "npcs": npcs, "facts": facts, "fact_top_tags": fact_top_tags,
     })
+
+
+@router.get("/sessions/{session_id}/npc-candidates")
+def session_npc_candidates(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The "Entities Featured" picker's candidate list, fetched when the picker is first used instead of being embedded in the session page
+    (it is every entity of the world). Same access as the session page itself."""
+    world, _ = get_world_ctx(request, db, active_world)
+    gs = db.get(GameSession, session_id)
+    if not gs or not world or gs.world_id != world.id:
+        raise HTTPException(404)
+    return {"candidates": _featured_entity_candidates(db, gs.world_id)}
 
 
 # Groups for the "Entities Featured" picker (still keyed name "npc_entity_
@@ -895,7 +905,7 @@ async def api_summarize_from_audio(
 
 
 @router.post("/api/sessions/ai/summarize-from-audio/chunk")
-async def api_summarize_from_audio_chunk(
+def api_summarize_from_audio_chunk(
     file: UploadFile = File(...), upload_id: str = Form(...), chunk_index: int = Form(...),
 ):
     """Receive one part of a large session recording — a whole-session
@@ -1046,7 +1056,7 @@ async def api_audio_job_create(
 
 
 @router.post("/api/sessions/ai/audio-jobs/chunk")
-async def api_audio_job_chunk(
+def api_audio_job_chunk(
     file: UploadFile = File(...), upload_id: str = Form(...), chunk_index: int = Form(...),
 ):
     """Same chunk-receiving route as .../summarize-from-audio/chunk (a

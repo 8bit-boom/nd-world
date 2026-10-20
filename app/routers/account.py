@@ -155,7 +155,7 @@ def account_2fa_setup(request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/account/2fa/setup")
-async def account_2fa_confirm(request: Request, code: str = Form(""),
+def account_2fa_confirm(request: Request, code: str = Form(""),
                                db: Session = Depends(get_db),
                                user: User = Depends(auth.require_login), active_world: str = Cookie(None)):
     if user.totp_enabled:

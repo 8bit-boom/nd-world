@@ -335,7 +335,7 @@ def _resolve_target_album(db: Session, world_id: int, album_id: str) -> Optional
 
 
 @router.post("/pages/upload")
-async def pages_upload(
+def pages_upload(
     request: Request, file: UploadFile = File(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
     is_character_sheet_template: Optional[str] = Form(None),
@@ -374,7 +374,7 @@ async def pages_upload(
 
 
 @router.post("/pages/upload/chunk")
-async def pages_upload_chunk(
+def pages_upload_chunk(
     request: Request, file: UploadFile = File(...),
     upload_id: str = Form(...), chunk_index: int = Form(...),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
@@ -392,7 +392,7 @@ async def pages_upload_chunk(
 
 
 @router.post("/pages/upload/complete")
-async def pages_upload_complete(
+def pages_upload_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
@@ -436,7 +436,7 @@ async def pages_upload_complete(
 
 
 @router.post("/pages/{doc_id}/edit")
-async def pages_edit(
+def pages_edit(
     doc_id: int, request: Request, name: str = Form(""), description: str = Form(""),
     visible_to_players: Optional[str] = Form(None),
     is_character_sheet_template: Optional[str] = Form(None),

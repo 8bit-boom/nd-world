@@ -1,0 +1,32 @@
+{# One group's fact cards - included by facts/list.html (the open group) and GET /facts/fragment (the rest, loaded on demand).
+   The edit form's session <select> is filled by toggleFactEdit from one shared list (FACT_SESSIONS), not repeated per fact. #}
+        {% for f in group.facts %}
+        <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
+          <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md_for(request) | safe }}</div>
+          {% if f.tags %}
+          <div class="tags">{% for t in f.tags.split(',') if t.strip() %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+          {% endif %}
+          <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
+            <textarea name="content" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
+            <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem;flex-wrap:wrap">
+              <select name="game_session_id" data-fact-session="{{ f.game_session_id or '' }}"><option value="">— none —</option></select>
+              <input name="tags" placeholder="tags, comma, separated" value="{{ f.tags or '' }}"
+                     style="flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
+                <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
+                Visible to players
+              </label>
+              <button type="submit" class="en-btn">Save</button>
+              <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Cancel</button>
+            </div>
+          </form>
+          <div class="en-note-footer">
+            <span class="en-note-date">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at else '' }}</span>
+            <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
+            <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
+            <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
+              <button type="submit" class="en-btn en-btn-del">Delete</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}

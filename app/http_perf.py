@@ -22,7 +22,11 @@
    it automatically and nothing can serve a stale map.
 """
 import json as _json
+import re as _re
+import time as _time
 from pathlib import Path as _Path
+
+from . import perf_log as _perf_log
 from typing import Optional as _Optional
 
 from starlette.datastructures import MutableHeaders as _MutableHeaders
@@ -55,13 +59,25 @@ class PerfMiddleware:
             if "accept-encoding" in headers:
                 del headers["accept-encoding"]
 
+        timed = not path.startswith("/static/") and not _is_sse_path(path)
+        rec = _perf_log.begin() if timed else None
+        started = _time.perf_counter()
+        status = {"code": 500}
+
         async def send_wrapper(message):
-            if message["type"] == "http.response.start" and path.startswith("/static/"):
-                headers = _MutableHeaders(scope=message)
-                headers["cache-control"] = "public, max-age=31536000, immutable"
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+                if path.startswith("/static/"):
+                    headers = _MutableHeaders(scope=message)
+                    headers["cache-control"] = "public, max-age=31536000, immutable"
             await send(message)
 
-        await self.app(scope, receive, send_wrapper)
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            if timed:
+                route = getattr(scope.get("route"), "path", None) or _re.sub(r"\d+", "{n}", path)      # the route template, never the real URL
+                _perf_log.finish(rec, scope.get("method", "GET"), route, status["code"], started)
 
 
 # ── maps JSON cache ──────────────────────────────────────────────────────────

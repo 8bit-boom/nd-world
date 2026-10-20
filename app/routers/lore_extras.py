@@ -212,13 +212,13 @@ class _KiyPlayBody(BaseModel):
 
 
 @router.get("/api/kiy/plays")
-async def kiy_list_plays():
+def kiy_list_plays():
     plays = _load_kiy_plays()
     return {"plays": [{"id": p["id"], "title": p["title"], "ts": p.get("ts", 0)} for p in plays], "count": len(plays)}
 
 
 @router.post("/api/kiy/plays")
-async def kiy_save_play(body: _KiyPlayBody):
+def kiy_save_play(body: _KiyPlayBody):
     plays = _load_kiy_plays()
     play_id = str(uuid.uuid4())[:8]
     title = body.title or f"The King in Yellow — {date.today().isoformat()}"
@@ -228,7 +228,7 @@ async def kiy_save_play(body: _KiyPlayBody):
 
 
 @router.delete("/api/kiy/plays/{play_id}")
-async def kiy_delete_play(play_id: str):
+def kiy_delete_play(play_id: str):
     plays = [p for p in _load_kiy_plays() if p["id"] != play_id]
     _save_kiy_plays(plays)
     return {"count": len(plays)}

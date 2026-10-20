@@ -274,7 +274,7 @@ def _world_maps(world_id: int) -> list:
 
 
 @router.get("/api/cockpit/workspace")
-async def cockpit_get_workspace(request: Request, db: Session = Depends(get_db),
+def cockpit_get_workspace(request: Request, db: Session = Depends(get_db),
                                 active_world: str = Cookie(None)):
     """The saved workspace for the active world (or null if the GM never
     arranged this world's cockpit)."""
@@ -376,7 +376,7 @@ async def cockpit_ai_find_start(request: Request, db: Session = Depends(get_db),
 
 
 @router.get("/api/cockpit/ai/find/{job_id}")
-async def cockpit_ai_find_poll(job_id: int, request: Request):
+def cockpit_ai_find_poll(job_id: int, request: Request):
     """Poll a find job: running (with elapsed seconds), done (enriched
     results — hallucinated ids filtered against the real candidates), or
     error (with the reason). The start route is GM-only and its results
@@ -610,7 +610,7 @@ def player_cockpit_page(request: Request, pc: str = "", db: Session = Depends(ge
 
 
 @router.get("/api/cockpit/player-board")
-async def cockpit_player_board(request: Request, pc: str = "", db: Session = Depends(get_db),
+def cockpit_player_board(request: Request, pc: str = "", db: Session = Depends(get_db),
                                active_world: str = Cookie(None)):
     """Live data for the player cockpit's party-vitals and quests panels:
     the player's own parties (member vitals included) and the world's
