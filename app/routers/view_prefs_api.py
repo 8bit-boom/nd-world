@@ -7,7 +7,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .. import view_prefs
+from .. import site_layout, view_prefs
 from ..database import get_db
 from ..models import UserViewPref
 
@@ -53,4 +53,28 @@ async def view_prefs_save(section: str, request: Request, db: Session = Depends(
     else:
         db.add(UserViewPref(user_id=user.id, section=section, prefs_json=json.dumps(cleaned)))
     db.commit()
+    if section == "site":
+        site_layout.remember(request, user.id, cleaned)       # the next page render reads it from the session, with no query
     return cleaned
+
+
+@router.delete("/api/view-prefs/{section}")
+def view_prefs_reset(section: str, request: Request, db: Session = Depends(get_db)):
+    """Forget one saved layout (the page goes back to its default for this person)."""
+    user = _user(request)
+    if section not in view_prefs.SECTIONS:
+        raise HTTPException(404, "Unknown section")
+    db.query(UserViewPref).filter(UserViewPref.user_id == user.id, UserViewPref.section == section).delete()
+    db.commit()
+    if section == "site":
+        site_layout.forget(request)
+    return {"reset": section}
+
+
+@router.delete("/api/view-prefs")
+def view_prefs_reset_all(request: Request, db: Session = Depends(get_db)):
+    user = _user(request)
+    n = db.query(UserViewPref).filter(UserViewPref.user_id == user.id).delete()
+    db.commit()
+    site_layout.forget(request)
+    return {"reset": n}

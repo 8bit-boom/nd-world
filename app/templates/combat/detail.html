@@ -1083,7 +1083,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) flush
 // keep the turn bar just under the site's own sticky top bar
 function placeBar() {
   const nav = document.querySelector('.topbar');
-  document.getElementById('turn-bar').style.top = (nav && nav.offsetHeight ? nav.offsetHeight : 0) + 'px';
+  document.getElementById('turn-bar').style.top = (window.ndNavOffset ? window.ndNavOffset() : (nav && nav.offsetHeight ? nav.offsetHeight : 0)) + 'px';
 }
 window.addEventListener('resize', placeBar); placeBar();
 

@@ -2481,3 +2481,82 @@ body.av-has-now { padding-bottom: 5.5rem; }
   body.pch-hub-page:not(.mp) .cs-more.js .cs-more-body > a, body.pch-hub-page:not(.mp) .cs-more.js .cs-more-body > form { width: 100%; box-sizing: border-box; }
   body.pch-hub-page:not(.mp) .cs-more.js .cs-more-body > form button { width: 100%; }
 }
+
+/* ── Site shell: navigation, width, density, motion, the contrast theme (static/js/nd-site.js; chosen on the Account page) ───────────────────── */
+:root[data-theme="contrast"] {
+  --bg: #000; --bg2: #0b0b0b; --bg3: #171717; --border: #9a9a9a;
+  --neon: #4dfcff; --neon2: #ff7ab8; --neon3: #c9a0ff; --yellow: #ffe14d; --text: #fff; --text-dim: #d6d6d6;
+}
+:root[data-theme="contrast"] a:not(.nav-kind):not(.btn-new):not(.logo):not(.tools-option):not(.world-option) { text-decoration: underline; }
+:root[data-theme="contrast"] :focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
+
+/* motion: "reduced" always; the browser's own setting unless "full" is chosen */
+html[data-motion="reduced"] *, html[data-motion="reduced"] *::before, html[data-motion="reduced"] *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) *, html:not([data-motion="full"]) *::before, html:not([data-motion="full"]) *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
+/* content width (pages with their own full-bleed layout - the cockpit - are left alone) */
+html[data-width="wide"] body:not(:has(#ck-wrap)) main { max-width: none; }
+html[data-width="wide"] body:not(:has(#ck-wrap)) main > [style*="max-width"],
+html[data-width="wide"] .cs, html[data-width="wide"] .cx, html[data-width="wide"] #pc-hub, html[data-width="wide"] .pch-now, html[data-width="wide"] .pch-tags,
+html[data-width="wide"] #pc-ai, html[data-width="wide"] .ed-layout, html[data-width="wide"] .form-page { max-width: none !important; }
+html[data-width="reading"] body:not(:has(#ck-wrap)) main { max-width: 49rem; }
+html[data-width="reading"] body:not(:has(#ck-wrap)) main > [style*="max-width"] { max-width: 100% !important; }
+
+/* density: comfortable is how it always was */
+html[data-density="compact"] body:not(:has(#ck-wrap)) main { padding: .8rem 1rem; }
+html[data-density="compact"] .topbar { padding-top: .3rem; padding-bottom: .3rem; gap: .6rem; }
+html[data-density="compact"] .card-grid { gap: .5rem; }
+html[data-density="compact"] .entity-card-body { padding: .5rem .6rem; }
+html[data-density="compact"] .pch-panel { padding: .65rem .8rem; }
+html[data-density="compact"] .pch-row { padding: .3rem 0; }
+html[data-density="compact"] body:not(:has(#ck-wrap)) h1 { margin-top: .3rem; margin-bottom: .5rem; }
+html[data-density="compact"] body { line-height: 1.4; }
+html[data-density="touch"] body:not(:has(#ck-wrap)) :is(button, select, .btn-primary, .btn-secondary, .nav-kind, .tools-option, .world-option, .pch-btn) { min-height: 44px; }
+html[data-density="touch"] body:not(:has(#ck-wrap)) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) { font-size: 16px; min-height: 44px; }
+html[data-density="touch"] body:not(:has(#ck-wrap)) a.nav-kind, html[data-density="touch"] .tools-option { display: flex; align-items: center; }
+
+/* navigation: icon-only top bar */
+html[data-nav="compact"] .topbar .nav-kinds .nav-lb, html[data-nav="compact"] .topbar .tools-btn .nav-lb { display: none; }
+html[data-nav="compact"] .topbar .tools-dropdown .nav-lb { display: inline; }
+html[data-nav="compact"] .nav-kind, html[data-nav="compact"] .tools-btn { font-size: 1rem; }
+
+/* navigation: side rail (a wide enough window; below that the top bar and its hamburger as always) */
+@media (min-width: 900px) {
+  html[data-nav="rail"] body { padding-left: 15rem; }
+  html[data-nav="rail"] body.nd-embed, html[data-nav="rail"] body.ck-laptop:not(.ck-showsite) { padding-left: 0; }
+  html[data-nav="rail"] .topbar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 15rem; box-sizing: border-box; flex-direction: column; align-items: stretch; flex-wrap: nowrap;
+    gap: .7rem; padding: .9rem .75rem 4rem; overflow-y: auto; border-right: 1px solid var(--border); border-bottom: 0;
+  }
+  html[data-nav="rail"] .nav-hamburger { display: none !important; }
+  html[data-nav="rail"] .search-form { flex: none; max-width: none; min-width: 0; width: 100%; box-sizing: border-box; }
+  html[data-nav="rail"] .search-form input { min-width: 0; }
+  html[data-nav="rail"] .nav-kinds { flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: .15rem; }
+  html[data-nav="rail"] .nav-kind { display: block; padding: .45rem .6rem; font-size: .85rem; }
+  html[data-nav="rail"] .btn-new { display: block; text-align: center; }
+  html[data-nav="rail"] .tools-switcher, html[data-nav="rail"] .world-switcher { display: block; position: relative; }
+  html[data-nav="rail"] .tools-btn, html[data-nav="rail"] .world-btn { width: 100%; text-align: left; box-sizing: border-box; }
+  html[data-nav="rail"] .tools-dropdown, html[data-nav="rail"] .world-dropdown {
+    position: static; margin: .15rem 0 .3rem .6rem; border: 0; border-left: 2px solid var(--border); border-radius: 0; background: transparent; min-width: 0;
+  }
+}
+@media print { html[data-nav="rail"] body { padding-left: 0; } }
+
+/* navigation: the phone's bottom bar (nd-site.js builds it; the character page and the cockpit have bars of their own) */
+#nd-bottom-nav { display: none; }
+@media (max-width: 768px) {
+  body.nd-has-bn #nd-bottom-nav {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 90; justify-content: space-around; gap: .15rem;
+    padding: .3rem .2rem calc(.3rem + env(safe-area-inset-bottom)); background: var(--bg2); border-top: 1px solid var(--border); box-shadow: 0 -6px 20px rgba(0,0,0,.4);
+  }
+  body.nd-has-bn { padding-bottom: calc(4.4rem + env(safe-area-inset-bottom)); --nd-fab-bottom: 5rem; }   /* the 📺 and 🐞 buttons sit above the bar */
+  body.nd-has-bn .nav-hamburger { display: none !important; }
+  body.nd-has-bn .nav-kinds { position: fixed; top: auto; bottom: calc(4.2rem + env(safe-area-inset-bottom)); max-height: 62vh; border-top: 1px solid var(--neon); }
+  .nd-bn { flex: 1 1 0; min-width: 0; min-height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .1rem;
+    background: none; border: 0; border-radius: 8px; color: var(--text-dim); text-decoration: none; font-family: inherit; cursor: pointer; }
+  .nd-bn-ic { font-size: 1.25rem; line-height: 1.1; }
+  .nd-bn small { font-size: .64rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nd-bn.active { color: var(--neon); background: var(--bg3); }
+}

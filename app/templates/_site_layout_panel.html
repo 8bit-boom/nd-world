@@ -1,0 +1,99 @@
+{# Account → "Layout & appearance": the site shell choices (static/js/nd-site.js) and every saved layout with a reset. Every control applies at once. #}
+<section id="site-layout" class="entity-form" style="margin-top:2rem">
+  <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">🎨 Layout &amp; appearance</h2>
+  <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .8rem">Your own choices - saved to your account, so they follow you from phone to laptop. Changes apply as you click.</p>
+  <script type="application/json" id="site-specs">{{ all_view_specs()|tojson }}</script>
+  <script type="application/json" id="site-titles">{{ view_titles()|tojson }}</script>
+  <div id="sl-groups" style="display:flex;flex-direction:column;gap:1rem"></div>
+
+  <h3 style="font-size:.82rem;color:var(--text-dim);margin:1.4rem 0 .4rem">Your saved layouts</h3>
+  <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 .5rem">Each list page, the character page and the cockpit remember the layout you last picked there. Reset one to go back to how it was.</p>
+  <div id="sl-saved" style="display:flex;flex-direction:column;gap:.35rem"></div>
+  <button type="button" id="sl-reset-all" class="btn-secondary" style="margin-top:.7rem">Reset every layout</button>
+</section>
+<style>
+#site-layout fieldset { border:1px solid var(--border); border-radius:6px; padding:.6rem .8rem .7rem; margin:0; }
+#site-layout legend { font-size:.82rem; color:var(--neon); padding:0 .4rem; }
+#site-layout label.sl-opt { display:flex; align-items:flex-start; gap:.5rem; padding:.3rem 0; font-size:.85rem; cursor:pointer; }
+#site-layout label.sl-opt input { width:auto; margin-top:.2rem; }
+#site-layout label.sl-opt small { display:block; color:var(--text-dim); font-size:.74rem; }
+#site-layout select { background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:.35rem .5rem; font-family:var(--font); font-size:.85rem; min-height:36px; }
+.sl-row { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; font-size:.82rem; }
+.sl-row b { color:var(--text); font-weight:normal; }
+.sl-row .sl-mode { color:var(--text-dim); }
+.sl-row button { margin-left:auto; }
+#site-layout .sl-pins { display:grid; grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); gap:.1rem .8rem; }
+</style>
+<script>
+(function () {
+  const root = document.getElementById('site-layout');
+  if (!root || !window.ndSite) return;
+  const S = window.ndSite;
+  const h = (tag, props, ...kids) => { const e = document.createElement(tag); Object.entries(props || {}).forEach(([k, v]) => { if (v == null || v === false) return; if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v === true ? '' : v); }); kids.flat().forEach(c => { if (c != null) e.append(c.nodeType ? c : document.createTextNode(String(c))); }); return e; };
+  const specs = JSON.parse(document.getElementById('site-specs').textContent), titles = JSON.parse(document.getElementById('site-titles').textContent);
+  const groups = document.getElementById('sl-groups');
+
+  const radios = (legend, key, choices) => {
+    const fs = h('fieldset', {}, h('legend', { text: legend }));
+    choices.forEach(([val, name, hint]) => {
+      const r = h('input', { type: 'radio', name: 'sl-' + key, value: val });
+      if ((S.get().options[key] || '') === val) r.checked = true;
+      r.addEventListener('change', () => { S.set({ [key]: val }); repaintPins(); });
+      fs.append(h('label', { class: 'sl-opt' }, r, h('span', {}, name, hint ? h('small', { text: hint }) : null)));
+    });
+    return fs;
+  };
+  const picker = (legend, key, choices) => {
+    const sel = h('select', { 'aria-label': legend }, choices.map(([v, n]) => h('option', { value: v, text: n, selected: (S.get().options[key] || '') === v ? true : null })));
+    sel.addEventListener('change', () => S.set({ [key]: sel.value }));
+    return h('fieldset', {}, h('legend', { text: legend }), sel);
+  };
+  groups.append(
+    radios('Navigation', 'nav', [['top', 'Top bar', 'The way it has always been.'], ['rail', 'Side rail', 'The menus down the left edge (screens 900 px or wider) - gives a short laptop screen its height back.'],
+      ['compact', 'Icon-only top bar', 'Just the icons; the names show in the menus and on hover.'], ['bottom', 'Phone bottom bar', 'On a phone: your pinned destinations along the bottom, the rest under More. (Top bar elsewhere.)']]),
+    h('fieldset', { id: 'sl-pins-box' }, h('legend', { text: 'Pinned destinations' })),
+    radios('Content width', 'width', [['centered', 'Centered', 'About 1200 px, as it has always been.'], ['wide', 'Wide', 'Fill the screen.'], ['reading', 'Reading', 'A narrow column for long text.']]),
+    radios('Density', 'density', [['comfortable', 'Comfortable', ''], ['compact', 'Compact', 'Tighter spacing: more on the screen.'], ['touch', 'Touch', 'Bigger buttons and fields (44 px) on any screen.']]),
+    picker('Theme', 'theme', [['', 'This browser’s choice'], ['dark', 'Dark'], ['dim', 'Dim'], ['light', 'Light'], ['contrast', 'High contrast']]),
+    picker('Text size', 'scale', [['', 'This browser’s choice'], ['90', '90%'], ['100', '100%'], ['110', '110%'], ['125', '125%'], ['150', '150%'], ['175', '175%'], ['200', '200%']]),
+    picker('Motion', 'motion', [['', 'Follow my device'], ['full', 'Full animations'], ['reduced', 'Reduced']]));
+
+  // pinned destinations: tick up to six (the bottom bar and the rail show the first four / all of them)
+  function repaintPins() {
+    const box = document.getElementById('sl-pins-box');
+    box.replaceChildren(h('legend', { text: 'Pinned destinations' }), h('small', { style: 'display:block;color:var(--text-dim);font-size:.74rem;margin-bottom:.4rem', text: 'Up to six. The phone bottom bar shows the first four, in the order you tick them; none ticked = the usual ones for your role.' }));
+    const items = S.navItems(), chosen = S.get().pins.filter(id => items.some(i => i.id === id)), grid = h('div', { class: 'sl-pins' });
+    items.forEach(it => {
+      const c = h('input', { type: 'checkbox' });
+      c.checked = chosen.indexOf(it.id) >= 0;
+      c.addEventListener('change', () => {
+        let next = S.get().pins.filter(id => id !== it.id);
+        if (c.checked) { if (next.length >= 6) { c.checked = false; return; } next.push(it.id); }
+        S.set({}, next); repaintPins();
+      });
+      grid.append(h('label', { class: 'sl-opt' }, c, h('span', { text: (it.icon ? it.icon + ' ' : '') + it.label })));
+    });
+    box.append(grid);
+  }
+  repaintPins();
+
+  // every saved layout, with a reset
+  async function repaintSaved() {
+    const host = document.getElementById('sl-saved');
+    let all = {};
+    try { all = await (await fetch('/api/view-prefs', { credentials: 'same-origin' })).json(); } catch (e) { /* none */ }
+    const rows = Object.keys(all).filter(k => k !== 'site').sort().map(k => {
+      const sp = specs[k] || {}, mode = (sp.modes || []).find(m => m.id === all[k].mode);
+      return h('div', { class: 'sl-row' }, h('b', { text: titles[k] || k }), h('span', { class: 'sl-mode', text: mode ? mode.icon + ' ' + mode.label : '' }),
+        h('button', { type: 'button', class: 'btn-secondary', text: 'Reset', onclick: async () => { await fetch('/api/view-prefs/' + encodeURIComponent(k), { method: 'DELETE' }); repaintSaved(); } }));
+    });
+    host.replaceChildren(...(rows.length ? rows : [h('span', { class: 'sl-mode', text: 'Nothing saved yet - every page is on its default layout.', style: 'font-size:.82rem;color:var(--text-dim)' })]));
+  }
+  repaintSaved();
+  document.getElementById('sl-reset-all').addEventListener('click', async () => {
+    if (!confirm('Reset the layout of every page (and the site settings above) to the defaults?')) return;
+    await fetch('/api/view-prefs', { method: 'DELETE' });
+    location.reload();
+  });
+})();
+</script>

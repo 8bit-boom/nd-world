@@ -3166,7 +3166,7 @@
     const tb = document.querySelector('.topbar');
     const wrap = document.getElementById('ck-wrap');
     if (!tb || !wrap) return;
-    const h = (window.innerHeight - tb.offsetHeight) + 'px';
+    const h = (window.innerHeight - (window.ndNavOffset ? window.ndNavOffset() : tb.offsetHeight)) + 'px';   // (a side rail takes width, not height)
     wrap.style.height = h;
     // The phone/tablet shell too: sized to a whole viewport BELOW the top bar, its tab bar sat off-screen.
     const mwrap = document.getElementById('ck-mwrap');

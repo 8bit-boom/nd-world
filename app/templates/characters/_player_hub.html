@@ -919,7 +919,7 @@ html.pcv-open, html.pcv-open body { overflow:hidden; }
   function topbarOffset() {
     const tb = document.querySelector('.topbar');
     const pos = tb ? getComputedStyle(tb).position : '';
-    document.documentElement.style.setProperty('--pch-top', (pos === 'sticky' || pos === 'fixed') ? Math.round(tb.getBoundingClientRect().height) + 'px' : '0px');
+    document.documentElement.style.setProperty('--pch-top', (pos === 'sticky' || pos === 'fixed') ? (window.ndNavOffset ? window.ndNavOffset() : Math.round(tb.getBoundingClientRect().height)) + 'px' : '0px');
   }
   function announce(detail) { window.dispatchEvent(new CustomEvent('pc-vitals', { detail })); }    // the sheet's own HP/Shock boxes follow
   async function post(path, payload) {

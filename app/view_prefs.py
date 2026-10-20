@@ -8,6 +8,8 @@ A choice is {mode, size (1..3 = S / M / L), sort ("key" or "-key" for descending
 (localStorage "nd_view:<section>") and may be given in the URL (?view= &size= &sort= &group=); `clean` is the tolerant reader both use.
 """
 
+import re
+
 MODE_LABELS = {
     "grid": ("⊞", "Grid"),
     "masonry": ("▥", "Masonry"),
@@ -26,6 +28,7 @@ MODE_LABELS = {
     "board": ("▦", "Board"),
     "web": ("🕸", "Web"),
     "tabs": ("🗂", "Tabs"),
+    "site": ("⚙", "Site"),
     "free": ("◫", "Free windows"),
     "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
@@ -132,6 +135,28 @@ SECTIONS["cockpit"] = {
     "modes": ["free", "rail", "tabs", "grid"], "default": "free", "size_modes": ["none"], "labels": {"grid": "Tiled grid"},
     "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 
+# The SITE shell: not a list but a handful of independent settings, so this section carries `options` (each: its allowed values, the first
+# being the default) and `pins` (the destinations kept in reach - the phone's bottom bar, the top of the side rail).
+SITE_OPTIONS = {
+    "nav": ["top", "rail", "compact", "bottom"],           # top bar (today) | side rail | icon-only top bar | phone bottom bar
+    "width": ["centered", "wide", "reading"],
+    "density": ["comfortable", "compact", "touch"],
+    "theme": ["", "dark", "dim", "light", "contrast"],      # "" = whatever this browser chose
+    "scale": ["", "90", "100", "110", "125", "150", "175", "200"],
+    "motion": ["", "full", "reduced"],                      # "" = the browser / system setting
+}
+SITE_MAX_PINS = 6
+SECTIONS["site"] = {"modes": ["site"], "default": "site", "size_modes": ["none"], "sorts": ["name"], "default_sort": "name", "groups": [], "filters": [],
+                    "options": SITE_OPTIONS, "max_pins": SITE_MAX_PINS}
+
+# What the person sees under "Your layouts" on the Account page (every section that is saved per account).
+SECTION_TITLES = {
+    "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
+    "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
+    "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
+    "hub": "My character page", "cockpit": "Cockpit layout style",
+}
+
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2
 
@@ -150,6 +175,7 @@ def spec(section: str) -> dict:
         "sorts": [{"id": k, "label": s.get("sort_labels", {}).get(k, SORT_LABELS[k])} for k in s["sorts"]],
         "groups": [{"id": k, "label": GROUP_LABELS[k]} for k in s["groups"]],
         "filters": [{"id": k, "label": FILTER_LABELS[k]} for k in s["filters"]],
+        **({"options": s["options"]} if s.get("options") else {}),
     }
 
 
@@ -172,4 +198,10 @@ def clean(section: str, raw) -> dict:
     group = raw.get("group") if raw.get("group") in s["groups"] else ""
     filters = [f for f in (raw.get("filters") if isinstance(raw.get("filters"), list) else []) if f in s["filters"]]
     filters = list(dict.fromkeys(filters))[: s.get("max_filters", len(filters))]      # no repeats; a section may cap how many
-    return {"mode": mode, "size": size, "sort": sort, "group": group, "filters": filters}
+    out = {"mode": mode, "size": size, "sort": sort, "group": group, "filters": filters}
+    if s.get("options"):
+        given = raw.get("options") if isinstance(raw.get("options"), dict) else {}
+        out["options"] = {k: (str(given.get(k)) if str(given.get(k)) in allowed else allowed[0]) for k, allowed in s["options"].items()}
+        pins = raw.get("pins") if isinstance(raw.get("pins"), list) else []
+        out["pins"] = list(dict.fromkeys(p for p in pins if isinstance(p, str) and re.fullmatch(r"[a-z0-9_-]{1,40}", p)))[: s.get("max_pins", 6)]
+    return out

@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from . import deps
 from . import view_prefs
 from . import nav_menus as _nav_menus
+from . import site_layout
 from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .database import SessionLocal, get_app_settings_flags_cached
 from .imaging import thumbnail_path_for
@@ -145,6 +146,9 @@ def _saved_view(request, section: str):
 
 
 templates.env.globals["saved_view"] = _saved_view
+templates.env.globals["site_layout"] = site_layout.for_request
+templates.env.globals["view_titles"] = lambda: view_prefs.SECTION_TITLES
+templates.env.globals["all_view_specs"] = lambda: {k: view_prefs.spec(k) for k in view_prefs.SECTIONS}
 # Last-resort default for the (nonexistent today) case of a template
 # rendered outside any request — real renders get the per-world merged
 # values from the context processor above.

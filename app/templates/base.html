@@ -1,5 +1,6 @@
+{%- set _sl = site_layout(request) -%}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-nav="{{ _sl.options.nav }}" data-width="{{ _sl.options.width }}" data-density="{{ _sl.options.density }}" data-motion="{{ _sl.options.motion }}" data-acct-theme="{{ _sl.options.theme }}" data-acct-scale="{{ _sl.options.scale }}" data-pins="{{ _sl.pins|join(',') }}"{% if _sl.signed %} data-signed="1"{% endif %}{% if request.state.user and request.state.user.is_gm %} data-gm="1"{% endif %}>
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -8,8 +9,9 @@
     // Applied before first paint so there's no flash of the wrong theme/scale.
     (function(){
       try {
-        document.documentElement.dataset.theme = localStorage.getItem('nd_theme') || 'dark';
-        document.documentElement.dataset.scale = localStorage.getItem('nd_ui_scale') || '100';
+        var d = document.documentElement;      // the account's choice (rendered into <html>) wins over this browser's, which wins over the default
+        d.dataset.theme = d.dataset.acctTheme || localStorage.getItem('nd_theme') || 'dark';
+        d.dataset.scale = d.dataset.acctScale || localStorage.getItem('nd_ui_scale') || '100';
       } catch(e) {}
     })();
   </script>
@@ -25,6 +27,8 @@
      floated panel. #}
   <script src="/static/js/nd-stage.js?v={{ asset_v('js/nd-stage.js') }}" defer></script>
   {% endif %}
+  {# The site shell's layout (navigation, width, density ...) - everyone, embedded pages included (they hide the chrome anyway). #}
+  <script src="/static/js/nd-site.js?v={{ asset_v('js/nd-site.js') }}"></script>
   {# AI tasks run in the background: ndAiFetch is the drop-in fetch that polls for the result (app/ai_background.py).
      Loaded before any page script (no defer) so inline handlers can use it; its page-corner tray only mounts when a
      task from a previous page is still pending. #}
@@ -143,14 +147,14 @@
   <button class="nav-hamburger" id="nav-toggle" aria-label="Toggle navigation">☰</button>
   <div class="nav-kinds" id="nav-kinds">
     {% macro nav_item_link(item, cls) %}
-    <a href="{{ item.href|wq }}" draggable="true"
+    <a href="{{ item.href|wq }}" draggable="true" data-nav-id="{{ item.id }}" title="{{ item.label }}"
        {% if item.ql_type %}data-ql-type="{{ item.ql_type }}" data-ql-ref="{{ item.ql_ref }}"{% else %}data-ql-ref="{{ item.href }}"{% endif %}
-       class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}">{{ item.icon }} {{ item.label }}{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span><span id="ai-dot-status" class="sr-only">AI unavailable</span>{% endif %}</a>
+       class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}"><span class="nav-ic">{{ item.icon }}</span> <span class="nav-lb">{{ item.label }}</span>{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span><span id="ai-dot-status" class="sr-only">AI unavailable</span>{% endif %}</a>
     {% endmacro %}
     {% for menu in nav_menus %}
     <div class="tools-switcher">
       <button type="button" class="tools-btn" aria-haspopup="true" aria-expanded="false" onclick="event.stopPropagation(); ndToggleDropdown(this)">
-        {{ menu.icon }} {{ menu.label }} ▾
+        <span class="nav-ic">{{ menu.icon }}</span> <span class="nav-lb">{{ menu.label }}</span> ▾
       </button>
       <div class="tools-dropdown">
         {% for item in menu.links %}
@@ -164,10 +168,10 @@
     {% endfor %}
     {% if world and request.state.user and not request.state.user.is_gm %}
     <a href="/worlds/{{ world.id }}/notes/{{ request.state.user.id }}"
-       class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>
+       class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}" title="My Notes" data-nav-id="my_notes"><span class="nav-ic">🔒</span> <span class="nav-lb">My Notes</span></a>
     {% endif %}
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
+    <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}" title="Settings" data-nav-id="settings"><span class="nav-ic">⚙</span> <span class="nav-lb">Settings</span></a>
     {% endif %}
     {% if can_edit(request) %}
     {# Content creation, not administration — a GM-Assistant gets this too
@@ -190,8 +194,8 @@
     <span class="nav-kind" style="color:var(--text-dim);cursor:default">
       {{ '⚡ GM' if request.state.user.is_gm else '🎭 ' + request.state.user.display_name }}
     </span>
-    <a href="/account"      class="nav-kind {% if request.url.path == '/account' %}active{% endif %}">👤 Account</a>
-    <a href="/logout" class="nav-kind">⏻ Logout</a>
+    <a href="/account"      class="nav-kind {% if request.url.path == '/account' %}active{% endif %}" title="Account" data-nav-id="account"><span class="nav-ic">👤</span> <span class="nav-lb">Account</span></a>
+    <a href="/logout" class="nav-kind" title="Logout"><span class="nav-ic">⏻</span> <span class="nav-lb">Logout</span></a>
     {% endif %}
   </div>
 </nav>
@@ -222,13 +226,13 @@
         if(dotStatus) dotStatus.textContent=label;
       }).catch(()=>{});
   }
-  var THEMES=['dark','dim','light'];
-  var THEME_LABELS={dark:'🌑 Dark',dim:'🌗 Dim',light:'☀ Light'};
+  var THEMES=['dark','dim','light','contrast'];
+  var THEME_LABELS={dark:'🌑 Dark',dim:'🌗 Dim',light:'☀ Light',contrast:'◐ Contrast'};
   var themeBtn=document.getElementById('theme-toggle');
   if(themeBtn){
     var setTheme=function(t){
-      document.documentElement.dataset.theme=t;
-      try{localStorage.setItem('nd_theme',t);}catch(e){}
+      if(window.ndSite){ window.ndSite.set({theme:t}); }       // this browser, and the account when signed in
+      else{ document.documentElement.dataset.theme=t; try{localStorage.setItem('nd_theme',t);}catch(e){} }
       themeBtn.textContent=THEME_LABELS[t]||THEME_LABELS.dark;
     };
     setTheme(document.documentElement.dataset.theme||'dark');
@@ -241,8 +245,8 @@
   // on window so a second control elsewhere on the page (Settings > Options)
   // can drive the exact same state instead of duplicating this logic.
   window.ndSetUIScale=function(v){
-    document.documentElement.dataset.scale=v;
-    try{localStorage.setItem('nd_ui_scale',v);}catch(e){}
+    if(window.ndSite){ window.ndSite.set({scale:String(v)}); }
+    else{ document.documentElement.dataset.scale=v; try{localStorage.setItem('nd_ui_scale',v);}catch(e){} }
     document.querySelectorAll('.nd-ui-scale-select').forEach(function(el){el.value=v;});
   };
   var scaleSelect=document.getElementById('scale-select');

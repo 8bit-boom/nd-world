@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import auth
+from .. import site_layout
 from .. import totp as _totp
 from ..database import get_db
 from ..models import InviteCode, TrustedDevice, User, World, WorldMembership
@@ -124,6 +125,7 @@ def _begin_2fa_or_login(request: Request, db: Session, user: User) -> bool:
         request.session["pending_2fa_user_id"] = user.id
         return True
     request.session["user_id"] = user.id
+    site_layout.remember(request, user.id)             # the site shell layout rides in the session (no query per page)
     request.session["session_version"] = user.session_version
     return False
 
@@ -220,6 +222,7 @@ async def login_2fa_submit(request: Request, db: Session = Depends(get_db)):
     request.session.pop("pending_2fa_user_id", None)
 
     request.session["user_id"] = user.id
+    site_layout.remember(request, user.id)             # the site shell layout rides in the session (no query per page)
     request.session["session_version"] = user.session_version
 
     resp = None
@@ -300,6 +303,7 @@ async def api_login(request: Request, db: Session = Depends(get_db)):
 
     _rl_clear(key)
     request.session["user_id"] = user.id
+    site_layout.remember(request, user.id)             # the site shell layout rides in the session (no query per page)
     request.session["session_version"] = user.session_version
     return {"ok": True, "user": {"id": user.id, "email": user.email, "is_gm": user.is_gm}}
 
