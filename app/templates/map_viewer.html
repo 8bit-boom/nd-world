@@ -222,6 +222,7 @@ function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').
 const MAP_W = {{ map_data.width }};
 const MAP_H = {{ map_data.height }};
 const IMG_URL = {{ image_url | tojson }};
+const MAP_TILES = {{ map_tiles | tojson }};   // the tile pyramid (app/map_tiles.py) or null while it is being built
 const SLUG = {{ slug | tojson }};
 const KANKA_MARKERS = {{ map_data.markers | tojson }};
 // JSON.parse(...|tojson) — not |safe — so entity/party/marker names can't
@@ -257,7 +258,15 @@ const map = L.map('map', {
   attributionControl: false, zoomControl: true,
 });
 const bounds = [[0, 0], [MAP_H, MAP_W]];
-L.imageOverlay(IMG_URL, bounds).addTo(map);
+// Tiles when the pyramid exists: only what is in view is loaded, full detail at the deepest zoom. Until then, the single picture as before.
+if (MAP_TILES) {
+  L.tileLayer('/map-tiles/' + MAP_TILES.key + '/{z}/{x}_{y}.webp', {
+    tileSize: MAP_TILES.tile, minZoom: -3, maxZoom: 4, minNativeZoom: MAP_TILES.zmin, maxNativeZoom: MAP_TILES.native,
+    bounds: bounds, noWrap: true, keepBuffer: 1,
+  }).addTo(map);
+} else {
+  L.imageOverlay(IMG_URL, bounds).addTo(map);
+}
 map.fitBounds(bounds);
 
 function toLL(kLat, kLng) { return L.latLng(MAP_H - kLat, kLng); }
@@ -765,7 +774,7 @@ function closeDlg(id) { document.getElementById(id).style.display = 'none'; }
   const wrap = document.getElementById('map-wrap'), mini = document.getElementById('map-mini');
   if (!wrap || !mini) return;
   const img = mini.querySelector('img'), box = document.getElementById('map-mini-box');
-  img.src = IMG_URL;
+  img.src = {{ image_url | thumb | tojson }};      // the small thumbnail is plenty for a 190 px overview
   function draw() {
     if (wrap.dataset.view !== 'minimap') { mini.hidden = true; return; }
     mini.hidden = false;

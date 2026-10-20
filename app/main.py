@@ -43,6 +43,7 @@ from . import map_strict as _map_strict
 from . import markup_locator as _markup_locator
 from . import personal_files as _personal_files
 from . import view_prefs
+from . import map_tiles as _map_tiles
 from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
@@ -470,6 +471,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path == "/api/hover-preview/config":
         return True
     if path == "/api/spotlight":
+        return True
+    if path.startswith("/map-tiles/"):          # tiles of a map picture: the map viewer is player-safe, so are its pieces
         return True
     if path == "/player-cockpit":
         # The PLAYER cockpit (the GM cockpit at /cockpit stays GM-only):
@@ -1479,6 +1482,17 @@ def _guard_strict_map_picture(request: Request, url: str) -> None:
                 raise HTTPException(404)
     finally:
         db.close()
+
+
+@app.get("/map-tiles/{key}/{z}/{tile}")
+def serve_map_tile(key: str, z: int, tile: str):
+    """One 256 px tile of a map picture's pyramid (app/map_tiles.py). Same audience as the map pictures themselves (any signed-in viewer of
+    the map); the key carries the picture's modification time, so a tile never changes at its URL."""
+    m = re.fullmatch(r"(-?\d+)_(-?\d+)\.webp", tile)
+    p = _map_tiles.tile_path(key, z, int(m.group(1)), int(m.group(2))) if m else None
+    if p is None:
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/webp", headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
 @app.get("/uploads/{filepath:path}")
@@ -2827,6 +2841,11 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
     for ext in (".webp", ".jpg", ".jpeg", ".png", ".avif"):
         if (_sm / (slug + ext)).exists(): image_url = f"/static/maps/{slug}{ext}"; break
         if (UPLOADS_DIR / "maps" / (slug + ext)).exists(): image_url = f"/uploads/maps/{slug}{ext}"; break
+    # the tiled pyramid of this picture (app/map_tiles.py), or None while it is being built - the viewer then shows the single picture
+    tiles = None
+    if image_url:
+        src = (BASE_DIR / image_url.lstrip("/")) if image_url.startswith("/static/") else (UPLOADS_DIR / image_url[len("/uploads/"):])
+        tiles = _map_tiles.meta_for(slug, src, int(map_data.get("width") or 0) or 1, int(map_data.get("height") or 0) or 1)
     worlds = _visible_worlds(request, db)
     overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
     if not overlay:
@@ -2847,7 +2866,7 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
     is_gm = bool(user and user.is_gm)
     return templates.TemplateResponse("map_viewer.html", {
         "request": request, "world": world, "worlds": worlds,
-        "map_data": map_data, "image_url": image_url or "", "slug": slug,
+        "map_data": map_data, "image_url": image_url or "", "slug": slug, "map_tiles": tiles,
         "overlay": overlay, "ename_map": json.dumps(ename_map), "is_gm": is_gm,
         "schematics_json": json.dumps([{"slug": s.slug, "name": s.name} for s in schematics]),
         "world_parties_json": json.dumps(_world_parties_payload(db, world.id, request)),

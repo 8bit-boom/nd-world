@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 # .br / .gz twins of every text asset, served as-is by app/http_perf.py (no per-request compression of the same files)
-RUN python -m app.static_thumbs && python -m app.precompress
+RUN python -m app.static_thumbs && python -m app.map_tiles && python -m app.precompress
 
 # The commit this image was built from (set by .github/workflows/docker-publish.yml), shown by /health and
 # Settings > System so "is the new image actually the one running?" has a one-glance answer. Declared
