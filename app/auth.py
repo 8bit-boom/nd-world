@@ -69,12 +69,17 @@ def hash_api_token(raw_token: str) -> str:
 # submitted email doesn't exist. Without it, `if not user or verify_password(...)`
 # short-circuits: an unknown email answers in sub-milliseconds while a known one
 # costs 600k PBKDF2 iterations, which is a trivially measurable enumeration oracle.
-# Computed once at import (~200ms of startup).
-_DUMMY_HASH = hash_password("nd-world-timing-equalizer")
+# Made on the first failed lookup instead of at import (efficiency plan, step 7: ~200 ms of every startup): making it costs the same PBKDF2
+# work as one verification, so that first call spends exactly that and later calls verify against it - the timing is the same either way.
+_DUMMY_HASH = None
 
 
 def burn_password_verify() -> None:
     """Spend the same PBKDF2 cost as a real verification, discarding the result."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password("nd-world-timing-equalizer")
+        return
     verify_password("wrong", _DUMMY_HASH)
 
 

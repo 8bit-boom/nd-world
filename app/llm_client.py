@@ -42,7 +42,8 @@ import time
 from types import SimpleNamespace
 
 import httpx as _httpx
-import ollama as _ollama
+from .lazy import LazyModule as _LazyModule
+_ollama = _LazyModule("ollama")      # imported on first use (app/lazy.py)
 
 _log = logging.getLogger("nd.llm")
 

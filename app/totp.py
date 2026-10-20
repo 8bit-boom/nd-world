@@ -15,7 +15,8 @@ import json
 import secrets
 
 import pyotp
-import qrcode
+from .lazy import LazyModule as _LazyModule
+qrcode = _LazyModule("qrcode")      # imported on first use (app/lazy.py)
 
 _ISSUER = "N&D World"
 _BACKUP_CODE_COUNT = 8

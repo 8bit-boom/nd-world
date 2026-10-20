@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 from collections.abc import AsyncGenerator
-import ollama as _ollama
+from .lazy import LazyModule as _LazyModule
+_ollama = _LazyModule("ollama")      # imported on first use (app/lazy.py)
 import httpx as _httpx
 import websockets as _websockets
 

@@ -5,7 +5,8 @@ import re
 import csv as _csv
 import logging
 import os as _os
-import ollama as _ollama
+from ..lazy import LazyModule as _LazyModule
+_ollama = _LazyModule("ollama")      # imported on first use (app/lazy.py)
 import time as _time
 import urllib.request as _urllib
 import uuid as _uuid

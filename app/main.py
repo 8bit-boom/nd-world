@@ -124,7 +124,8 @@ from .routers.knowledge import router as knowledge_router
 from .routers.ai_instructions import router as ai_instructions_router
 from .routers.system_monitor import router as system_monitor_router
 from . import gallery as _gallery_module
-from . import mcp_server
+from .lazy import LazyModule as _LazyModule
+mcp_server = _LazyModule("app.mcp_server")      # the MCP server loads on the first /mcp request (app/lazy.py)
 from . import ai as _ai_module
 from . import audio_jobs as _audio_jobs
 from . import ollama_tuning as _tuning
@@ -7671,7 +7672,7 @@ def api_create_world(payload: dict, db: Session = Depends(get_db)):
     db.refresh(w)
     return {"id": w.id, "slug": w.slug, "created": True}
 
-_mcp_asgi_app = mcp_server.mcp.streamable_http_app()
+_mcp_asgi_app = None        # built on the first /mcp request, together with the MCP server module
 _mcp_start_lock = asyncio.Lock()
 _mcp_started = False
 _mcp_ready = asyncio.Event()
@@ -7708,10 +7709,11 @@ async def _mcp_entrypoint(scope, receive, send):
     tests/conftest.py's `client` fixture), which would hit that "already
     started" error on the second test to touch it. Starting it on first use
     instead means only tests that actually exercise /mcp ever trigger it."""
-    global _mcp_started
+    global _mcp_started, _mcp_asgi_app
     if not _mcp_started:
         async with _mcp_start_lock:
             if not _mcp_started:
+                _mcp_asgi_app = mcp_server.mcp.streamable_http_app()
                 asyncio.create_task(_run_mcp_session_manager_forever())
                 _mcp_started = True
     await _mcp_ready.wait()
