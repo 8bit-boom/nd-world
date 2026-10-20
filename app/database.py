@@ -593,9 +593,10 @@ def _upgrade_builtin_sheet_fields(db):
             row.fields_json = json.dumps(fields)
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
-# pool: one connection per worker thread (Starlette's threadpool has 40 tokens) with a short wait, so a stall shows up as an error in seconds
-# instead of every request hanging for the default 30 s
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}, pool_size=20, max_overflow=20, pool_timeout=10)
+# pool: up to one connection per worker thread (Starlette's threadpool has 40 tokens) but only 10 kept open when idle, each with an 8 MB page
+# cache (worst case 320 MB, typical far less); a short wait, so a stall shows up as an error in seconds instead of a 30 s hang
+
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}, pool_size=10, max_overflow=30, pool_timeout=10)
 from . import perf_log as _perf_log   # per-request statement counts and database time (app/perf_log.py)
 _perf_log.install(engine)
 
@@ -628,9 +629,9 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     # durable across an app crash, which is the failure mode that matters for
     # a self-hosted single-writer app, and meaningfully faster on slow disks.
     cursor.execute("PRAGMA synchronous=NORMAL")
-    # Read-side tuning (per connection): a 16 MB page cache per connection instead of the 2 MB default, up to 256 MB of the file memory-mapped (reads skip a
+    # Read-side tuning (per connection): an 8 MB page cache per connection instead of the 2 MB default, up to 256 MB of the file memory-mapped (reads skip a
     # copy), and temp tables / sort spills (ORDER BY on a big list) in memory. All of them only change speed, never what is stored.
-    cursor.execute("PRAGMA cache_size=-16384")
+    cursor.execute("PRAGMA cache_size=-8192")
     cursor.execute("PRAGMA mmap_size=268435456")
     cursor.execute("PRAGMA temp_store=MEMORY")
     cursor.close()

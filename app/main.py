@@ -125,6 +125,7 @@ from .routers.ai_instructions import router as ai_instructions_router
 from .routers.system_monitor import router as system_monitor_router
 from . import gallery as _gallery_module
 from .lazy import LazyModule as _LazyModule
+from .session_cookie import QuietSessionMiddleware as _QuietSessionMiddleware
 mcp_server = _LazyModule("app.mcp_server")      # the MCP server loads on the first /mcp request (app/lazy.py)
 from . import ai as _ai_module
 from . import audio_jobs as _audio_jobs
@@ -1211,7 +1212,8 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "tru
 # AI tasks run in the background when asked (X-ND-Background: 1) — see app/ai_background.py. Added BEFORE
 # SessionMiddleware so it sits inside it: scope["session"] is already filled when it decides who owns the task.
 app.add_middleware(_ai_background.AiBackgroundMiddleware)
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
+# QuietSessionMiddleware: Starlette's SessionMiddleware, minus a Set-Cookie on every response (app/session_cookie.py)
+app.add_middleware(_QuietSessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
 # ── Response-perf middlewares (app/http_perf.py) ────────────────────────────
 # GZip compresses HTML/JSON/static (~4-5x — cockpit.js alone is ~75 KB raw).
 # PerfMiddleware sits OUTSIDE it (last added = first to see the request) and

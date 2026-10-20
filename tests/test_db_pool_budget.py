@@ -52,7 +52,7 @@ def test_a_page_render_holds_one_connection_for_gm_and_player(client, seed):
 
 
 def test_the_pool_is_sized_for_the_worker_threads_and_fails_fast():
-    assert engine.pool.size() >= 20 and engine.pool._max_overflow >= 20          # 40 worker threads, one connection each
+    assert engine.pool.size() + engine.pool._max_overflow >= 40 and engine.pool.size() <= 10   # 40 worker threads, one connection each; 10 kept idle
     assert engine.pool._timeout <= 10                                           # a stall is an error in seconds, not a 30 s hang
 
 
