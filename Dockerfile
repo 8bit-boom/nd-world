@@ -18,9 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 COPY static/ ./static/
-# Build-time efficiency steps (docs/EFFICIENCY_PLAN.md): bundled maps as WebP, thumbnails, map tile pyramids, minified + pre-compressed
+# Build-time efficiency steps (docs/EFFICIENCY_PLAN.md): bundled maps as AVIF, thumbnails, map tile pyramids, minified + pre-compressed
 # (.br / .gz, served as-is by app/http_perf.py) static files, and compiled bytecode for a faster first start.
-RUN python -m app.static_thumbs --webp-maps && python -m app.map_tiles && python -m app.precompress --minify && python -m compileall -q app
+RUN python -m app.static_thumbs --avif-maps && python -m app.map_tiles && python -m app.precompress --minify && python -m compileall -q app
 
 # The commit this image was built from (set by .github/workflows/docker-publish.yml), shown by /health and
 # Settings > System so "is the new image actually the one running?" has a one-glance answer. Declared

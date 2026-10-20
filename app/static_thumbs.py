@@ -10,6 +10,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 from .imaging import make_thumbnail, thumbnail_path_for
 
@@ -61,20 +62,36 @@ def ensure(*roots: Path) -> int:
     return n
 
 
-def webp_maps(folder: Path, quality: int = 90) -> tuple:
-    """Image build only (efficiency plan, step 12): re-save the bundled JPEG / PNG map pictures as high-quality WebP when that is smaller, and
-    drop the original - the map viewer looks for <slug>.webp first, and nothing refers to a bundled map picture by its extension. The repository
-    keeps the originals. Returns (files converted, bytes before, bytes after)."""
-    from PIL import Image
+# Bundled map pictures in the image build: AVIF at quality 80 measured ~17% smaller than WebP at quality 90 for the same fidelity (PSNR 39.7
+# against 39.6 over the six biggest maps, 20.2 MB against 24.3 MB) and encoded 3x faster. Tiles, thumbnails and display copies stay WebP:
+# at 256 px AVIF was no smaller at equal quality, ~7x slower to encode and slower to decode (docs/EFFICIENCY_PLAN.md, section 5).
+_MAP_FORMATS = {"avif": ("AVIF", ".avif", 80), "webp": ("WEBP", ".webp", 90)}
+# Bigger pictures keep their file: the Dreamlands map (72 MP, already WebP) took 2.5 GB and 29 s to encode as AVIF and came out no smaller, and
+# a picture that size is shown as tiles (app/map_tiles.py) anyway, so its original is only the viewer's fallback.
+MAX_MAP_PIXELS = 40_000_000
+
+
+def compact_maps(folder: Path, fmt: str = "avif", quality: Optional[int] = None) -> tuple:
+    """Image build only (efficiency plan, step 12): re-save the bundled map pictures as AVIF (or WebP) when that is smaller, and drop the
+    original - every lookup of a map picture tries each extension, and http_perf redirects old links. The repository keeps the originals.
+    Falls back to WebP when this Pillow cannot write AVIF. Returns (files converted, bytes before, bytes after)."""
+    from PIL import Image, features
+    if fmt == "avif" and not features.check("avif"):
+        fmt = "webp"
+    pil_fmt, ext, default_q = _MAP_FORMATS[fmt]
     n = before = after = 0
     for src in sorted(folder.glob("*")):
-        if src.suffix.lower() not in (".jpg", ".jpeg", ".png") or src.stem.endswith("_thumb"):
+        if src.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".avif") or src.suffix.lower() == ext or src.stem.endswith("_thumb"):
             continue
-        dest = src.with_suffix(".webp")
+        dest = src.with_suffix(ext)
         if dest.exists():
             continue
         with Image.open(src) as im:
-            im.save(dest, format="WEBP", quality=quality, method=6)
+            if im.width * im.height > MAX_MAP_PIXELS:
+                continue
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
+            im.save(dest, format=pil_fmt, quality=quality or default_q, **({"method": 6} if pil_fmt == "WEBP" else {}))
         if dest.stat().st_size < src.stat().st_size:
             before += src.stat().st_size
             after += dest.stat().st_size
@@ -87,7 +104,8 @@ def webp_maps(folder: Path, quality: int = 90) -> tuple:
 
 if __name__ == "__main__":
     static = Path(__file__).resolve().parent.parent / "static"
-    if "--webp-maps" in sys.argv:
-        print("bundled maps as WebP (files, bytes before, after):", webp_maps(static / "maps"))
+    if "--avif-maps" in sys.argv or "--webp-maps" in sys.argv:
+        fmt = "avif" if "--avif-maps" in sys.argv else "webp"
+        print(f"bundled maps as {fmt} (files, bytes before, after):", compact_maps(static / "maps", fmt))
     roots = [Path(a) for a in sys.argv[1:] if not a.startswith("--")] or [static / "maps", static / "races"]
     print("static thumbnails written:", ensure(*roots))

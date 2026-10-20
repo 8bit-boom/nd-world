@@ -128,7 +128,18 @@ Before = `86c9780`, after = this commit; same seeded world, same Chromium and ti
 9. **Smaller JavaScript - done** (`python -m app.precompress --minify` in the image build, every minified file checked with `node --check` in the tests; the 3-D dice module loads only for the tray layouts).
 10. **Cookie only when needed - done** (`app/session_cookie.py`).
 11. **Database memory - done** (pool keeps 10 idle, up to 40; 8 MB page cache each; throughput unchanged).
-12. **Lighter image - partly.** Bundled JPEG/PNG maps are stored as WebP q90 in the image (33 -> 23 MB; old `.jpg` links redirect) and bytecode is compiled at build. **Not done:** replacing Debian's `ffmpeg` with a static build (a downloaded binary at build time is a supply-chain risk this plan did not justify; no Docker daemon here to measure the gain). The prebuilt map tiles add about 45 MB to the image.
+12. **Lighter image - partly.** Bundled maps are stored as **AVIF q80** in the image (`python -m app.static_thumbs --avif-maps`; old `.jpg` and `.webp` links redirect) and bytecode is compiled at build. AVIF replaced the first version's WebP q90 after measuring both on the 15 bundled maps:
+
+    | Bundled maps in the image | WebP q90 (first version) | AVIF q80 (now) |
+    |---|---|---|
+    | `static/maps` folder | 38.5 MB | **31.2 MB** (originals: 48 MB) |
+    | Converted files | 12 maps, 35.0 -> 23.8 MB | 13 maps, 39.2 -> **20.8 MB** |
+    | Fidelity against the original (mean / lowest PSNR) | 39.8 / 38.3 dB | **40.5 / 38.4 dB** |
+    | Build time / peak memory | 37 s | 39 s / 0.6 GB |
+    | Finest-zoom tiles cut from it, against tiles cut from the originals | 35.7 dB | **36.2 dB** (same tile size) |
+
+    A picture over 40 MP keeps its file (`MAX_MAP_PIXELS`): the 72 MP Dreamlands map, already WebP, took 2.5 GB and 29 s to encode as AVIF and came out no smaller, and it is shown as tiles anyway. A file AVIF does not shrink is kept as it is (the City of Hue map). If Pillow cannot write AVIF the build falls back to WebP. **Kept as WebP on purpose:** map tiles, thumbnails and lightbox display copies. For 256 px tiles AVIF at equal quality was no smaller (q65: 9.0 KB at 37.4 dB against WebP q82: 9.1 KB at 38.0 dB), about 7x slower to encode (64 ms against 8.5 ms a tile, which matters for a GM's uploads cut on the server) and about 2x slower to decode in the browser; small thumbnails behave the same way. **Not done:** replacing Debian's `ffmpeg` with a static build (a downloaded binary at build time is a supply-chain risk this plan did not justify; no Docker daemon here to measure the gain).
+    The prebuilt map tiles add about 45 MB to the image.
 13. **Display-size copies - done** for the lightbox (`?display=1`, 1,600 px WebP made on first request, "Full size" link to the original). Other large-picture places (handout print, gallery album) still use the original.
 14. **Database upkeep - done** (`app/db_upkeep.py`: daily `PRAGMA optimize`, on shutdown too; a file more than a quarter free pages is switched once to incremental auto-vacuum, then trimmed daily). Nothing is deleted.
 

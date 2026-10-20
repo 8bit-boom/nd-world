@@ -86,17 +86,64 @@ def test_the_image_builds_minifier_keeps_every_script_valid(tmp_path):
     assert "{" in (tmp_path / "style.css").read_text() and "/*" not in (tmp_path / "style.css").read_text()
 
 
-def test_bundled_maps_as_webp_keep_old_jpg_links_working(client, tmp_path):
-    from PIL import Image
+def test_bundled_maps_as_avif_keep_old_jpg_and_webp_links_working(client, tmp_path):
+    from PIL import Image, ImageChops, ImageStat
     from app import static_thumbs
-    Image.new("RGB", (300, 200), "green").save(tmp_path / "m.jpg", quality=95)
-    n, before, after = static_thumbs.webp_maps(tmp_path)
-    assert n == 1 and after < before and (tmp_path / "m.webp").is_file() and not (tmp_path / "m.jpg").exists()
-    probe = STATIC / "maps" / "_probe_map.webp"
+    import math
+    pic = Image.radial_gradient("L").resize((300, 200)).convert("RGB")
+    pic.save(tmp_path / "m.jpg", quality=95)
+    pic.save(tmp_path / "w.webp", quality=95)
+    Image.new("RGB", (40, 40), "blue").save(tmp_path / "keep_thumb.webp")
+    n, before, after = static_thumbs.compact_maps(tmp_path)
+    assert n == 2 and after < before
+    assert (tmp_path / "m.avif").is_file() and (tmp_path / "w.avif").is_file()
+    assert not (tmp_path / "m.jpg").exists() and not (tmp_path / "w.webp").exists()
+    assert (tmp_path / "keep_thumb.webp").is_file()                     # thumbnails are never converted
+    with Image.open(tmp_path / "m.avif") as im:                          # still the same picture
+        mse = sum(v * v for v in ImageStat.Stat(ImageChops.difference(im.convert("RGB"), pic)).rms) / 3
+        assert im.size == (300, 200) and 10 * math.log10(255 ** 2 / max(mse, 1e-9)) > 35
+    assert static_thumbs.compact_maps(tmp_path) == (0, 0, 0)            # run again: nothing left to do
+    probe = STATIC / "maps" / "_probe_map.avif"
     try:
         Image.new("RGB", (10, 10), "red").save(probe)
-        r = client.get("/static/maps/_probe_map.jpg", follow_redirects=False)
-        assert r.status_code == 301 and r.headers["location"] == "/static/maps/_probe_map.webp"
+        for old in ("jpg", "webp"):
+            r = client.get(f"/static/maps/_probe_map.{old}", follow_redirects=False)
+            assert r.status_code == 301 and r.headers["location"] == "/static/maps/_probe_map.avif"
+        r = client.get("/static/maps/_probe_map.avif")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/avif"
         assert client.get("/static/maps/_nothing_here.jpg", follow_redirects=False).status_code == 404
+        assert client.get("/static/maps/_nothing_here.webp", follow_redirects=False).status_code == 404
     finally:
         probe.unlink(missing_ok=True)
+
+
+def test_an_image_from_before_avif_still_redirects_jpg_links_to_webp(client):
+    from PIL import Image
+    probe = STATIC / "maps" / "_probe_old.webp"
+    try:
+        Image.new("RGB", (10, 10), "red").save(probe)
+        r = client.get("/static/maps/_probe_old.jpg", follow_redirects=False)
+        assert r.status_code == 301 and r.headers["location"] == "/static/maps/_probe_old.webp"
+        assert client.get("/static/maps/_probe_old.webp").status_code == 200
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def test_maps_fall_back_to_webp_when_pillow_cannot_write_avif(tmp_path, monkeypatch):
+    from PIL import Image, features
+    from app import static_thumbs
+    Image.radial_gradient("L").resize((300, 200)).convert("RGB").save(tmp_path / "m.png")
+    real = features.check
+    monkeypatch.setattr(features, "check", lambda name: False if name == "avif" else real(name))
+    n, _, _ = static_thumbs.compact_maps(tmp_path)
+    assert n == 1 and (tmp_path / "m.webp").is_file() and not (tmp_path / "m.png").exists()
+
+
+def test_huge_maps_keep_their_file(tmp_path, monkeypatch):
+    """A picture over MAX_MAP_PIXELS is shown as tiles; re-encoding it cost gigabytes of memory in the image build for nothing."""
+    from PIL import Image
+    from app import static_thumbs
+    Image.radial_gradient("L").resize((300, 200)).convert("RGB").save(tmp_path / "big.jpg", quality=95)
+    monkeypatch.setattr(static_thumbs, "MAX_MAP_PIXELS", 300 * 200 - 1)
+    assert static_thumbs.compact_maps(tmp_path) == (0, 0, 0)
+    assert (tmp_path / "big.jpg").is_file() and not (tmp_path / "big.avif").exists()
