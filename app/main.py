@@ -517,6 +517,9 @@ def _is_player_safe(method: str, path: str) -> bool:
     # saved layouts: every signed-in user reads and writes only their own (routers/view_prefs_api.py)
     if path == "/api/view-prefs" or re.match(r"^/api/view-prefs/(preset/)?[a-z_]{1,32}$", path):
         return True
+    # named views: the same, each person's own rows (routers/view_prefs_api.py)
+    if re.match(r"^/api/saved-views/[a-z_]{1,32}(/\d+)?$", path):
+        return True
     if re.match(r"^/api/worlds/\d+/characters/sync$", path):
         return True
     if re.match(r"^/api/worlds/\d+/content-pack$", path):

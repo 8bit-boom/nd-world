@@ -16,10 +16,13 @@ MODE_LABELS = {
     "list": ("☰", "List"),
     "compact": ("≡", "Compact"),
     "filmstrip": ("🎞", "Filmstrip"),
+    "justified": ("▬", "Justified rows"),
+    "compare": ("◧", "Compare"),
     "rows": ("☰", "Rows"),
     "playlist": ("▶", "Playlist"),
     "pads": ("🎛", "Soundboard"),
     "posters": ("🎬", "Posters"),
+    "theater": ("📽", "Theater"),
     "wall": ("🖼", "Portrait wall"),
     "split": ("◫", "Split"),
     "timeline": ("📜", "Timeline"),
@@ -107,18 +110,20 @@ FILTER_LABELS = {
 }
 
 SECTIONS = {
-    # All Images (/images): the gallery of every picture the world uses or keeps in an album
-    "images": {"modes": ["grid", "masonry", "list", "filmstrip"], "default": "grid",
+    # All Images (/images): the gallery of every picture the world uses or keeps in an album - grid, masonry, list, filmstrip, justified rows (each
+    # picture as wide as its shape, rows filled edge to edge) and compare (two pictures side by side, zoomed together)
+    "images": {"modes": ["grid", "masonry", "list", "filmstrip", "justified", "compare"], "default": "grid",
                "sorts": ["name", "uses", "date", "size"], "default_sort": "name",
                "groups": ["usage", "source"], "filters": ["unused"]},
     # an album's pictures: no "used in" data on its tiles
-    "album": {"modes": ["grid", "masonry", "list", "filmstrip"], "default": "grid",
+    "album": {"modes": ["grid", "masonry", "list", "filmstrip", "justified", "compare"], "default": "grid",
               "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []},
-    # the Audio library (/audio and an audio album): rows (today's layout), compact rows, a playlist with one shared player, a soundboard of pads
-    "audio": {"modes": ["rows", "compact", "playlist", "pads"], "default": "rows", "size_modes": ["pads"],
+    # the Audio library (/audio and an audio album): rows (today's layout), compact rows, a playlist with one shared player, a soundboard of pads,
+    # a table (columns you sort by clicking their heading)
+    "audio": {"modes": ["rows", "compact", "playlist", "pads", "table"], "default": "rows", "size_modes": ["pads"],
               "sorts": ["name", "date", "size"], "default_sort": "name", "groups": ["visibility"], "filters": ["hidden"]},
-    # the Video library (/video and a video album): rows (today's layout), compact rows, a grid of posters
-    "video": {"modes": ["rows", "compact", "posters"], "default": "rows", "size_modes": ["posters"],
+    # the Video library (/video and a video album): rows (today's layout), compact rows, a grid of posters, a theater (one big player, the rest a strip)
+    "video": {"modes": ["rows", "compact", "posters", "theater"], "default": "rows", "size_modes": ["posters"],
               "sorts": ["name", "date", "size"], "default_sort": "name", "groups": ["visibility"], "filters": ["hidden"]},
     # an entity list's cards (/kind/<kind>): cards (today's), compact rows, a portrait wall, a split view (the list beside a live preview) and a board (a column per subtype)
     "entities": {"modes": ["grid", "compact", "wall", "split", "board"], "default": "grid", "size_modes": ["grid", "wall"],

@@ -6,6 +6,8 @@
 //     others when a pad starts; "Stop all" and "Fade all" are for the end of a scene.
 //   Playlist ("playlist"): clips play one after another through ONE shared bar (previous / play / next, shuffle, repeat all) - the rows only
 //     carry a play button.
+//   Table ("table"): one line per clip with columns - name, when it was added, file size, who can hear it - and a play button; a click on a
+//     column heading sorts by it (a second click reverses), through the same sort the layout bar uses.
 //
 // Every clip keeps using its own <audio id="audio-el-ID"> (the same element Loop, Pop out and subtitles already use), so nothing about those
 // changes. The pure bits (the order a playlist plays in, the hotkey -> pad mapping) are exported for tests/test_audio_views.py.
@@ -35,7 +37,22 @@
     const i = parseInt(key, 10) - 1;
     return i < count ? i : -1;
   }
-  const core = { nextIndex, prevIndex, padForKey };
+  // A file size for the table: "512 B", "342 KB", "3.5 MB".
+  function fmtSize(bytes) {
+    const b = Number(bytes) || 0;
+    if (b < 1024) return b + " B";
+    if (b < 1024 * 1024) return Math.round(b / 1024) + " KB";
+    const mb = b / (1024 * 1024);
+    return (mb < 10 ? mb.toFixed(1) : String(Math.round(mb))) + " MB";
+  }
+  // The sort a click on a column heading asks for: that column ascending (dates newest first), or the reverse when it already sorts by it.
+  function headingSort(current, col) {
+    const desc = String(current || "").startsWith("-");
+    const key = desc ? current.slice(1) : current;
+    if (key === col) return desc ? col : "-" + col;
+    return col === "date" ? "-date" : col;
+  }
+  const core = { nextIndex, prevIndex, padForKey, fmtSize, headingSort };
   if (typeof module !== "undefined" && module.exports) module.exports = core;
   root.audioViewsCore = core;
   if (typeof document === "undefined") return;
@@ -76,6 +93,12 @@
     const key = el("span", { class: "av-key", "aria-hidden": "true" });
     const box = el("div", { class: "av-controls" }, key, play, el("div", { class: "av-bar" }, fill), vol, fade);
     row.appendChild(box);
+    // the table's cells (hidden in the other layouts)
+    const added = parseInt(row.dataset.date, 10);
+    row.insertBefore(el("div", { class: "av-cells" },
+      el("span", { class: "av-cell av-c-date", text: added ? new Date(added * 1000).toLocaleDateString() : "—" }),
+      el("span", { class: "av-cell av-c-size", text: fmtSize(row.dataset.size) }),
+      el("span", { class: "av-cell av-c-vis", text: row.dataset.vis === "hidden" ? "GM only" : "Players" })), box);
 
     play.addEventListener("click", () => toggle(row));
     vol.addEventListener("input", () => { audio.volume = parseFloat(vol.value); setVol(id, vol.value); });
@@ -189,15 +212,37 @@
   function numberPads() {
     rows().forEach((r, i) => { const k = r.querySelector(".av-key"); if (k) k.textContent = i < 9 ? String(i + 1) : ""; });
   }
-  function onMode(m) {
+  // ── the table's column headings ─────────────────────────────────────────────────────────────────
+  let head = null;
+  const COLS = [["name", "Name"], ["date", "Added"], ["size", "Size"], ["", "Who hears it"], ["", ""]];
+  function ensureHead() {
+    if (head) return head;
+    head = el("div", { class: "av-thead", role: "row", hidden: true }, COLS.map(([col, label]) => col
+      ? el("button", { type: "button", class: "av-th", "data-col": col, role: "columnheader", onclick: () => { if (list.ndViews) list.ndViews.set({ sort: headingSort(list.ndViews.state().sort, col) }); } }, label)
+      : el("span", { class: "av-th", role: "columnheader", text: label })));
+    list.parentNode.insertBefore(head, list);
+    return head;
+  }
+  function markHead(sort) {
+    const desc = String(sort || "").startsWith("-"), key = desc ? sort.slice(1) : sort;
+    ensureHead().querySelectorAll("button.av-th").forEach((b) => {
+      const on = b.dataset.col === key;
+      b.setAttribute("aria-sort", on ? (desc ? "descending" : "ascending") : "none");
+      b.dataset.dir = on ? (desc ? "↓" : "↑") : "";
+    });
+  }
+
+  function onMode(m, sort) {
     mode = m;
     list.querySelectorAll(":scope > .audio-clip-row").forEach(decorate);
+    ensureHead().hidden = m !== "table";
+    if (m === "table") markHead(sort || (list.ndViews ? list.ndViews.state().sort : ""));
     ensurePadBar().hidden = m !== "pads";
     ensureNow().hidden = m !== "playlist";
     document.body.classList.toggle("av-has-now", m === "playlist");
     if (m === "pads") numberPads();
   }
-  list.addEventListener("nd-view-change", (e) => { onMode(e.detail.mode); });
+  list.addEventListener("nd-view-change", (e) => { onMode(e.detail.mode, e.detail.sort); });
   document.addEventListener("keydown", (e) => {
     if (mode !== "pads" || e.ctrlKey || e.metaKey || e.altKey) return;
     // typing somewhere must not trigger a pad - but a checkbox, slider or button the person just used must not eat the hotkeys

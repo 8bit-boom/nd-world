@@ -2198,6 +2198,35 @@ a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .nd-collection[data-view="filmstrip"] .nd-item.nd-current { opacity: 1; border-color: var(--neon); box-shadow: 0 0 0 2px var(--neon); }
 .nd-collection[data-view="filmstrip"] .nd-group-head { display: none; }
 @media (max-width: 720px) { .nd-film { grid-template-columns: 36px minmax(0, 1fr) 36px; } .nd-film-tools { right: 44px; } }
+/* justified rows: a tile's width follows its picture's shape (--nd-ar, set from the thumbnail when it loads) at the row height of the size */
+.nd-collection[data-view="justified"] { display: flex; flex-wrap: wrap; gap: .4rem; --nd-jr-h: 170px; }
+.nd-collection[data-view="justified"][data-size="1"] { --nd-jr-h: 110px; }
+.nd-collection[data-view="justified"][data-size="3"] { --nd-jr-h: 250px; }
+.nd-collection[data-view="justified"]::after { content: ""; flex: 999 1 0; }          /* the last row keeps its pictures' shape instead of stretching */
+.nd-collection[data-view="justified"] > .nd-item { flex: var(--nd-ar, 1) 1 calc(var(--nd-ar, 1) * var(--nd-jr-h)); min-width: 0; margin: 0; padding: 0; position: relative; overflow: hidden; }
+.nd-collection[data-view="justified"] > .nd-item img { display: block; width: 100%; height: var(--nd-jr-h); object-fit: cover; }
+.nd-collection[data-view="justified"] > .nd-group-head { flex: 0 0 100%; }
+.nd-collection[data-view="justified"] .gallery-img-name, .nd-collection[data-view="justified"] .gallery-img-uses { position: absolute; left: 0; right: 0; bottom: 0; margin: 0;
+  padding: .15rem .4rem; background: rgba(0,0,0,.6); color: #fff; font-size: .72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .15s; }
+.nd-collection[data-view="justified"] .gallery-img-uses { display: none; }
+.nd-collection[data-view="justified"] > .nd-item:hover .gallery-img-name, .nd-collection[data-view="justified"] > .nd-item:focus-within .gallery-img-name { opacity: 1; }
+@media (max-width: 640px) { .nd-collection[data-view="justified"] { --nd-jr-h: 120px; } }
+/* compare: two panes above the strip of pictures; zoom and pan move both */
+.nd-cmp { margin: 0 0 .7rem; }
+.nd-cmp[hidden] { display: none; }
+.nd-cmp-panes { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.nd-cmp-pane { min-width: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.nd-cmp-frame { height: min(60vh, 520px); overflow: hidden; display: flex; align-items: center; justify-content: center; background: #000; cursor: zoom-in; touch-action: none; }
+.nd-cmp-img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; user-select: none; }
+.nd-cmp-cap { padding: .35rem .6rem; font-size: .82rem; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-cmp-tools { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .4rem; }
+.nd-cmp-hint { color: var(--text-dim); font-size: .78rem; margin-right: auto; }
+.nd-collection[data-view="compare"] { display: flex; gap: .5rem; overflow-x: auto; padding-bottom: .4rem; }
+.nd-collection[data-view="compare"] > .nd-item { flex: 0 0 var(--nd-tile); opacity: .75; }
+.nd-collection[data-view="compare"] > .nd-item img { height: calc(var(--nd-tile) * .7); width: 100%; object-fit: cover; cursor: pointer; }
+.nd-collection[data-view="compare"] > .nd-item.nd-cmp-on { opacity: 1; border-color: var(--neon); box-shadow: 0 0 0 2px var(--neon); }
+.nd-collection[data-view="compare"] .nd-group-head { display: none; }
+@media (max-width: 720px) { .nd-cmp-panes { grid-template-columns: 1fr; } .nd-cmp-frame { height: 38vh; } }
 @media (prefers-reduced-motion: reduce) { .nd-collection .nd-item { transition: none; } }
 
 /* ── Audio layouts (static/js/audio-views.js): compact rows, playlist, soundboard ─────────────────────────────────────────────────────────── */
@@ -2227,6 +2256,31 @@ a.cal-yd:hover { outline: 1px solid var(--neon); color: var(--text); }
 .av-now-btn { min-width: 44px; min-height: 44px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 1rem; }
 .av-now-btn[aria-pressed="true"] { border-color: var(--neon); color: var(--neon); }
 body.av-has-now { padding-bottom: 5.5rem; }
+
+/* table: one line per clip in columns; the heading row above it sorts (static/js/audio-views.js) */
+.av-cells, .av-thead { display: none; }
+.av-thead:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) 7rem 5rem 7rem 9rem; gap: .6rem; align-items: center; padding: .2rem .6rem; margin-bottom: .2rem;
+  border-bottom: 1px solid var(--border); font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+.av-th { background: none; border: 0; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; text-align: left; padding: .3rem 0; cursor: pointer; min-height: 32px; }
+button.av-th:hover, button.av-th[aria-sort="ascending"], button.av-th[aria-sort="descending"] { color: var(--neon); }
+button.av-th[data-dir]:not([data-dir=""])::after { content: " " attr(data-dir); }
+.nd-collection[data-view="table"] { gap: 0; }
+.nd-collection[data-view="table"] .audio-clip-row { display: grid; grid-template-columns: minmax(0, 1fr) 7rem 5rem 7rem 9rem; gap: .6rem; align-items: center;
+  padding: .3rem .6rem; border-radius: 0; border-width: 0 0 1px; }
+.nd-collection[data-view="table"] .audio-clip-row:nth-of-type(even) { background: var(--bg2); }
+.nd-collection[data-view="table"] .audio-clip-desc, .nd-collection[data-view="table"] .audio-clip-edit-form,
+.nd-collection[data-view="table"] .audio-clip-actions, .nd-collection[data-view="table"] .audio-clip-transcript,
+.nd-collection[data-view="table"] .audio-clip-info > button { display: none; }
+.nd-collection[data-view="table"] .audio-player-slot { display: none !important; }   /* it has an inline display:flex */
+.nd-collection[data-view="table"] .av-cells { display: contents; }
+.nd-collection[data-view="table"] .av-cell { font-size: .8rem; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nd-collection[data-view="table"] .av-controls { display: flex; align-items: center; gap: .4rem; }
+.nd-collection[data-view="table"] .av-vol, .nd-collection[data-view="table"] .av-fade, .nd-collection[data-view="table"] .av-key { display: none; }
+.nd-collection[data-view="table"] .av-play { min-width: 36px; min-height: 36px; font-size: .9rem; }
+@media (max-width: 640px) {
+  .av-thead:not([hidden]), .nd-collection[data-view="table"] .audio-clip-row { grid-template-columns: minmax(0, 1fr) 4.5rem 6.5rem; }
+  .av-thead .av-th:nth-child(2), .av-thead .av-th:nth-child(4), .nd-collection[data-view="table"] .av-c-date, .nd-collection[data-view="table"] .av-c-vis { display: none; }
+}
 
 /* soundboard: big pads */
 .av-padbar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: 0 0 .7rem; }
@@ -2270,6 +2324,20 @@ body.av-has-now { padding-bottom: 5.5rem; }
 .nd-collection[data-view="posters"] .video-clip-actions { flex-wrap: wrap; }
 .nd-collection[data-view="posters"] .video-clip-name { font-size: .88rem; overflow-wrap: anywhere; }
 @media (max-width: 720px) { .nd-collection[data-view="posters"] { grid-template-columns: 1fr; } }
+/* theater (static/js/video-views.js): the chosen clip's own <video> on a stage, the others a strip of posters below */
+.vv-stage { margin: 0 0 .7rem; background: #000; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.vv-stage[hidden] { display: none; }
+.vv-screen video { display: block; width: 100% !important; max-width: none !important; max-height: 70vh; border-radius: 0 !important; }
+.vv-title { padding: .45rem .7rem; font-size: .9rem; color: var(--neon); background: var(--bg2); }
+.nd-collection[data-view="theater"] { display: flex; flex-direction: row; gap: .6rem; overflow-x: auto; padding-bottom: .4rem; scroll-snap-type: x proximity; }
+.nd-collection[data-view="theater"] .video-clip-row { flex: 0 0 calc(var(--nd-tile, 160px) + 40px); flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: .3rem; padding: .4rem;
+  cursor: pointer; scroll-snap-align: center; opacity: .8; }
+.nd-collection[data-view="theater"] .video-clip-row.vv-current { opacity: 1; border-color: var(--neon); box-shadow: 0 0 0 2px var(--neon); }
+.nd-collection[data-view="theater"] .video-clip-row video { order: -1; width: 100% !important; max-width: none !important; aspect-ratio: 16 / 9; object-fit: cover; pointer-events: none; }
+.nd-collection[data-view="theater"] .video-clip-desc, .nd-collection[data-view="theater"] .video-clip-edit-form, .nd-collection[data-view="theater"] .video-clip-actions,
+.nd-collection[data-view="theater"] .video-clip-info > button, .nd-collection[data-view="theater"] .video-clip-transcript, .nd-collection[data-view="theater"] .nd-group-head { display: none; }
+.nd-collection[data-view="theater"] .video-clip-name { font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nd-collection[data-view="theater"] .video-clip-row.vv-current::before { content: "▶ on stage"; font-size: .7rem; color: var(--neon); }
 
 /* ── Entity layouts (static/js/entity-views.js): cards (the default grid), compact rows, a portrait wall, a split list + preview ─────────────────── */
 .entity-noimg { display: none; }

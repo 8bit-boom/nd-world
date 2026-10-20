@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .. import site_layout, view_prefs
 from ..database import get_db
-from ..models import UserViewPref
+from ..models import SavedView, UserViewPref
 from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
@@ -105,3 +105,64 @@ def view_prefs_reset_all(request: Request, db: Session = Depends(get_db)):
     db.commit()
     site_layout.forget(request)
     return {"reset": n}
+
+
+# ── named views (a layout saved under a name, picked again from the layout bar's Views menu) ─────────────────────────────────────────────
+MAX_NAMED = 20          # per person and page
+
+
+def _named(db: Session, user_id: int, section: str) -> list:
+    rows = db.query(SavedView).filter(SavedView.user_id == user_id, SavedView.section == section).order_by(SavedView.name).all()
+    out = []
+    for r in rows:
+        try:
+            state = json.loads(r.prefs_json or "{}")
+        except ValueError:
+            state = {}
+        out.append({"id": r.id, "name": r.name, "state": view_prefs.clean(section, state)})
+    return out
+
+
+@router.get("/api/saved-views/{section}")
+def saved_views_list(section: str, request: Request, db: Session = Depends(get_db)):
+    user = _user(request)
+    if section not in view_prefs.SECTIONS:
+        raise HTTPException(404, "Unknown section")
+    return {"views": _named(db, user.id, section)}
+
+
+@router.post("/api/saved-views/{section}")
+def saved_views_save(section: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
+    """Save the layout in the body (`{name, state}`) under its name - the same name again replaces it."""
+    user = _user(request)
+    if section not in view_prefs.SECTIONS:
+        raise HTTPException(404, "Unknown section")
+    try:
+        body = parse_json(_body)
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    name = " ".join(str(body.get("name") or "").split())[:40]
+    if not name:
+        raise HTTPException(400, "Give the view a name")
+    cleaned = view_prefs.clean(section, body.get("state"))
+    row = db.query(SavedView).filter(SavedView.user_id == user.id, SavedView.section == section, SavedView.name == name).first()
+    if row:
+        row.prefs_json = json.dumps(cleaned)
+    else:
+        if db.query(SavedView).filter(SavedView.user_id == user.id, SavedView.section == section).count() >= MAX_NAMED:
+            raise HTTPException(400, f"At most {MAX_NAMED} saved views per page - delete one first")
+        db.add(SavedView(user_id=user.id, section=section, name=name, prefs_json=json.dumps(cleaned)))
+    db.commit()
+    return {"views": _named(db, user.id, section)}
+
+
+@router.delete("/api/saved-views/{section}/{view_id}")
+def saved_views_delete(section: str, view_id: int, request: Request, db: Session = Depends(get_db)):
+    user = _user(request)
+    n = db.query(SavedView).filter(SavedView.id == view_id, SavedView.user_id == user.id, SavedView.section == section).delete()
+    db.commit()
+    if not n:
+        raise HTTPException(404)
+    return {"views": _named(db, user.id, section)}

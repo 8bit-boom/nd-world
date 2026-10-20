@@ -24,11 +24,11 @@ def _run(file, script):
 
 def test_the_audio_section_offers_rows_compact_playlist_and_a_soundboard():
     sp = view_prefs.spec("audio")
-    assert [m["id"] for m in sp["modes"]] == ["rows", "compact", "playlist", "pads"] and sp["default"] == "rows"
+    assert [m["id"] for m in sp["modes"]] == ["rows", "compact", "playlist", "pads", "table"] and sp["default"] == "rows"
     assert sp["size_modes"] == ["pads"]                                     # only the soundboard has a size
     assert [g["id"] for g in sp["groups"]] == ["visibility"] and [f["id"] for f in sp["filters"]] == ["hidden"]
     assert view_prefs.clean("audio", {"mode": "grid"})["mode"] == "rows"      # a picture layout is not an audio one
-    assert view_prefs.spec("images")["size_modes"] == ["grid", "masonry", "filmstrip"]
+    assert view_prefs.spec("images")["size_modes"] == ["grid", "masonry", "filmstrip", "justified", "compare"]
 
 
 @needs_node
@@ -85,7 +85,7 @@ def test_the_audio_page_has_the_switcher_data_and_scripts_for_gm_and_players(cli
 def test_the_video_section_and_page(client, seed):
     from app.models import VideoClip
     sp = view_prefs.spec("video")
-    assert [m["id"] for m in sp["modes"]] == ["rows", "compact", "posters"] and sp["size_modes"] == ["posters"]
+    assert [m["id"] for m in sp["modes"]] == ["rows", "compact", "posters", "theater"] and sp["size_modes"] == ["posters"]
     db = SessionLocal()
     try:
         db.add(VideoClip(world_id=seed.world_a.id, name="Cutscene", file_url="/uploads/video/c.mp4", visible_to_players=True))

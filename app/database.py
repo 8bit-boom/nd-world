@@ -73,6 +73,8 @@ _GENERICALLY_HEALED_TABLES = (
     "media_titles", "media_rename_log", "media_rename_runs",
     # map_props (app.models.MapProp - the map-object library): brand new, same reasoning as above.
     "map_props",
+    # saved_views (app.models.SavedView - layouts saved under a name): brand new, same reasoning as above.
+    "saved_views",
 )
 
 

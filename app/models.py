@@ -743,6 +743,20 @@ class UserViewPref(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SavedView(Base):
+    """A layout a person saved under a name for one list page ("Session night", "Prep") - picked again from the layout bar's Views menu
+    (docs/LEFTOVERS_PLAN.md, step 15). Their own rows only; the layout is always run through app.view_prefs.clean."""
+    __tablename__ = "saved_views"
+    __table_args__ = (UniqueConstraint("user_id", "section", "name", name="uq_saved_views_user_section_name"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    section = Column(String(32), nullable=False)
+    name = Column(String(40), nullable=False)
+    prefs_json = Column(Text, default="{}")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class CharacterShare(Base):
     """A read-only link to ONE character's sheet that anyone holding the token can open without an account; the owner (or a
     GM) can revoke it. The token is the only secret and is never logged."""

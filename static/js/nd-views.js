@@ -210,8 +210,48 @@
       (filterBoxes[f.id] = el("input", { type: "checkbox", onchange: () => change({ filters: spec.filters.map((x) => x.id).filter((id) => filterBoxes[id].checked) }) })),
       " " + f.label));
     const count = el("span", { class: "nd-vb-count", role: "status", "aria-live": "polite" });
+    // Saved views (signed in only): a layout kept under a name and picked again here (/api/saved-views/<section>). The list is read the first
+    // time the menu is opened, so a page view costs no extra request.
+    let named = null;
+    const viewsSel = account ? el("select", { class: "nd-vb-views", "aria-label": "Saved views", title: "Saved views",
+      onchange: (e) => pickView(e.target.value), onfocus: () => loadViews(), onpointerdown: () => loadViews() }) : null;
+    function fillViews() {
+      if (!viewsSel) return;
+      const opts = [el("option", { value: "", text: "Views…" })];
+      (named || []).forEach((v) => opts.push(el("option", { value: "v:" + v.id, text: v.name })));
+      opts.push(el("option", { value: "save", text: "Save this layout as…" }));
+      if (named && named.length) opts.push(el("optgroup", { label: "Delete" }, named.map((v) => el("option", { value: "del:" + v.id, text: "✕ " + v.name }))));
+      viewsSel.replaceChildren(...opts);
+      viewsSel.value = "";
+    }
+    function viewsCall(method, path, body) {
+      return fetch("/api/saved-views/" + encodeURIComponent(spec.section) + path, { method, credentials: "same-origin",
+        headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined })
+        .then((r) => r.ok ? r.json() : r.json().then((d) => Promise.reject(new Error(d.detail || ("HTTP " + r.status))), () => Promise.reject(new Error("HTTP " + r.status))));
+    }
+    function loadViews() {
+      if (named !== null || !viewsSel) return;
+      named = [];
+      viewsCall("GET", "").then((d) => { named = d.views || []; fillViews(); }).catch(() => { named = null; });
+    }
+    function pickView(value) {
+      if (value.startsWith("v:")) {
+        const v = (named || []).find((x) => "v:" + x.id === value);
+        if (v) change({ ...v.state });
+      } else if (value === "save") {
+        const name = (window.prompt("Save this layout as:", "") || "").trim();
+        if (name) viewsCall("POST", "", { name, state }).then((d) => { named = d.views || []; fillViews(); }).catch((e) => window.alert("Could not save the view: " + e.message));
+      } else if (value.startsWith("del:")) {
+        const v = (named || []).find((x) => "del:" + x.id === value);
+        if (v && window.confirm("Delete the saved view \u201c" + v.name + "\u201d?")) {
+          viewsCall("DELETE", "/" + v.id).then((d) => { named = d.views || []; fillViews(); }).catch((e) => window.alert("Could not delete the view: " + e.message));
+        }
+      }
+      fillViews();
+    }
+    fillViews();
     bar.classList.add("nd-viewbar-ready");
-    bar.replaceChildren(...[modeGroup, sizeWrap, el("span", { class: "nd-vb-sort" }, sortSel, dirBtn), groupSel, ...filterWrap, count].filter(Boolean));
+    bar.replaceChildren(...[modeGroup, sizeWrap, el("span", { class: "nd-vb-sort" }, sortSel, dirBtn), groupSel, ...filterWrap, viewsSel, count].filter(Boolean));
 
     function change(patch) {
       state = cleanState({ ...state, ...patch }, spec);
@@ -261,6 +301,71 @@
       show(list[(at + delta + list.length) % list.length]);
     }
 
+    // ── compare: two pictures side by side (click a tile: it fills the left pane, the next click the right one) ──────────────────────
+    let cmp = null;
+    const view = { scale: 1, x: 0, y: 0 };
+    function ensureCmp() {
+      if (cmp) return cmp;
+      const pane = (side) => {
+        const img = el("img", { class: "nd-cmp-img", alt: "", draggable: "false" });
+        const cap = el("div", { class: "nd-cmp-cap" });
+        return { side, item: null, img, cap, root: el("div", { class: "nd-cmp-pane", "data-side": side }, el("div", { class: "nd-cmp-frame" }, img), cap) };
+      };
+      const a = pane("left"), b = pane("right");
+      const hint = el("span", { class: "nd-cmp-hint" });
+      cmp = { a, b, next: "a", hint,
+        root: el("div", { class: "nd-cmp", hidden: true },
+          el("div", { class: "nd-cmp-panes" }, a.root, b.root),
+          el("div", { class: "nd-cmp-tools" }, hint,
+            el("button", { type: "button", class: "nd-film-full", text: "⇄ Swap", onclick: () => { const t = cmp.a.item; setPane(cmp.a, cmp.b.item); setPane(cmp.b, t); } }),
+            // buttons as well as the wheel: a touch screen has no wheel
+            el("button", { type: "button", class: "nd-film-full", text: "＋", title: "Zoom in", "aria-label": "Zoom in", onclick: () => zoomBy(1.4) }),
+            el("button", { type: "button", class: "nd-film-full", text: "−", title: "Zoom out", "aria-label": "Zoom out", onclick: () => zoomBy(1 / 1.4) }),
+            el("button", { type: "button", class: "nd-film-full", text: "⟲ Reset zoom", onclick: () => { view.scale = 1; view.x = 0; view.y = 0; zoomPanes(); } }))) };
+      collection.parentNode.insertBefore(cmp.root, collection);
+      // zoom (wheel) and pan (drag) move both pictures together, so the same spot is compared
+      cmp.root.addEventListener("wheel", (e) => {
+        if (!e.target.closest(".nd-cmp-frame")) return;
+        e.preventDefault();
+        zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      }, { passive: false });
+      let pan = null;
+      cmp.root.addEventListener("pointerdown", (e) => { if (e.target.closest(".nd-cmp-frame") && view.scale > 1) { pan = { x: e.clientX - view.x, y: e.clientY - view.y }; e.preventDefault(); } });
+      window.addEventListener("pointermove", (e) => { if (pan) { view.x = e.clientX - pan.x; view.y = e.clientY - pan.y; zoomPanes(); } });
+      window.addEventListener("pointerup", () => { pan = null; });
+      return cmp;
+    }
+    function zoomBy(f) {
+      view.scale = Math.min(8, Math.max(1, view.scale * f));
+      if (view.scale === 1) { view.x = 0; view.y = 0; }
+      zoomPanes();
+    }
+    function zoomPanes() {
+      [cmp.a, cmp.b].forEach((p) => { p.img.style.transform = "translate(" + view.x + "px," + view.y + "px) scale(" + view.scale + ")"; });
+    }
+    function setPane(p, item) {
+      p.item = item || null;
+      const own = item && item.querySelector("img");
+      p.img.src = item ? displayOf(srcOf(item)) : "";
+      p.img.alt = (own && own.alt) || "";
+      p.img.hidden = !item;
+      p.cap.textContent = item ? ((own && own.alt) || item.dataset.name || "") : "Click a picture below";
+      items().forEach((i) => i.classList.toggle("nd-cmp-on", i === cmp.a.item || i === cmp.b.item));
+    }
+    function cmpPick(item) {
+      setPane(cmp.next === "a" ? cmp.a : cmp.b, item);
+      cmp.next = cmp.next === "a" ? "b" : "a";
+      cmp.hint.textContent = "The next picture you click goes on the " + (cmp.next === "a" ? "left" : "right");
+    }
+
+    // ── justified rows: each tile as wide as its picture's shape at the row height, rows filled edge to edge ──────────────────────────
+    function fitAspect(item) {
+      const img = item.querySelector("img");
+      if (!img || item.style.getPropertyValue("--nd-ar")) return;
+      const setAr = () => { if (img.naturalWidth && img.naturalHeight) item.style.setProperty("--nd-ar", (img.naturalWidth / img.naturalHeight).toFixed(4)); };
+      if (img.complete) setAr(); else img.addEventListener("load", setAr, { once: true });
+    }
+
     // ── applying the choice ─────────────────────────────────────────────────────────────────────────
     function apply() {
       // a page that moved the items into containers of its own (the entity board's columns) puts them back first
@@ -302,6 +407,17 @@
       } else if (film) {
         film.root.hidden = true;
       }
+      if (state.mode === "compare") {
+        ensureCmp().root.hidden = false;
+        const vis = visibleItems();
+        if (!vis.includes(cmp.a.item)) setPane(cmp.a, vis[0]);
+        if (!vis.includes(cmp.b.item)) setPane(cmp.b, vis.find((i) => i !== cmp.a.item));
+        cmp.hint.textContent = "Click a picture below to compare it (left, then right)";
+      } else if (cmp) {
+        cmp.root.hidden = true;
+        items().forEach((i) => i.classList.remove("nd-cmp-on"));
+      }
+      if (state.mode === "justified") list.forEach(fitAspect);
       // pages with layout-specific behaviour (the soundboard's pads, the playlist's shared player) listen for this
       collection.dispatchEvent(new CustomEvent("nd-view-change", { bubbles: true, detail: { ...state } }));
     }
@@ -309,13 +425,13 @@
     // In the filmstrip a click on a picture selects it instead of doing what the picture does elsewhere (open the lightbox ...). Capture phase,
     // so the picture's own handler never runs; the tile's buttons and checkbox are not touched.
     collection.addEventListener("click", (e) => {
-      if (state.mode !== "filmstrip" || !e.target.closest) return;
+      if ((state.mode !== "filmstrip" && state.mode !== "compare") || !e.target.closest) return;
       const img = e.target.closest("img");
       const item = img && img.closest(".nd-item");
       if (!item || item.parentNode !== collection) return;
       e.preventDefault();
       e.stopPropagation();
-      show(item);
+      if (state.mode === "compare") cmpPick(item); else show(item);
     }, true);
     // The strip of thumbnails can be dragged sideways with the mouse and scrolled with the wheel (a touch screen scrolls it natively). A drag
     // that moved is not a click: the click that ends it is swallowed so it does not select a picture by accident.
@@ -356,7 +472,8 @@
       else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
     });
 
-    collection.ndViews = { refresh: apply, state: () => ({ ...state }) };
+    // set(patch): another script on the page changes the choice the same way the bar does (the audio table's column headers sort with it)
+    collection.ndViews = { refresh: apply, state: () => ({ ...state }), set: change };
     apply();
   }
 
