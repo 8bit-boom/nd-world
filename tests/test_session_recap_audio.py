@@ -12,7 +12,8 @@ from app.models import AudioClip, GameSession, World
 from app import session_media as sm
 from app.routers import session_audio as sa
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, page_with_scripts
+from .conftest import session_data
 
 pytestmark = pytest.mark.usefixtures("client")
 
@@ -241,10 +242,10 @@ def test_a_session_with_only_hidden_audio_shows_players_nothing(client, seed):
 def test_the_gm_session_page_has_the_recap_audio_panel(client, seed):
     _gm(client, seed)
     sid = _session(seed)
-    html = client.get(f"/sessions/{sid}").text
-    assert 'id="recap-audio-panel"' in html and f"/api/sessions/{sid}/recap-audio" in html
+    html = page_with_scripts(client.get(f"/sessions/{sid}").text)
+    assert 'id="recap-audio-panel"' in html and "'/api/sessions/' + ND_SESSION.id + '/recap-audio'" in html and session_data(html)["id"] == sid
     assert "Perform it" in html, "the folk-tale result can be performed"
-    new_page = client.get("/sessions/new").text
+    new_page = page_with_scripts(client.get("/sessions/new").text)
     assert 'id="recap-audio-panel"' not in new_page, "needs a saved session"
 
 
@@ -280,7 +281,7 @@ def test_an_assistant_needs_the_sessions_edit_level(client, seed):
 def test_the_style_picker_only_offers_styles_the_server_knows(client, seed):
     import re
     _gm(client, seed)
-    html = client.get(f"/sessions/{_session(seed)}").text
+    html = page_with_scripts(client.get(f"/sessions/{_session(seed)}").text)
     block = html.split('id="tale-style"')[1].split("</select>")[0]
     offered = re.findall(r'<option value="([^"]+)"', block)
     assert offered and set(offered) == set(sa.SONG_STYLES)

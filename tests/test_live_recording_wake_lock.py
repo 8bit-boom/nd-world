@@ -9,7 +9,7 @@ mid-recording. This test just locks in that it stays wired — no new code."""
 from app.database import SessionLocal
 from app.models import GameSession
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, login, page_with_scripts
 
 
 def _make_session(world_id, title="Session 1"):
@@ -31,15 +31,15 @@ def test_live_recording_acquires_and_releases_a_wake_lock(client, seed):
 
     r = client.get(f"/sessions/{sid}")
     assert r.status_code == 200
-    assert "async function liveAcquireWakeLock()" in r.text
-    assert "navigator.wakeLock.request('screen')" in r.text
-    assert "function liveReleaseWakeLock()" in r.text
+    assert "async function liveAcquireWakeLock()" in page_with_scripts(r.text)
+    assert "navigator.wakeLock.request('screen')" in page_with_scripts(r.text)
+    assert "function liveReleaseWakeLock()" in page_with_scripts(r.text)
     # Acquired on start, released on stop.
-    assert "liveAcquireWakeLock();" in r.text
-    assert "liveReleaseWakeLock();" in r.text
+    assert "liveAcquireWakeLock();" in page_with_scripts(r.text)
+    assert "liveReleaseWakeLock();" in page_with_scripts(r.text)
     # Re-acquired when the tab regains visibility — the browser silently
     # releases any wake lock the moment a tab is hidden.
-    assert "visibilitychange" in r.text
-    assert "liveAcquireWakeLock()" in r.text.split("visibilitychange", 1)[1][:300]
+    assert "visibilitychange" in page_with_scripts(r.text)
+    assert "liveAcquireWakeLock()" in page_with_scripts(r.text).split("visibilitychange", 1)[1][:300]
     # Warn before an accidental navigation away mid-recording.
-    assert "beforeunload" in r.text
+    assert "beforeunload" in page_with_scripts(r.text)

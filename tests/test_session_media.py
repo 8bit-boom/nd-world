@@ -14,7 +14,8 @@ from app.database import SessionLocal, get_app_settings
 from app.main import UPLOADS_DIR
 from app.models import AudioClip, GameSession, ImageAlbum, VideoClip
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, page_with_scripts
+from .conftest import session_data
 
 pytestmark = pytest.mark.usefixtures("client")
 
@@ -465,10 +466,11 @@ def test_deleting_a_session_deletes_the_pictures_uploaded_for_it_but_not_gallery
 def test_the_gm_session_page_has_the_drop_zone_and_the_pickers(client, seed):
     _gm(client, seed)
     sid = _session(seed)
-    page = client.get(f"/sessions/{sid}").text
+    page = page_with_scripts(client.get(f"/sessions/{sid}").text)
     for marker in ('id="session-media-panel"', 'id="sm-drop"', 'id="sm-file"', 'multiple', 'id="sm-choose"', 'id="smp"', 'smpOpen', 'addEventListener(\'paste\'',
-                   f"/api/sessions/{sid}/media", "SM_BASE + '/upload'", "smDropFiles", "Session media", "addEventListener('drop'"):
+                   "'/api/sessions/' + ND_SESSION.id + '/media'", "SM_BASE + '/upload'", "smDropFiles", "Session media", "addEventListener('drop'"):
         assert marker in page, marker
+    assert session_data(page)["id"] == sid
     assert "ndGalleryPickerOpen" in page and 'id="gallery-picker-overlay"' in page
 
 

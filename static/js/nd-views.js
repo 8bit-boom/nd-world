@@ -240,13 +240,15 @@
       return film;
     }
     const srcOf = (item) => { const i = item.querySelector("img"); return i ? (i.dataset.full || i.currentSrc || i.src) : ""; };
+    // the big preview shows an upload at display size (?display=1, 1,600 px - the lightbox's rule); "Full size" and the second screen keep the original
+    const displayOf = (src) => (/^\/uploads\/(?!maps\/)[^?#]+\.(jpe?g|png|webp|avif)$/i.test(src) && !/_(thumb|display)\.webp$/i.test(src)) ? src + "?display=1" : src;
     const visibleItems = () => items().filter((i) => !i.hidden);
     function show(item) {
       if (!item) return;
       current = item;
       items().forEach((i) => i.classList.toggle("nd-current", i === item));
       const f = ensureFilm();
-      f.img.src = srcOf(item);
+      f.img.src = displayOf(srcOf(item));
       f.img.alt = (item.querySelector("img") || {}).alt || item.dataset.name || "";
       const own = item.querySelector("img");
       f.cap.textContent = (own && own.alt) || item.dataset.name || "";

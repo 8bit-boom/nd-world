@@ -28,7 +28,8 @@ import json
 from app.database import SessionLocal
 from app.models import Entity, GameSession, PlayerCharacter
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, login, page_with_scripts
+from .conftest import session_data
 
 
 def _make_entity(world_id, kind, name, subtype=None, folder=""):
@@ -72,9 +73,9 @@ def _extract_npc_candidates(client, html):
     GET /sessions/{id}/npc-candidates when the picker is first used, so read it the same way."""
     import re
     assert "const NPC_CANDIDATES" not in html
-    m = re.search(r"/sessions/(\d+)/npc-candidates", html)
-    assert m, "the page names the endpoint it loads the picker from"
-    r = client.get(f"/sessions/{m.group(1)}/npc-candidates")
+    assert "fetch('/sessions/' + ND_SESSION.id + '/npc-candidates' + ND_SESSION.npc_query)" in html, "the page names the endpoint it loads the picker from"
+    data = session_data(html)
+    r = client.get(f"/sessions/{data['id']}/npc-candidates{data['npc_query']}")
     assert r.status_code == 200
     return r.json()["candidates"]
 
@@ -88,7 +89,7 @@ def test_npc_picker_includes_characters_and_creatures(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
     assert r.status_code == 200
-    candidates = _extract_npc_candidates(client, r.text)
+    candidates = _extract_npc_candidates(client, page_with_scripts(r.text))
     ids = {c["id"] for c in candidates}
     assert npc_id in ids
     assert creature_id in ids
@@ -111,7 +112,7 @@ def test_npc_picker_now_includes_pc_lore_and_other_kinds(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
-    candidates = _extract_npc_candidates(client, r.text)
+    candidates = _extract_npc_candidates(client, page_with_scripts(r.text))
     ids = {c["id"] for c in candidates}
     assert {pc_id, location_id, org_id, race_id, profession_id, note_id, npc_id} <= ids
 
@@ -128,7 +129,7 @@ def test_npc_picker_groups_pc_lore_separately_from_npcs(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
-    candidates = {c["id"]: c for c in _extract_npc_candidates(client, r.text)}
+    candidates = {c["id"]: c for c in _extract_npc_candidates(client, page_with_scripts(r.text))}
     assert "Player Characters" in candidates[pc_id]["folder"]
     assert "NPCs" in candidates[npc_id]["folder"]
     assert candidates[pc_id]["folder"] != candidates[npc_id]["folder"]
@@ -143,7 +144,7 @@ def test_npc_picker_includes_entities_with_no_subtype_or_folder(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
-    candidates = _extract_npc_candidates(client, r.text)
+    candidates = _extract_npc_candidates(client, page_with_scripts(r.text))
     matching = [c for c in candidates if c["id"] == unlabeled_id]
     assert len(matching) == 1
     # No original folder, but still grouped under its kind label.
@@ -157,7 +158,7 @@ def test_npc_picker_carries_folder_for_client_side_tree(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
-    candidates = _extract_npc_candidates(client, r.text)
+    candidates = _extract_npc_candidates(client, page_with_scripts(r.text))
     matching = [c for c in candidates if c["id"] == npc_id]
     assert matching[0]["folder"] == "👤 NPCs/NPCs/Bazaar"
 
@@ -185,8 +186,8 @@ def test_npc_selection_still_round_trips_through_session_edit(client, seed):
 
     # Reload: the saved selection still resolves to real names in npc_names.
     r = client.get(f"/sessions/{gs_id}")
-    assert "Elena the Merchant" in r.text
-    assert "Giant Rat" in r.text
+    assert "Elena the Merchant" in page_with_scripts(r.text)
+    assert "Giant Rat" in page_with_scripts(r.text)
 
 
 def test_location_selection_round_trips_through_session_edit(client, seed):
@@ -221,7 +222,7 @@ def test_picker_includes_real_player_characters(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
-    candidates = _extract_npc_candidates(client, r.text)
+    candidates = _extract_npc_candidates(client, page_with_scripts(r.text))
     matching = [c for c in candidates if c["name"] == "Boric Stonehand"]
     assert len(matching) == 1
     assert matching[0]["id"] == f"pc:{pc_id}"
@@ -250,8 +251,8 @@ def test_player_character_pick_round_trips_with_kind_tag(client, seed):
 
     # Reload: resolves to the real name, and the checkbox pre-checks correctly.
     r = client.get(f"/sessions/{gs_id}")
-    assert "Boric Stonehand" in r.text
-    assert f'"pc:{pc_id}"' in r.text  # NPC_SELECTED carries the composite id
+    assert "Boric Stonehand" in page_with_scripts(r.text)
+    assert f'"pc:{pc_id}"' in page_with_scripts(r.text)  # NPC_SELECTED carries the composite id
 
 
 def test_mixed_entity_and_player_character_picks_round_trip(client, seed):
@@ -275,8 +276,8 @@ def test_mixed_entity_and_player_character_picks_round_trip(client, seed):
     assert picks == {(npc_id, "entity"), (pc_id, "player_character")}
 
     r = client.get(f"/sessions/{gs_id}")
-    assert "Elena the Merchant" in r.text
-    assert "Boric Stonehand" in r.text
+    assert "Elena the Merchant" in page_with_scripts(r.text)
+    assert "Boric Stonehand" in page_with_scripts(r.text)
 
 
 def test_legacy_npcs_json_without_kind_key_still_resolves(client, seed):
@@ -297,4 +298,4 @@ def test_legacy_npcs_json_without_kind_key_still_resolves(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{gs_id}")
     assert r.status_code == 200
-    assert "Elena the Merchant" in r.text
+    assert "Elena the Merchant" in page_with_scripts(r.text)

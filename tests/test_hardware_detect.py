@@ -480,6 +480,7 @@ async def test_v100_preset_triggers_volta_advisory_note(monkeypatch):
 # file depending on code that doesn't exist yet.)
 
 
+@pytest.mark.asyncio
 async def test_tesla_t10_preset_sizes_and_skips_volta_advisory(monkeypatch):
     """The T10 (Turing, sm_75) preset must size recommendations at 16 GB
     like the V100 preset does — but must NOT fire the Volta/CUDA-13

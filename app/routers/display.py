@@ -90,15 +90,26 @@ def clear_stage(world_id) -> dict:
 
 
 async def stream_stage(world_id, poll: float = 1.0, beat: float = 15.0) -> AsyncIterator[str]:
-    """SSE body: a `state` frame (the full state) on connect and whenever it changes, keep-alive
+    """SSE body: a `state` frame (the full state) on connect and whenever it changes, a `combat` frame whenever an encounter of this world
+    changed (combat_turns.touch -> live signal "combat"; the TV's turn-order page re-reads on it instead of polling every 2 s), keep-alive
     comments in between. A module-level function so tests can drive it directly."""
+    from .. import live
     yield "retry: 2000\n\n"
     last, since_beat = None, 0.0
+    last_combat = live.signals(world_id).get("combat")
     while True:
+        sent = False
         state = get_state(world_id)
         if state["seq"] != last:
             last = state["seq"]
             yield f"event: state\ndata: {json.dumps(state)}\n\n"
+            sent = True
+        combat = live.signals(world_id).get("combat")
+        if combat != last_combat:
+            last_combat = combat
+            yield "event: combat\ndata: 1\n\n"
+            sent = True
+        if sent:
             since_beat = 0.0
         else:
             since_beat += poll

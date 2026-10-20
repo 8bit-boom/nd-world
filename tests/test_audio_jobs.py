@@ -26,7 +26,8 @@ from app import job_shutdown as _job_shutdown
 from app.database import SessionLocal
 from app.models import AudioJob, Entity, Fact, GameSession, World
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, page_with_scripts
+from .conftest import session_data
 
 # Captured before the autouse _fake_ai fixture below ever runs, so tests that
 # need the REAL map-reduce chunking logic (not _fake_ai's flat fake) can
@@ -2392,6 +2393,7 @@ async def test_resume_interrupted_jobs_resumes_ai_assist_and_world_summary_witho
         assert job.resumed_count == 1
 
 
+@pytest.mark.asyncio
 async def test_start_resume_job_resumes_session_log_recap_without_transcript_or_audio(client, seed):
     db = SessionLocal()
     try:
@@ -4611,8 +4613,9 @@ def test_session_page_scopes_jobs_panel_and_links_all_jobs(client, seed):
         db.close()
 
     _login_gm_audio_jobs(client, seed)
-    html = client.get(f"/sessions/{gs_id}").text
-    assert f"game_session_id={gs_id}" in html  # the scoped listUrl
+    html = page_with_scripts(client.get(f"/sessions/{gs_id}").text)
+    assert session_data(html)["id"] == gs_id  # the scoped listUrl: game_session_id=<this session>
+    assert "'/api/sessions/ai/audio-jobs' + (ND_SESSION.id ? '?game_session_id=' + ND_SESSION.id : '')" in html
     assert "allJobsUrl: '/background-jobs'" in html
     # The shared panel source renders the link from that opt.
     js = (Path(__file__).resolve().parent.parent / "static" / "js" / "audio-jobs.js").read_text()

@@ -13,7 +13,7 @@ same rendered page) for every assertion."""
 from app.database import SessionLocal
 from app.models import GameSession
 
-from .conftest import GM_PASSWORD, base_js, login
+from .conftest import GM_PASSWORD, base_js, login, page_with_scripts
 
 
 def _make_session(world_id, title="Session 1"):
@@ -34,7 +34,7 @@ def _get_page(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{sid}")
     assert r.status_code == 200
-    return r.text + "\n" + base_js()
+    return page_with_scripts(r.text) + "\n" + base_js()
 
 
 def test_ndmicrecorder_accepts_and_reuses_an_existing_stream(client, seed):

@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from .conftest import GM_PASSWORD
+from .conftest import GM_PASSWORD, page_with_scripts
 from .test_live_recording_unsloth_fixes import _login, _session
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
@@ -20,7 +20,7 @@ needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="needs node
 def _policy_js(client, seed) -> str:
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
-    page = client.get(f"/sessions/{sid}").text
+    page = page_with_scripts(client.get(f"/sessions/{sid}").text)
     m = re.search(r"// BEGIN live-upload-policy\n(.*?)// END live-upload-policy", page, re.S)
     assert m, "the retry policy block is in the page"
     return m.group(1)
@@ -74,7 +74,7 @@ def test_the_raw_audio_size_is_readable_below_one_megabyte(client, seed, n, labe
 def test_the_ladder_and_the_status_line_use_them(client, seed):
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
-    page = client.get(f"/sessions/{sid}").text
+    page = page_with_scripts(client.get(f"/sessions/{sid}").text)
     body = page.split("async function liveProcessQueue", 1)[1].split("function liveStartSegment", 1)[0]
     assert "liveUploadFailureKind(e)" in body and "kind === 'wait'" in body and "kind === 'park'" in body
     assert "liveFormatBytes(data.total_bytes)" in page and "Math.round(data.total_bytes / (1024 * 1024))" not in page

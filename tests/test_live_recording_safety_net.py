@@ -11,7 +11,7 @@ fake microphone)."""
 from app.database import SessionLocal
 from app.models import GameSession
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, login, page_with_scripts
 
 
 def _get_page(client, seed):
@@ -28,7 +28,7 @@ def _get_page(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/sessions/{sid}")
     assert r.status_code == 200
-    return r.text
+    return page_with_scripts(r.text)
 
 
 def _body(page, marker, size):

@@ -8,7 +8,7 @@ actual match logic is covered by a live browser check (see session notes)."""
 from app.database import SessionLocal
 from app.models import Entity, GameSession
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, login, page_with_scripts
 
 
 def _make_session(world_id, title="Session 1", summary=""):
@@ -42,9 +42,9 @@ def test_check_mentioned_button_present_on_existing_session(client, seed):
 
     r = client.get(f"/sessions/{sid}")
     assert r.status_code == 200
-    assert 'onclick="checkMentionedEntities()"' in r.text
-    assert "function checkMentionedEntities()" in r.text
-    assert 'id="npc-search-input"' in r.text
+    assert 'onclick="checkMentionedEntities()"' in page_with_scripts(r.text)
+    assert "function checkMentionedEntities()" in page_with_scripts(r.text)
+    assert 'id="npc-search-input"' in page_with_scripts(r.text)
 
 
 def test_check_mentioned_button_absent_on_new_session_form(client, seed):
@@ -55,4 +55,4 @@ def test_check_mentioned_button_absent_on_new_session_form(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/sessions/new")
     assert r.status_code == 200
-    assert "checkMentionedEntities" not in r.text
+    assert "checkMentionedEntities" not in page_with_scripts(r.text)

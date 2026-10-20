@@ -9,6 +9,7 @@ the other eight routers silently rendered zero lore-kind nav links. Registering
 everything exactly once here fixes that app-wide and is the reason this module
 (like app/rendering.py and app/deps.py) deliberately doesn't import main.
 """
+import re
 import json
 import os
 import hashlib
@@ -257,3 +258,16 @@ def thumb_url(url: str) -> str:
 
 templates.env.filters["thumb"] = thumb_url
 templates.env.globals["thumb_url"] = thumb_url
+
+_DISPLAYABLE = re.compile(r"^/uploads/(?!maps/)[^?#]+\.(jpe?g|png|webp|avif)$", re.I)
+
+
+def display_url(url: str) -> str:
+    """The 1,600 px display copy of an uploaded picture (`?display=1`, made on first request - app/imaging.make_display), else `url`
+    unchanged. The same rule as the lightbox in base.html and the filmstrip in nd-views.js: map images and thumbnails keep their own URL."""
+    if url and _DISPLAYABLE.match(url) and not re.search(r"_(thumb|display)\.webp$", url, re.I):
+        return url + "?display=1"
+    return url
+
+
+templates.env.filters["display"] = display_url

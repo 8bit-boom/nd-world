@@ -346,7 +346,7 @@ def test_no_plain_fetch_builds_an_ai_task_url_at_run_time():
 
 
 def test_helper_functions_that_take_a_url_use_the_background_fetch():
-    detail = (ROOT / "app" / "templates" / "sessions" / "detail.html").read_text()
+    detail = (ROOT / "static" / "js" / "session-detail-common.js").read_text() + (ROOT / "static" / "js" / "session-detail.js").read_text()
     for fn in ("async function aiRunRecap(url, body)", "async function raCall(url, opts)"):
         body = detail[detail.index(fn): detail.index(fn) + 700]
         assert "ndAiFetch(" in body and "await fetch(" not in body, fn

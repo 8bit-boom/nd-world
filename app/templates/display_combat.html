@@ -65,8 +65,10 @@
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(render).catch(function () { /* the next poll tries again */ });
   }
-  poll(); setInterval(poll, 2000);
+  // the TV page (display.html) passes on the display stream's "combat" event, so a change shows at once; the slow poll is the safety net
+  poll(); setInterval(poll, 30000);
   window.addEventListener('nd-live', poll);
+  window.addEventListener('message', function (e) { if (e.origin === location.origin && e.data && e.data.type === 'nd-combat') poll(); });
   document.addEventListener('keydown', function (e) { if (e.key === 'f' || e.key === 'F') { try { parent.postMessage({ type: 'nd-fullscreen' }, location.origin); } catch (x) {} } });
 })();
 </script>

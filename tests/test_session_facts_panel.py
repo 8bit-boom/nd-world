@@ -10,7 +10,8 @@ a standalone, cross-session page — these are additive, not a replacement.
 from app.database import SessionLocal
 from app.models import Fact, GameSession
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, login, page_with_scripts
+from .conftest import session_data
 
 
 def _login_gm_in(client, seed, world):
@@ -51,7 +52,7 @@ def test_session_detail_shows_only_its_own_facts_in_order(client, seed):
     _make_fact(seed.world_a.id, "unfiled fact", None)
 
     _login_gm_in(client, seed, seed.world_a)
-    html = client.get(f"/sessions/{s1}").text
+    html = page_with_scripts(client.get(f"/sessions/{s1}").text)
     assert "s1 fact alpha" in html
     assert "s1 fact beta" in html
     assert html.index("s1 fact alpha") < html.index("s1 fact beta")
@@ -62,9 +63,9 @@ def test_session_detail_shows_only_its_own_facts_in_order(client, seed):
 def test_session_detail_facts_panel_wires_shared_js_module(client, seed):
     s1 = _make_session(seed.world_a.id, 1, "First")
     _login_gm_in(client, seed, seed.world_a)
-    html = client.get(f"/sessions/{s1}").text
+    html = page_with_scripts(client.get(f"/sessions/{s1}").text)
     assert re.search(r'<script src="/static/js/facts-recap-parser\.js\?v=[0-9a-f]+"></script>', html)
-    assert f"ndFactsRecapParser({{ fixedSessionId: {s1}" in html
+    assert "ndFactsRecapParser({ fixedSessionId: ND_SESSION.id" in html and session_data(html)["id"] == s1
     assert 'id="parse-btn"' in html
     assert 'id="draft-panel"' in html
 
@@ -76,7 +77,7 @@ def test_new_session_form_has_no_facts_panel(client, seed):
     _login_gm_in(client, seed, seed.world_a)
     r = client.get("/sessions/new")
     assert r.status_code == 200
-    assert 'id="draft-panel"' not in r.text
+    assert 'id="draft-panel"' not in page_with_scripts(r.text)
 
 
 def test_quick_add_from_session_page_redirects_back_to_session(client, seed):
@@ -180,6 +181,6 @@ def test_facts_from_another_world_dont_leak_into_session_panel(client, seed):
     _make_fact(seed.world_b.id, "Belongs to world B", s_b)
 
     _login_gm_in(client, seed, seed.world_a)
-    html = client.get(f"/sessions/{s_a}").text
+    html = page_with_scripts(client.get(f"/sessions/{s_a}").text)
     assert "Belongs to world A" in html
     assert "Belongs to world B" not in html

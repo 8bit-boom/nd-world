@@ -38,7 +38,7 @@ body{background:#fff;color:#111;font-family:Georgia,'Times New Roman',serif;font
 {% for item in entities %}
 <div class="handout">
   <div class="ho-kind">{{ item.entity.kind }}</div>
-  {% if item.entity.image_url %}<img class="ho-img" src="{{ item.entity.image_url }}" alt=""/>{% endif %}
+  {% if item.entity.image_url %}<img class="ho-img" src="{{ item.entity.image_url | display }}" alt=""/>{% endif %}
   <div class="ho-name">{{ item.entity.name }}</div>
   {% if item.entity.summary %}<div class="ho-summary">{{ item.entity.summary }}</div>{% endif %}
   <div class="ho-body">{{ item.body_html | safe }}</div>

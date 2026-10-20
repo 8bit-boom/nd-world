@@ -71,8 +71,18 @@ def set_turn_state(cs, state: dict) -> None:
 
 
 def touch(cs) -> None:
-    """Every write to an encounter's turn/state bumps its revision, so a tracker open elsewhere learns its copy is stale."""
+    """Every write to an encounter's turn/state bumps its revision, so a tracker open elsewhere learns its copy is stale - and, once the
+    change is committed, announces a "combat" signal on the live stream so the table's TV (display_combat.html) re-reads it at once
+    instead of polling every 2 s."""
     cs.rev = (getattr(cs, "rev", 0) or 0) + 1
+    from sqlalchemy.orm.exc import UnmappedInstanceError
+    from sqlalchemy.orm import object_session
+    try:
+        sess = object_session(cs)
+    except UnmappedInstanceError:                       # a plain object (the turn helpers are also used on stand-ins)
+        sess = None
+    if sess is not None and getattr(cs, "world_id", None) is not None:
+        sess.info.setdefault("nd_live_signals", set()).add((cs.world_id, "combat"))
 
 
 def load(cs) -> list:

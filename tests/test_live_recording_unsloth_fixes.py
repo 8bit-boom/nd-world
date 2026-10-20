@@ -22,7 +22,7 @@ from app import unsloth_extras as ux
 from app.database import SessionLocal
 from app.models import GameSession, World, WorldMembership
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, page_with_scripts
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -358,7 +358,7 @@ def test_uploads_does_not_serve_the_live_archive(client, seed, monkeypatch, tmp_
 def _page(client, seed):
     sid = _session(seed.world_a)
     _login(client, seed.gm, seed.world_a, GM_PASSWORD)
-    return client.get(f"/sessions/{sid}").text
+    return page_with_scripts(client.get(f"/sessions/{sid}").text)
 
 
 def test_the_panel_shows_why_chunks_failed(client, seed):

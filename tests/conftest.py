@@ -271,3 +271,22 @@ def base_js():
     cacheable files now (static/js/nd-base-*.js, performance plan step 6); a test that checks what every page ships reads them with the page."""
     from pathlib import Path
     return "\n".join(p.read_text(encoding="utf-8") for p in sorted((Path(__file__).parent.parent / "static" / "js").glob("nd-base-*.js")))
+
+
+def page_with_scripts(html: str) -> str:
+    """A GM session page's text plus the scripts it loads from static/js/session-detail*.js: the page's own script used to be inline and
+    is a cacheable file now (docs/LEFTOVERS_PLAN.md, step 3); a test that checks what the page ships reads both."""
+    import re
+    from pathlib import Path
+    js = Path(__file__).parent.parent / "static" / "js"
+    names = re.findall(r'src="/static/js/(session-detail[\w-]*\.js)\?', html or "")
+    return (html or "") + "".join("\n<script>\n" + (js / n).read_text(encoding="utf-8") + "\n</script>" for n in names)
+
+
+def session_data(html: str) -> dict:
+    """The values a GM session page hands its script (the <script type="application/json" id="nd-session-data"> block, read as ND_SESSION)."""
+    import json
+    import re
+    m = re.search(r'<script type="application/json" id="nd-session-data">(.*?)</script>', html, re.S)
+    assert m, "the session page carries its data block"
+    return json.loads(m.group(1))

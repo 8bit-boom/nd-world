@@ -16,13 +16,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # The image runs Python 3.13 (Dockerfile), so the tests that gate it do too (same as tests.yml).
+          python-version: "3.13"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: python -m pytest tests/ -q
 
   build-and-push:
     needs: test
@@ -70,3 +72,20 @@ jobs:
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # How big the image is, layer by layer (docs/LEFTOVERS_PLAN.md, step 1): written to the job summary and the log on every build, so a
+      # growing layer (ffmpeg, the pip install, static/, the prebuilt map tiles) is visible and decisions like a slimmer ffmpeg rest on numbers.
+      - name: Report image size
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
+        run: |
+          docker pull -q "$IMAGE"
+          size=$(docker image inspect -f '{{.Size}}' "$IMAGE")
+          {
+            echo "### Image size: $((size / 1000000)) MB (uncompressed)"
+            echo
+            echo "| Layer size | Created by |"
+            echo "|---:|---|"
+            docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' "$IMAGE" | grep -v '^0B' \
+              | awk -F'\t' '{ c=$2; gsub(/\|/, "\\|", c); if (length(c) > 160) c = substr(c, 1, 160) "..."; printf "| %s | `%s` |\n", $1, c }'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

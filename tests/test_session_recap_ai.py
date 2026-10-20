@@ -12,7 +12,8 @@ from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import AudioJob, Fact, GameSession, World
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, assert_no_nested_forms, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, assert_no_nested_forms, login, page_with_scripts
+from .conftest import session_data
 
 
 def _poll_until_terminal(client, url, timeout=5.0):
@@ -399,12 +400,12 @@ def test_new_session_form_wires_the_retry_without_reupload_button(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/sessions/new")
     assert r.status_code == 200
-    assert 'onclick="aiRetrySummaryFromTranscript()"' in r.text
-    assert "function aiRetrySummaryFromTranscript()" in r.text
-    assert "/api/sessions/ai/summarize-transcript" in r.text
-    assert "function _showRecapFailed(errorText)" in r.text
-    assert "function _showRecapDraft(text)" in r.text
-    assert "data.recap_failed" in r.text
+    assert 'onclick="aiRetrySummaryFromTranscript()"' in page_with_scripts(r.text)
+    assert "function aiRetrySummaryFromTranscript()" in page_with_scripts(r.text)
+    assert "/api/sessions/ai/summarize-transcript" in page_with_scripts(r.text)
+    assert "function _showRecapFailed(errorText)" in page_with_scripts(r.text)
+    assert "function _showRecapDraft(text)" in page_with_scripts(r.text)
+    assert "data.recap_failed" in page_with_scripts(r.text)
 
 
 def test_summarize_from_audio_is_session_independent(client, seed, monkeypatch):
@@ -983,7 +984,7 @@ def test_session_detail_delete_form_is_not_nested_inside_edit_form(client, seed)
     _login_gm_in(client, seed, seed.world_a)
     r = client.get(f"/sessions/{session_id}")
     assert r.status_code == 200
-    assert 'id="del-form"' in r.text
+    assert 'id="del-form"' in page_with_scripts(r.text)
     assert_no_nested_forms(r.text)
 
 
@@ -1698,8 +1699,8 @@ def test_session_detail_summarize_from_facts_uses_the_job_pipeline(client, seed)
     _showRecapFailed instead of offering the error text as a draft."""
     session_id = _make_session(seed.world_a)
     _login_gm_in(client, seed, seed.world_a)
-    html = client.get(f"/sessions/{session_id}").text
-    assert f"fetch('/api/session-log/{session_id}/recap'" in html
+    html = page_with_scripts(client.get(f"/sessions/{session_id}").text)
+    assert "fetch('/api/session-log/' + ND_SESSION.id + '/recap'" in html and session_data(html)["id"] == session_id
     # The old blocking summarize-from-facts call is no longer wired to the
     # button flow (expand-notes stays blocking by design — it's quick).
     assert "/ai/summarize-from-facts" not in html
@@ -1916,7 +1917,7 @@ def test_recap_draft_element_lookups_are_null_safe(client, seed):
     null-safe _setText/_setStyle helpers instead."""
     session_id = _make_session(seed.world_a)
     _login_gm_in(client, seed, seed.world_a)
-    page = client.get(f"/sessions/{session_id}").text
+    page = page_with_scripts(client.get(f"/sessions/{session_id}").text)
     assert "function _setText(id, text)" in page
     assert "function _setStyle(id, prop, value)" in page
     setup_body = page.split("function _setText(id, text)", 1)[1][:400]
@@ -1937,7 +1938,7 @@ def test_use_this_background_job_button_surfaces_errors_instead_of_silent_no_op(
     instead of failing silently."""
     session_id = _make_session(seed.world_a)
     _login_gm_in(client, seed, seed.world_a)
-    page = client.get(f"/sessions/{session_id}").text
+    page = page_with_scripts(client.get(f"/sessions/{session_id}").text)
     assert "onUse: (job) => {" in page
     body = page.split("onUse: (job) => {", 1)[1].split("},", 1)[0]
     assert "try {" in body

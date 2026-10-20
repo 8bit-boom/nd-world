@@ -119,6 +119,8 @@
   try {
     var es = new EventSource('/api/display/stream' + W);
     es.addEventListener('state', function (e) { document.getElementById('offline').style.display = 'none'; render(JSON.parse(e.data)); });
+    // an encounter changed: the turn-order page in the frame re-reads at once (it only polls every 30 s as a safety net)
+    es.addEventListener('combat', function () { try { mapFrame.contentWindow.postMessage({ type: 'nd-combat' }, location.origin); } catch (x) {} });
     es.onerror = function () { document.getElementById('offline').style.display = 'block'; };
   } catch (e) { /* the poll below covers it */ }
   try {

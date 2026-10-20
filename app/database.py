@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from fastapi import Request
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session as _OrmSession, sessionmaker
 from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
     StarredImage, User, WorldMembership, InviteCode, EntityTemplate, RandomTable,
@@ -638,6 +638,22 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+# Live signals queued during a transaction (session.info["nd_live_signals"], e.g. combat_turns.touch) go out only once it is committed, so a
+# page that re-reads on the signal never sees the state from before the change; a rollback drops them.
+@event.listens_for(_OrmSession, "after_commit")
+def _send_live_signals(session):
+    pending = session.info.pop("nd_live_signals", None)
+    if pending:
+        from . import live
+        for world_id, name in pending:
+            live.signal(world_id, name)
+
+
+@event.listens_for(_OrmSession, "after_soft_rollback")
+def _drop_live_signals(session, previous_transaction):
+    session.info.pop("nd_live_signals", None)
 
 
 def _apply_staged_restore():

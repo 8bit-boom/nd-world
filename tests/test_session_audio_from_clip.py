@@ -20,7 +20,7 @@ from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import AudioClip
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, page_with_scripts
 
 _MP3_BYTES = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 500
 
@@ -219,7 +219,7 @@ def test_session_page_ships_the_picker_and_js_wiring(client, seed):
     finally:
         db.close()
 
-    page = client.get(f"/sessions/{sid}").text
+    page = page_with_scripts(client.get(f"/sessions/{sid}").text)
     assert 'onclick="toggleAudioLibraryPicker()"' in page
     assert 'id="audio-library-clip-select"' in page
     assert "async function aiStartAudioJobFromClip()" in page
