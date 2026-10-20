@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% block title %}{{ board.name }} — Board{% endblock %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block content %}
-<div id="brd-wrap">
+<div id="brd-wrap" {{ pl_attrs("board_view", request) }}>
 
   <!-- Toolbar -->
   <div id="brd-bar">
     <a href="{{ '/boards'|wq }}" class="tb">← Boards</a>
     <span class="tb-title">{{ board.name }}</span>
+    {{ pl_bar("board_view") }}
     <span id="dirty-dot" style="display:none;color:#ff8844;font-size:.8rem" title="Unsaved">●</span>
     <div class="tb-sep"></div>
 
@@ -1433,4 +1435,5 @@ snapshot();   // push initial state so undo reaches it
 render();
 if (nodes.length && !_vp) setTimeout(fitAll, 80);
 </script>
+<script src="/static/js/board-layouts.js?v={{ asset_v('js/board-layouts.js') }}"></script>
 {% endblock %}

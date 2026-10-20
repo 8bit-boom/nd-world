@@ -74,11 +74,15 @@
   layout.addEventListener("nd-pl-ready", () => { if (isBook()) show(at); });
   layout.addEventListener("nd-pl-change", () => { if (isBook()) show(at); });
   const search = document.getElementById("rules-search");
+  // Search-first: the layout shows no section until something is typed (CSS keys on data-q)
+  const markQuery = () => { layout.dataset.q = search && search.value.trim() ? "1" : ""; };
+  if (search) { search.addEventListener("input", markQuery); markQuery(); }
   if (search) search.addEventListener("input", () => { if (isBook()) setTimeout(() => show(0), 0); });
   content.addEventListener("click", (e) => { if (e.target.closest && e.target.closest(".rules-tab") && isBook()) setTimeout(() => show(0), 0); });
   // a contents link names a heading: show the section that holds it
   const toc = document.getElementById("rules-toc-wrap");
   if (toc) toc.addEventListener("click", (e) => {
+    if (layout.dataset.view === "searchfirst" && e.target.closest && e.target.closest("a")) layout.dataset.q = "1";   // a heading was picked: show the rules
     const a = e.target.closest && e.target.closest("a.toc-entry");
     if (!a || !isBook()) return;
     const target = document.getElementById((a.getAttribute("href") || "").slice(1));

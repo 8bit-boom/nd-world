@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Combat Tracker — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -16,6 +17,8 @@
 </div>
 
 {% if sessions or enc_templates %}
+<div class="combat-list-wrap" {{ pl_attrs("combat_list", request) }}>
+{{ pl_bar("combat_list") }}
 <div style="margin:.2rem 0 .9rem"><input id="enc-filter" type="search" placeholder="Filter encounters…" aria-label="Filter encounters"
   style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.82rem;border-radius:3px;max-width:100%;width:20rem"/></div>
 {% endif %}
@@ -43,7 +46,7 @@
 <h2 style="color:var(--neon);font-size:.9rem;margin:1rem 0 .5rem">⚔ Encounters</h2>
 <div class="card-grid" id="enc-grid">
   {% for s in sessions %}
-  <a href="{{ ('/combat/' + s.id|string)|wq }}" class="entity-card" data-name="{{ s.name|lower }}" style="{{ 'opacity:.6' if s.finished_at else '' }}">
+  <a href="{{ ('/combat/' + s.id|string)|wq }}" class="entity-card" data-status="{{ 'finished' if s.finished_at else 'running' }}" data-name="{{ s.name|lower }}" style="{{ 'opacity:.6' if s.finished_at else '' }}">
     <div class="entity-card-body">
       <span class="entity-kind">{{ '🏁 Finished' if s.finished_at else '⚔ Round ' ~ s.round_num }}{% if s.ruleset %} · {{ rule_labels.get(s.ruleset, s.ruleset) }}{% endif %}</span>
       <h3>{{ s.name }}</h3>
@@ -55,7 +58,9 @@
 {% elif not enc_templates %}
 <p style="color:var(--text-dim);text-align:center;padding:2rem">No encounters yet. Name one above and hit "+ New Encounter".</p>
 {% endif %}
+{% if sessions or enc_templates %}</div>{% endif %}
 {% include "_pagination.html" %}
+<script src="/static/js/combat-list-groups.js?v={{ asset_v('js/combat-list-groups.js') }}"></script>
 <script>
 (function () {
   var f = document.getElementById('enc-filter');

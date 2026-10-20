@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Background Jobs — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -40,7 +41,8 @@
   </select>
 </div>
 
-<div id="bg-jobs-list"></div>
+{{ pl_bar("jobs_list") }}
+<div id="bg-jobs-list" {{ pl_attrs("jobs_list", request) }}></div>
 <p id="bg-jobs-empty" style="color:var(--text-dim);text-align:center;padding:2rem;display:none">No background jobs yet.</p>
 <p id="bg-jobs-pagenote" style="color:var(--text-dim);font-size:.8rem;text-align:center;margin:.5rem 0 0;display:none"></p>
 

@@ -58,6 +58,11 @@ MODE_LABELS = {
     "month": ("🗓", "Month"),
     "week": ("▭", "Week"),
     "mapfull": ("🗺", "Map only"),
+    "minimap": ("◰", "Mini-map"),
+    "long": ("☰", "Long page"),
+    "run": ("▶", "Run mode"),
+    "canvas": ("🗺", "Canvas"),
+    "searchfirst": ("🔎", "Search first"),
     "onepage": ("📜", "One page + search"),
     "withside": ("◧", "Chat + side panel"),
     "panel": ("◧", "Map + list"),
@@ -182,7 +187,7 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "settings_page": "Settings", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "settings_page": "Settings", "board_view": "A board", "session_gm": "A session (GM)", "combat_list": "Encounters", "jobs_list": "Background jobs", "calendar_agenda": "Calendar agenda", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
@@ -209,10 +214,10 @@ SECTIONS["home"] = {
 
 # Pages whose layouts are CSS (plus a little JS where the behaviour changes): each is a plain choice of one mode, applied by static/js/nd-pagelayout.js
 for _id, _modes, _labels in (
-    ("rules", ["scroll", "book", "wide"], {}),
+    ("rules", ["scroll", "book", "wide", "searchfirst"], {}),
     ("search_results", ["grouped", "flat", "cards"], {"cards": "Cards"}),
     ("facts", ["groups", "timeline", "table"], {"timeline": "Timeline"}),
-    ("recap", ["full", "sections"], {}),
+    ("recap", ["full", "sections", "cards"], {}),
     ("maps", ["grid", "list", "large"], {}),
     ("parties", ["grid", "table"], {"grid": "Cards"}),
     ("party_page", ["classic", "dashboard"], {"classic": "Long page"}),
@@ -222,9 +227,14 @@ for _id, _modes, _labels in (
     ("worlds", ["grid", "list"], {"grid": "Cards"}),
     ("templates", ["list", "grid"], {"grid": "Cards"}),
     ("calendar_view", ["month", "week"], {}),
+    ("board_view", ["canvas", "outline", "timeline"], {}),
+    ("calendar_agenda", ["table", "timeline"], {"timeline": "Eras timeline"}),
+    ("combat_list", ["grid", "table", "grouped"], {"grid": "Cards", "grouped": "By status"}),
+    ("jobs_list", ["cards", "compact", "table"], {}),
+    ("session_gm", ["long", "tabs", "run"], {"long": "Long page", "run": "Run mode"}),
     ("settings_page", ["tabs", "onepage"], {}),
     ("ai_chat", ["withside", "focus"], {"focus": "Chat only"}),
-    ("map_viewer", ["mapfull", "panel"], {"mapfull": "Map only", "panel": "Map + list"}),
+    ("map_viewer", ["mapfull", "panel", "minimap"], {"mapfull": "Map only", "panel": "Map + list"}),
 ):
     SECTIONS[_id] = {"modes": _modes, "default": _modes[0], "size_modes": ["none"], "labels": _labels, "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 

@@ -2764,3 +2764,66 @@ body.home-night-on .home-edit-link { display: none; }
 .form-page[data-view="onepage"] .settings-q { display: block; width: 100%; box-sizing: border-box; margin: .5rem 0; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .5rem .7rem; border-radius: 4px; font-family: var(--font); }
 .form-page[data-view="onepage"] .settings-q-none:not([hidden]) { display: block; color: var(--text-dim); }
 .form-page[data-view="onepage"] .sp-miss { display: none !important; }
+
+/* ── Rules "Search first": nothing but a big search box until you type ── */
+.rules-layout[data-view="searchfirst"] { flex-direction: column; }
+.rules-layout[data-view="searchfirst"] .rules-toc-wrap { width: 100%; position: static; height: auto; max-height: none; border: 0; border-bottom: 1px solid var(--border); padding: .8rem 1rem; box-sizing: border-box; }
+.rules-layout[data-view="searchfirst"] #rules-search { font-size: 1.1rem !important; padding: .7rem .9rem !important; min-height: 48px; }
+.rules-layout[data-view="searchfirst"] .rules-content { max-width: 46rem; margin: 0 auto; width: 100%; box-sizing: border-box; }
+.rules-layout[data-view="searchfirst"]:not([data-q]) .rules-section, .rules-layout[data-view="searchfirst"][data-q=""] .rules-section { display: none !important; }
+.rules-layout[data-view="searchfirst"]:not([data-q]) .rules-body::before, .rules-layout[data-view="searchfirst"][data-q=""] .rules-body::before { content: "Type above to find a rule - or pick a heading from Contents."; display: block; color: var(--text-dim); padding: 1rem 0; }
+
+/* ── Recap "Cards": the folds, all open, as a grid; each part's pictures first ── */
+#recap-box[data-view="cards"] .rendered-md { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: .8rem; align-items: start; }
+#recap-box[data-view="cards"] .rs-fold { margin: 0; display: flex; flex-direction: column; }
+#recap-box[data-view="cards"] .rs-fold > summary { pointer-events: none; }
+#recap-box[data-view="cards"] .rs-fold > summary::before { content: ""; margin: 0; }
+#recap-box[data-view="cards"] .rs-fold img { max-width: 100%; height: auto; border-radius: 6px; }
+#recap-box[data-view="cards"] .rs-fold > :is(p, div, figure):has(img) { order: -1; }
+#recap-box[data-view="cards"] .rs-fold > summary { order: -2; }
+
+/* ── Board "Outline" / "Timeline" (section board_view, static/js/board-layouts.js) ── */
+#brd-reading { display: none; flex: 1; overflow-y: auto; padding: .8rem 1rem; flex-direction: column; gap: .35rem; min-height: 0; }
+#brd-wrap[data-view="outline"] #brd-reading, #brd-wrap[data-view="timeline"] #brd-reading { display: flex; }
+#brd-wrap[data-view="outline"] :is(#brd-outer, #brd-tags, #brd-status), #brd-wrap[data-view="timeline"] :is(#brd-outer, #brd-tags, #brd-status) { display: none; }
+.br-entry { text-align: left; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: .55rem .8rem; cursor: pointer; font-family: var(--font); display: flex; flex-direction: column; gap: .15rem; min-height: 44px; }
+.br-entry:hover, .br-entry:focus-visible { border-color: var(--neon); }
+.br-entry small { color: var(--text-dim); font-size: .72rem; }
+.br-body { color: var(--text-dim); font-size: .82rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.br-empty { color: var(--text-dim); }
+#brd-bar .ep-layoutbar { margin: 0 .4rem; }
+
+/* ── Calendar agenda "Eras timeline" (section calendar_agenda, static/js/agenda-eras.js) ── */
+.ag-year { display: none; }
+.agenda-wrap[data-view="timeline"] .ag-year { display: table-row; }
+.agenda-wrap[data-view="timeline"] .ag-year td { color: var(--neon); font-size: 1.15rem; font-weight: bold; padding: 1.2rem 0 .3rem 1rem; border: 0; letter-spacing: .04em; }
+.agenda-wrap[data-view="timeline"] thead { display: none; }
+.agenda-wrap[data-view="timeline"] #agenda-table, .agenda-wrap[data-view="timeline"] #agenda-table tbody { display: block; }
+.agenda-wrap[data-view="timeline"] #agenda-table tr[data-search] { display: block; position: relative; margin-left: .6rem; padding: .5rem 0 .6rem 1.2rem; border-left: 2px solid var(--border); }
+.agenda-wrap[data-view="timeline"] #agenda-table tr[data-search]::before { content: ""; position: absolute; left: -6px; top: .9rem; width: 10px; height: 10px; border-radius: 50%; background: var(--neon); }
+.agenda-wrap[data-view="timeline"] #agenda-table tr[data-search] td { display: block; padding: .1rem 0; border: 0; }
+
+/* ── Encounter list: Table / By status (section combat_list) ── */
+.cl-head { grid-column: 1 / -1; color: var(--neon); font-size: .9rem; margin: .5rem 0 0; }
+.combat-list-wrap[data-view="table"] .card-grid { display: flex; flex-direction: column; gap: .3rem; }
+.combat-list-wrap[data-view="table"] .entity-card-body { display: flex; align-items: baseline; gap: .9rem; flex-wrap: wrap; padding: .45rem .8rem; }
+.combat-list-wrap[data-view="table"] .entity-card-body h3 { margin: 0; flex: 1; min-width: 8rem; font-size: 1rem; }
+.combat-list-wrap[data-view="table"] .entity-card-body p { margin: 0; }
+.combat-list-wrap[data-view="table"] .entity-card-body form { display: inline; }
+/* ── Background jobs: Compact / Table (section jobs_list) ── */
+#bg-jobs-list[data-view="compact"] .bg-job-card, #bg-jobs-list[data-view="table"] .bg-job-card { padding: .35rem .7rem; margin-bottom: .3rem; }
+#bg-jobs-list[data-view="compact"] .bg-job-head, #bg-jobs-list[data-view="table"] .bg-job-head { margin: 0; }
+#bg-jobs-list[data-view="compact"] :is(.bg-job-result, .bg-job-result-label, .bg-job-note-text, .bg-job-error-text), #bg-jobs-list[data-view="compact"] .bg-job-card > :not(.bg-job-head):not(.bg-job-actions) { display: none !important; }
+#bg-jobs-list[data-view="compact"] .bg-job-actions, #bg-jobs-list[data-view="table"] .bg-job-actions { margin: .25rem 0 0; }
+#bg-jobs-list[data-view="table"] .bg-job-card { border-radius: 0; border-width: 0 0 1px; background: transparent; }
+
+/* ── GM session page: Tabs / Run mode (section session_gm, static/js/session-gm-layouts.js) ── */
+.session-gm [data-sp][hidden] { display: none !important; }
+.sg-bar { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: 0 0 1rem; }
+.sg-tabs { display: none; gap: .3rem; flex-wrap: wrap; }
+.session-gm[data-view="tabs"] .sg-tabs { display: flex; }
+.sg-tabs button { background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); border-radius: 4px; padding: .4rem .8rem; cursor: pointer; font-family: var(--font); min-height: 40px; }
+.sg-tabs button[aria-selected="true"] { border-color: var(--neon); color: var(--neon); }
+.session-gm[data-view="run"] { max-width: 1280px !important; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 1rem; align-items: start; }
+.session-gm[data-view="run"] > * { margin-bottom: 0 !important; min-width: 0; }
+.session-gm[data-view="run"] > :not([data-sp]) { grid-column: 1 / -1; }

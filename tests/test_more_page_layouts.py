@@ -13,7 +13,7 @@ from .conftest import GM_PASSWORD, login
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(not NODE, reason="node is not installed")
 
-WANT = {"maps": ["grid", "list", "large"], "map_viewer": ["mapfull", "panel"], "boards": ["grid", "list"], "parties": ["grid", "table"],
+WANT = {"maps": ["grid", "list", "large"], "map_viewer": ["mapfull", "panel", "minimap"], "boards": ["grid", "list"], "parties": ["grid", "table"],
         "party_page": ["classic", "dashboard"], "calendar_view": ["month", "week"], "ai_chat": ["withside", "focus"]}
 
 

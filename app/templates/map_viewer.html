@@ -38,7 +38,8 @@
   </div>
   {% else %}
   <div id="map-body">
-    <div id="map"></div>
+    <div id="map-stage"><div id="map"></div>
+      <div id="map-mini" hidden aria-label="Overview of the whole map - click to go there"><img alt="" draggable="false"/><div id="map-mini-box"></div></div></div>
     <aside id="map-side" aria-label="Pins on this map">
       <input type="search" id="map-side-q" placeholder="Find a pin…" aria-label="Find a pin"/>
       <ul id="map-side-list"></ul>
@@ -157,7 +158,13 @@
 .tb-save { border-color:#44ff88; color:#44ff88; }
 .tb-save:hover { background:#44ff88; color:#000; }
 #edit-tools { display:flex; gap:.3rem; align-items:center; }
+#map-stage { flex:1; position:relative; min-width:0; display:flex; }
 #map { flex:1; background:#111; min-width:0; }
+#map-mini { position:absolute; right:10px; bottom:10px; z-index:1000; width:190px; border:2px solid var(--neon); background:#000; box-shadow:0 2px 10px rgba(0,0,0,.6); cursor:crosshair; line-height:0; touch-action:none; }
+#map-mini img { width:100%; display:block; opacity:.85; }
+#map-mini-box { position:absolute; border:2px solid #ff2d78; box-sizing:border-box; pointer-events:none; }
+#map-wrap[data-view="minimap"] #map-mini:not([hidden]) { display:block; }
+@media (max-width:700px) { #map-mini { width:120px; } }
 #map-body { flex:1; display:flex; min-height:0; }
 #map-side { display:none; width:280px; flex-shrink:0; flex-direction:column; gap:.4rem; padding:.5rem; background:var(--bg2); border-left:1px solid var(--border); overflow:hidden; }
 #map-wrap[data-view="panel"] #map-side { display:flex; }
@@ -750,6 +757,38 @@ function closeDlg(id) { document.getElementById(id).style.display = 'none'; }
   wrap.addEventListener('nd-pl-change', relayout);
   q.addEventListener('input', render);
   map.on('layeradd layerremove', () => { clearTimeout(render._t); render._t = setTimeout(render, 150); });
+})();
+
+// ── Mini-map (layout "Mini-map", section map_viewer) ───────────────────────────
+// A small copy of the whole map in a corner with a rectangle for what the main view shows; click or drag on it to go there.
+(function () {
+  const wrap = document.getElementById('map-wrap'), mini = document.getElementById('map-mini');
+  if (!wrap || !mini) return;
+  const img = mini.querySelector('img'), box = document.getElementById('map-mini-box');
+  img.src = IMG_URL;
+  function draw() {
+    if (wrap.dataset.view !== 'minimap') { mini.hidden = true; return; }
+    mini.hidden = false;
+    const w = mini.clientWidth, h = mini.clientHeight; if (!w || !h) return;
+    const b = map.getBounds();
+    const x1 = Math.max(0, b.getWest()) / MAP_W, x2 = Math.min(MAP_W, b.getEast()) / MAP_W;
+    const y1 = 1 - Math.min(MAP_H, b.getNorth()) / MAP_H, y2 = 1 - Math.max(0, b.getSouth()) / MAP_H;
+    box.style.left = (x1 * w) + 'px'; box.style.top = (y1 * h) + 'px';
+    box.style.width = Math.max(4, (x2 - x1) * w) + 'px'; box.style.height = Math.max(4, (y2 - y1) * h) + 'px';
+  }
+  function go(e) {
+    const r = mini.getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), fy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    map.panTo(L.latLng(MAP_H * (1 - fy), MAP_W * fx), { animate: false });
+  }
+  let drag = false;
+  mini.addEventListener('pointerdown', e => { drag = true; mini.setPointerCapture(e.pointerId); go(e); });
+  mini.addEventListener('pointermove', e => { if (drag) go(e); });
+  mini.addEventListener('pointerup', () => { drag = false; });
+  map.on('move zoom resize', draw);
+  img.addEventListener('load', draw);
+  wrap.addEventListener('nd-pl-ready', () => setTimeout(draw, 0));
+  wrap.addEventListener('nd-pl-change', () => setTimeout(draw, 0));
 })();
 </script>
 {% endif %}

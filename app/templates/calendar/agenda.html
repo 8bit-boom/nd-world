@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}Calendar Agenda — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:900px;margin:0 auto;padding:1.5rem 1rem">
@@ -16,12 +17,13 @@
   </div>
   {% endif %}
 
+  {{ pl_bar("calendar_agenda") }}
   <div class="form-group" style="max-width:320px">
     <input id="agenda-filter" placeholder="Filter by title, note, or link…" style="width:100%"/>
   </div>
 
   {% if rows %}
-  <div style="overflow-x:auto">
+  <div style="overflow-x:auto" class="agenda-wrap" {{ pl_attrs("calendar_agenda", request) }}>
     <table class="stat-table" id="agenda-table">
       <thead><tr>
         <th class="col-name">Date</th>
@@ -30,7 +32,7 @@
       </tr></thead>
       <tbody>
         {% for row in rows %}
-        <tr data-search="{{ row.month_name }} {{ row.dom }} {{ row.year_text }} {% for e in row.events %}{{ e.title }} {{ e.notes }} {{ e.entity_label }} {{ e.session_label }} {{ e.character_label }} {{ e.party_label }} {% endfor %}{% for ic in row.icons %}{{ ic.label }} {% endfor %}">
+        <tr data-year="{{ row.year_text }}" data-search="{{ row.month_name }} {{ row.dom }} {{ row.year_text }} {% for e in row.events %}{{ e.title }} {{ e.notes }} {{ e.entity_label }} {{ e.session_label }} {{ e.character_label }} {{ e.party_label }} {% endfor %}{% for ic in row.icons %}{{ ic.label }} {% endfor %}">
           <td class="col-name">
             <a href="{{ ('/calendar?year=' + row.year|string + '&month=' + row.month_idx|string + '&day=' + row.day_num|string)|wq }}"
                style="color:var(--neon);font-weight:bold;text-decoration:none">{{ row.month_name }} {{ row.dom }}, {{ row.year_text }}</a>
@@ -69,13 +71,14 @@
   <p style="color:var(--text-dim);font-style:italic">No days with events or icons yet — pin something on the <a href="{{ '/calendar'|wq }}" style="color:var(--neon)">Calendar</a> to see it here.</p>
   {% endif %}
 </div>
+<script src="/static/js/agenda-eras.js?v={{ asset_v('js/agenda-eras.js') }}"></script>
 <script>
 (function () {
   const input = document.getElementById('agenda-filter');
   if (!input) return;
   input.addEventListener('input', () => {
     const q = input.value.trim().toLowerCase();
-    document.querySelectorAll('#agenda-table tbody tr').forEach(row => {
+    document.querySelectorAll('#agenda-table tbody tr[data-search]').forEach(row => {
       row.style.display = row.dataset.search.toLowerCase().includes(q) ? '' : 'none';
     });
   });

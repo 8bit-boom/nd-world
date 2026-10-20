@@ -1,5 +1,5 @@
 "use strict";
-// A session recap as SECTIONS (templates/sessions/player_detail.html, section "recap"): the recap's headings (# / ## / ###) become folds - the
+// A session recap as SECTIONS (or CARDS: the same folds, all open, laid out as a grid with each part's pictures first) (templates/sessions/player_detail.html, section "recap"): the recap's headings (# / ## / ###) become folds - the
 // first open, the others closed - so a long recap is read one part at a time on a phone. The text is the page's own (moved into the folds and
 // moved back for "Full text", never rewritten), and a recap that is generated after the page loads is handled when it arrives.
 // Pure helper exported for tests/test_recap_sections.py.
@@ -33,7 +33,7 @@
     if (groups.length < 2) return;                                      // nothing to fold: a recap without headings stays as it is
     el._orig = Array.from(el.childNodes);
     const folds = groups.map((g, k) => {
-      const d = document.createElement("details"); d.className = "rs-fold"; d.open = k === 0;
+      const d = document.createElement("details"); d.className = "rs-fold"; d.open = box.dataset.view === "cards" || k === 0;
       const sum = document.createElement("summary");
       const head = g.heading >= 0 ? nodes[g.heading] : null;
       sum.textContent = head ? head.textContent.trim() : "Opening";
@@ -47,10 +47,10 @@
   function sync() {
     if (busy) return;
     busy = true;
-    try { targets().forEach((el) => (box.dataset.view === "sections" ? fold(el) : unfold(el))); } finally { busy = false; }
+    try { targets().forEach((el) => (box.dataset.view === "sections" || box.dataset.view === "cards" ? fold(el) : unfold(el))); } finally { busy = false; }
   }
   box.addEventListener("nd-pl-ready", sync);
   box.addEventListener("nd-pl-change", sync);
   // a recap written after the page loaded replaces the text: fold the new text too
-  if (window.MutationObserver) new MutationObserver(() => { if (!busy && box.dataset.view === "sections") setTimeout(sync, 0); }).observe(box, { childList: true, subtree: true });
+  if (window.MutationObserver) new MutationObserver(() => { if (!busy && (box.dataset.view === "sections" || box.dataset.view === "cards")) setTimeout(sync, 0); }).observe(box, { childList: true, subtree: true });
 })(typeof window !== "undefined" ? window : globalThis);

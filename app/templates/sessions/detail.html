@@ -1,22 +1,24 @@
 {% extends "base.html" %}
+{% from "_views.html" import pl_bar, pl_attrs %}
 {% block title %}{{ gsession.title if gsession else 'New Session' }} — Sessions{% endblock %}
 {% block content %}
 <style>
 .ai-recap-btn { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.35rem .8rem; font-size:.78rem; border-radius:3px; cursor:pointer; font-family:var(--font); }
 .ai-recap-btn:disabled { opacity:.5; cursor:default; }
 </style>
-<div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
+<div class="session-gm" {{ pl_attrs("session_gm", request) }} style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">{{ '📓 #' + gsession.session_num|string + ' ' + gsession.title if gsession else '+ New Session' }}</h1>
     <a href="{{ '/sessions'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Sessions</a>
   </div>
+  {% if gsession %}<div class="sg-bar">{{ pl_bar("session_gm") }}<div class="sg-tabs" role="tablist" aria-label="Session sections"></div></div>{% endif %}
 
   {% if request.query_params.get('saved') %}
   <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">Session saved.</div>
   {% endif %}
 
   <!-- Recap block (GM-editable now, natural split-point for a future player-facing view) -->
-  <form method="post" action="{% if gsession %}/sessions/{{ gsession.id }}/edit{% else %}/sessions/new{% endif %}">
+  <form data-sp="recap" method="post" action="{% if gsession %}/sessions/{{ gsession.id }}/edit{% else %}/sessions/new{% endif %}">
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Recap</h2>
       <div class="sess-meta-grid">
@@ -303,7 +305,7 @@
   <!-- Live session recording: records in short chunks, transcribing and
        saving each one as it finishes, so a long session survives a crashed
        tab or dropped connection with at most one chunk lost. -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+  <div data-sp="transcript" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording <small id="live-transcript-token-count" style="color:var(--text-dim);font-weight:normal"></small></h2>
     <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
       Records in short chunks, each transcribed and saved to this session as it finishes. Every chunk is also
@@ -354,7 +356,7 @@
        parser.js). Reassigning a fact to a DIFFERENT session stays a
        /facts-only action — this panel only ever creates/edits facts
        scoped to the session you're already looking at. -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+  <div data-sp="facts" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0">🗒 Facts <span style="font-size:.75rem;color:var(--text-dim);font-weight:normal">({{ facts|length }})</span></h2>
       <a href="{{ '/facts'|wq }}" style="font-size:.75rem;color:var(--text-dim);text-decoration:none">All sessions →</a>
@@ -484,7 +486,7 @@
   </div>
 
   <!-- Prep checklist -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+  <div data-sp="prep" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">✅ Prep Checklist</h2>
     <div id="prep-list" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.6rem"></div>
     <div style="display:flex;gap:.4rem">
@@ -500,7 +502,7 @@
   </div>
 
   <!-- Loot -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+  <div data-sp="loot" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">💰 Loot Given</h2>
     <div id="loot-list" style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:.6rem"></div>
     <div style="display:flex;gap:.4rem;flex-wrap:wrap">
@@ -512,7 +514,7 @@
   </div>
 
   <!-- XP -->
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+  <div data-sp="xp" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">⭐ XP</h2>
     <p style="font-size:.85rem;margin:0 0 .6rem">Total awarded this session: <strong id="xp-total">{{ gsession.xp_awarded }}</strong></p>
     {% if party_pcs %}
@@ -526,7 +528,7 @@
   </div>
 
   {% if linked_combats %}
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
+  <div data-sp="combats" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">⚔ Linked Combats</h2>
     {% for c in linked_combats %}
     <a href="{{ ('/combat/' + c.id|string)|wq }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ c.name }}</a>
@@ -2667,4 +2669,5 @@ renderLoot();
 liveRefreshAudioStatus();
 {% endif %}
 </script>
+<script src="/static/js/session-gm-layouts.js?v={{ asset_v('js/session-gm-layouts.js') }}"></script>
 {% endblock %}

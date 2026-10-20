@@ -15,8 +15,8 @@ needs_node = pytest.mark.skipif(not NODE, reason="node is not installed")
 
 
 def test_the_reading_sections_offer_their_modes_and_reject_others():
-    want = {"rules": ["scroll", "book", "wide"], "search_results": ["grouped", "flat", "cards"],
-            "facts": ["groups", "timeline", "table"], "recap": ["full", "sections"]}
+    want = {"rules": ["scroll", "book", "wide", "searchfirst"], "search_results": ["grouped", "flat", "cards"],
+            "facts": ["groups", "timeline", "table"], "recap": ["full", "sections", "cards"]}
     for sec, ids in want.items():
         sp = view_prefs.spec(sec)
         assert [m["id"] for m in sp["modes"]] == ids and sp["default"] == ids[0], sec
