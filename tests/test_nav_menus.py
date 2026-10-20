@@ -10,7 +10,7 @@ from app.database import SessionLocal
 from app.models import World
 from app.nav_menus import build_catalog, load_nav_menus, resolve_nav_menus, sanitize_nav_menus
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, fake_request, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, fake_request, login, nav_text
 
 
 def _set_nav_menus(world_id, menus):
@@ -38,8 +38,8 @@ def test_fresh_world_defaults_to_tools_and_ai_tools_grouping(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
-    assert "🎯 Tools" in r.text
-    assert "🤖 AI Tools" in r.text
+    assert "🎯 Tools" in nav_text(r.text)
+    assert "🤖 AI Tools" in nav_text(r.text)
     assert 'data-ql-ref="/boards"' in r.text
     assert 'data-ql-ref="/ai"' in r.text
 
@@ -68,8 +68,8 @@ def test_explicit_empty_list_is_honored_as_all_flat(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
-    assert "🎯 Tools" not in r.text
-    assert "🤖 AI Tools" not in r.text
+    assert "🎯 Tools" not in nav_text(r.text)
+    assert "🤖 AI Tools" not in nav_text(r.text)
     assert 'data-ql-ref="/boards"' in r.text  # still reachable, just flat now
     assert '"nav-kind ' in r.text or 'class="nav-kind' in r.text
 

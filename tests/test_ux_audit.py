@@ -17,7 +17,7 @@ from pathlib import Path
 from app.database import SessionLocal
 from app.models import Entity
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, nav_text
 
 _STYLE_CSS = (Path(__file__).parent.parent / "static" / "style.css").read_text()
 
@@ -95,8 +95,8 @@ def test_gm_nav_still_reaches_every_relocated_page(client, seed):
     assert r.status_code == 200
     for href in ("/boards", "/ai", "/imagestudio", "/editor", "/export", "/settings"):
         assert f'data-ql-ref="{href}"' in r.text, f"{href} missing from nav"
-    assert "🎯 Tools" in r.text
-    assert "🤖 AI Tools" in r.text
+    assert "🎯 Tools" in nav_text(r.text)
+    assert "🤖 AI Tools" in nav_text(r.text)
     # The routes themselves are unaffected regardless of nav placement.
     assert client.get("/boards").status_code == 200
 
@@ -121,7 +121,7 @@ def test_player_nav_shows_no_gm_only_links_inside_shared_menus(client, seed):
     assert ">AI Chat<" not in r.text
     # Tools DOES render (Audio/Video/Dice/Android App are player-visible)
     # with its gm-only members stripped.
-    assert "🎯 Tools" in r.text
+    assert "🎯 Tools" in nav_text(r.text)
     assert ">Combat Tracker<" not in r.text
     assert ">Export & Backup<" not in r.text
 

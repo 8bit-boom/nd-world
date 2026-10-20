@@ -211,6 +211,12 @@ def fake_request(is_gm=False, is_assistant=False, logged_in=True):
     return SimpleNamespace(state=SimpleNamespace(user=user, is_assistant=is_assistant))
 
 
+def nav_text(html: str) -> str:
+    """The page with the nav's icon / label spans (`<span class="nav-ic">`, `nav-lb`) taken out, so "🎯 Tools" reads as one piece of text again."""
+    import re
+    return re.sub(r'<span class="nav-(?:ic|lb)">|</span>', "", html)
+
+
 def login(c, email, password):
     r = c.post("/login", data={"email": email, "password": password, "next": "/"}, follow_redirects=False)
     assert r.status_code == 303, f"login failed for {email}: {r.status_code} {r.text[:300]}"
