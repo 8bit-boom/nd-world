@@ -263,7 +263,7 @@ _DISPLAYABLE = re.compile(r"^/uploads/(?!maps/)[^?#]+\.(jpe?g|png|webp|avif)$", 
 
 
 def display_url(url: str) -> str:
-    """The 1,600 px display copy of an uploaded picture (`?display=1`, made on first request - app/imaging.make_display), else `url`
+    """The 2,560 px display copy of an uploaded picture (`?display=1`, made on first request - app/imaging.make_display), else `url`
     unchanged. The same rule as the lightbox in base.html and the filmstrip in nd-views.js: map images and thumbnails keep their own URL."""
     if url and _DISPLAYABLE.match(url) and not re.search(r"_(thumb|display)\.webp$", url, re.I):
         return url + "?display=1"

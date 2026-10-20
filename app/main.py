@@ -1574,7 +1574,7 @@ def serve_upload(filepath: str, request: Request):
     # shows up as mangled text days later.
     media_type = "text/html; charset=utf-8" if path.suffix.lower() in (".html", ".htm") else None
     if request.query_params.get("display") and not filepath.startswith("maps/"):
-        # the lightbox's display-size copy (app/imaging.py make_display): a 1,600 px WebP of a large picture, the original when it is small
+        # the lightbox's display-size copy (app/imaging.py make_display): a 2,560 px WebP of a large picture, the original when it is small
         shown = make_display(path)
         if shown is not None:
             return FileResponse(shown, headers=headers, media_type="image/webp")
