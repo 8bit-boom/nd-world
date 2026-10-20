@@ -61,7 +61,33 @@ def ensure(*roots: Path) -> int:
     return n
 
 
+def webp_maps(folder: Path, quality: int = 90) -> tuple:
+    """Image build only (efficiency plan, step 12): re-save the bundled JPEG / PNG map pictures as high-quality WebP when that is smaller, and
+    drop the original - the map viewer looks for <slug>.webp first, and nothing refers to a bundled map picture by its extension. The repository
+    keeps the originals. Returns (files converted, bytes before, bytes after)."""
+    from PIL import Image
+    n = before = after = 0
+    for src in sorted(folder.glob("*")):
+        if src.suffix.lower() not in (".jpg", ".jpeg", ".png") or src.stem.endswith("_thumb"):
+            continue
+        dest = src.with_suffix(".webp")
+        if dest.exists():
+            continue
+        with Image.open(src) as im:
+            im.save(dest, format="WEBP", quality=quality, method=6)
+        if dest.stat().st_size < src.stat().st_size:
+            before += src.stat().st_size
+            after += dest.stat().st_size
+            src.unlink()
+            n += 1
+        else:
+            dest.unlink()
+    return n, before, after
+
+
 if __name__ == "__main__":
     static = Path(__file__).resolve().parent.parent / "static"
-    roots = [Path(a) for a in sys.argv[1:]] or [static / "maps", static / "races"]
+    if "--webp-maps" in sys.argv:
+        print("bundled maps as WebP (files, bytes before, after):", webp_maps(static / "maps"))
+    roots = [Path(a) for a in sys.argv[1:] if not a.startswith("--")] or [static / "maps", static / "races"]
     print("static thumbnails written:", ensure(*roots))

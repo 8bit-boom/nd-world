@@ -50,7 +50,7 @@ from . import session_media as _session_media
 from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_edit_section, world_can_view_section, world_row_visible, world_section_access
-from .imaging import convert_image, make_thumbnail
+from .imaging import convert_image, make_display, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants, strip_gm_only
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
@@ -1563,6 +1563,11 @@ def serve_upload(filepath: str, request: Request):
     # encoding on user-uploaded content is the kind of thing that only
     # shows up as mangled text days later.
     media_type = "text/html; charset=utf-8" if path.suffix.lower() in (".html", ".htm") else None
+    if request.query_params.get("display") and not filepath.startswith("maps/"):
+        # the lightbox's display-size copy (app/imaging.py make_display): a 1,600 px WebP of a large picture, the original when it is small
+        shown = make_display(path)
+        if shown is not None:
+            return FileResponse(shown, headers=headers, media_type="image/webp")
     return FileResponse(path, headers=headers, media_type=media_type)
 
 # ── Worlds management ─────────────────────────────────────────────────────────

@@ -165,3 +165,36 @@ def make_thumbnail(path: Path, max_dim: int = THUMBNAIL_MAX_DIM, quality: int = 
     except Exception:
         return None
     return dest
+
+
+# ── Display-size copies (efficiency plan, step 13) ─────────────────────────────
+# What the lightbox shows: a 1,600 px WebP of a large upload, made on the first request for it (GET /uploads/...?display=1) and kept beside
+# the original. The original is untouched and one click away ("Full size" in the lightbox).
+DISPLAY_MAX_DIM = 1600
+DISPLAY_QUALITY = 82
+DISPLAY_SUFFIX = "_display.webp"
+
+
+def display_path_for(path: Path) -> Path:
+    return path.with_name(path.stem + DISPLAY_SUFFIX)
+
+
+def make_display(path: Path, max_dim: int = DISPLAY_MAX_DIM, quality: int = DISPLAY_QUALITY) -> Optional[Path]:
+    """The display copy of `path` (made now if missing or older than the original), or None when the original is small enough to show as it
+    is, is animated, or can't be read - callers then serve the original."""
+    if path.suffix.lower() not in _CONVERTIBLE_EXTS or path.suffix.lower() == ".gif" or path.stem.endswith(("_thumb", "_display")):
+        return None
+    dest = display_path_for(path)
+    try:
+        if dest.is_file() and dest.stat().st_mtime_ns >= path.stat().st_mtime_ns:
+            return dest
+        with Image.open(path) as img:
+            if max(img.size) <= max_dim or getattr(img, "is_animated", False):
+                return None
+            img.draft("RGB", (max_dim, max_dim))
+            frame = img.convert(_frame_mode(img, "WEBP"))
+            frame.thumbnail((max_dim, max_dim), Image.LANCZOS)
+            frame.save(dest, format="WEBP", quality=quality)
+    except Exception:
+        return None
+    return dest

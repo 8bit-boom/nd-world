@@ -78,6 +78,14 @@ class PerfMiddleware:
             if "accept-encoding" in headers:
                 del headers["accept-encoding"]
 
+        if path.startswith("/static/maps/") and path.lower().endswith((".jpg", ".jpeg", ".png")) and scope.get("method") in ("GET", "HEAD"):
+            # the image build stores bundled maps as WebP (app/static_thumbs.py --webp-maps): an old link to the .jpg still finds the picture
+            rel = path[len("/static/"):]
+            src, webp = _STATIC_DIR / rel, (_STATIC_DIR / rel).with_suffix(".webp")
+            if not src.exists() and webp.is_file() and webp.resolve().is_relative_to(_STATIC_DIR):
+                from starlette.responses import RedirectResponse
+                await RedirectResponse(path.rsplit(".", 1)[0] + ".webp", status_code=301)(scope, receive, send)
+                return
         if path.startswith("/static/") and scope.get("method") in ("GET", "HEAD"):
             pre = _precompressed(path, _MutableHeaders(scope=scope).get("accept-encoding", ""))
             if pre is not None:

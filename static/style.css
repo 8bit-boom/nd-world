@@ -2827,3 +2827,5 @@ body.home-night-on .home-edit-link { display: none; }
 .session-gm[data-view="run"] { max-width: 1280px !important; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 1rem; align-items: start; }
 .session-gm[data-view="run"] > * { margin-bottom: 0 !important; min-width: 0; }
 .session-gm[data-view="run"] > :not([data-sp]) { grid-column: 1 / -1; }
+.lightbox-full { position: absolute; bottom: 1rem; right: 1.2rem; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: .35rem .7rem; font-size: .85rem; text-decoration: none; }
+.lightbox-full[hidden] { display: none; }

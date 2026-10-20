@@ -84,3 +84,19 @@ def test_the_image_builds_minifier_keeps_every_script_valid(tmp_path):
             bad.append((f.name, r.stderr[-200:]))
     assert not bad, bad
     assert "{" in (tmp_path / "style.css").read_text() and "/*" not in (tmp_path / "style.css").read_text()
+
+
+def test_bundled_maps_as_webp_keep_old_jpg_links_working(client, tmp_path):
+    from PIL import Image
+    from app import static_thumbs
+    Image.new("RGB", (300, 200), "green").save(tmp_path / "m.jpg", quality=95)
+    n, before, after = static_thumbs.webp_maps(tmp_path)
+    assert n == 1 and after < before and (tmp_path / "m.webp").is_file() and not (tmp_path / "m.jpg").exists()
+    probe = STATIC / "maps" / "_probe_map.webp"
+    try:
+        Image.new("RGB", (10, 10), "red").save(probe)
+        r = client.get("/static/maps/_probe_map.jpg", follow_redirects=False)
+        assert r.status_code == 301 and r.headers["location"] == "/static/maps/_probe_map.webp"
+        assert client.get("/static/maps/_nothing_here.jpg", follow_redirects=False).status_code == 404
+    finally:
+        probe.unlink(missing_ok=True)
