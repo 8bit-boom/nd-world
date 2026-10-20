@@ -1,16 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Neon & Dragons — World{% endblock %}
 {% block content %}
+{% set _hv = saved_view(request, 'home') %}
+<div id="home-layoutbar" class="ep-layoutbar" role="group" aria-label="Home layout"></div>
+<section id="home-night" class="home-night" hidden aria-label="Session night"></section>
+<div id="home-stack" class="home-stack" data-view="classic" data-ep-view="{{ (_hv.mode if _hv else '') }}" data-ep-order="{{ ((_hv.order if _hv else [])|join(',')) }}" data-ep-hidden="{{ ((_hv.hidden if _hv else [])|join(',')) }}">
 {% if (world.hero_style if world else 'home') not in ('everywhere', 'off') %}
-{% include "_hero.html" %}
+<div data-hb="hero">{% include "_hero.html" %}</div>
 {% endif %}
 
 {% if world.home_welcome_md %}
-<section class="home-welcome">{{ world.home_welcome_md | md | safe }}</section>
+<section class="home-welcome" data-hb="welcome">{{ world.home_welcome_md | md | safe }}</section>
 {% endif %}
 
 {% if world_is_empty and request.state.user and request.state.user.is_gm %}
-<section class="getting-started">
+<section class="getting-started" data-hb="start">
   <h2>👋 Get started with {{ world.name }}</h2>
   <p>This world doesn't have any lore yet — here's where most GMs start:</p>
   <div class="getting-started-links">
@@ -23,7 +27,7 @@
 {% endif %}
 
 {% if home_sections %}
-<section class="dash-section quick-links-section">
+<section class="dash-section quick-links-section" data-hb="links">
   {% if home_sections|length > 1 %}
   <div class="ql-tab-bar">
     {% for sec in home_sections %}
@@ -47,7 +51,7 @@
   {% endfor %}
 </section>
 {% elif request.state.user and request.state.user.is_gm %}
-<section class="dash-section quick-links-section">
+<section class="dash-section quick-links-section" data-hb="links">
   <div id="ql-empty-dropzone" class="ql-empty-dropzone">📌 Drag a tab from the top nav here to start your Quick Links</div>
 </section>
 {% endif %}
@@ -59,7 +63,7 @@
 {# GM + GM-Assistant: the AI world-summary card (job-backed, cached until
    Regenerate — see app/routers/ai.py's /api/ai/world-summary routes). #}
 {% if can_edit(request) %}
-<section id="world-ai-summary-card" style="border:1px solid var(--border);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg2);margin-bottom:1.1rem">
+<section id="world-ai-summary-card" data-hb="summary" style="border:1px solid var(--border);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg2);margin-bottom:1.1rem">
   <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;flex-wrap:wrap">
     <span style="font-size:.8rem;color:var(--neon);font-weight:700;letter-spacing:.06em">🤖 WORLD SUMMARY</span>
     <span id="was-generated" style="font-size:.72rem;color:var(--text-dim)"></span>
@@ -106,7 +110,7 @@
    digest the GM/assistant already produced (see api_world_summary_get's
    docstring in app/routers/ai.py), and the whole card hides itself below
    if there isn't one yet — there's nothing actionable to show. #}
-<section id="world-ai-summary-card-player" style="border:1px solid var(--border);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg2);margin-bottom:1.1rem" hidden>
+<section id="world-ai-summary-card-player" data-hb="summary" style="border:1px solid var(--border);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg2);margin-bottom:1.1rem" hidden>
   <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
     <span style="font-size:.8rem;color:var(--neon);font-weight:700;letter-spacing:.06em">🤖 WORLD SUMMARY</span>
     <span id="was-player-generated" style="font-size:.72rem;color:var(--text-dim)"></span>
@@ -115,7 +119,7 @@
 </section>
 {% endif %}
 
-<section class="dashboard" id="dashboard-dropzone">
+<section class="dashboard" id="dashboard-dropzone" data-hb="kinds">
   {% for k in kinds if k not in hidden_kinds %}
   <a href="{{ ('/kind/' + k)|wq }}" class="dash-card kind-{{ k }}">
     {% if request.state.user and request.state.user.is_gm %}
@@ -142,7 +146,7 @@
 {% endif %}
 
 {% if preview_maps %}
-<section class="map-preview-section">
+<section class="map-preview-section" data-hb="maps">
   <h2>🗺 MAPS <a href="{{ '/maps'|wq }}" class="map-preview-all">View all →</a></h2>
   <div class="map-mini-grid">
     {% for m in preview_maps %}
@@ -156,7 +160,7 @@
 {% endif %}
 
 {% if recent %}
-<section class="recent">
+<section class="recent" data-hb="recent">
   <h2>// RECENTLY UPDATED</h2>
   <div class="card-grid">
     {% for e in recent %}
@@ -178,7 +182,7 @@
 {% endif %}
 
 {% if most_linked %}
-<section class="dash-section">
+<section class="dash-section" data-hb="linked">
   <h2 class="dash-heading">🔗 Most Referenced</h2>
   <div class="linked-strip">
     {% for ent, n in most_linked %}
@@ -193,7 +197,7 @@
 {% endif %}
 
 {% if top_tags %}
-<section class="dash-section">
+<section class="dash-section" data-hb="tags">
   <h2 class="dash-heading">🏷 Tags</h2>
   {% set max_count = top_tags[0][1] %}
   <div class="tag-cloud">
@@ -205,7 +209,7 @@
 {% endif %}
 
 {% if recent_boards or recent_schematics or recent_sessions or active_quests %}
-<section class="dash-section">
+<section class="dash-section" data-hb="activity">
   <h2 class="dash-heading">🛠 Recent Tools</h2>
   <div style="display:flex;gap:2rem;flex-wrap:wrap">
     {% if recent_boards %}
@@ -243,6 +247,8 @@
   </div>
 </section>
 {% endif %}
+</div>
+
 
 <style>
 .dash-section { margin: 2rem 0; }
@@ -286,6 +292,7 @@
 .ql-empty-dropzone { border:1px dashed var(--border); border-radius:6px; padding:1.5rem; text-align:center; color:var(--text-dim); font-size:.85rem; }
 .ql-empty-dropzone.drag-over { border-color:var(--neon); color:var(--neon); }
 </style>
+<script src="/static/js/home-layouts.js?v={{ asset_v('js/home-layouts.js') }}"></script>
 <script>
 function switchQuickLinksTab(i) {
   document.querySelectorAll('.ql-tab').forEach(b => b.classList.remove('active'));

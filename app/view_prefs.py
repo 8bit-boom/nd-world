@@ -32,6 +32,9 @@ MODE_LABELS = {
     "classic": ("☰", "Long page"),
     "cols": ("◧", "Two columns"),
     "reader": ("📖", "Reader"),
+    "night": ("🌙", "Session night"),
+    "focus": ("◎", "Focus"),
+    "widgets": ("🧩", "My widgets"),
     "tray": ("🎲", "3D tray"),
     "quick": ("⚡", "Quick buttons"),
     "log": ("📜", "History first"),
@@ -163,7 +166,7 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
@@ -181,6 +184,12 @@ SECTIONS["tables"] = {
     # random tables: cards (today's), compact rows, a roll board (every table a big roll button, the results stack in a log beside it)
     "modes": ["grid", "compact", "roll"], "default": "grid", "size_modes": ["grid"], "labels": {"grid": "Cards", "compact": "List"},
     "sorts": ["name"], "default_sort": "name", "groups": ["category"], "default_group": "category", "filters": []}
+
+SECTIONS["home"] = {
+    # the world's home page: classic (today's), Session night (what the table needs at the start of play), Focus (links and recent only) or My widgets
+    # (reorder and hide the blocks - `order` and `hidden` are lists of block ids)
+    "modes": ["classic", "night", "focus", "widgets"], "default": "classic", "size_modes": ["none"], "labels": {"classic": "Classic"},
+    "sorts": ["name"], "default_sort": "name", "groups": [], "filters": [], "lists": {"order": 16, "hidden": 16}}
 
 SIZES = (1, 2, 3)
 DEFAULT_SIZE = 2
@@ -227,6 +236,9 @@ def clean(section: str, raw) -> dict:
     filters = [f for f in (raw.get("filters") if isinstance(raw.get("filters"), list) else []) if f in s["filters"]]
     filters = list(dict.fromkeys(filters))[: s.get("max_filters", len(filters))]      # no repeats; a section may cap how many
     out = {"mode": mode, "size": size, "sort": sort, "group": group, "filters": filters}
+    for name, cap in (s.get("lists") or {}).items():        # id lists a section keeps (e.g. the home page's block order and hidden blocks)
+        given = raw.get(name) if isinstance(raw.get(name), list) else []
+        out[name] = list(dict.fromkeys(x for x in given if isinstance(x, str) and re.fullmatch(r"[a-z0-9_-]{1,40}", x)))[:cap]
     if s.get("options"):
         given = raw.get("options") if isinstance(raw.get("options"), dict) else {}
         out["options"] = {k: (str(given.get(k)) if str(given.get(k)) in allowed else allowed[0]) for k, allowed in s["options"].items()}
