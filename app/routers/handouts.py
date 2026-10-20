@@ -13,6 +13,7 @@ from ..deps import get_world_ctx
 from ..models import Entity
 from ..rendering import render_md
 from ..templating import templates
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -42,11 +43,11 @@ def handouts_gallery(request: Request, db: Session = Depends(get_db), active_wor
 
 
 @router.post("/handouts/print")
-async def handouts_print(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def handouts_print(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    body = await request.json()
+    body = parse_json(_body)
     ids: List[int] = [int(x) for x in body.get("ids", [])]
     items = []
     for eid in ids:

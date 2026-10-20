@@ -13,6 +13,7 @@ from ..models import CombatSession, Entity, Fact, GameSession, PlayerCharacter, 
 from ..pc_stats import clean_conditions, pc_maxima, speed as pc_speed
 from ..sheet_systems import hp_track, parse_custom_fields, resource_tracks, system_meta, template_fields
 from ..templating import templates
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -318,13 +319,13 @@ def combat_get_state(combat_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/combat/{combat_id}/state")
-async def combat_save_state(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def combat_save_state(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Save the tracker. The body is checked and cleaned (combat_state.normalize_state). If it carries the `rev` the tracker last saw and
     the encounter has moved on since (a player rolled initiative, the map pushed HP, another tab saved), nothing is written and the
     answer is 409 with the current state, so the page can merge its edits onto it instead of overwriting the others."""
     _, cs = _scoped(db, request, active_world, combat_id)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         raise HTTPException(400, "The body must be JSON.")
     try:
@@ -360,9 +361,9 @@ def combat_delete(combat_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/combat/{combat_id}/link-session")
-async def combat_link_session(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def combat_link_session(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, cs = _scoped(db, request, active_world, combat_id)
-    form = await request.form()
+    form = _form
     session_id = form.get("game_session_id")
     if session_id:
         gs = db.query(GameSession).filter(GameSession.id == _as_int(session_id), GameSession.world_id == world.id).first()
@@ -473,10 +474,10 @@ def combat_duplicate(combat_id: int, request: Request, db: Session = Depends(get
 
 
 @router.post("/combat/{combat_id}/save-template")
-async def combat_save_template(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def combat_save_template(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     """Keep this fight's enemies as a template to run again (the player characters are added fresh each time)."""
     _, cs = _scoped(db, request, active_world, combat_id)
-    form = await request.form()
+    form = _form
     name = " ".join(str(form.get("name") or "").split()) or cs.name
     _copy_encounter(db, cs, name, npcs_only=True, template=True)
     db.commit()

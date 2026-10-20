@@ -13,6 +13,7 @@ from ..database import get_db
 from ..models import InviteCode, TrustedDevice, User, UserViewPref, World, WorldMembership
 from .view_prefs_api import apply_preset
 from ..templating import templates
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -140,8 +141,8 @@ def login_form(request: Request, next: str = "/"):
 
 
 @router.post("/login")
-async def login_submit(request: Request, db: Session = Depends(get_db)):
-    form = await request.form()
+def login_submit(request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
+    form = _form
     email = str(form.get("email", "")).strip().lower()
     password = str(form.get("password", ""))
     next_url = auth.safe_next_url(str(form.get("next") or "/"))
@@ -183,7 +184,7 @@ def login_2fa_form(request: Request):
 
 
 @router.post("/login/2fa")
-async def login_2fa_submit(request: Request, db: Session = Depends(get_db)):
+def login_2fa_submit(request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     pending_id = request.session.get("pending_2fa_user_id")
     if not pending_id:
         return RedirectResponse("/login", status_code=303)
@@ -203,7 +204,7 @@ async def login_2fa_submit(request: Request, db: Session = Depends(get_db)):
             "error": f"Too many failed attempts. Try again in {locked_for // 60 + 1} minute(s).",
         }, status_code=429)
 
-    form = await request.form()
+    form = _form
     code = str(form.get("code", "")).strip()
 
     ok = _totp.verify_code(user.totp_secret, code)
@@ -251,12 +252,12 @@ async def login_2fa_submit(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/login")
-async def api_login(request: Request, db: Session = Depends(get_db)):
+def api_login(request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """JSON-friendly login for non-browser clients (e.g. the Android app) that
     can't submit an HTML form. Shares the same session cookie and failed-login
     lockout as the form-based /login above — a JSON client hammering this
     doesn't get a free pass around the throttle."""
-    body = await request.json()
+    body = parse_json(_body)
     email = str(body.get("email", "")).strip().lower()
     password = str(body.get("password", ""))
     totp_code = str(body.get("totp_code", "")).strip()
@@ -331,7 +332,7 @@ def join_form(code: str, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/join/{code}")
-async def join_submit(code: str, request: Request, db: Session = Depends(get_db)):
+def join_submit(code: str, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     invite = db.query(InviteCode).filter(InviteCode.code == code).first()
     error = _invite_error(invite)
     if error:
@@ -340,7 +341,7 @@ async def join_submit(code: str, request: Request, db: Session = Depends(get_db)
             "error": error, "form_error": None,
         }, status_code=400)
 
-    form = await request.form()
+    form = _form
     mode = str(form.get("mode", "signup"))
     email = str(form.get("email", "")).strip().lower()
     password = str(form.get("password", ""))

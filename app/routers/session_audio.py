@@ -32,6 +32,7 @@ from ..models import AudioClip, GameSession
 from ..session_media import attached_clips, recap_clip_ids, sessions_with_audio_for_players   # noqa: F401  (re-exported: sessions.py, mcp_server.py)
 from ..uploads import copy_upload_bounded, unique_upload_filename
 from .audio import _ALLOWED_EXTS, _MAX_CLIPS_PER_WORLD, _MAX_DESCRIPTION, _MAX_NAME, _effective_audio_bytes
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -94,11 +95,11 @@ def recap_audio_list(session_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.post("/api/sessions/{session_id}/recap-audio")
-async def recap_audio_attach(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def recap_audio_attach(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Attach a clip that is already in this world's audio library."""
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     body = body if isinstance(body, dict) else {}
@@ -143,7 +144,7 @@ def recap_audio_upload(session_id: int, request: Request, file: UploadFile = Fil
 
 
 @router.post("/api/sessions/{session_id}/recap-audio/{clip_id}/visibility")
-async def recap_audio_visibility(session_id: int, clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def recap_audio_visibility(session_id: int, clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Let players hear (or not) an attached clip — the same switch as in the audio library."""
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     if clip_id not in recap_clip_ids(gs):
@@ -152,7 +153,7 @@ async def recap_audio_visibility(session_id: int, clip_id: int, request: Request
     if not clip or clip.world_id != world.id:
         raise HTTPException(404)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     vis = body.get("visible_to_players") if isinstance(body, dict) else None

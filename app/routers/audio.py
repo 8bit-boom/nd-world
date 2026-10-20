@@ -30,6 +30,7 @@ from .. import deps as _deps
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
 from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -270,13 +271,13 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.post("/audio/albums/new")
-async def audio_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def audio_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(AudioAlbum).filter(AudioAlbum.world_id == world.id).count()
     if count >= _MAX_ALBUMS_PER_WORLD:
@@ -293,14 +294,14 @@ async def audio_album_create(request: Request, db: Session = Depends(get_db), ac
 
 
 @router.post("/audio/albums/{album_id}/rename")
-async def audio_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def audio_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
     if name:
         album.name = name
@@ -375,15 +376,15 @@ def audio_upload(
 
 
 @router.post("/audio/{clip_id}/attach")
-async def audio_attach(clip_id: int, request: Request, db: Session = Depends(get_db),
-                       active_world: str = Cookie(None)):
+def audio_attach(clip_id: int, request: Request, db: Session = Depends(get_db),
+                       active_world: str = Cookie(None), _form=Depends(read_form)):
     """Attach this clip to a lore entity (empty entity_id detaches). The clip
     and the entity must share a world. Entity-edit level (GM/assistant)."""
     clip = db.query(AudioClip).filter(AudioClip.id == clip_id).first()
     if not clip:
         raise HTTPException(404)
     _require_can_edit(request)
-    form = await request.form()
+    form = _form
     raw = str(form.get("entity_id") or "").strip()
     clip.entity_id = _resolve_entity_id(db, clip.world_id, raw) if raw else None
     db.commit()

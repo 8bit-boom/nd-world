@@ -25,6 +25,7 @@ from ..rendering import render_md
 from ..templating import templates
 from ..tiers import group_by_tier
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -198,7 +199,7 @@ def races_new(
 
 
 @router.post("/races/add-builtin")
-async def races_add_builtin(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def races_add_builtin(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Adds one built-in race into the active world. Returns the resulting
     Entity's card data ({id, name, tier, image_url, summary, body_html}) —
     not just {"ok": True} — so the page's own AJAX handler (addBuiltin in
@@ -210,7 +211,7 @@ async def races_add_builtin(request: Request, db: Session = Depends(get_db), act
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    payload = await request.json()
+    payload = parse_json(_body)
     slug = payload.get("slug", "")
     tier = payload.get("tier", "")
     builtin = _load_builtin_races()

@@ -141,6 +141,7 @@ from . import diagnostics as _diagnostics
 from . import auth as _auth
 from .constants import (KINDS, SUBTYPES, KIND_ICONS, MAX_CHARACTERS_PER_PLAYER,
                         CHARACTER_IMPORT_MIN_CHARS as _CHARACTER_IMPORT_MIN, CHARACTER_IMPORT_MAX_CHARS as _CHARACTER_IMPORT_MAX)
+from .deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 BASE_DIR = Path(__file__).parent.parent
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
@@ -2890,7 +2891,7 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
 _MAX_OVERLAY_ITEMS = 500  # per list — a GM-authored battle map, not a data dump
 
 @app.post("/api/maps/{slug}/overlay")
-async def save_map_overlay(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def save_map_overlay(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     # This route previously took no world param and did no existence check at
     # all — any slug, real map or not, would get (and keep) an overlay row.
     jf = _MAPS_DIR / f"{slug}.json"
@@ -2904,7 +2905,7 @@ async def save_map_overlay(slug: str, request: Request, db: Session = Depends(ge
         raise HTTPException(404)
     if not world_can_edit_section(request, world, "maps"):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     custom_markers = body.get("custom_markers", [])
     custom_regions = body.get("custom_regions", [])
     if not isinstance(custom_markers, list) or not isinstance(custom_regions, list):
@@ -3694,7 +3695,7 @@ def _require_schematic_world_access(db: Session, s: Schematic, user) -> None:
 
 
 @app.post("/api/maps/schematic/{slug}/move-token")
-async def schematic_move_own_token(slug: str, request: Request, db: Session = Depends(get_db)):
+def schematic_move_own_token(slug: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Players may move only the one token linked to their own PlayerCharacter.
     Ownership is re-derived from the session user server-side, never trusted
     from the client.
@@ -3722,7 +3723,7 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
     if not user:
         raise HTTPException(403)
     _require_schematic_world_access(db, s, user)
-    body = await request.json()
+    body = parse_json(_body)
     token_id = body.get("token_id")
     x, y = body.get("x"), body.get("y")
     if token_id is None or x is None or y is None:
@@ -3801,7 +3802,7 @@ def _own_pc_for_schematic(db: Session, s: Schematic, user) -> Optional[PlayerCha
 
 
 @app.post("/api/maps/schematic/{slug}/pickup-item")
-async def schematic_pickup_item(slug: str, request: Request, db: Session = Depends(get_db)):
+def schematic_pickup_item(slug: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """A player picks up an entire item-token stack into their own character's
     equipment. Ownership of the calling PlayerCharacter is re-derived from the
     session user server-side, same pattern as move-token. The read-check-write
@@ -3815,7 +3816,7 @@ async def schematic_pickup_item(slug: str, request: Request, db: Session = Depen
     if not user:
         raise HTTPException(403)
     _require_schematic_world_access(db, s, user)
-    body = await request.json()
+    body = parse_json(_body)
     token_id = body.get("token_id")
     if not token_id:
         raise HTTPException(400)
@@ -3851,7 +3852,7 @@ async def schematic_pickup_item(slug: str, request: Request, db: Session = Depen
 
 
 @app.post("/api/maps/schematic/{slug}/buy-item")
-async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(get_db)):
+def schematic_buy_item(slug: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """A player buys one stock row from a merchant token, deducting currency
     and merging the item into their own equipment. Ownership of the calling
     PlayerCharacter is re-derived server-side, same pattern as pickup-item.
@@ -3864,7 +3865,7 @@ async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(
     if not user:
         raise HTTPException(403)
     _require_schematic_world_access(db, s, user)
-    body = await request.json()
+    body = parse_json(_body)
     token_id = body.get("token_id")
     stock_id = body.get("stock_id")
     if not token_id or not stock_id:
@@ -3914,11 +3915,11 @@ async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(
         raise HTTPException(409, "Someone else is completing this action — try again")
 
 @app.post("/maps/schematic/{slug}/grid")
-async def schematic_save_grid(slug: str, request: Request, db: Session = Depends(get_db)):
+def schematic_save_grid(slug: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
-    body = await request.json()
+    body = parse_json(_body)
     grid_type = body.get("grid_type") if body.get("grid_type") in ("none", "hex", "square") else "none"
     config = body.get("config") if isinstance(body.get("config"), dict) else {}
     s.grid_type = grid_type
@@ -4097,10 +4098,10 @@ def schematic_preview_svg(slug: str, request: Request, db: Session = Depends(get
 
 
 @app.post("/maps/schematic/{slug}/elements")
-async def schematic_save_elements(slug: str, request: Request, db: Session = Depends(get_db)):
+def schematic_save_elements(slug: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s: raise HTTPException(404)
-    body = await request.json()
+    body = parse_json(_body)
     elements = body.get("elements", [])
     # Every read path — the editor itself, the player view, move-token,
     # pickup-item, buy-item, pull/push-combat — assumes elements_json decodes
@@ -5326,12 +5327,12 @@ def board_notes(slug: str, request: Request, db: Session = Depends(get_db), acti
     })
 
 @app.post("/boards/{slug}/save")
-async def board_save(slug: str, request: Request, db: Session = Depends(get_db)):
+def board_save(slug: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
     if not b: raise HTTPException(404)
     if not world_can_edit_section(request, db.get(World, b.world_id), "boards"):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     # stash nodes + groups together to avoid schema change
     b.nodes_json = json.dumps({"nodes": body.get("nodes", []), "groups": body.get("groups", [])})
     b.edges_json = json.dumps(body.get("edges", []))
@@ -6743,9 +6744,9 @@ def entity_template_new_form(request: Request, db: Session = Depends(get_db), ac
 
 
 @app.post("/entity-templates/new")
-async def entity_template_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def entity_template_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world = get_active_world(request, db, active_world)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip() or "Unnamed Template"
     desc = str(form.get("description", "")).strip()
     kind = str(form.get("kind", "")).strip() or None
@@ -6786,11 +6787,11 @@ def entity_template_edit_form(tpl_id: int, request: Request, db: Session = Depen
 
 
 @app.post("/entity-templates/{tpl_id}/edit")
-async def entity_template_update(tpl_id: int, request: Request, db: Session = Depends(get_db)):
+def entity_template_update(tpl_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     tpl = db.query(EntityTemplate).filter(EntityTemplate.id == tpl_id).first()
     if not tpl:
         raise HTTPException(404)
-    form = await request.form()
+    form = _form
     if not tpl.is_builtin:
         tpl.name = str(form.get("name", tpl.name)).strip() or tpl.name
         tpl.description = str(form.get("description", "")).strip()
@@ -7045,11 +7046,11 @@ def delete(entity_id: int, request: Request, db: Session = Depends(get_db), acti
 
 
 @app.post("/kind/{kind}/bulk-delete")
-async def bulk_delete_entities(kind: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def bulk_delete_entities(kind: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world = get_active_world(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    form = await request.form()
+    form = _form
     raw_ids = form.getlist("entity_ids")
     ids = []
     for v in raw_ids:
@@ -7095,7 +7096,7 @@ async def bulk_delete_entities(kind: str, request: Request, db: Session = Depend
 
 
 @app.post("/api/entities/bulk-visibility")
-async def bulk_set_visibility(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def bulk_set_visibility(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Set visible_to_players (and, for 'players' mode, the per-player
     allow-list) on a batch of entities at once — the Settings > Visibility
     tab's bulk-apply action. Same visibility semantics as the per-entity
@@ -7103,7 +7104,7 @@ async def bulk_set_visibility(request: Request, db: Session = Depends(get_db), a
     world = get_active_world(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    body = await request.json()
+    body = parse_json(_body)
     ids = []
     for v in body.get("entity_ids") or []:
         try:
@@ -7128,7 +7129,7 @@ async def bulk_set_visibility(request: Request, db: Session = Depends(get_db), a
 
 
 @app.post("/api/entities/bulk-folder")
-async def bulk_set_folder(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def bulk_set_folder(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Move a batch of entities into a folder at once — the entity list's
     bulk-action-bar equivalent of dragging each one over individually.
     Same shape as bulk_set_visibility just above. An empty `folder` moves
@@ -7137,7 +7138,7 @@ async def bulk_set_folder(request: Request, db: Session = Depends(get_db), activ
     world = get_active_world(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    body = await request.json()
+    body = parse_json(_body)
     ids = []
     for v in body.get("entity_ids") or []:
         try:

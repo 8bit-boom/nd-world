@@ -13,16 +13,17 @@ from ..database import get_db
 from ..deps import sanitize_section_access
 from ..models import World
 from ..nav_menus import sanitize_nav_menus
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
 
 @router.post("/worlds/{world_id}/nav-menus/edit")
-async def nav_menus_edit_save(world_id: int, request: Request, db: Session = Depends(get_db)):
+def nav_menus_edit_save(world_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    form = await request.form()
+    form = _form
     w.nav_menus_json = json.dumps(sanitize_nav_menus(str(form.get("nav_menus_json", "[]") or "[]"), w))
     # section_access_json: the per-section Players/Assistants None/Read/
     # Edit matrix, edited from the same Navigation tab form (see

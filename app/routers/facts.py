@@ -16,6 +16,7 @@ from ..deps import get_world_ctx, is_gm, world_can_edit_section, world_can_view_
 from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
 from .sessions import _rag_options_from_body
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -233,10 +234,10 @@ def facts_fragment(request: Request, keys: str = "", db: Session = Depends(get_d
 
 
 @router.post("/facts/new")
-async def fact_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def fact_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     user = getattr(request.state, "user", None)
     next_url = _safe_next(form.get("next"))
     content = str(form.get("content", "")).strip()
@@ -264,7 +265,7 @@ async def fact_create(request: Request, db: Session = Depends(get_db), active_wo
 
 
 @router.post("/facts/{fact_id}/edit")
-async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     # World-scoped like every other fact route (the list only shows the
     # active world's facts, and /facts/new writes into it): without this
     # check a GM posting a bare fact id from another world could edit (or,
@@ -275,7 +276,7 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
     if not fact or not world or fact.world_id != world.id:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     next_url = _safe_next(form.get("next"))
     content = str(form.get("content", "")).strip()
     if content:
@@ -300,15 +301,15 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/facts/{fact_id}/delete")
-async def fact_delete(
-    fact_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+def fact_delete(
+    fact_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form),
 ):
     world, _ = get_world_ctx(request, db, active_world)
     fact = db.get(Fact, fact_id)
     if not fact or not world or fact.world_id != world.id:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     next_url = _safe_next(form.get("next"))
     db.delete(fact)
     # A deletion leaves NO Fact row behind to timestamp, so the per-fact
@@ -539,7 +540,7 @@ def api_facts_last_parse(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/api/facts/bulk")
-async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_facts_bulk(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Bulk-insert facts — the recap-review UI's Confirm & Save action.
 
     Duplicate facts are SKIPPED, not re-inserted: an item whose normalized
@@ -557,7 +558,7 @@ async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active
     just-saved draft for a second round."""
     world, _ = get_world_ctx(request, db, active_world)
     _require_edit_section(request, world)
-    body = await request.json()
+    body = parse_json(_body)
     user = getattr(request.state, "user", None)
     items = body.get("facts")
     if not isinstance(items, list) or not items:
@@ -580,7 +581,7 @@ async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/api/facts/from-job/{job_id}")
-async def api_facts_from_job(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_facts_from_job(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Confirm (or dismiss) the Facts a session_recap job auto-drafted on
     completion (AudioJob.pending_facts_json — see app.audio_jobs.
     _auto_extract_pending_facts) — the review step on the Background Jobs
@@ -602,7 +603,7 @@ async def api_facts_from_job(job_id: int, request: Request, db: Session = Depend
     if not world or job.world_id != world.id:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    body = await request.json()
+    body = parse_json(_body)
     items = body.get("facts")
     if not isinstance(items, list):
         raise HTTPException(400, '"facts" must be a list (possibly empty, to dismiss)')

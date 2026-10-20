@@ -16,6 +16,7 @@ from ..database import get_db
 from ..deps import get_world_ctx, world_can_edit_section
 from ..models import AudioAlbum, AudioClip, ImageAlbum, MediaRenameRun, User, VideoAlbum, VideoClip
 from ..templating import templates, thumb_url
+from ..deps import read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -40,8 +41,13 @@ def _require_edit(request: Request, world, kinds) -> None:
 
 
 async def _json(request: Request) -> dict:
+    return _json_raw(await request.body())
+
+
+def _json_raw(raw: bytes) -> dict:
+    """_json for a plain-def route that got the raw body from deps.read_body."""
     try:
-        data = await request.json()
+        data = json.loads(raw)
     except Exception:
         raise HTTPException(400, "Send a JSON body.")
     if not isinstance(data, dict):
@@ -180,11 +186,11 @@ def media_rename_summary(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/api/media-rename/select")
-async def media_rename_select(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def media_rename_select(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Everything that matches, across the whole library (not one page of it): {kinds, scope: "needs_work" | "all",
     album?} -> {items:[{kind, id|url}], count, capped}. `count` is the real total, `items` is cut at MAX_RUN_ITEMS."""
     world, _ = _ctx(request, db, active_world)
-    body = await _json(request)
+    body = _json_raw(_body)
     kinds = body.get("kinds")
     if not isinstance(kinds, list):
         raise HTTPException(400, "kinds must be a list.")
@@ -320,10 +326,10 @@ async def media_rename_suggest(request: Request, db: Session = Depends(get_db), 
 
 
 @router.post("/api/media-rename/apply")
-async def media_rename_apply(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def media_rename_apply(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Apply reviewed renames: {renames:[{kind, id|url, name}]}. Returns {batch_id, applied, skipped}."""
     world, _ = _ctx(request, db, active_world)
-    body = await _json(request)
+    body = _json_raw(_body)
     renames = body.get("renames")
     if not isinstance(renames, list) or not renames:
         raise HTTPException(400, "Nothing to rename.")
@@ -339,12 +345,12 @@ async def media_rename_apply(request: Request, db: Session = Depends(get_db), ac
 
 
 @router.post("/api/media-rename/undo")
-async def media_rename_undo(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def media_rename_undo(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Put a batch of renames back: {batch_id}. Items renamed again since are left alone and listed."""
     world, _ = _ctx(request, db, active_world)
     if not any(world_can_edit_section(request, world, s) for s in SECTION.values()):
         raise HTTPException(403)
-    body = await _json(request)
+    body = _json_raw(_body)
     batch_id = str(body.get("batch_id") or "")
     if not batch_id:
         raise HTTPException(400, "Say which batch to undo.")

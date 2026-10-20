@@ -11,6 +11,7 @@ remove anyone's plan or slot) is GM / assistant / owner, and a creator manages t
 Times are stored in UTC (naive datetimes, like every DateTime column here) and shown in the viewer's own time zone by the
 browser; the page sends ISO-8601 with an offset.
 """
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -24,6 +25,7 @@ from ..database import get_db
 from ..deps import get_world_ctx, with_world
 from ..models import GameSession, SessionPlan, SessionPlanSlot, SessionPlanVote, User, WorldMembership
 from ..templating import templates
+from ..deps import read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -49,8 +51,13 @@ def _ctx(request: Request, db: Session, active_world):
 
 
 async def _body(request: Request) -> dict:
+    return _body_raw(await request.body())
+
+
+def _body_raw(raw: bytes) -> dict:
+    """_body for a plain-def route that got the raw body from deps.read_body."""
     try:
-        data = await request.json()
+        data = json.loads(raw)
     except Exception:
         raise HTTPException(400, "Send a JSON body.")
     if not isinstance(data, dict):
@@ -259,9 +266,9 @@ def _parse_slots(raw) -> list:
 
 
 @router.post("/api/schedule/plans")
-async def plan_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def plan_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     user, world, _ = _ctx(request, db, active_world)
-    body = await _body(request)
+    body = _body_raw(_body)
     title = _text(body.get("title"), 160)
     if not title:
         raise HTTPException(400, "Give the session a title.")
@@ -282,12 +289,12 @@ async def plan_create(request: Request, db: Session = Depends(get_db), active_wo
 
 
 @router.post("/api/schedule/plans/{plan_id}/edit")
-async def plan_edit(plan_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def plan_edit(plan_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     user, world, is_manager = _ctx(request, db, active_world)
     plan = _plan_or_404(db, world, plan_id)
     if not _can_touch(user, is_manager, plan.created_by_user_id):
         raise HTTPException(403)
-    body = await _body(request)
+    body = _body_raw(_body)
     if "title" in body:
         title = _text(body.get("title"), 160)
         if not title:
@@ -305,12 +312,12 @@ async def plan_edit(plan_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/api/schedule/plans/{plan_id}/slots")
-async def slot_add(plan_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def slot_add(plan_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     user, world, _ = _ctx(request, db, active_world)
     plan = _plan_or_404(db, world, plan_id)
     if plan.status != "open":
         raise HTTPException(400, "This plan is no longer open for new times.")
-    body = await _body(request)
+    body = _body_raw(_body)
     try:
         dt = _parse_time(body.get("starts_at"))
     except (ValueError, TypeError):
@@ -345,11 +352,11 @@ def slot_delete(slot_id: int, request: Request, db: Session = Depends(get_db), a
 
 
 @router.post("/api/schedule/slots/{slot_id}/vote")
-async def slot_vote(slot_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def slot_vote(slot_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     user, world, _ = _ctx(request, db, active_world)
     slot = _slot_or_404(db, world, slot_id)
     plan = db.get(SessionPlan, slot.plan_id)
-    body = await _body(request)
+    body = _body_raw(_body)
     choice = body.get("choice")
     if choice not in CHOICES + ("clear",):
         raise HTTPException(400, "choice must be yes, maybe, no or clear.")
@@ -386,12 +393,12 @@ def _valid_date(value) -> Optional[str]:
 
 
 @router.post("/api/schedule/plans/{plan_id}/confirm")
-async def plan_confirm(plan_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def plan_confirm(plan_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     user, world, is_manager = _ctx(request, db, active_world)
     if not is_manager:
         raise HTTPException(403)
     plan = _plan_or_404(db, world, plan_id)
-    body = await _body(request)
+    body = _body_raw(_body)
     try:
         slot_id = int(body.get("slot_id"))
     except (TypeError, ValueError):

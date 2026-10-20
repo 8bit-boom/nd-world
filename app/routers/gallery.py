@@ -23,6 +23,7 @@ from ..uploads import (
     MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, reassemble_upload_chunks, save_upload_chunk,
     unique_upload_filename,
 )
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -254,14 +255,14 @@ def _delete_one_image(db, world, url, discovered):
 
 
 @router.post("/images/delete-many")
-async def image_delete_many(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def image_delete_many(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Deletes several unused images at once (the All Images page's "Delete selected"). Each one follows the single-image rules; an image that
     is still used (or not found) is skipped and reported, never blocking the rest. Reply: {deleted, skipped: [{url, reason}]}."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    payload = await request.json()
+    payload = parse_json(_body)
     urls = payload.get("urls") if isinstance(payload, dict) else None
     if not isinstance(urls, list) or not urls or len(urls) > 500 or not all(isinstance(u, str) and u for u in urls):
         raise HTTPException(400, "Send up to 500 image urls")
@@ -277,7 +278,7 @@ async def image_delete_many(request: Request, db: Session = Depends(get_db), act
 
 
 @router.post("/images/delete")
-async def image_delete(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def image_delete(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Permanently delete an image file. Only allowed while the image is
     unused (no entity/PC references it) — the common case for something
     sitting in an album that was uploaded but never attached to anything,
@@ -289,7 +290,7 @@ async def image_delete(request: Request, db: Session = Depends(get_db), active_w
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     url = payload.get("url")
@@ -304,7 +305,7 @@ async def image_delete(request: Request, db: Session = Depends(get_db), active_w
 
 
 @router.post("/images/spotlight")
-async def image_spotlight_send(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def image_spotlight_send(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Push an image to every player's screen as a full-screen popup — see
     GET /api/spotlight (main.py) for the player-side poller that picks this
     up, and app/templates/base.html for where it's shown (reuses the
@@ -313,7 +314,7 @@ async def image_spotlight_send(request: Request, db: Session = Depends(get_db), 
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     url = payload.get("url")
@@ -400,12 +401,12 @@ def gallery_browse(
 
 
 @router.post("/images/albums/new")
-async def album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).count()
     if count >= _MAX_ALBUMS_PER_WORLD:
@@ -447,13 +448,13 @@ def album_detail(album_id: int, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/images/albums/{album_id}/rename")
-async def album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
     if name:
         album.name = name
@@ -462,7 +463,7 @@ async def album_rename(album_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.post("/images/albums/{album_id}/move")
-async def album_move(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def album_move(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     """Move an EXISTING album under a new parent (or to top-level, if
     parent_id is blank) — the counterpart to /images/albums/new's
     parent_id, which only lets a NEW album be created as a child. Moving
@@ -474,7 +475,7 @@ async def album_move(album_id: int, request: Request, db: Session = Depends(get_
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    form = await request.form()
+    form = _form
     parent_id_raw = str(form.get("parent_id", "")).strip()
     if not parent_id_raw:
         album.parent_id = None
@@ -508,13 +509,13 @@ def album_delete(album_id: int, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/images/albums/{album_id}/add")
-async def album_add_images(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def album_add_images(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     urls = payload.get("urls")
@@ -530,13 +531,13 @@ async def album_add_images(album_id: int, request: Request, db: Session = Depend
 
 
 @router.post("/images/albums/{album_id}/remove")
-async def album_remove_image(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def album_remove_image(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     # one address ("url") or several ("urls": a bulk "Remove selected from album")

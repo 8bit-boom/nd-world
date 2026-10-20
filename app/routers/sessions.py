@@ -30,6 +30,7 @@ from .. import gallery as _gallery_module
 from .. import session_media as _session_media
 from .session_audio import attached_clips, recap_clip_ids, sessions_with_audio_for_players
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -225,10 +226,10 @@ def session_new_form(request: Request, db: Session = Depends(get_db), active_wor
 
 
 @router.post("/sessions/new")
-async def session_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def session_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     gs = GameSession(
         world_id=world.id if world else 1,
         title=str(form.get("title", "")).strip() or "Untitled Session",
@@ -439,12 +440,12 @@ def session_download_transcript(session_id: int, request: Request, db: Session =
 
 
 @router.post("/sessions/{session_id}/edit")
-async def session_edit(session_id: int, request: Request, db: Session = Depends(get_db)):
+def session_edit(session_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
     _require_edit_section(request, db.get(World, gs.world_id))
-    form = await request.form()
+    form = _form
     gs.title = str(form.get("title", gs.title)).strip() or gs.title
     gs.session_num = int(form.get("session_num") or gs.session_num)
     gs.session_date = str(form.get("session_date", "")).strip() or None
@@ -498,12 +499,12 @@ def session_delete(session_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/api/sessions/{session_id}/prep/toggle")
-async def prep_toggle(session_id: int, request: Request, db: Session = Depends(get_db)):
+def prep_toggle(session_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
     _require_edit_section(request, db.get(World, gs.world_id))
-    body = await request.json()
+    body = parse_json(_body)
     idx = int(body.get("index", -1))
     prep = json.loads(gs.prep_json or "[]")
     if 0 <= idx < len(prep):
@@ -514,12 +515,12 @@ async def prep_toggle(session_id: int, request: Request, db: Session = Depends(g
 
 
 @router.post("/api/sessions/{session_id}/prep/add")
-async def prep_add(session_id: int, request: Request, db: Session = Depends(get_db)):
+def prep_add(session_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
     _require_edit_section(request, db.get(World, gs.world_id))
-    body = await request.json()
+    body = parse_json(_body)
     task = str(body.get("task", "")).strip()
     prep = json.loads(gs.prep_json or "[]")
     if task:
@@ -612,12 +613,12 @@ async def prep_generate(session_id: int, request: Request, db: Session = Depends
 
 
 @router.post("/api/sessions/{session_id}/xp")
-async def session_xp(session_id: int, request: Request, db: Session = Depends(get_db)):
+def session_xp(session_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
     _require_edit_section(request, db.get(World, gs.world_id))
-    body = await request.json()
+    body = parse_json(_body)
     delta = int(body.get("delta", 0))
     pc_ids = body.get("pc_ids")
     if not pc_ids and gs.party:
@@ -656,12 +657,12 @@ async def session_xp(session_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.post("/api/sessions/{session_id}/loot/transfer")
-async def session_loot_transfer(session_id: int, request: Request, db: Session = Depends(get_db)):
+def session_loot_transfer(session_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
     _require_edit_section(request, db.get(World, gs.world_id))
-    body = await request.json()
+    body = parse_json(_body)
     action = body.get("action")
     loot = json.loads(gs.loot_json or "[]")
     if action == "add":

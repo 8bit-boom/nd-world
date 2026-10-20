@@ -28,6 +28,7 @@ from .gallery import _ALLOWED_EXTS as IMAGE_EXTS, _effective_gallery_upload_byte
 from .session_audio import _UPLOADS, _attach as _attach_audio, _require_gm_edit, _store as _store_audio
 from .video import _ALLOWED_EXTS as VIDEO_EXTS, _MAX_CLIPS_PER_WORLD as VIDEO_CLIPS_PER_WORLD
 from .video import _effective_video_bytes, _finish_stored_file, _generate_poster
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -163,12 +164,12 @@ async def media_upload_complete(session_id: int, request: Request, upload_id: st
 # ── picking from the libraries ───────────────────────────────────────────────────────────────────────
 
 @router.post("/api/sessions/{session_id}/media/attach")
-async def media_attach(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def media_attach(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Attach something that is already in this world: {kind: "audio"|"video", id | url} or {kind: "image", url} (a url is the file's
     /uploads/... address, as copied from the library)."""
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     body = body if isinstance(body, dict) else {}
@@ -233,14 +234,14 @@ def _clip_for(db: Session, world, gs, kind: str, ref: str):
 
 
 @router.post("/api/sessions/{session_id}/media/{kind}/{ref}/visibility")
-async def media_visibility(session_id: int, kind: str, ref: str, request: Request, db: Session = Depends(get_db),
-                           active_world: str = Cookie(None)):
+def media_visibility(session_id: int, kind: str, ref: str, request: Request, db: Session = Depends(get_db),
+                           active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Let players see (or not) one attached item - for audio and video the same switch as in their library."""
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     if kind not in ("audio", "video", "image"):
         raise HTTPException(404)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     vis = body.get("visible_to_players") if isinstance(body, dict) else None
@@ -260,15 +261,15 @@ async def media_visibility(session_id: int, kind: str, ref: str, request: Reques
 
 
 @router.post("/api/sessions/{session_id}/media/{kind}/{ref}/rename")
-async def media_rename(session_id: int, kind: str, ref: str, request: Request, db: Session = Depends(get_db),
-                       active_world: str = Cookie(None)):
+def media_rename(session_id: int, kind: str, ref: str, request: Request, db: Session = Depends(get_db),
+                       active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Name an attached item so the Session Log shows that name to players: a picture's caption, or - for audio and video - the clip's own
     name (the same one the library shows). A picture's caption may be emptied; a clip's name may not."""
     world, gs = _require_gm_edit(request, db, session_id, active_world)
     if kind not in ("audio", "video", "image"):
         raise HTTPException(404)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     name = body.get("name") if isinstance(body, dict) else None

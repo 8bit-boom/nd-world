@@ -22,6 +22,7 @@ from ..database import get_db
 from ..deps import CUSTOM_KIND_PREFIX, MAX_CUSTOM_KINDS, get_world_ctx, load_custom_kinds
 from ..models import Entity, World
 from ..templating import templates
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -132,22 +133,22 @@ def kinds_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
 
 
 @router.post("/worlds/{world_id}/kinds/edit")
-async def kinds_edit_save(world_id: int, request: Request, db: Session = Depends(get_db)):
+def kinds_edit_save(world_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    form = await request.form()
+    form = _form
     w.custom_kinds_json = json.dumps(_sanitize_saved_list(str(form.get("custom_kinds_json", "[]") or "[]"), w))
     db.commit()
     return RedirectResponse(f"/worlds/{world_id}/kinds/edit?saved=1", status_code=303)
 
 
 @router.post("/worlds/{world_id}/kinds/new")
-async def kinds_new(world_id: int, request: Request, db: Session = Depends(get_db)):
+def kinds_new(world_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    form = await request.form()
+    form = _form
     entry, error = _validate_new_kind(
         str(form.get("label", "")), str(form.get("icon", "")), str(form.get("subtypes", "")), w,
     )

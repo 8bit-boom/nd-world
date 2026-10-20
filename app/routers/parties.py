@@ -29,6 +29,7 @@ from .characters import (  # cross-router imports, per AGENTS.md
 )
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -336,12 +337,12 @@ def party_vitals(party_id: int, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/parties/{party_id}/edit")
-async def party_edit(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def party_edit(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     party, world = _party_for_write(request, db, party_id, active_world)
     level = _party_edit_level(request, db, world, party)
     if level == "none":
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     party.notes = str(form.get("notes", "")).strip()
     party.goals = str(form.get("goals", "")).strip()
     if level == "full":
@@ -427,7 +428,7 @@ def _loot_index(loot: list, body: dict) -> int:
 
 
 @router.post("/api/parties/{party_id}/loot")
-async def party_loot(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def party_loot(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Edit the shared stash. Actions: add {name, qty?, notes?}, remove, claim /
     unclaim {pc_id}, give {pc_id, qty?} (moves the item — or `qty` of it — into
     that member's equipment). Items are addressed by `lid` (or legacy `index`)."""
@@ -436,7 +437,7 @@ async def party_loot(party_id: int, request: Request, db: Session = Depends(get_
     if level == "none":
         raise HTTPException(403)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
     if not isinstance(body, dict):
@@ -522,11 +523,11 @@ async def party_loot(party_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/api/parties/{party_id}/location")
-async def party_set_location(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def party_set_location(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     party, world = _party_for_write(request, db, party_id, active_world)
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     kind = body.get("kind")
     if kind not in ("map", "schematic"):
         party.location_json = "{}"
@@ -642,8 +643,8 @@ async def party_ai_insights(party_id: int, request: Request,
 # Save round-trip. One POST toggles one membership.
 
 @router.post("/api/parties/{party_id}/members/toggle")
-async def party_member_toggle(party_id: int, request: Request, db: Session = Depends(get_db),
-                              active_world: str = Cookie(None)):
+def party_member_toggle(party_id: int, request: Request, db: Session = Depends(get_db),
+                              active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Toggle one member's presence in the party ({"kind": "pc"|"entity",
     "id": int}) — the vitals strip's quick-add. Full-edit tier (structural
     change, same as the membership form)."""
@@ -654,7 +655,7 @@ async def party_member_toggle(party_id: int, request: Request, db: Session = Dep
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
     kind = str(body.get("kind") or "")
@@ -787,8 +788,8 @@ _MAX_SNAPSHOT_FIELDS_BYTES = 200_000
 
 
 @router.post("/api/parties/{party_id}/rest")
-async def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
-                     active_world: str = Cookie(None)):
+def party_rest(party_id: int, request: Request, db: Session = Depends(get_db),
+                     active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Apply a Rest to every member, each by THEIR system's rules. An N&D sheet
     gets the core-rules Rest (core_rules.md §10): +½ max PP and MP (rounded down),
     all Shock; HP is untouched — that's stims/medical. A character on a built-in
@@ -805,7 +806,7 @@ async def party_rest(party_id: int, request: Request, db: Session = Depends(get_
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         body = {}
     kind = body.get("kind", "long") if isinstance(body, dict) else "long"
@@ -818,8 +819,8 @@ async def party_rest(party_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/api/parties/{party_id}/rest/undo")
-async def party_rest_undo(party_id: int, request: Request, db: Session = Depends(get_db),
-                          active_world: str = Cookie(None)):
+def party_rest_undo(party_id: int, request: Request, db: Session = Depends(get_db),
+                          active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Undo a Rest: the client POSTs back the snapshot /rest returned.
     Only member PCs of THIS party are touched, and only the fields the rest
     changed (PP/MP/Shock for an N&D sheet, the sheet's custom fields for a
@@ -831,7 +832,7 @@ async def party_rest_undo(party_id: int, request: Request, db: Session = Depends
     if _party_edit_level(request, db, world, party) != "full":
         raise HTTPException(403)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
     snapshot = body.get("snapshot") if isinstance(body, dict) else None

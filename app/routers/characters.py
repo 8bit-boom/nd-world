@@ -33,6 +33,7 @@ from ..party_refs import detach_pc, member_ids as _member_ids
 from .. import char_extras
 from .character_hub import delete_character_journal, journey_context
 from pydantic import BaseModel
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -546,11 +547,11 @@ def character_upload_media(file: UploadFile = File(...), db: Session = Depends(g
 
 
 @router.post("/characters/new")
-async def character_create(
+def character_create(
     request: Request,
     portrait: UploadFile = File(None),
     db: Session = Depends(get_db),
-    active_world: str = Cookie(None),
+    active_world: str = Cookie(None), _form=Depends(read_form),
 ):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
@@ -562,7 +563,7 @@ async def character_create(
         if owned >= character_limit(world):
             raise HTTPException(400, _limit_reached_message(owned, character_limit(world)))
         owner_id = user.id
-    form = await request.form()
+    form = _form
     data = dict(form)
     pc = PlayerCharacter(world_id=world.id, owner_user_id=owner_id)
     _apply_form(pc, data)
@@ -614,13 +615,13 @@ def template_new_form(request: Request, db: Session = Depends(get_db), active_wo
 
 
 @router.post("/characters/templates/new")
-async def template_create(
+def template_create(
     request: Request,
     db: Session = Depends(get_db),
-    active_world: str = Cookie(None),
+    active_world: str = Cookie(None), _form=Depends(read_form),
 ):
     world, _ = get_world_ctx(request, db, active_world)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip() or "Unnamed Template"
     desc = str(form.get("description", "")).strip()
     sheet_mode = "custom" if str(form.get("sheet_mode", "nd")) == "custom" else "nd"
@@ -661,15 +662,15 @@ def template_edit_form(tpl_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/characters/templates/{tpl_id}/edit")
-async def template_update(
+def template_update(
     tpl_id: int,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), _form=Depends(read_form),
 ):
     tpl = db.query(SheetTemplate).filter(SheetTemplate.id == tpl_id).first()
     if not tpl:
         raise HTTPException(404)
-    form = await request.form()
+    form = _form
     if not tpl.is_builtin:
         tpl.name = str(form.get("name", tpl.name)).strip() or tpl.name
         tpl.description = str(form.get("description", "")).strip()
@@ -949,19 +950,19 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/characters/{pc_id}/edit")
-async def character_update(
+def character_update(
     pc_id: int,
     request: Request,
     portrait: UploadFile = File(None),
     db: Session = Depends(get_db),
-    active_world: str = Cookie(None),
+    active_world: str = Cookie(None), _form=Depends(read_form),
 ):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     data = dict(form)
     _apply_form(pc, data, partial=True)
     if portrait and portrait.filename:
@@ -1638,8 +1639,13 @@ def character_export_pdf(pc_id: int, request: Request, db: Session = Depends(get
 async def _json_dict(request: Request) -> dict:
     """The JSON body of a quick-edit route, or 400 — never a 500 on a missing,
     malformed or non-object body."""
+    return _json_dict_raw(await request.body())
+
+
+def _json_dict_raw(raw: bytes) -> dict:
+    """_json_dict for a plain-def route that got the raw body from deps.read_body."""
     try:
-        body = await request.json()
+        body = json.loads(raw)
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
     if not isinstance(body, dict):
@@ -1664,8 +1670,8 @@ def _log_num(db, pc, request, op, label, before, after) -> None:
 
 
 @router.post("/api/characters/{pc_id}/hp-async")
-async def character_hp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await _json_dict(request)
+def character_hp_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1703,8 +1709,8 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
 # ── AJAX: Shock ───────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/shock")
-async def character_shock_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await _json_dict(request)
+def character_shock_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1729,8 +1735,8 @@ async def character_shock_async(pc_id: int, request: Request, db: Session = Depe
 # ── AJAX: PP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/pp")
-async def character_pp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await _json_dict(request)
+def character_pp_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1757,8 +1763,8 @@ async def character_pp_async(pc_id: int, request: Request, db: Session = Depends
 # ── AJAX: MP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/mp")
-async def character_mp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await _json_dict(request)
+def character_mp_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1785,14 +1791,14 @@ async def character_mp_async(pc_id: int, request: Request, db: Session = Depends
 # ── AJAX: Conditions ──────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/conditions")
-async def character_conditions_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_conditions_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Persist a character's conditions (Burn, Stunned, …). Body:
     {action: "add"|"remove"|"toggle", name} or {action: "set", conditions:[…]}.
     Labels are cleaned (printable, ≤40 chars), de-duplicated case-insensitively
     and capped at 12 — conditions are free text the party strip and combat
     tracker echo, so they are kept short and plain. Owner-or-GM like every
     other quick-edit route (this prefix is player-reachable, so it self-gates)."""
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1834,12 +1840,12 @@ async def character_conditions_async(pc_id: int, request: Request, db: Session =
 
 
 @router.post("/api/characters/{pc_id}/resource")
-async def character_resource_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_resource_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Quick-adjust ONE resource track (Health, Stamina, Hunger, ...) of a character on a custom sheet system - the
     custom-sheet equivalent of the N&D HP / Shock steppers, so a phone never has to open the edit form for a point of
     damage. Body: {field_id, action: "delta"|"set", value}. Clamped to 0..max (no upper bound when the track has no
     max). Owner-or-GM like every other quick-edit route (this prefix is player-reachable, so it self-gates)."""
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1898,8 +1904,8 @@ def character_vitals(pc_id: int, request: Request, db: Session = Depends(get_db)
 # ── AJAX: XP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/xp")
-async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_db)):
-    body = await _json_dict(request)
+def character_xp(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -1942,12 +1948,12 @@ def character_advance_options(pc_id: int, request: Request, db: Session = Depend
 
 
 @router.post("/api/characters/{pc_id}/advance")
-async def character_advance(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_advance(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Spend XP: {kind: "stat", stat} (new rank x 2), {kind: "feat", id} (Race / Profession rank x 4, Common rank x 3, only Ranks
     unlocked by owning two feats of the one below, only your own race / profession), or {kind: "spent", value} to tell the sheet
     how much XP was already spent before this tool existed. Undoable from the change log."""
     from .. import advance
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -2022,13 +2028,13 @@ async def character_level_up(pc_id: int, request: Request, db: Session = Depends
 
 
 @router.post("/api/characters/{pc_id}/equipment")
-async def character_equipment_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_equipment_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     equipment = json.loads(pc.equipment_json or "[]")
     _before_equipment = pc.equipment_json or "[]"
     action = body.get("action", "add")
@@ -2074,10 +2080,10 @@ async def character_equipment_async(pc_id: int, request: Request, db: Session = 
 
 
 @router.post("/api/characters/{pc_id}/currency")
-async def character_currency_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_currency_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Coin purse: {abbr, action: "delta"|"set", value} on one currency of the character (matched by abbreviation or label,
     case-insensitively). Never below 0. Owner-or-GM like the other quick edits."""
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -2104,9 +2110,9 @@ async def character_currency_async(pc_id: int, request: Request, db: Session = D
 
 
 @router.post("/api/characters/{pc_id}/carry-limit")
-async def character_carry_limit_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_carry_limit_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Set how much the character can carry ({value}; 0 = back to the default of 5 x (STR + BOD))."""
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -2152,12 +2158,12 @@ def character_ability_cards(pc_id: int, request: Request, db: Session = Depends(
 
 
 @router.post("/api/characters/{pc_id}/ability-use")
-async def character_ability_use(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_ability_use(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Use a feat: {index, pp, mp, shock, hp} = what to spend (the suggested cost, adjusted by the player). Shock and Health
     can only be spent down to 0, PP / MP must be on hand. A feat limited to once per Rest / session is marked used until
     a Rest (or "Ready again")."""
     from .. import feat_use
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -2196,10 +2202,10 @@ async def character_ability_use(pc_id: int, request: Request, db: Session = Depe
 
 
 @router.post("/api/characters/{pc_id}/ability-ready")
-async def character_ability_ready(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_ability_ready(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Mark a once-per-Rest / once-per-session feat ready again ({index})."""
     from .. import feat_use
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
@@ -2217,13 +2223,13 @@ async def character_ability_ready(pc_id: int, request: Request, db: Session = De
 
 
 @router.post("/api/characters/{pc_id}/feats")
-async def character_feats_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_feats_async(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     feats = json.loads(pc.feats_json or "[]")
     action = body.get("action", "add")
     if action == "add":
@@ -2357,20 +2363,20 @@ def character_sync_get(pc_id: int, request: Request, db: Session = Depends(get_d
 
 
 @router.put("/api/characters/{pc_id}/sync")
-async def character_sync_put(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_sync_put(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     _apply_sync_json(pc, body)
     db.commit()
     return _pc_to_sync_dict(pc)
 
 
 @router.post("/api/worlds/{world_id}/characters/sync")
-async def character_sync_create(world_id: int, request: Request, db: Session = Depends(get_db)):
+def character_sync_create(world_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     user = _current_user(request)
     if not user:
         raise HTTPException(401)
@@ -2381,7 +2387,7 @@ async def character_sync_create(world_id: int, request: Request, db: Session = D
         owned = len(_own_characters(db, world_id, user.id))
         if owned >= character_limit(world):
             raise HTTPException(400, _limit_reached_message(owned, character_limit(world), sync=True))
-    body = await request.json()
+    body = parse_json(_body)
     pc = PlayerCharacter(world_id=world_id, owner_user_id=user.id, name="Unnamed")
     _apply_sync_json(pc, body)
     db.add(pc)
@@ -2438,7 +2444,7 @@ def _roll_log(db, request, world, pc, notation, breakdown, total, label):
 
 
 @router.post("/api/characters/{pc_id}/roll")
-async def character_roll(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def character_roll(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Roll for a character. Body, one of:
     * {"kind": "stat", "stat": "int", "boost": 0-2, "mode": "normal"|"adv"|"dis"} - Stat + d10 + points spent from the matching
       pool (PP for physical stats, MP for mental); natural 10 = critical, natural 1 = automatic failure.
@@ -2447,7 +2453,7 @@ async def character_roll(pc_id: int, request: Request, db: Session = Depends(get
       successes the GM asked for (0 = none). Owner-or-GM."""
     from .. import pool_roll
     from ..sheet_systems import dice_spec, pool_dice
-    body = await _json_dict(request)
+    body = _json_dict_raw(_body)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)

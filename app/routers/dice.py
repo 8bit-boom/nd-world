@@ -24,6 +24,7 @@ from ..database import get_db
 from ..deps import get_world_ctx, world_can_view_section
 from ..models import DiceRoll
 from ..templating import templates
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -182,13 +183,13 @@ def dice_page(request: Request, db: Session = Depends(get_db), active_world: str
 
 
 @router.post("/dice")
-async def dice_roll_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def dice_roll_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
     if not world_can_view_section(request, world, "dice"):
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     notation = str(form.get("notation", ""))
     try:
         _store_roll(db, request, world, notation)

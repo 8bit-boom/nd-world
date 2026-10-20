@@ -47,6 +47,7 @@ from ..uploads import (
     save_upload_chunk,
     unique_upload_filename,
 )
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -449,7 +450,7 @@ def video_album_detail(album_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.post("/video/settings")
-async def video_settings_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def video_settings_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     """Saves the world's space-saving AV1 conversion preferences (codec
     is fixed — see _convert_video's docstring for why no picker for it —
     only whether conversion runs at all, the resolution cap, and the
@@ -460,7 +461,7 @@ async def video_settings_save(request: Request, db: Session = Depends(get_db), a
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     world.video_convert_enabled = bool(form.get("video_convert_enabled"))
     max_height_raw = str(form.get("video_convert_max_height", "")).strip()
     world.video_convert_max_height = int(max_height_raw) if max_height_raw.isdigit() and int(max_height_raw) > 0 else None
@@ -471,13 +472,13 @@ async def video_settings_save(request: Request, db: Session = Depends(get_db), a
 
 
 @router.post("/video/albums/new")
-async def video_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def video_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(VideoAlbum).filter(VideoAlbum.world_id == world.id).count()
     if count >= _MAX_ALBUMS_PER_WORLD:
@@ -494,14 +495,14 @@ async def video_album_create(request: Request, db: Session = Depends(get_db), ac
 
 
 @router.post("/video/albums/{album_id}/rename")
-async def video_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def video_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
     if name:
         album.name = name
@@ -579,15 +580,15 @@ async def video_upload(
 
 
 @router.post("/video/{clip_id}/attach")
-async def video_attach(clip_id: int, request: Request, db: Session = Depends(get_db),
-                       active_world: str = Cookie(None)):
+def video_attach(clip_id: int, request: Request, db: Session = Depends(get_db),
+                       active_world: str = Cookie(None), _form=Depends(read_form)):
     """Attach this video to a lore entity (empty entity_id detaches). The
     video and the entity must share a world. Entity-edit level (GM/assistant)."""
     clip = db.query(VideoClip).filter(VideoClip.id == clip_id).first()
     if not clip:
         raise HTTPException(404)
     _require_can_edit(request)
-    form = await request.form()
+    form = _form
     raw = str(form.get("entity_id") or "").strip()
     clip.entity_id = _resolve_entity_id(db, clip.world_id, raw) if raw else None
     db.commit()

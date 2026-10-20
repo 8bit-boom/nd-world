@@ -16,6 +16,7 @@ from .. import vault_sync as _vault_sync
 from ..database import get_db
 from ..deps import get_world_ctx
 from ..models import Entity, EntityRelation
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -73,8 +74,8 @@ async def api_knowledge_suggest_relations(
 
 
 @router.post("/api/knowledge/relations/bulk")
-async def api_knowledge_relations_bulk(
-    request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+def api_knowledge_relations_bulk(
+    request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None), _body: bytes = Depends(read_body),
 ):
     """GM-only — the relation-suggestion review panel's Confirm & Save
     action (mirrors /api/facts/bulk). Body {"relations": [{"source_id",
@@ -98,7 +99,7 @@ async def api_knowledge_relations_bulk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    body = await request.json()
+    body = parse_json(_body)
     items = body.get("relations")
     if not isinstance(items, list) or not items:
         raise HTTPException(400, '"relations" must be a non-empty list')

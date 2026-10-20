@@ -48,6 +48,7 @@ from ..pc_stats import pc_maxima
 from ..rendering import strip_gm_only, strip_md
 from .calendar import _default_config, date_label
 from .schedule import next_confirmed, polls_waiting
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -114,8 +115,13 @@ def _party_sessions(db: Session, pc: PlayerCharacter, party_ids: list) -> list:
 
 
 async def _json_body(request: Request) -> dict:
+    return _json_body_raw(await request.body())
+
+
+def _json_body_raw(raw: bytes) -> dict:
+    """_json_body for a plain-def route that got the raw body from deps.read_body."""
     try:
-        body = await request.json()
+        body = json.loads(raw)
     except Exception:
         raise HTTPException(400, "Invalid JSON")
     if not isinstance(body, dict):
@@ -188,7 +194,7 @@ def journey_context(db: Session, request: Request, pc: PlayerCharacter, world) -
 
 
 @router.post("/api/characters/{pc_id}/hub/loot")
-async def hub_loot_claim(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_loot_claim(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Claim / unclaim a party-stash item for the caller's OWN character from the
     Journey tab. Owner-only (a body `pc_id` is ignored — a claim is always for
     the character in the URL). Deliberately not tied to the Parties section
@@ -196,7 +202,7 @@ async def hub_loot_claim(pc_id: int, request: Request, db: Session = Depends(get
     already shows a player their own party's stash. A claim is only a marker;
     handing the item over (give) stays on the party page."""
     user, pc, world = _owned_pc(request, db, pc_id)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     action, lid = body.get("action"), body.get("lid")
     if action not in ("claim", "unclaim"):
         raise HTTPException(400, "action must be claim or unclaim")
@@ -572,7 +578,7 @@ def hub_end_turn(pc_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/characters/{pc_id}/hub/pass-turn")
-async def hub_pass_turn(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_pass_turn(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Fluid initiative: this character has just acted and chooses who goes next - an ally who has not acted yet ({"next": combatant id}),
     or the enemy side ({"next": "gm"}: the GM then names which enemy)."""
     _user, pc, _world = _owned_pc(request, db, pc_id)
@@ -586,7 +592,7 @@ async def hub_pass_turn(pc_id: int, request: Request, db: Session = Depends(get_
     if ts["active_id"] is not None or ts["picker"] != combatants[mine].get("id"):
         raise HTTPException(409, "It is not this character's choice")
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     choice = str(body.get("next") or "") if isinstance(body, dict) else ""
@@ -616,13 +622,13 @@ def _rest_kinds(db: Session, pc: PlayerCharacter) -> list:
 
 
 @router.post("/api/characters/{pc_id}/hub/rest")
-async def hub_rest(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_rest(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Take a Rest on the character's own system's rules (what the party Rest does for everyone, for one character):
     N&D = +half PP/MP and all Shock; a custom system = its Rest rules. Returns the snapshot for one-tap Undo."""
     from .parties import apply_pc_rest
     _user, pc, _world = _owned_pc(request, db, pc_id)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         body = {}
     kind = body.get("kind", "long") if isinstance(body, dict) else "long"
@@ -640,12 +646,12 @@ async def hub_rest(pc_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/characters/{pc_id}/hub/rest/undo")
-async def hub_rest_undo(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_rest_undo(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Undo that Rest: the client posts back the snapshot /hub/rest returned (only for this character)."""
     from .parties import restore_pc_snapshot
     _user, pc, _world = _owned_pc(request, db, pc_id)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
     snap = body.get("snapshot") if isinstance(body, dict) else None
@@ -830,12 +836,12 @@ def hub_keepsakes(pc_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/characters/{pc_id}/hub/keepsakes")
-async def hub_keepsake_add(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_keepsake_add(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Keep something under a name and a short description. Body: {name, description?, source: {type: handout|note|session|raw, ...}}.
     The owner keeps what they were shown; the GM may keep it for them (and add a raw file / text)."""
     from ..models import CharacterKeepsake
     user, pc, world, is_owner = _hub_pc(request, db, pc_id)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     kind, url, text, default_name = _resolve_keepsake_source(db, pc, world, user, is_owner, body.get("source"))
     name = _clean_keepsake_text(body.get("name"), 120) or _clean_keepsake_text(default_name, 120)
     if not name:
@@ -890,11 +896,11 @@ def hub_keepsake_upload(pc_id: int, request: Request, file: UploadFile = File(..
 
 
 @router.post("/api/characters/{pc_id}/hub/keepsakes/{kid}")
-async def hub_keepsake_edit(pc_id: int, kid: int, request: Request, db: Session = Depends(get_db)):
+def hub_keepsake_edit(pc_id: int, kid: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Rename a kept thing / change its description. Body: {name?, description?}."""
     _user, pc, _world, _is_owner = _hub_pc(request, db, pc_id)
     row = _keepsake_of(db, pc, kid)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     if "name" in body:
         name = _clean_keepsake_text(body.get("name"), 120)
         if not name:
@@ -1037,10 +1043,10 @@ def hub_places(pc_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/characters/{pc_id}/hub/pins")
-async def hub_pin_toggle(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_pin_toggle(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Pin or unpin one page ({id}): at most PINS_MAX, only pages that are open to players. Owner only."""
     _user, pc, world = _owned_pc(request, db, pc_id)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     page = str(body.get("id") or "")
     valid = {row["id"] for _g, row in _place_rows(world)}
     pins = [i for i in (char_extras.prefs(db, pc.id).get("pins") or []) if i in valid]
@@ -1108,10 +1114,10 @@ def hub_companions(pc_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/characters/{pc_id}/hub/companions")
-async def hub_companion_add(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_companion_add(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     from ..models import CharacterCompanion
     _user, pc, world = _owned_pc(request, db, pc_id)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     if db.query(CharacterCompanion).filter(CharacterCompanion.character_id == pc.id).count() >= COMPANION_MAX:
         raise HTTPException(400, f"At most {COMPANION_MAX} companions per character")
     c = CharacterCompanion(world_id=world.id, character_id=pc.id, name="x")
@@ -1125,13 +1131,13 @@ async def hub_companion_add(pc_id: int, request: Request, db: Session = Depends(
 
 
 @router.patch("/api/characters/{pc_id}/hub/companions/{cid}")
-async def hub_companion_edit(pc_id: int, cid: int, request: Request, db: Session = Depends(get_db)):
+def hub_companion_edit(pc_id: int, cid: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     from ..models import CharacterCompanion
     _user, pc, _world = _owned_pc(request, db, pc_id)
     c = db.get(CharacterCompanion, cid)
     if not c or c.character_id != pc.id:
         raise HTTPException(404)
-    _apply_companion(c, await _json_body(request))
+    _apply_companion(c, _json_body_raw(_body))
     db.commit()
     return {"companions": _companions(db, pc)}
 
@@ -1183,11 +1189,11 @@ def _owned_entry(db: Session, pc: PlayerCharacter, entry_id: int) -> CharacterJo
 
 
 @router.post("/api/characters/{pc_id}/hub/entries")
-async def hub_entry_create(pc_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_entry_create(pc_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Create a journal entry or a goal for this character (owner only).
     Body: {kind: "journal"|"goal", title, body, status?(goal), session_id?(journal)}."""
     user, pc, world = _owned_pc(request, db, pc_id)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     kind = body.get("kind", "journal")
     if kind not in _KINDS:
         raise HTTPException(400, "kind must be 'journal' or 'goal'")
@@ -1215,12 +1221,12 @@ async def hub_entry_create(pc_id: int, request: Request, db: Session = Depends(g
 
 
 @router.post("/api/characters/{pc_id}/hub/entries/{entry_id}")
-async def hub_entry_update(pc_id: int, entry_id: int, request: Request, db: Session = Depends(get_db)):
+def hub_entry_update(pc_id: int, entry_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Edit a journal entry or goal (owner only). Only the fields present in
     the body change; kind can't change."""
     user, pc, world = _owned_pc(request, db, pc_id)
     entry = _owned_entry(db, pc, entry_id)
-    body = await _json_body(request)
+    body = _json_body_raw(_body)
     title = _clean_text(body, "title", _MAX_TITLE)
     text = _clean_text(body, "body", _MAX_BODY)
     new_title = entry.title if title is None else title

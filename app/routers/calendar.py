@@ -17,6 +17,7 @@ from ..imaging import convert_image
 from ..models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, World, WorldCalendar
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -672,7 +673,7 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/calendar/config")
-async def calendar_config_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def calendar_config_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -680,7 +681,7 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
         raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
-    form = await request.form()
+    form = _form
     config = json.loads(cal.config_json or "{}") or _default_config()
     config["era_name"] = _cc.clean_era_name(form.get("era_name"))
     config["current_day"] = max(1, _safe_int(form.get("current_day"), 1))
@@ -725,14 +726,14 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
 
 
 @router.post("/api/calendar/events")
-async def calendar_event_add(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def calendar_event_add(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     if not world_can_edit_section(request, world, "calendar"):
         raise HTTPException(403)
     world_id = world.id
-    body = await request.json()
+    body = parse_json(_body)
     # A plain player adding under their own "calendar: edit" grant owns the
     # row (see CalendarEvent.created_by_user_id) and may only ever delete
     # this one going forward — a GM or assistant adding one leaves it
@@ -774,7 +775,7 @@ def calendar_event_delete(
 
 
 @router.post("/api/calendar/advance")
-async def calendar_advance(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def calendar_advance(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -782,7 +783,7 @@ async def calendar_advance(request: Request, db: Session = Depends(get_db), acti
         raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
-    body = await request.json()
+    body = parse_json(_body)
     delta = _safe_int(body.get("days"), 1)
     config = json.loads(cal.config_json or "{}") or _default_config()
     config["current_day"] = _clamp_day(_months_of(config), _safe_int(config.get("current_day"), 1) + delta)
@@ -793,7 +794,7 @@ async def calendar_advance(request: Request, db: Session = Depends(get_db), acti
 
 
 @router.post("/api/calendar/set-date")
-async def calendar_set_date(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def calendar_set_date(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Set the campaign's current day directly from a (year, month, day-of-
     month) triple instead of an absolute day count — the friendly
     counterpart to /api/calendar/advance's relative move. Nobody can hold
@@ -811,7 +812,7 @@ async def calendar_set_date(request: Request, db: Session = Depends(get_db), act
         raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
-    body = await request.json()
+    body = parse_json(_body)
     config = json.loads(cal.config_json or "{}") or _default_config()
     months = _months_of(config)
     year = max(1, min(MAX_YEAR, _safe_int(body.get("year"), 1)))

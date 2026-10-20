@@ -29,6 +29,7 @@ from ..deps import get_world_ctx
 from ..models import CharacterSheet, PageDoc, PlayerCharacter, User
 from ..templating import templates
 from .pages import _UPLOADS_DIR, _doc_or_404
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -195,14 +196,14 @@ def character_sheets_list(request: Request, db: Session = Depends(get_db), activ
 
 
 @router.post("/pages/sheets/new")
-async def character_sheets_new(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def character_sheets_new(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     template_id = str(form.get("template_id", "")).strip()
     if not template_id.isdigit():
         raise HTTPException(400, "Missing template")
@@ -267,12 +268,12 @@ def character_sheet_render(sheet_id: int, request: Request, db: Session = Depend
 
 
 @router.post("/pages/sheets/{sheet_id}/save")
-async def character_sheet_save(sheet_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def character_sheet_save(sheet_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     sheet = _sheet_or_404(db, world.id, sheet_id, request)
-    body = await request.json()
+    body = parse_json(_body)
     data = body.get("data")
     if not isinstance(data, dict):
         raise HTTPException(400, '"data" must be an object')
@@ -285,12 +286,12 @@ async def character_sheet_save(sheet_id: int, request: Request, db: Session = De
 
 
 @router.post("/pages/sheets/{sheet_id}/edit")
-async def character_sheet_update(sheet_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def character_sheet_update(sheet_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     sheet = _sheet_or_404(db, world.id, sheet_id, request)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_NAME]
     if name:
         sheet.name = name

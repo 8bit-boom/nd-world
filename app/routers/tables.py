@@ -12,6 +12,7 @@ from ..database import get_db
 from ..deps import can_edit_content, get_world_ctx, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import RandomTable, World
 from ..templating import templates
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -75,11 +76,11 @@ def table_new_form(request: Request, db: Session = Depends(get_db), active_world
 
 
 @router.post("/tables/new")
-async def table_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def table_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world_can_edit_section(request, world, "tables"):
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip() or "Unnamed Table"
     category = str(form.get("category", "")).strip() or "general"
     description = str(form.get("description", "")).strip()
@@ -114,13 +115,13 @@ def table_edit_form(table_id: int, request: Request, db: Session = Depends(get_d
 
 
 @router.post("/tables/{table_id}/edit")
-async def table_update(table_id: int, request: Request, db: Session = Depends(get_db)):
+def table_update(table_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     tbl = db.query(RandomTable).filter(RandomTable.id == table_id).first()
     if not tbl:
         raise HTTPException(404)
     if not _can_edit_table_row(request, db, tbl):
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     if not tbl.is_builtin:
         tbl.name = str(form.get("name", tbl.name)).strip() or tbl.name
         tbl.category = str(form.get("category", "")).strip() or "general"

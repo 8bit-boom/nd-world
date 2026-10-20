@@ -25,6 +25,7 @@ from ..imaging import convert_image
 from ..models import Entity, GameSession, InvestBoard, Quest, Schematic, World
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -187,15 +188,15 @@ def world_home_edit_form(world_id: int, request: Request, db: Session = Depends(
 
 
 @router.post("/worlds/{world_id}/home/edit")
-async def world_home_edit_post(
+def world_home_edit_post(
     world_id: int, request: Request,
     home_background_file: UploadFile = File(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), _form=Depends(read_form),
 ):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    form = await request.form()
+    form = _form
     world_kinds = deps.effective_kinds(w)[0]
     w.home_welcome_md = str(form.get("home_welcome_md", "")).strip() or None
     w.home_sections_json = json.dumps(_sanitize_sections(
@@ -229,7 +230,7 @@ async def world_home_edit_post(
 
 
 @router.post("/api/worlds/{world_id}/home/quick-link")
-async def world_home_quick_link(world_id: int, request: Request, db: Session = Depends(get_db)):
+def world_home_quick_link(world_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Append one link to a home-page section without the full edit-form
     round trip — the drag-a-nav-tab-onto-the-home-page interaction
     (app/templates/base.html's dragstart + index.html's drop handlers)
@@ -240,7 +241,7 @@ async def world_home_quick_link(world_id: int, request: Request, db: Session = D
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     world_kinds = deps.effective_kinds(w)[0]
@@ -268,7 +269,7 @@ async def world_home_quick_link(world_id: int, request: Request, db: Session = D
 
 
 @router.post("/api/worlds/{world_id}/home/pinned-tile")
-async def world_home_pinned_tile(world_id: int, request: Request, db: Session = Depends(get_db)):
+def world_home_pinned_tile(world_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Append one tile to the home page's stat-tile dashboard — the
     drag-a-nav-tab-onto-the-dashboard interaction (index.html) posts here,
     same payload shape and dragstart source as world_home_quick_link above,
@@ -277,7 +278,7 @@ async def world_home_pinned_tile(world_id: int, request: Request, db: Session = 
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     world_kinds = deps.effective_kinds(w)[0]
@@ -300,7 +301,7 @@ async def world_home_pinned_tile(world_id: int, request: Request, db: Session = 
 
 
 @router.post("/api/worlds/{world_id}/home/pinned-tile/remove")
-async def world_home_pinned_tile_remove(world_id: int, request: Request, db: Session = Depends(get_db)):
+def world_home_pinned_tile_remove(world_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Removes one tile from the home page's pinned dashboard by its
     position in the saved list — the ✕ button rendered directly on each
     pinned tile in index.html (GM view only) posts here, so deleting a
@@ -310,7 +311,7 @@ async def world_home_pinned_tile_remove(world_id: int, request: Request, db: Ses
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     index = payload.get("index")
@@ -327,7 +328,7 @@ async def world_home_pinned_tile_remove(world_id: int, request: Request, db: Ses
 
 
 @router.post("/api/worlds/{world_id}/home/hide-kind")
-async def world_home_hide_kind(world_id: int, request: Request, db: Session = Depends(get_db)):
+def world_home_hide_kind(world_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     """Hides one built-in/custom kind's tile from the home page's default
     stat-tile dashboard — the hover ✕ on each tile (index.html, GM view
     only) posts here. Idempotent: hiding an already-hidden kind is a no-op,
@@ -336,7 +337,7 @@ async def world_home_hide_kind(world_id: int, request: Request, db: Session = De
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    payload = await request.json()
+    payload = parse_json(_body)
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
     kind = payload.get("kind")

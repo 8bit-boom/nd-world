@@ -14,6 +14,7 @@ from ..database import get_db
 from ..deps import get_world_ctx, world_can_edit_section
 from ..models import MapProp, Schematic
 from ..uploads import unique_upload_filename
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -132,13 +133,13 @@ async def props_upload(request: Request, files: list[UploadFile] = File(...), ce
 
 
 @router.post("/api/maps/props/{prop_id}/update")
-async def props_update(prop_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def props_update(prop_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world = _world_for_maps(request, db, active_world)
     p = db.get(MapProp, prop_id)
     if not p or p.world_id != world.id:
         raise HTTPException(404)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         body = {}
     if not isinstance(body, dict):

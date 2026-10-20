@@ -22,6 +22,7 @@ from ..templating import templates
 from ..uploads import BULK_IMAGE_MAX_FILES
 from .characters import _apply_form, _current_user
 from .tables import _slugify as _table_slugify
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -934,9 +935,9 @@ def import_page(request: Request, db: Session = Depends(get_db), active_world: s
 
 
 @router.post("/api/import/detect")
-async def import_detect(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def import_detect(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
-    body = await request.json()
+    body = parse_json(_body)
     raw = body.get("json_text", "")
     try:
         data = json.loads(raw)
@@ -946,12 +947,12 @@ async def import_detect(request: Request, db: Session = Depends(get_db), active_
 
 
 @router.post("/api/import/execute")
-async def import_execute(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def import_execute(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
     _require_edit_section(request, world)
-    body = await request.json()
+    body = parse_json(_body)
     raw = body.get("json_text", "")
     try:
         data = json.loads(raw)
@@ -985,7 +986,7 @@ async def import_execute(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/api/import/convert-images")
-async def api_convert_images(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_convert_images(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Retroactively re-encode every image already in the active world to a
     single chosen format/quality — see convert_world_images above. GM-only:
     enforced by main.py's auth_gate middleware, same as every other write
@@ -993,7 +994,7 @@ async def api_convert_images(request: Request, db: Session = Depends(get_db), ac
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    body = await request.json()
+    body = parse_json(_body)
     target_format = body.get("format")
     if target_format not in CONVERT_TARGET_FORMATS:
         raise HTTPException(400, f"format must be one of: {', '.join(sorted(CONVERT_TARGET_FORMATS))}")

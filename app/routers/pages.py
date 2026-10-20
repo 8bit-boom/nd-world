@@ -37,6 +37,7 @@ from ..uploads import (
     save_upload_chunk,
     unique_upload_filename,
 )
+from ..deps import read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -254,13 +255,13 @@ def pages_download(doc_id: int, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/pages/albums/new")
-async def pages_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def pages_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(PageAlbum).filter(PageAlbum.world_id == world.id).count()
     if count >= _MAX_ALBUMS_PER_WORLD:
@@ -277,14 +278,14 @@ async def pages_album_create(request: Request, db: Session = Depends(get_db), ac
 
 
 @router.post("/pages/albums/{album_id}/rename")
-async def pages_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def pages_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
-    form = await request.form()
+    form = _form
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
     if name:
         album.name = name

@@ -18,6 +18,7 @@ from ..database import SessionLocal, get_db
 from ..deps import get_world_ctx, is_gm, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import Entity, Fact, GameSession, Party, Quest, World
 from ..templating import templates
+from ..deps import parse_json, read_body, read_form  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -129,11 +130,11 @@ def quest_new_form(request: Request, db: Session = Depends(get_db), active_world
 
 
 @router.post("/quests/new")
-async def quest_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def quest_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _form=Depends(read_form)):
     world, _ = get_world_ctx(request, db, active_world)
     if not world or not world_can_edit_section(request, world, "quests"):
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     # A plain player creating under their own "quests: edit" grant owns the
     # row (see Quest.created_by_user_id) and may only ever edit/delete this
     # one going forward — a GM or assistant creating one leaves it
@@ -193,14 +194,14 @@ def quest_detail(quest_id: int, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/quests/{quest_id}/edit")
-async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_db)):
+def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_db), _form=Depends(read_form)):
     quest = db.query(Quest).filter(Quest.id == quest_id).first()
     if not quest:
         raise HTTPException(404)
     world = db.get(World, quest.world_id)
     if not world_can_edit_row(request, world, "quests", quest.created_by_user_id):
         raise HTTPException(403)
-    form = await request.form()
+    form = _form
     quest.title = str(form.get("title", quest.title)).strip() or quest.title
     quest.status = str(form.get("status", "active")).strip() or "active"
     quest.category = str(form.get("category", "main")).strip() or "main"
@@ -221,14 +222,14 @@ async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/api/quests/{quest_id}/status")
-async def quest_status(quest_id: int, request: Request, db: Session = Depends(get_db)):
+def quest_status(quest_id: int, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     quest = db.query(Quest).filter(Quest.id == quest_id).first()
     if not quest:
         raise HTTPException(404)
     world = db.get(World, quest.world_id)
     if not world_can_edit_row(request, world, "quests", quest.created_by_user_id):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     status = str(body.get("status", "")).strip()
     if status:
         quest.status = status
@@ -292,7 +293,7 @@ def _session_quest_material(db: Session, gs: GameSession, char_budget: int = 600
 
 
 @router.post("/api/quests/apply")
-async def quests_apply_suggestions(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def quests_apply_suggestions(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Apply reviewed AI suggestions: create new quests and apply quest
     updates. GM-only. Body: {new_quests: [...], quest_updates: [...], owner_user_id?} —
     the same shapes /api/quests/suggest returned."""
@@ -301,7 +302,7 @@ async def quests_apply_suggestions(request: Request, db: Session = Depends(get_d
         raise HTTPException(400, "No active world")
     if not is_gm(request):
         raise HTTPException(403)
-    body = await request.json()
+    body = parse_json(_body)
     user = getattr(request.state, "user", None)
 
     created = 0

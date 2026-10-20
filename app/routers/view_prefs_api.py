@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .. import site_layout, view_prefs
 from ..database import get_db
 from ..models import UserViewPref
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -38,12 +39,12 @@ def view_prefs_get(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/api/view-prefs/{section}")
-async def view_prefs_save(section: str, request: Request, db: Session = Depends(get_db)):
+def view_prefs_save(section: str, request: Request, db: Session = Depends(get_db), _body: bytes = Depends(read_body)):
     user = _user(request)
     if section not in view_prefs.SECTIONS:
         raise HTTPException(404, "Unknown section")
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except ValueError:
         raise HTTPException(400, "Invalid JSON")
     cleaned = view_prefs.clean(section, body)

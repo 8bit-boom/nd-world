@@ -33,6 +33,7 @@ from ..rendering import render_md, strip_gm_only
 from ..rules_render import strip_gm_directives
 from ..schematic_payload import BG_COLORS, player_scene
 from ..templating import templates
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -290,12 +291,12 @@ async def display_stream(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/api/display/show")
-async def display_show(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def display_show(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Send an image / text / entity to the screen. Body: {"kind": "image", "url", "title"?, "caption"?} |
     {"kind": "text", "text", "title"?} | {"kind": "entity", "entity_id", "mode"?: "image"|"text"}."""
     world, _ = _gm_world(request, db, active_world)
     try:
-        body = await request.json()
+        body = parse_json(_body)
     except Exception:
         raise HTTPException(400, "Invalid JSON")
     if not isinstance(body, dict):

@@ -554,3 +554,21 @@ def filter_visible_entities(q, request: Request):
         else:
             q = q.filter(Entity.visible_to_players.isnot(False))
     return q
+
+
+# ── request bodies for routes that run as plain `def` (docs/LEFTOVERS_PLAN.md, step 4) ──────────────────────────────────────────────────
+# A route that only awaited request.form() / request.json() and then did its database work ran that work ON the event loop, so every other
+# request - live streams, cheap API calls - waited behind it. Such routes are plain `def` now: these async dependencies read the body on the
+# event loop first, then FastAPI runs the route itself in its worker threads. parse_json is the same json.loads Starlette's request.json()
+# uses, called where the route used to await it, so a malformed body still fails at the same point (after the route's own permission checks).
+
+async def read_form(request: Request):
+    return await request.form()
+
+
+async def read_body(request: Request) -> bytes:
+    return await request.body()
+
+
+def parse_json(raw: bytes):
+    return json.loads(raw)

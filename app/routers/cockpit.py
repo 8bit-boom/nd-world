@@ -38,6 +38,7 @@ from ..party_refs import member_ids
 from ..pc_stats import pc_maxima
 from .parties import _member_vitals, _pc_levelup_ready
 from ..templating import templates
+from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
 
@@ -288,8 +289,8 @@ def cockpit_get_workspace(request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/api/cockpit/workspace")
-async def cockpit_save_workspace(request: Request, db: Session = Depends(get_db),
-                                 active_world: str = Cookie(None)):
+def cockpit_save_workspace(request: Request, db: Session = Depends(get_db),
+                                 active_world: str = Cookie(None), _body: bytes = Depends(read_body)):
     """Save (and switch/replace) the workspace: current panels plus named
     presets. Sanitized and size-capped — this is GM-authored UI state, not
     free-form storage."""
@@ -299,7 +300,7 @@ async def cockpit_save_workspace(request: Request, db: Session = Depends(get_db)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    body = await request.json()
+    body = parse_json(_body)
     try:
         ws = _sanitize_workspace(body)
     except ValueError as exc:
