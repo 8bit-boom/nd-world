@@ -9,7 +9,7 @@ PRODID = "-//nd-world//Session schedule//EN"
 def escape_text(value: Optional[str]) -> str:
     """A TEXT value: backslash, semicolon and comma escaped, line breaks as \\n."""
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    return text.replace("\\", "\\\\").replace(";", "\;").replace(",", "\\,").replace("\n", "\\n")
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
 def fold_line(line: str) -> str:

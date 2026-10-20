@@ -70,6 +70,25 @@ def test_ics_text_escaping():
     assert ical.escape_text(None) == ""
 
 
+def test_ics_summary_escapes_semicolon_comma_backslash_and_newline_per_rfc5545():
+    # RFC 5545 section 3.3.11: TEXT escapes ";" -> "\;", "," -> "\,", "\" -> "\\", a line break -> "\n".
+    text = ical.build_calendar([{
+        "uid": "u@nd-world", "start": datetime(2031, 5, 4, 18, 30), "stamp": datetime(2031, 1, 1),
+        "summary": "Heist; part 2, the vault\\door\nbring dice",
+    }])
+    assert "SUMMARY:Heist\\; part 2\\, the vault\\\\door\\nbring dice\r\n" in text
+
+
+def test_ical_module_compiles_without_invalid_escape_warnings():
+    # "\;" in a plain string is an invalid escape: a SyntaxWarning on Python 3.12+, an error in a future Python.
+    import pathlib
+    import warnings
+    source = pathlib.Path(ical.__file__).read_text(encoding="utf-8")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        compile(source, ical.__file__, "exec")
+
+
 def test_ics_lines_fold_at_75_octets_without_splitting_a_character():
     line = "DESCRIPTION:" + "é" * 100                       # two bytes each
     folded = ical.fold_line(line)
