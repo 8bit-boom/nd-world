@@ -17,6 +17,8 @@ all of it is `ND_RUST_ROUTES=` or `ND_GATEWAY=0`.
 |---|---|
 | `GET /dice` (`dice.html` in `base.html`) | the first signed-in page; switched on with `pages` in `ND_RUST_ROUTES` (opt-in). Built from the layout context (below) plus the world's last 50 rolls. Same HTML as Python for a GM, a player and an assistant, with a custom kind, custom section access, a theme, a saved dice layout, `?embed=1`, `?error=`/`?n=`, `?w=` and `?q=` (`tests/test_gateway_golden.py`). 84 -> 237 pages/s, p50 165 -> 58 ms. |
 | `/chronicler`, `/background-jobs`, `/tools/bulk-edit`, `/system`, `/boards` | batch 2: the layout plus a section check and at most one list - one row each in `SIMPLE` (`rust/nd-gateway/src/pages.rs`); same HTML or Python's refusal for three roles |
+| `GET /kind/<kind>` (`entities/list.html`, `_card.html`) | batch 3: the entity lists - folders and parent folders, stat columns (`parse_stats`), visibility (hidden / shared entities), search, grid / table views and paging, thumbnails. Same HTML for a GM and two players over 17 URL variants. 69 -> 247 pages/s on a 55-entity folder |
+| `/androidapp` | batch 3 |
 | `GET /login` (`auth/login.html`) | no database: the session cookie is read (signed in = 303 to `next`), `next` is clamped like `auth.safe_next_url`, the form is rendered. The POST (rate limiter, passwords, 2FA) stays in Python. |
 
 ## Differences between MiniJinja and Jinja2 that the work found (and how each is handled)
@@ -80,3 +82,7 @@ difference allowed for; `tests/test_rust_layout.py` checks that the app's own ta
 render exactly like Python's wherever the two markdown libraries agree.
 
 Python dates in templates: database DATETIME columns reach templates as objects with Python's `strftime`, `isoformat`, `date()` and `str()`.
+
+Batch 3 also ported the card helpers (`body_summary`, `entry_text`, `parse_stats` - checked against Python on 7,500 random and real bodies), Jinja2's
+`truncate`, `thumb` (a bundled or map picture whose thumbnail Python would have to queue leaves the page to Python), `datetime.timestamp()`, and
+the context processor's world-specific `kinds` / `kind_icons` / `subtypes`.

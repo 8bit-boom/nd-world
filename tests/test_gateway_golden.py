@@ -343,7 +343,7 @@ def test_the_dice_page_the_gateway_builds_is_pythons_page(client, seed):
             assert b.headers.get("x-nd-served-by") == "gateway", (email, path, "Python built it - the gateway deferred")
 
 
-SIMPLE_PAGES = ["/chronicler", "/background-jobs", "/tools/bulk-edit", "/system", "/boards"]
+SIMPLE_PAGES = ["/chronicler", "/background-jobs", "/tools/bulk-edit", "/system", "/boards", "/androidapp"]
 
 
 def test_the_simple_pages_the_gateway_builds_are_pythons_pages(client, seed):
@@ -378,3 +378,50 @@ def test_the_simple_pages_the_gateway_builds_are_pythons_pages(client, seed):
                 raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:40]))
             served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 6, served          # the rest are refusals, which Python answers
+
+
+def test_entity_lists_the_gateway_builds_are_pythons(client, seed):
+    """/kind/<kind>: folders, parent folders, stat columns, hidden and shared entities, search, views and paging - for a GM and two players."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, entity_player_access
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        add = lambda **kw: db.add(Entity(world_id=w, **kw))
+        add(kind="item", name="Laser Rifle", folder="Weapons/Rifles", body="## Attributes\n* **Damage**: 3d6\n* **Rarity**: Rare\n* **Cost**: *900*")
+        add(kind="item", name="Knife", folder="Weapons", body="## Attributes\n* **Damage**: 1d4\n\\*\\*Armor\\*\\* = 0", summary="A <sharp> knife")
+        add(kind="item", name="Secret Gun", folder="Weapons", visible_to_players=False, body="## Attributes\n* **Damage**: 9d9")
+        add(kind="item", name="Shared Gun", folder="Weapons/Pistols", visible_to_players=False, tags="loud, rare")
+        add(kind="item", name="Loose thing", body="Some text\n\n## Entry\nAn *odd* [thing](/x).")
+        add(kind="feat", name="Iron Will", folder="Race Feats/Rank 2", body="## Entry\nYou resist.")
+        add(kind="feat", name="Quick", folder="Origin Feats", body="## Attributes\n* **Effect**: fast")
+        for i in range(55):
+            add(kind="note", name=f"Note {i:02d}", folder="Archive", body=f"* **Damage**: {i}")
+        db.flush()
+        shared = db.query(Entity).filter(Entity.name == "Shared Gun").first()
+        db.execute(entity_player_access.insert().values(entity_id=shared.id, user_id=seed.player_a.id))
+        db.commit()
+    finally:
+        db.close()
+    paths = ["/kind/item", "/kind/item?folder=Weapons", "/kind/item?folder=Weapons/Rifles", "/kind/item?folder=", "/kind/item?q=gun",
+             "/kind/item?q=GUN&folder=Weapons", "/kind/item?view=table", "/kind/item?folder=Weapons&view=grid", "/kind/feat?folder=Race%20Feats",
+             "/kind/feat?folder=Race%20Feats/Rank%202", "/kind/feat?folder=Origin%20Feats", "/kind/note?folder=Archive", "/kind/note?folder=Archive&page=2",
+             "/kind/note?folder=Archive&page=99", "/kind/nothing", "/kind/item?q=%25", "/kind/item?page=x"]
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path in paths:
+            a, b = d.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
+            assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location")), (email, path, a.status_code, b.status_code)
+            if a.status_code != 200 or "text/html" not in a.headers.get("content-type", ""):
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:40]))
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 30, served

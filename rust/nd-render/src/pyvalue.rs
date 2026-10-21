@@ -108,6 +108,12 @@ impl Object for PyDateTime {
         match name {
             "strftime" => Ok(Value::from(self.strftime(args.first().and_then(|a| a.as_str()).unwrap_or(""))?)),
             "isoformat" => Ok(Value::from(self.isoformat())),
+            // a naive datetime read as UTC (the image runs in UTC; Python would use the container's local time)
+            "timestamp" => {
+                let days = days_from_civil(self.y, self.mo as i64, self.d as i64);
+                let secs = days * 86400 + (self.h * 3600 + self.mi * 60 + self.s) as i64;
+                Ok(Value::from(secs as f64 + self.us as f64 / 1e6))
+            }
             "date" => Ok(Value::from_object(PyDateTime { h: 0, mi: 0, s: 0, us: 0, ..(**self).clone() })),
             _ => Err(Error::new(ErrorKind::UnknownMethod, format!("datetime.{name}"))),
         }
@@ -124,8 +130,23 @@ pub fn to_value(j: &serde_json::Value) -> Value {
             Some(dt) => Value::from_object(dt),
             None => Value::from(()),
         },
+        // a Python dict with int keys ({entity.id: ...}): JSON can only carry string keys, so the page builder marks it
+        serde_json::Value::Object(o) if o.len() == 1 && o.contains_key("__intkeys__") => match &o["__intkeys__"] {
+            serde_json::Value::Object(m) => Value::from_iter(m.iter().map(|(k, v)| (Value::from(k.parse::<i64>().unwrap_or(0)), to_value(v)))),
+            _ => Value::from(()),
+        },
         serde_json::Value::Object(o) => Value::from_iter(o.iter().map(|(k, v)| (k.clone(), to_value(v)))),
         serde_json::Value::Array(a) => Value::from_iter(a.iter().map(to_value)),
         other => Value::from_serialize(other),
     }
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }

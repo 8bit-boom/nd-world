@@ -168,6 +168,10 @@ pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &H
     ctx.insert("nav_menus".into(), Value::Array(menus));
     ctx.insert("nav_ungrouped_items".into(), Value::Array(ungrouped));
     ctx.insert("hover_cfg".into(), hover);
+    let (kinds, kind_icons, subtypes) = app::effective_kind_tables(world.as_ref())?;
+    ctx.insert("kinds".into(), kinds);
+    ctx.insert("kind_icons".into(), kind_icons);
+    ctx.insert("subtypes".into(), subtypes);
     ctx.insert("dreamlands_enabled".into(), json!(dl));
     ctx.insert("king_in_yellow_enabled".into(), json!(ky));
     ctx.insert("__nd".into(), json!({"site_layout": site_layout, "can_edit": is_gm || is_assistant, "saved_views": saved}));

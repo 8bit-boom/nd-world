@@ -10,6 +10,7 @@ async fn main() {
         return;
     }
     let cfg = Arc::new(Config::from_env());
+    nd_render::set_paths(cfg.static_dir.clone(), cfg.db_path.parent().map(|p| p.join("uploads")).unwrap_or_default());
     let listener = match tokio::net::TcpListener::bind(&cfg.listen).await {
         Ok(l) => l,
         Err(e) => {

@@ -1,6 +1,6 @@
 //! JSON lines in, one JSON answer per line out - for tests/test_rust_layout.py, which puts the same questions to Python.
 //! {"op": "clean", "section", "raw"} | {"op": "nav", "is_gm", "role", "world": {...} or null, "dreamlands", "king"}
-use nd_render::{app, md};
+use nd_render::{app, md, text};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
@@ -25,6 +25,9 @@ fn main() {
                 }
             }
             "md" => json!(md::render_md(q["text"].as_str().unwrap())),
+            "summary" => json!(text::body_summary(q["text"].as_str().unwrap())),
+            "entry" => json!(text::entry_text(q["text"].as_str().unwrap())),
+            "stats" => json!(text::parse_stats(q["text"].as_str().unwrap())),
             o => panic!("op {o}"),
         };
         writeln!(out, "{a}").unwrap();

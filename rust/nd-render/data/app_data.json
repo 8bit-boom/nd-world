@@ -585,6 +585,88 @@
    "ql_type": null
   }
  ],
+ "subtypes": {
+  "character": [
+   "NPC",
+   "PC",
+   "villain",
+   "ally",
+   "neutral"
+  ],
+  "creature": [
+   "mutant",
+   "animal",
+   "abomination",
+   "corp-enhanced",
+   "ice creature",
+   "undead"
+  ],
+  "event": [
+   "corporate war",
+   "outbreak",
+   "disaster",
+   "political",
+   "yellow corruption",
+   "discovery"
+  ],
+  "feat": [
+   "common feat",
+   "origin feat",
+   "profession feat",
+   "profession ability",
+   "psy power",
+   "race feat"
+  ],
+  "item": [
+   "weapon",
+   "armor",
+   "augment",
+   "bio-augmentation",
+   "drone",
+   "husk",
+   "vehicle",
+   "oddity",
+   "metal",
+   "item"
+  ],
+  "location": [
+   "district",
+   "city",
+   "country",
+   "void station",
+   "moon",
+   "ruin",
+   "corp facility"
+  ],
+  "note": [
+   "lore",
+   "session note",
+   "rumor",
+   "prophecy",
+   "theory",
+   "tale"
+  ],
+  "organization": [
+   "megacorp",
+   "syndicate",
+   "government",
+   "cult",
+   "secret society",
+   "gang",
+   "AI entity",
+   "family"
+  ],
+  "profession": [
+   "standard",
+   "advanced",
+   "exceptional"
+  ],
+  "race": [
+   "standard",
+   "advanced",
+   "exceptional"
+  ]
+ },
  "view_default_size": 2,
  "view_sections": {
   "ai_chat": {

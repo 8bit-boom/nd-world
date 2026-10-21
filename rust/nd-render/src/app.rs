@@ -253,3 +253,34 @@ pub fn resolve_nav(c: &NavCtx) -> Option<(Vec<Value>, Vec<Value>)> {
     }
     Some((menus, ungrouped))
 }
+
+/// `deps.effective_kinds(world)` and `effective_subtypes(world)` as the context processor hands them to every template:
+/// (kinds, kind_icons, subtypes) with the world's valid custom kinds added. `None` = not sure.
+pub fn effective_kind_tables(world: Option<&Map<String, Value>>) -> Option<(Value, Value, Value)> {
+    let raw = wstr(world, "custom_kinds_json");
+    let kinds = nd_perm::sections::effective_kinds(raw)?;
+    let mut icons = data()["kind_icons"].as_object()?.clone();
+    let mut subtypes = data()["subtypes"].as_object()?.clone();
+    let customs: Vec<Value> = match raw.filter(|s| !s.is_empty()).map(serde_json::from_str::<Value>) {
+        Some(Ok(Value::Array(a))) => a,
+        _ => vec![],
+    };
+    for k in kinds.iter().filter(|k| k.starts_with("custom_")) {
+        // load_custom_kinds keeps every valid entry; a later entry with the same id wins in the dicts
+        for c in customs.iter().filter(|c| c.get("id").and_then(|v| v.as_str()) == Some(k.as_str())) {
+            let label_ok = c.get("label").and_then(|l| l.as_str()).map_or(false, |l| !l.trim().is_empty());
+            if !label_ok {
+                continue;
+            }
+            let icon = c.get("icon").filter(|i| truthy(Some(i))).cloned().unwrap_or(json!("🏷"));
+            icons.insert(k.clone(), icon);
+            if let Some(Value::Array(st)) = c.get("subtypes") {
+                let list: Vec<Value> = st.iter().filter(|x| x.is_string()).cloned().collect();
+                if !list.is_empty() {
+                    subtypes.insert(k.clone(), Value::Array(list));
+                }
+            }
+        }
+    }
+    Some((json!(kinds), Value::Object(icons), Value::Object(subtypes)))
+}

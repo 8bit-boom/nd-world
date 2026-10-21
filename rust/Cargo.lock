@@ -727,6 +727,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "fancy-regex",
  "flate2",
  "futures-util",
  "hmac",

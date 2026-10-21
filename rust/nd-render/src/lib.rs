@@ -5,6 +5,7 @@ use minijinja::{AutoEscape, Output};
 pub mod app;
 pub mod pyvalue;
 pub mod md;
+pub mod text;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,87 @@ fn nd_perm_now() -> nd_perm::gmonly::Minute {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
     (y, m, d, rem / 3600, rem % 3600 / 60)
+}
+
+/// Jinja2's `truncate(s, length=255, killwords=False, end="...", leeway=5)`.
+fn jinja_truncate(s: String, length: Option<usize>, killwords: Option<bool>, end: Option<String>, leeway: Option<usize>) -> String {
+    let (length, killwords, end, leeway) = (length.unwrap_or(255), killwords.unwrap_or(false), end.unwrap_or_else(|| "...".into()), leeway.unwrap_or(5));
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= length + leeway {
+        return s;
+    }
+    let cut: String = chars[..length.saturating_sub(end.chars().count())].iter().collect();
+    if killwords {
+        return cut + &end;
+    }
+    match cut.rsplit_once(' ') {
+        Some((head, _)) => head.to_string() + &end,
+        None => cut + &end,
+    }
+}
+
+static PATHS: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// Where `thumb` looks: the app's `static/` and the uploads folder (set once by the server at start).
+pub fn set_paths(static_dir: PathBuf, uploads_dir: PathBuf) {
+    let _ = PATHS.set((static_dir, uploads_dir));
+}
+
+fn mtime_ns(p: &Path) -> Option<u128> {
+    std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_nanos())
+}
+
+/// `templating.thumb_url`: the picture's small copy when it exists (and, for bundled / map pictures, is fresh), else the URL unchanged.
+/// A bundled or map picture without a fresh copy makes Python queue one: that page is left to Python (an error here).
+fn thumb(url: Option<String>) -> Result<Value, Error> {
+    let url = url.unwrap_or_default();
+    if url.is_empty() {
+        return Ok(Value::from(url));
+    }
+    let Some((static_dir, uploads_dir)) = PATHS.get() else { return Err(Error::new(ErrorKind::InvalidOperation, "thumb paths not set")) };
+    let path = url.split('?').next().unwrap_or("");
+    let (root, prefix) = if let Some(_) = path.strip_prefix("/uploads/") {
+        (uploads_dir, "/uploads/")
+    } else if path.starts_with("/static/maps/") || path.starts_with("/static/races/") {
+        (static_dir, "/static/")
+    } else {
+        return Ok(Value::from(url));
+    };
+    let Ok(root) = std::fs::canonicalize(root) else { return Ok(Value::from(url)) };
+    let rel = percent_decode(&path[prefix.len()..]);
+    let src = match std::fs::canonicalize(root.join(&rel)) {
+        Ok(p) => p,
+        Err(_) => root.join(&rel), // Python's resolve() does not need the file to exist
+    };
+    if !src.starts_with(&root) || rel.split('/').any(|c| c == "..") {
+        return Ok(Value::from(url));
+    }
+    let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let existing = ["_thumb.avif", "_thumb.webp"].iter().map(|suf| src.with_file_name(format!("{stem}{suf}"))).find(|p| p.is_file());
+    if prefix == "/static/" || path.starts_with("/uploads/maps/") {
+        let fresh = match (&existing, mtime_ns(&src)) {
+            (Some(t), Some(s)) => mtime_ns(t).map_or(false, |tm| tm >= s),
+            _ => false,
+        };
+        if !fresh {
+            if src.is_file() {
+                return Err(Error::new(ErrorKind::InvalidOperation, "a thumbnail would be queued: Python's job"));
+            }
+            return Ok(Value::from(url));
+        }
+        let t = existing.unwrap();
+        let rel_t = t.strip_prefix(&root).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        return Ok(Value::from(format!("{prefix}{rel_t}?v={}", mtime_ns(&t).unwrap_or(0) / 1_000_000)));
+    }
+    match existing {
+        Some(t) => Ok(Value::from(format!("/uploads/{}", t.strip_prefix(&root).map(|p| p.to_string_lossy().to_string()).unwrap_or_default()))),
+        None => Ok(Value::from(url)),
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    // URLs in the database are written by the app unencoded; a "%" is taken literally, as Python's Path does
+    s.to_string()
 }
 
 fn nd(state: &State, key: &str) -> Value {
@@ -182,6 +264,12 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
             None => Err(Error::new(ErrorKind::InvalidOperation, "strip_gm_only: not sure, let Python render")),
         }
     });
+    env.add_filter("body_summary", |t: Option<String>| text::body_summary(t.as_deref().unwrap_or("")));
+    env.add_filter("entry_text", |t: Option<String>| text::entry_text(t.as_deref().unwrap_or("")));
+    env.add_filter("parse_stats", |t: Option<String>| Value::from_serialize(text::parse_stats(t.as_deref().unwrap_or(""))));
+    env.add_filter("truncate", jinja_truncate);
+    env.add_filter("thumb", thumb);
+    env.add_function("thumb_url", thumb);
     env.add_function("view_spec", |section: String| -> Value {
         Value::from_serialize(app::data()["view_specs"].get(&section).cloned().unwrap_or(serde_json::json!({})))
     });

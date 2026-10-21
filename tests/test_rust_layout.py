@@ -118,3 +118,26 @@ def test_the_apps_own_markdown_tags_render_like_python():
     n = lambda h: golden.normalise("text/html", h.encode())
     bad = [(t, _render_md(t), g) for t, g in zip(texts, got) if n(_render_md(t)) != n(g)]
     assert len(bad) < len(texts) * 0.05, f"{len(bad)} of {len(texts)} differ, e.g. {bad[:3]}"
+
+
+_BODY_LINES = ["## Attributes", "## Entry", "## Profile", "## Other", "* **Damage**: 2d6", "* **Rarity[1]**: Rare", "* **Cost**: *500* cr",
+               "\\*\\*Armor\\*\\* = 3", "\\*\\*Range\\*\\*: 10 m\\", "**Strength:** 4", "Points: 12", "Difficulty to craft:", "", "  ", "next value",
+               "---", "![img](/a.png)", "| a | b |", "Special conditions: none", "* **Special conditions**: only at night", "* **Visibility**: hidden",
+               "* **Type**: weapon", "Some *plain* text with [a link](/x) and \\*\\*bold\\*\\*.", "- a list line", "\\- escaped dash", "&amp; &lt;b&gt;",
+               "* **Effect**: {template}", "* **Max PP**: 7", "Rank 2 thing", "##Heading", "Ünïcödé: wert", "\x1c", "a\r\nb", "\tTabbed: x"]
+
+
+def test_card_text_helpers_match_python():
+    """body_summary, entry_text and parse_stats (cards, list tables) - random bodies built from the formats the app's content uses."""
+    from app.rendering import body_summary, entry_text, parse_stats
+    rng = random.Random(7)
+    bodies = ["", "plain"] + ["\n".join(rng.choice(_BODY_LINES) for _ in range(rng.randint(1, 14))) for _ in range(2500)]
+    for p in sorted(ROOT.glob("app/**/*.md"))[:200]:
+        bodies.append(p.read_text(errors="ignore"))
+    qs = [{"op": op, "text": b} for b in bodies for op in ("summary", "entry", "stats")]
+    got = ask(qs)
+    want = []
+    for b in bodies:
+        want += [body_summary(b), entry_text(b), json.loads(json.dumps(parse_stats(b)))]
+    bad = [(q["op"], q["text"], w, g) for q, w, g in zip(qs, want, got) if w != g]
+    assert not bad, f"{len(bad)} of {len(qs)} differ: {bad[:3]}"
