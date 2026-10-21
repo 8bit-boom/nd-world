@@ -19,6 +19,8 @@ percent-encoding = "2"
 serde_json = "1"
 base64 = "0.22"
 hmac = "0.12"
+nd-render = { path = "../nd-render" }
+minijinja = "2"
 sha1 = "0.10"
 
 [dev-dependencies]

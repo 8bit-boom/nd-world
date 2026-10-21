@@ -182,3 +182,18 @@ Not done / not true yet:
   a real browser session through the gateway. The entrypoint was run outside Docker: start, request, SIGTERM stops both processes.
 - Files other than `/uploads/` that the app sends with `FileResponse` (map tiles, exports, audio/video downloads) still go through Python.
 - Every upload still costs one short Python request (the access check); only the sending of the file moved to Rust.
+
+## 12. Phase 2 - what was done (measured) and what was not
+
+Done: the foundation and **one page**. Details and the full list of what the other pages need: `docs/RUST_PAGES.md`.
+- `rust/nd-render`: MiniJinja over the app's real templates, Jinja2-exact HTML escaping, `asset_v`. All 128 templates compile in MiniJinja.
+- The gateway builds `GET /login` itself (`ND_RUST_ROUTES=login`, the default): same page, same redirects as Python for 12 kinds of `next` and for
+  a signed-in browser (golden test, byte-normalised HTML); the POST stays Python's. It keeps answering the form while Python is restarting.
+- A per-page switch (`ND_RUST_ROUTES`), a cookie writer (`session::sign`, reproduces Python's cookie byte for byte).
+- Measured (4 cores, 16 clients): the login page 316 req/s from Python, 971 req/s from the gateway (p50 46 ms -> 14 ms). It is the cheapest page the
+  app has (no database), so this says the Rust path works, not what the rest will gain.
+
+NOT done - phase 2's exit criteria are **not met**: of the ~130 pages one is ported. Every signed-in page first needs the layout context (auth
+gate with roles, worlds, section access, nav menus, theme, layouts) ported against a permission matrix; that is the next piece of work and the
+riskiest. The markdown renderer (`md`, `nh3` equivalent) and the other 19 template functions are also still Python. No page throughput gain for
+the pages people actually use yet. Nothing else changed for users.

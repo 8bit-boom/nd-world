@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nd-gateway"]
+members = ["nd-gateway", "nd-render"]
 
 [profile.release]
 lto = "thin"

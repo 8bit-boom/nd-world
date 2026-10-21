@@ -46,3 +46,13 @@ pub fn from_cookie_header(header: &str, secret: &str, now: u64) -> Option<serde_
         .find(|(k, _)| *k == COOKIE_NAME)
         .and_then(|(_, v)| read(v, secret, now, MAX_AGE_SECONDS))
 }
+
+/// A cookie value for `json_text` (the session as JSON text), signed at `now` - the inverse of `read`. Python writes the app's real cookies;
+/// this is for tests and for the day the gateway has to set one itself.
+pub fn sign(json_text: &str, secret: &str, now: u64) -> String {
+    let ts: Vec<u8> = now.to_be_bytes().iter().copied().skip_while(|b| *b == 0).collect();
+    let signed = format!("{}.{}", STANDARD.encode(json_text), URL_SAFE_NO_PAD.encode(ts));
+    let mut mac = Hmac::<Sha1>::new_from_slice(&key(secret)).expect("hmac key");
+    mac.update(signed.as_bytes());
+    format!("{signed}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}

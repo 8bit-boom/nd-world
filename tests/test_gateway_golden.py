@@ -67,3 +67,24 @@ def test_uploads_and_static_files_are_the_same_through_the_gateway(client, seed)
     anon = httpx.Client(base_url=str(client.base_url), timeout=60)
     r = anon.get("/uploads/p/same.png", follow_redirects=False)
     assert r.content != body and "x-nd-accel-path" not in r.headers
+
+
+def test_the_login_page_the_gateway_builds_is_the_one_python_builds(client, seed):
+    """GET /login is built by the gateway (ND_RUST_ROUTES=login): same page, same redirects, for every kind of `next` and for a signed-in browser."""
+    direct = httpx.Client(base_url=DIRECT, timeout=60)
+    anon_paths = ["/login", "/login?next=/dice", "/login?next=%2Fentity%2F3%3Fa%3D1%26b%3D2", "/login?next=//evil.example", "/login?next=https://evil.example",
+                  "/login?next=/%5Cevil", "/login?next=", "/login?next=%20/padded%20", "/login?next=/a&next=/b", "/login?next=/q%22%3E%3Cb%3Ex%3C/b%3E",
+                  "/login?next=/caf%C3%A9", "/login?next=/a+b", "/login?other=1"]
+    for path in anon_paths:
+        a, b = direct.get(path, follow_redirects=False), client.get(path, follow_redirects=False)
+        assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location")), path
+        assert golden.normalise(a.headers["content-type"], a.content) == golden.normalise(b.headers["content-type"], b.content), path
+    # signed in: both send the browser on, to the same place
+    via = _login(client, seed)
+    dir_in = _login(httpx.Client(base_url=DIRECT, timeout=60), seed)
+    for path in ("/login", "/login?next=/dice", "/login?next=//evil.example", "/login?next=/caf%C3%A9%20x"):
+        a, b = dir_in.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
+        assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location")), path
+    # a login that fails still shows Python's page (the POST is never the gateway's)
+    r = client.post("/login", data={"email": "nobody@test.local", "password": "x", "next": "/"})
+    assert r.status_code == 400 and "Incorrect email or password" in r.text

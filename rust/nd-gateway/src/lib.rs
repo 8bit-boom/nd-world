@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod config;
 pub mod files;
+pub mod pages;
 pub mod proxy;
 pub mod session;
 pub mod static_files;
@@ -16,7 +17,8 @@ pub use config::Config;
 
 pub fn router(cfg: Arc<Config>) -> Router {
     let proxy = proxy::Proxy::new(cfg.clone());
-    let state = App { cfg, proxy };
+    let pages = Arc::new(pages::Pages::new(&cfg));
+    let state = App { cfg, proxy, pages };
     Router::new().fallback(handle).with_state(state)
 }
 
@@ -24,6 +26,7 @@ pub fn router(cfg: Arc<Config>) -> Router {
 pub struct App {
     pub cfg: Arc<Config>,
     pub proxy: proxy::Proxy,
+    pub pages: Arc<pages::Pages>,
 }
 
 async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
@@ -42,6 +45,9 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         if let Some(resp) = static_files::serve(&app.cfg, &method, &uri, &headers).await {
             return resp;
         }
+    }
+    if let Some(resp) = app.pages.serve(req.method(), req.uri(), req.headers()) {
+        return resp;
     }
     app.proxy.forward(req, peer).await
 }

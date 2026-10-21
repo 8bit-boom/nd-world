@@ -67,6 +67,8 @@ async fn rig(token: &str, trust: bool, upstream_up: bool) -> Rig {
         accel_root: root.join("data"),
         accel_token: token.to_string(),
         trust_proxy: trust,
+        templates_dir: root.join("templates"),
+        rust_routes: vec![],
         secret_key: None,
     };
     let gw = spawn(router(Arc::new(cfg))).await;
@@ -120,6 +122,7 @@ async fn a_precompressed_twin_is_sent_when_accepted_and_only_when_fresh() {
     let resp = get("gzip").await;
     assert_eq!(resp.headers()["content-encoding"], "gzip");
     assert_eq!(resp.text().await.unwrap(), "GZIP");
+    std::thread::sleep(std::time::Duration::from_millis(30));
     // the source changed after the twins were made: they are stale, so Python (which compresses) answers
     write(&src, &vec![b'y'; 5000]);
     let resp = get("br").await;
@@ -286,4 +289,12 @@ fn session_cookies_made_by_python_are_read_and_forgeries_are_not() {
     assert_eq!(session::from_cookie_header(&header, secret, at + 10), Some(fx["cases"][0]["session"].clone()));
     assert_eq!(session::read("garbage", secret, at, 100), None);
     assert_eq!(session::read("a.b.c", secret, at, 100), None);
+}
+
+#[test]
+fn signing_reproduces_the_cookie_python_made() {
+    let fx: serde_json::Value = serde_json::from_str(include_str!("fixtures/session.json")).unwrap();
+    let case = &fx["cases"][0];
+    let text = "{\"user_id\": 7, \"world_id\": 3}"; // json.dumps' spelling
+    assert_eq!(session::sign(text, fx["secret"].as_str().unwrap(), fx["signed_at"].as_u64().unwrap()), case["cookie"].as_str().unwrap());
 }
