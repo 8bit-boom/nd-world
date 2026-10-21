@@ -151,3 +151,34 @@ Not done, said plainly:
   server-side cache across tests) is not pinned down.
 - Spotlight cache and settings snapshot can be up to 2 s / 5 s stale across processes (accepted, see the state document). The failed-login limiters
   are still per process: auth POSTs must stay proxied to Python until they are shared.
+
+## 11. Phase 1 - what was done (measured)
+
+Built (details and safety rules: `docs/RUST_GATEWAY.md`):
+- `rust/nd-gateway` (Axum, ~800 lines, a 2 MB static musl binary): `/static/` from disk (pre-compressed twins, ranges, 304, old-map redirects),
+  `/uploads/` sent by the gateway after Python has done every check (`X-Nd-Accel-Path`, shared secret token, confined to the data folder),
+  streaming proxy for everything else, client address set by the gateway, a "starting" page while Python is down, graceful shutdown.
+- A session-cookie reader in Rust, tested against cookies signed by Python (the key is `sha1("itsdangerous.Signer" + "signer" + secret)`).
+- `docker/entrypoint.sh` (gateway on 8000, Python on 127.0.0.1:8001; `ND_GATEWAY=0` = Python alone as before), multi-stage Dockerfile.
+- Tests: 15 Rust tests, 5 Python tests for the hand-over, a golden comparison (pages and uploads through the gateway vs direct: identical), the
+  whole Python suite over HTTP through the gateway as a CI job.
+
+Measured on the 4-core test machine, 16 concurrent clients, one Python client program (so the static numbers are partly the client's limit):
+
+| Request | Direct (Python) | Through the gateway |
+|---|---|---|
+| `/static/style.css` (177 KB) | 258 req/s, p50 57 ms | 517 req/s, p50 24 ms |
+| a 2 MB upload | 16 req/s, p50 954 ms | 163 req/s, p50 88 ms |
+| a page (home) | 50 req/s, p50 264 ms | 60 req/s, p50 244 ms |
+
+The upload gap is mostly not Rust: Python's GZip middleware compresses every response over 1 KB, including pictures that do not shrink, and the
+gateway sends them as they are. Pages are about as fast as before, which is expected: Python still builds them. The gateway starts to pay for
+pages in phase 2, when it builds some of them itself.
+
+Not done / not true yet:
+- The gateway does not check logins for anything. `/uploads/` is protected by Python, as before. The cookie reader is unused until phase 2.
+- No WebSocket proxying (the app has no WebSocket route). No HTTP/2 or TLS (the reverse proxy in front does that today).
+- Not measured: the Docker image build and image size (no Docker daemon in the development sandbox; the CI build is the first real run), and
+  a real browser session through the gateway. The entrypoint was run outside Docker: start, request, SIGTERM stops both processes.
+- Files other than `/uploads/` that the app sends with `FileResponse` (map tiles, exports, audio/video downloads) still go through Python.
+- Every upload still costs one short Python request (the access check); only the sending of the file moved to Rust.
