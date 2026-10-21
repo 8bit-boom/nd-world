@@ -69,6 +69,7 @@ async fn rig(token: &str, trust: bool, upstream_up: bool) -> Rig {
         trust_proxy: trust,
         templates_dir: root.join("templates"),
         rust_routes: vec![],
+        db_path: std::path::PathBuf::from("/nonexistent"),
         secret_key: None,
     };
     let gw = spawn(router(Arc::new(cfg))).await;

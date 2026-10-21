@@ -43,7 +43,7 @@ jobs:
         run: |
           export ND_ACCEL_TOKEN=ci-token
           python -m tests.serve --port 8951 > serve.log 2>&1 &
-          SECRET_KEY=test-secret-key-not-for-production ND_TEMPLATES_DIR=$PWD/app/templates \
+          SECRET_KEY=test-secret-key-not-for-production ND_TEMPLATES_DIR=$PWD/app/templates DB_PATH=$PWD/tests/_data/world.db ND_RUST_ROUTES=login,dice_roll \
           ND_UPSTREAM=127.0.0.1:8951 ND_GATEWAY_LISTEN=127.0.0.1:8952 ND_STATIC_DIR=$PWD/static ND_ACCEL_ROOT=$PWD/tests/_data \
             rust/target/release/nd-gateway > gateway.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8952/__gateway/health | grep -q '"upstream":true' && break; sleep 1; done

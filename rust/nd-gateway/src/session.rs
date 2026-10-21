@@ -9,6 +9,8 @@ use sha1::{Digest, Sha1};
 
 pub const COOKIE_NAME: &str = "session";
 pub const MAX_AGE_SECONDS: u64 = 14 * 24 * 3600;
+/// app/session_cookie.py REFRESH_SECONDS: a cookie older than this is signed again on the next response.
+pub const REFRESH_SECONDS: u64 = 6 * 3600;
 
 fn key(secret: &str) -> Vec<u8> {
     let mut h = Sha1::new();
@@ -20,6 +22,12 @@ fn key(secret: &str) -> Vec<u8> {
 
 /// The session's JSON if `value` is a cookie signed with `secret` no longer than `max_age` seconds before `now` (unix seconds).
 pub fn read(value: &str, secret: &str, now: u64, max_age: u64) -> Option<serde_json::Value> {
+    read_with_time(value, secret, now, max_age).map(|(v, _)| v)
+}
+
+/// Like `read`, with the time the cookie was signed (unix seconds): Python signs a fresh cookie when the one it was sent is older than
+/// `REFRESH_SECONDS`, so a request carrying an old cookie has to reach Python.
+pub fn read_with_time(value: &str, secret: &str, now: u64, max_age: u64) -> Option<(serde_json::Value, u64)> {
     let (signed, sig) = value.rsplit_once('.')?;
     let (payload, ts) = signed.rsplit_once('.')?;
     let sig = URL_SAFE_NO_PAD.decode(sig).ok()?;
@@ -35,7 +43,7 @@ pub fn read(value: &str, secret: &str, now: u64, max_age: u64) -> Option<serde_j
         return None;
     }
     let json = STANDARD.decode(payload).ok()?;
-    serde_json::from_slice(&json).ok()
+    serde_json::from_slice(&json).ok().map(|v| (v, signed_at))
 }
 
 /// The session from a `Cookie:` request header.
@@ -55,4 +63,9 @@ pub fn sign(json_text: &str, secret: &str, now: u64) -> String {
     let mut mac = Hmac::<Sha1>::new_from_slice(&key(secret)).expect("hmac key");
     mac.update(signed.as_bytes());
     format!("{signed}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+/// The value of cookie `name` in a `Cookie:` header.
+pub fn cookie<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    header.split(';').filter_map(|c| c.trim().split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v)
 }

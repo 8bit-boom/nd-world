@@ -197,3 +197,16 @@ NOT done - phase 2's exit criteria are **not met**: of the ~130 pages one is por
 gate with roles, worlds, section access, nav menus, theme, layouts) ported against a permission matrix; that is the next piece of work and the
 riskiest. The markdown renderer (`md`, `nh3` equivalent) and the other 19 template functions are also still Python. No page throughput gain for
 the pages people actually use yet. Nothing else changed for users.
+
+## 13. Phase 3 - what was done (measured) and what was not
+
+Done: **one write route**, built as the pattern (details: `docs/RUST_WRITES.md`). `POST /api/dice/roll` is written by the gateway when
+`dice_roll` is in `ND_RUST_ROUTES` (opt-in, not on by default): it re-checks session, user, world, role and section access, rolls, stores the
+row and bumps the live counter in one SQLite transaction. It answers only the success case; every refusal and every unusual request goes to
+Python unchanged. Checked against Python for three kinds of person and 14 request bodies, a switched-off section, a stranger, a changed
+password, and 40 simultaneous rolls written by both servers. 66 -> 366 rolls/s on the 4-core test machine.
+
+NOT done - phase 3's exit criteria are **not met**: of hundreds of write routes one is ported. Every other write needs the permission layer
+the plan calls the riskiest part (route allowlists, per-row ownership, `[gmonly]` stripping) in Rust, and its own refusal-parity test; uploads
+need multipart handling and the picture pipeline. The static musl build now links a C library (bundled SQLite), so the image's Rust stage
+installs `gcc` / `musl-tools`; the binary grew from 2 MB to 7 MB.

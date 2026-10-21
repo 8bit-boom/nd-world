@@ -21,6 +21,7 @@ async fn gateway(routes: &[&str], secret: Option<&str>) -> String {
         trust_proxy: false,
         templates_dir: repo.join("app/templates"),
         rust_routes: routes.iter().map(|r| r.to_string()).collect(),
+        db_path: std::path::PathBuf::from("/nonexistent"),
         secret_key: secret.map(str::to_string),
     };
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

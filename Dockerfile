@@ -13,6 +13,9 @@ FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c
 # everything else to the Python app. Dependencies are compiled in their own layer so a change to the gateway's code does not rebuild them.
 FROM rust:1-slim AS gateway
 WORKDIR /src
+# the bundled SQLite (rusqlite) is C: it needs a compiler that targets musl
+RUN apt-get update && apt-get install -y --no-install-recommends gcc musl-tools && rm -rf /var/lib/apt/lists/*
+ENV CC_x86_64_unknown_linux_musl=musl-gcc CC_aarch64_unknown_linux_musl=musl-gcc
 RUN rustup target add "$(uname -m)-unknown-linux-musl"
 COPY rust/Cargo.toml rust/Cargo.lock ./
 COPY rust/nd-gateway/Cargo.toml nd-gateway/Cargo.toml

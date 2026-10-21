@@ -1,0 +1,53 @@
+# Writes made by the gateway (Rust)
+
+Phase 3 of `docs/RUST_REWRITE_PLAN.md`: edits and uploads. One write route so far - `POST /api/dice/roll` - as the pattern the rest has to follow.
+It is **off by default**: switch it on with `ND_RUST_ROUTES=login,dice_roll` (the default is `login`).
+
+## The rule: the gateway answers only the success case
+
+A write that Rust gets wrong can damage data or let someone do what they may not. So the gateway re-does every check Python does, and **if any
+check fails, or anything about the request is unusual, it hands the request to Python unchanged** (body included) and Python answers, with its own
+error, exactly as before. A mistake in the gateway can therefore only turn an answer into a refusal-by-Python, never a refusal into an answer.
+
+For `POST /api/dice/roll` (`rust/nd-gateway/src/writes.rs`) the gateway answers only when all of these hold:
+
+| Check | Python's code it repeats |
+|---|---|
+| a session cookie that verifies with `SECRET_KEY`, not older than 6 h (Python re-signs older ones, only it can) | `session_cookie.py` |
+| the user exists and the cookie's `session_version` is the user's | `auth_gate` |
+| the active world: `?w=` over the `active_world` cookie, else the first world the person may use (GM: every world; others: memberships, in id order) | `deps.get_world_ctx`, `_active_membership` |
+| role in that world (assistant / owner count as assistant) and the world's `section_access_json["dice"][role]` is not `none` (default `read`) | `deps.world_section_level`, `_default_section_levels` |
+| `Content-Type: application/json`, body at most 16 KB, `notation` a string, `label` a string if present | pydantic `RollBody` |
+| notation / label are printable ASCII (Unicode whitespace and printability rules stay Python's) | `str.strip`, `isprintable` |
+| the notation fits the grammar (`2d6+3`, at most 8 terms, 50 dice, 1000 sides) | `dice._evaluate` |
+
+It then stores the row (the same columns, the stored time spelled like SQLAlchemy, the breakdown spelled like `json.dumps`), bumps the live
+counter `sig:<world>:dice` in `shared_state` in the same transaction (so open dice pages refresh), and answers with the same JSON, same key order,
+plus `X-Nd-Served-By: gateway`. SQLite is opened per request with `busy_timeout=30000` and WAL like Python's connection, so both servers write one file.
+
+## Checked by
+
+- `rust/nd-gateway/tests/writes.rs`: 16 refusal cases each reach Python with the body intact and store nothing; membership, `?w=`, cookie world,
+  a world with dice switched off for players, assistants, an empty display name; 40 concurrent rolls all land and the counter is exact.
+- `tests/test_gateway_golden.py`: for a GM, a player and a player of another world, 14 request bodies each sent to Python directly and through
+  the gateway: same status, same error words, same fields; plus a section switched off, a stranger, and a changed password (`session_version`)
+  refused identically; plus 40 rolls written by both servers at once (20 each) - every one stored, live counter exact.
+- CI runs the whole Python suite through the gateway with `ND_RUST_ROUTES=login,dice_roll`.
+
+## Measured
+
+4 cores, 16 clients rolling `4d6+2`: Python 66 rolls/s (p50 200 ms), gateway 366 rolls/s (p50 39 ms) - `scripts/bench_dice.py`. The benchmark client
+shares the machine, so read it as "several times faster", not as a limit.
+
+## Not done (phase 3's exit criteria are NOT met)
+
+Phase 3 is the forms and JSON writes for entities, sessions, facts, quests, parties, characters, galleries, audio / video libraries, chunked
+uploads and picture processing - hundreds of write routes. One is done. The rest need, in this order:
+
+1. The rest of the permission layer in Rust (`_is_player_safe` / `_is_assistant_safe` / `_is_owner_safe` allowlists, per-row visibility,
+   `[gmonly]` rules) - the dice route needed only the section matrix. Each route also needs its own refusal-parity test like the one above.
+2. The failed-login limiter in `shared_state`, then the auth POSTs.
+3. Multipart uploads and picture processing (the AVIF / WebP / tiles work is Python's Pillow today).
+4. Routes that touch Python-only memory (`docs/RUST_MIGRATION_STATE.md`) stay in Python.
+
+Also not covered: Python's request timing log and `AiBackgroundMiddleware` do not see a roll the gateway wrote; non-ASCII notation / label go to Python.

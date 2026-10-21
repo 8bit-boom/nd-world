@@ -24,7 +24,11 @@ minijinja = "2"
 sha1 = "0.10"
 flate2 = "1"
 
+rusqlite = { version = "0.32", features = ["bundled"] }
+rand = "0.8"
+regex = "1"
+
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
 tempfile = "3"
 flate2 = "1"

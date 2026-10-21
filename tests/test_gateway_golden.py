@@ -88,3 +88,146 @@ def test_the_login_page_the_gateway_builds_is_the_one_python_builds(client, seed
     # a login that fails still shows Python's page (the POST is never the gateway's)
     r = client.post("/login", data={"email": "nobody@test.local", "password": "x", "next": "/"})
     assert r.status_code == 400 and "Incorrect email or password" in r.text
+
+
+# ── POST /api/dice/roll written by the gateway (ND_RUST_ROUTES=...,dice_roll) ─────────────────────────────────────────────────────────────
+
+def _roll(c, body, *, w=None, headers=None):
+    return c.post("/api/dice/roll" + (f"?w={w}" if w else ""), json=body, headers=headers or {})
+
+
+def _members(seed):
+    """(client factory per person): a GM, a player of world A, a player of world B only, nobody."""
+    from .conftest import PLAYER_PASSWORD
+
+    def as_(email, password, world=None):
+        c = httpx.Client(base_url=DIRECT, timeout=60)
+        r = c.post("/login", data={"email": email, "password": password, "next": "/"}, follow_redirects=False)
+        assert r.status_code == 303, (email, r.status_code)
+        if world:
+            c.cookies.set("active_world", world)
+        return c
+    return as_
+
+
+def _via(direct_client, base):
+    """The same person's session, sent through the gateway (the cookie is the proof of who they are, so it is simply reused)."""
+    c = httpx.Client(base_url=base, timeout=60)
+    for k, v in direct_client.cookies.items():
+        c.cookies.set(k, v)
+    return c
+
+
+def test_a_roll_the_gateway_writes_is_the_roll_python_would_have_written(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    direct = httpx.Client(base_url=DIRECT, timeout=60)
+    people = []
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = httpx.Client(base_url=DIRECT, timeout=60)
+        assert d.post("/login", data={"email": email, "password": pw, "next": "/"}, follow_redirects=False).status_code == 303
+        d.cookies.set("active_world", world)
+        people.append((email, d, _via(d, base)))
+    bodies = [{"notation": "2d6+3"}, {"notation": "d20", "label": "Perception"}, {"notation": "  4d8+2d6+1  ", "label": " padded "}, {"notation": "1d20-1"},
+              {"notation": "banana"}, {"notation": ""}, {"notation": "51d6"}, {"notation": "d6", "label": None}, {"notation": 5}, {}, {"notation": "d6", "label": "café"},
+              {"notation": "2 6"}, {"notation": "+5"}, {"notation": "d100", "label": "x" * 200}]
+    for email, d, via in people:
+        for body in bodies:
+            a, b = _roll(d, body), _roll(via, body)
+            assert a.status_code == b.status_code, (email, body, a.status_code, b.status_code, a.text, b.text)
+            if a.status_code != 200:
+                assert a.json() == b.json(), (email, body)           # an error is Python's error word for word
+                continue
+            ja, jb = a.json(), b.json()
+            assert set(ja) == set(jb) == {"id", "user_name", "notation", "label", "breakdown", "total", "created_at"}
+            for k in ("user_name", "notation", "label"):
+                assert ja[k] == jb[k], (email, body, k)
+            assert [t["term"] for t in ja["breakdown"]] == [t["term"] for t in jb["breakdown"]]
+            assert [set(t) for t in ja["breakdown"]] == [set(t) for t in jb["breakdown"]]
+            assert jb["total"] == sum(t["sum"] for t in jb["breakdown"])
+            assert len(ja["created_at"]) in (20, 27) and len(jb["created_at"]) in (20, 27) and jb["created_at"].endswith("Z")
+            ascii_only = all(all(" " <= ch <= "~" for ch in str(body.get(k) or "")) for k in ("notation", "label"))
+            assert (b.headers.get("x-nd-served-by") == "gateway") == ascii_only, ("who wrote it", email, body)    # non-ASCII text is left to Python
+            assert a.headers.get("content-type") == b.headers.get("content-type")
+    # what was stored reads back the same through Python's own history route, whoever wrote it
+    hist = people[0][1].get("/api/dice/history")
+    if hist.status_code == 200:
+        rows = hist.json()
+        rows = rows if isinstance(rows, list) else rows.get("rolls", [])
+        assert rows and all(set(r) >= {"id", "user_name", "notation", "breakdown", "total", "created_at"} for r in rows)
+
+
+def test_the_gateway_never_writes_for_someone_python_would_refuse(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = db.query(World).filter(World.id == seed.world_a.id).first()
+        w.section_access_json = '{"dice": {"player": "none", "assistant": "none"}}'
+        db.commit()
+    finally:
+        db.close()
+    try:
+        d = httpx.Client(base_url=DIRECT, timeout=60)
+        assert d.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}, follow_redirects=False).status_code == 303
+        d.cookies.set("active_world", seed.world_a.slug)
+        via = _via(d, base)
+        import time
+        time.sleep(0.2)
+        a, b = _roll(d, {"notation": "d6"}), _roll(via, {"notation": "d6"})
+        assert (a.status_code, a.json()) == (b.status_code, b.json()) and a.status_code == 403
+        # a stranger without any session: Python's 401 through the gateway
+        anon = httpx.Client(base_url=base, timeout=60)
+        r = _roll(anon, {"notation": "d6"})
+        assert r.status_code == 401 and r.json() == {"detail": "Login required"}
+        # a player's cookie for a changed password (session_version) is refused by both
+        from app.models import User
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.id == seed.player_a.id).first()
+            u.session_version = (u.session_version or 1) + 1
+            db.commit()
+        finally:
+            db.close()
+        a, b = _roll(d, {"notation": "d6"}), _roll(via, {"notation": "d6"})
+        assert a.status_code == b.status_code == 401, (a.status_code, b.status_code)
+    finally:
+        pass
+
+
+def test_rolls_written_by_both_servers_at_once_all_land_and_the_live_counter_is_exact(client, seed):
+    """Python and the gateway write the same SQLite file and the same live counter at the same moment: nothing is lost."""
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    d = httpx.Client(base_url=DIRECT, timeout=60)
+    assert d.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"}, follow_redirects=False).status_code == 303
+    d.cookies.set("active_world", seed.world_a.slug)
+    cookies = dict(d.cookies)
+
+    def counts():
+        db = SessionLocal()
+        try:
+            rolls = db.execute(text("SELECT count(*) FROM dice_rolls WHERE world_id = :w"), {"w": seed.world_a.id}).scalar()
+            n = db.execute(text("SELECT n FROM shared_state WHERE key = :k"), {"k": f"sig:{seed.world_a.id}:dice"}).scalar() or 0
+            return rolls, n
+        finally:
+            db.close()
+
+    before_rolls, before_n = counts()
+
+    def one(i):
+        c = httpx.Client(base_url=base if i % 2 else DIRECT, timeout=60, cookies=cookies)
+        r = c.post("/api/dice/roll", json={"notation": "d20"})
+        return r.status_code, r.headers.get("x-nd-served-by")
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(one, range(40)))
+    assert all(code == 200 for code, _ in results), results
+    assert sum(1 for _, by in results if by == "gateway") == 20, "half were written by the gateway"
+    from .conftest import wait_until
+    assert wait_until(lambda: counts() == (before_rolls + 40, before_n + 40)), counts()           # Python's counter is written by its background thread

@@ -19,6 +19,8 @@ pub struct Config {
     pub templates_dir: PathBuf,
     /// Pages the gateway renders itself (`ND_RUST_ROUTES`, comma separated; empty = none: Python answers all of them). Rollback is this list.
     pub rust_routes: Vec<String>,
+    /// The app's SQLite file (`DB_PATH`), for the writes the gateway makes itself.
+    pub db_path: PathBuf,
     /// The session signing key (`SECRET_KEY`), for the cookie reader (not used to gate anything in phase 1).
     pub secret_key: Option<String>,
 }
@@ -35,6 +37,7 @@ impl Config {
             trust_proxy: matches!(get("ND_GATEWAY_TRUST_PROXY", "0").as_str(), "1" | "true" | "yes"),
             templates_dir: PathBuf::from(get("ND_TEMPLATES_DIR", "/app/app/templates")),
             rust_routes: get("ND_RUST_ROUTES", "login").split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect(),
+            db_path: PathBuf::from(get("DB_PATH", "/data/world.db")),
             secret_key: std::env::var("SECRET_KEY").ok().filter(|v| !v.is_empty()),
         }
     }
