@@ -1,0 +1,137 @@
+//! Everything the gateway does not answer itself goes to the Python server, streamed both ways (uploads, server-sent events, big downloads are
+//! never held in memory). Python can ask the gateway to send a file instead of sending it itself: it answers with `X-Nd-Accel-Path` (an absolute
+//! path below the data folder) after it has done its own checks, and the gateway streams that file, with ranges and validators.
+use crate::{files, Config};
+use axum::body::Body;
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::rt::TokioExecutor;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+const HOP: [&str; 9] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
+pub const ACCEL: &str = "x-nd-accel";
+pub const ACCEL_PATH: &str = "x-nd-accel-path";
+
+#[derive(Clone)]
+pub struct Proxy {
+    cfg: Arc<Config>,
+    client: Client<HttpConnector, Body>,
+}
+
+fn starting_page() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::BAD_GATEWAY)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::RETRY_AFTER, "2")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from("<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=3><title>Starting</title>\
+            <body style=\"font-family:sans-serif;background:#111;color:#ddd;padding:2rem\"><h1>nd-world is starting</h1>\
+            <p>The application is not answering yet. This page tries again by itself.</p>"))
+        .unwrap()
+}
+
+impl Proxy {
+    pub fn new(cfg: Arc<Config>) -> Proxy {
+        let mut http = HttpConnector::new();
+        http.set_connect_timeout(Some(Duration::from_secs(5)));
+        http.set_nodelay(true);
+        let client = Client::builder(TokioExecutor::new()).pool_idle_timeout(Duration::from_secs(30)).build(http);
+        Proxy { cfg, client }
+    }
+
+    pub async fn upstream_up(&self) -> bool {
+        matches!(tokio::time::timeout(Duration::from_secs(1), tokio::net::TcpStream::connect(&self.cfg.upstream)).await, Ok(Ok(_)))
+    }
+
+    pub async fn forward(&self, req: Request<Body>, peer: Option<SocketAddr>) -> Response<Body> {
+        let (mut parts, body) = req.into_parts();
+        let method = parts.method.clone();
+        let req_headers = parts.headers.clone();
+
+        let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        let uri: hyper::Uri = match format!("http://{}{}", self.cfg.upstream, pq).parse() {
+            Ok(u) => u,
+            Err(_) => return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(),
+        };
+        let host = parts.headers.get(header::HOST).cloned();
+        scrub_request(&mut parts.headers, &self.cfg, peer);
+        if let Some(h) = host {
+            parts.headers.insert(header::HOST, h);
+        }
+        if !self.cfg.accel_token.is_empty() {
+            if let Ok(v) = HeaderValue::from_str(&self.cfg.accel_token) {
+                parts.headers.insert(HeaderName::from_static(ACCEL), v);
+            }
+        }
+        let mut out = Request::new(body);
+        *out.method_mut() = method.clone();
+        *out.uri_mut() = uri;
+        *out.headers_mut() = parts.headers;
+
+        let resp = match self.client.request(out).await {
+            Ok(r) => r,
+            Err(_) => return starting_page(),
+        };
+        let (rp, rbody) = resp.into_parts();
+        let mut headers = rp.headers;
+        // a file handed over by Python
+        let accel = headers.remove(HeaderName::from_static(ACCEL_PATH));
+        for h in HOP {
+            headers.remove(h);
+        }
+        if let (Some(path), false) = (accel, self.cfg.accel_token.is_empty()) {
+            return self.send_file(&method, &req_headers, path, headers).await;
+        }
+        let mut r = Response::new(Body::new(rbody));
+        *r.status_mut() = rp.status;
+        *r.headers_mut() = headers;
+        r
+    }
+
+    async fn send_file(&self, method: &Method, req_headers: &HeaderMap, path: HeaderValue, mut headers: HeaderMap) -> Response<Body> {
+        let not_found = || Response::builder().status(StatusCode::NOT_FOUND).header(header::CONTENT_TYPE, "application/json").body(Body::from("{\"detail\":\"Not Found\"}")).unwrap();
+        let Ok(path) = path.to_str() else { return not_found() };
+        let Ok(real) = tokio::fs::canonicalize(path).await else { return not_found() };
+        let Ok(root) = tokio::fs::canonicalize(&self.cfg.accel_root).await else { return not_found() };
+        if !real.starts_with(&root) {
+            return not_found();
+        }
+        let content_type = headers.remove(header::CONTENT_TYPE).and_then(|v| v.to_str().ok().map(str::to_string));
+        for h in [header::CONTENT_LENGTH, header::ETAG, header::LAST_MODIFIED, header::ACCEPT_RANGES, header::CONTENT_RANGE] {
+            headers.remove(h);
+        }
+        let extra = files::Extra { headers: headers.into_iter().filter_map(|(k, v)| k.map(|k| (k, v))).collect(), content_type };
+        files::send(method, req_headers, &real, extra).await.unwrap_or_else(not_found)
+    }
+}
+
+fn scrub_request(h: &mut HeaderMap, cfg: &Config, peer: Option<SocketAddr>) {
+    for name in HOP {
+        h.remove(name);
+    }
+    h.remove(header::HOST);
+    // a client can never claim to be the gateway
+    h.remove(ACCEL);
+    h.remove(ACCEL_PATH);
+    // the address Python sees as the client is the gateway's peer, appended to whatever chain a trusted proxy in front sent
+    let chain = h.get("x-forwarded-for").and_then(|v| v.to_str().ok()).map(str::to_string);
+    h.remove("x-forwarded-for");
+    if let Some(p) = peer {
+        let v = match chain {
+            Some(c) if cfg.trust_proxy => format!("{c}, {}", p.ip()),
+            _ => p.ip().to_string(),
+        };
+        if let Ok(v) = HeaderValue::from_str(&v) {
+            h.insert("x-forwarded-for", v);
+        }
+    }
+    if !cfg.trust_proxy {
+        h.remove("x-forwarded-proto");
+        h.remove("x-forwarded-host");
+        h.remove("x-forwarded-port");
+        h.remove("forwarded");
+        h.remove("x-real-ip");
+    }
+}

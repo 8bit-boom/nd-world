@@ -1,0 +1,44 @@
+use nd_gateway::{router, Config};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() {
+    if std::env::args().any(|a| a == "--version") {
+        println!("nd-gateway {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    let cfg = Arc::new(Config::from_env());
+    let listener = match tokio::net::TcpListener::bind(&cfg.listen).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("nd-gateway: cannot listen on {}: {e}", cfg.listen);
+            std::process::exit(1);
+        }
+    };
+    eprintln!("nd-gateway: {} -> {} (static: {})", cfg.listen, cfg.upstream, cfg.static_dir.display());
+    let app = router(cfg).into_make_service_with_connect_info::<SocketAddr>();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = rx.await;
+    });
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = tx.send(());
+        // long-lived streams (server-sent events) would keep a graceful shutdown waiting for ever; Python has its own drain
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        std::process::exit(0);
+    });
+    if let Err(e) = serve.await {
+        eprintln!("nd-gateway: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).expect("signal");
+    let mut int = signal(SignalKind::interrupt()).expect("signal");
+    tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+}

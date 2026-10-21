@@ -1531,6 +1531,9 @@ def serve_map_tile(key: str, z: int, tile: str):
     return FileResponse(p, media_type="image/webp", headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
+from . import accel as _accel
+
+
 @app.get("/uploads/{filepath:path}")
 def serve_upload(filepath: str, request: Request):
     # Containment check: without it, `filepath="../world.db"` escapes UPLOADS_DIR
@@ -1607,8 +1610,8 @@ def serve_upload(filepath: str, request: Request):
         # small or the setting is "original"
         shown = make_display(path)
         if shown is not None:
-            return FileResponse(shown, headers=headers, media_type="image/avif" if shown.suffix == ".avif" else "image/webp")
-    return FileResponse(path, headers=headers, media_type=media_type)
+            return _accel.file_response(request, shown, headers, "image/avif" if shown.suffix == ".avif" else "image/webp")
+    return _accel.file_response(request, path, headers, media_type)
 
 # ── Worlds management ─────────────────────────────────────────────────────────
 

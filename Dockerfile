@@ -9,9 +9,26 @@
 # To update: pick a newer tag, take the digest of its manifest list, re-run those checks.
 FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
 
+# The Rust gateway (rust/nd-gateway, docs/RUST_GATEWAY.md): a ~2 MB static binary (musl) that answers /static/ and sends uploads, and passes
+# everything else to the Python app. Dependencies are compiled in their own layer so a change to the gateway's code does not rebuild them.
+FROM rust:1-slim AS gateway
+WORKDIR /src
+RUN rustup target add "$(uname -m)-unknown-linux-musl"
+COPY rust/Cargo.toml rust/Cargo.lock ./
+COPY rust/nd-gateway/Cargo.toml nd-gateway/Cargo.toml
+RUN mkdir -p nd-gateway/src && echo "fn main() {}" > nd-gateway/src/main.rs && touch nd-gateway/src/lib.rs \
+    && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway; \
+    rm -rf nd-gateway/src
+COPY rust/nd-gateway/src nd-gateway/src
+RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs \
+    && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway \
+    && cp "target/$(uname -m)-unknown-linux-musl/release/nd-gateway" /nd-gateway
+
 FROM python:3.13-slim
 
 COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
+COPY --from=gateway /nd-gateway /usr/local/bin/nd-gateway
+COPY docker/entrypoint.sh /usr/local/bin/nd-entrypoint
 
 WORKDIR /app
 
@@ -45,4 +62,6 @@ EXPOSE 8000
 # at all.
 # --no-access-log: one line per request (including the polls) is noise and unbounded disk; app/perf_log.py keeps route timings and the
 # slow-request log, and errors are still logged.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10", "--no-access-log"]
+# docker/entrypoint.sh runs the gateway on 8000 with uvicorn (the command above, with --proxy-headers) on 127.0.0.1:8001 behind it; ND_GATEWAY=0
+# runs uvicorn alone on 8000 as before.
+CMD ["/usr/local/bin/nd-entrypoint"]

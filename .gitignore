@@ -15,3 +15,6 @@ static/**/*.gz
 static/**/*_thumb.webp
 static/**/*_thumb.avif
 static/map_tiles/
+
+# Rust gateway build output
+rust/target/

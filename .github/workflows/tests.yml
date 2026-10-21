@@ -18,3 +18,35 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run test suite
         run: python -m pytest -q
+
+  # The Rust gateway (rust/nd-gateway, docs/RUST_GATEWAY.md): its own tests, and the whole Python suite run over HTTP THROUGH it - the same
+  # tests that run in-process above, against the app started separately (tests/serve.py) with the gateway in front (docs/RUST_REWRITE_PLAN.md).
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: The session-cookie fixture matches what Python signs
+        run: python scripts/gen_session_fixture.py --check
+      - name: Gateway tests
+        working-directory: rust
+        run: cargo test --locked
+      - name: Build the gateway
+        working-directory: rust
+        run: cargo build --release --locked
+      - name: Run the suite through the gateway
+        run: |
+          export ND_ACCEL_TOKEN=ci-token
+          python -m tests.serve --port 8951 > serve.log 2>&1 &
+          ND_UPSTREAM=127.0.0.1:8951 ND_GATEWAY_LISTEN=127.0.0.1:8952 ND_STATIC_DIR=$PWD/static ND_ACCEL_ROOT=$PWD/tests/_data \
+            rust/target/release/nd-gateway > gateway.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8952/__gateway/health | grep -q '"upstream":true' && break; sleep 1; done
+          ND_GOLDEN_DIRECT_URL=http://127.0.0.1:8951 ND_TEST_BASE_URL=http://127.0.0.1:8952 python -m pytest -q
+      - name: Server logs
+        if: failure()
+        run: tail -n 80 serve.log gateway.log

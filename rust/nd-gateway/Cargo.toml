@@ -1,0 +1,26 @@
+[package]
+name = "nd-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "nd-world gateway: serves static files and uploads, passes everything else to the Python app (docs/RUST_REWRITE_PLAN.md, phase 1)"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "io-util", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+hyper = { version = "1", features = ["http1", "client"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+futures-util = "0.3"
+bytes = "1"
+httpdate = "1"
+mime_guess = "2"
+percent-encoding = "2"
+serde_json = "1"
+base64 = "0.22"
+hmac = "0.12"
+sha1 = "0.10"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+tempfile = "3"

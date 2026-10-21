@@ -1,0 +1,31 @@
+{
+ "secret": "fixture-secret-not-used-anywhere",
+ "signed_at": 1700000000,
+ "cases": [
+  {
+   "cookie": "eyJ1c2VyX2lkIjogNywgIndvcmxkX2lkIjogM30=.ZVPxAA.i9SHgpisxwGfGITo4T2ROcT7RDU",
+   "session": {
+    "user_id": 7,
+    "world_id": 3
+   }
+  },
+  {
+   "cookie": "e30=.ZVPxAA.ehPhAT-ajf7-m3452p6fwbyfYM0",
+   "session": {}
+  },
+  {
+   "cookie": "eyJ1c2VyX2lkIjogMSwgIm5hbWUiOiAiWm9cdTAwZWIgXCJxdW90ZWRcIiBcdTI3MTMiLCAibGlzdCI6IFsxLCAyLCB7ImEiOiBudWxsfV19.ZVPxAA.Ffcn4OHdnA9sqMWHgquPN61817E",
+   "session": {
+    "user_id": 1,
+    "name": "Zoë \"quoted\" ✓",
+    "list": [
+     1,
+     2,
+     {
+      "a": null
+     }
+    ]
+   }
+  }
+ ]
+}

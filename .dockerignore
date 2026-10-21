@@ -18,3 +18,4 @@ LICENSE-CONTENT.md
 .env.example
 docker-compose.yml
 truenas-compose.yml
+rust/target/
