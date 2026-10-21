@@ -17,7 +17,7 @@ from app import live
 from app.database import SessionLocal
 from app.models import Party, PlayerCharacter, Schematic
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, wait_until
 
 
 def _mk_pc(world_id, name, **kw):
@@ -60,43 +60,39 @@ def _mk_map(world_id, slug, name):
 # ── Phase 1: live version counter ────────────────────────────────────────────
 
 def test_touch_bumps_only_that_world():
-    live._VERSIONS.clear()
-    before = live.version(101)
+    before1, before2 = live.version(101), live.version(202)
     live.touch(101)
     live.touch(101)
     live.touch(202)
-    assert live.version(101) == before + 2
-    assert live.version(202) == before + 1
-    live._VERSIONS.clear()
+    assert live.version(101) == before1 + 2
+    assert live.version(202) == before2 + 1
 
 
 def test_touch_ignores_none():
-    live._VERSIONS.clear()
+    from app import shared_state
+    before = shared_state.snapshot("live:")
     live.touch(None)
-    assert live._VERSIONS == {}
-    live._VERSIONS.clear()
+    assert shared_state.snapshot("live:") == before
 
 
 def test_hp_change_touches_world_version(client, seed):
     """The whole point of Phase 1: a vitals mutation anywhere (this window,
     a floated panel, a player's phone) is observable by every open page."""
-    live._VERSIONS.clear()
+    before = live.version(seed.world_a.id)
     pc_id = _mk_pc(seed.world_a.id, "Vex", current_hp=20, max_hp=20)
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.post(f"/api/characters/{pc_id}/hp-async", json={"action": "delta", "value": -6})
     assert r.status_code == 200
-    assert live.version(seed.world_a.id) >= 1
-    live._VERSIONS.clear()
+    assert wait_until(lambda: live.version(seed.world_a.id) > before)
 
 
 def test_party_loot_touches_world_version(client, seed):
-    live._VERSIONS.clear()
+    before = live.version(seed.world_a.id)
     party_id = _mk_party(seed.world_a.id, "Looters")
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.post(f"/api/parties/{party_id}/loot", json={"action": "add", "name": "Gem"})
     assert r.status_code == 200
-    assert live.version(seed.world_a.id) >= 1
-    live._VERSIONS.clear()
+    assert wait_until(lambda: live.version(seed.world_a.id) > before)
 
 
 # ── Phase 1: the SSE stream ──────────────────────────────────────────────────
@@ -106,26 +102,25 @@ async def test_stream_generator_format():
     """The SSE body directly (not through TestClient — consuming an infinite
     stream over the test portal deadlocks the suite). First frame is the
     reconnect hint; every counter change emits an event+data frame."""
-    live._VERSIONS.clear()
+    base = live.version(55)
     gen = live.stream_world_events(55)
     try:
         first = await asyncio.wait_for(gen.__anext__(), 2)
         assert first == "retry: 3000\n\n"
         evt = await asyncio.wait_for(gen.__anext__(), 2)
-        assert evt == "event: version\ndata: 0\n\n"
+        assert evt == f"event: version\ndata: {base}\n\n"
         live.touch(55)
         evt = await asyncio.wait_for(gen.__anext__(), 3)
-        assert evt == "event: version\ndata: 1\n\n"
+        assert evt == f"event: version\ndata: {base + 1}\n\n"
     finally:
         await gen.aclose()
-    live._VERSIONS.clear()
 
 
 @pytest.mark.asyncio
 async def test_stream_generator_updates_propagate_mid_wait():
     """A touch that lands WHILE the generator is sleeping surfaces on the
     next frame within a poll interval — the property the frontend relies on."""
-    live._VERSIONS.clear()
+    base = live.version(77)
     gen = live.stream_world_events(77)
     try:
         await asyncio.wait_for(gen.__anext__(), 2)  # retry
@@ -134,10 +129,9 @@ async def test_stream_generator_updates_propagate_mid_wait():
         await asyncio.sleep(0.1)
         live.touch(77)
         evt = await asyncio.wait_for(task, 3)
-        assert evt == "event: version\ndata: 1\n\n"
+        assert evt == f"event: version\ndata: {base + 1}\n\n"
     finally:
         await gen.aclose()
-    live._VERSIONS.clear()
 
 
 def test_live_route_registered_and_player_safe():

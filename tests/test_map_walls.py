@@ -10,7 +10,7 @@ from app import live, map_walls as W
 from app.database import SessionLocal
 from app.models import Schematic
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, wait_until
 
 
 # ── the pure helpers ─────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ def test_walls_round_trip_and_the_gm_sees_secret_doors(client, seed):
     before = live.version(seed.world_a.id)
     r = client.post(f"/maps/schematic/{slug}/walls", json={"walls": WALLS})
     assert r.status_code == 200 and len(r.json()["walls"]) == 3
-    assert live.version(seed.world_a.id) > before                                   # players' maps refresh at once
+    assert wait_until(lambda: live.version(seed.world_a.id) > before)               # players' maps refresh at once
     got = client.get(f"/maps/schematic/{slug}/walls.json").json()
     assert [w["kind"] for w in got["walls"]] == ["wall", "door", "secret"] and got["fog"]["enabled"] is False
     assert client.post(f"/maps/schematic/{slug}/walls", json={"walls": "nope"}).status_code == 400
@@ -213,7 +213,7 @@ def test_lights_round_trip_toggle_and_permissions(client, seed):
     _gm(client, seed)
     before = live.version(seed.world_a.id)
     r = client.post(f"/maps/schematic/{slug}/lights", json={"lights": LIGHTS})
-    assert r.status_code == 200 and [l["id"] for l in r.json()["lights"]] == ["torch", "lamp"] and live.version(seed.world_a.id) > before
+    assert r.status_code == 200 and [l["id"] for l in r.json()["lights"]] == ["torch", "lamp"] and wait_until(lambda: live.version(seed.world_a.id) > before)
     assert [l["on"] for l in client.get(f"/maps/schematic/{slug}/walls.json").json()["lights"]] == [True, False]       # the GM sees every light
     assert client.post(f"/maps/schematic/{slug}/light", json={"id": "lamp"}).json() == {"id": "lamp", "on": True}
     assert client.post(f"/maps/schematic/{slug}/light", json={"id": "lamp", "on": False}).json()["on"] is False

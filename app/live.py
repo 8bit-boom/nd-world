@@ -31,55 +31,51 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from . import shared_state
 from .database import get_db
 from .deps import get_world_ctx
 
 router = APIRouter()
 
-# world_id -> monotonically increasing int. A GIL-atomic dict store — no
-# locking needed for "bump an int from many threads, read it from one loop".
-_VERSIONS: dict = {}
-
 _HEARTBEAT_EVERY = 15  # seconds between ": keep-alive" comments
 _POLL_EVERY = 1.0  # seconds between counter checks
 
 
+# The counters live in app/shared_state.py (one SQLite table both this server and a Rust gateway read and write); touch() and signal() only
+# queue a bump for its writer thread, so they are safe to call from async handlers, threadpool handlers and code that still holds a lock.
+
 def touch(world_id) -> None:
-    """Record that something in `world_id` changed. Safe to call from async
-    handlers and sync (threadpool) handlers alike."""
+    """Record that something in `world_id` changed."""
     if world_id is None:
         return
-    _VERSIONS[world_id] = _VERSIONS.get(world_id, 0) + 1
+    shared_state.bump(f"live:{world_id}")
 
 
 def version(world_id) -> int:
-    return _VERSIONS.get(world_id, 0)
+    return shared_state.value(f"live:{world_id}")
 
 
 # Named signals (efficiency plan, step 4): "spot" = the spotlight / now playing changed, "dice" = the shared dice log got a roll. Pages used to
 # poll for these every 4-5 s per open tab; the open live stream now says so instead and the page fetches once. Keyed by world, with a
 # "every world" counter for changes that are cheapest to announce to everyone (a spotlight cache clear).
-_SIGNALS: dict = {}
-_GLOBAL_SIGNALS: dict = {}
-
 
 def signal(world_id, name: str) -> None:
     if world_id is None:
         return
-    key = (world_id, name)
-    _SIGNALS[key] = _SIGNALS.get(key, 0) + 1
+    shared_state.bump(f"sig:{world_id}:{name}")
 
 
 def signal_all(name: str) -> None:
-    _GLOBAL_SIGNALS[name] = _GLOBAL_SIGNALS.get(name, 0) + 1
+    shared_state.bump(f"sigall:{name}")
 
 
 def signals(world_id) -> dict:
     """{name: (every-world counter, this world's counter)} - compared as a whole, so a change in either is news."""
-    out = {name: (v, 0) for name, v in _GLOBAL_SIGNALS.items()}
-    for (w, name), v in list(_SIGNALS.items()):
-        if w == world_id:
-            out[name] = (out.get(name, (0, 0))[0], v)
+    out = {k[len("sigall:"):]: (v, 0) for k, v in shared_state.snapshot("sigall:").items()}
+    prefix = f"sig:{world_id}:"
+    for k, v in shared_state.snapshot(prefix).items():
+        name = k[len(prefix):]
+        out[name] = (out.get(name, (0, 0))[0], v)
     return out
 
 

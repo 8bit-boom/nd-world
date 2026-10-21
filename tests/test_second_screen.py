@@ -13,7 +13,7 @@ from app.database import SessionLocal
 from app.models import Entity, Schematic
 from app.routers import display as display_router
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, wait_until
 
 pytestmark = pytest.mark.usefixtures("client")
 
@@ -78,7 +78,7 @@ def test_show_an_image_sets_the_stage_and_bumps_the_live_counter(client, seed):
     assert r.status_code == 200, r.text
     cur = r.json()["current"]
     assert cur["kind"] == "image" and cur["url"] == "/uploads/map.png" and cur["title"] == "The Drowned Quarter"
-    assert live.version(seed.world_a.id) > before
+    assert wait_until(lambda: live.version(seed.world_a.id) > before)
     st = client.get("/api/display/state").json()
     assert st["current"]["url"] == "/uploads/map.png" and st["seq"] == r.json()["seq"]
 

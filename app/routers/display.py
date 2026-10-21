@@ -33,6 +33,7 @@ from ..rendering import render_md, strip_gm_only
 from ..rules_render import strip_gm_directives
 from ..schematic_payload import BG_COLORS, player_scene
 from ..templating import templates
+from .. import shared_state
 from ..deps import parse_json, read_body  # async routes as plain def (docs/LEFTOVERS_PLAN.md, step 4)
 
 router = APIRouter()
@@ -40,26 +41,23 @@ router = APIRouter()
 RECENT_LIMIT = 12
 _TITLE_CAP, _CAPTION_CAP, _TEXT_CAP = 200, 600, 20000
 
-# world_id -> {"seq": int, "current": item | None, "recent": [item, ...]}
-_STAGES: dict = {}
+# The stage of each world lives in the shared_state table (app/shared_state.py), key stage:<world>, so every process serving this site sees the
+# same one: {"seq": int, "current": item | None, "recent": [item, ...]}
 
 
 # ── state ────────────────────────────────────────────────────────────────────
 
 def reset_stage(world_id=None) -> None:
     """Forget one world's stage, or all of them (tests; also handy after a world is deleted)."""
-    if world_id is None:
-        _STAGES.clear()
-    else:
-        _STAGES.pop(world_id, None)
+    shared_state.delete_prefix("stage:" if world_id is None else f"stage:{world_id}")
 
 
-def _stage(world_id) -> dict:
-    return _STAGES.setdefault(world_id, {"seq": 0, "current": None, "recent": []})
+def _blank() -> dict:
+    return {"seq": 0, "current": None, "recent": []}
 
 
 def get_state(world_id) -> dict:
-    s = _stage(world_id)
+    s = shared_state.get_json(f"stage:{world_id}") or _blank()
     return {"seq": s["seq"], "current": s["current"], "recent": list(s["recent"])}
 
 
@@ -72,20 +70,26 @@ def _identity(item: dict) -> str:
 def set_stage(world_id, item: dict) -> dict:
     """Put `item` on the screen: it becomes current, moves to the front of the history (no
     duplicates, capped), and the live counter is bumped so open pages notice."""
-    s = _stage(world_id)
-    s["seq"] += 1
-    item = {**item, "id": s["seq"], "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
-    item["key"] = _identity(item)
-    s["current"] = item
-    s["recent"] = [item] + [r for r in s["recent"] if r.get("key") != item["key"]][: RECENT_LIMIT - 1]
+    def put(old):
+        s = old or _blank()
+        s["seq"] += 1
+        it = {**item, "id": s["seq"], "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+        it["key"] = _identity(it)
+        s["current"] = it
+        s["recent"] = [it] + [r for r in s["recent"] if r.get("key") != it["key"]][: RECENT_LIMIT - 1]
+        return s
+    shared_state.update_json(f"stage:{world_id}", put)
     live.touch(world_id)
     return get_state(world_id)
 
 
 def clear_stage(world_id) -> dict:
-    s = _stage(world_id)
-    s["seq"] += 1
-    s["current"] = None
+    def clear(old):
+        s = old or _blank()
+        s["seq"] += 1
+        s["current"] = None
+        return s
+    shared_state.update_json(f"stage:{world_id}", clear)
     live.touch(world_id)
     return get_state(world_id)
 

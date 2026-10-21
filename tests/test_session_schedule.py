@@ -17,7 +17,7 @@ from app.models import (
     GameSession, PlayerCharacter, SessionPlan, SessionPlanSlot, SessionPlanVote, User, World, WorldMembership,
 )
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, wait_until
 
 
 def _iso(days=7, hour=18, minute=0, tz=timezone.utc):
@@ -438,11 +438,11 @@ def test_every_change_pings_live_sync(client, seed):
     before = live.version(seed.world_a.id)
     pid = _make_plan(client)
     slot = _plan(client, pid)["slots"][0]["id"]
-    after_create = live.version(seed.world_a.id)
+    after_create = wait_until(lambda: live.version(seed.world_a.id) > before and live.version(seed.world_a.id))
     _vote(client, slot, "yes")
-    after_vote = live.version(seed.world_a.id)
+    after_vote = wait_until(lambda: live.version(seed.world_a.id) > after_create and live.version(seed.world_a.id))
     client.post(f"/api/schedule/plans/{pid}/confirm", json={"slot_id": slot})
-    assert before < after_create < after_vote < live.version(seed.world_a.id)
+    assert before < after_create < after_vote and wait_until(lambda: live.version(seed.world_a.id) > after_vote)
 
 
 # ── .ics downloads ─────────────────────────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ from app.database import SessionLocal
 from app.models import CombatSession
 from app.routers import display as display_router
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, login, wait_until
 from .test_combat_tracker_state import _cb, _make
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "app" / "templates"
@@ -47,7 +47,7 @@ def test_the_trackers_save_route_announces_it(client, seed):
     cid = _make(seed.world_a.id)
     before = _combat_signal(seed.world_a.id)
     assert client.post(f"/combat/{cid}/state", json={"combatants": [_cb("c1", "Ana", init=3)]}).status_code == 200
-    assert _combat_signal(seed.world_a.id) != before
+    assert wait_until(lambda: _combat_signal(seed.world_a.id) != before)
 
 
 def test_the_display_stream_sends_a_combat_event_when_an_encounter_changes():

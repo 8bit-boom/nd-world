@@ -16,7 +16,7 @@ from app import main as main_module
 from app.database import SessionLocal
 from app.models import PlayerCharacter, Schematic, User, WorldMembership
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login, wait_until
 
 
 def _make_schematic(world_id, slug, name="Test Schematic", elements=None, image_url=None):
@@ -479,8 +479,8 @@ def test_map_writes_bump_the_live_counter_so_players_refresh_at_once(client, see
     before = live.version(seed.world_a.id)
     r = client.post(f"/maps/schematic/{s.slug}/elements", json={"elements": []})
     assert r.status_code == 200
-    assert live.version(seed.world_a.id) > before
+    assert wait_until(lambda: live.version(seed.world_a.id) > before)
     mid = live.version(seed.world_a.id)
     r = client.post(f"/maps/schematic/{s.slug}/grid", json={"grid_type": "square", "grid_config": {"cell_size": 50}})
     assert r.status_code == 200, r.text
-    assert live.version(seed.world_a.id) > mid
+    assert wait_until(lambda: live.version(seed.world_a.id) > mid)

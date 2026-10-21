@@ -51,4 +51,5 @@ def test_a_roll_signals_the_dice_log(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     before = live.signals(seed.world_a.id).get("dice", (0, 0))[1]
     assert client.post("/api/dice/roll", json={"notation": "1d20"}).status_code == 200
-    assert live.signals(seed.world_a.id)["dice"][1] == before + 1
+    from .conftest import wait_until
+    assert wait_until(lambda: live.signals(seed.world_a.id).get("dice", (0, 0))[1] == before + 1)

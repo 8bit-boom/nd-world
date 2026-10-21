@@ -743,6 +743,16 @@ class UserViewPref(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class SharedState(Base):
+    """Live state shared between processes (app/shared_state.py): change counters (n) and small JSON values such as the second screen's stage.
+    Keys: live:<world>, sig:<world>:<name>, sigall:<name>, stage:<world>."""
+    __tablename__ = "shared_state"
+
+    key = Column(String(120), primary_key=True)
+    value = Column(Text, nullable=True)
+    n = Column(Integer, default=0, nullable=False)
+
+
 class SavedView(Base):
     """A layout a person saved under a name for one list page ("Session night", "Prep") - picked again from the layout bar's Views menu
     (docs/LEFTOVERS_PLAN.md, step 15). Their own rows only; the layout is always run through app.view_prefs.clean."""

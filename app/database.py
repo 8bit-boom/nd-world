@@ -75,6 +75,8 @@ _GENERICALLY_HEALED_TABLES = (
     "map_props",
     # saved_views (app.models.SavedView - layouts saved under a name): brand new, same reasoning as above.
     "saved_views",
+    # shared_state (app.models.SharedState - live counters / the second screen's stage shared between processes): brand new, same reasoning as above.
+    "shared_state",
 )
 
 

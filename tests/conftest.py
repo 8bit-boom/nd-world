@@ -33,6 +33,8 @@ os.environ["OLLAMA_CONFIG_DIR"] = str(_TEST_DATA_DIR / "ollama-config")
 os.environ.pop("GM_EMAIL", None)
 os.environ.pop("GM_PASSWORD", None)
 
+EXTERNAL_BASE_URL = os.environ.get("ND_TEST_BASE_URL", "").rstrip("/")     # run the suite against a live server instead of in-process
+
 import asyncio
 import shutil
 
@@ -76,6 +78,18 @@ _GM_PASSWORD_HASH = auth.hash_password(GM_PASSWORD)
 _PLAYER_PASSWORD_HASH = auth.hash_password(PLAYER_PASSWORD)
 
 
+def pytest_collection_modifyitems(config, items):
+    """Against a server started separately (ND_TEST_BASE_URL) the tests that reach into the app's own process cannot run: skip those listed in
+    tests/inprocess_only.txt (why: see that file)."""
+    if not EXTERNAL_BASE_URL:
+        return
+    listed = {l.strip() for l in (Path(__file__).parent / "inprocess_only.txt").read_text().splitlines() if l.strip() and not l.startswith("#")}
+    skip = pytest.mark.skip(reason="needs the app in this process (tests/inprocess_only.txt)")
+    for item in items:
+        if item.nodeid in listed:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def _reset_stt_upload_state(monkeypatch):
     """app.ai remembers (until restart) that Studio refused an Opus re-encode. That is process-wide state; a test
@@ -96,60 +110,21 @@ def client():
     path — silent split-brain state between tests.
     """
     Base.metadata.drop_all(bind=engine)
-    from app.main import UPLOADS_DIR
-    shutil.rmtree(UPLOADS_DIR, ignore_errors=True)
-    from app.database import RESTORE_STAGING_DIR
-    shutil.rmtree(RESTORE_STAGING_DIR, ignore_errors=True)
-    # Dropping/recreating the tables above restarts autoincrement ids from 1
-    # every test, so a user id gets reused across tests — a process-local,
-    # user-id-keyed dict like app.deps._llm_cooldowns would otherwise leak a
-    # timestamp from one test into the "same" id in the next and produce a
-    # false 429 there. Clear it here for the same reason the DB/uploads
-    # above are reset per test.
-    from app.deps import _llm_cooldowns
-    _llm_cooldowns.clear()
-    # Same reasoning, same fix, for the small AI-answer caches added in
-    # Wave 3 (plan item 1.9) — process-local state keyed by ids
-    # (session_id, world_id/user_id) that get reused across tests once the
-    # DB is reset above, so a cached recap/answer from one test would
-    # otherwise leak into an unrelated later test reusing the "same" id.
-    # The session-log recap needs no reset here anymore: its "cache" is
-    # durable DB state (done AudioJob rows compared against Fact
-    # timestamps and World.recap_content_touch — see
-    # app.routers.sessions.api_session_log_recap), and the DB drop/create
-    # above already resets all of it.
-    from app.routers.chronicler import _ask_cache
-    _ask_cache.clear()
-    # app.database._app_settings_flags_cache (Wave 4, Speed 4.5) — a single
-    # cached snapshot, not a dict, so reset the module attribute directly
-    # rather than .clear(); same drop_all/create_all-reuse leak risk as the
-    # dict caches above (a world's AppSettings row is a fresh id=1 every
-    # test, but the OLD test's cached flags would otherwise still be
-    # "fresh" by the TTL clock and get served into the new test).
-    import app.database as _database_module
-    _database_module._app_settings_flags_cache = None
-    # app.rendering._parse_stats_cache (Wave 4, Speed 4.1) — keyed by
-    # (entity.id, entity.updated_at). A DB reset restarts autoincrement ids,
-    # and datetime.utcnow()'s microsecond precision makes an exact collision
-    # with a prior test's timestamp for the "same" id astronomically
-    # unlikely but not impossible in a fast-running suite — clear it
-    # unconditionally for the same reason as the caches above.
-    from app.rendering import clear_parse_stats_cache
-    clear_parse_stats_cache()
-    # app.ai.stt_job_semaphore/ollama_job_semaphore are module-level
-    # singletons that lazily bind to whichever asyncio event loop first
-    # actually contends them (see asyncio.Semaphore.acquire — it only
-    # calls _get_loop(), and so only binds, once a second waiter shows up)
-    # — harmless in production, where the process has exactly one event
-    # loop for its whole lifetime, but pytest-asyncio hands each test
-    # function its own fresh loop, so a semaphore genuinely contended (two
-    # jobs queued at once) in one test would raise "bound to a different
-    # event loop" in any later test whose own contention is the first to
-    # reach it. Give every test fresh, as-yet-unbound instances, same
-    # reasoning as _llm_cooldowns above.
-    ai_module.stt_job_semaphore = asyncio.Semaphore(ai_module.STT_JOB_CONCURRENCY)
-    ai_module.ollama_job_semaphore = asyncio.Semaphore(ai_module.OLLAMA_JOB_CONCURRENCY)
-    ai_module.imagegen_job_semaphore = asyncio.Semaphore(ai_module.IMAGEGEN_JOB_CONCURRENCY)
+    from tests._reset import reset_process_state
+    reset_process_state()
+    if EXTERNAL_BASE_URL:
+        import httpx
+        httpx.post(EXTERNAL_BASE_URL + "/__test__/reset", timeout=60).raise_for_status()      # the server's own caches (tests/serve.py)
+    if EXTERNAL_BASE_URL:
+        # Server-agnostic mode (docs/RUST_REWRITE_PLAN.md, phase 0): the same tests, over HTTP, against a server that is already running and
+        # uses the same database file (DB_PATH, SECRET_KEY) - Python today, a Rust gateway in front of it later. The tables were dropped above;
+        # recreate them here (the server keeps working: SQLite opens the file afresh) and seed through SessionLocal as always.
+        import httpx
+        from app.database import init_db
+        init_db()
+        with httpx.Client(base_url=EXTERNAL_BASE_URL, follow_redirects=True, timeout=120) as c:
+            yield c
+        return
     with TestClient(app) as c:
         yield c
 
@@ -290,3 +265,18 @@ def session_data(html: str) -> dict:
     m = re.search(r'<script type="application/json" id="nd-session-data">(.*?)</script>', html, re.S)
     assert m, "the session page carries its data block"
     return json.loads(m.group(1))
+
+
+def wait_until(check, timeout: float = 5.0, every: float = 0.05):
+    """Poll `check()` until it returns something truthy (and return it) - for a change made by ANOTHER process (a server the suite runs against
+    over HTTP): its counters reach this process after its writer thread and this process's refresh, a few hundredths of a second."""
+    import time
+    from app import shared_state
+    end = time.monotonic() + timeout
+    while True:
+        shared_state.refresh(force=True)
+        got = check()
+        if got or time.monotonic() > end:
+            return got
+        time.sleep(every)
+
