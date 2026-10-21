@@ -1,0 +1,133 @@
+# Rust (Axum) rewrite plan
+
+Status: PLAN ONLY - nothing here is built. Written at the user's request after the question "which language would use all of the server's
+cores". It describes how nd-world could move from Python (FastAPI) to Rust (Axum) without a big-bang switch, what it would cost, what it
+would and would not gain, and where to stop if the gain does not show.
+
+## 1. What a rewrite would and would not change
+
+**Would change**
+- Page building on every core: Axum runs requests on all threads; the Python interpreter lock that caps page building today
+  (`app/render_gate.py`) goes away. Expect roughly 5-20x more pages per second under load and lower worst-case waits.
+- Memory: ~20-40 MB for the web server instead of ~190 MB; start-up in milliseconds instead of ~2 s.
+- One static binary in the image: no Python, no pip layer (144 MB today), a smaller image.
+- Type checking of every request, query and template value at compile time.
+
+**Would not change**
+- The AI: Ollama, Unsloth Studio and SwarmUI already run outside nd-world (C++/CUDA on the GPU). The GPU's 16 GB is still the limit.
+- Video and audio: still ffmpeg.
+- Pictures: Pillow already encodes in C on 8 threads; Rust would be somewhat faster, not a different league.
+- What a table of 5-10 people feels: pages already take 10-40 ms. The rewrite pays off with many simultaneous users, a much smaller
+  machine, or as a long-term maintenance choice - not on today's load.
+
+## 2. The size of the job (counted on main)
+
+| | Count |
+|---|---|
+| Python application code | ~70,000 lines; `main.py` 8,300, `ai.py` 5,700, 53 routers |
+| HTTP routes | 757 |
+| Jinja templates | 128 (92 use `extends`, 37 `include`, 38 `from ... import` macros) + 20 custom filters / globals |
+| Database models | 61 tables (SQLite), hand-written migrations in `database.py` |
+| Background job systems | 7 (`audio_jobs`, `chat_jobs`, `image_jobs`, `video_jobs`, `live_jobs`, `media_rename_jobs`, `ai_queue`), with checkpoint / resume |
+| Live streams (SSE) | 29 files: live updates, display screen, AI streaming, chronicler |
+| Front-end | 24,000 lines of JavaScript + CSS - **kept as it is** |
+| Tests | 374 files, ~100,000 lines; 49 talk to the app only over HTTP, 325 also call Python functions directly |
+
+## 3. Strategy: replace it piece by piece, never all at once
+
+A "strangler" migration: the Rust server goes in front and answers the routes it has been taught; everything else it passes to the
+Python app behind it. Both use the same SQLite file and the same `uploads/` folder. Each step moves a group of routes and ships on its
+own; at every point the site works and can be rolled back by switching a route back to Python.
+
+```
+browser ──> Rust (Axum) ──┬── routes already ported: answered here
+                          └── everything else: proxied to Python (FastAPI) on 127.0.0.1
+             both ──> the same SQLite database, uploads/, static/
+```
+
+Rules for the whole migration:
+- **One database, one schema.** Python keeps owning migrations until the very end; Rust reads the schema as it is (no ORM rewrite of
+  the data model). SQLite in WAL mode handles two processes writing; writes go through short transactions on both sides.
+- **The same templates.** Rust renders the existing Jinja files with MiniJinja (Jinja-compatible, by Jinja's author), so pages look the
+  same and a template change keeps working on both sides during the migration.
+- **The same URLs, cookies and logins.** Session cookies (Starlette / itsdangerous signed JSON) and password hashes (PBKDF2-SHA256) are
+  read and written in the same format, so nobody is logged out and both servers accept the same session.
+- **Live state moves first.** What lives in Python's memory today (live-update counters, the display screen's stage, spotlight, the
+  render gate) has to be shared by both processes: it moves into the database (or a tiny Rust service the Python side calls) before any
+  route that uses it is ported.
+- **Parity, not redesign.** A route is ported to produce the same response; improvements come after the switch, not during it.
+
+## 4. Building blocks (Python today -> Rust)
+
+| Need | Python today | Rust |
+|---|---|---|
+| Web framework | FastAPI / Starlette, uvicorn | `axum` + `tokio` + `tower-http` (compression, static files with the existing `.br` / `.gz` twins, timeouts) |
+| Database | SQLAlchemy 2 + hand migrations | `sqlx` (SQLite, async, queries checked at compile time) - plain SQL, no ORM |
+| Templates | Jinja2 | `minijinja` - same files; the 20 filters / globals (`thumb`, `display`, `asset_v`, markdown, view specs ...) rewritten |
+| Markdown | markdown2 + extras | `comrak` (GitHub-flavoured); output differences checked by golden tests |
+| HTML sanitising | nh3 (Python bindings to ammonia) | `ammonia` - the same library |
+| Sessions / auth | Starlette sessions, PBKDF2, TOTP, trusted devices | `tower-sessions`-style middleware reading the itsdangerous format, `pbkdf2` + `sha2`, `totp-rs`, `qrcode` |
+| Uploads | python-multipart, chunked uploads | `axum::extract::Multipart`, the same chunk protocol |
+| Live updates | SSE (sse-starlette), in-memory counters | `axum::response::sse`, `tokio::sync::broadcast` |
+| Pictures | Pillow (thumbnails, AVIF / WebP, tiles, display copies) | `image` + `fast_image_resize`, `ravif` / libavif, `webp` (libwebp) |
+| AI back ends | httpx, ollama client, websockets | `reqwest` (streaming), `tokio-tungstenite` |
+| MCP server | `mcp` (FastMCP) | `rmcp` (the official Rust SDK) |
+| PDF reading / writing | pypdf / reportlab | `lopdf` + `pdf-extract` / `typst` or `printpdf` |
+| HTML -> text | html2text | `html2text` crate |
+| ffmpeg | subprocess | `tokio::process` - same commands |
+| Background jobs | asyncio tasks + DB rows, checkpoint / resume | `tokio` tasks + the same job tables and resume rules |
+
+## 5. Phases
+
+Effort is for one experienced developer, full time; the ranges are honest - the AI and job code is the uncertain part.
+
+| Phase | What | Exit criteria | Effort |
+|---|---|---|---|
+| 0. Groundwork (in Python) | Move the in-memory live state (live counters, signals, display stage, spotlight cache) into the database; turn the 325 test files that call Python internals into HTTP-level tests where they check behaviour, so the same suite can run against either server (`ND_TEST_BASE_URL`). Add a golden-response tool: record Python's response for a set of requests, compare another server's. | The suite runs against a live server; nothing lives only in Python's memory | 6-8 weeks |
+| 1. Rust gateway | Axum binary in front: static files (with `.br` / `.gz`), `/uploads/` (thumbnail fallback, display copies), cookies / sessions / auth gate, proxy for everything else, the perf log. Docker image runs both processes. | All tests green with Rust in front; no visible change | 4-6 weeks |
+| 2. Read-only pages | Templates via MiniJinja and the 20 filters; entity pages and lists, search, rules, maps viewer + tiles, calendar, facts, sessions list, home. | Golden HTML matches (normalised) for every ported page; page throughput measured | 8-12 weeks |
+| 3. Edits and uploads | Forms and JSON writes for entities, sessions, facts, quests, parties, characters, galleries, audio / video libraries, chunked uploads, picture processing (thumbnails, AVIF, tiles). | Write routes ported with the same permission checks (the visibility / section-access rules are the riskiest part) | 10-14 weeks |
+| 4. Live and table tools | SSE streams, live updates, display screen, cockpit, combat tracker, dice, character hub, schematic maps (walls, fog, tokens, buy / pick-up with the same locking). | Two-browser tests of every live feature; race tests pass | 8-10 weeks |
+| 5. AI and jobs | AI chat / streaming, recaps, transcription pipeline (chunking, retries, checkpoint / resume), image and video jobs, media renamer, RAG / retrieval, MCP server, Ollama tuning, hardware detection, fan control. | Every job survives a restart mid-way as today; the AI audit list re-checked | 12-16 weeks |
+| 6. Switch-off | Migrations move to Rust (`sqlx` migrations reproducing `database.py`'s healing), Python removed from the image, docs. | One binary; image size and memory measured | 3-4 weeks |
+
+**Total: roughly 12-17 months** for one developer (about 51-70 weeks), or 6-9 months for two. Phases 2-5 can overlap with two people.
+
+## 6. How correctness is kept
+
+- **The existing suite is the contract.** Phase 0 makes it server-agnostic; every phase ends with the full suite green against the
+  Rust-fronted server - the same rule as today (full suite before every push).
+- **Golden responses.** For each ported route, the Python response and the Rust response to the same requests are compared (HTML
+  normalised for whitespace and attribute order, JSON compared as data). A difference is either fixed or written down as intended.
+- **Shadow traffic** before switching a busy route: Rust answers in parallel, its answer is compared and thrown away, Python's is sent.
+- **Permissions get their own matrix**: every route x role (GM, player, assistant, logged-out) x world section access, generated from
+  the route list, run against both servers.
+- **Rollback per route**: the gateway's route table decides who answers; switching back is one line and a restart.
+
+## 7. Risks
+
+| Risk | Why | Mitigation |
+|---|---|---|
+| Takes longer than planned | Big rewrites usually do; the AI / job code holds many hard-won fixes (retries, timeouts, resume) | Phases ship separately; stop after any phase and keep the hybrid |
+| Lost fixes | The Python code encodes years of edge cases (comments explain many of them) | Port tests first; read each module's comments as requirements |
+| Two servers writing one SQLite file | Lock contention, `database is locked` | WAL, short transactions, a busy timeout on both sides; move hot writers as a group |
+| Template / markdown differences | MiniJinja and comrak are close to Jinja2 and markdown2, not identical | Golden tests; small template adjustments made in Python first |
+| Fewer contributors know Rust | Changes get slower to make | Keep the code plain (no clever generics), document the patterns |
+| Feature freeze | New features during the migration have to be built twice or wait | Build new features in Rust once the gateway exists |
+| Python-only libraries | A few have no exact Rust twin (reportlab, some markdown extras) | Keep that part in a small Python sidecar until a replacement is good enough |
+
+## 8. Decision points (where to stop)
+
+1. **After phase 0** (worth doing even without a rewrite: it makes the tests and the live state better). Stop if the measured load
+   still never reaches the page limit.
+2. **After phase 2**: compare pages per second, memory and worst-case wait under the real load (`scripts/perf_smoke.py`). If the gain
+   does not matter at the table, stop - the hybrid (Rust in front for static files, uploads and read-only pages, Python for the rest) is
+   a fine final state.
+3. **Before phase 5**: the AI code is the most expensive to port and the least likely to get faster (it waits on the GPU). Keeping it in
+   a Python service behind the Rust server is a reasonable end point.
+
+## 9. Recommendation
+
+Not now: today's pages are fast, the heavy work already runs outside Python, and the server's limit is the GPU's memory. If the rewrite
+is wanted anyway (for the experience, a smaller footprint, or a future with many more users), do **phase 0 first** - it pays for itself
+in Python - then **phase 1 and 2** and measure at decision point 2 before committing to the rest.
