@@ -210,3 +210,10 @@ NOT done - phase 3's exit criteria are **not met**: of hundreds of write routes 
 the plan calls the riskiest part (route allowlists, per-row ownership, `[gmonly]` stripping) in Rust, and its own refusal-parity test; uploads
 need multipart handling and the picture pipeline. The static musl build now links a C library (bundled SQLite), so the image's Rust stage
 installs `gcc` / `musl-tools`; the binary grew from 2 MB to 7 MB.
+
+### 13a. Phase 3, continued - the permission layer
+
+`rust/nd-perm` (`docs/RUST_PERMISSIONS.md`): the route allowlists, `auth_gate`'s decision, the section matrix with custom kinds, row ownership and
+`[gmonly]` / `[for]` / `[reveal]` stripping, ported and checked differentially against the Python originals (~290,000 allowlist questions over
+every route, the real `_auth_gate_rest` for 6 kinds of viewer, random matrices and tagged texts). The dice write uses it. Still phase 3's
+exit criteria are not met: the write routes themselves, each with its own handler checks and refusal-parity test, are still Python's.

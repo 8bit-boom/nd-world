@@ -136,23 +136,18 @@ pub fn actor_for_dice(db: &Connection, cfg: &Config, uri: &Uri, headers: &Header
     if !is_gm && rows.iter().filter(|r| r.0 == chosen.0).count() != 1 {
         return None; // two membership rows for one world: not a case to guess about
     }
+    // auth_gate's allowlists, then the section matrix - both from rust/nd-perm, checked against Python by tests/test_rust_permissions.py
+    let viewer = nd_perm::allow::Viewer { is_gm, active_role: chosen.3.clone(), active_world_id: Some(chosen.0) };
+    if !nd_perm::allow::gate_allows(&viewer, "POST", uri.path()) {
+        return None;
+    }
     if !is_gm {
-        let is_assistant = matches!(chosen.3.as_deref(), Some("assistant") | Some("owner"));
-        let role = if is_assistant { "assistant" } else { "player" };
-        if dice_level(chosen.2.as_deref(), role) == "none" {
+        let role = if matches!(chosen.3.as_deref(), Some("assistant") | Some("owner")) { "assistant" } else { "player" };
+        if nd_perm::sections::section_level(false, Some(role), chosen.2.as_deref(), None, "dice")? == "none" {
             return None;
         }
     }
     Some(Actor { user_id, display_name: display_name.unwrap_or_default(), world_id: chosen.0 })
-}
-
-/// `deps.world_section_access(world)["dice"][role]`: the GM's setting if it is a valid level, else the default ("read" for both roles).
-fn dice_level(section_access_json: Option<&str>, role: &str) -> String {
-    let parsed: serde_json::Value = section_access_json.and_then(|s| serde_json::from_str(s).ok()).unwrap_or(serde_json::Value::Null);
-    match parsed.get("dice").and_then(|d| d.get(role)).and_then(|v| v.as_str()) {
-        Some(l @ ("none" | "read" | "edit")) => l.to_string(),
-        _ => "read".to_string(),
-    }
 }
 
 // ── the roll itself ──────────────────────────────────────────────────────────
