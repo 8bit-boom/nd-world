@@ -1525,5 +1525,1787 @@
   1,
   2,
   3
- ]
+ ],
+ "view_specs": {
+  "ai_chat": {
+   "default": "withside",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "◧",
+     "id": "withside",
+     "label": "Chat + side panel"
+    },
+    {
+     "icon": "◎",
+     "id": "focus",
+     "label": "Chat only"
+    }
+   ],
+   "section": "ai_chat",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "album": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Grid"
+    },
+    {
+     "icon": "▥",
+     "id": "masonry",
+     "label": "Masonry"
+    },
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    },
+    {
+     "icon": "🎞",
+     "id": "filmstrip",
+     "label": "Filmstrip"
+    },
+    {
+     "icon": "▬",
+     "id": "justified",
+     "label": "Justified rows"
+    },
+    {
+     "icon": "◧",
+     "id": "compare",
+     "label": "Compare"
+    }
+   ],
+   "section": "album",
+   "size_modes": [
+    "grid",
+    "masonry",
+    "filmstrip",
+    "justified",
+    "compare"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "audio": {
+   "default": "rows",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [
+    {
+     "id": "hidden",
+     "label": "Hidden from players only"
+    }
+   ],
+   "groups": [
+    {
+     "id": "visibility",
+     "label": "Visible / hidden to players"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "rows",
+     "label": "Rows"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    },
+    {
+     "icon": "▶",
+     "id": "playlist",
+     "label": "Playlist"
+    },
+    {
+     "icon": "🎛",
+     "id": "pads",
+     "label": "Soundboard"
+    },
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    }
+   ],
+   "section": "audio",
+   "size_modes": [
+    "pads"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    },
+    {
+     "id": "date",
+     "label": "Date"
+    },
+    {
+     "id": "size",
+     "label": "File size"
+    }
+   ]
+  },
+  "board_notes": {
+   "default": "timeline",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "date",
+   "filters": [],
+   "groups": [
+    {
+     "id": "type",
+     "label": "Type"
+    },
+    {
+     "id": "status",
+     "label": "Status"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "List"
+    },
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    },
+    {
+     "icon": "≣",
+     "id": "outline",
+     "label": "Outline"
+    },
+    {
+     "icon": "◫",
+     "id": "split",
+     "label": "Reader"
+    }
+   ],
+   "section": "board_notes",
+   "size_modes": [
+    "cards"
+   ],
+   "sorts": [
+    {
+     "id": "date",
+     "label": "Board order"
+    },
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "board_view": {
+   "default": "canvas",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗺",
+     "id": "canvas",
+     "label": "Canvas"
+    },
+    {
+     "icon": "≣",
+     "id": "outline",
+     "label": "Outline"
+    },
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "Timeline"
+    }
+   ],
+   "section": "board_view",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "boards": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    }
+   ],
+   "section": "boards",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "calendar_agenda": {
+   "default": "table",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    },
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "Eras timeline"
+    }
+   ],
+   "section": "calendar_agenda",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "calendar_view": {
+   "default": "month",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗓",
+     "id": "month",
+     "label": "Month"
+    },
+    {
+     "icon": "▭",
+     "id": "week",
+     "label": "Week"
+    }
+   ],
+   "section": "calendar_view",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "catalog": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    }
+   ],
+   "section": "catalog",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "characters": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    {
+     "id": "party",
+     "label": "Party"
+    },
+    {
+     "id": "owner",
+     "label": "Player"
+    },
+    {
+     "id": "system",
+     "label": "Sheet type"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Grid"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Roster"
+    },
+    {
+     "icon": "🖼",
+     "id": "wall",
+     "label": "Portrait wall"
+    }
+   ],
+   "section": "characters",
+   "size_modes": [
+    "grid",
+    "wall"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    },
+    {
+     "id": "num",
+     "label": "Level"
+    }
+   ]
+  },
+  "cockpit": {
+   "default": "free",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "◫",
+     "id": "free",
+     "label": "Free windows"
+    },
+    {
+     "icon": "▥",
+     "id": "rail",
+     "label": "Stage + rail"
+    },
+    {
+     "icon": "🗂",
+     "id": "tabs",
+     "label": "Tabs"
+    },
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Tiled grid"
+    }
+   ],
+   "section": "cockpit",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "combat": {
+   "default": "rows",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "rows",
+     "label": "Standard"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    },
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    },
+    {
+     "icon": "🎯",
+     "id": "turn",
+     "label": "Turn view"
+    },
+    {
+     "icon": "🖥",
+     "id": "big",
+     "label": "Big screen"
+    }
+   ],
+   "section": "combat",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "combat_list": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    },
+    {
+     "icon": "☰",
+     "id": "grouped",
+     "label": "By status"
+    }
+   ],
+   "section": "combat_list",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "connections": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    {
+     "id": "dir",
+     "label": "Direction"
+    },
+    {
+     "id": "kind",
+     "label": "Kind"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "🕸",
+     "id": "web",
+     "label": "Web"
+    }
+   ],
+   "section": "connections",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "dice": {
+   "default": "tray",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🎲",
+     "id": "tray",
+     "label": "3D tray"
+    },
+    {
+     "icon": "⚡",
+     "id": "quick",
+     "label": "Quick buttons"
+    },
+    {
+     "icon": "📜",
+     "id": "log",
+     "label": "History first"
+    }
+   ],
+   "section": "dice",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "entities": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    {
+     "id": "subtype",
+     "label": "Subtype"
+    },
+    {
+     "id": "tag",
+     "label": "First tag"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Grid"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    },
+    {
+     "icon": "🖼",
+     "id": "wall",
+     "label": "Portrait wall"
+    },
+    {
+     "icon": "◫",
+     "id": "split",
+     "label": "Split"
+    },
+    {
+     "icon": "▦",
+     "id": "board",
+     "label": "Board"
+    }
+   ],
+   "section": "entities",
+   "size_modes": [
+    "grid",
+    "wall"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    },
+    {
+     "id": "date",
+     "label": "Date"
+    }
+   ]
+  },
+  "entity_notes": {
+   "default": "timeline",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "date",
+   "filters": [],
+   "groups": [
+    {
+     "id": "month",
+     "label": "Month"
+    },
+    {
+     "id": "visibility",
+     "label": "Visible / hidden to players"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "List"
+    },
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    },
+    {
+     "icon": "≣",
+     "id": "outline",
+     "label": "Outline"
+    },
+    {
+     "icon": "◫",
+     "id": "split",
+     "label": "Reader"
+    }
+   ],
+   "section": "entity_notes",
+   "size_modes": [
+    "cards"
+   ],
+   "sorts": [
+    {
+     "id": "date",
+     "label": "Date"
+    },
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "entity_page": {
+   "default": "classic",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "classic",
+     "label": "Long page"
+    },
+    {
+     "icon": "🗂",
+     "id": "tabs",
+     "label": "Tabs"
+    },
+    {
+     "icon": "◧",
+     "id": "cols",
+     "label": "Two columns"
+    },
+    {
+     "icon": "📖",
+     "id": "reader",
+     "label": "Reader"
+    }
+   ],
+   "section": "entity_page",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "facts": {
+   "default": "groups",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗂",
+     "id": "groups",
+     "label": "By session"
+    },
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "Timeline"
+    },
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    }
+   ],
+   "section": "facts",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "handouts": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Grid"
+    },
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    }
+   ],
+   "section": "handouts",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "home": {
+   "default": "classic",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "classic",
+     "label": "Classic"
+    },
+    {
+     "icon": "🌙",
+     "id": "night",
+     "label": "Session night"
+    },
+    {
+     "icon": "◎",
+     "id": "focus",
+     "label": "Focus"
+    },
+    {
+     "icon": "🧩",
+     "id": "widgets",
+     "label": "My widgets"
+    }
+   ],
+   "section": "home",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "hub": {
+   "default": "tabs",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [
+    {
+     "id": "sheet",
+     "label": "Sheet"
+    },
+    {
+     "id": "cockpit",
+     "label": "Cockpit"
+    },
+    {
+     "id": "journey",
+     "label": "Journey"
+    },
+    {
+     "id": "quests",
+     "label": "Quests"
+    },
+    {
+     "id": "notes",
+     "label": "Notes"
+    },
+    {
+     "id": "world",
+     "label": "World"
+    },
+    {
+     "id": "schedule",
+     "label": "Schedule"
+    },
+    {
+     "id": "sessions",
+     "label": "Sessions"
+    },
+    {
+     "id": "keepsakes",
+     "label": "Kept"
+    },
+    {
+     "id": "handouts",
+     "label": "Handouts"
+    },
+    {
+     "id": "companions",
+     "label": "Allies"
+    },
+    {
+     "id": "log",
+     "label": "Log"
+    },
+    {
+     "id": "places",
+     "label": "Pages"
+    }
+   ],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗂",
+     "id": "tabs",
+     "label": "Tabs"
+    },
+    {
+     "icon": "🎲",
+     "id": "play",
+     "label": "Play"
+    },
+    {
+     "icon": "▤",
+     "id": "dashboard",
+     "label": "Dashboard"
+    },
+    {
+     "icon": "◫",
+     "id": "split",
+     "label": "Split"
+    }
+   ],
+   "section": "hub",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "images": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [
+    {
+     "id": "unused",
+     "label": "Unused only"
+    }
+   ],
+   "groups": [
+    {
+     "id": "usage",
+     "label": "Used / unused"
+    },
+    {
+     "id": "source",
+     "label": "First place used"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Grid"
+    },
+    {
+     "icon": "▥",
+     "id": "masonry",
+     "label": "Masonry"
+    },
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    },
+    {
+     "icon": "🎞",
+     "id": "filmstrip",
+     "label": "Filmstrip"
+    },
+    {
+     "icon": "▬",
+     "id": "justified",
+     "label": "Justified rows"
+    },
+    {
+     "icon": "◧",
+     "id": "compare",
+     "label": "Compare"
+    }
+   ],
+   "section": "images",
+   "size_modes": [
+    "grid",
+    "masonry",
+    "filmstrip",
+    "justified",
+    "compare"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    },
+    {
+     "id": "uses",
+     "label": "Used in"
+    },
+    {
+     "id": "date",
+     "label": "Date"
+    },
+    {
+     "id": "size",
+     "label": "File size"
+    }
+   ]
+  },
+  "jobs_list": {
+   "default": "cards",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    },
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    }
+   ],
+   "section": "jobs_list",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "map_viewer": {
+   "default": "mapfull",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗺",
+     "id": "mapfull",
+     "label": "Map only"
+    },
+    {
+     "icon": "◧",
+     "id": "panel",
+     "label": "Map + list"
+    },
+    {
+     "icon": "◰",
+     "id": "minimap",
+     "label": "Mini-map"
+    }
+   ],
+   "section": "map_viewer",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "maps": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Grid"
+    },
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    },
+    {
+     "icon": "🖼",
+     "id": "large",
+     "label": "Large"
+    }
+   ],
+   "section": "maps",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "notes": {
+   "default": "timeline",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "-date",
+   "filters": [],
+   "groups": [
+    {
+     "id": "month",
+     "label": "Month"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "Timeline"
+    },
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    },
+    {
+     "icon": "≣",
+     "id": "outline",
+     "label": "Outline"
+    },
+    {
+     "icon": "◫",
+     "id": "split",
+     "label": "Reader"
+    }
+   ],
+   "section": "notes",
+   "size_modes": [
+    "cards"
+   ],
+   "sorts": [
+    {
+     "id": "date",
+     "label": "Date"
+    },
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "parties": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "▦",
+     "id": "table",
+     "label": "Table"
+    }
+   ],
+   "section": "parties",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "party_page": {
+   "default": "classic",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "classic",
+     "label": "Long page"
+    },
+    {
+     "icon": "▤",
+     "id": "dashboard",
+     "label": "Dashboard"
+    }
+   ],
+   "section": "party_page",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "quests": {
+   "default": "board",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    {
+     "id": "status",
+     "label": "Status"
+    },
+    {
+     "id": "category",
+     "label": "Category"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "▦",
+     "id": "board",
+     "label": "Board"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "List"
+    },
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    }
+   ],
+   "section": "quests",
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    },
+    {
+     "id": "date",
+     "label": "Date"
+    }
+   ]
+  },
+  "recap": {
+   "default": "full",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "📄",
+     "id": "full",
+     "label": "Full text"
+    },
+    {
+     "icon": "§",
+     "id": "sections",
+     "label": "Sections"
+    },
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    }
+   ],
+   "section": "recap",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "rules": {
+   "default": "scroll",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "📜",
+     "id": "scroll",
+     "label": "Scroll"
+    },
+    {
+     "icon": "📕",
+     "id": "book",
+     "label": "Book"
+    },
+    {
+     "icon": "↔",
+     "id": "wide",
+     "label": "Reading column"
+    },
+    {
+     "icon": "🔎",
+     "id": "searchfirst",
+     "label": "Search first"
+    }
+   ],
+   "section": "rules",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "search_results": {
+   "default": "grouped",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "grouped",
+     "label": "Grouped"
+    },
+    {
+     "icon": "≣",
+     "id": "flat",
+     "label": "One list"
+    },
+    {
+     "icon": "🗒",
+     "id": "cards",
+     "label": "Cards"
+    }
+   ],
+   "section": "search_results",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "session_gm": {
+   "default": "long",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "long",
+     "label": "Long page"
+    },
+    {
+     "icon": "🗂",
+     "id": "tabs",
+     "label": "Tabs"
+    },
+    {
+     "icon": "▶",
+     "id": "run",
+     "label": "Run mode"
+    }
+   ],
+   "section": "session_gm",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "session_log": {
+   "default": "timeline",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "-num",
+   "filters": [],
+   "groups": [
+    {
+     "id": "recap",
+     "label": "Recap"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "📜",
+     "id": "timeline",
+     "label": "List"
+    },
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    }
+   ],
+   "section": "session_log",
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    {
+     "id": "num",
+     "label": "Session number"
+    },
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "sessions": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "-num",
+   "filters": [],
+   "groups": [
+    {
+     "id": "party",
+     "label": "Party"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "List"
+    }
+   ],
+   "section": "sessions",
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    {
+     "id": "num",
+     "label": "Session number"
+    },
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "settings_page": {
+   "default": "tabs",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🗂",
+     "id": "tabs",
+     "label": "Tabs"
+    },
+    {
+     "icon": "📜",
+     "id": "onepage",
+     "label": "One page + search"
+    }
+   ],
+   "section": "settings_page",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "site": {
+   "default": "site",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⚙",
+     "id": "site",
+     "label": "Site"
+    }
+   ],
+   "options": {
+    "density": [
+     "comfortable",
+     "compact",
+     "touch"
+    ],
+    "motion": [
+     "",
+     "full",
+     "reduced"
+    ],
+    "nav": [
+     "top",
+     "rail",
+     "compact",
+     "bottom"
+    ],
+    "scale": [
+     "",
+     "90",
+     "100",
+     "110",
+     "125",
+     "150",
+     "175",
+     "200"
+    ],
+    "theme": [
+     "",
+     "dark",
+     "dim",
+     "light",
+     "contrast"
+    ],
+    "width": [
+     "centered",
+     "wide",
+     "reading"
+    ]
+   },
+   "section": "site",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "tables": {
+   "default": "grid",
+   "default_group": "category",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    {
+     "id": "category",
+     "label": "Category"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "List"
+    },
+    {
+     "icon": "🎲",
+     "id": "roll",
+     "label": "Roll board"
+    }
+   ],
+   "section": "tables",
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "templates": {
+   "default": "list",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    },
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    }
+   ],
+   "section": "templates",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
+  "video": {
+   "default": "rows",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [
+    {
+     "id": "hidden",
+     "label": "Hidden from players only"
+    }
+   ],
+   "groups": [
+    {
+     "id": "visibility",
+     "label": "Visible / hidden to players"
+    }
+   ],
+   "modes": [
+    {
+     "icon": "☰",
+     "id": "rows",
+     "label": "Rows"
+    },
+    {
+     "icon": "≡",
+     "id": "compact",
+     "label": "Compact"
+    },
+    {
+     "icon": "🎬",
+     "id": "posters",
+     "label": "Posters"
+    },
+    {
+     "icon": "📽",
+     "id": "theater",
+     "label": "Theater"
+    }
+   ],
+   "section": "video",
+   "size_modes": [
+    "posters"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    },
+    {
+     "id": "date",
+     "label": "Date"
+    },
+    {
+     "id": "size",
+     "label": "File size"
+    }
+   ]
+  },
+  "worlds": {
+   "default": "grid",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "⊞",
+     "id": "grid",
+     "label": "Cards"
+    },
+    {
+     "icon": "☰",
+     "id": "list",
+     "label": "List"
+    }
+   ],
+   "section": "worlds",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  }
+ }
 }

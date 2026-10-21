@@ -341,3 +341,40 @@ def test_the_dice_page_the_gateway_builds_is_pythons_page(client, seed):
                 diff = "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:40])
                 raise AssertionError(f"{email} {path}\n{diff}")
             assert b.headers.get("x-nd-served-by") == "gateway", (email, path, "Python built it - the gateway deferred")
+
+
+SIMPLE_PAGES = ["/chronicler", "/background-jobs", "/tools/bulk-edit", "/system", "/boards"]
+
+
+def test_the_simple_pages_the_gateway_builds_are_pythons_pages(client, seed):
+    """Pages that are the layout plus a section check and at most one list (rust/nd-gateway/src/pages.rs SIMPLE): the same HTML, or Python's
+    refusal, for every role."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import InvestBoard, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        db.add(InvestBoard(world_id=seed.world_a.id, slug="clues", name="Clues <&>", description="who did it", nodes_json='[{"id": 1}]'))
+        db.add(InvestBoard(world_id=seed.world_a.id, slug="empty", name="Empty"))
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"boards": {"player": "read", "assistant": "read"}, "chronicler": {"player": "none", "assistant": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path in SIMPLE_PAGES:
+            a, b = d.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
+            assert a.status_code == b.status_code, (email, path, a.status_code, b.status_code)
+            if a.status_code != 200 or "text/html" not in a.headers.get("content-type", ""):
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:40]))
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 6, served          # the rest are refusals, which Python answers

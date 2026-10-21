@@ -3,6 +3,8 @@
 use minijinja::{escape_formatter, value::ValueKind, Environment, Error, ErrorKind, State, Value};
 use minijinja::{AutoEscape, Output};
 pub mod app;
+pub mod pyvalue;
+pub mod md;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -148,6 +150,9 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     env.add_filter("wq", wq);
     // per-render answers the page builder put in the context under "__nd" (site_layout, can_edit, saved views)
     env.add_function("site_layout", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "site_layout")) });
+    env.add_function("view_spec", |section: String| -> Value {
+        Value::from_serialize(app::data()["view_specs"].get(&section).cloned().unwrap_or(serde_json::json!({})))
+    });
     env.add_function("can_edit", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "can_edit")) });
     env.add_function("saved_view", |state: &State, _req: Value, section: String| -> Result<Value, Error> {
         let v = nd(state, "saved_views");

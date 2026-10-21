@@ -108,7 +108,7 @@ impl Pages {
 /// A page built from the database: the layout context (crate::layout) plus the page's own data, rendered with the app's template.
 /// `None` = let Python build it.
 pub fn render_with(pages: &Pages, template: &str, ctx: serde_json::Map<String, serde_json::Value>, headers: &HeaderMap) -> Option<Response<Body>> {
-    let page = pages.env.get_template(template).ok()?.render(minijinja::Value::from_serialize(&ctx));
+    let page = pages.env.get_template(template).ok()?.render(nd_render::pyvalue::to_value(&serde_json::Value::Object(ctx)));
     let page = match page {
         Ok(p) => p,
         Err(e) => {
@@ -155,4 +155,54 @@ pub fn dice(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
     p.ctx.insert("error".into(), q("error").into());
     p.ctx.insert("last_notation".into(), q("n").into());
     render_with(pages, "dice.html", p.ctx, headers)
+}
+
+/// The pages whose handler is "the layout, a section check, perhaps one list": app/routers/*.py and app/main.py, one row each.
+pub struct Simple {
+    pub path: &'static str,
+    pub template: &'static str,
+    /// world_can_view_section(...) the handler checks (None = no section check)
+    pub section: Option<&'static str>,
+    /// the handler raises 404 without a world
+    pub needs_world: bool,
+    pub gm_only: bool,
+    /// extra context: (name, SQL with ?1 = world id, one row per item)
+    pub lists: &'static [(&'static str, &'static str)],
+}
+
+pub const SIMPLE: &[Simple] = &[
+    Simple { path: "/chronicler", template: "chronicler.html", section: Some("chronicler"), needs_world: false, gm_only: false, lists: &[] },
+    Simple { path: "/background-jobs", template: "background_jobs.html", section: Some("background_jobs"), needs_world: true, gm_only: false, lists: &[] },
+    Simple { path: "/tools/bulk-edit", template: "bulk_edit.html", section: Some("bulk_edit"), needs_world: false, gm_only: false, lists: &[] },
+    Simple { path: "/system", template: "system_monitor.html", section: None, needs_world: false, gm_only: true, lists: &[] },
+    Simple { path: "/boards", template: "boards.html", section: Some("boards"), needs_world: true, gm_only: false,
+             lists: &[("boards", "SELECT * FROM invest_boards WHERE world_id = ?1 ORDER BY rowid")] },
+];
+
+pub fn simple(pages: &Pages, cfg: &Config, page: &Simple, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if page.gm_only && !p.is_gm {
+        return None;
+    }
+    if page.needs_world && p.world.is_none() {
+        return None;
+    }
+    if let (Some(section), false) = (page.section, p.is_gm) {
+        let w = p.world.as_ref();
+        let s = |k: &str| w.and_then(|w| w.get(k)).and_then(|v| v.as_str());
+        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), section)? == "none" {
+            return None;
+        }
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(0);
+    for (name, sql) in page.lists {
+        let mut st = db.prepare(sql).ok()?;
+        let rows = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        p.ctx.insert(name.to_string(), serde_json::Value::Array(rows.into_iter().map(serde_json::Value::Object).collect()));
+    }
+    p.ctx.insert("kinds".into(), nd_render::app::data()["kinds"].clone());
+    p.ctx.insert("kind_icons".into(), nd_render::app::data()["kind_icons"].clone());
+    render_with(pages, page.template, p.ctx, headers)
 }

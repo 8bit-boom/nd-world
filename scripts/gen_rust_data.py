@@ -17,6 +17,7 @@ def make() -> dict:
         "view_sections": view_prefs.SECTIONS, "view_sizes": list(view_prefs.SIZES), "view_default_size": view_prefs.DEFAULT_SIZE,
         "nav_static_catalog": nav_menus.STATIC_CATALOG, "nav_default_menus": nav_menus.DEFAULT_NAV_MENUS,
         "kinds": constants.KINDS, "kind_icons": constants.KIND_ICONS,
+        "view_specs": {s: view_prefs.spec(s) for s in view_prefs.SECTIONS},
     }
 
 

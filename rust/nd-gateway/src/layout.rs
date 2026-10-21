@@ -17,6 +17,9 @@ pub fn row_map(r: &Row) -> rusqlite::Result<Map<String, Value>> {
             ValueRef::Null => Value::Null,
             ValueRef::Integer(n) => json!(n),
             ValueRef::Real(f) => json!(f),
+            ValueRef::Text(t) if stmt.columns()[i].decl_type().map_or(false, |d| d.eq_ignore_ascii_case("DATETIME")) => {
+                json!({"__dt__": String::from_utf8_lossy(t)})
+            }
             ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).into_owned()),
             ValueRef::Blob(_) => Value::Null,
         };

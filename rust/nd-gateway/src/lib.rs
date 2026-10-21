@@ -57,6 +57,14 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        if let Some(i) = pages::SIMPLE.iter().position(|s| s.path == req.uri().path()) {
+            let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::simple(&pages_, &cfg, &pages::SIMPLE[i], &uri, &headers)).await {
+                return resp;
+            }
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/dice" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::dice(&pages, &cfg, &uri, &headers)).await {

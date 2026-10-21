@@ -16,6 +16,7 @@ all of it is `ND_RUST_ROUTES=` or `ND_GATEWAY=0`.
 | Route | Notes |
 |---|---|
 | `GET /dice` (`dice.html` in `base.html`) | the first signed-in page; switched on with `pages` in `ND_RUST_ROUTES` (opt-in). Built from the layout context (below) plus the world's last 50 rolls. Same HTML as Python for a GM, a player and an assistant, with a custom kind, custom section access, a theme, a saved dice layout, `?embed=1`, `?error=`/`?n=`, `?w=` and `?q=` (`tests/test_gateway_golden.py`). 84 -> 237 pages/s, p50 165 -> 58 ms. |
+| `/chronicler`, `/background-jobs`, `/tools/bulk-edit`, `/system`, `/boards` | batch 2: the layout plus a section check and at most one list - one row each in `SIMPLE` (`rust/nd-gateway/src/pages.rs`); same HTML or Python's refusal for three roles |
 | `GET /login` (`auth/login.html`) | no database: the session cookie is read (signed in = 303 to `next`), `next` is clamped like `auth.safe_next_url`, the form is rendered. The POST (rate limiter, passwords, 2FA) stays in Python. |
 
 ## Differences between MiniJinja and Jinja2 that the work found (and how each is handled)
@@ -66,3 +67,14 @@ Jinja2's exact `tojson` and `urlencode`, the `wq` filter and the per-page `site_
 
 The gateway leaves a page to Python when: the session's site-layout copy is missing or older than 15 minutes (Python refreshes it in the cookie),
 the cookie is older than 6 hours, the world shows its hero banner on every page (`_hero.html` is not ported), or anything else is unusual.
+
+## Markdown (`|md`) - a decision, not yet made
+
+`rust/nd-render/src/md.rs` is `render_md` with pulldown-cmark for the markdown step and a line-by-line port of everything after it (the app's own
+tags, media titles, prose code blocks). `scripts/compare_markdown.py` feeds every markdown file of the repository (cut into sections, 984 texts)
+to both: **73 % render the same**. The differences are markdown2's own: it turns underscores inside words into italics (`AI_ENTITY_GUIDE.md` ->
+"AI*ENTITY*GUIDE.md"), puts no language class on fenced code, and reads some fenced blocks inside lists differently. So pages with written
+content (entities, notes, facts, recaps, rules) would look different in places once Rust builds them - mostly better. Not used by any page
+yet; the choice (accept CommonMark, imitate markdown2, or keep a Python helper for it) is the owner's.
+
+Python dates in templates: database DATETIME columns reach templates as objects with Python's `strftime`, `isoformat`, `date()` and `str()`.
