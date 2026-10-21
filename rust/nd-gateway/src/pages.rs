@@ -955,3 +955,44 @@ pub fn facts_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     c.insert("top_tags".into(), Value::Array(tags.into_iter().map(|(k, n)| json!([k, n])).collect()));
     render_with(pages, "facts/list.html", p.ctx, headers)
 }
+
+/// `GET /tables` (app/routers/tables.py `tables_list`)
+pub fn tables_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !section_ok(&p, Some(&world), "tables")? {
+        return None;
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let mut st = db.prepare("SELECT * FROM random_tables WHERE world_id IS NULL OR world_id = ?1 ORDER BY category, name").ok()?;
+    let tables = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let is_assistant = p.role.as_deref() == Some("assistant");
+    let mut grouped: Vec<(String, Vec<Value>)> = vec![];
+    for mut t in tables {
+        // _can_edit_table_row
+        let can = match t.get("world_id").and_then(|v| v.as_i64()) {
+            None => p.is_gm || is_assistant,
+            Some(tw) => {
+                let tworld = db.query_row("SELECT section_access_json, custom_kinds_json FROM worlds WHERE id = ?1", [tw], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).ok();
+                let edit = p.is_gm || match tworld {
+                    Some((a, k)) => nd_perm::sections::section_level(false, p.role.as_deref(), a.as_deref(), k.as_deref(), "tables")? == "edit",
+                    None => nd_perm::sections::section_level(false, p.role.as_deref(), None, None, "tables")? == "edit",
+                };
+                edit && (p.is_gm || is_assistant || t.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(p.user_id))
+            }
+        };
+        t.insert("__nd_can_edit".into(), json!(can));
+        let cat = t.get("category").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("general").to_string();
+        match grouped.iter_mut().find(|(c, _)| *c == cat) {
+            Some(g) => g.1.push(Value::Object(t)),
+            None => grouped.push((cat, vec![Value::Object(t)])),
+        }
+    }
+    let can_create = edit_level(&p, &world, "tables")?;
+    p.ctx.insert("grouped".into(), Value::Object(grouped.into_iter().map(|(k, v)| (k, Value::Array(v))).collect()));
+    p.ctx.insert("can_create".into(), json!(can_create));
+    render_with(pages, "tables/list.html", p.ctx, headers)
+}

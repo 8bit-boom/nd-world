@@ -16,7 +16,7 @@ bytes = "1"
 httpdate = "1"
 mime_guess = "2"
 percent-encoding = "2"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 hmac = "0.12"
 nd-render = { path = "../nd-render" }

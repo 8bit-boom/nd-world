@@ -284,6 +284,8 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     });
     env.add_filter("thumb", thumb);
     env.add_function("thumb_url", thumb);
+    // the random-table list's per-row edit check, worked out by the page builder (rust/nd-gateway/src/pages.rs tables_list)
+    env.add_function("can_edit_table", |t: Value| -> bool { t.get_attr("__nd_can_edit").map_or(false, |v| v.is_true()) });
     env.add_function("view_spec", |section: String| -> Value {
         Value::from_serialize(app::data()["view_specs"].get(&section).cloned().unwrap_or(serde_json::json!({})))
     });
