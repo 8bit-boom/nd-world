@@ -1019,6 +1019,9 @@ def _migrate():
                 ("character_import_max_chars", "INTEGER"),
                 ("session_media_max", "INTEGER"),
                 ("preview_format", "VARCHAR(16) DEFAULT 'avif'"),
+                ("res_image_workers", "INTEGER"),
+                ("res_render_slots", "INTEGER"),
+                ("res_memory_mb", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

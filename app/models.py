@@ -2171,6 +2171,10 @@ class AppSettings(Base):
     animated_format = Column(String(16), default="avif")  # "none" | "avif" | "webp"
     # The format of thumbnails and of the copy an opened picture shows (app/imaging.py preview_format): "avif" | "webp" | "original"
     preview_format = Column(String(16), default="avif")
+    # Settings -> System -> Server resources (app/workers.py): picture jobs at once, page builds at once, the memory budget in MB; NULL = automatic
+    res_image_workers = Column(Integer, nullable=True)
+    res_render_slots = Column(Integer, nullable=True)
+    res_memory_mb = Column(Integer, nullable=True)
     # Blank = fall back to the OLLAMA_MODEL/OLLAMA_URL/SWARMUI_EXTERNAL_URL env vars
     # (see app.ai.effective_ollama_*() and main.py's imagestudio()).
     ollama_model = Column(String(256), default="")

@@ -47,11 +47,15 @@ _GATES: "_weakref.WeakKeyDictionary" = _weakref.WeakKeyDictionary()      # one g
 
 
 def _gate():
+    """This loop's render gate, sized by app/workers.render_slots() (ND_RENDERS, else Settings -> System, else 2); a new size takes effect
+    for the requests that arrive after it."""
+    from . import workers
     loop = _asyncio.get_running_loop()
+    slots = workers.render_slots()
     g = _GATES.get(loop)
-    if g is None:
-        g = _GATES[loop] = _asyncio.Semaphore(RENDER_SLOTS)
-    return g
+    if g is None or g[0] != slots:
+        g = _GATES[loop] = (slots, _asyncio.Semaphore(slots))
+    return g[1]
 
 
 def _is_sse_path(path: str) -> bool:

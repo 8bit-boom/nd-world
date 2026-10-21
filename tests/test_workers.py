@@ -43,3 +43,68 @@ def test_a_container_cpu_limit_is_respected(tmp_path, monkeypatch):
     (tmp_path / "cpu" / "cpu.cfs_period_us").write_text("100000")
     assert workers.usable_cpus(str(tmp_path)) == 3                       # cgroup v1
     assert workers.usable_cpus(str(tmp_path / "nothing")) == 16
+
+
+def test_settings_override_auto_and_env_overrides_settings(monkeypatch):
+    for k in ("ND_IMAGE_WORKERS", "ND_RENDERS", "ND_TILE_WORKERS"):
+        monkeypatch.delenv(k, raising=False)
+    try:
+        workers.apply(image_workers=12, render_slots=3, memory_mb=8 * 1024)
+        assert workers.image_workers() == 12 and workers.render_slots() == 3
+        assert workers.memory_budget_gb() == 8 and workers.tile_workers() == 1
+        assert workers.tiling_fits(40_000_000) and not workers.tiling_fits(500_000_000)
+        monkeypatch.setenv("ND_IMAGE_WORKERS", "2")
+        assert workers.image_workers() == 2
+        workers.apply(memory_mb=32 * 1024)
+        assert workers.tile_workers() == 2
+    finally:
+        workers.apply()
+    assert workers.render_slots() == 2
+
+
+def test_the_pools_follow_the_setting(monkeypatch):
+    from app import map_tiles, static_thumbs
+    monkeypatch.delenv("ND_IMAGE_WORKERS", raising=False)
+    monkeypatch.delenv("ND_TILE_WORKERS", raising=False)
+    try:
+        workers.apply(image_workers=5, memory_mb=64 * 1024)
+        assert static_thumbs._pool._max_workers == 5 and map_tiles._pool._max_workers == 2
+        workers.apply(image_workers=1, memory_mb=4 * 1024)
+        assert static_thumbs._pool._max_workers == 1 and map_tiles._pool._max_workers == 1
+    finally:
+        workers.apply()
+
+
+def test_a_container_memory_limit_is_respected(tmp_path, monkeypatch):
+    monkeypatch.setattr(workers, "_ram_gb", lambda: 40.0)
+    assert workers.usable_ram_gb(str(tmp_path)) == 40.0
+    (tmp_path / "memory.max").write_text("max\n")
+    assert workers.usable_ram_gb(str(tmp_path)) == 40.0
+    (tmp_path / "memory.max").write_text(str(6 * 2 ** 30))
+    assert workers.usable_ram_gb(str(tmp_path)) == 6.0
+
+
+def test_the_settings_page_and_form(client, seed):
+    from app.database import SessionLocal, get_app_settings
+    from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/settings?tab=system").text
+    assert 'id="server-resources"' in page and 'name="res_image_workers"' in page and "CPU thread" in page
+    try:
+        r = client.post("/settings/resources", data={"res_image_workers": "6", "res_render_slots": "99", "res_memory_gb": "12.5"}, follow_redirects=False)
+        assert r.status_code == 303
+        db = SessionLocal()
+        try:
+            st = get_app_settings(db)
+            assert (st.res_image_workers, st.res_render_slots, st.res_memory_mb) == (6, 16, 12800)
+        finally:
+            db.close()
+        assert workers.image_workers() == 6 and workers.render_slots() == 16
+        client.post("/settings/resources", data={"res_image_workers": "", "res_render_slots": "auto", "res_memory_gb": "-3"})
+        assert workers.render_slots() == 2 and workers._overrides == {"image_workers": None, "render_slots": None, "memory_mb": None}
+    finally:
+        workers.apply()
+    client.post("/logout"); client.cookies.clear()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.post("/settings/resources", data={"res_image_workers": "32"}, follow_redirects=False).status_code in (302, 303, 403)
+    assert workers.image_workers() != 32

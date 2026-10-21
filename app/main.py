@@ -368,7 +368,10 @@ def _load_preview_format():
     from . import imaging as _imaging
     db = SessionLocal()
     try:
-        _imaging.set_preview_format(getattr(get_app_settings(db), "preview_format", None) or "avif")
+        st = get_app_settings(db)
+        _imaging.set_preview_format(getattr(st, "preview_format", None) or "avif")
+        from . import workers as _workers
+        _workers.apply(st.res_image_workers, st.res_render_slots, st.res_memory_mb)
     except Exception:
         _log.warning("could not read the preview format setting; using AVIF", exc_info=True)
     finally:
@@ -4720,7 +4723,9 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         ollama_model_overrides = json.loads(settings.ollama_model_overrides_json or "{}")
     except (TypeError, ValueError):
         ollama_model_overrides = {}
+    from . import workers as _workers
     return {
+        "resources": _workers.summary(),
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
         "app_build": _build_id(),
@@ -4813,6 +4818,32 @@ def admin_diagnostics_dump(name: str):
     if text is None:
         raise HTTPException(404)
     return PlainTextResponse(text)
+
+@app.post("/settings/resources")
+def settings_resources_save(
+    res_image_workers: str = Form(""),
+    res_render_slots: str = Form(""),
+    res_memory_gb: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Settings -> System -> Server resources (app/workers.py): blank or "auto" = automatic. Takes effect at once, no restart."""
+    from . import workers as _workers
+
+    def num(raw, lo, hi, kind=int):
+        try:
+            v = kind(str(raw).strip())
+        except ValueError:
+            return None
+        return min(hi, max(lo, v)) if v > 0 else None
+    settings = get_app_settings(db)
+    settings.res_image_workers = num(res_image_workers, 1, 32)
+    settings.res_render_slots = num(res_render_slots, 1, 16)
+    gb = num(res_memory_gb, 0.5, 1024, float)
+    settings.res_memory_mb = int(gb * 1024) if gb else None
+    db.commit()
+    _workers.apply(settings.res_image_workers, settings.res_render_slots, settings.res_memory_mb)
+    return RedirectResponse("/settings?tab=system", status_code=303)
+
 
 @app.post("/settings")
 def settings_save(

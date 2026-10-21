@@ -16,8 +16,18 @@ from .imaging import make_thumbnail, thumbnail_path_for
 
 _log = logging.getLogger("nd.static_thumbs")
 _EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
-from .workers import image_workers
-_pool = ThreadPoolExecutor(max_workers=image_workers(), thread_name_prefix="nd-thumbs")         # app/workers.py
+from . import workers as _workers
+_pool = ThreadPoolExecutor(max_workers=_workers.image_workers(), thread_name_prefix="nd-thumbs")   # app/workers.py
+
+
+@_workers.on_change
+def _resize_pool():
+    """A new size from Settings: new jobs go to a pool of that size; jobs already queued finish in the old one."""
+    global _pool
+    n = _workers.image_workers()
+    if n != _pool._max_workers:
+        old, _pool = _pool, ThreadPoolExecutor(max_workers=n, thread_name_prefix="nd-thumbs")
+        old.shutdown(wait=False)
 _queued: set = set()
 _lock = threading.Lock()
 

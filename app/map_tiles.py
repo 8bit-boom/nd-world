@@ -25,8 +25,17 @@ TILE = 256
 MAX_NATIVE_ZOOM = 4                 # the viewer's maxZoom
 Image.MAX_IMAGE_PIXELS = None        # our own bundled / GM-uploaded map pictures can be large (10k x 7k)
 
-from .workers import tile_workers
-_pool = ThreadPoolExecutor(max_workers=tile_workers(), thread_name_prefix="nd-map-tiles")      # app/workers.py
+from . import workers as _workers
+_pool = ThreadPoolExecutor(max_workers=_workers.tile_workers(), thread_name_prefix="nd-map-tiles")   # app/workers.py
+
+
+@_workers.on_change
+def _resize_pool():
+    global _pool
+    n = _workers.tile_workers()
+    if n != _pool._max_workers:
+        old, _pool = _pool, ThreadPoolExecutor(max_workers=n, thread_name_prefix="nd-map-tiles")
+        old.shutdown(wait=False)
 _building: set = set()
 _lock = threading.Lock()
 
@@ -157,6 +166,13 @@ def meta_for(slug: str, src: Path, map_w: int, map_h: int) -> Optional[dict]:
         except (OSError, ValueError):
             return None
     out = root_dir() / key
+    try:
+        with Image.open(src) as probe:                     # the header only: is cutting this one within the memory budget?
+            if not _workers.tiling_fits(probe.width * probe.height):
+                _log.info("map %s: %dx%d is too big to cut within the memory budget; shown as one picture", slug, probe.width, probe.height)
+                return None
+    except Exception:
+        return None
     with _lock:
         if out.name in _building:
             return None

@@ -41,7 +41,30 @@ generation (SwarmUI) all want to be in it, and whatever does not fit is unloaded
 What does not help: the T10's video encoder does H.264 / HEVC only (no AV1 - that needs a newer card), and the image's ffmpeg is a CPU
 build; the 5800X encodes AV1 fast enough. Picture resizing on the GPU would cost more in copying than it saves.
 
+## Limits (Settings -> System -> Server resources)
+
+Background picture jobs at once, pages built at once and a memory budget can be set there (blank = automatic; a value in `.env` wins).
+They size nd-world's own work: the memory budget decides how many maps are cut into tiles at once and refuses to cut, on the server, an
+uploaded map too big for half of it (it is then shown as one picture). A hard cap on the container is set where it runs - on TrueNAS the
+app's Resources limits (CPUs, memory); nd-world reads that cap and plans within it.
+
 ## RAM
 
 40 GB is far more than nd-world itself needs (~200 MB). The rest is best spent on the models (above). SQLite's cache is left small on
 purpose: the database file is small enough that the operating system keeps it in memory anyway.
+
+### TrueNAS: the ZFS cache (ARC)
+
+ZFS keeps recently read data in RAM (the ARC) and gives memory back when programs ask for it, so most of what it "eats" is borrowed, not
+lost. nd-world's own working set is small: the database (megabytes), the pictures people are looking at and the map tiles - a few GB at
+most - so a few GB of ARC already serves it from RAM. The big reader is the AI: loading a 15 GB model file goes much faster from ARC than
+from disk, and a model partly kept in RAM (the 26 B chat model on a 16 GB card) needs that RAM for itself. On 40 GB:
+
+- Leave the ARC automatic unless model loads stall or the AI containers get killed for memory; then cap it at about 12-16 GB
+  (`zfs_arc_max`, set in TrueNAS as a post-init command) so the models and containers always have room.
+- **An SSD as a read cache (L2ARC) will not help here**: it only pays when the data read over and over is bigger than RAM, and its index
+  itself costs RAM. The same SSD helps far more as the place the apps live - a pool (or dataset on an SSD pool) for the app data,
+  nd-world's `/data` and above all the AI models: a model loads in seconds from an SSD instead of a minute or more from hard disks, and
+  pages and thumbnails read faster too.
+- An SSD log device (SLOG) only speeds up synchronous writes; nd-world's database writes are small and few, so it is not worth it for this.
+
