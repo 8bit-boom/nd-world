@@ -19,6 +19,7 @@ all of it is `ND_RUST_ROUTES=` or `ND_GATEWAY=0`.
 | `/chronicler`, `/background-jobs`, `/tools/bulk-edit`, `/system`, `/boards` | batch 2: the layout plus a section check and at most one list - one row each in `SIMPLE` (`rust/nd-gateway/src/pages.rs`); same HTML or Python's refusal for three roles |
 | `GET /kind/<kind>` (`entities/list.html`, `_card.html`) | batch 3: the entity lists - folders and parent folders, stat columns (`parse_stats`), visibility (hidden / shared entities), search, grid / table views and paging, thumbnails. Same HTML for a GM and two players over 17 URL variants. 69 -> 247 pages/s on a 55-entity folder |
 | `/androidapp` | batch 3 |
+| `GET /entity/<id>` (`entities/detail.html`) | batch 4: the entity page - markdown body with headings / sections / autolinks (names, aliases, derived short forms), `[gmonly]` / `[for]` / `[reveal]` for players, notes, template custom fields, connections and backlinks with visibility, a hidden-but-shared entity, the GM's `?as=player` preview, the AI panel's context and the world's AI instructions. Same HTML as Python for three roles and seven URLs; an HTML (rich-editor) note or a non-ASCII name in the autolink list leaves the page to Python. 46 -> 183 pages/s |
 | `GET /login` (`auth/login.html`) | no database: the session cookie is read (signed in = 303 to `next`), `next` is clamped like `auth.safe_next_url`, the form is rendered. The POST (rate limiter, passwords, 2FA) stays in Python. |
 
 ## Differences between MiniJinja and Jinja2 that the work found (and how each is handled)
@@ -86,3 +87,6 @@ Python dates in templates: database DATETIME columns reach templates as objects 
 Batch 3 also ported the card helpers (`body_summary`, `entry_text`, `parse_stats` - checked against Python on 7,500 random and real bodies), Jinja2's
 `truncate`, `thumb` (a bundled or map picture whose thumbnail Python would have to queue leaves the page to Python), `datetime.timestamp()`, and
 the context processor's world-specific `kinds` / `kind_icons` / `subtypes`.
+
+Batch 4 ported `autolink_entities`, `derive_name_variants`, `_rules_toc`, `split_rules_sections` (checked against Python with random names, prose and
+headings) and markupsafe's `striptags`.

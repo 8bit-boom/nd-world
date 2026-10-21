@@ -141,3 +141,37 @@ def test_card_text_helpers_match_python():
         want += [body_summary(b), entry_text(b), json.loads(json.dumps(parse_stats(b)))]
     bad = [(q["op"], q["text"], w, g) for q, w, g in zip(qs, want, got) if w != g]
     assert not bad, f"{len(bad)} of {len(qs)} differ: {bad[:3]}"
+
+
+_NAMES = ["Bob", "Bob Smith", "Hunter Edmund Vosk, the Greyfather", "The King in Yellow", "Rusty Anchor", "Al", "bob", "Senior Resident Hunter Ann Lee",
+          "x.y (z)", "C++ Guild", "  Spaced  ", "Ünïcode Name", "O'Neil", "Anne-Marie Dupont"]
+_PROSE = ["Bob went to the Rusty Anchor.", "<p>Bob Smith met bob and BOB.</p>", "<a href='/x'>Bob</a> and <code>Bob</code>", "<pre>Bob</pre> Bob",
+          "Edmund Vosk spoke", "Bobby is not Bob_", "<img alt=\"Bob\"/> Bob", "<h2>Rusty Anchor</h2>", "C++ Guild rules", "Ann Lee and Anne-Marie Dupont",
+          "<script>Bob</script>Bob", "<p>x.y (z) is here</p>", "dressed in yellow"]
+
+
+def test_autolinks_name_variants_headings_and_sections_match_python():
+    from app.main import _rules_toc
+    from app.rendering import autolink_entities, derive_name_variants
+    from app.rules_render import split_rules_sections
+    rng = random.Random(8)
+    qs, want = [], []
+    for n in _NAMES:
+        qs.append({"op": "variants", "text": n}); want.append(derive_name_variants(n))
+    for _ in range(600):
+        names = {}
+        for n in rng.sample(_NAMES, rng.randint(1, 6)):
+            names.setdefault(n, rng.randint(1, 50))
+        text = " ".join(rng.choice(_PROSE) for _ in range(rng.randint(1, 4)))
+        qs.append({"op": "autolink", "text": text, "names": [[k, v] for k, v in names.items()]}); want.append(autolink_entities(text, names))
+    heads = ["<h1>Part I &amp; more</h1>", "<h2>Overview</h2>", "<h2>Overview</h2>", "<h3>Hooks <em>x</em></h3>", "<p>text</p>", "<h4>deep</h4>", "<h2>!!!</h2>",
+             "<h2>Ünïcödé Tïtle</h2>", "\n", "<h1>Two\nlines</h1>"]
+    for _ in range(400):
+        html = "".join(rng.choice(heads) for _ in range(rng.randint(0, 8)))
+        h, toc = _rules_toc(html, levels="123")
+        qs.append({"op": "toc", "text": html, "levels": "123"}); want.append(json.loads(json.dumps([h, toc, split_rules_sections(h, include_h1=True)])))
+    got = ask(qs)
+    unsure = sum(1 for q, g in zip(qs, got) if q["op"] == "autolink" and g is None)
+    bad = [(q, w, g) for q, w, g in zip(qs, want, got) if g is not None and w != g]
+    assert not bad, f"{len(bad)} of {len(qs)} differ: {json.dumps(bad[:2])[:2000]}"
+    assert unsure < 200, unsure

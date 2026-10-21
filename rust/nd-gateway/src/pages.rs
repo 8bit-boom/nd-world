@@ -425,3 +425,260 @@ pub fn kind_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
     c.insert("table_total_pages".into(), json!(table_total));
     render_with(pages, "entities/list.html", p.ctx, headers)
 }
+
+/// Python's `str(x)` for a custom-field value from JSON; `None` = not sure (floats, containers).
+fn py_str_value(v: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    Some(match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(true) => "True".into(),
+        Value::Bool(false) => "False".into(),
+        Value::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
+        _ => return None,
+    })
+}
+
+fn truthy_json(v: Option<&serde_json::Value>) -> bool {
+    use serde_json::Value;
+    match v {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+    }
+}
+
+/// `GET /entity/{id}` (app/main.py `detail`): one entity's page - body with headings and autolinks, notes, custom fields, connections, media.
+pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use nd_render::{md, text};
+    use serde_json::{json, Map, Value};
+    let id: i64 = uri.path().strip_prefix("/entity/")?.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let one = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Option<Map<String, Value>>> {
+        use rusqlite::OptionalExtension;
+        db.query_row(sql, params, |r| crate::layout::row_map(r)).optional().ok()
+    };
+    let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
+        r
+    };
+    // _entity_view_gate: every refusal is Python's 404
+    let entity = one("SELECT * FROM entities WHERE id = ?1", &[&id])??;
+    let ewid = entity.get("world_id").and_then(|v| v.as_i64());
+    let ent_world = match ewid {
+        Some(w) => one("SELECT * FROM worlds WHERE id = ?1", &[&w])??,
+        None => return None,
+    };
+    let ewid = ewid?;
+    if !p.is_gm {
+        let member: i64 = db.query_row("SELECT count(*) FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [ewid, p.user_id], |r| r.get(0)).ok()?;
+        if member == 0 {
+            return None;
+        }
+        let s = |k: &str| ent_world.get(k).and_then(|v| v.as_str());
+        let kind = entity.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), &format!("kind_{kind}"))? == "none" {
+            return None;
+        }
+        if !truthy_json(entity.get("visible_to_players")) {
+            let shared: i64 = db.query_row("SELECT count(*) FROM entity_player_access WHERE entity_id = ?1 AND user_id = ?2", [id, p.user_id], |r| r.get(0)).ok()?;
+            if shared == 0 {
+                return None;
+            }
+        }
+    }
+    let view_as_player = p.is_gm && query_param(uri, "as").as_deref() == Some("player");
+    let is_gm = p.is_gm && !view_as_player;
+    let viewer_id: Option<i64> = if view_as_player {
+        query_param(uri, "player").filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).and_then(|s| s.parse().ok())
+    } else {
+        Some(p.user_id)
+    };
+    let strip = |t: &str| -> Option<String> { nd_perm::gmonly::strip_gm_only(t, viewer_id, nd_render::now_minute()) };
+    // the request's own visibility rule (filter_visible_entities) goes by the REAL viewer, not the preview
+    let vis = if p.is_gm { "1".to_string() } else { format!("(e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id) };
+    let active_wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let (mut audio, mut video) = (vec![], vec![]);
+    if let Some(aw) = active_wid {
+        let v = if is_gm { "" } else { " AND visible_to_players IS 1" };
+        audio = rows(&format!("SELECT * FROM audio_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw])?;
+        video = rows(&format!("SELECT * FROM video_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw])?;
+    }
+    let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id])?;
+    let notes_vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
+    let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id])?;
+    // the autolink names: every other entity of the entity's world the viewer may see, names then aliases, then derived variants
+    let mut names: Vec<(String, i64)> = vec![];
+    {
+        let mut st = db.prepare(&format!("SELECT e.id, e.name, e.aliases FROM entities e WHERE e.world_id = ?1 AND e.id != ?2 AND {vis} ORDER BY e.id")).ok()?;
+        let r: Vec<(i64, Option<String>, Option<String>)> = st.query_map([ewid, id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        let mut add = |n: String, i: i64| {
+            if !names.iter().any(|(k, _)| *k == n) {
+                names.push((n, i));
+            }
+        };
+        for (eid, name, aliases) in &r {
+            if let Some(n) = name.as_ref().filter(|n| !n.is_empty()) {
+                add(n.clone(), *eid);
+            }
+            for a in aliases.as_deref().unwrap_or("").split(',') {
+                let a = text::py_strip(a);
+                if !a.is_empty() {
+                    add(a.to_string(), *eid);
+                }
+            }
+        }
+        for (eid, name, _) in &r {
+            for v in text::derive_name_variants(name.as_deref().unwrap_or("")) {
+                add(v, *eid);
+            }
+        }
+    }
+    for n in notes.iter_mut() {
+        let content = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let content = if is_gm { content } else { strip(&content)? };
+        let html = if truthy_json(n.get("content_is_html")) { content } else { md::render_md(&content) };
+        n.insert("content_html".into(), Value::String(text::autolink_entities(&html, &names)?));
+    }
+    // custom fields of a template-made entity
+    let mut custom_sections: Vec<(String, Vec<Value>)> = vec![];
+    let mut custom_fields = Map::new();
+    if let Some(tid) = entity.get("template_id").and_then(|v| v.as_i64()) {
+        let tpl = one("SELECT fields_json FROM entity_templates WHERE id = ?1", &[&tid])?;
+        let fields: Vec<Value> = match tpl.and_then(|t| t.get("fields_json").and_then(|v| v.as_str()).map(str::to_string)) {
+            Some(s) if !s.is_empty() => serde_json::from_str(&s).ok()?,
+            _ => vec![],
+        };
+        custom_fields = match entity.get("custom_fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            Some(s) => serde_json::from_str::<Value>(s).ok()?.as_object()?.clone(),
+            None => Map::new(),
+        };
+        for f in fields {
+            let sec = f.get("section").filter(|s| truthy_json(Some(s))).and_then(|s| s.as_str()).unwrap_or("Custom").to_string();
+            match custom_sections.iter_mut().find(|(s, _)| *s == sec) {
+                Some(x) => x.1.push(f),
+                None => custom_sections.push((sec, vec![f])),
+            }
+        }
+    }
+    let body = entity.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let summary = entity.get("summary").and_then(|v| v.as_str()).map(str::to_string);
+    let safe_body = if is_gm { body.clone() } else { strip(&body)? };
+    let safe_summary: Value = match &summary {
+        None => Value::Null,
+        Some(s) => Value::String(if is_gm { s.clone() } else { strip(s)? }),
+    };
+    let (mut body_sections, mut toc) = (vec![], vec![]);
+    if !safe_body.is_empty() {
+        let html = text::autolink_entities(&md::render_md(&text::strip_legacy_anchors(&safe_body)), &names)?;
+        let (h, t) = text::rules_toc(&html, "123");
+        toc = t;
+        body_sections = text::split_sections_h123(&h);
+    }
+    let related = rows(
+        &format!("SELECT e.* FROM entities e WHERE e.id IN (SELECT target_id FROM entity_links WHERE source_id = ?1) AND {vis} ORDER BY e.kind, e.name"),
+        &[&id],
+    )?;
+    // retrieval.entity_extra_context
+    let mut parts: Vec<String> = vec![];
+    let mut field_lines: Vec<String> = vec![];
+    for (_, fields) in &custom_sections {
+        for f in fields {
+            let fid = f.get("id").and_then(|v| v.as_str())?;
+            let label = f.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            if f.get("type").and_then(|v| v.as_str()) == Some("list") {
+                for row in custom_fields.get(fid).and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+                    let mut bits = vec![];
+                    for sf in f.get("item_fields").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+                        let sid = sf.get("id").and_then(|v| v.as_str())?;
+                        if truthy_json(row.get(sid)) {
+                            bits.push(format!("{}: {}", sf.get("label").and_then(|v| v.as_str()).unwrap_or(""), py_str_value(&row[sid])?));
+                        }
+                    }
+                    if !bits.is_empty() {
+                        field_lines.push(format!("- {label}: {}", bits.join("; ")));
+                    }
+                }
+                continue;
+            }
+            let Some(v) = custom_fields.get(fid).filter(|v| truthy_json(Some(v))) else { continue };
+            let mut val = py_str_value(v)?;
+            if !is_gm {
+                val = nd_perm::gmonly::strip_gm_only(&val, None, nd_render::now_minute())?;
+            }
+            let val = text::py_strip(&val);
+            if !val.is_empty() {
+                field_lines.push(format!("- {label}: {val}"));
+            }
+        }
+    }
+    if !field_lines.is_empty() {
+        parts.push(format!("Custom fields:\n{}", field_lines.join("\n")));
+    }
+    let mut note_lines = vec![];
+    for n in &notes {
+        if !is_gm && !truthy_json(n.get("visible_to_players")) {
+            continue;
+        }
+        if truthy_json(n.get("content_is_html")) {
+            return None; // html2text is Python's
+        }
+        let mut c = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if !is_gm {
+            c = nd_perm::gmonly::strip_gm_only(&c, None, nd_render::now_minute())?;
+        }
+        let c = text::py_strip(&c);
+        if !c.is_empty() {
+            note_lines.push(format!("- {c}"));
+        }
+    }
+    if !note_lines.is_empty() {
+        parts.push(format!("Notes:\n{}", note_lines.join("\n")));
+    }
+    let mut rel_names: Vec<String> = related.iter().chain(backlinks.iter()).filter_map(|e| e.get("name").and_then(|v| v.as_str()).map(str::to_string)).collect();
+    rel_names.sort();
+    rel_names.dedup();
+    if !rel_names.is_empty() {
+        parts.push(format!("Related entities: {}", rel_names.join(", ")));
+    }
+    let ai_extra = parts.join("\n\n");
+    // ai_instructions.enabled_instructions_text for the active world
+    let mut ai_custom = String::new();
+    if let Some(aw) = active_wid {
+        let pl = if is_gm { "" } else { " AND applies_to_players IS 1" };
+        let rs = rows(&format!("SELECT title, content FROM ai_instructions WHERE world_id = ?1 AND enabled IS 1{pl} ORDER BY created_at"), &[&aw])?;
+        let ps: Vec<String> = rs
+            .iter()
+            .filter_map(|r| {
+                let c = text::py_strip(r.get("content").and_then(|v| v.as_str()).unwrap_or(""));
+                (!c.is_empty()).then(|| format!("## {}\n\n{c}", r.get("title").and_then(|v| v.as_str()).unwrap_or("None")))
+            })
+            .collect();
+        if !ps.is_empty() {
+            ai_custom = format!("Additional GM-authored instructions for how you should behave — follow these in addition to everything above, not instead of it:\n\n{}", ps.join("\n\n"));
+        }
+    }
+    let objs = |v: Vec<Map<String, Value>>| Value::Array(v.into_iter().map(Value::Object).collect());
+    let c = &mut p.ctx;
+    c.insert("entity".into(), Value::Object(entity));
+    c.insert("view_as_player".into(), json!(view_as_player));
+    c.insert("backlinks".into(), objs(backlinks));
+    c.insert("entity_notes".into(), objs(notes));
+    c.insert("custom_sections".into(), Value::Array(custom_sections.into_iter().map(|(s, f)| json!([s, f])).collect()));
+    c.insert("custom_fields".into(), Value::Object(custom_fields));
+    c.insert("body_sections".into(), Value::Array(body_sections));
+    c.insert("toc".into(), Value::Array(toc));
+    c.insert("safe_body".into(), Value::String(safe_body));
+    c.insert("safe_summary".into(), safe_summary);
+    c.insert("visible_related".into(), objs(related));
+    c.insert("entity_ai_extra".into(), Value::String(ai_extra));
+    c.insert("entity_media_audio".into(), objs(audio));
+    c.insert("entity_media_video".into(), objs(video));
+    c.insert("ai_custom_instructions".into(), Value::String(ai_custom));
+    render_with(pages, "entities/detail.html", p.ctx, headers)
+}

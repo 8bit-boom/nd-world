@@ -65,6 +65,14 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             }
         }
     }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/entity/") && req.uri().path()[8..].bytes().all(|b| b.is_ascii_digit())
+        && req.uri().path().len() > 8 && app.cfg.rust_routes.iter().any(|r| r == "pages")
+    {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::entity_detail(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/kind/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::kind_list(&pages_, &cfg, &uri, &headers)).await {

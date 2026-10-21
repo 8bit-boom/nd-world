@@ -28,6 +28,15 @@ fn main() {
             "summary" => json!(text::body_summary(q["text"].as_str().unwrap())),
             "entry" => json!(text::entry_text(q["text"].as_str().unwrap())),
             "stats" => json!(text::parse_stats(q["text"].as_str().unwrap())),
+            "variants" => json!(text::derive_name_variants(q["text"].as_str().unwrap())),
+            "autolink" => {
+                let names: Vec<(String, i64)> = q["names"].as_array().unwrap().iter().map(|p| (p[0].as_str().unwrap().to_string(), p[1].as_i64().unwrap())).collect();
+                json!(text::autolink_entities(q["text"].as_str().unwrap(), &names))
+            }
+            "toc" => {
+                let (h, t) = text::rules_toc(q["text"].as_str().unwrap(), q["levels"].as_str().unwrap());
+                json!([h, t, text::split_sections_h123(&h)])
+            }
             o => panic!("op {o}"),
         };
         writeln!(out, "{a}").unwrap();

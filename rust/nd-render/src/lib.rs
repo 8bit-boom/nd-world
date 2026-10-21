@@ -51,6 +51,10 @@ fn formatter(out: &mut Output, state: &State, value: &Value) -> Result<(), Error
 }
 
 /// The current UTC minute, for [reveal=...] blocks.
+pub fn now_minute() -> nd_perm::gmonly::Minute {
+    nd_perm_now()
+}
+
 fn nd_perm_now() -> nd_perm::gmonly::Minute {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let days = secs.div_euclid(86400);
@@ -268,6 +272,15 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     env.add_filter("entry_text", |t: Option<String>| text::entry_text(t.as_deref().unwrap_or("")));
     env.add_filter("parse_stats", |t: Option<String>| Value::from_serialize(text::parse_stats(t.as_deref().unwrap_or(""))));
     env.add_filter("truncate", jinja_truncate);
+    // markupsafe's striptags: comments and tags out, whitespace collapsed, entities decoded
+    env.add_filter("striptags", |v: String| -> String {
+        static C: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static T: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let v = C.get_or_init(|| regex::Regex::new(r"(?s)<!--.*?-->").unwrap()).replace_all(&v, "");
+        let v = T.get_or_init(|| regex::Regex::new(r"(?s)<.*?>").unwrap()).replace_all(&v, "");
+        let v = v.split(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+        html_escape::decode_html_entities(&v).into_owned()
+    });
     env.add_filter("thumb", thumb);
     env.add_function("thumb_url", thumb);
     env.add_function("view_spec", |section: String| -> Value {
