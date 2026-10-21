@@ -523,3 +523,47 @@ def test_session_and_quest_lists_the_gateway_builds_are_pythons(client, seed):
                 raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
             served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 20, served
+
+
+def test_party_and_fact_lists_the_gateway_builds_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, Fact, GameSession, Party, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        npc = Entity(world_id=w, kind="character", name="Secret Ally", visible_to_players=False)
+        pal = Entity(world_id=w, kind="character", name="Open Ally")
+        db.add_all([npc, pal]); db.flush()
+        db.add(Party(world_id=w, name="Alpha", member_pc_ids_json="[1, 2]", member_entity_ids_json=json.dumps([npc.id, pal.id, 999999])))
+        db.add(Party(world_id=w, name="Beta"))
+        s1 = GameSession(world_id=w, title="One", session_num=1)
+        s2 = GameSession(world_id=w, title="Two", session_num=2)
+        db.add_all([s1, s2]); db.flush()
+        db.add_all([Fact(world_id=w, game_session_id=s1.id, content="The **door** was red.", tags="door, red"),
+                    Fact(world_id=w, game_session_id=s2.id, content="A hidden fact.", visible_to_players=False, tags="secret"),
+                    Fact(world_id=w, game_session_id=s2.id, content="Second session fact.", tags="red"),
+                    Fact(world_id=w, content="Unfiled fact [gmonly]gm part[/gmonly].", tags=" door ,, "),
+                    Fact(world_id=w, game_session_id=987654, content="Lost session fact.")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"parties": {"player": "read", "assistant": "edit"}, "facts": {"player": "read", "assistant": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path in ("/parties", "/parties?page=3", "/facts"):
+            a, b = d.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
+            assert a.status_code == b.status_code, (email, path, a.status_code, b.status_code)
+            if a.status_code != 200:
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 6, served

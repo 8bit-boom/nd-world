@@ -73,9 +73,14 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/facts") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        let f = if uri.path() == "/sessions" { pages::sessions_list } else { pages::quests_list };
+        let f = match uri.path() {
+            "/sessions" => pages::sessions_list,
+            "/quests" => pages::quests_list,
+            "/parties" => pages::parties_list,
+            _ => pages::facts_list,
+        };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }

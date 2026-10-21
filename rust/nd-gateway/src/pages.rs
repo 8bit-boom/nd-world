@@ -810,3 +810,148 @@ pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     c.insert("ai_ready".into(), json!(""));
     render_with(pages, "quests/list.html", p.ctx, headers)
 }
+
+fn edit_level(p: &crate::layout::PageCtx, world: &serde_json::Map<String, serde_json::Value>, section: &str) -> Option<bool> {
+    if p.is_gm {
+        return Some(true);
+    }
+    let s = |k: &str| world.get(k).and_then(|v| v.as_str());
+    Some(nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), section)? == "edit")
+}
+
+/// `GET /parties` (app/routers/parties.py `parties_list`)
+pub fn parties_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let page = page_param(uri)?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !section_ok(&p, Some(&world), "parties")? {
+        return None;
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let total: i64 = db.query_row("SELECT count(*) FROM parties WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    let total_pages = std::cmp::max(1, (total + 49) / 50);
+    let page = page.max(1).min(total_pages);
+    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name LIMIT 50 OFFSET ?2").ok()?;
+    let parties = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut counts = Map::new();
+    for party in &parties {
+        let arr = |k: &str| -> Option<Vec<Value>> {
+            match party.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                None => Some(vec![]),
+                Some(s) => serde_json::from_str::<Value>(s).ok()?.as_array().cloned(),
+            }
+        };
+        let pcs = arr("member_pc_ids_json")?;
+        let ents = arr("member_entity_ids_json")?;
+        let n = if p.is_gm {
+            pcs.len() + ents.len()
+        } else {
+            let ids: Vec<i64> = ents.iter().filter_map(|v| v.as_i64().or_else(|| v.as_bool().map(|b| b as i64))).collect();
+            let pwid = party.get("world_id").and_then(|v| v.as_i64()).unwrap_or(wid);
+            let mut seen: Vec<i64> = vec![];
+            for id in ids {
+                let ok: i64 = db
+                    .query_row(
+                        "SELECT count(*) FROM entities e WHERE e.id = ?1 AND e.world_id = ?2 AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))",
+                        [id, pwid, p.user_id],
+                        |r| r.get(0),
+                    )
+                    .ok()?;
+                if ok > 0 && !seen.contains(&id) {
+                    seen.push(id);
+                }
+            }
+            pcs.len() + seen.len()
+        };
+        counts.insert(party.get("id")?.as_i64()?.to_string(), json!(n));
+    }
+    let can_create = edit_level(&p, &world, "parties")? && (p.is_gm || p.role.as_deref() == Some("assistant"));
+    let c = &mut p.ctx;
+    c.insert("parties".into(), Value::Array(parties.into_iter().map(Value::Object).collect()));
+    c.insert("member_counts".into(), json!({"__intkeys__": Value::Object(counts)}));
+    c.insert("page".into(), json!(page));
+    c.insert("total_pages".into(), json!(total_pages));
+    c.insert("can_create".into(), json!(can_create));
+    render_with(pages, "parties/list.html", p.ctx, headers)
+}
+
+/// `GET /facts` (app/routers/facts.py `facts_list`)
+pub fn facts_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !section_ok(&p, p.world.as_ref(), "facts")? {
+        return None;
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
+    let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
+        r
+    };
+    // the dict {id: session} in the database's own order (no ORDER BY in Python: rowid order)
+    let sessions = rows("SELECT * FROM game_sessions WHERE world_id = ?1")?;
+    let vis = if p.is_gm { "" } else { " AND visible_to_players IS NOT 0" };
+    let facts = rows(&format!("SELECT * FROM facts WHERE world_id = ?1{vis} ORDER BY created_at ASC, id ASC"))?;
+    let sid_of = |f: &Map<String, Value>| f.get("game_session_id").and_then(|v| v.as_i64()).filter(|x| *x != 0);
+    let known = |sid: i64| sessions.iter().find(|s| s.get("id").and_then(|v| v.as_i64()) == Some(sid));
+    let mut by_session: Vec<(i64, Vec<Value>)> = vec![];
+    let mut unsessioned = vec![];
+    for f in &facts {
+        match sid_of(f).filter(|s| known(*s).is_some()) {
+            Some(sid) => match by_session.iter_mut().find(|(s, _)| *s == sid) {
+                Some(x) => x.1.push(Value::Object(f.clone())),
+                None => by_session.push((sid, vec![Value::Object(f.clone())])),
+            },
+            None => unsessioned.push(Value::Object(f.clone())),
+        }
+    }
+    let label = |s: &Map<String, Value>| -> String {
+        let num = s.get("session_num").map(|v| if v.is_null() { "None".to_string() } else { v.to_string() }).unwrap_or_else(|| "None".into());
+        format!("#{num} {}", s.get("title").and_then(|v| v.as_str()).unwrap_or("None"))
+    };
+    let mut groups = vec![];
+    if !unsessioned.is_empty() {
+        unsessioned.reverse();
+        groups.push(json!({"session": null, "label": "🗂 No session", "facts": unsessioned}));
+    }
+    // sorted by (session_num or 0, id), newest first - stable, so ties keep first-seen order reversed... as sorted(reverse=True) does
+    let key = |sid: i64| {
+        let s = known(sid).unwrap();
+        (s.get("session_num").and_then(|v| v.as_i64()).unwrap_or(0), sid)
+    };
+    by_session.sort_by(|a, b| key(b.0).cmp(&key(a.0)));
+    for (sid, fl) in by_session {
+        let s = known(sid)?.clone();
+        groups.push(json!({"label": label(&s), "session": Value::Object(s), "facts": fl}));
+    }
+    let mut tags: Vec<(String, i64)> = vec![];
+    for g in &groups {
+        for f in g["facts"].as_array()? {
+            for t in f.get("tags").and_then(|v| v.as_str()).unwrap_or("").split(',') {
+                let t = nd_render::text::py_strip(t);
+                if !t.is_empty() {
+                    match tags.iter_mut().find(|(k, _)| k == t) {
+                        Some(x) => x.1 += 1,
+                        None => tags.push((t.to_string(), 1)),
+                    }
+                }
+            }
+        }
+    }
+    tags.sort_by(|a, b| (-a.1, &a.0).cmp(&(-b.1, &b.0)));
+    let fact_count: usize = groups.iter().map(|g| g["facts"].as_array().map_or(0, |a| a.len())).sum();
+    let session_options: Vec<Value> = sessions.iter().map(|s| json!({"id": s.get("id"), "label": label(s)})).collect();
+    let smap: Map<String, Value> = sessions.iter().map(|s| (s.get("id").and_then(|v| v.as_i64()).unwrap_or(0).to_string(), Value::Object(s.clone()))).collect();
+    let c = &mut p.ctx;
+    c.insert("groups".into(), Value::Array(groups));
+    c.insert("sessions".into(), json!({"__intkeys__": Value::Object(smap)}));
+    c.insert("session_options".into(), Value::Array(session_options));
+    c.insert("fact_count".into(), json!(fact_count));
+    c.insert("top_tags".into(), Value::Array(tags.into_iter().map(|(k, n)| json!([k, n])).collect()));
+    render_with(pages, "facts/list.html", p.ctx, headers)
+}
