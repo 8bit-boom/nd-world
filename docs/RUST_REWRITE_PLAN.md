@@ -131,3 +131,23 @@ Effort is for one experienced developer, full time; the ranges are honest - the 
 Not now: today's pages are fast, the heavy work already runs outside Python, and the server's limit is the GPU's memory. If the rewrite
 is wanted anyway (for the experience, a smaller footprint, or a future with many more users), do **phase 0 first** - it pays for itself
 in Python - then **phase 1 and 2** and measure at decision point 2 before committing to the rest.
+
+## 10. Phase 0 - what was done (measured)
+
+Done in Python, valuable on its own:
+- **Shared live state.** `app/shared_state.py` (table `shared_state`): the world change counter, named signals and the second screen's stage now
+  live in the database. Counters are written by one background thread (never inside a request that may hold SQLite's write lock); a process sees
+  its own bumps at once and another process's within ~0.3 s (`REFRESH_EVERY` 0.25 s). The stage uses compare-and-swap. A test starts a second OS
+  process to prove it. Inventory of everything else that stays in Python's memory, and why that is fine: `docs/RUST_MIGRATION_STATE.md`.
+- **Server-agnostic suite.** `ND_TEST_BASE_URL=http://host:port` makes the `client` fixture an httpx client against a separately started server
+  (`python -m tests.serve --port N` starts one on a throw-away data dir). In-process: 6,473 passed, 2 skipped. Over HTTP: 5,985 passed, 485 skipped.
+- **Golden-response tool.** `scripts/golden.py` (`crawl` then `compare`, per role, normalised HTML/JSON); the app compared with itself shows zero differences.
+
+Not done, said plainly:
+- The plan item "turn the 325 internals-calling test files into HTTP-level tests" was only **partly** done: ~487 tests (monkeypatching app modules,
+  in-memory registries, cache-hit counts, the per-process perf log, the 5 s settings snapshot) are listed in `tests/inprocess_only.txt` and skipped
+  in external mode. They still run in-process. Rewriting them is not needed to start phase 1, but the Rust side will not be covered by them.
+- One golden test (`test_crawl_finds_...`) failed once in a full external run but passes alone; it is listed as in-process-only and the cause (a
+  server-side cache across tests) is not pinned down.
+- Spotlight cache and settings snapshot can be up to 2 s / 5 s stale across processes (accepted, see the state document). The failed-login limiters
+  are still per process: auth POSTs must stay proxied to Python until they are shared.
