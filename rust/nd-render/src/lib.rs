@@ -2,6 +2,7 @@
 //! Holds the template globals and filters the Rust side has taught MiniJinja so far (see `docs/RUST_PAGES.md` for what is and is not ported).
 use minijinja::{escape_formatter, value::ValueKind, Environment, Error, ErrorKind, State, Value};
 use minijinja::{AutoEscape, Output};
+pub mod app;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,11 +47,115 @@ fn formatter(out: &mut Output, state: &State, value: &Value) -> Result<(), Error
     escape_formatter(out, state, value)
 }
 
+fn nd(state: &State, key: &str) -> Value {
+    state.lookup("__nd").and_then(|v| v.get_attr(key).ok()).unwrap_or(Value::UNDEFINED)
+}
+
+/// `deps.with_world(path, ctx["world"])`: `?w=<slug>` (or `&w=`) appended when the page has a world.
+fn wq(state: &State, path: String) -> String {
+    let slug = state.lookup("world").filter(|w| w.is_true()).and_then(|w| w.get_attr("slug").ok()).map(|s| s.to_string());
+    match slug {
+        Some(slug) => format!("{path}{}w={slug}", if path.contains('?') { "&" } else { "?" }),
+        None => path,
+    }
+}
+
+/// Jinja2's `urlencode` for a string: `urllib.parse.quote(s, safe="/")` on the UTF-8 bytes.
+fn py_urlencode(v: Value) -> String {
+    let s = v.to_string();
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"_.-~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Python's `json.dumps(x, sort_keys=True)` (ensure_ascii, ", " / ": ") made HTML-safe the way Jinja2's `tojson` does.
+pub fn py_json(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::Null => out.push_str("null"),
+        serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        serde_json::Value::Number(n) => out.push_str(&n.to_string()),
+        serde_json::Value::String(s) => {
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\u{8}' => out.push_str("\\b"),
+                    '\u{c}' => out.push_str("\\f"),
+                    c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
+                        let mut buf = [0u16; 2];
+                        for u in c.encode_utf16(&mut buf) {
+                            out.push_str(&format!("\\u{:04x}", u));
+                        }
+                    }
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+        serde_json::Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                py_json(x, out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(o) => {
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                py_json(&serde_json::Value::String((*k).clone()), out);
+                out.push_str(": ");
+                py_json(&o[*k], out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn py_tojson(v: Value) -> Result<Value, Error> {
+    let j: serde_json::Value = serde_json::to_value(&v).map_err(|e| Error::new(ErrorKind::InvalidOperation, e.to_string()))?;
+    let mut s = String::new();
+    py_json(&j, &mut s);
+    let s = s.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026").replace('\'', "\\u0027");
+    Ok(Value::from_safe_string(s))
+}
+
 /// An environment that loads templates from `templates_dir` on demand; `static_dir` is where `asset_v` looks.
 pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'static> {
     let mut env = Environment::new();
     env.set_loader(minijinja::path_loader(templates_dir.to_path_buf()));
     env.set_formatter(formatter);
+    env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
+    env.add_filter("tojson", py_tojson);
+    env.add_filter("urlencode", py_urlencode);
+    env.add_filter("wq", wq);
+    // per-render answers the page builder put in the context under "__nd" (site_layout, can_edit, saved views)
+    env.add_function("site_layout", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "site_layout")) });
+    env.add_function("can_edit", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "can_edit")) });
+    env.add_function("saved_view", |state: &State, _req: Value, section: String| -> Result<Value, Error> {
+        let v = nd(state, "saved_views");
+        if v.is_none() || v.is_undefined() {
+            return Ok(Value::from(()));
+        }
+        Ok(v.get_attr(&section).ok().filter(|x| !x.is_undefined()).unwrap_or_else(|| Value::from_serialize(serde_json::json!({}))))
+    });
     env.add_function("asset_v", asset_v_fn(static_dir.to_path_buf()));
     env
 }

@@ -1,0 +1,1529 @@
+{
+ "kind_icons": {
+  "character": "👤",
+  "creature": "☠",
+  "event": "⚡",
+  "feat": "✦",
+  "item": "⚙",
+  "location": "🗺",
+  "note": "📄",
+  "organization": "🏢",
+  "profession": "🎭",
+  "race": "🧬"
+ },
+ "kinds": [
+  "character",
+  "location",
+  "organization",
+  "creature",
+  "event",
+  "item",
+  "feat",
+  "note",
+  "race",
+  "profession"
+ ],
+ "nav_default_menus": [
+  {
+   "icon": "👤",
+   "id": "menu_entities",
+   "item_ids": [
+    "kind_character",
+    "kind_location",
+    "kind_organization",
+    "kind_creature",
+    "kind_item",
+    "kind_feat",
+    "kind_event",
+    "kind_race",
+    "kind_profession",
+    "maps",
+    "races",
+    "professions",
+    "characters"
+   ],
+   "label": "Entities"
+  },
+  {
+   "icon": "🎯",
+   "id": "menu_tools",
+   "item_ids": [
+    "cockpit",
+    "boards",
+    "tables",
+    "combat",
+    "parties",
+    "quests",
+    "sessions",
+    "facts",
+    "calendar",
+    "schedule",
+    "images",
+    "import",
+    "export",
+    "dreamlands",
+    "king-in-yellow",
+    "androidapp",
+    "audio",
+    "video",
+    "dice"
+   ],
+   "label": "Tools"
+  },
+  {
+   "icon": "📝",
+   "id": "menu_notes",
+   "item_ids": [
+    "kind_note",
+    "chronicler",
+    "session_log",
+    "rules",
+    "pages",
+    "character_sheets"
+   ],
+   "label": "Notes, Logs"
+  },
+  {
+   "icon": "🤖",
+   "id": "menu_ai_tools",
+   "item_ids": [
+    "ai",
+    "imagestudio",
+    "editor",
+    "background_jobs",
+    "system_monitor",
+    "code_assist",
+    "ai_chat_player",
+    "image_gen_player",
+    "bulk_edit",
+    "npc_talk",
+    "npc_talk_player",
+    "studio_console"
+   ],
+   "label": "AI Tools"
+  }
+ ],
+ "nav_static_catalog": [
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/maps",
+   "icon": "🗺",
+   "id": "maps",
+   "label": "Maps",
+   "player_section": "maps",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": false,
+   "href": "/races",
+   "icon": "🧬",
+   "id": "races",
+   "label": "Race Catalog",
+   "player_section": "races",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": false,
+   "href": "/professions",
+   "icon": "🎭",
+   "id": "professions",
+   "label": "Profession Catalog",
+   "player_section": "professions",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/cockpit",
+   "icon": "🎛",
+   "id": "cockpit",
+   "label": "GM Cockpit",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/boards",
+   "icon": "📌",
+   "id": "boards",
+   "label": "Boards",
+   "player_section": "boards",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/tables",
+   "icon": "🎲",
+   "id": "tables",
+   "label": "Random Tables",
+   "player_section": "tables",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/combat",
+   "icon": "⚔",
+   "id": "combat",
+   "label": "Combat Tracker",
+   "player_section": "combat",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/parties",
+   "icon": "🛡",
+   "id": "parties",
+   "label": "Parties",
+   "player_section": "parties",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/quests",
+   "icon": "📜",
+   "id": "quests",
+   "label": "Quests",
+   "player_section": "quests",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/sessions",
+   "icon": "📓",
+   "id": "sessions",
+   "label": "Sessions",
+   "player_section": "sessions",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/facts",
+   "icon": "🗒",
+   "id": "facts",
+   "label": "Facts",
+   "player_section": "facts",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/calendar",
+   "icon": "🗓",
+   "id": "calendar",
+   "label": "Calendar",
+   "player_section": "calendar",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/schedule",
+   "icon": "📅",
+   "id": "schedule",
+   "label": "Session Schedule",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/images",
+   "icon": "🖼",
+   "id": "images",
+   "label": "Images",
+   "player_section": "images",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": true,
+   "href": "/import",
+   "icon": "📥",
+   "id": "import",
+   "label": "Import",
+   "player_section": "import",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/tools/bulk-edit",
+   "icon": "🔎",
+   "id": "bulk_edit",
+   "label": "Find & Replace (AI)",
+   "player_section": "bulk_edit",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/system",
+   "icon": "🖥",
+   "id": "system_monitor",
+   "label": "System Monitor",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/background-jobs",
+   "icon": "⏳",
+   "id": "background_jobs",
+   "label": "Background Jobs",
+   "player_section": "background_jobs",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/export",
+   "icon": "📦",
+   "id": "export",
+   "label": "Export & Backup",
+   "player_section": "export",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": "dreamlands_enabled",
+   "exact": true,
+   "gm_only": true,
+   "href": "/dreamlands",
+   "icon": "🌙",
+   "id": "dreamlands",
+   "label": "Dreamlands",
+   "player_section": "dreamlands",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": "king_in_yellow_enabled",
+   "exact": true,
+   "gm_only": true,
+   "href": "/king-in-yellow",
+   "icon": "🎭",
+   "id": "king-in-yellow",
+   "label": "King in Yellow",
+   "player_section": "king-in-yellow",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/ai",
+   "icon": "🤖",
+   "id": "ai",
+   "label": "AI Chat",
+   "player_section": "ai",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/imagestudio",
+   "icon": "🎨",
+   "id": "imagestudio",
+   "label": "Image Studio",
+   "player_section": "imagestudio",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/studio",
+   "icon": "🧠",
+   "id": "studio_console",
+   "label": "Studio Console",
+   "player_section": "studio_console",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/editor",
+   "icon": "🛠",
+   "id": "editor",
+   "label": "Content Editor",
+   "player_section": "editor",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/tools/code-assist",
+   "icon": "🧩",
+   "id": "code_assist",
+   "label": "Code Assist",
+   "player_section": "code_assist",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/chronicler",
+   "icon": "📜",
+   "id": "chronicler",
+   "label": "Chronicler",
+   "player_section": "chronicler",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/dice",
+   "icon": "🎲",
+   "id": "dice",
+   "label": "Dice",
+   "player_section": "dice",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": false,
+   "href": "/session-log",
+   "icon": "📓",
+   "id": "session_log",
+   "label": "Session Log",
+   "player_section": "session_log",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/rules",
+   "icon": "📖",
+   "id": "rules",
+   "label": "Rules",
+   "player_section": "rules",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": false,
+   "gm_only": false,
+   "href": "/characters",
+   "icon": "🎲",
+   "id": "characters",
+   "label": "Player Characters",
+   "player_section": "characters",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/audio",
+   "icon": "🎵",
+   "id": "audio",
+   "label": "Audio",
+   "player_section": "audio",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/video",
+   "icon": "🎬",
+   "id": "video",
+   "label": "Video",
+   "player_section": "video",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/pages",
+   "icon": "📄",
+   "id": "pages",
+   "label": "Pages",
+   "player_section": "pages",
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/pages/sheets",
+   "icon": "🧬",
+   "id": "character_sheets",
+   "label": "My Character Sheets",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": "players_can_use_ai_chat",
+   "exact": true,
+   "gm_only": false,
+   "href": "/ai-chat",
+   "icon": "🤖",
+   "id": "ai_chat_player",
+   "label": "Chat with AI",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": true,
+   "href": "/npc-talk",
+   "icon": "💬",
+   "id": "npc_talk",
+   "label": "Talk to NPCs",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": "players_can_ask_ai",
+   "exact": true,
+   "gm_only": false,
+   "href": "/npc-talk",
+   "icon": "💬",
+   "id": "npc_talk_player",
+   "label": "Talk to NPCs",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": "players_can_use_image_gen",
+   "exact": true,
+   "gm_only": false,
+   "href": "/image-gen",
+   "icon": "🎨",
+   "id": "image_gen_player",
+   "label": "Create Art",
+   "player_section": null,
+   "ql_ref": null,
+   "ql_type": null
+  },
+  {
+   "condition": null,
+   "exact": true,
+   "gm_only": false,
+   "href": "/androidapp",
+   "icon": "📱",
+   "id": "androidapp",
+   "label": "Android App",
+   "player_section": "androidapp",
+   "ql_ref": null,
+   "ql_type": null
+  }
+ ],
+ "view_default_size": 2,
+ "view_sections": {
+  "ai_chat": {
+   "default": "withside",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "focus": "Chat only"
+   },
+   "modes": [
+    "withside",
+    "focus"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "album": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    "grid",
+    "masonry",
+    "list",
+    "filmstrip",
+    "justified",
+    "compare"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "audio": {
+   "default": "rows",
+   "default_sort": "name",
+   "filters": [
+    "hidden"
+   ],
+   "groups": [
+    "visibility"
+   ],
+   "modes": [
+    "rows",
+    "compact",
+    "playlist",
+    "pads",
+    "table"
+   ],
+   "size_modes": [
+    "pads"
+   ],
+   "sorts": [
+    "name",
+    "date",
+    "size"
+   ]
+  },
+  "board_notes": {
+   "default": "timeline",
+   "default_sort": "date",
+   "filters": [],
+   "groups": [
+    "type",
+    "status"
+   ],
+   "labels": {
+    "split": "Reader",
+    "timeline": "List"
+   },
+   "modes": [
+    "timeline",
+    "cards",
+    "outline",
+    "split"
+   ],
+   "size_modes": [
+    "cards"
+   ],
+   "sort_labels": {
+    "date": "Board order"
+   },
+   "sorts": [
+    "date",
+    "name"
+   ]
+  },
+  "board_view": {
+   "default": "canvas",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "canvas",
+    "outline",
+    "timeline"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "boards": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "list"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "calendar_agenda": {
+   "default": "table",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "timeline": "Eras timeline"
+   },
+   "modes": [
+    "table",
+    "timeline"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "calendar_view": {
+   "default": "month",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "month",
+    "week"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "catalog": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "compact": "Compact",
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "table",
+    "compact"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "characters": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    "party",
+    "owner",
+    "system"
+   ],
+   "labels": {
+    "compact": "Roster",
+    "wall": "Portrait wall"
+   },
+   "modes": [
+    "grid",
+    "compact",
+    "wall"
+   ],
+   "size_modes": [
+    "grid",
+    "wall"
+   ],
+   "sort_labels": {
+    "num": "Level"
+   },
+   "sorts": [
+    "name",
+    "num"
+   ]
+  },
+  "cockpit": {
+   "default": "free",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "grid": "Tiled grid"
+   },
+   "modes": [
+    "free",
+    "rail",
+    "tabs",
+    "grid"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "combat": {
+   "default": "rows",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "rows": "Standard"
+   },
+   "modes": [
+    "rows",
+    "compact",
+    "cards",
+    "turn",
+    "big"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "combat_list": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "grid": "Cards",
+    "grouped": "By status"
+   },
+   "modes": [
+    "grid",
+    "table",
+    "grouped"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "connections": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    "dir",
+    "kind"
+   ],
+   "labels": {
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "web"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "dice": {
+   "default": "tray",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    "tray",
+    "quick",
+    "log"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "entities": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    "subtype",
+    "tag"
+   ],
+   "modes": [
+    "grid",
+    "compact",
+    "wall",
+    "split",
+    "board"
+   ],
+   "size_modes": [
+    "grid",
+    "wall"
+   ],
+   "sorts": [
+    "name",
+    "date"
+   ]
+  },
+  "entity_notes": {
+   "default": "timeline",
+   "default_sort": "date",
+   "filters": [],
+   "groups": [
+    "month",
+    "visibility"
+   ],
+   "labels": {
+    "split": "Reader",
+    "timeline": "List"
+   },
+   "modes": [
+    "timeline",
+    "cards",
+    "outline",
+    "split"
+   ],
+   "size_modes": [
+    "cards"
+   ],
+   "sorts": [
+    "date",
+    "name"
+   ]
+  },
+  "entity_page": {
+   "default": "classic",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    "classic",
+    "tabs",
+    "cols",
+    "reader"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "facts": {
+   "default": "groups",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "timeline": "Timeline"
+   },
+   "modes": [
+    "groups",
+    "timeline",
+    "table"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "handouts": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "grid",
+    "list"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "home": {
+   "default": "classic",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "classic": "Classic"
+   },
+   "lists": {
+    "hidden": 16,
+    "order": 16
+   },
+   "modes": [
+    "classic",
+    "night",
+    "focus",
+    "widgets"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "hub": {
+   "default": "tabs",
+   "default_sort": "name",
+   "filters": [
+    "sheet",
+    "cockpit",
+    "journey",
+    "quests",
+    "notes",
+    "world",
+    "schedule",
+    "sessions",
+    "keepsakes",
+    "handouts",
+    "companions",
+    "log",
+    "places"
+   ],
+   "groups": [],
+   "max_filters": 4,
+   "modes": [
+    "tabs",
+    "play",
+    "dashboard",
+    "split"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "images": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [
+    "unused"
+   ],
+   "groups": [
+    "usage",
+    "source"
+   ],
+   "modes": [
+    "grid",
+    "masonry",
+    "list",
+    "filmstrip",
+    "justified",
+    "compare"
+   ],
+   "sorts": [
+    "name",
+    "uses",
+    "date",
+    "size"
+   ]
+  },
+  "jobs_list": {
+   "default": "cards",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "cards",
+    "compact",
+    "table"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "map_viewer": {
+   "default": "mapfull",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "mapfull": "Map only",
+    "panel": "Map + list"
+   },
+   "modes": [
+    "mapfull",
+    "panel",
+    "minimap"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "maps": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "grid",
+    "list",
+    "large"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "notes": {
+   "default": "timeline",
+   "default_sort": "-date",
+   "filters": [],
+   "groups": [
+    "month"
+   ],
+   "labels": {
+    "split": "Reader"
+   },
+   "modes": [
+    "timeline",
+    "cards",
+    "outline",
+    "split"
+   ],
+   "size_modes": [
+    "cards"
+   ],
+   "sorts": [
+    "date",
+    "name"
+   ]
+  },
+  "parties": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "table"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "party_page": {
+   "default": "classic",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "classic": "Long page"
+   },
+   "modes": [
+    "classic",
+    "dashboard"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "quests": {
+   "default": "board",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    "status",
+    "category"
+   ],
+   "labels": {
+    "compact": "List",
+    "grid": "Cards"
+   },
+   "modes": [
+    "board",
+    "compact",
+    "grid"
+   ],
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    "name",
+    "date"
+   ]
+  },
+  "recap": {
+   "default": "full",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "full",
+    "sections",
+    "cards"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "rules": {
+   "default": "scroll",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "scroll",
+    "book",
+    "wide",
+    "searchfirst"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "search_results": {
+   "default": "grouped",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "cards": "Cards"
+   },
+   "modes": [
+    "grouped",
+    "flat",
+    "cards"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "session_gm": {
+   "default": "long",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "long": "Long page",
+    "run": "Run mode"
+   },
+   "modes": [
+    "long",
+    "tabs",
+    "run"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "session_log": {
+   "default": "timeline",
+   "default_sort": "-num",
+   "filters": [],
+   "groups": [
+    "recap"
+   ],
+   "labels": {
+    "grid": "Cards",
+    "timeline": "List"
+   },
+   "modes": [
+    "timeline",
+    "grid",
+    "compact"
+   ],
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    "num",
+    "name"
+   ]
+  },
+  "sessions": {
+   "default": "grid",
+   "default_sort": "-num",
+   "filters": [],
+   "groups": [
+    "party"
+   ],
+   "labels": {
+    "compact": "List",
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "compact"
+   ],
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    "num",
+    "name"
+   ]
+  },
+  "settings_page": {
+   "default": "tabs",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {},
+   "modes": [
+    "tabs",
+    "onepage"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "site": {
+   "default": "site",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "max_pins": 6,
+   "modes": [
+    "site"
+   ],
+   "options": {
+    "density": [
+     "comfortable",
+     "compact",
+     "touch"
+    ],
+    "motion": [
+     "",
+     "full",
+     "reduced"
+    ],
+    "nav": [
+     "top",
+     "rail",
+     "compact",
+     "bottom"
+    ],
+    "scale": [
+     "",
+     "90",
+     "100",
+     "110",
+     "125",
+     "150",
+     "175",
+     "200"
+    ],
+    "theme": [
+     "",
+     "dark",
+     "dim",
+     "light",
+     "contrast"
+    ],
+    "width": [
+     "centered",
+     "wide",
+     "reading"
+    ]
+   },
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "tables": {
+   "default": "grid",
+   "default_group": "category",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [
+    "category"
+   ],
+   "labels": {
+    "compact": "List",
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "compact",
+    "roll"
+   ],
+   "size_modes": [
+    "grid"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "templates": {
+   "default": "list",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "grid": "Cards"
+   },
+   "modes": [
+    "list",
+    "grid"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
+  "video": {
+   "default": "rows",
+   "default_sort": "name",
+   "filters": [
+    "hidden"
+   ],
+   "groups": [
+    "visibility"
+   ],
+   "modes": [
+    "rows",
+    "compact",
+    "posters",
+    "theater"
+   ],
+   "size_modes": [
+    "posters"
+   ],
+   "sorts": [
+    "name",
+    "date",
+    "size"
+   ]
+  },
+  "worlds": {
+   "default": "grid",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "grid": "Cards"
+   },
+   "modes": [
+    "grid",
+    "list"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  }
+ },
+ "view_sizes": [
+  1,
+  2,
+  3
+ ]
+}

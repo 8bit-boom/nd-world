@@ -34,10 +34,7 @@ fn counters(cfg: &Arc<Config>) -> Counters {
                 .ok()
                 .flatten();
                 if let Some(rows) = rows {
-                    let mut g = m.lock().unwrap();
-                    for (k, n) in rows {
-                        g.insert(k, n);
-                    }
+                    *m.lock().unwrap() = rows.into_iter().collect(); // the table as it is now (a key that went away reads 0, as in Python)
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }

@@ -9,7 +9,7 @@ use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_AL
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Pages {
-    env: Environment<'static>,
+    pub env: Environment<'static>,
     routes: Vec<String>,
     secret: Option<String>,
 }
@@ -103,4 +103,56 @@ impl Pages {
         let page = self.env.get_template("auth/login.html").ok()?.render(context! { next => next, error => Option::<String>::None }).ok()?;
         Some(html(StatusCode::OK, page, headers))
     }
+}
+
+/// A page built from the database: the layout context (crate::layout) plus the page's own data, rendered with the app's template.
+/// `None` = let Python build it.
+pub fn render_with(pages: &Pages, template: &str, ctx: serde_json::Map<String, serde_json::Value>, headers: &HeaderMap) -> Option<Response<Body>> {
+    let page = pages.env.get_template(template).ok()?.render(minijinja::Value::from_serialize(&ctx));
+    let page = match page {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("nd-gateway: {template}: {e:#}");
+            return None;
+        }
+    };
+    let mut r = html(StatusCode::OK, page, headers);
+    r.headers_mut().insert("x-nd-served-by", axum::http::HeaderValue::from_static("gateway"));
+    Some(r)
+}
+
+/// `GET /dice` (app/routers/dice.py `dice_page`).
+pub fn dice(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world_id = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    if let Some(w) = &p.world {
+        if !p.is_gm {
+            let level = nd_perm::sections::section_level(false, p.role.as_deref(), w.get("section_access_json").and_then(|v| v.as_str()), w.get("custom_kinds_json").and_then(|v| v.as_str()), "dice")?;
+            if level == "none" {
+                return None; // Python's 403
+            }
+        }
+    } else if !p.is_gm {
+        // no world: Python's world_can_view_section(None) decides by the defaults; "dice" is readable, so the page shows its empty state
+    }
+    let mut rolls = vec![];
+    if let Some(wid) = world_id {
+        let mut st = db.prepare("SELECT id, user_name, notation, label, breakdown, total FROM dice_rolls WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 50").ok()?;
+        let rows = st
+            .query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<i64>>(5)?)))
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        for (id, user_name, notation, label, breakdown, total) in rows {
+            let b: serde_json::Value = serde_json::from_str(breakdown.as_deref().unwrap_or("[]")).ok()?;
+            rolls.push(serde_json::json!({"id": id, "user_name": user_name, "notation": notation, "label": label.unwrap_or_default(), "breakdown": b, "total": total}));
+        }
+    }
+    let q = |k: &str| query_param(uri, k).unwrap_or_default();
+    p.ctx.insert("rolls".into(), serde_json::Value::Array(rolls));
+    p.ctx.insert("error".into(), q("error").into());
+    p.ctx.insert("last_notation".into(), q("n").into());
+    render_with(pages, "dice.html", p.ctx, headers)
 }

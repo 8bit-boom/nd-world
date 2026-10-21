@@ -227,3 +227,9 @@ cockpit, combat tracker, character hub and schematic maps are still Python's.
 
 Found on the way: `tests/test_unsloth_audit_fixes.py::test_no_studio_api_key_is_committed` read every file under the repository, including
 `rust/target/` (5 GB of build output), and took half an hour; it now skips `rust/target`.
+
+## 15. Full port, batch 1 (phase 2): the layout of every signed-in page, and /dice
+
+The user asked for the whole app in Rust, phase by phase. Batch 1 ports the context `base.html` needs (`docs/RUST_PAGES.md`, "The layout
+context") and the first signed-in page, `/dice`, identical to Python's for three roles and five URL variants; 84 -> 237 pages/s. Fixed on the way:
+the gateway's live stream kept counters of rows that were gone (a table reset); it now reads the table as it is.

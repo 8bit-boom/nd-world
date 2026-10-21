@@ -45,6 +45,7 @@ async def main():
     ap.add_argument("--password", default="")
     ap.add_argument("--upload", default="")
     ap.add_argument("--static", default="/static/style.css")
+    ap.add_argument("--page", default="", help="the page to time (default: / signed in, /login otherwise)")
     ap.add_argument("--clients", type=int, default=16)
     ap.add_argument("--seconds", type=float, default=8)
     a = ap.parse_args()
@@ -53,7 +54,7 @@ async def main():
         async with httpx.AsyncClient(base_url=a.direct) as c:
             r = await c.post("/login", data={"email": a.email, "password": a.password, "next": "/"}, follow_redirects=False)
             cookies = dict(c.cookies)
-    kinds = [("static file (style.css)", a.static, {"Accept-Encoding": "identity"}), ("page", "/" if a.email else "/login", {"Accept": "text/html"})]
+    kinds = [("static file (style.css)", a.static, {"Accept-Encoding": "identity"}), ("page " + (a.page or ("/" if a.email else "/login")), a.page or ("/" if a.email else "/login"), {"Accept": "text/html"})]
     if a.upload:
         kinds.insert(1, ("upload", a.upload, {}))
     print(f"{'':28}{'':>9}{'req/s':>9}{'p50 ms':>9}{'p99 ms':>9}{'errors':>8}")

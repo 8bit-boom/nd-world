@@ -9,3 +9,6 @@ minijinja = { version = "2", features = ["loader", "builtins", "multi_template",
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
+minijinja-contrib = { version = "2", features = ["pycompat"] }
+regex = "1"
+nd-perm = { path = "../nd-perm" }

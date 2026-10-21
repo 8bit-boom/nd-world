@@ -3,6 +3,7 @@
 
     ND_TEST_BASE_URL=http://127.0.0.1:8952 ND_GOLDEN_DIRECT_URL=http://127.0.0.1:8951 python -m pytest tests/test_gateway_golden.py"""
 import importlib.util
+import json
 import os
 from pathlib import Path
 
@@ -290,3 +291,53 @@ def test_the_live_stream_is_refused_through_the_gateway_as_python_refuses_it(cli
     for c in (httpx.Client(base_url=DIRECT, timeout=10), httpx.Client(base_url=base, timeout=10)):
         r = c.get("/api/live")
         assert r.status_code == 401 and r.json() == {"detail": "Login required"}
+
+
+# ── GET /dice built by the gateway (ND_RUST_ROUTES=...,pages): the layout (base.html) and the page ──────────────────────────────────────────
+
+def _signed_in(email, password, world=None):
+    d = httpx.Client(base_url=DIRECT, timeout=60)
+    assert d.post("/login", data={"email": email, "password": password, "next": "/"}, follow_redirects=False).status_code == 303
+    if world:
+        d.cookies.set("active_world", world)
+    d.get("/")                                    # a page view writes the site layout into the session, as for a real browser
+    return d
+
+
+def test_the_dice_page_the_gateway_builds_is_pythons_page(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import UserViewPref, World, WorldMembership
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        # a custom kind, custom menus, a theme, and an assistant: the layout has something to show
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.custom_kinds_json = json.dumps([{"id": "custom_ship", "label": "Ships", "icon": "🚀"}])
+        wa.theme_json = json.dumps({"bg": "#101010", "font": "Georgia"})
+        wa.section_access_json = json.dumps({"maps": {"player": "none", "assistant": "read"}, "kind_custom_ship": {"player": "read", "assistant": "edit"}})
+        db.add(UserViewPref(user_id=seed.player_a.id, section="dice", prefs_json=json.dumps({"mode": "log"})))
+        m = db.query(WorldMembership).filter(WorldMembership.user_id == seed.player_b.id).first()
+        if m:
+            m.role = "assistant"
+        db.commit()
+    finally:
+        db.close()
+    people = [(seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)]
+    d0 = _signed_in(people[0][0], people[0][1], people[0][2])
+    d0.post("/api/dice/roll", json={"notation": "2d6+3", "label": "<b>escape me</b>"})
+    for email, pw, world in people:
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path in ("/dice", "/dice?embed=1", "/dice?error=Bad%20notation&n=2d%3Cx", f"/dice?w={seed.world_b.slug}", "/dice?q=search%20me"):
+            a, b = d.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
+            assert a.status_code == b.status_code, (email, path, a.status_code, b.status_code)
+            if a.status_code != 200:
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                diff = "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:40])
+                raise AssertionError(f"{email} {path}\n{diff}")
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, path, "Python built it - the gateway deferred")

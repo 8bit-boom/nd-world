@@ -15,6 +15,7 @@ all of it is `ND_RUST_ROUTES=` or `ND_GATEWAY=0`.
 
 | Route | Notes |
 |---|---|
+| `GET /dice` (`dice.html` in `base.html`) | the first signed-in page; switched on with `pages` in `ND_RUST_ROUTES` (opt-in). Built from the layout context (below) plus the world's last 50 rolls. Same HTML as Python for a GM, a player and an assistant, with a custom kind, custom section access, a theme, a saved dice layout, `?embed=1`, `?error=`/`?n=`, `?w=` and `?q=` (`tests/test_gateway_golden.py`). 84 -> 237 pages/s, p50 165 -> 58 ms. |
 | `GET /login` (`auth/login.html`) | no database: the session cookie is read (signed in = 303 to `next`), `next` is clamped like `auth.safe_next_url`, the form is rendered. The POST (rate limiter, passwords, 2FA) stays in Python. |
 
 ## Differences between MiniJinja and Jinja2 that the work found (and how each is handled)
@@ -52,3 +53,16 @@ table above first, and every page after it is cheaper.
 2. First authenticated page: a small one (`/dice`: one table, `world_can_view_section`) in "shadow" mode - the gateway renders it, compares with
    Python's answer, sends Python's, and logs differences - before it is switched on.
 3. Then the big read pages (entity lists, entity detail, rules, search), where the speed gain is.
+
+## The layout context (batch 1 of the full port)
+
+Every signed-in page sits in `base.html`, which needs: the user and their session (`session_version`, the site layout the session carries), the
+active world and the worlds the person may use, their role there, the route allowlist (`rust/nd-perm`), the world's theme, the navigation menus
+(custom kinds, conditions, per-role section access), the hover-preview settings and the person's saved view layouts. `rust/nd-gateway/src/layout.rs`
+builds all of it; `rust/nd-render/src/app.rs` holds the two pure pieces, checked against Python with random inputs (`tests/test_rust_layout.py`:
+~7,000 layout choices, 1,200 navigation cases). The app's data tables (layout sections, nav catalog, kinds) are copied from Python by
+`scripts/gen_rust_data.py` (`tests/test_rust_data.py` fails when stale). MiniJinja got Python's methods on values (`.get`, `.startswith`, ...),
+Jinja2's exact `tojson` and `urlencode`, the `wq` filter and the per-page `site_layout` / `can_edit` / `saved_view` functions.
+
+The gateway leaves a page to Python when: the session's site-layout copy is missing or older than 15 minutes (Python refreshes it in the cookie),
+the cookie is older than 6 hours, the world shows its hero banner on every page (`_hero.html` is not ported), or anything else is unusual.

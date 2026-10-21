@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod config;
 pub mod files;
+pub mod layout;
 pub mod live;
 pub mod pages;
 pub mod proxy;
@@ -53,6 +54,12 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/live" && app.cfg.rust_routes.iter().any(|r| r == "live") {
         if let Some(resp) = live::serve(app.cfg.clone(), req.uri(), req.headers()).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/dice" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::dice(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
