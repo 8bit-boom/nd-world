@@ -378,3 +378,17 @@ pub fn split_sections_h123(html: &str) -> Vec<Value> {
 pub fn strip_legacy_anchors(text: &str) -> String {
     re!(r#"<a\s+name="[^"]*">\s*</a>"#).replace_all(text, "").into_owned()
 }
+
+/// `rendering.strip_md`: markdown to one line of plain text (list previews).
+pub fn strip_md(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let t = re!(r"!\[[^\]]*\]\([^)]+\)").replace_all(text, "");
+    let t = re!(r"\[([^\]]+)\]\([^)]+\)").replace_all(&t, "$1");
+    let t = re!(r"(?m)^#+\s+").replace_all(&t, "");
+    let t = re!(r"\*{1,2}([^*]+)\*{1,2}").replace_all(&t, "$1");
+    let t = re!(r"(?m)^\*\s*").replace_all(&t, "");
+    let t = re!(r"(?m)^-{3,}$").replace_all(&t, "");
+    py_strip(&collapse_ws(&t)).to_string()
+}

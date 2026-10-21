@@ -269,6 +269,7 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
         }
     });
     env.add_filter("body_summary", |t: Option<String>| text::body_summary(t.as_deref().unwrap_or("")));
+    env.add_filter("strip_md", |t: Option<String>| text::strip_md(t.as_deref().unwrap_or("")));
     env.add_filter("entry_text", |t: Option<String>| text::entry_text(t.as_deref().unwrap_or("")));
     env.add_filter("parse_stats", |t: Option<String>| Value::from_serialize(text::parse_stats(t.as_deref().unwrap_or(""))));
     env.add_filter("truncate", jinja_truncate);

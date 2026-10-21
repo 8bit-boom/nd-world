@@ -682,3 +682,131 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     c.insert("ai_custom_instructions".into(), Value::String(ai_custom));
     render_with(pages, "entities/detail.html", p.ctx, headers)
 }
+
+fn section_ok(p: &crate::layout::PageCtx, world: Option<&serde_json::Map<String, serde_json::Value>>, section: &str) -> Option<bool> {
+    if p.is_gm {
+        return Some(true);
+    }
+    let s = |k: &str| world.and_then(|w| w.get(k)).and_then(|v| v.as_str());
+    Some(nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), section)? != "none")
+}
+
+fn page_param(uri: &Uri) -> Option<i64> {
+    match query_param(uri, "page") {
+        None => Some(1),
+        Some(p) => p.trim().parse().ok(),
+    }
+}
+
+/// `GET /sessions` (app/routers/sessions.py `sessions_list`)
+pub fn sessions_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let page = page_param(uri)?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !section_ok(&p, p.world.as_ref(), "sessions")? {
+        return None;
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
+    let total: i64 = db.query_row("SELECT count(*) FROM game_sessions WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    let total_pages = std::cmp::max(1, (total + 49) / 50);
+    let page = page.max(1).min(total_pages);
+    let mut st = db.prepare("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 50 OFFSET ?2").ok()?;
+    let sessions = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
+    let mut names = Map::new();
+    for r in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
+        let (id, n) = r.ok()?;
+        names.insert(id.to_string(), json!(n));
+    }
+    p.ctx.insert("sessions".into(), Value::Array(sessions.into_iter().map(Value::Object).collect()));
+    p.ctx.insert("page".into(), json!(page));
+    p.ctx.insert("total_pages".into(), json!(total_pages));
+    p.ctx.insert("party_names".into(), json!({"__intkeys__": Value::Object(names)}));
+    render_with(pages, "sessions/list.html", p.ctx, headers)
+}
+
+/// `GET /quests` (app/routers/quests.py `quests_list`)
+pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !section_ok(&p, Some(&world), "quests")? {
+        return None;
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let term = nd_render::text::py_strip(&query_param(uri, "q").unwrap_or_default()).to_string();
+    let category = query_param(uri, "category").unwrap_or_default();
+    let party = query_param(uri, "party").unwrap_or_default();
+    let mut sql = String::from("SELECT * FROM quests WHERE world_id = ?1");
+    if !p.is_gm {
+        sql.push_str(" AND visible_to_players IS NOT 0");
+    }
+    sql.push_str(if term.is_empty() { " AND ?2 IS NOT NULL" } else { " AND (lower(title) LIKE lower(?2) OR lower(summary) LIKE lower(?2) OR lower(body) LIKE lower(?2))" });
+    sql.push_str(if category.is_empty() { " AND ?3 IS NOT NULL" } else { " AND category = ?3" });
+    // str.isdigit(): Unicode digits too; those make int() differ - leave such a request to Python
+    if party.chars().any(|c| c.is_numeric() && !c.is_ascii_digit()) {
+        return None;
+    }
+    let party_id: Option<i64> = if !party.is_empty() && party.bytes().all(|b| b.is_ascii_digit()) { Some(party.parse().ok()?) } else { None };
+    sql.push_str(if party_id.is_some() { " AND assigned_party_id = ?4" } else { " AND ?4 IS NULL" });
+    sql.push_str(" ORDER BY title");
+    let like = format!("%{term}%");
+    let mut st = db.prepare(&sql).ok()?;
+    let quests = st
+        .query_map(rusqlite::params![wid, like, category, party_id], |r| crate::layout::row_map(r))
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let (mut done, mut total): (Vec<(i64, i64)>, Vec<(i64, i64)>) = (vec![], vec![]);
+    let bump = |v: &mut Vec<(i64, i64)>, k: i64| match v.iter_mut().find(|(a, _)| *a == k) {
+        Some(x) => x.1 += 1,
+        None => v.push((k, 1)),
+    };
+    for q in &quests {
+        if let Some(pid) = q.get("parent_id").and_then(|v| v.as_i64()).filter(|x| *x != 0) {
+            bump(&mut total, pid);
+            if q.get("status").and_then(|v| v.as_str()) == Some("complete") {
+                bump(&mut done, pid);
+            }
+        }
+    }
+    let statuses = ["active", "complete", "failed", "secret"];
+    let mut grouped: Vec<(String, Vec<Value>)> = statuses.iter().map(|s| (s.to_string(), vec![])).collect();
+    for q in &quests {
+        let s = q.get("status").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("active").to_string();
+        match grouped.iter_mut().find(|(g, _)| *g == s) {
+            Some(g) => g.1.push(Value::Object(q.clone())),
+            None => grouped.push((s, vec![Value::Object(q.clone())])),
+        }
+    }
+    let rows = |sql: &str| -> Option<Vec<Value>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r.into_iter().map(Value::Object).collect())
+    };
+    let parties = rows("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name")?;
+    let sessions = rows("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 50")?;
+    // world_can_edit_section(request, world, "quests")
+    let can_create = p.is_gm || {
+        let s = |k: &str| world.get(k).and_then(|v| v.as_str());
+        nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), "quests")? == "edit"
+    };
+    let ik = |v: Vec<(i64, i64)>| json!({"__intkeys__": Value::Object(v.into_iter().map(|(k, n)| (k.to_string(), json!(n))).collect::<Map<_, _>>())});
+    let c = &mut p.ctx;
+    c.insert("grouped".into(), Value::Object(grouped.into_iter().map(|(k, v)| (k, Value::Array(v))).collect()));
+    c.insert("statuses".into(), json!(statuses));
+    c.insert("can_create".into(), json!(can_create));
+    c.insert("q".into(), json!(term));
+    c.insert("category".into(), json!(category));
+    c.insert("party".into(), json!(party));
+    c.insert("parties".into(), Value::Array(parties));
+    c.insert("subs_done".into(), ik(done));
+    c.insert("subs_total".into(), ik(total));
+    c.insert("sessions".into(), Value::Array(sessions));
+    c.insert("ai_ready".into(), json!(""));
+    render_with(pages, "quests/list.html", p.ctx, headers)
+}

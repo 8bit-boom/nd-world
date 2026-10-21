@@ -26,6 +26,7 @@ fn main() {
             }
             "md" => json!(md::render_md(q["text"].as_str().unwrap())),
             "summary" => json!(text::body_summary(q["text"].as_str().unwrap())),
+            "strip_md" => json!(text::strip_md(q["text"].as_str().unwrap())),
             "entry" => json!(text::entry_text(q["text"].as_str().unwrap())),
             "stats" => json!(text::parse_stats(q["text"].as_str().unwrap())),
             "variants" => json!(text::derive_name_variants(q["text"].as_str().unwrap())),

@@ -481,3 +481,45 @@ def test_entity_pages_the_gateway_builds_are_pythons(client, seed):
                 raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
             served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 8, served
+
+
+def test_session_and_quest_lists_the_gateway_builds_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import GameSession, Party, Quest, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        party = Party(world_id=w, name="The Crew")
+        db.add(party); db.flush()
+        for i in range(53):
+            db.add(GameSession(world_id=w, title=f"Session {i}", session_num=i, summary=f"# Recap {i}\nThe **crew** went to [the docks](/x)."))
+        main_q = Quest(world_id=w, title="Find the ship", status="active", category="main", summary="Look <here>", assigned_party_id=party.id)
+        db.add(main_q); db.flush()
+        db.add_all([Quest(world_id=w, title="Sub one", status="complete", parent_id=main_q.id), Quest(world_id=w, title="Sub two", parent_id=main_q.id),
+                    Quest(world_id=w, title="Hidden plot", status="secret", visible_to_players=False), Quest(world_id=w, title="Odd", status="weird", category="side")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"quests": {"player": "edit", "assistant": "read"}, "sessions": {"player": "read", "assistant": "read"}})
+        db.commit()
+        pid = party.id
+    finally:
+        db.close()
+    paths = ["/sessions", "/sessions?page=2", "/sessions?page=0", "/sessions?page=9", "/sessions?page=x", "/quests", "/quests?q=ship", "/quests?q=%20SUB%20",
+             "/quests?category=side", f"/quests?party={pid}", "/quests?party=abc", "/quests?q=hidden"]
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path in paths:
+            a, b = d.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
+            assert a.status_code == b.status_code, (email, path, a.status_code, b.status_code)
+            if a.status_code != 200:
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 20, served

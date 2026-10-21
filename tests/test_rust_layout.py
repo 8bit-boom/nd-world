@@ -129,16 +129,16 @@ _BODY_LINES = ["## Attributes", "## Entry", "## Profile", "## Other", "* **Damag
 
 def test_card_text_helpers_match_python():
     """body_summary, entry_text and parse_stats (cards, list tables) - random bodies built from the formats the app's content uses."""
-    from app.rendering import body_summary, entry_text, parse_stats
+    from app.rendering import body_summary, entry_text, parse_stats, strip_md
     rng = random.Random(7)
     bodies = ["", "plain"] + ["\n".join(rng.choice(_BODY_LINES) for _ in range(rng.randint(1, 14))) for _ in range(2500)]
     for p in sorted(ROOT.glob("app/**/*.md"))[:200]:
         bodies.append(p.read_text(errors="ignore"))
-    qs = [{"op": op, "text": b} for b in bodies for op in ("summary", "entry", "stats")]
+    qs = [{"op": op, "text": b} for b in bodies for op in ("summary", "entry", "stats", "strip_md")]
     got = ask(qs)
     want = []
     for b in bodies:
-        want += [body_summary(b), entry_text(b), json.loads(json.dumps(parse_stats(b)))]
+        want += [body_summary(b), entry_text(b), json.loads(json.dumps(parse_stats(b))), strip_md(b)]
     bad = [(q["op"], q["text"], w, g) for q, w, g in zip(qs, want, got) if w != g]
     assert not bad, f"{len(bad)} of {len(qs)} differ: {bad[:3]}"
 
