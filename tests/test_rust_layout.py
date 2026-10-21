@@ -96,3 +96,25 @@ def test_navigation_menus_are_resolved_like_python():
     bad = [(q, w, g) for q, w, g in zip(qs, want, got) if g is not None and w != g]
     assert not bad, f"{len(bad)} of {len(qs)} differ; first: {json.dumps(bad[0])[:1500]}"
     assert unsure < len(qs) * 0.05, unsure
+
+
+_MD_PIECES = ["Hello world", "**bold**", "*it*", "[color=red]red[/color]", "[color=#0f0]x[/color]", "[color=evil;]y[/color]", "[mark]m[/mark]",
+              "[mark=gold]g[/mark]", "[u]u[/u]", "[read]Read this aloud[/read]", "[spoiler]twist[/spoiler]", "[gmonly]secret[/gmonly]",
+              "[for=1,2]yours[/for]", "[reveal=2026-01-01]later[/reveal]", "[reveal=2026-02-30]bad[/reveal]", "\n\n", " ", "\n\n- item\n\n",
+              "![pic](/uploads/a.png \"size:50\")", "![s](/uploads/a.mp3 \"audio\")", "![v](/uploads/a.mp4 \"video\")", "[link](/entity/3)", "# Title\n"]
+
+
+def test_the_apps_own_markdown_tags_render_like_python():
+    """The part of |md after the markdown step is a line-by-line port: on text where the two markdown libraries agree (no underscores,
+    no fenced code), the whole result must be Python's. (Where the libraries differ the owner chose the Rust one - docs/RUST_PAGES.md.)"""
+    import importlib.util
+    from app.rendering import _render_md
+    spec = importlib.util.spec_from_file_location("golden", ROOT / "scripts" / "golden.py")
+    golden = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(golden)
+    rng = random.Random(6)
+    texts = ["".join(rng.choice(_MD_PIECES) for _ in range(rng.randint(1, 8))) for _ in range(1500)]
+    got = ask([{"op": "md", "text": t} for t in texts])
+    n = lambda h: golden.normalise("text/html", h.encode())
+    bad = [(t, _render_md(t), g) for t, g in zip(texts, got) if n(_render_md(t)) != n(g)]
+    assert len(bad) < len(texts) * 0.05, f"{len(bad)} of {len(texts)} differ, e.g. {bad[:3]}"

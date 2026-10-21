@@ -49,6 +49,23 @@ fn formatter(out: &mut Output, state: &State, value: &Value) -> Result<(), Error
     escape_formatter(out, state, value)
 }
 
+/// The current UTC minute, for [reveal=...] blocks.
+fn nd_perm_now() -> nd_perm::gmonly::Minute {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    (y, m, d, rem / 3600, rem % 3600 / 60)
+}
+
 fn nd(state: &State, key: &str) -> Value {
     state.lookup("__nd").and_then(|v| v.get_attr(key).ok()).unwrap_or(Value::UNDEFINED)
 }
@@ -150,6 +167,21 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     env.add_filter("wq", wq);
     // per-render answers the page builder put in the context under "__nd" (site_layout, can_edit, saved views)
     env.add_function("site_layout", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "site_layout")) });
+    // markdown: pulldown-cmark plus the app's own tags (md.rs) - the owner chose CommonMark's behaviour over markdown2's (docs/RUST_PAGES.md)
+    env.add_filter("md", |text: Option<String>| Value::from_safe_string(md::render_md(text.as_deref().unwrap_or(""))));
+    env.add_filter("md_for", |state: &State, text: Option<String>, _req: Value| -> Result<Value, Error> {
+        let text = text.unwrap_or_default();
+        let gm = state.lookup("request").and_then(|r| r.get_attr("state").ok()?.get_attr("user").ok()?.get_attr("is_gm").ok()).map_or(false, |v| v.is_true());
+        if gm {
+            return Ok(Value::from_safe_string(md::render_md(&text)));
+        }
+        let viewer = state.lookup("request").and_then(|r| r.get_attr("state").ok()?.get_attr("user").ok()?.get_attr("id").ok()).and_then(|v| i64::try_from(v).ok());
+        let now = nd_perm_now();
+        match nd_perm::gmonly::strip_gm_only(&text, viewer, now) {
+            Some(t) => Ok(Value::from_safe_string(md::render_md(&t))),
+            None => Err(Error::new(ErrorKind::InvalidOperation, "strip_gm_only: not sure, let Python render")),
+        }
+    });
     env.add_function("view_spec", |section: String| -> Value {
         Value::from_serialize(app::data()["view_specs"].get(&section).cloned().unwrap_or(serde_json::json!({})))
     });

@@ -26,6 +26,7 @@ RUN mkdir -p nd-gateway/src nd-render/src nd-perm/src && echo "fn main() {}" > n
     rm -rf nd-gateway/src nd-render/src nd-perm/src
 COPY rust/nd-gateway/src nd-gateway/src
 COPY rust/nd-render/src nd-render/src
+COPY rust/nd-render/data nd-render/data
 COPY rust/nd-perm/src nd-perm/src
 RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs nd-render/src/lib.rs nd-perm/src/lib.rs \
     && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway \

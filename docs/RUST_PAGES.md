@@ -68,13 +68,15 @@ Jinja2's exact `tojson` and `urlencode`, the `wq` filter and the per-page `site_
 The gateway leaves a page to Python when: the session's site-layout copy is missing or older than 15 minutes (Python refreshes it in the cookie),
 the cookie is older than 6 hours, the world shows its hero banner on every page (`_hero.html` is not ported), or anything else is unusual.
 
-## Markdown (`|md`) - a decision, not yet made
+## Markdown (`|md`) - decided: the Rust (CommonMark) behaviour
 
 `rust/nd-render/src/md.rs` is `render_md` with pulldown-cmark for the markdown step and a line-by-line port of everything after it (the app's own
 tags, media titles, prose code blocks). `scripts/compare_markdown.py` feeds every markdown file of the repository (cut into sections, 984 texts)
 to both: **73 % render the same**. The differences are markdown2's own: it turns underscores inside words into italics (`AI_ENTITY_GUIDE.md` ->
 "AI*ENTITY*GUIDE.md"), puts no language class on fenced code, and reads some fenced blocks inside lists differently. So pages with written
-content (entities, notes, facts, recaps, rules) would look different in places once Rust builds them - mostly better. Not used by any page
-yet; the choice (accept CommonMark, imitate markdown2, or keep a Python helper for it) is the owner's.
+content (entities, notes, facts, recaps, rules) would look different in places once Rust builds them - mostly better. The owner chose the Rust
+behaviour (2026-10-21): `md` and `md_for` are now template filters on the Rust side. Pages that use them are compared with Python with that
+difference allowed for; `tests/test_rust_layout.py` checks that the app's own tags (colours, marks, spoilers, [gmonly] / [for] / [reveal] boxes, media titles)
+render exactly like Python's wherever the two markdown libraries agree.
 
 Python dates in templates: database DATETIME columns reach templates as objects with Python's `strftime`, `isoformat`, `date()` and `str()`.
