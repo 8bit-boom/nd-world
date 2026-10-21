@@ -8,7 +8,7 @@ it applies to any machine; the numbers in brackets are what nd-world picks on th
 | What | How it uses the cores | Setting |
 |---|---|---|
 | Building pages | At most `ND_RENDERS` pages at once (default 2). Page building holds Python's interpreter lock, so more parallel pages queue rather than speed up - measured on 4 cores: 2 slots gave 28 pages/s, 8-40 gave 6. Pages take 10-40 ms. | `ND_RENDERS` - measure before changing (below) |
-| Picture work: thumbnails, opened-picture copies, the thumbnail remake | Half the cores, 1 to 6 (**6**): Pillow releases the lock while it resizes and encodes, so these really run in parallel, and half the cores stay free for pages. Measured: 16 thumbnails remade in 4.4 s with 1 worker, 2.5 s with 3. | `ND_IMAGE_WORKERS` |
+| Picture work: thumbnails, opened-picture copies, the thumbnail remake | Half the usable cores, 1 to 8 (**8** on a 5800X's 16 threads; a Docker `cpus:` limit counts): Pillow releases the lock while it resizes and encodes, so these really run in parallel, and half the cores stay free for pages. Measured: 16 thumbnails remade in 4.4 s with 1 worker, 2.5 s with 3. | `ND_IMAGE_WORKERS` |
 | Map tiling of uploaded maps | 2 maps at once with 16 GB of RAM or more (**2**), else 1 - one 72 MP map needs ~0.7 GB while it is cut. | `ND_TILE_WORKERS` |
 | Video conversion (AV1, SVT-AV1) | All cores, by ffmpeg itself. | - |
 
