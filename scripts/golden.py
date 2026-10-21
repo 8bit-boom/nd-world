@@ -23,7 +23,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 
-SKIP_PATH = re.compile(r"^/(logout|static/|uploads/|api/live|api/display/stream|api/chronicler|api/ai/|__test__|map-tiles/)|/(delete|download|export|stream)\b|\.(zip|pdf|mp3|mp4|webm|png|jpe?g|webp|avif|gif|svg|ics)(\?|$)")
+SKIP_PATH = re.compile(r"^/(logout|worlds/switch/|static/|uploads/|api/live|api/display/stream|api/chronicler|api/ai/|__test__|map-tiles/)|/(delete|download|export|stream)\b|\.(zip|pdf|mp3|mp4|webm|png|jpe?g|webp|avif|gif|svg|ics)(\?|$)")
 START = ["/", "/rules", "/sessions", "/facts", "/maps", "/calendar", "/characters", "/quests", "/tables", "/dice", "/gallery", "/images", "/audio",
          "/video", "/search?q=a", "/account", "/settings", "/worlds", "/combat", "/parties", "/boards", "/handouts", "/schedule", "/session-log"]
 
@@ -47,6 +47,21 @@ class _Links(HTMLParser):
         a = dict(attrs)
         if tag == "a" and a.get("href"):
             self.hrefs.append(a["href"])
+
+
+PER_SHAPE = 6        # pages collected per route shape ("/entity/{n}"): enough to cover a kind of page, not every row of the data
+
+
+def shape(path: str) -> str:
+    """The route a path belongs to: ids and the query string folded away (`/entity/3?x=1` -> `/entity/{n}`)."""
+    return re.sub(r"\d+", "{n}", path.split("?", 1)[0])
+
+
+def _plain(path: str) -> str:
+    """A discovered link without the `w` (world) parameter - the active world comes from the cookie, the same page otherwise."""
+    base, _, query = path.partition("?")
+    keep = [q for q in query.split("&") if q and not q.startswith("w=")]
+    return base + (("?" + "&".join(keep)) if keep else "")
 
 
 def links(html: str, base: str) -> list:
@@ -133,13 +148,16 @@ def snapshot(client: httpx.Client, path: str) -> dict:
             "location": r.headers.get("location", ""), "body": normalise(r.headers.get("content-type", ""), r.content)}
 
 
-def crawl(client: httpx.Client, limit: int = 400) -> list:
-    seen, queue, found = set(), list(START), []
+def crawl(client: httpx.Client, limit: int = 400, per_shape: int = PER_SHAPE) -> list:
+    seen, queue, found, count = set(), list(START), [], {}
     while queue and len(found) < limit:
-        path = queue.pop(0)
+        path = _plain(queue.pop(0))
         if path in seen or SKIP_PATH.search(path):
             continue
         seen.add(path)
+        sh = shape(path)
+        if count.get(sh, 0) >= per_shape and path not in START:
+            continue
         try:
             r = client.get(path, follow_redirects=False)
         except httpx.HTTPError:
@@ -147,8 +165,10 @@ def crawl(client: httpx.Client, limit: int = 400) -> list:
         if r.status_code >= 400:
             continue
         found.append(path)
+        count[sh] = count.get(sh, 0) + 1
         if "text/html" in r.headers.get("content-type", "") and r.status_code == 200:
             for link in links(r.text, str(client.base_url) + path):
+                link = _plain(link)
                 if link not in seen and not SKIP_PATH.search(link):
                     queue.append(link)
     return found

@@ -37,6 +37,12 @@ def test_links_stay_on_the_site():
     assert golden.SKIP_PATH.search("/logout") and golden.SKIP_PATH.search("/entity/3/delete") and not golden.SKIP_PATH.search("/entity/3")
 
 
+def test_the_crawl_folds_ids_and_the_world_parameter():
+    assert golden.shape("/entity/12?x=1") == "/entity/{n}" and golden.shape("/kind/character") == "/kind/character"
+    assert golden._plain("/kind/item?w=world-a") == "/kind/item" and golden._plain("/search?q=a&w=x") == "/search?q=a"
+    assert golden.SKIP_PATH.search("/worlds/switch/world-b?next=/")
+
+
 def _gm(client, seed):
     r = client.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"}, follow_redirects=False)
     assert r.status_code == 303
@@ -48,13 +54,13 @@ def test_crawl_finds_the_pages_of_the_data_and_the_app_agrees_with_itself(client
     db = SessionLocal()
     try:
         for n in ("Ana", "Bo"):
-            db.add(Entity(world_id=seed.world_a.id, kind="npc", name=n, body="Hello **there**"))
+            db.add(Entity(world_id=seed.world_a.id, kind="character", name=n, body="Hello **there**"))
         db.commit()
     finally:
         db.close()
     gm = _gm(client, seed)
     paths = golden.crawl(gm, limit=60)
-    assert "/" in paths and any(p.startswith("/kind/npc") for p in paths) and any(p.startswith("/entity/") for p in paths), paths
+    assert "/" in paths and any(p.startswith("/kind/character") for p in paths) and any(p.startswith("/entity/") for p in paths), paths
     assert not any("logout" in p or "delete" in p for p in paths)
     res = golden.compare(gm, gm, paths)
     assert not res["differ"], {k: v[:3] for k, v in list(res["differ"].items())[:3]}
