@@ -220,9 +220,14 @@
 <footer>{{ world.name if world else 'N&D World' }} — self-hosted</footer>
 
 <div id="lightbox-overlay" class="lightbox-overlay" role="dialog" aria-modal="true" aria-label="Image preview" onclick="closeLightbox()">
+  <div id="lightbox-stage" class="lightbox-stage"><img id="lightbox-img" src="" alt="" draggable="false"/></div>
   <button type="button" class="lightbox-close" onclick="closeLightbox()" aria-label="Close">✕</button>
-  <img id="lightbox-img" src="" alt=""/>
-  <a id="lightbox-full" class="lightbox-full" href="#" target="_blank" rel="noopener" hidden onclick="event.stopPropagation()">⤢ Full size</a>
+  <div class="lightbox-bar" onclick="event.stopPropagation()">
+    <span class="lightbox-hint">Click: actual size · wheel / pinch: zoom · drag: move</span>
+    <label class="lightbox-always" title="Remembered in this browser"><input type="checkbox" id="lightbox-always"/> Always open at full size</label>
+    <button type="button" id="lightbox-full" class="lightbox-full" hidden title="Load the original picture (F)">⤢ Full size</button>
+    <a id="lightbox-orig" class="lightbox-full" href="#" target="_blank" rel="noopener" hidden title="The original in a new tab">↗</a>
+  </div>
 </div>
 
 <!-- Persistent "Now Playing" widget — present on every page (unlike the
@@ -236,23 +241,24 @@
   <button type="button" id="nd-now-playing-close" title="Hide (doesn't stop it for others)" onclick="ndNowPlayingDismiss()">✕</button>
 </div>
 
+<script src="/static/js/nd-base-lightbox.js?v={{ asset_v('js/nd-base-lightbox.js') }}"></script>
 <script>
 let _lightboxReturnFocus = null;
 function openLightbox(src, alt) {
   if (!src) return;
   _lightboxReturnFocus = document.activeElement;
-  // An upload is shown at display size (2,560 px, ?display=1 - a large original can be 5-10x the bytes); "Full size" opens the original.
-  var full = document.getElementById('lightbox-full');
+  // An upload is shown at display size (2,560 px, ?display=1 - a large original can be 5-10x the bytes); "Full size", zooming in past it
+  // or "Always open at full size" load the original in place (static/js/nd-base-lightbox.js - zoom, pan, actual size).
   var big = /^\/uploads\/(?!maps\/)[^?#]+\.(jpe?g|png|webp|avif)$/i.test(src) && !/_(thumb|display)\.(webp|avif)$/i.test(src);
-  document.getElementById('lightbox-img').src = big ? src + '?display=1' : src;
-  if (full) { full.hidden = !big; full.href = src; }
   document.getElementById('lightbox-img').alt = alt || '';
+  if (window.ndLightbox) ndLightbox.open(src, big); else document.getElementById('lightbox-img').src = big ? src + '?display=1' : src;
   document.getElementById('lightbox-overlay').classList.add('open');
   document.body.style.overflow = 'hidden';
   document.querySelector('.lightbox-close').focus();
 }
 function closeLightbox() {
   document.getElementById('lightbox-overlay').classList.remove('open');
+  if (window.ndLightbox) ndLightbox.close();
   document.getElementById('lightbox-img').src = '';
   document.body.style.overflow = '';
   if (_lightboxReturnFocus && document.body.contains(_lightboxReturnFocus)) _lightboxReturnFocus.focus();
