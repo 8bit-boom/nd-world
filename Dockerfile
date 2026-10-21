@@ -16,11 +16,13 @@ WORKDIR /src
 RUN rustup target add "$(uname -m)-unknown-linux-musl"
 COPY rust/Cargo.toml rust/Cargo.lock ./
 COPY rust/nd-gateway/Cargo.toml nd-gateway/Cargo.toml
-RUN mkdir -p nd-gateway/src && echo "fn main() {}" > nd-gateway/src/main.rs && touch nd-gateway/src/lib.rs \
+COPY rust/nd-render/Cargo.toml nd-render/Cargo.toml
+RUN mkdir -p nd-gateway/src nd-render/src && echo "fn main() {}" > nd-gateway/src/main.rs && touch nd-gateway/src/lib.rs nd-render/src/lib.rs \
     && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway; \
-    rm -rf nd-gateway/src
+    rm -rf nd-gateway/src nd-render/src
 COPY rust/nd-gateway/src nd-gateway/src
-RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs \
+COPY rust/nd-render/src nd-render/src
+RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs nd-render/src/lib.rs \
     && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway \
     && cp "target/$(uname -m)-unknown-linux-musl/release/nd-gateway" /nd-gateway
 

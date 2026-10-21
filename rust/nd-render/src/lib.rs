@@ -41,7 +41,7 @@ pub fn markupsafe_escape(s: &str) -> String {
 
 fn formatter(out: &mut Output, state: &State, value: &Value) -> Result<(), Error> {
     if matches!(state.auto_escape(), AutoEscape::Html) && value.kind() == ValueKind::String && !value.is_safe() {
-        use std::fmt::Write;
+        use std::fmt::Write as _;
         return write!(out, "{}", markupsafe_escape(value.as_str().unwrap_or(""))).map_err(|_| Error::new(ErrorKind::WriteFailure, "write"));
     }
     escape_formatter(out, state, value)
