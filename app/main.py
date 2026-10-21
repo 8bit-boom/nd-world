@@ -4723,9 +4723,10 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         ollama_model_overrides = json.loads(settings.ollama_model_overrides_json or "{}")
     except (TypeError, ValueError):
         ollama_model_overrides = {}
-    from . import workers as _workers
+    from . import http_perf as _http_perf, workers as _workers
     return {
         "resources": _workers.summary(),
+        "render_now": _http_perf.current_render_limit(),
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
         "app_build": _build_id(),

@@ -175,7 +175,8 @@
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:.8rem">
         nd-world sees <b>{{ r.cpus }}</b> CPU thread{{ 's' if r.cpus != 1 }}{% if r.cpus != r.host_cpus %} (of {{ r.host_cpus }} on the machine - the container is limited){% endif %}
         and <b>{{ r.ram_gb }} GB</b> of RAM. These size nd-world's own work and apply at once. A hard cap on the container's cores and memory is
-        set where it runs (TrueNAS: the app's Resources limits); nd-world reads that cap and plans within it. Blank = automatic.
+        set where it runs - for an app installed from YAML (TrueNAS custom app, docker compose) under the service's
+        <code>deploy: resources: limits:</code> (<code>cpus</code>, <code>memory</code>); nd-world reads that cap and plans within it. Blank = automatic.
       </p>
       <div class="form-group">
         <label for="res-image-workers">Background picture jobs at once (thumbnails, opened-picture copies)</label>
@@ -186,8 +187,8 @@
       <div class="form-group">
         <label for="res-render-slots">Pages built at once</label>
         <input id="res-render-slots" name="res_render_slots" type="number" min="1" max="16" step="1" style="max-width:140px"
-               value="{{ settings.res_render_slots or '' }}" placeholder="auto: 2" {% if r.env.ND_RENDERS %}disabled{% endif %}>
-        <small style="color:var(--text-dim)">Now {{ r.render_slots }}.{% if r.env.ND_RENDERS %} Set by ND_RENDERS in .env, which wins.{% else %} Python builds pages faster a couple at a time than many at once; measure before raising it (docs/HARDWARE.md).{% endif %}</small>
+               value="{{ settings.res_render_slots or '' }}" placeholder="auto: 1-{{ r.render_slots_max }}" {% if r.env.ND_RENDERS %}disabled{% endif %}>
+        <small style="color:var(--text-dim)">{% if r.env.ND_RENDERS %}Now {{ r.render_slots }}: set by ND_RENDERS in .env, which wins.{% elif r.render_auto %}Automatic: tuned while the site is busy, between 1 and {{ r.render_slots_max }} (half the threads), keeping whatever builds the most pages a second - now {{ render_now or 2 }}. Python builds pages faster a few at a time than many at once, so more is not always faster.{% else %}Now {{ r.render_slots }} (fixed here; blank tunes it automatically).{% endif %}</small>
       </div>
       <div class="form-group">
         <label for="res-memory-gb">Memory budget for nd-world (GB)</label>

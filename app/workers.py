@@ -6,7 +6,7 @@ free. Map tiling holds one whole picture in memory (~0.7 GB for a 72 MP map), so
 
     ND_IMAGE_WORKERS   picture jobs at once (default: half the usable cores, at least 1, at most 8)
     ND_TILE_WORKERS    map pyramids cut at once (default: 2 with a 16 GB memory budget or more, else 1)
-    ND_RENDERS         page builds at once (app/http_perf.py; default 2)
+    ND_RENDERS         page builds at once (app/http_perf.py; default: tuned under load, app/render_gate.py)
 
 Settings -> System -> "Server resources" sets the same three (picture jobs, page builds, a memory budget) without editing .env; a value
 in .env wins over the setting, the setting wins over the automatic choice. These size nd-world's OWN work - a hard cap on the container's
@@ -113,8 +113,18 @@ def tiling_fits(pixels: int) -> bool:
 
 
 def render_slots() -> int:
+    """A fixed number of pages built at once (ND_RENDERS, else the setting), or 2 - where automatic tuning starts (render_slots_fixed)."""
     n = _env_int("ND_RENDERS") or _overrides["render_slots"]
     return max(1, min(int(n), 16)) if n else 2
+
+
+def render_slots_fixed() -> bool:
+    return bool(_env_int("ND_RENDERS") or _overrides["render_slots"])
+
+
+def render_slots_max(cpus=None) -> int:
+    """The most the automatic tuning tries: half the usable cores, at least 2, at most 8 (app/render_gate.py)."""
+    return max(2, min(8, (cpus or usable_cpus()) // 2))
 
 
 def on_change(fn):
@@ -140,6 +150,7 @@ def summary() -> dict:
     return {
         "cpus": usable_cpus(), "host_cpus": os.cpu_count() or 1, "ram_gb": round(usable_ram_gb(), 1),
         "image_workers": image_workers(), "auto_image_workers": auto_image_workers(),
-        "render_slots": render_slots(), "tile_workers": tile_workers(), "memory_budget_gb": round(memory_budget_gb(), 1),
+        "render_slots": render_slots(), "render_auto": not render_slots_fixed(), "render_slots_max": render_slots_max(),
+        "tile_workers": tile_workers(), "memory_budget_gb": round(memory_budget_gb(), 1),
         "env": {k: bool(_env_int(k)) for k in ("ND_IMAGE_WORKERS", "ND_RENDERS", "ND_TILE_WORKERS")},
     }

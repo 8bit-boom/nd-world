@@ -47,15 +47,23 @@ _GATES: "_weakref.WeakKeyDictionary" = _weakref.WeakKeyDictionary()      # one g
 
 
 def _gate():
-    """This loop's render gate, sized by app/workers.render_slots() (ND_RENDERS, else Settings -> System, else 2); a new size takes effect
-    for the requests that arrive after it."""
-    from . import workers
+    """This loop's render gate (app/render_gate.py). A fixed size (ND_RENDERS, else Settings -> System) is used as it is; with none the gate
+    tunes its own limit under load, from 2 up to half the usable cores, keeping whatever builds the most pages a second."""
+    from . import render_gate, workers
     loop = _asyncio.get_running_loop()
-    slots = workers.render_slots()
+    fixed = workers.render_slots() if workers.render_slots_fixed() else None
     g = _GATES.get(loop)
-    if g is None or g[0] != slots:
-        g = _GATES[loop] = (slots, _asyncio.Semaphore(slots))
+    if g is None or g[0] != fixed:
+        tuner = None if fixed else render_gate.Tuner(hi=workers.render_slots_max())
+        g = _GATES[loop] = (fixed, render_gate.Gate(fixed or tuner.limit, tuner))
     return g[1]
+
+
+def current_render_limit():
+    """What the gate of the running loop allows now (the Settings page shows it), or None before the first page."""
+    for fixed, gate in list(_GATES.values()):
+        return gate.limit
+    return None
 
 
 def _is_sse_path(path: str) -> bool:

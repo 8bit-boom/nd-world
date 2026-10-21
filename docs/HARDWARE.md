@@ -7,20 +7,17 @@ it applies to any machine; the numbers in brackets are what nd-world picks on th
 
 | What | How it uses the cores | Setting |
 |---|---|---|
-| Building pages | At most `ND_RENDERS` pages at once (default 2). Page building holds Python's interpreter lock, so more parallel pages queue rather than speed up - measured on 4 cores: 2 slots gave 28 pages/s, 8-40 gave 6. Pages take 10-40 ms. | `ND_RENDERS` - measure before changing (below) |
+| Building pages | Tuned automatically while the site is busy (`app/render_gate.py`): from 2, one more and one fewer page at once are tried and the limit moves only to a clearly faster one, between 1 and half the threads. Page building holds Python's interpreter lock, so more at once is often slower - measured on 4 cores: 2 gave 28 pages/s, 8-40 gave 6. | `ND_RENDERS` or the setting fixes it |
 | Picture work: thumbnails, opened-picture copies, the thumbnail remake | Half the usable cores, 1 to 8 (**8** on a 5800X's 16 threads; a Docker `cpus:` limit counts): Pillow releases the lock while it resizes and encodes, so these really run in parallel, and half the cores stay free for pages. Measured: 16 thumbnails remade in 4.4 s with 1 worker, 2.5 s with 3. | `ND_IMAGE_WORKERS` |
 | Map tiling of uploaded maps | 2 maps at once with 16 GB of RAM or more (**2**), else 1 - one 72 MP map needs ~0.7 GB while it is cut. | `ND_TILE_WORKERS` |
 | Video conversion (AV1, SVT-AV1) | All cores, by ffmpeg itself. | - |
 
-### Should `ND_RENDERS` be higher on an 8-core machine?
+### Pages built at once
 
-Measure it on the server - `scripts/perf_smoke.py` signs in and times pages, including 16 browsers at once:
-
-    ND_RENDERS=2 docker compose up -d world && python scripts/perf_smoke.py --base http://<server>:8000 --email <gm> --password '<pw>'
-    ND_RENDERS=4 docker compose up -d world && python scripts/perf_smoke.py ...
-
-Keep the value with more pages per second and the lower worst case in the "16 browsers" line. On the 4-core test machine 2 won; an 8-core
-machine may gain a little from 3-4, never from much more.
+Automatic by default: while pages are waiting for a slot, nd-world measures pages per second at the current limit, tries one more and one
+fewer, and moves only when that was more than 5 % faster; old measurements are re-checked after 5 minutes. Settings -> System -> Server
+resources shows the value it settled on. To check it on your own server, `scripts/perf_smoke.py` signs in and times pages, including 16
+browsers at once; to pin a value, set it in Settings or `ND_RENDERS` in `.env`.
 
 ## GPU (16 GB)
 
@@ -45,8 +42,9 @@ build; the 5800X encodes AV1 fast enough. Picture resizing on the GPU would cost
 
 Background picture jobs at once, pages built at once and a memory budget can be set there (blank = automatic; a value in `.env` wins).
 They size nd-world's own work: the memory budget decides how many maps are cut into tiles at once and refuses to cut, on the server, an
-uploaded map too big for half of it (it is then shown as one picture). A hard cap on the container is set where it runs - on TrueNAS the
-app's Resources limits (CPUs, memory); nd-world reads that cap and plans within it.
+uploaded map too big for half of it (it is then shown as one picture). A hard cap on the container is set where it runs - for an app installed from YAML (a TrueNAS custom
+app, docker compose) under each service's `deploy: resources: limits:` (`cpus`, `memory`; examples in `truenas-compose.yml`); nd-world reads
+that cap and plans within it.
 
 ## RAM
 

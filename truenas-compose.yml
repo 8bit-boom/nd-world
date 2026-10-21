@@ -2,6 +2,15 @@ version: "3.9"
 services:
   world:
     image: ghcr.io/8bit-boom/nd-world:latest
+    # Optional hard caps for this container (docs/HARDWARE.md). nd-world reads them and sizes its own work to fit - see Settings ->
+    # System -> Server resources. nd-world itself needs ~0.3 GB; give the AI services (ollama / unsloth / swarmui) their own limits the
+    # same way, generously (a container that goes over its memory limit is restarted). On a 40 GB machine, e.g. world 3G, ollama 20G,
+    # unsloth 8G, swarmui 8G. A service that already has a `deploy: resources: reservations:` GPU block gets `limits:` beside it.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "6"        # threads it may use
+    #       memory: 3G
     logging:                             # bounded logs: Docker's json-file keeps everything forever by default
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
