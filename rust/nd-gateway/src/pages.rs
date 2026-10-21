@@ -40,8 +40,23 @@ pub fn safe_next_url(candidate: Option<&str>) -> String {
     }
 }
 
-fn html(status: StatusCode, body: String) -> Response<Body> {
-    Response::builder().status(status).header(header::CONTENT_TYPE, "text/html; charset=utf-8").body(Body::from(body)).unwrap()
+/// A page as Python's GZip middleware sends it: gzipped from 1 KB up when the browser accepts it.
+fn html(status: StatusCode, body: String, request_headers: &HeaderMap) -> Response<Body> {
+    let wants_gzip = request_headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map_or(false, |v| v.split(',').any(|p| p.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("gzip")));
+    let b = Response::builder().status(status).header(header::CONTENT_TYPE, "text/html; charset=utf-8");
+    if wants_gzip && body.len() >= 1024 {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+        if enc.write_all(body.as_bytes()).is_ok() {
+            if let Ok(bytes) = enc.finish() {
+                return b.header(header::CONTENT_ENCODING, "gzip").header(header::VARY, "Accept-Encoding").body(Body::from(bytes)).unwrap();
+            }
+        }
+    }
+    b.header(header::VARY, "Accept-Encoding").body(Body::from(body)).unwrap()
 }
 
 impl Pages {
@@ -86,6 +101,6 @@ impl Pages {
             return Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, loc).body(Body::empty()).ok();
         }
         let page = self.env.get_template("auth/login.html").ok()?.render(context! { next => next, error => Option::<String>::None }).ok()?;
-        Some(html(StatusCode::OK, page))
+        Some(html(StatusCode::OK, page, headers))
     }
 }

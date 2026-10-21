@@ -88,3 +88,21 @@ async fn what_is_not_switched_on_or_cannot_be_checked_goes_to_python() {
     assert_eq!(client().post(format!("{base}/login")).body("email=a").send().await.unwrap().text().await.unwrap(), "python", "the login POST is always Python's");
     assert_eq!(client().get(format!("{base}/login/2fa")).send().await.unwrap().text().await.unwrap(), "python");
 }
+
+#[tokio::test]
+async fn a_page_is_gzipped_for_a_browser_that_accepts_it() {
+    let base = gateway(&["login"], Some(SECRET)).await;
+    let plain = reqwest::Client::builder().no_gzip().build().unwrap();
+    let gz = plain.get(format!("{base}/login")).header("accept-encoding", "gzip, br").send().await.unwrap();
+    assert_eq!(gz.headers()["content-encoding"], "gzip");
+    assert_eq!(gz.headers()["vary"], "Accept-Encoding");
+    let raw = plain.get(format!("{base}/login")).header("accept-encoding", "identity").send().await.unwrap();
+    assert!(raw.headers().get("content-encoding").is_none());
+    let text = raw.text().await.unwrap();
+    // the gzipped bytes inflate to the same page
+    let bytes = gz.bytes().await.unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut out).unwrap();
+    assert_eq!(out, text);
+    assert!(bytes.len() < text.len());
+}
