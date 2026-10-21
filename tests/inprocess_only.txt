@@ -498,3 +498,4 @@ tests/test_accel.py::test_the_live_recording_archive_is_never_handed_over
 tests/test_audio_jobs.py::test_cancel_stops_an_in_progress_job
 tests/test_audio_jobs.py::test_cancel_requires_gm
 tests/test_audio_jobs.py::test_delete_route_rejects_in_progress_job
+tests/test_diagnostics.py::test_events_route_serves_full_journal
