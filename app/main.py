@@ -357,6 +357,12 @@ def _warm_static_thumbnails():
     threading.Thread(target=run, name="nd-static-thumbs", daemon=True).start()
 
 
+def _remake_thumbnails():
+    """Background: thumbnails not in the chosen format are made again in it (app/thumb_migrate.py) - at startup and when the setting changes."""
+    from . import thumb_migrate
+    thumb_migrate.start(UPLOADS_DIR, BASE_DIR / "static" / "maps", BASE_DIR / "static" / "races")
+
+
 def _load_preview_format():
     """The "Thumbnails and opened pictures" setting into app/imaging.py, which makes those copies outside any request."""
     from . import imaging as _imaging
@@ -383,6 +389,7 @@ def _startup_tasks():
     _job_shutdown.clear_stop()
     init_db()
     _load_preview_format()
+    _remake_thumbnails()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
     _refresh_settings_overrides()
@@ -4825,6 +4832,7 @@ def settings_save(
     from . import imaging as _imaging
     settings.preview_format = preview_format if preview_format in _imaging.PREVIEW_FORMATS else "avif"
     _imaging.set_preview_format(settings.preview_format)
+    _remake_thumbnails()
     settings.hover_preview_enabled = hover_preview_enabled is not None
     # Clamped rather than rejected with an error page — a GM fat-fingering
     # "0" or "9999" should just get a sane bound, not a round trip to fix a form.
