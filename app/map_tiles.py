@@ -25,7 +25,8 @@ TILE = 256
 MAX_NATIVE_ZOOM = 4                 # the viewer's maxZoom
 Image.MAX_IMAGE_PIXELS = None        # our own bundled / GM-uploaded map pictures can be large (10k x 7k)
 
-_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nd-map-tiles")
+from .workers import tile_workers
+_pool = ThreadPoolExecutor(max_workers=tile_workers(), thread_name_prefix="nd-map-tiles")      # app/workers.py
 _building: set = set()
 _lock = threading.Lock()
 

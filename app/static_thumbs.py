@@ -16,7 +16,8 @@ from .imaging import make_thumbnail, thumbnail_path_for
 
 _log = logging.getLogger("nd.static_thumbs")
 _EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
-_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nd-thumbs")
+from .workers import image_workers
+_pool = ThreadPoolExecutor(max_workers=image_workers(), thread_name_prefix="nd-thumbs")         # app/workers.py
 _queued: set = set()
 _lock = threading.Lock()
 

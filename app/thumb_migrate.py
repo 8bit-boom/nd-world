@@ -2,7 +2,7 @@
 
 Thumbnails made before AVIF ones (`<name>_thumb.webp`) - or AVIF ones after a switch to WebP - are found under the given folders, made again
 from their picture in the chosen format, and the old file is deleted (make_thumbnail removes the other format). It runs in one background
-thread at startup and when the setting is saved, one picture at a time with a short pause between them, so the site stays responsive; a
+thread at startup and when the setting is saved, a few pictures at a time (app/workers.py: half the cores) with a short pause after each, so the site stays responsive; a
 run that is already going is not started twice, and a picture whose source is gone keeps its thumbnail (nothing else would show).
 
     python -m app.thumb_migrate [folder ...]        # the same, in the foreground (default: the uploads folder, static/maps and static/races)
@@ -44,18 +44,27 @@ def stale_thumbnails(*roots: Path):
                     yield thumb, src
 
 
-def regenerate(*roots: Path, pause: float = 0.0) -> dict:
-    """Remake every stale thumbnail under `roots`; {"done": n, "failed": n}."""
-    done = failed = 0
-    for thumb, src in stale_thumbnails(*roots):
+def regenerate(*roots: Path, pause: float = 0.0, workers: int = 1) -> dict:
+    """Remake every stale thumbnail under `roots` with `workers` threads at once; {"done": n, "failed": n}."""
+    stats = {"done": 0, "failed": 0}
+    count = threading.Lock()
+
+    def one(item):
+        thumb, src = item
         made = imaging.make_thumbnail(src)
-        if made is not None and made != thumb:
-            done += 1
-        else:
-            failed += 1
+        with count:
+            stats["done" if made is not None and made != thumb else "failed"] += 1
         if pause:
             time.sleep(pause)
-    return {"done": done, "failed": failed}
+
+    if workers <= 1:
+        for item in stale_thumbnails(*roots):
+            one(item)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="nd-thumb-remake") as pool:
+            list(pool.map(one, stale_thumbnails(*roots)))
+    return stats
 
 
 def start(*roots: Path, pause: float = 0.05) -> bool:
@@ -69,7 +78,8 @@ def start(*roots: Path, pause: float = 0.05) -> bool:
     def run():
         global _running
         try:
-            stats = regenerate(*roots, pause=pause)
+            from .workers import image_workers
+            stats = regenerate(*roots, pause=pause, workers=image_workers())
             if stats["done"] or stats["failed"]:
                 _log.info("thumbnails remade as %s: %s", imaging.preview_format(), stats)
         except Exception:
