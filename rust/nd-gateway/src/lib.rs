@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod config;
 pub mod files;
+pub mod live;
 pub mod pages;
 pub mod proxy;
 pub mod session;
@@ -49,6 +50,11 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         return writes::dice_roll(app.cfg.clone(), &app.proxy, req, peer).await;
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/api/live" && app.cfg.rust_routes.iter().any(|r| r == "live") {
+        if let Some(resp) = live::serve(app.cfg.clone(), req.uri(), req.headers()).await {
+            return resp;
+        }
     }
     if let Some(resp) = app.pages.serve(req.method(), req.uri(), req.headers()) {
         return resp;

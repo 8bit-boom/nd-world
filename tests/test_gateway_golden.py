@@ -231,3 +231,62 @@ def test_rolls_written_by_both_servers_at_once_all_land_and_the_live_counter_is_
     assert sum(1 for _, by in results if by == "gateway") == 20, "half were written by the gateway"
     from .conftest import wait_until
     assert wait_until(lambda: counts() == (before_rolls + 40, before_n + 40)), counts()           # Python's counter is written by its background thread
+
+
+# ── GET /api/live streamed by the gateway (ND_RUST_ROUTES=...,live) ──────────────────────────────────────────────────────────────────────
+
+def _events(base, cookies, seconds, out):
+    """Collect the SSE frames one client receives for `seconds`."""
+    import time
+    end = time.monotonic() + seconds
+    try:
+        with httpx.Client(base_url=base, cookies=cookies, timeout=seconds + 5) as c, c.stream("GET", "/api/live") as r:
+            out.append(("status", r.status_code, r.headers.get("content-type"), r.headers.get("x-nd-served-by")))
+            buf = ""
+            for chunk in r.iter_text():
+                buf += chunk
+                while "\n\n" in buf:
+                    frame, buf = buf.split("\n\n", 1)
+                    out.append(("frame", frame))
+                if time.monotonic() > end:
+                    break
+    except httpx.ReadTimeout:
+        pass
+
+
+def test_the_live_stream_from_the_gateway_says_what_pythons_says(client, seed):
+    import threading
+    import time
+    from app import shared_state
+    base = str(client.base_url)
+    d = httpx.Client(base_url=DIRECT, timeout=60)
+    assert d.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"}, follow_redirects=False).status_code == 303
+    d.cookies.set("active_world", seed.world_a.slug)
+    cookies = dict(d.cookies)
+    got_py, got_gw = [], []
+    threads = [threading.Thread(target=_events, args=(DIRECT, cookies, 6, got_py)), threading.Thread(target=_events, args=(base, cookies, 6, got_gw))]
+    for t in threads:
+        t.start()
+    time.sleep(2)
+    shared_state.bump(f"live:{seed.world_a.id}")                     # a change in world A, as any route's live.touch makes it
+    shared_state.bump(f"sig:{seed.world_a.id}:spot")                  # and a named signal
+    shared_state.bump(f"live:{seed.world_b.id}")                      # a change elsewhere: neither stream may mention it
+    shared_state.flush()
+    for t in threads:
+        t.join()
+    assert got_py[0][:3] == got_gw[0][:3] == ("status", 200, "text/event-stream; charset=utf-8")
+    assert got_gw[0][3] == "gateway" and got_py[0][3] is None
+    frames = lambda got: [f for kind, *rest in got if kind == "frame" for f in rest]
+    fp, fg = frames(got_py), frames(got_gw)
+    assert fp[0] == fg[0] == "retry: 3000"
+    versions = lambda fs: [f for f in fs if f.startswith("event: version")]
+    signals = lambda fs: sorted(f for f in fs if f.startswith("event: signal"))
+    assert versions(fp) == versions(fg) and len(versions(fp)) == 2, (fp, fg)
+    assert signals(fp) == signals(fg) == ["event: signal\ndata: spot"], (fp, fg)
+
+
+def test_the_live_stream_is_refused_through_the_gateway_as_python_refuses_it(client, seed):
+    base = str(client.base_url)
+    for c in (httpx.Client(base_url=DIRECT, timeout=10), httpx.Client(base_url=base, timeout=10)):
+        r = c.get("/api/live")
+        assert r.status_code == 401 and r.json() == {"detail": "Login required"}

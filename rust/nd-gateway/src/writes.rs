@@ -95,6 +95,11 @@ fn query_w(uri: &Uri) -> Option<String> {
 
 /// The signed-in user, the world this request is about and whether they may use the `dice` section there. `None` = let Python decide.
 pub fn actor_for_dice(db: &Connection, cfg: &Config, uri: &Uri, headers: &HeaderMap, now: u64) -> Option<Actor> {
+    actor_for(db, cfg, "POST", uri, headers, now, Some("dice"))
+}
+
+/// The signed-in user and the active world for a request, after auth_gate's checks (and the section matrix when `section` is given).
+pub fn actor_for(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &HeaderMap, now: u64, section: Option<&str>) -> Option<Actor> {
     let secret = cfg.secret_key.as_deref()?;
     let cookie_header = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
     let raw = session::cookie(cookie_header, session::COOKIE_NAME)?;
@@ -138,12 +143,12 @@ pub fn actor_for_dice(db: &Connection, cfg: &Config, uri: &Uri, headers: &Header
     }
     // auth_gate's allowlists, then the section matrix - both from rust/nd-perm, checked against Python by tests/test_rust_permissions.py
     let viewer = nd_perm::allow::Viewer { is_gm, active_role: chosen.3.clone(), active_world_id: Some(chosen.0) };
-    if !nd_perm::allow::gate_allows(&viewer, "POST", uri.path()) {
+    if !nd_perm::allow::gate_allows(&viewer, method, uri.path()) {
         return None;
     }
-    if !is_gm {
+    if let (false, Some(section)) = (is_gm, section) {
         let role = if matches!(chosen.3.as_deref(), Some("assistant") | Some("owner")) { "assistant" } else { "player" };
-        if nd_perm::sections::section_level(false, Some(role), chosen.2.as_deref(), None, "dice")? == "none" {
+        if nd_perm::sections::section_level(false, Some(role), chosen.2.as_deref(), None, section)? == "none" {
             return None;
         }
     }
@@ -183,7 +188,7 @@ fn ascii_printable(s: &str) -> bool {
     s.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
-fn open(cfg: &Config) -> Option<Connection> {
+pub fn open(cfg: &Config) -> Option<Connection> {
     let db = Connection::open_with_flags(&cfg.db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
     db.busy_timeout(std::time::Duration::from_millis(30_000)).ok()?;
     db.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=OFF;").ok()?;

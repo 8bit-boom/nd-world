@@ -377,7 +377,7 @@ def test_no_studio_api_key_is_committed():
     pat = re.compile(r"sk-unsloth-[0-9a-f]{16,}")
     hits = []
     for p in ROOT.rglob("*"):
-        if p.is_dir() or ".git" in p.parts or "__pycache__" in p.parts or "_data" in p.parts or p.suffix in (".png", ".webp", ".db", ".pyc"):
+        if p.is_dir() or ".git" in p.parts or "__pycache__" in p.parts or "_data" in p.parts or ("rust" in p.parts and "target" in p.parts) or p.suffix in (".png", ".webp", ".db", ".pyc"):
             continue
         try:
             text = p.read_text(errors="ignore")

@@ -217,3 +217,13 @@ installs `gcc` / `musl-tools`; the binary grew from 2 MB to 7 MB.
 `[gmonly]` / `[for]` / `[reveal]` stripping, ported and checked differentially against the Python originals (~290,000 allowlist questions over
 every route, the real `_auth_gate_rest` for 6 kinds of viewer, random matrices and tagged texts). The dice write uses it. Still phase 3's
 exit criteria are not met: the write routes themselves, each with its own handler checks and refusal-parity test, are still Python's.
+
+## 14. Phase 4 - what was done (measured) and what was not
+
+One stream: `GET /api/live` served by the gateway (opt-in, `live` in `ND_RUST_ROUTES`; `docs/RUST_LIVE.md`), the same frames as Python's,
+checked side by side. Measured with 200 open streams: no gain in memory or delay over Python (whose streams were already cheap); the benefit
+is that browsers stay connected through a Python restart. Phase 4's exit criteria are **not met**: the display, AI and chronicler streams,
+cockpit, combat tracker, character hub and schematic maps are still Python's.
+
+Found on the way: `tests/test_unsloth_audit_fixes.py::test_no_studio_api_key_is_committed` read every file under the repository, including
+`rust/target/` (5 GB of build output), and took half an hour; it now skips `rust/target`.
