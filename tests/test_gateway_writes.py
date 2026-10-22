@@ -3849,3 +3849,51 @@ def test_hub_turn_controls_are_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (path, body, kw, out)
         served += out[1][3] == "gateway"
     assert served >= 5, served
+
+
+def test_hub_companions_and_handouts_seen_are_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    served = 0
+    adds = [{"name": "  Rex   the dog ", "kind": "mount", "hp_max": "8", "hp": 12, "notes": "  good boy "}, {"name": "Cat"}, {"kind": "vehicle"},
+            {"name": " "}, {"name": "Ghost", "kind": "spirit", "hp": 2.9}, {"name": "Bad", "hp": "x"}]
+    for body in adds:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Owner")
+            r = side.post(f"/api/characters/{pid}/hub/companions", json=body)
+            j = r.json() if r.status_code == 200 else None
+            if j:
+                for x in j["companions"]:
+                    x.pop("id")
+            out.append((r.status_code, j, r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (body, out)
+        served += out[1][2] == "gateway"
+    edits = [("PATCH", {"hp_delta": -3}), ("PATCH", {"hp": 99}), ("PATCH", {"hp_max": 0, "hp": 50, "name": "  New "}), ("PATCH", {"kind": "x", "notes": None}),
+             ("PATCH", {"name": ""}), ("DELETE", None)]
+    for method, body in edits:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Owner")
+            cid = _add("CharacterCompanion", world_id=w, character_id=pid, name="Rex", kind="mount", hp=5, hp_max=8, notes="n")
+            r = side.request(method, f"/api/characters/{pid}/hub/companions/{cid}", json=body) if body is not None else side.request(method, f"/api/characters/{pid}/hub/companions/{cid}")
+            j = r.json() if r.status_code == 200 else None
+            if j:
+                for x in j["companions"]:
+                    x.pop("id")
+            out.append((r.status_code, j, r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (method, body, out)
+        served += out[1][2] == "gateway"
+    other = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Theirs")
+    ocid = _add("CharacterCompanion", world_id=w, character_id=other, name="X")
+    assert _via(pl, base).request("DELETE", f"/api/characters/{other}/hub/companions/{ocid}").status_code == 404
+    _add("WorldHandout", world_id=w, url="/uploads/a.png", label="a")
+    out = []
+    for side in (pl, _via(pl, base)):
+        pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Owner")
+        r = side.post(f"/api/characters/{pid}/hub/handouts/seen")
+        out.append((r.status_code, r.json(), _prefs(pid), r.headers.get("x-nd-served-by")))
+    assert out[0][:3] == out[1][:3], out
+    served += out[1][3] == "gateway"
+    assert served >= 9, served

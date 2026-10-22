@@ -210,6 +210,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/ability-use", pc_ability_use),
     ("/api/characters/{}/advance", pc_advance),
     ("/api/characters/{}/hub/end-turn", hub_end_turn),
+    ("/api/characters/{}/hub/handouts/seen", hub_handouts_seen),
+    ("/api/characters/{}/hub/companions", hub_companion_add),
     ("/api/characters/{}/hub/pass-turn", hub_pass_turn),
     ("/api/characters/{}/resource", pc_resource),
     ("/api/characters/{}/ability-ready", pc_ability_ready),
@@ -492,6 +494,19 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
             Method::DELETE => Some((view_pref_reset as SlugHandler, sec.to_string())),
             _ => None,
         };
+    }
+    if let Some(rest) = path.strip_prefix("/api/characters/") {
+        if let Some((pc, cid)) = rest.split_once("/hub/companions/") {
+            let num = |t: &str| !t.is_empty() && t.len() <= 15 && t.bytes().all(|b| b.is_ascii_digit());
+            if num(pc) && num(cid) {
+                let key = format!("{pc}/{cid}");
+                return match *method {
+                    Method::PATCH => Some((hub_companion_edit as SlugHandler, key)),
+                    Method::DELETE => Some((hub_companion_remove as SlugHandler, key)),
+                    _ => None,
+                };
+            }
+        }
     }
     if path == "/api/spotlight" && *method == Method::GET {
         return Some((spotlight_state as SlugHandler, String::new()));
@@ -8983,4 +8998,138 @@ fn hub_pass_turn(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let (round, idx) = (f.round(), f.active_idx());
     hub_save_fight(c, &f, round, idx)?;
     hub_after(c, &pc, f.cs.get("id")?.as_i64()?)
+}
+
+// ── the character hub: handouts seen, companions (app/routers/character_hub.py) ──
+
+/// `_json_body_raw`: the body as an object (anything else: Python's 400)
+fn hub_body(c: &Ctx) -> Option<Map<String, Value>> {
+    c.json()
+}
+
+fn hub_handouts_seen(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let newest: Option<i64> = c.db.query_row("SELECT id FROM world_handouts WHERE world_id = ?1 ORDER BY id DESC LIMIT 1", [pc.get("world_id")?.as_i64()?], |r| r.get(0)).ok();
+    set_pc_pref(c, &pc, "handouts_seen", newest.map(|n| json!(n)))?;
+    json_response(&json!({"ok": true}))
+}
+
+fn hub_companions_json(c: &Ctx, pc_id: i64) -> Option<Value> {
+    let mut st = c.db.prepare("SELECT * FROM character_companions WHERE character_id = ?1 ORDER BY id").ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map([pc_id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "name": r.get("name"), "kind": r.get("kind"),
+        "hp": r.get("hp").and_then(|v| v.as_i64()).unwrap_or(0), "hp_max": r.get("hp_max").and_then(|v| v.as_i64()).unwrap_or(0),
+        "notes": r.get("notes").and_then(|v| v.as_str()).unwrap_or("")})).collect();
+    Some(json!({"companions": list}))
+}
+
+/// `_companion_int(body, key, low, high)`: int(v) clamped; None for a value int() refuses (Python's 400) or reads its own way
+fn comp_int(v: Option<&Value>, low: i64, high: i64) -> Option<i64> {
+    let n = match v? {
+        Value::Bool(b) => *b as i64,
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => i,
+            None => {
+                let f = n.as_f64()?;
+                if !f.is_finite() || f.abs() > 1e15 {
+                    return None;
+                }
+                f.trunc() as i64
+            }
+        },
+        Value::String(t) => py_int_text(t).ok()?,
+        _ => return None,
+    };
+    Some(n.clamp(low, high))
+}
+
+/// `_apply_companion(c, body)` on the stored row `cur`: the columns to write
+fn comp_apply(cur: &Map<String, Value>, body: &Map<String, Value>) -> Option<Vec<(&'static str, Sql)>> {
+    let mut set: Vec<(&'static str, Sql)> = vec![];
+    if body.contains_key("name") {
+        let name = take_chars(&nd_render::text::py_split_join(&cs_text(body.get("name"), "").ok()?), 80);
+        if name.is_empty() {
+            return None;
+        }
+        set.push(("name", s(&name)));
+    }
+    if body.contains_key("kind") {
+        let k = match body.get("kind").and_then(|v| v.as_str()) {
+            Some(k @ ("familiar" | "hireling" | "mount" | "vehicle" | "other")) => k,
+            _ => "other",
+        };
+        set.push(("kind", s(k)));
+    }
+    if body.contains_key("notes") {
+        set.push(("notes", s(&take_chars(&strip(&cs_text(body.get("notes"), "").ok()?), 600))));
+    }
+    let mut hp_max = cur.get("hp_max").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut hp = cur.get("hp").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut hp_set = false;
+    if body.contains_key("hp_max") {
+        hp_max = comp_int(body.get("hp_max"), 0, 9999)?;
+        set.push(("hp_max", Sql::Integer(hp_max)));
+    }
+    if body.contains_key("hp") {
+        hp = comp_int(body.get("hp"), 0, 9999)?;
+        hp_set = true;
+    }
+    if body.contains_key("hp_delta") {
+        hp = (hp + comp_int(body.get("hp_delta"), -9999, 9999)?).clamp(0, 9999);
+        hp_set = true;
+    }
+    if hp_max != 0 && hp > hp_max {
+        hp = hp_max;
+        hp_set = true;
+    }
+    if hp_set {
+        set.push(("hp", Sql::Integer(hp)));
+    }
+    Some(set)
+}
+
+fn hub_companion_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    let n: i64 = c.db.query_row("SELECT COUNT(*) FROM character_companions WHERE character_id = ?1", [ids[0]], |r| r.get(0)).ok()?;
+    if n >= 12 || !body.contains_key("name") {
+        return None;
+    }
+    let mut full = Map::new();
+    full.insert("kind".into(), json!("familiar"));
+    for (k, v) in &body {
+        full.insert(k.clone(), v.clone());
+    }
+    let cur = Map::new();
+    let set = comp_apply(&cur, &full)?;
+    let mut cols: Vec<(&str, Sql)> = vec![("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)), ("character_id", Sql::Integer(ids[0]))];
+    if !set.iter().any(|(k, _)| *k == "name") {
+        cols.push(("name", s("x")));
+    }
+    cols.extend(set);
+    orm::insert(&c.db, "character_companions", &cols)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&hub_companions_json(c, ids[0])?)
+}
+
+fn hub_companion_target(c: &Ctx, key: &str) -> Option<(i64, Map<String, Value>)> {
+    let (pc, cid) = key.split_once('/')?;
+    let (pc, cid): (i64, i64) = (pc.parse().ok()?, cid.parse().ok()?);
+    hub_owned_pc(c, pc)?;
+    let row_ = row(&c.db, "SELECT * FROM character_companions WHERE id = ?1", cid)?;
+    (row_.get("character_id")?.as_i64()? == pc).then_some((pc, row_))
+}
+
+fn hub_companion_edit(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (pc, cur) = hub_companion_target(c, key)?;
+    let body = hub_body(c)?;
+    let set = comp_apply(&cur, &body)?;
+    orm::update(&c.db, "character_companions", cur.get("id")?.as_i64()?, &set)?;
+    json_response(&hub_companions_json(c, pc)?)
+}
+
+fn hub_companion_remove(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (pc, cur) = hub_companion_target(c, key)?;
+    c.db.execute("DELETE FROM character_companions WHERE id = ?1", [cur.get("id")?.as_i64()?]).ok()?;
+    json_response(&hub_companions_json(c, pc)?)
 }
