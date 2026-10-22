@@ -541,6 +541,8 @@ def test_party_and_fact_lists_the_gateway_builds_are_pythons(client, seed):
         s1 = GameSession(world_id=w, title="One", session_num=1)
         s2 = GameSession(world_id=w, title="Two", session_num=2)
         db.add_all([s1, s2]); db.flush()
+        frag = [f"/facts/fragment?keys={s1.id},none", f"/facts/fragment?keys={s2.id}", "/facts/fragment?keys=none", "/facts/fragment",
+                f"/facts/fragment?keys=%20{s2.id}%20,x,987654", "/facts/fragment?keys=0"]
         db.add_all([Fact(world_id=w, game_session_id=s1.id, content="The **door** was red.", tags="door, red"),
                     Fact(world_id=w, game_session_id=s2.id, content="A hidden fact.", visible_to_players=False, tags="secret"),
                     Fact(world_id=w, game_session_id=s2.id, content="Second session fact.", tags="red"),
@@ -556,7 +558,7 @@ def test_party_and_fact_lists_the_gateway_builds_are_pythons(client, seed):
                              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
         d = _signed_in(email, pw, world)
         via = _via(d, base)
-        for path in ("/parties", "/parties?page=3", "/facts"):
+        for path in ("/parties", "/parties?page=3", "/facts", *frag):
             a, b = d.get(path, follow_redirects=False), via.get(path, follow_redirects=False)
             assert a.status_code == b.status_code, (email, path, a.status_code, b.status_code)
             if a.status_code != 200:
@@ -566,7 +568,7 @@ def test_party_and_fact_lists_the_gateway_builds_are_pythons(client, seed):
                 import difflib
                 raise AssertionError(f"{email} {path}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
             served += b.headers.get("x-nd-served-by") == "gateway"
-    assert served >= 6, served
+    assert served >= 18, served
 
 
 def test_random_table_list_the_gateway_builds_is_pythons(client, seed):

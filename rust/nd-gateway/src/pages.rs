@@ -1031,7 +1031,32 @@ pub fn facts_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     // the dict {id: session} in the database's own order (no ORDER BY in Python: rowid order)
     let sessions = rows("SELECT * FROM game_sessions WHERE world_id = ?1")?;
     let vis = if p.is_gm { "" } else { " AND visible_to_players IS NOT 0" };
-    let facts = rows(&format!("SELECT * FROM facts WHERE world_id = ?1{vis} ORDER BY created_at ASC, id ASC"))?;
+    let mut facts = rows(&format!("SELECT * FROM facts WHERE world_id = ?1{vis} ORDER BY created_at ASC, id ASC"))?;
+    // GET /facts/fragment?keys=3,7,none: just those groups ("none" = no session, or a session that is gone)
+    let fragment = uri.path() == "/facts/fragment";
+    if fragment {
+        let keys = query_param(uri, "keys").unwrap_or_default();
+        let (mut ids, mut none) = (vec![], false);
+        for k in keys.split(',') {
+            if !k.is_ascii() {
+                return None; // str.isdigit / int() over other scripts' digits: Python's call
+            }
+            let k = k.trim_matches(|c: char| c.is_ascii_whitespace() || ('\x1c'..='\x1f').contains(&c));
+            if k == "none" {
+                none = true;
+            } else if !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()) {
+                ids.push(k.parse::<i64>().ok()?);
+            }
+        }
+        let session_ids: Vec<i64> = sessions.iter().filter_map(|s| s.get("id").and_then(|v| v.as_i64())).collect();
+        facts.retain(|f| match f.get("game_session_id") {
+            None | Some(Value::Null) => none,
+            Some(v) => {
+                let sid = v.as_i64();
+                sid.map_or(false, |x| ids.contains(&x)) || (none && !sid.map_or(false, |x| session_ids.contains(&x)))
+            }
+        });
+    }
     let sid_of = |f: &Map<String, Value>| f.get("game_session_id").and_then(|v| v.as_i64()).filter(|x| *x != 0);
     let known = |sid: i64| sessions.iter().find(|s| s.get("id").and_then(|v| v.as_i64()) == Some(sid));
     let mut by_session: Vec<(i64, Vec<Value>)> = vec![];
@@ -1088,7 +1113,7 @@ pub fn facts_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     c.insert("session_options".into(), Value::Array(session_options));
     c.insert("fact_count".into(), json!(fact_count));
     c.insert("top_tags".into(), Value::Array(tags.into_iter().map(|(k, n)| json!([k, n])).collect()));
-    render_with(pages, "facts/list.html", p.ctx, headers)
+    render_with(pages, if fragment { "facts/_fragment.html" } else { "facts/list.html" }, p.ctx, headers)
 }
 
 /// `GET /tables` (app/routers/tables.py `tables_list`)
