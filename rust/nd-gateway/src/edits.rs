@@ -42,6 +42,9 @@ impl Ctx<'_> {
 
     /// `parse_json(body)` as an object (anything else makes Python fail - its own answer)
     pub fn json(&self) -> Option<Map<String, Value>> {
+        if !plain_numbers(self.body) {
+            return None;
+        }
         match serde_json::from_slice::<Value>(self.body).ok()? {
             Value::Object(o) => Some(o),
             _ => None,
@@ -65,6 +68,45 @@ impl Ctx<'_> {
     pub fn can_edit_row(&self, section: &str, created_by: Option<i64>) -> Option<bool> {
         Some(self.can_edit_section(section)? && (self.p.is_gm || self.is_assistant() || created_by == Some(self.p.user_id)))
     }
+}
+
+/// Whether every whole number in a JSON text fits in 64 bits (Python keeps a bigger one exact; here it would turn into a float and be
+/// written back differently)
+fn plain_numbers(raw: &[u8]) -> bool {
+    let (mut in_str, mut esc, mut run, mut frac) = (false, false, 0usize, false);
+    for &b in raw {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if b == b'\\' {
+                esc = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'0'..=b'9' => {
+                run += 1;
+                if run > 18 && !frac {
+                    return false;
+                }
+                continue;
+            }
+            b'.' | b'e' | b'E' if run > 0 => frac = true,
+            b'-' | b'+' => {}
+            _ => {
+                run = 0;
+                frac = false;
+            }
+        }
+        if !b.is_ascii_digit() && !matches!(b, b'.' | b'e' | b'E' | b'-' | b'+') {
+            run = 0;
+            frac = false;
+        }
+    }
+    true
 }
 
 /// Starlette's RedirectResponse(url, 303)
@@ -108,6 +150,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/calendar/events/{}/delete", calendar_event_delete),
     ("/api/calendar/advance", calendar_advance),
     ("/api/calendar/set-date", calendar_set_date),
+    ("/boards/new", board_create),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -136,17 +179,41 @@ fn route(path: &str) -> Option<(Handler, Vec<i64>)> {
     None
 }
 
+type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
+
+/// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
+const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete)];
+
+fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
+    for (pre, post, h) in SLUG_ROUTES {
+        if let Some(slug) = path.strip_prefix(pre).and_then(|r| r.strip_suffix(post)) {
+            if !slug.is_empty() && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                return Some((*h, slug.to_string()));
+            }
+        }
+    }
+    None
+}
+
 pub fn handles(method: &Method, path: &str) -> bool {
-    method == Method::POST && route(path).is_some()
+    method == Method::POST && (route(path).is_some() || slug_route(path).is_some())
 }
 
 fn run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
-    let (h, ids) = route(uri.path())?;
+    let by_id = route(uri.path());
+    let by_slug = if by_id.is_none() { slug_route(uri.path()) } else { None };
+    if by_id.is_none() && by_slug.is_none() {
+        return None;
+    }
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
     let mut ctx = Ctx { db, p, uri, headers, body };
-    h(&mut ctx, &ids)
+    match (by_id, by_slug) {
+        (Some((h, ids)), _) => h(&mut ctx, &ids),
+        (_, Some((h, slug))) => h(&mut ctx, &slug),
+        _ => None,
+    }
 }
 
 /// Entry point: reads the (small) body, tries to answer, and otherwise forwards the request - body included - to Python.
@@ -677,4 +744,91 @@ fn calendar_set_date(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     config.as_object_mut()?.insert("current_day".into(), json!(day));
     save_calendar(&c.db, wid, &config)?;
     json_response(&json!({"current_day": day, "year": year, "month_idx": idx, "dom": dom}))
+}
+
+// ── investigation boards (app/main.py) ───────────────────────────────────────
+
+/// A FastAPI `Form(default)` parameter: an empty value counts as missing (None = required and missing: FastAPI's 422)
+fn form_param<'a>(f: &'a Form, name: &str, default: Option<&'a str>) -> Option<&'a str> {
+    match f.get(name) {
+        Some(v) if !v.is_empty() => Some(v),
+        _ => default,
+    }
+}
+
+fn board_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("boards")? {
+        return None;
+    }
+    let name = form_param(&f, "name", None)?.to_string();
+    if !name.is_ascii() {
+        return None; // the slug lowercases first: a non-ASCII letter may turn ASCII in Python
+    }
+    let mut slug = String::new();
+    let mut dash = false;
+    for ch in name.to_ascii_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            slug.push(ch);
+            dash = false;
+        } else if !dash {
+            slug.push('-');
+            dash = true;
+        }
+    }
+    let base = slug.trim_matches('-').to_string();
+    let base = if base.is_empty() { "board".to_string() } else { base };
+    let tx = c.db.unchecked_transaction().ok()?;
+    let taken = |sl: &str| -> Option<bool> { tx.query_row("SELECT count(*) FROM invest_boards WHERE slug = ?1", [sl], |r| r.get::<_, i64>(0)).ok().map(|n| n > 0) };
+    let mut slug = base.clone();
+    let mut i = 2;
+    while taken(&slug)? {
+        slug = format!("{base}-{i}");
+        i += 1;
+    }
+    orm::insert(
+        &tx,
+        "invest_boards",
+        &[
+            ("world_id", Sql::Integer(wid)),
+            ("name", s(&name)),
+            ("slug", s(&slug)),
+            ("description", s(form_param(&f, "description", Some(""))?)),
+            ("canvas_bg", s(form_param(&f, "canvas_bg", Some("cork"))?)),
+        ],
+    )?;
+    tx.commit().ok()?;
+    redirect(&format!("/boards/{slug}"))
+}
+
+/// The board by slug, of the viewer's active world, with board edit rights there
+fn editable_board(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
+    let b = c.db.query_row("SELECT * FROM invest_boards WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    if b.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_section("boards")? {
+        return None;
+    }
+    Some(b)
+}
+
+fn board_save(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let b = editable_board(c, slug)?;
+    let pick = |k: &str| body.get(k).cloned().unwrap_or(json!([]));
+    let mut nodes = Map::new();
+    nodes.insert("nodes".into(), pick("nodes"));
+    nodes.insert("groups".into(), pick("groups"));
+    orm::update(
+        &c.db,
+        "invest_boards",
+        b.get("id")?.as_i64()?,
+        &[("nodes_json", s(&nd_render::py_dumps(&Value::Object(nodes)))), ("edges_json", s(&nd_render::py_dumps(&pick("edges"))))],
+    )?;
+    json_response(&json!({"ok": true}))
+}
+
+fn board_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let b = editable_board(c, slug)?;
+    c.db.execute("DELETE FROM invest_boards WHERE id = ?1", [b.get("id")?.as_i64()?]).ok()?;
+    redirect("/boards")
 }

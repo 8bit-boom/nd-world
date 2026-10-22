@@ -389,3 +389,73 @@ def test_calendar_writes_are_pythons(client, seed):
                 served += rb.headers.get("x-nd-served-by") == "gateway"
         set_cal(json.dumps(config))
     assert served >= 20, served
+
+
+# ── boards ────────────────────────────────────────────────────────────────────
+
+def _board(**kw):
+    from app.database import SessionLocal
+    from app.models import InvestBoard
+    db = SessionLocal()
+    try:
+        b = InvestBoard(**kw)
+        db.add(b)
+        db.commit()
+        return b.slug
+    finally:
+        db.close()
+
+
+def test_board_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"boards": {"player": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+
+    def by_slug(slug):
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            r = db.execute(text("SELECT * FROM invest_boards WHERE slug = :s"), {"s": slug}).mappings().first()
+            return dict(r) if r else None
+        finally:
+            db.close()
+
+    served = 0
+    n = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in ({"name": "The Case!", "description": "d", "canvas_bg": "dark"}, {"name": "The Case!"}, {"name": "", "description": "x"},
+                     {}, {"name": "Ünï"}, {"name": "x", "canvas_bg": ""}):
+            ra = d.post("/boards/new", data=form, follow_redirects=False)
+            na = _newest("invest_boards")
+            rb = via.post("/boards/new", data=form, follow_redirects=False)
+            nb = _newest("invest_boards")
+            assert ra.status_code == rb.status_code, (form, ra.text[:200], rb.text[:200])
+            if ra.status_code == 303:
+                assert rb.headers["location"].startswith(ra.headers["location"].rsplit("-", 1)[0])
+                _same_rows(na, nb, ignore=("slug",))
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body in ({"nodes": [{"id": 1, "title": "Ünï <x>", "x": 10.5, "y": -3, "tags": ["a"]}], "groups": [{"id": "g"}], "edges": [{"from": 1, "to": 1}]},
+                     {}, {"nodes": None}, {"nodes": "text", "edges": {"a": [1, 2.25e-7]}}, [1, 2]):
+            n += 1
+            slugs = [_board(world_id=seed.world_a.id, name="B", slug=f"save-{n}-{i}") for i in range(2)]
+            before = [by_slug(x) for x in slugs]
+            ra, rb = d.post(f"/boards/{slugs[0]}/save", json=body), via.post(f"/boards/{slugs[1]}/save", json=body)
+            _same_answer(ra, rb)
+            _same_rows(by_slug(slugs[0]), by_slug(slugs[1]), before[0], before[1], ignore=("slug",))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        n += 1
+        slugs = [_board(world_id=seed.world_a.id, name="D", slug=f"del-{n}-{i}") for i in range(2)]
+        _same_answer(d.post(f"/boards/{slugs[0]}/delete", follow_redirects=False), via.post(f"/boards/{slugs[1]}/delete", follow_redirects=False))
+        assert (by_slug(slugs[0]) is None) == (by_slug(slugs[1]) is None)
+        far = [_board(world_id=seed.world_b.id, name="F", slug=f"far-{n}-{i}") for i in range(2)]
+        _same_answer(d.post(f"/boards/{far[0]}/save", json={}), via.post(f"/boards/{far[1]}/save", json={}))
+    assert served >= 7, served   # the GM's (players may not write boards: auth_gate refuses them, through Python)
