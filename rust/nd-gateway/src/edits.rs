@@ -273,6 +273,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/members/{}/remove", member_remove),
     ("/worlds/{}/members/{}/role", member_role),
     ("/worlds/{}/members/{}/clear-2fa", member_clear_2fa),
+    ("/worlds/{}/notes/{}/new", private_note_new),
+    ("/worlds/{}/notes/{}/{}/delete", private_note_delete),
+    ("/worlds/{}/theme/clear", theme_clear),
+    ("/worlds/{}/theme/preset", theme_preset),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -5868,4 +5872,51 @@ fn member_clear_2fa(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     )?;
     c.db.execute("DELETE FROM trusted_devices WHERE user_id = ?1", [ids[1]]).ok()?;
     redirect(&format!("/worlds/{}/edit?twofa_cleared={}", ids[0], ids[1]))
+}
+
+// ── GM <-> player private notes, world themes (app/main.py) ──────────────────
+
+fn private_note_new(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let content = f.get("content").filter(|v| !v.is_empty())?.to_string();
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    row(&c.db, "SELECT id FROM users WHERE id = ?1", ids[1])?;
+    orm::insert(
+        &c.db,
+        "private_notes",
+        &[("world_id", Sql::Integer(ids[0])), ("player_user_id", Sql::Integer(ids[1])), ("author_id", Sql::Integer(c.p.user_id)),
+          ("title", s(&strip(f.get("title").unwrap_or("")))), ("content", s(&content))],
+    )?;
+    redirect(&format!("/worlds/{}/notes/{}", ids[0], ids[1]))
+}
+
+fn private_note_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    c.db.execute("DELETE FROM private_notes WHERE id = ?1 AND world_id = ?2 AND player_user_id = ?3", [ids[2], ids[0], ids[1]]).ok()?;
+    redirect(&format!("/worlds/{}/notes/{}", ids[0], ids[1]))
+}
+
+fn theme_clear(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    orm::update(&c.db, "worlds", ids[0], &[("theme_json", Sql::Null)])?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn theme_preset(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let preset = required(&f, "preset")?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    let pairs = nd_render::app::data().get("theme_presets_clean")?.as_array()?.iter().find(|p| p.get(0).and_then(|k| k.as_str()) == Some(preset.as_str()))?.get(1)?.as_array()?;
+    let mut theme = Map::new();
+    let mut set: Vec<(&str, Sql)> = vec![];
+    for pair in pairs {
+        let (k, v) = (pair.get(0)?.as_str()?, pair.get(1)?);
+        if k == "accent" {
+            set.push(("accent", s(v.as_str()?)));
+        } else {
+            theme.insert(k.to_string(), v.clone());
+        }
+    }
+    set.push(("theme_json", s(&nd_render::py_dumps(&Value::Object(theme)))));
+    orm::update(&c.db, "worlds", ids[0], &set)?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
 }

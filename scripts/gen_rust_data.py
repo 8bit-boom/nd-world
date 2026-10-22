@@ -36,6 +36,11 @@ def column_defaults() -> dict:
     return out
 
 
+def theme_presets_clean() -> list:
+    from app.main import THEME_PRESETS, _sanitize_theme
+    return [[k, list(_sanitize_theme(v).items())] for k, v in THEME_PRESETS.items()]
+
+
 def make() -> dict:
     from app import calendar_config, combat_rules, constants, nav_menus, view_prefs
     from app.routers import quests
@@ -50,6 +55,8 @@ def make() -> dict:
         "view_options_order": {s: list(v["options"]) for s, v in view_prefs.SECTIONS.items() if v.get("options")},
         "view_lists_order": {s: list(v["lists"]) for s, v in view_prefs.SECTIONS.items() if v.get("lists")},
         "view_presets": list(view_prefs.PRESETS),
+        # the built-in world themes as /worlds/<id>/theme/preset stores them (_sanitize_theme already applied), key order kept as pairs
+        "theme_presets_clean": theme_presets_clean(),
         "column_defaults": column_defaults(),
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,

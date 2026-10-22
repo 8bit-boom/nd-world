@@ -2690,3 +2690,59 @@ def test_world_invites_and_members_are_pythons(client, seed):
         assert member(a) == member(b), (path, form, member(a), member(b))
         served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 8, served
+
+
+def test_private_notes_and_themes_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app.main import THEME_PRESETS
+    base = str(client.base_url)
+    w = seed.world_b.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+    pid = seed.player_b.id
+    for form in ({"title": "  Secret ", "content": " the key\r\nis here "}, {"content": ""}, {"title": "t"}):
+        ra = d.post(f"/worlds/{w}/notes/{pid}/new", data=form, follow_redirects=False)
+        na = _newest("private_notes")
+        rb = via.post(f"/worlds/{w}/notes/{pid}/new", data=form, follow_redirects=False)
+        nb = _newest("private_notes")
+        _same_answer(ra, rb)
+        if ra.status_code == 303:
+            _same_rows(na, nb)
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    for owner in (pid, seed.player_a.id):
+        ids = []
+        for _ in range(2):
+            db = SessionLocal()
+            try:
+                r = db.execute(text("INSERT INTO private_notes (world_id, player_user_id, title, content) VALUES (:w, :p, 't', 'c')"), {"w": w, "p": owner})
+                db.commit(); ids.append(r.lastrowid)
+            finally:
+                db.close()
+        ra = d.post(f"/worlds/{w}/notes/{pid}/{ids[0]}/delete", follow_redirects=False)
+        rb = via.post(f"/worlds/{w}/notes/{pid}/{ids[1]}/delete", follow_redirects=False)
+        _same_answer(ra, rb)
+        assert (_row("private_notes", ids[0]) is None) == (_row("private_notes", ids[1]) is None)
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+
+    def theme():
+        r = _row("worlds", w)
+        return r["accent"], r["theme_json"]
+
+    def reset():
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE worlds SET accent = '#111111', theme_json = :t WHERE id = :w"), {"w": w, "t": '{"x": 1}'}); db.commit()
+        finally:
+            db.close()
+
+    for path, form in [("clear", {})] + [("preset", {"preset": k}) for k in list(THEME_PRESETS)[:4]] + [("preset", {"preset": "nope"}), ("preset", {})]:
+        out = []
+        for side in (d, via):
+            reset()
+            r = side.post(f"/worlds/{w}/theme/{path}", data=form, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), theme(), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (path, form, out)
+        served += out[1][3] == "gateway"
+    assert served >= 8, served
