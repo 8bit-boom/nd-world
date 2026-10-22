@@ -2580,3 +2580,46 @@ def test_account_plain_writes_are_pythons(client, seed):
                 assert (_row(table, ids[0]) is None) == (_row(table, ids[1]) is None)
                 served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 12, served
+
+
+def test_world_edit_is_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    w = seed.world_b.id      # a world nobody is playing in during the test
+    cols = ("name", "description", "accent", "font", "font_size", "players_see_party", "max_characters_per_player", "players_can_download_rules",
+            "players_can_ask_ai", "ai_chat_rag_entity_limit", "ai_chat_rag_notes_limit", "obsidian_vault_path", "hero_style", "layout_preset",
+            "personal_images_max", "personal_audio_max", "personal_video_max", "updated_at")
+
+    def snap():
+        r = _row("worlds", w)
+        return {k: r.get(k) for k in cols if k != "updated_at"}
+
+    def reset():
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE worlds SET name='WB', description='d', accent='#123456', font='Inter', font_size=110, players_see_party=1, max_characters_per_player=3, "
+                            "hero_style='home', layout_preset='prep', personal_images_max=7, ai_chat_rag_entity_limit=4 WHERE id = :w"), {"w": w})
+            db.commit()
+        finally:
+            db.close()
+
+    forms = [{"name": " New name ", "description": " raw ", "accent": " #abc ", "font": " Fira Sans, serif ", "font_size": "300", "players_see_party": "on",
+              "max_characters_per_player": "50", "players_can_ask_ai": "1", "ai_chat_rag_entity_limit": " 12 ", "ai_chat_rag_notes_limit": "x",
+              "obsidian_vault_path": " /v ", "hero_style": "everywhere", "layout_preset": "reading", "personal_images_max": " 900 ", "personal_audio_max": "-3",
+              "personal_video_max": "abc"},
+             {"name": "  ", "accent": "red", "font": "Bad;font", "font_size": "x", "max_characters_per_player": "two", "hero_style": "nope", "layout_preset": "zzz"},
+             {"name": "N", "font": "", "font_size": " +90 ", "max_characters_per_player": "٣"},
+             {"name": "N", "personal_images_max": "1_0"}, {"description": "no name"}]
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+    for form in forms:
+        out = []
+        for side in (d, via):
+            reset()
+            r = side.post(f"/worlds/{w}/edit", data=form, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), snap(), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (form, out[0], out[1])
+        served += out[1][3] == "gateway"
+    assert served >= 3, served

@@ -2660,6 +2660,12 @@
    "motion"
   ]
  },
+ "view_presets": [
+  "table_night",
+  "prep",
+  "player_phone",
+  "reading"
+ ],
  "view_sections": {
   "ai_chat": {
    "default": "withside",

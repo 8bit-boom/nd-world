@@ -267,6 +267,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/account/name", account_name),
     ("/account/tokens/{}/revoke", account_token_revoke),
     ("/account/trusted-devices/{}/revoke", account_device_revoke),
+    ("/worlds/{}/edit", world_edit),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -5720,4 +5721,78 @@ fn account_token_revoke(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn account_device_revoke(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     account_revoke(c, "trusted_devices", ids[0])
+}
+
+// ── world settings (app/main.py world_edit_post) ─────────────────────────────
+
+/// `text.strip().isdigit()` then int(): Some(n) / None (not digits); Err for text whose isdigit() is Python's
+fn digits_or_none(v: &str) -> Result<Option<i64>, ()> {
+    digit_field(v)
+}
+
+fn world_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let w = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", ids[0])?;
+    let name = required(&f, "name")?;
+    let flag = |k: &str| Sql::Integer(flag_param(&f, k));
+    let wtext = |k: &str| w.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let mut set: Vec<(&str, Sql)> = vec![];
+    let name = strip(&name);
+    set.push(("name", if name.is_empty() { w.get("name").and_then(|v| v.as_str()).map_or(Sql::Null, s) } else { s(&name) }));
+    set.push(("description", s(f.get("description").unwrap_or(""))));
+    // _sanitize_accent: a #rgb / #rrggbb colour, else the saved one
+    let accent = strip(opt(&f, "accent", "#00f0ff"));
+    let b = accent.as_bytes();
+    let hex = (b.len() == 4 || b.len() == 7) && b[0] == b'#' && b[1..].iter().all(|x| x.is_ascii_hexdigit());
+    set.push(("accent", if hex { s(&accent) } else { wtext("accent").map_or(Sql::Null, |a| s(&a)) }));
+    // _sanitize_font: "" clears it; a value outside [A-Za-z0-9 ,'-]{1,120} keeps the saved one
+    let font = strip(f.get("font").unwrap_or(""));
+    let font_ok = font.chars().count() <= 120 && font.bytes().all(|x| x.is_ascii_alphanumeric() || b" ,'-".contains(&x));
+    set.push(("font", if font.is_empty() { Sql::Null } else if font_ok { s(&font) } else { wtext("font").map_or(Sql::Null, |v| s(&v)) }));
+    // _sanitize_font_size: int() of the value, clamped to 75..150; not a number keeps the saved one (or 100)
+    let saved_size = w.get("font_size").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(100);
+    let size = match py_int_text(opt(&f, "font_size", "100")) {
+        Ok(n) => n.clamp(75, 150),
+        Err(PyErr::Value) => saved_size,
+        Err(_) => return None,
+    };
+    set.push(("font_size", Sql::Integer(size)));
+    set.push(("players_see_party", flag("players_see_party")));
+    if let Some(raw) = f.get("max_characters_per_player").filter(|v| !v.is_empty()) {
+        let n = match digits_or_none(raw).ok()? {
+            Some(n) => n.clamp(1, 20),
+            None => 1,
+        };
+        set.push(("max_characters_per_player", Sql::Integer(n)));
+    }
+    for k in ["players_can_download_rules", "players_can_download_entities", "players_can_ask_ai", "players_can_use_ai_chat",
+              "players_can_view_world_summary", "players_can_use_image_gen"] {
+        set.push((k, flag(k)));
+    }
+    for k in ["ai_chat_rag_entity_limit", "ai_chat_rag_notes_limit"] {
+        let v = digits_or_none(f.get(k).unwrap_or("")).ok()?;
+        set.push((k, v.map_or(Sql::Null, Sql::Integer)));
+    }
+    let vault = strip(f.get("obsidian_vault_path").unwrap_or(""));
+    set.push(("obsidian_vault_path", if vault.is_empty() { Sql::Null } else { s(&vault) }));
+    let hero = opt(&f, "hero_style", "home");
+    if ["off", "home", "everywhere"].contains(&hero) {
+        set.push(("hero_style", s(hero)));
+    }
+    if let Some(p) = f.get("layout_preset").filter(|v| !v.is_empty()) {
+        let presets = str_list(nd_render::app::data().get("view_presets"));
+        set.push(("layout_preset", if presets.iter().any(|x| x == p) { s(p) } else { Sql::Null }));
+    }
+    for (k, col) in [("personal_images_max", "personal_images_max"), ("personal_audio_max", "personal_audio_max"), ("personal_video_max", "personal_video_max")] {
+        if let Some(raw) = f.get(k).filter(|v| !v.is_empty()) {
+            let v = match py_int_text(raw) {
+                Ok(n) => Sql::Integer(n.clamp(0, 500)),
+                Err(PyErr::Value) => Sql::Null,
+                Err(_) => return None,
+            };
+            set.push((col, v));
+        }
+    }
+    orm::update(&c.db, "worlds", ids[0], &set)?;
+    redirect("/worlds")
 }
