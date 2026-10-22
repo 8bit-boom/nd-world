@@ -4369,3 +4369,32 @@ def test_schematic_rooms_save_is_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (body, out)
         served += out[1][3] == "gateway"
     assert served >= 3, served
+
+
+def test_cockpit_workspace_save_is_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    panel = {"id": 12, "type": "notes", "ref": "", "title": "T" * 130, "x": -5, "y": "40", "w": 9.9, "h": None, "z": True, "collapsed": 1,
+             "accent": "#a1B2c3", "data": {"text": "hello", "zoom": "300", "timer": {"minutes": 9}}, "parked": True,
+             "lap": {"x": 1, "w": "x", "parked": "yes"}, "junk": 1}
+    timer = {"type": "timer", "data": {"timer": {"mode": "up", "minutes": 0, "endAt": 5e15, "remainMs": "12"}, "zoom": 100}, "accent": "red"}
+    pages = [{"type": "page", "ref": "/entity/1"}, {"type": "page", "ref": "//evil"}, {"type": "page", "ref": "/a b"}, {"type": "bogus"}, "x"]
+    bodies = [{"current": {"panels": [panel, timer] + pages, "vp": {"w": "1920", "h": 1080}, "lvp": {"w": 10, "h": 10}},
+               "presets": {"  Combat ": {"panels": [timer]}, "": {"panels": []}, "Combat": {"panels": []}, "Calm": {"panels": [], "vp": {"w": None}}}},
+              {"current": {"panels": []}}, {"current": {}}, {"current": {"panels": [{}] * 25}}, {"current": {"panels": []}, "presets": []}, {}]
+    served = 0
+    for who, body in [(gm, b) for b in bodies] + [(pl, bodies[1])]:
+        out = []
+        for side in (who, _via(who, base)):
+            from app.database import SessionLocal
+            from app.models import World
+            db = SessionLocal()
+            db.get(World, w).cockpit_ws_json = None
+            db.commit(); db.close()
+            r = side.post("/api/cockpit/workspace", json=body)
+            out.append((r.status_code, r.json(), _row("worlds", w)["cockpit_ws_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out)
+        served += out[1][3] == "gateway"
+    assert served >= 2, served

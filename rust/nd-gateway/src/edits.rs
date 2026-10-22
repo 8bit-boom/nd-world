@@ -219,6 +219,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/keepsakes", hub_keepsake_add),
     ("/api/characters/{}/hub/loot", hub_loot_claim),
     ("/api/characters/{}/hub/initiative", hub_roll_initiative),
+    ("/api/cockpit/workspace", cockpit_save_workspace),
     ("/api/characters/{}/hub/keepsakes/{}", hub_keepsake_edit),
     ("/api/characters/{}/hub/keepsakes/{}/delete", hub_keepsake_delete),
     ("/api/characters/{}/hub/entries", hub_entry_create),
@@ -9674,6 +9675,190 @@ fn hub_pass_turn(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let (round, idx) = (f.round(), f.active_idx());
     hub_save_fight(c, &f, round, idx)?;
     hub_after(c, &pc, f.cs.get("id")?.as_i64()?)
+}
+
+// ── the GM cockpit's saved workspace (app/routers/cockpit.py) ──
+
+/// `str(v or "")`; None for a value str() spells its own way (a float, a list ...)
+fn py_str_or_empty(v: Option<&Value>) -> Option<String> {
+    match v {
+        Some(Value::String(t)) => Some(t.clone()),
+        v if !py_truthy(v) => Some(String::new()),
+        Some(Value::Bool(true)) => Some("True".into()),
+        Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Python's `int(v)` for a JSON value: Some(Ok(n)), Some(Err(())) for its TypeError / ValueError, None where it might read the value
+/// its own way (Unicode digits, underscores) or the value is past what this counts
+fn json_py_int(v: Option<&Value>) -> Option<Result<i128, ()>> {
+    Some(match v {
+        None | Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => Err(()),
+        Some(Value::Bool(b)) => Ok(*b as i128),
+        Some(Value::Number(n)) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) => Ok(i as i128),
+            (None, Some(u)) => Ok(u as i128),
+            _ => {
+                let f = n.as_f64()?;
+                if !f.is_finite() || f.abs() > 1e30 {
+                    return None;
+                }
+                Ok(f.trunc() as i128)
+            }
+        },
+        Some(Value::String(t)) => {
+            if !t.is_ascii() || t.contains('_') {
+                return None;
+            }
+            let w = t.trim_matches(re_space);
+            let digits = w.strip_prefix(['+', '-']).unwrap_or(w);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                Err(())
+            } else if digits.len() > 30 {
+                return None;
+            } else {
+                Ok(w.parse::<i128>().ok()?)
+            }
+        }
+    })
+}
+
+/// `_clamp_int(v, lo, hi, default)`
+fn clamp_int(v: Option<&Value>, lo: i64, hi: i64, default: i64) -> Option<i64> {
+    Some(match json_py_int(v)? {
+        Err(()) => default,
+        Ok(n) => n.min(hi as i128).max(lo as i128) as i64,
+    })
+}
+
+/// `_sanitize_vp`
+fn cockpit_vp(raw: Option<&Value>) -> Option<Option<Value>> {
+    let Some(Value::Object(r)) = raw else { return Some(None) };
+    let (Ok(w), Ok(h)) = (json_py_int(r.get("w"))?, json_py_int(r.get("h"))?) else { return Some(None) };
+    Some(((200..=20000).contains(&w) && (150..=20000).contains(&h)).then(|| json!({"w": w as i64, "h": h as i64})))
+}
+
+/// The `\s` of a str pattern, for ASCII
+fn re_space(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1f')
+}
+
+fn cockpit_panels(raw: Option<&Value>) -> Option<Vec<Value>> {
+    const TYPES: [&str; 20] = ["map", "wmap", "dice", "party", "quests", "entity", "ecard", "notes", "ai", "ai_chat", "combat", "tables", "calendar",
+        "gallery", "audio", "video", "imagestudio", "find", "timer", "page"];
+    let list = raw?.as_array()?;
+    if list.len() > 24 {
+        return None;
+    }
+    let mut out = vec![];
+    for p in list {
+        let Some(p) = p.as_object() else { continue };
+        let ptype = match p.get("type") {
+            Some(Value::String(t)) if TYPES.contains(&t.as_str()) => t.as_str(),
+            Some(Value::Array(_) | Value::Object(_)) => return None,
+            _ => continue,
+        };
+        let ref_ = py_str_or_empty(p.get("ref"))?;
+        if ptype == "page" {
+            if !ref_.is_ascii() {
+                return None;
+            }
+            let ok = ref_.starts_with('/') && !ref_.starts_with("//") && ref_.len() <= 120 && !ref_.chars().any(|ch| re_space(ch) || ch == '\\');
+            if !ok {
+                continue;
+            }
+        }
+        let accent = py_str_or_empty(p.get("accent"))?;
+        let accent_ok = accent.is_empty() || (accent.len() == 7 && accent.starts_with('#') && accent[1..].bytes().all(|b| b.is_ascii_hexdigit()));
+        let mut data = Map::new();
+        if let Some(Value::Object(d)) = p.get("data") {
+            data.insert("text".into(), json!(take_chars(&py_str_or_empty(d.get("text"))?, 8000)));
+            if ptype == "timer" {
+                if let Some(Value::Object(t)) = d.get("timer") {
+                    let minutes = clamp_int(t.get("minutes"), 1, 600, 5)?;
+                    data.insert("timer".into(), json!({
+                        "mode": if t.get("mode").and_then(|v| v.as_str()) == Some("up") { "up" } else { "down" },
+                        "minutes": minutes, "running": py_truthy(t.get("running")), "done": py_truthy(t.get("done")),
+                        "endAt": clamp_int(t.get("endAt"), 0, 4_102_444_800_000, 0)?, "startAt": clamp_int(t.get("startAt"), 0, 4_102_444_800_000, 0)?,
+                        "remainMs": clamp_int(t.get("remainMs"), 0, 36_000_000, minutes * 60_000)?, "elapsedMs": clamp_int(t.get("elapsedMs"), 0, 360_000_000, 0)?}));
+                }
+            }
+            let zoom = clamp_int(d.get("zoom"), 50, 200, 100)?;
+            if zoom != 100 {
+                data.insert("zoom".into(), json!(zoom));
+            }
+        }
+        let mut e = Map::new();
+        e.insert("id".into(), json!(take_chars(&py_str_or_empty(p.get("id"))?, 40)));
+        e.insert("type".into(), json!(ptype));
+        e.insert("ref".into(), json!(take_chars(&ref_, 120)));
+        e.insert("title".into(), json!(take_chars(&py_str_or_empty(p.get("title"))?, 120)));
+        e.insert("x".into(), json!(clamp_int(p.get("x"), 0, 8000, 0)?));
+        e.insert("y".into(), json!(clamp_int(p.get("y"), 0, 8000, 0)?));
+        e.insert("w".into(), json!(clamp_int(p.get("w"), 160, 8000, 420)?));
+        e.insert("h".into(), json!(clamp_int(p.get("h"), 120, 8000, 300)?));
+        e.insert("z".into(), json!(clamp_int(p.get("z"), 0, 100000, 0)?));
+        e.insert("collapsed".into(), json!(py_truthy(p.get("collapsed"))));
+        e.insert("accent".into(), json!(if accent_ok { accent } else { String::new() }));
+        e.insert("data".into(), Value::Object(data));
+        if p.get("parked") == Some(&Value::Bool(true)) {
+            e.insert("parked".into(), json!(true));
+        }
+        if let Some(Value::Object(l)) = p.get("lap") {
+            e.insert("lap".into(), json!({"x": clamp_int(l.get("x"), 0, 8000, 0)?, "y": clamp_int(l.get("y"), 0, 8000, 0)?,
+                "w": clamp_int(l.get("w"), 160, 8000, 420)?, "h": clamp_int(l.get("h"), 120, 8000, 300)?, "z": clamp_int(l.get("z"), 0, 100000, 0)?,
+                "collapsed": py_truthy(l.get("collapsed")), "parked": py_truthy(l.get("parked"))}));
+        }
+        out.push(Value::Object(e));
+    }
+    Some(out)
+}
+
+fn cockpit_layout(raw: Option<&Value>) -> Option<Value> {
+    let empty = Map::new();
+    let r = match raw {
+        Some(Value::Object(o)) => o,
+        _ => &empty,
+    };
+    let mut out = Map::new();
+    out.insert("panels".into(), Value::Array(cockpit_panels(r.get("panels"))?));
+    for key in ["vp", "lvp"] {
+        if let Some(v) = cockpit_vp(r.get(key))? {
+            out.insert(key.into(), v);
+        }
+    }
+    Some(Value::Object(out))
+}
+
+/// `cockpit_save_workspace` (GM only): the current arrangement and the named presets, sanitized; the refusals stay Python's
+fn cockpit_save_workspace(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let wid = c.world_id()?;
+    let body = c.json()?;
+    let mut presets = Map::new();
+    match body.get("presets") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(o)) => {
+            for (name, layout) in o.iter().take(12) {
+                let name = take_chars(&strip(name), 40);
+                if name.is_empty() {
+                    continue;
+                }
+                presets.insert(name, cockpit_layout(Some(layout))?);
+            }
+        }
+        _ => return None,
+    }
+    let ws = json!({"current": cockpit_layout(body.get("current"))?, "presets": presets});
+    let dumped = nd_render::py_dumps(&ws);
+    if dumped.len() > 128 * 1024 {
+        return None;
+    }
+    orm::update(&c.db, "worlds", wid, &[("cockpit_ws_json", s(&dumped))])?;
+    json_response(&json!({"ok": true}))
 }
 
 // ── the character hub: handouts seen, companions (app/routers/character_hub.py) ──
