@@ -4225,3 +4225,26 @@ def test_schematic_lights_are_pythons(client, seed):
     served += run("lights", {"lights": "no"})
     served += run("lights", {"lights": [{"id": "a", "x": "1", "y": 1, "range": 1}]})
     assert served >= 8, served  # the first set (a number label, a half to round) is Python's
+
+
+def test_schematic_walls_save_is_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    n = [0]
+    served = 0
+    sets = [[{"id": "w1", "pts": [[0, 0], [10, 0], [10, 0], [10, 5.5]], "kind": "wall"}, {"pts": [[1, 1], [2, 2]], "kind": "door", "state": "open"},
+             {"id": "w1", "pts": [[-5, 9000], [3.25, "x"], [7, 8, 9]], "kind": "secret"}, {"pts": [[1, 1]]}, "junk", {"pts": "no"},
+             {"id": "q?q", "pts": [[1, 1], [2, 2]], "kind": "portal"}, {"id": 9, "pts": [[1, 2], [3, 4]], "kind": "window", "state": "open"}],
+            [], [{"pts": [[0, 0], [1, 1]]}] * 3]
+    for walls in sets + ["nope"]:
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"walls-{n[0]}"
+            sid = _add("Schematic", world_id=w, name="Map", slug=slug, canvas_width=800, canvas_height=600)
+            r = side.post(f"/maps/schematic/{slug}/walls", json={"walls": walls})
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, _row("schematics", sid)["walls_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (walls, out)
+        served += out[1][3] == "gateway"
+    assert served >= 3, served

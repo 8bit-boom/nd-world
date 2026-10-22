@@ -456,7 +456,7 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
-    ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8595,6 +8595,78 @@ fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, 
         warnings.push(format!("{dropped} light(s) were skipped because they were not usable."));
     }
     Some((out, warnings))
+}
+
+/// `map_walls.clean_walls` -> (walls, warnings); None for what Python spells or rounds its own way
+fn clean_walls(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
+    let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64).max(1.0);
+    let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
+    let (mut out, mut warnings, mut total, mut seen, mut dropped) = (vec![], vec![], 0usize, Vec::<String>::new(), 0);
+    for (i, w) in data.iter().enumerate() {
+        if out.len() >= 5000 {
+            warnings.push("Only the first 5000 walls were kept.".to_string());
+            break;
+        }
+        let Some((w, raw_pts)) = w.as_object().and_then(|o| Some((o, o.get("pts")?.as_array()?))) else {
+            dropped += 1;
+            continue;
+        };
+        let mut pts: Vec<[f64; 2]> = vec![];
+        for p in raw_pts.iter().take(200) {
+            let Some(p) = p.as_array().filter(|p| p.len() >= 2) else { continue };
+            let (Some(x), Some(y)) = (wall_num(p.first()), wall_num(p.get(1))) else { continue };
+            let q = [py_round(x.max(0.0).min(cw), 2)?, py_round(y.max(0.0).min(ch), 2)?];
+            if pts.last() != Some(&q) {
+                pts.push(q);
+            }
+        }
+        if pts.len() < 2 || total + pts.len() > 20000 {
+            dropped += 1;
+            continue;
+        }
+        total += pts.len();
+        let kind = match w.get("kind") {
+            Some(Value::String(k)) if ["wall", "door", "window", "secret"].contains(&k.as_str()) => k.clone(),
+            None | Some(Value::Null) | Some(Value::String(_)) | Some(Value::Number(_)) | Some(Value::Bool(_)) => "wall".to_string(),
+            _ => return None,
+        };
+        let raw_id = match w.get("id") {
+            Some(Value::String(t)) => t.clone(),
+            Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+            v if !py_truthy(v) => String::new(),
+            _ => return None,
+        };
+        let mut wid: String = raw_id.chars().filter(|ch| ch.is_ascii_alphanumeric() || "_.:-".contains(*ch)).take(40).collect();
+        if wid.is_empty() {
+            wid = format!("w{}", i + 1);
+        }
+        while seen.contains(&wid) {
+            wid.push('x');
+        }
+        seen.push(wid.clone());
+        let mut item = Map::new();
+        item.insert("id".into(), json!(wid));
+        item.insert("pts".into(), json!(pts));
+        item.insert("kind".into(), json!(kind));
+        if kind == "door" || kind == "secret" {
+            item.insert("state".into(), json!(if w.get("state").and_then(|v| v.as_str()) == Some("open") { "open" } else { "closed" }));
+        }
+        out.push(Value::Object(item));
+    }
+    if dropped > 0 {
+        warnings.push(format!("{dropped} wall(s) were skipped because they were not usable."));
+    }
+    Some((out, warnings))
+}
+
+fn sc_walls(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let body = c.json()?;
+    let (walls, warnings) = clean_walls(body.get("walls")?.as_array()?, &sc)?;
+    let v = Value::Array(walls);
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&v)))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"walls": v, "warnings": warnings}))
 }
 
 fn sc_lights(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
