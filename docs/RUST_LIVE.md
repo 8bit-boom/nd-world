@@ -87,3 +87,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `GET /combat/<id>` for a player (the read-only view: `_player_state` / `combat_state.player_view` - enemies as "Enemy A" with a word for their health, a hidden combatant left out; the Combat section must be open to the role) | P4-30 |
 | `GET /api/combat/<id>/state`, `/api/display/combat/<id>/state` (the tracker's and the TV's polling state: the GM's full state, everyone else's - and the TV's - player view) | P4-31 |
 | Strict secrecy on a map (`app/map_strict.py` ported: the vision sweep, the explored cells - recorded on each view as Python records them -, what a player is sent, the masked picture's address), in the players' view, view.json and the TV's data | P4-32 |
+| `POST /maps/schematic/<slug>/upload`, `/embed-image` (the map's background picture and a picture placed on it, stored as uploaded; a GM or Assistant, the active world) | P4-33 |
