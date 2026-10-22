@@ -1118,3 +1118,44 @@ def test_rules_page_the_gateway_builds_is_pythons(client, seed):
         via = _via(d, base)
         served += _same_page(d, via, "/rules", email)
     assert served >= 2, served
+
+
+def test_search_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote, GameSession, PlayerCharacter, Quest, World, entity_player_access
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        ents = [Entity(world_id=w, kind="npc", name="Ashfall Rifle", summary="A weapon", body="weapon weapon weapon <b>bold</b> ash"),
+                Entity(world_id=w, kind="item", name="Weapon Traits", summary="traits list", body="The trait list."),
+                Entity(world_id=w, kind="npc", name="Hidden Ash", visible_to_players=False, body="ashen secrets"),
+                Entity(world_id=w, kind="npc", name="Shared Ash", visible_to_players=False, body="shared ash"),
+                Entity(world_id=w, kind="location", name="Vault", summary="[gmonly]codeword zebra[/gmonly] a vault", body="Stores ash."),
+                Entity(world_id=w, kind="location", name="Dock", body="Only the GM knows [gmonly]zebra[/gmonly] here."),
+                Entity(world_id=seed.world_b.id, kind="npc", name="Ash elsewhere")]
+        db.add_all(ents); db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=ents[3].id, user_id=seed.player_a.id))
+        db.add_all([EntityNote(entity_id=ents[0].id, content="note about ash", visible_to_players=True),
+                    EntityNote(entity_id=ents[0].id, content="gm note ash", visible_to_players=False),
+                    EntityNote(entity_id=ents[1].id, content="[gmonly]ash zebra[/gmonly] public part", visible_to_players=True),
+                    PlayerCharacter(world_id=w, name="Ash Walker", owner_user_id=seed.player_a.id, race="Elf", char_class="Rogue", backstory="Born in ash."),
+                    PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.gm.id, backstory="ash too"),
+                    Quest(world_id=w, title="Find the ash", status="active", body="Search the ash pits."),
+                    GameSession(world_id=w, session_num=3, title="Ashes", summary="We found ash.", session_date="2026-01-02")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.players_see_party = True
+        db.commit()
+    finally:
+        db.close()
+    urls = ["/search", "/search?q=ash", "/search?q=weapons", "/search?q=a", "/search?q=zebra", "/search?q=ash&kind=npc", "/search?q=%22quoted%22",
+            "/search?q=ASH+walker", "/search?q=%C3%BC", "/search?q=trait", "/search?q=x&kind=nope"]
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for u in urls:
+            served[u] += _same_page(d, via, u, email)
+    assert all(v >= 2 for v in served.values()), served
