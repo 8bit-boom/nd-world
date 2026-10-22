@@ -27,6 +27,8 @@ pub struct Ctx<'a> {
     pub upload: Option<crate::uploads::Upload>,
     /// files this request wrote, removed again when the gateway does not answer after all
     pub created: Vec<std::path::PathBuf>,
+    /// files / folders to remove once the answer is committed (an original replaced by its converted copy, a chunk folder)
+    pub removals: Vec<std::path::PathBuf>,
     pub db: Connection,
     pub p: PageCtx,
     pub uri: &'a Uri,
@@ -35,6 +37,17 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// After the commit: remove what the answer replaced (files, chunk folders)
+    fn apply_removals(&self) {
+        for p in &self.removals {
+            if p.is_dir() {
+                let _ = std::fs::remove_dir_all(p);
+            } else {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
     pub fn form(&self) -> Option<Form> {
         if let Some(u) = &self.upload {
             return Some(u.form.clone());
@@ -234,6 +247,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/media/audio/{}/remove", sm_audio_remove),
     ("/api/sessions/{}/media/video/{}/remove", sm_video_item_remove),
     ("/audio/upload/complete", audio_complete),
+    ("/images/albums/upload/complete", gallery_complete),
     ("/pages/upload/complete", pages_complete),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
@@ -261,6 +275,8 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/pages/upload/chunk", pages_chunk),
     ("/audio/upload", audio_upload),
     ("/pages/upload", pages_upload),
+    ("/images/albums/upload/chunk", gallery_chunk),
+    ("/images/albums/{}/upload", gallery_upload),
 ];
 
 pub fn handles_upload(method: &Method, path: &str) -> bool {
@@ -275,9 +291,10 @@ pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, p
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
         db.execute_batch("BEGIN IMMEDIATE").ok()?;
-        let mut ctx = Ctx { cfg, upload: Some(up), created: vec![], db, p, uri, headers, body: &[] };
+        let mut ctx = Ctx { cfg, upload: Some(up), created: vec![], removals: vec![], db, p, uri, headers, body: &[] };
         let answer = h(&mut ctx, &ids);
         if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
+            ctx.apply_removals();
             return answer;
         }
         let _ = ctx.db.execute_batch("ROLLBACK");
@@ -368,16 +385,20 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
     // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
     // Python) must leave nothing behind, or Python would apply the same write a second time
     db.execute_batch("BEGIN IMMEDIATE").ok()?;
-    let mut ctx = Ctx { cfg, upload: None, created: vec![], db, p, uri, headers, body };
+    let mut ctx = Ctx { cfg, upload: None, created: vec![], removals: vec![], db, p, uri, headers, body };
     let answer = match (by_id, by_slug) {
         (Some((h, ids)), _) => h(&mut ctx, &ids),
         (_, Some((h, slug))) => h(&mut ctx, &slug),
         _ => None,
     };
     if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
+        ctx.apply_removals();
         return answer;
     }
     let _ = ctx.db.execute_batch("ROLLBACK");
+    for f in &ctx.created {
+        let _ = std::fs::remove_file(f);
+    }
     None
 }
 
@@ -3019,7 +3040,8 @@ fn session_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::bulk_update(&c.db, "facts", &[("game_session_id", Sql::Null)], "game_session_id = ?", &[Sql::Integer(id)])?;
     c.db.execute("DELETE FROM game_sessions WHERE id = ?1", [id]).ok()?;
     // the raw-recording archive, <DB_PATH dir>/uploads/live/<id> (shutil.rmtree(..., ignore_errors=True))
-    let _ = std::fs::remove_dir_all(uploads_root(c)?.join("live").join(id.to_string()));
+    let live = uploads_root(c)?.join("live").join(id.to_string());
+    c.removals.push(live);
     redirect("/sessions")
 }
 
@@ -3463,12 +3485,13 @@ fn uploads_root(c: &Ctx) -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(&c.cfg.db_path).parent()?.join("uploads"))
 }
 
-/// Delete the file behind an `/uploads/...` url when it resolves inside the uploads folder and is a file (`_delete_icon_file` & co.)
-fn remove_upload(c: &Ctx, url: &str) {
+/// Delete (after the commit) the file behind an `/uploads/...` url when it resolves inside the uploads folder and is a file
+/// (`_delete_icon_file` & co.)
+fn remove_upload(c: &mut Ctx, url: &str) {
     let (Some(rel), Some(root)) = (url.strip_prefix("/uploads/"), uploads_root(c).and_then(|r| r.canonicalize().ok())) else { return };
     if let Ok(path) = root.join(rel).canonicalize() {
         if path.starts_with(&root) && path.is_file() {
-            let _ = std::fs::remove_file(path);
+            c.removals.push(path);
         }
     }
 }
@@ -4734,7 +4757,7 @@ fn library_complete(c: &mut Ctx, lib: &Lib, exts: &[&str], max_items: i64, cap: 
     c.created.push(dest.clone());
     reassemble(&parts, &dest)?;
     add_library_item(c, lib, wid, &f, &filename, &name, album, false)?;
-    let _ = std::fs::remove_dir_all(dir);
+    c.removals.push(dir);
     json_response(&json!({"ok": true}))
 }
 
@@ -4787,4 +4810,112 @@ fn audio_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 fn pages_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let cap = env_bytes("MAX_PAGE_UPLOAD_BYTES", 50 * 1024 * 1024)?;
     library_upload(c, &PAGES, &PAGE_EXTS, 200, cap, false)
+}
+
+// ── gallery uploads: pictures converted and thumbnailed (crate::imaging) ─────
+
+const IMAGE_EXTS: [&str; 6] = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"];
+
+/// `_effective_gallery_upload_bytes`: the saved limit, else max(MAX_UPLOAD_BYTES, MAX_GALLERY_UPLOAD_BYTES)
+fn gallery_cap(c: &Ctx) -> Option<i64> {
+    let saved: Option<i64> = c.db.query_row("SELECT max_gallery_upload_mb FROM app_settings LIMIT 1", [], |r| r.get(0)).ok()?;
+    match saved.filter(|v| *v > 0) {
+        Some(mb) => Some(mb * 1024 * 1024),
+        None => Some(env_bytes("MAX_UPLOAD_BYTES", 20 * 1024 * 1024)?.max(env_bytes("MAX_GALLERY_UPLOAD_BYTES", 500 * 1024 * 1024)?)),
+    }
+}
+
+/// `_finalize_album_image(dest)`: convert + thumbnail; the url. Files are tracked for clean-up; the original goes once all is well.
+fn finalize_picture(c: &mut Ctx, dest: &std::path::Path, folder: &str) -> Option<String> {
+    let st: (Option<String>, Option<String>) =
+        c.db.query_row("SELECT static_format, preview_format FROM app_settings LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let static_format = st.0.unwrap_or_else(|| "avif".into());
+    let preview = st.1.filter(|p| matches!(p.as_str(), "avif" | "webp" | "original")).unwrap_or_else(|| "avif".into());
+    let done = crate::imaging::finish_upload(dest, &static_format, &preview)?;
+    c.created.extend(done.written.iter().cloned());
+    if let Some(r) = done.remove {
+        c.removals.push(r);
+    }
+    Some(format!("/uploads/{folder}/{}", done.path.file_name()?.to_string_lossy()))
+}
+
+fn gallery_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = images_editor(c)?;
+    let album = lib_album(c, &IMAGES, wid, ids[0])?;
+    let cap = gallery_cap(c)?;
+    let part = one_file(c, "file")?;
+    if part.filename.is_empty() || part.len as i64 > cap {
+        return None;
+    }
+    let filename = part.filename.clone();
+    let ext = py_suffix_lower(&filename)?;
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let target = uploads_root(c)?.join("gallery");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    let url = finalize_picture(c, &dest, "gallery")?;
+    let mut current = album_urls(&album)?;
+    if !current.iter().any(|u| u.as_str() == Some(url.as_str())) && current.len() < 500 {
+        current.push(json!(url));
+    }
+    orm::update(&c.db, "image_albums", ids[0], &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(current))))])?;
+    redirect(&format!("/images/albums/{}", ids[0]))
+}
+
+fn gallery_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    images_editor(c)?;
+    let cap = gallery_cap(c)?.min(128 * 1024 * 1024);
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let index = form_int_required(&f, "chunk_index")?;
+    if !chunk_id_ok(&id) || !(0..=2000).contains(&index) || one_file(c, "file")?.len as i64 > cap {
+        return None;
+    }
+    let root = uploads_root(c)?.join("gallery").join("_chunks");
+    let dir = root.join(&id);
+    if index == 0 && !dir.exists() {
+        sweep_chunks(&root);
+    }
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{index:06}.part"));
+    if !dest.exists() {
+        c.created.push(dest.clone());
+    }
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    json_response(&json!({"ok": true}))
+}
+
+fn gallery_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = images_editor(c)?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let filename = f.get("filename").filter(|v| !v.is_empty())?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let album_id = form_int_required(&f, "album_id")?;
+    let ext = py_suffix_lower(&filename)?;
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let album = lib_album(c, &IMAGES, wid, album_id)?;
+    let (dir, parts, size) = chunk_parts(c, "gallery", &id, total)?;
+    if size as i64 > gallery_cap(c)? || album_urls(&album)?.len() >= 500 {
+        return None; // the 413 / "Album is full": Python's
+    }
+    let target = uploads_root(c)?.join("gallery");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    reassemble(&parts, &dest)?;
+    let url = finalize_picture(c, &dest, "gallery")?;
+    let mut current = album_urls(&album)?;
+    current.push(json!(url));
+    orm::update(&c.db, "image_albums", album_id, &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(current))))])?;
+    c.removals.push(dir);
+    json_response(&json!({"url": url}))
 }

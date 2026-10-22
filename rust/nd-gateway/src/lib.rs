@@ -12,6 +12,7 @@ pub mod files;
 pub mod form;
 pub mod gallery;
 pub mod home;
+pub mod imaging;
 pub mod layout;
 pub mod live;
 pub mod maps;

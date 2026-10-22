@@ -51,6 +51,7 @@ shares the machine, so read it as "several times faster", not as a limit.
 | `orm::touch` | `live.touch(world)` where the Python handler calls it |
 | One transaction per request (`edits::run`) | Python's single commit: `BEGIN IMMEDIATE` before the handler, `COMMIT` only when the gateway answers; a handler that gives up part-way rolls back, so Python never applies the same write twice |
 | `uploads::serve` / `uploads::scan` | Upload bodies streamed to a temporary file under `<uploads>/_gateway` (never held in memory), multipart parts located in it, a file part copied into place from it; a request the gateway does not answer goes to Python with the body re-sent from the file. Files a handler wrote are removed when it gives up |
+| `imaging::finish_upload` | `convert_image` + `make_thumbnail` for an uploaded picture: the configured format (ravif for AVIF, libwebp for WebP, the image crate for PNG / JPEG; bytes differ from Pillow's, format / pixel size / alpha / file names do not), the thumbnail at Pillow's `thumbnail()` size (checked on 400 random sizes). Animated pictures, GIFs, AVIF sources and pictures it cannot decode are Python's |
 | answers | Starlette's 303 redirect, FastAPI's compact JSON |
 
 A row of another world than the viewer's active one is left to Python (its cross-world access rule is not ported). Checked by
@@ -81,6 +82,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /images/albums/new`, `/images/albums/<id>/rename`, `/move`, `/delete`, `/add`, `/remove` (image albums hold urls; spotlight and image delete: Python's) | 23 |
 | `POST /api/sessions/<id>/recap-audio`, `/recap-audio/<clip>/visibility`, `/remove`, `/media/attach`, `/media/<kind>/<ref>/visibility`, `/rename`, `/remove` (the panel as `session_media.panel`; items still waiting for a uid, and removing a picture uploaded for the session: Python's) | 24 |
 | `POST /audio/upload/chunk`, `/video/upload/chunk`, `/pages/upload/chunk`, `/audio/upload/complete`, `/pages/upload/complete`, `/audio/upload`, `/pages/upload` (stored as `unique_upload_filename` names them; video files, which ffmpeg finishes, and over-limit files: Python's) | 25 |
+| `POST /images/albums/<id>/upload`, `/images/albums/upload/chunk`, `/images/albums/upload/complete` (pictures converted and thumbnailed by `imaging`) | 26 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

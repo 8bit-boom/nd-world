@@ -2068,3 +2068,111 @@ def test_library_uploads_are_pythons(client, seed):
                     assert res[1][1] is None
                 served += res[1][0].headers.get("x-nd-served-by") == "gateway"
     assert served >= 10, served   # the GM's
+
+
+def _pictures():
+    """Test pictures as bytes, by name"""
+    import io
+    from PIL import Image
+    out = {}
+    im = Image.new("RGB", (1000, 600))
+    for x in range(0, 1000, 50):
+        im.paste((x % 255, 80, 200 - x % 200), (x, 0, x + 50, 600))
+    b = io.BytesIO(); im.save(b, "JPEG", quality=85); out["Photo One.jpg"] = b.getvalue()
+    im = Image.new("RGBA", (300, 200), (10, 200, 30, 120))
+    b = io.BytesIO(); im.save(b, "PNG"); out["small alpha.png"] = b.getvalue()
+    im = Image.new("L", (900, 2000), 128)
+    b = io.BytesIO(); im.save(b, "PNG"); out["tall-grey.png"] = b.getvalue()
+    frames = [Image.new("RGB", (64, 64), c) for c in ((255, 0, 0), (0, 255, 0))]
+    b = io.BytesIO(); frames[0].save(b, "WEBP", save_all=True, append_images=frames[1:], duration=100); out["anim.webp"] = b.getvalue()
+    b = io.BytesIO(); Image.new("P", (40, 40)).save(b, "GIF"); out["still.gif"] = b.getvalue()
+    out["broken.png"] = b"\x89PNG\r\n\x1a\n" + b"garbage" * 50
+    return out
+
+
+def _picture_facts(up, url):
+    """(masked url, format, size, mode) of the stored picture and of its thumbnail; whether the original upload is gone"""
+    from PIL import Image
+    if not url:
+        return None
+    p = up / url[len("/uploads/"):]
+    facts = [_masked_url(url)]
+    try:
+        with Image.open(p) as im:
+            facts += [im.format, im.size, im.mode]
+    except Exception:
+        facts += ["unreadable", p.exists()]
+    for suf in ("_thumb.avif", "_thumb.webp"):
+        t = p.with_name(p.stem + suf)
+        if t.exists():
+            with Image.open(t) as im:
+                facts += [suf, im.format, im.size, im.mode]
+    return facts
+
+
+def test_gallery_uploads_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import AppSettings, World
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"images": {"player": "edit", "assistant": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+
+    def set_format(fmt):
+        db = SessionLocal()
+        try:
+            s = db.query(AppSettings).first()
+            if s is None:
+                s = AppSettings(id=1); db.add(s)
+            s.static_format = fmt
+            db.commit()
+        finally:
+            db.close()
+
+    pics = _pictures()
+    served = 0
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    for fmt in ("avif", "webp", "none", "jpg", "png"):
+        set_format(fmt)
+        for name, data in pics.items():
+            if fmt != "avif" and name not in ("Photo One.jpg", "small alpha.png"):
+                continue
+            res = []
+            for side in (d, via):
+                alb = _add("ImageAlbum", world_id=w, name="Up", image_urls_json="[]")
+                body, hdr = _multipart([], [("file", name, data)])
+                r = side.post(f"/images/albums/{alb}/upload", content=body, headers=hdr, follow_redirects=False)
+                urls = json.loads(_row("image_albums", alb)["image_urls_json"])
+                res.append((r, [_picture_facts(up, u) for u in urls], r.headers.get("x-nd-served-by"), alb))
+            _same_answer(res[0][0], res[1][0], res[0][3], res[1][3])
+            assert res[0][1] == res[1][1], (fmt, name, res[0][1], res[1][1])
+            served += res[1][2] == "gateway"
+    # chunked: two parts, then complete
+    set_format("avif")
+    for name in ("Photo One.jpg", "small alpha.png", "x.txt"):
+        data = pics.get(name, b"text")
+        res = []
+        for side in (d, via):
+            alb = _add("ImageAlbum", world_id=w, name="Up", image_urls_json="[]")
+            uid = os.urandom(16).hex()
+            for i, chunk in enumerate((data[: len(data) // 2], data[len(data) // 2:])):
+                body, hdr = _multipart([("upload_id", uid), ("chunk_index", str(i))], [("file", "blob", chunk)])
+                side.post("/images/albums/upload/chunk", content=body, headers=hdr)
+            r = side.post("/images/albums/upload/complete", data={"upload_id": uid, "filename": name, "total_chunks": "2", "album_id": str(alb)})
+            urls = json.loads(_row("image_albums", alb)["image_urls_json"])
+            ans = r.json() if r.status_code == 200 else r.text
+            if isinstance(ans, dict):
+                ans = {"url": _masked_url(ans["url"])}
+            res.append((r.status_code, ans, [_picture_facts(up, u) for u in urls], (up / "gallery" / "_chunks" / uid).exists()))
+            served += r.headers.get("x-nd-served-by") == "gateway"
+        assert res[0] == res[1], (name, res[0], res[1])
+    assert served >= 8, served
