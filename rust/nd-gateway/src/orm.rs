@@ -8,8 +8,13 @@ use serde_json::Value;
 
 /// Now as SQLAlchemy stores a naive UTC `datetime.utcnow()` in SQLite ("2026-10-22 03:31:09.123456")
 pub fn now_stamp() -> String {
+    stamp_after(0)
+}
+
+/// `datetime.utcnow() + timedelta(seconds=offset)` as SQLAlchemy stores it
+pub fn stamp_after(offset_secs: i64) -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let (secs, micros) = (d.as_secs() as i64, d.subsec_micros());
+    let (secs, micros) = (d.as_secs() as i64 + offset_secs, d.subsec_micros());
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
     let z = days + 719468;

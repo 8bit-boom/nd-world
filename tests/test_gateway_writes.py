@@ -2623,3 +2623,70 @@ def test_world_edit_is_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (form, out[0], out[1])
         served += out[1][3] == "gateway"
     assert served >= 3, served
+
+
+def test_world_invites_and_members_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app.models import InviteCode, User, WorldMembership
+    base = str(client.base_url)
+    w = seed.world_b.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+    for form in ({"expires_days": "7", "max_uses": "3"}, {"expires_days": "0", "max_uses": "x"}, {}, {"expires_days": " 2 "}, {"expires_days": "٣"}):
+        ra = d.post(f"/worlds/{w}/invites/new", data=form, follow_redirects=False)
+        na = _newest("invite_codes")
+        rb = via.post(f"/worlds/{w}/invites/new", data=form, follow_redirects=False)
+        nb = _newest("invite_codes")
+        _same_answer(ra, rb)
+        assert len(na["code"]) == len(nb["code"]) == 12
+        assert (na["expires_at"] is None) == (nb["expires_at"] is None)
+        if na["expires_at"]:
+            assert str(na["expires_at"])[:10] == str(nb["expires_at"])[:10]
+        _same_rows(na, nb, ignore=("code", "expires_at"))
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    for target_world in (w, seed.world_a.id):
+        ids = []
+        for _ in range(2):
+            db = SessionLocal()
+            try:
+                inv = InviteCode(code=os.urandom(6).hex(), world_id=target_world); db.add(inv); db.commit(); ids.append(inv.id)
+            finally:
+                db.close()
+        ra = d.post(f"/worlds/{w}/invites/{ids[0]}/revoke", follow_redirects=False)
+        rb = via.post(f"/worlds/{w}/invites/{ids[1]}/revoke", follow_redirects=False)
+        _same_answer(ra, rb)
+        _same_rows(_row("invite_codes", ids[0]), _row("invite_codes", ids[1]), ignore=("code",))
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    # members: two throwaway players, one per side
+    def player(tag):
+        db = SessionLocal()
+        try:
+            u = User(email=f"{tag}-{os.urandom(4).hex()}@t.local", password_hash="x", display_name=tag, totp_enabled=True, totp_secret="S", totp_backup_codes_json='["h"]')
+            db.add(u); db.commit()
+            db.add(WorldMembership(world_id=w, user_id=u.id, role="player")); db.commit()
+            db.execute(text("INSERT INTO trusted_devices (user_id, token_hash, expires_at) VALUES (:u, :h, '2099-01-01')"), {"u": u.id, "h": os.urandom(8).hex()})
+            db.commit()
+            return u.id
+        finally:
+            db.close()
+
+    def member(uid):
+        db = SessionLocal()
+        try:
+            m = db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == uid).first()
+            u = db.get(User, uid)
+            devices = db.execute(text("SELECT COUNT(*) FROM trusted_devices WHERE user_id = :u"), {"u": uid}).scalar()
+            return (m.role if m else None, u.totp_enabled, u.totp_secret, u.totp_backup_codes_json, u.session_version, devices)
+        finally:
+            db.close()
+
+    for path, form in (("role", {"role": "assistant"}), ("role", {"role": "owner"}), ("role", {"role": "king"}), ("role", {}), ("clear-2fa", {}), ("remove", {})):
+        a, b = player("a"), player("b")
+        ra = d.post(f"/worlds/{w}/members/{a}/{path}", data=form, follow_redirects=False)
+        rb = via.post(f"/worlds/{w}/members/{b}/{path}", data=form, follow_redirects=False)
+        _same_answer(ra, rb, a, b)
+        assert member(a) == member(b), (path, form, member(a), member(b))
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 8, served

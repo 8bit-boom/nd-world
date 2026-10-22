@@ -268,6 +268,11 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/account/tokens/{}/revoke", account_token_revoke),
     ("/account/trusted-devices/{}/revoke", account_device_revoke),
     ("/worlds/{}/edit", world_edit),
+    ("/worlds/{}/invites/new", invite_new),
+    ("/worlds/{}/invites/{}/revoke", invite_revoke),
+    ("/worlds/{}/members/{}/remove", member_remove),
+    ("/worlds/{}/members/{}/role", member_role),
+    ("/worlds/{}/members/{}/clear-2fa", member_clear_2fa),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -5795,4 +5800,72 @@ fn world_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::update(&c.db, "worlds", ids[0], &set)?;
     redirect("/worlds")
+}
+
+// ── world invites and members (app/main.py) ──────────────────────────────────
+
+fn invite_new(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    let days = digit_field(f.get("expires_days").unwrap_or("")).ok()?.filter(|d| *d > 0);
+    let expires = match days {
+        Some(d) if d > 2_900_000 => return None, // past year 9999: Python's OverflowError
+        Some(d) => s(&orm::stamp_after(d * 86_400)),
+        None => Sql::Null,
+    };
+    let max_uses = digit_field(f.get("max_uses").unwrap_or("")).ok()?.filter(|n| *n > 0);
+    use base64::Engine;
+    let code = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 9]>());
+    orm::insert(
+        &c.db,
+        "invite_codes",
+        &[("code", s(&code)), ("world_id", Sql::Integer(ids[0])), ("created_by_id", Sql::Integer(c.p.user_id)), ("expires_at", expires),
+          ("max_uses", max_uses.map_or(Sql::Null, Sql::Integer))],
+    )?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn invite_revoke(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let inv = row(&c.db, "SELECT * FROM invite_codes WHERE id = ?1", ids[1])?;
+    if inv.get("world_id")?.as_i64() != Some(ids[0]) {
+        return None;
+    }
+    orm::update(&c.db, "invite_codes", ids[1], &[("revoked", Sql::Integer(1))])?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn membership(c: &Ctx, world: i64, user: i64) -> Option<i64> {
+    c.db.query_row("SELECT id FROM world_memberships WHERE world_id = ?1 AND user_id = ?2 LIMIT 1", [world, user], |r| r.get(0)).ok()
+}
+
+fn member_remove(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(m) = membership(c, ids[0], ids[1]) {
+        c.db.execute("DELETE FROM world_memberships WHERE id = ?1", [m]).ok()?;
+    }
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn member_role(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let role = required(&f, "role")?;
+    if !["player", "assistant", "owner"].contains(&role.as_str()) || (role == "owner" && !c.p.is_gm) {
+        return None;
+    }
+    let m = membership(c, ids[0], ids[1])?;
+    orm::update(&c.db, "world_memberships", m, &[("role", s(&role))])?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn member_clear_2fa(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    membership(c, ids[0], ids[1])?;
+    let user = row(&c.db, "SELECT * FROM users WHERE id = ?1", ids[1])?;
+    let version = user.get("session_version")?.as_i64()?;
+    orm::update(
+        &c.db,
+        "users",
+        ids[1],
+        &[("totp_enabled", Sql::Integer(0)), ("totp_secret", Sql::Null), ("totp_backup_codes_json", s("[]")), ("session_version", Sql::Integer(version + 1))],
+    )?;
+    c.db.execute("DELETE FROM trusted_devices WHERE user_id = ?1", [ids[1]]).ok()?;
+    redirect(&format!("/worlds/{}/edit?twofa_cleared={}", ids[0], ids[1]))
 }
