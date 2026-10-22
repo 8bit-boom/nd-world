@@ -345,16 +345,25 @@ def _sync_ollama_server_env() -> None:
         pass
 
 
+_static_thumbs_thread = None
+
+
 def _warm_static_thumbnails():
     """Background, best effort: thumbnails for the bundled map / race pictures and for map images (app/static_thumbs.py). The image build
     already made the bundled ones, so normally this only finds map images replaced since the last start."""
     from . import static_thumbs
+    global _static_thumbs_thread
+    # One at a time: the lifespan can run again while an earlier pass is still busy (the test client starts the app once per test), and
+    # each pass over the big bundled maps holds a lot of memory - several at once ran a CI runner out of memory.
+    if _static_thumbs_thread is not None and _static_thumbs_thread.is_alive():
+        return
     def run():
         try:
             static_thumbs.ensure(BASE_DIR / "static" / "maps", BASE_DIR / "static" / "races", UPLOADS_DIR / "maps")
         except Exception:
             logging.getLogger("nd.static_thumbs").debug("startup thumbnails failed", exc_info=True)
-    threading.Thread(target=run, name="nd-static-thumbs", daemon=True).start()
+    _static_thumbs_thread = threading.Thread(target=run, name="nd-static-thumbs", daemon=True)
+    _static_thumbs_thread.start()
 
 
 def _remake_thumbnails():

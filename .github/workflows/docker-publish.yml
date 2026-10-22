@@ -23,6 +23,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      # the bundled maps' thumbnails, made once (as the image build does) - otherwise every test worker's app makes them at startup,
+      # all at once, and the big map pictures run the runner out of memory
+      - name: Thumbnails of the bundled pictures
+        run: python -m app.static_thumbs
       - name: Run tests
         run: python -m pytest tests/ -q -n auto --dist loadgroup
 

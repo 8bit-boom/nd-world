@@ -29,6 +29,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       # pytest-xdist: one worker per core, each with its own database (tests/conftest.py)
+      # the bundled maps' thumbnails, made once (as the image build does) - otherwise every test worker's app makes them at startup,
+      # all at once, and the big map pictures run the runner out of memory
+      - name: Thumbnails of the bundled pictures
+        run: python -m app.static_thumbs
       - name: Run test suite
         run: python -m pytest -q -n auto --dist loadgroup
 
