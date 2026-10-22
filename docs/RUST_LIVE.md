@@ -39,8 +39,8 @@ character hub's writes, the schematic editor (writes, the GM's page, the players
 workspace) and the player cockpit. Each live write is checked to wake the same listeners as Python's.
 
 Still Python's, and why:
-- strict secrecy on a map (`app/map_strict.py`: what the party has seen, recorded on each view, and the masked background picture) - the
-  vision computation is a port of its own;
+- the masked background picture of a strict-secrecy map (`/maps/schematic/<slug>/bg.webp`: Pillow's LANCZOS resize and WebP encoder);
+  what the party has seen is computed and recorded by the gateway (`rust/nd-gateway/src/strict.rs`, batch 32);
 - the character hub page itself (`/characters/<id>`), with the other pages on the character-sheet engine (custom sheet systems' tracks),
   and anything a character on a custom sheet system touches (its Rest rules, vitals, combat tracks);
 - uploads that write files Python names and resizes (the map's background, embedded pictures, a player's own keepsake files);
@@ -85,4 +85,5 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `GET /maps/schematic/<slug>` (the GM's map editor: the fight pickers (`combat._candidates`), items, encounters, the linked fight's turn, parties, the gallery; a character on a custom system, a map of another world or an uploaded HTML map stays Python's) | P4-28 |
 | `GET /combat/<id>` for the GM (the tracker: `_full_state`, the fight pickers, the sessions; a player's read-only view and an encounter without a ruleset - settled and saved on the visit - stay Python's) | P4-29 |
 | `GET /combat/<id>` for a player (the read-only view: `_player_state` / `combat_state.player_view` - enemies as "Enemy A" with a word for their health, a hidden combatant left out; the Combat section must be open to the role) | P4-30 |
+| Strict secrecy on a map (`app/map_strict.py` ported: the vision sweep, the explored cells - recorded on each view as Python records them -, what a player is sent, the masked picture's address), in the players' view, view.json and the TV's data | P4-32 |
 | `GET /api/combat/<id>/state`, `/api/display/combat/<id>/state` (the tracker's and the TV's polling state: the GM's full state, everyone else's - and the TV's - player view) | P4-31 |

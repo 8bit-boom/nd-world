@@ -6,6 +6,7 @@
 pub mod boards;
 pub mod calendar;
 pub mod config;
+pub mod strict;
 pub mod idpages;
 pub mod edits;
 pub mod files;

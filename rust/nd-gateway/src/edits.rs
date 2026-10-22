@@ -2988,6 +2988,10 @@ fn pc_carry_limit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 /// Python's `bool(v)` for a JSON value
+pub fn py_truthy_pub(v: Option<&Value>) -> bool {
+    py_truthy(v)
+}
+
 fn py_truthy(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => false,
@@ -10798,9 +10802,7 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
     }
     // fog_payload
     let fog = clean_fog(sc_load(sc, "fog_json", false)?.as_object()?)?;
-    if fog["enabled"] == json!(true) && fog["strict"] == json!(true) {
-        return None;
-    }
+    let strict = fog["enabled"] == json!(true) && fog["strict"] == json!(true);
     let darkness = fog["darkness"].as_f64()?;
     let active = fog["enabled"] == json!(true) || darkness > 0.0;
     let mut walls = vec![];
@@ -10837,11 +10839,31 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
             lights.push(Value::Object(m));
         }
     }
+    let mut image_url = sc.get("image_url").and_then(|v| v.as_str()).map(str::to_string);
+    let mut visible = visible;
+    let mut explored = None;
+    if strict {
+        // strict secrecy (app/map_strict.py): only what the party has seen; the view records newly explored squares
+        let (view, record) = crate::strict::compute(sc, &elements, &fog)?;
+        if let Some(rec) = record {
+            let _ = db.execute("UPDATE schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
+        }
+        visible = crate::strict::filter_elements(visible, &view);
+        walls = crate::strict::filter_walls(walls, &view)?;
+        lights = crate::strict::filter_lights(lights, &view);
+        let runs = view.runs();
+        if image_url.as_deref().is_some_and(|u| !u.is_empty()) {
+            image_url = Some(crate::strict::masked_image_url(sc.get("slug")?.as_str()?, &runs["runs"]));
+        }
+        explored = Some(runs);
+    }
     let mut fog_part = Map::new();
     fog_part.insert("fog".into(), Value::Object(fog));
     fog_part.insert("walls".into(), Value::Array(walls));
     fog_part.insert("lights".into(), Value::Array(lights));
-    let image_url = sc.get("image_url").and_then(|v| v.as_str()).map(str::to_string);
+    if let Some(e) = explored {
+        fog_part.insert("explored".into(), e);
+    }
     // the viewer's own characters (a player's)
     let (mut own_pc_id, mut own_pc_ids, mut own_pc_currency) = (Value::Null, vec![], json!([]));
     if let Some((uid, false)) = viewer {

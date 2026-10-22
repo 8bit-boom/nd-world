@@ -1455,3 +1455,72 @@ def test_combat_tracker_page_is_pythons(client, seed):
                 json_served += b.headers.get("x-nd-served-by") == "gateway"
     assert json_served >= 6, json_served
     assert served >= 5, served  # the GM: three encounters; a player: the two fights' read-only views
+
+
+def test_strict_secrecy_map_views_are_pythons(client, seed):
+    """A map with strict secrecy: the server sends players only what the party has seen (app/map_strict.py) and records the explored
+    squares on each view. Each case is visited on two copies of the map - one through Python, one through the gateway - and the answers
+    and the recorded explored area must be the same."""
+    from .conftest import PLAYER_PASSWORD
+    from app.models import PlayerCharacter, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Scout")
+        db.add(pc)
+        db.commit()
+        pid = pc.id
+    finally:
+        db.close()
+    walls = [{"id": "w1", "pts": [[300, 0], [300, 500]], "kind": "wall"}, {"id": "d1", "pts": [[300, 500], [300, 600]], "kind": "door", "state": "open"},
+             {"id": "s1", "pts": [[0, 700], [800, 700]], "kind": "secret"}, {"id": "win", "pts": [[500, 0], [500, 300]], "kind": "window"}]
+    els = [{"id": "me", "type": "token", "pc_id": pid, "x": 150.5, "y": 220},
+           {"id": "orc", "type": "token", "x": 200, "y": 260}, {"id": "far", "type": "token", "x": 900, "y": 900},
+           {"id": "r1", "type": "rect", "x": 100, "y": 100, "w": 60, "h": -40}, {"id": "r2", "type": "rect", "x": 1500, "y": 1200, "w": 10, "h": 10},
+           {"id": "c1", "type": "circle", "cx": 400, "cy": 400, "rx": -30, "ry": 30}, {"id": "l1", "type": "aoe", "x1": 50, "y1": 50, "x2": 80, "y2": 90},
+           {"id": "p1", "type": "poly", "points": [[10, 10], [20, 30], [5, 40]]}, {"id": "p2", "type": "path", "pts": "nope"},
+           {"id": "t1", "type": "text", "x": 1700, "y": 100}, {"id": "i1", "type": "image", "x": 250, "y": 250, "w": 5, "h": 5, "rot": 30},
+           {"id": "h", "type": "rect", "x": 150, "y": 220, "w": 5, "h": 5, "hidden": True}]
+    lights = [{"id": "L1", "x": 160, "y": 230, "range": 3, "on": True}, {"id": "L2", "x": 1800, "y": 1400, "range": 3, "on": True}]
+    cases = [
+        ({"enabled": True, "strict": True, "range": 6, "darkness": 0.4, "epoch": 2}, None, "square", '{"cell_size": 40}', 2000, 1500),
+        ({"enabled": True, "strict": True, "epoch": 1}, {"epoch": 1, "cell": 50.0, "cols": 40, "rows": 30, "runs": [0, 5, 1200, 3, "x", 2]}, "none", "{}", 2000, 1500),
+        ({"enabled": True, "strict": True, "epoch": 3}, {"epoch": 2, "cell": 50.0, "cols": 40, "rows": 30, "runs": [0, 5]}, "none", "{}", 2000, 1500),
+        ({"enabled": True, "strict": True, "range": 2}, None, "hex", '{"cell_size": 15}', 9000, 7000),
+    ]
+    n = 0
+    served = 0
+    for fog, stored, gtype, gcfg, cw, chh in cases:
+        for who in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+            d = _signed_in(who[0], who[1], seed.world_a.slug)
+            for path in ("/view.json", "/view", "tv"):
+                if path == "tv" and who[0] != seed.gm.email:
+                    continue
+                answers, records = [], []
+                for side in (d, _via(d, base)):
+                    n += 1
+                    slug = f"strict-{n}"
+                    db = SessionLocal()
+                    try:
+                        db.add(Schematic(world_id=w, name="Strict", slug=slug, elements_json=json.dumps(els), walls_json=json.dumps(walls),
+                                         lights_json=json.dumps(lights), fog_json=json.dumps(fog), grid_type=gtype, grid_config_json=gcfg,
+                                         canvas_width=cw, canvas_height=chh, image_url="/uploads/schematics/s.png",
+                                         explored_json=json.dumps(stored) if stored else None))
+                        db.commit()
+                    finally:
+                        db.close()
+                    url = f"/display/map/{slug}/data.json" if path == "tv" else f"/maps/schematic/{slug}{path}"
+                    r = side.get(url)
+                    body = golden.normalise(r.headers.get("content-type", ""), r.content) if path == "/view" else r.text
+                    answers.append((r.status_code, body.replace(slug, "SLUG")))
+                    db = SessionLocal()
+                    try:
+                        records.append(db.query(Schematic).filter(Schematic.slug == slug).first().explored_json)
+                    finally:
+                        db.close()
+                    if side is not d:
+                        served += r.headers.get("x-nd-served-by") == "gateway"
+                assert answers[0] == answers[1], (fog, who[0], path, answers[0][1][:400], answers[1][1][:400])
+                assert records[0] == records[1], (fog, who[0], path, records)
+    assert served >= 15, served
