@@ -11,6 +11,31 @@ sys.path.insert(0, str(ROOT))
 OUT = ROOT / "rust" / "nd-render" / "data" / "app_data.json"
 
 
+def column_defaults() -> dict:
+    """{table: {column: {"default": value} | {"default": "__utcnow__"}, "onupdate": "__utcnow__"?}} - SQLAlchemy fills these in Python, not
+    the database, so a write the gateway makes has to fill them the same way (rust/nd-gateway/src/orm.rs)."""
+    from app.models import Base
+    out = {}
+    for t in Base.metadata.sorted_tables:
+        cols = {}
+        for c in t.columns:
+            entry = {}
+            for what in ("default", "onupdate"):
+                d = getattr(c, what)
+                if d is None:
+                    continue
+                if d.is_scalar:
+                    entry[what] = d.arg
+                elif d.is_callable and getattr(d.arg, "__name__", "") == "utcnow":
+                    entry[what] = "__utcnow__"
+                else:
+                    raise SystemExit(f"{t.name}.{c.name}: a {what} the gateway cannot reproduce")
+            if entry:
+                cols[c.name] = entry
+        out[t.name] = cols
+    return out
+
+
 def make() -> dict:
     from app import calendar_config, combat_rules, constants, nav_menus, view_prefs
     from app.routers import quests
@@ -21,6 +46,7 @@ def make() -> dict:
         # Python's own key order of those two dicts (templates iterate them; the file itself is written with sorted keys)
         "kind_icons_order": list(constants.KIND_ICONS), "subtypes_order": list(constants.SUBTYPES),
         "view_specs": {s: view_prefs.spec(s) for s in view_prefs.SECTIONS},
+        "column_defaults": column_defaults(),
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,
         "calendar_preset_labels": [[k, v["label"]] for k, v in calendar_config.CALENDAR_PRESETS.items()],

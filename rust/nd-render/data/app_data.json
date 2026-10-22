@@ -524,6 +524,1392 @@
    ]
   ]
  ],
+ "column_defaults": {
+  "ai_instructions": {
+   "applies_to_players": {
+    "default": false
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "enabled": {
+    "default": true
+   }
+  },
+  "api_tokens": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "label": {
+    "default": ""
+   }
+  },
+  "app_settings": {
+   "android_emulator_url": {
+    "default": ""
+   },
+   "animated_format": {
+    "default": "avif"
+   },
+   "dreamlands_enabled": {
+    "default": false
+   },
+   "editor_external_url": {
+    "default": ""
+   },
+   "hover_preview_delay_ms": {
+    "default": 5000
+   },
+   "hover_preview_enabled": {
+    "default": true
+   },
+   "hover_preview_hide_delay_ms": {
+    "default": 400
+   },
+   "hover_preview_max_height_px": {
+    "default": 420
+   },
+   "hover_preview_width_px": {
+    "default": 340
+   },
+   "id": {
+    "default": 1
+   },
+   "king_in_yellow_enabled": {
+    "default": false
+   },
+   "llm_api_key": {
+    "default": ""
+   },
+   "llm_model": {
+    "default": ""
+   },
+   "llm_url": {
+    "default": ""
+   },
+   "ollama_gpu_preset": {
+    "default": ""
+   },
+   "ollama_keep_alive": {
+    "default": ""
+   },
+   "ollama_model": {
+    "default": ""
+   },
+   "ollama_model_overrides_json": {
+    "default": "{}"
+   },
+   "ollama_server_env_json": {
+    "default": "{}"
+   },
+   "ollama_url": {
+    "default": ""
+   },
+   "ollama_use_mmap": {
+    "default": ""
+   },
+   "preview_format": {
+    "default": "avif"
+   },
+   "static_format": {
+    "default": "avif"
+   },
+   "swarmui_external_url": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "audio_albums": {
+   "created_at": {
+    "default": "__utcnow__"
+   }
+  },
+  "audio_clips": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "subtitles_vtt": {
+    "default": ""
+   },
+   "transcript": {
+    "default": ""
+   },
+   "visible_to_players": {
+    "default": true
+   }
+  },
+  "audio_jobs": {
+   "assist_params_json": {
+    "default": ""
+   },
+   "attachment_url": {
+    "default": ""
+   },
+   "audience": {
+    "default": ""
+   },
+   "audio_path": {
+    "default": ""
+   },
+   "checkpoint_json": {
+    "default": ""
+   },
+   "condense_strictness": {
+    "default": "guideline"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "delete_after": {
+    "default": true
+   },
+   "error": {
+    "default": ""
+   },
+   "expanded_thinking": {
+    "default": false
+   },
+   "filename": {
+    "default": ""
+   },
+   "fit_context": {
+    "default": false
+   },
+   "pending_facts_json": {
+    "default": "[]"
+   },
+   "recap": {
+    "default": ""
+   },
+   "result_json": {
+    "default": ""
+   },
+   "resumed_count": {
+    "default": 0
+   },
+   "status": {
+    "default": "pending"
+   },
+   "think_fallback": {
+    "default": false
+   },
+   "think_rejected": {
+    "default": false
+   },
+   "think_token_fallback": {
+    "default": false
+   },
+   "transcript": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "use_rag": {
+    "default": false
+   }
+  },
+  "calendar_day_icons": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "label": {
+    "default": ""
+   }
+  },
+  "calendar_events": {
+   "color": {
+    "default": "#4488ff"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "notes": {
+    "default": ""
+   }
+  },
+  "character_companions": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "hp": {
+    "default": 0
+   },
+   "hp_max": {
+    "default": 0
+   },
+   "kind": {
+    "default": "familiar"
+   },
+   "notes": {
+    "default": ""
+   }
+  },
+  "character_journal_entries": {
+   "body": {
+    "default": ""
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "kind": {
+    "default": "journal"
+   },
+   "status": {
+    "default": ""
+   },
+   "title": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "character_keepsakes": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "own": {
+    "default": false
+   },
+   "saved_by": {
+    "default": "player"
+   },
+   "text": {
+    "default": ""
+   },
+   "url": {
+    "default": ""
+   }
+  },
+  "character_log": {
+   "actor": {
+    "default": ""
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "kind": {
+    "default": ""
+   },
+   "text": {
+    "default": ""
+   },
+   "undo_json": {
+    "default": "{}"
+   },
+   "undone": {
+    "default": false
+   }
+  },
+  "character_prefs": {
+   "prefs_json": {
+    "default": "{}"
+   }
+  },
+  "character_shares": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "revoked": {
+    "default": false
+   }
+  },
+  "character_sheets": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "data_json": {
+    "default": "{}"
+   },
+   "name": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "chat_jobs": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "error": {
+    "default": ""
+   },
+   "messages_json": {
+    "default": "[]"
+   },
+   "options_json": {
+    "default": "{}"
+   },
+   "prompt": {
+    "default": ""
+   },
+   "result": {
+    "default": ""
+   },
+   "resumed_count": {
+    "default": 0
+   },
+   "status": {
+    "default": "pending"
+   },
+   "system": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "chat_sessions": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "messages_json": {
+    "default": "[]"
+   },
+   "surface": {
+    "default": "chat"
+   },
+   "title": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "combat_sessions": {
+   "active_idx": {
+    "default": 0
+   },
+   "combatants_json": {
+    "default": "[]"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "is_template": {
+    "default": false
+   },
+   "log_json": {
+    "default": "[]"
+   },
+   "rev": {
+    "default": 0
+   },
+   "round_num": {
+    "default": 1
+   },
+   "ruleset": {
+    "default": ""
+   },
+   "turn_json": {
+    "default": "{}"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "dice_rolls": {
+   "breakdown": {
+    "default": "[]"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "label": {
+    "default": ""
+   },
+   "total": {
+    "default": 0
+   },
+   "user_name": {
+    "default": ""
+   }
+  },
+  "entities": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "custom_fields_json": {
+    "default": "{}"
+   },
+   "rag_priority": {
+    "default": false
+   },
+   "roleplay_personality": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "visible_to_players": {
+    "default": true
+   },
+   "world_id": {
+    "default": 1
+   }
+  },
+  "entity_links": {},
+  "entity_notes": {
+   "content_is_html": {
+    "default": false
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "visible_to_players": {
+    "default": false
+   }
+  },
+  "entity_player_access": {},
+  "entity_relations": {
+   "relation": {
+    "default": "related"
+   }
+  },
+  "entity_templates": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "fields_json": {
+    "default": "[]"
+   },
+   "is_builtin": {
+    "default": false
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "entity_voice_hints": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "instructions": {
+    "default": ""
+   },
+   "model": {
+    "default": ""
+   }
+  },
+  "facts": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "visible_to_players": {
+    "default": true
+   }
+  },
+  "game_sessions": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "live_audio_files_json": {
+    "default": ""
+   },
+   "live_transcript": {
+    "default": ""
+   },
+   "live_transcript_segments_json": {
+    "default": ""
+   },
+   "loot_json": {
+    "default": "[]"
+   },
+   "npcs_json": {
+    "default": "[]"
+   },
+   "player_summary": {
+    "default": ""
+   },
+   "player_summary_published": {
+    "default": false
+   },
+   "prep_json": {
+    "default": "[]"
+   },
+   "recap_audio_json": {
+    "default": "[]"
+   },
+   "recap_media_json": {
+    "default": "[]"
+   },
+   "session_num": {
+    "default": 1
+   },
+   "summary": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "xp_awarded": {
+    "default": 0
+   }
+  },
+  "image_albums": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "image_urls_json": {
+    "default": "[]"
+   }
+  },
+  "image_jobs": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "error": {
+    "default": ""
+   },
+   "params_json": {
+    "default": "{}"
+   },
+   "prompt": {
+    "default": ""
+   },
+   "result_urls_json": {
+    "default": "[]"
+   },
+   "resumed_count": {
+    "default": 0
+   },
+   "status": {
+    "default": "pending"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "invest_boards": {
+   "canvas_bg": {
+    "default": "cork"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "edges_json": {
+    "default": "[]"
+   },
+   "nodes_json": {
+    "default": "[]"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "world_id": {
+    "default": 1
+   }
+  },
+  "invite_codes": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "revoked": {
+    "default": false
+   },
+   "uses_count": {
+    "default": 0
+   }
+  },
+  "map_overlays": {
+   "custom_markers_json": {
+    "default": "[]"
+   },
+   "custom_regions_json": {
+    "default": "[]"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "map_props": {
+   "cells_h": {
+    "default": 1.0
+   },
+   "cells_w": {
+    "default": 1.0
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "kind": {
+    "default": "raster"
+   },
+   "px_h": {
+    "default": 0
+   },
+   "px_w": {
+    "default": 0
+   },
+   "tags": {
+    "default": ""
+   }
+  },
+  "media_rename_log": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "new_name": {
+    "default": ""
+   },
+   "old_name": {
+    "default": ""
+   }
+  },
+  "media_rename_runs": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "done": {
+    "default": 0
+   },
+   "error": {
+    "default": ""
+   },
+   "errors_json": {
+    "default": "[]"
+   },
+   "items_json": {
+    "default": "[]"
+   },
+   "options_json": {
+    "default": "{}"
+   },
+   "results_json": {
+    "default": "[]"
+   },
+   "resumed_count": {
+    "default": 0
+   },
+   "status": {
+    "default": "pending"
+   },
+   "total": {
+    "default": 0
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "media_titles": {
+   "updated_at": {
+    "default": "__utcnow__"
+   }
+  },
+  "page_albums": {
+   "created_at": {
+    "default": "__utcnow__"
+   }
+  },
+  "page_docs": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "is_character_sheet_template": {
+    "default": false
+   },
+   "visible_to_players": {
+    "default": true
+   }
+  },
+  "parties": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "goals": {
+    "default": ""
+   },
+   "location_json": {
+    "default": "{}"
+   },
+   "loot_json": {
+    "default": "[]"
+   },
+   "member_entity_ids_json": {
+    "default": "[]"
+   },
+   "member_pc_ids_json": {
+    "default": "[]"
+   },
+   "notes": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "xp_json": {
+    "default": "[]"
+   }
+  },
+  "player_characters": {
+   "age": {
+    "default": ""
+   },
+   "alignment": {
+    "default": ""
+   },
+   "app_extra_json": {
+    "default": "{}"
+   },
+   "armor_class": {
+    "default": 10
+   },
+   "armor_profs": {
+    "default": ""
+   },
+   "attacks_json": {
+    "default": "[]"
+   },
+   "background": {
+    "default": ""
+   },
+   "backstory": {
+    "default": ""
+   },
+   "bonds": {
+    "default": ""
+   },
+   "cha_score": {
+    "default": 10
+   },
+   "char_class": {
+    "default": ""
+   },
+   "con_score": {
+    "default": 10
+   },
+   "conditions_json": {
+    "default": "[]"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "currency_cp": {
+    "default": 0
+   },
+   "currency_ep": {
+    "default": 0
+   },
+   "currency_gp": {
+    "default": 0
+   },
+   "currency_json": {
+    "default": "[]"
+   },
+   "currency_pp": {
+    "default": 0
+   },
+   "currency_sp": {
+    "default": 0
+   },
+   "current_hp": {
+    "default": 10
+   },
+   "custom_fields_json": {
+    "default": "{}"
+   },
+   "cyberware_json": {
+    "default": "[]"
+   },
+   "death_saves_failure": {
+    "default": 0
+   },
+   "death_saves_success": {
+    "default": 0
+   },
+   "dex_score": {
+    "default": 10
+   },
+   "equipment_json": {
+    "default": "[]"
+   },
+   "eyes": {
+    "default": ""
+   },
+   "feats_json": {
+    "default": "[]"
+   },
+   "flaws": {
+    "default": ""
+   },
+   "hair": {
+    "default": ""
+   },
+   "height": {
+    "default": ""
+   },
+   "hit_dice": {
+    "default": "1d8"
+   },
+   "ideals": {
+    "default": ""
+   },
+   "int_score": {
+    "default": 10
+   },
+   "languages": {
+    "default": ""
+   },
+   "level": {
+    "default": 1
+   },
+   "major_edge": {
+    "default": ""
+   },
+   "major_edge_count": {
+    "default": 0
+   },
+   "max_hp": {
+    "default": 10
+   },
+   "minor_edge": {
+    "default": ""
+   },
+   "minor_edge_count": {
+    "default": 0
+   },
+   "mp_current": {
+    "default": 0
+   },
+   "notes": {
+    "default": ""
+   },
+   "personality_traits": {
+    "default": ""
+   },
+   "player_name": {
+    "default": ""
+   },
+   "portrait_url": {
+    "default": ""
+   },
+   "pp_current": {
+    "default": 0
+   },
+   "profession_id": {
+    "default": ""
+   },
+   "race": {
+    "default": ""
+   },
+   "race_id": {
+    "default": ""
+   },
+   "saving_throw_profs": {
+    "default": "[]"
+   },
+   "secondary_resource_current": {
+    "default": 0
+   },
+   "secondary_resource_max": {
+    "default": 0
+   },
+   "secondary_resource_name": {
+    "default": ""
+   },
+   "shock_current": {
+    "default": 0
+   },
+   "shock_max": {
+    "default": 0
+   },
+   "skill_expertise": {
+    "default": "[]"
+   },
+   "skill_profs": {
+    "default": "[]"
+   },
+   "skills_json": {
+    "default": "[]"
+   },
+   "skin": {
+    "default": ""
+   },
+   "speed": {
+    "default": 30
+   },
+   "stats_json": {
+    "default": "[]"
+   },
+   "str_score": {
+    "default": 10
+   },
+   "subclass": {
+    "default": ""
+   },
+   "temp_hp": {
+    "default": 0
+   },
+   "tool_profs": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "weapon_profs": {
+    "default": ""
+   },
+   "weight_app": {
+    "default": ""
+   },
+   "wis_score": {
+    "default": 10
+   },
+   "world_id": {
+    "default": 1
+   },
+   "xp": {
+    "default": 0
+   }
+  },
+  "private_notes": {
+   "content": {
+    "default": ""
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "title": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "prompt_presets": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "icon": {
+    "default": ""
+   },
+   "negative": {
+    "default": ""
+   },
+   "params_json": {
+    "default": ""
+   },
+   "sort_order": {
+    "default": 0
+   },
+   "text": {
+    "default": ""
+   }
+  },
+  "quests": {
+   "body": {
+    "default": ""
+   },
+   "category": {
+    "default": "main"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "linked_entities_json": {
+    "default": "[]"
+   },
+   "status": {
+    "default": "active"
+   },
+   "summary": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "visible_to_players": {
+    "default": true
+   }
+  },
+  "random_tables": {
+   "category": {
+    "default": "general"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "entries_json": {
+    "default": "[]"
+   },
+   "is_builtin": {
+    "default": false
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "saved_views": {
+   "prefs_json": {
+    "default": "{}"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "schematics": {
+   "canvas_bg": {
+    "default": "dark"
+   },
+   "canvas_height": {
+    "default": 1500
+   },
+   "canvas_width": {
+    "default": 2000
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "elements_json": {
+    "default": "[]"
+   },
+   "explored_json": {
+    "default": "{}"
+   },
+   "fog_json": {
+    "default": "{}"
+   },
+   "grid_config_json": {
+    "default": "{}"
+   },
+   "grid_type": {
+    "default": "none"
+   },
+   "is_html": {
+    "default": false
+   },
+   "lights_json": {
+    "default": "[]"
+   },
+   "rooms_json": {
+    "default": "{}"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   },
+   "walls_json": {
+    "default": "[]"
+   },
+   "world_id": {
+    "default": 1
+   }
+  },
+  "session_plan_slots": {
+   "created_at": {
+    "default": "__utcnow__"
+   }
+  },
+  "session_plan_votes": {
+   "updated_at": {
+    "default": "__utcnow__"
+   }
+  },
+  "session_plans": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "duration_min": {
+    "default": 180
+   },
+   "location": {
+    "default": ""
+   },
+   "notes": {
+    "default": ""
+   },
+   "status": {
+    "default": "open"
+   }
+  },
+  "shared_state": {
+   "n": {
+    "default": 0
+   }
+  },
+  "sheet_templates": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "fields_json": {
+    "default": "[]"
+   },
+   "is_builtin": {
+    "default": false
+   },
+   "rules_md": {
+    "default": ""
+   },
+   "sheet_mode": {
+    "default": "nd"
+   },
+   "system_json": {
+    "default": "{}"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "starred_images": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "model": {
+    "default": ""
+   },
+   "negative": {
+    "default": ""
+   },
+   "params_json": {
+    "default": "{}"
+   },
+   "prompt": {
+    "default": ""
+   },
+   "seed": {
+    "default": -1
+   }
+  },
+  "trusted_devices": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "label": {
+    "default": ""
+   }
+  },
+  "user_view_prefs": {
+   "prefs_json": {
+    "default": "{}"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "users": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "display_name": {
+    "default": ""
+   },
+   "is_gm": {
+    "default": false
+   },
+   "session_version": {
+    "default": 1
+   },
+   "totp_backup_codes_json": {
+    "default": "[]"
+   },
+   "totp_enabled": {
+    "default": false
+   }
+  },
+  "vault_chunks": {
+   "heading": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "video_albums": {
+   "created_at": {
+    "default": "__utcnow__"
+   }
+  },
+  "video_clips": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "description": {
+    "default": ""
+   },
+   "subtitles_vtt": {
+    "default": ""
+   },
+   "transcript": {
+    "default": ""
+   },
+   "visible_to_players": {
+    "default": true
+   }
+  },
+  "video_jobs": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "error": {
+    "default": ""
+   },
+   "params_json": {
+    "default": "{}"
+   },
+   "prompt": {
+    "default": ""
+   },
+   "resumed_count": {
+    "default": 0
+   },
+   "status": {
+    "default": "pending"
+   },
+   "studio_video_id": {
+    "default": ""
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "world_calendars": {
+   "config_json": {
+    "default": "{}"
+   },
+   "updated_at": {
+    "default": "__utcnow__",
+    "onupdate": "__utcnow__"
+   }
+  },
+  "world_handouts": {
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "label": {
+    "default": ""
+   }
+  },
+  "world_memberships": {
+   "joined_at": {
+    "default": "__utcnow__"
+   },
+   "role": {
+    "default": "player"
+   }
+  },
+  "worlds": {
+   "accent": {
+    "default": "#00f0ff"
+   },
+   "created_at": {
+    "default": "__utcnow__"
+   },
+   "custom_kinds_json": {
+    "default": "[]"
+   },
+   "font_size": {
+    "default": 100
+   },
+   "hero_style": {
+    "default": "home"
+   },
+   "home_hidden_kinds_json": {
+    "default": "[]"
+   },
+   "home_pinned_tiles_json": {
+    "default": "[]"
+   },
+   "home_sections_json": {
+    "default": "[]"
+   },
+   "max_characters_per_player": {
+    "default": 1
+   },
+   "now_playing_loop": {
+    "default": false
+   },
+   "now_playing_version": {
+    "default": 0
+   },
+   "players_can_ask_ai": {
+    "default": false
+   },
+   "players_can_download_entities": {
+    "default": false
+   },
+   "players_can_download_rules": {
+    "default": false
+   },
+   "players_can_use_ai_chat": {
+    "default": false
+   },
+   "players_can_use_image_gen": {
+    "default": false
+   },
+   "players_can_view_world_summary": {
+    "default": false
+   },
+   "players_see_party": {
+    "default": true
+   },
+   "rules_json": {
+    "default": ""
+   },
+   "section_access_json": {
+    "default": "{\"maps\":{\"player\":\"read\",\"assistant\":\"edit\"},\"calendar\":{\"player\":\"none\",\"assistant\":\"edit\"},\"quests\":{\"player\":\"none\",\"assistant\":\"edit\"},\"parties\":{\"player\":\"none\",\"assistant\":\"edit\"},\"tables\":{\"player\":\"none\",\"assistant\":\"edit\"}}"
+   },
+   "spotlight_version": {
+    "default": 0
+   },
+   "video_convert_enabled": {
+    "default": false
+   }
+  }
+ },
  "combat_rule_labels": [
   [
    "generic",

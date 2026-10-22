@@ -39,6 +39,26 @@ plus `X-Nd-Served-By: gateway`. SQLite is opened per request with `busy_timeout=
 4 cores, 16 clients rolling `4d6+2`: Python 66 rolls/s (p50 200 ms), gateway 366 rolls/s (p50 39 ms) - `scripts/bench_dice.py`. The benchmark client
 shares the machine, so read it as "several times faster", not as a limit.
 
+## Phase 3: the form and JSON writes (`ND_RUST_ROUTES=...,writes`)
+
+`rust/nd-gateway/src/edits.rs` holds the writes, one function per Python handler, routed by path pattern. The shared parts:
+
+| Part | What it reproduces |
+|---|---|
+| `crate::layout::build(.., "POST", ..)` | who is asking, the active world, auth_gate's allowlists for a POST |
+| `crate::form` | Starlette's urlencoded form (last value of a repeated name wins); a body Starlette could read differently (non-ASCII bytes, `;`, non-UTF-8 escapes) is Python's. `py_int`: Python's `int()` only for plain digits |
+| `crate::orm` | rows as SQLAlchemy writes them: every model's Python-side `default=` on INSERT and `onupdate=` on UPDATE (copied from the models into `app_data.json` by `scripts/gen_rust_data.py`); no UPDATE - so no `updated_at` bump - when nothing changed; a bulk `query.update()` sets `onupdate` columns too (both checked against SQLAlchemy itself) |
+| `orm::touch` | `live.touch(world)` where the Python handler calls it |
+| answers | Starlette's 303 redirect, FastAPI's compact JSON |
+
+A row of another world than the viewer's active one is left to Python (its cross-world access rule is not ported). Checked by
+`tests/test_gateway_writes.py`: each case runs once through Python and once through the gateway on two identical rows, for a GM, a player and a
+player of another world, and compares the answers and every column afterwards (timestamps as "changed or not").
+
+| Routes | Batch |
+|---|---|
+| `POST /quests/new`, `/quests/<id>/edit`, `/quests/<id>/delete`, `/api/quests/<id>/status` | 1 |
+
 ## Not done (phase 3's exit criteria are NOT met)
 
 Phase 3 is the forms and JSON writes for entities, sessions, facts, quests, parties, characters, galleries, audio / video libraries, chunked
