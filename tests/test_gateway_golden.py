@@ -1444,9 +1444,14 @@ def test_combat_tracker_page_is_pythons(client, seed):
         ids = [f.id for f in fights]
     finally:
         db.close()
-    served = 0
+    served = json_served = 0
     for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
         d = _signed_in(email, pw, world)
         for i in ids[:3] + ids[4:] + [ids[3], 999999]:
             served += _same_page(d, _via(d, base), f"/combat/{i}", email)
+            for url in (f"/api/combat/{i}/state", f"/api/display/combat/{i}/state"):
+                a, b = d.get(url), _via(d, base).get(url)
+                assert (a.status_code, a.content) == (b.status_code, b.content), (email, url, a.text[:300], b.text[:300])
+                json_served += b.headers.get("x-nd-served-by") == "gateway"
+    assert json_served >= 6, json_served
     assert served >= 5, served  # the GM: three encounters; a player: the two fights' read-only views

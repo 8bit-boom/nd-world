@@ -1565,3 +1565,36 @@ pub fn combat_tracker(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
     c.insert("combat".into(), Value::Object(cs));
     render_with(pages, "combat/detail.html", p.ctx, headers)
 }
+
+/// `GET /api/combat/<id>/state` (the GM's full state, a player's sanitized one) and `/api/display/combat/<id>/state` (always the player
+/// view - the table's TV), for an encounter of the active world
+pub fn combat_state_json(_pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::Value;
+    let path = uri.path();
+    let (tv, rest) = match path.strip_prefix("/api/display/combat/") {
+        Some(r) => (true, r),
+        None => (false, path.strip_prefix("/api/combat/")?),
+    };
+    let id = rest.strip_suffix("/state").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()))?;
+    let id: i64 = id.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if tv && !p.is_gm {
+        return None;
+    }
+    let w = p.world.as_ref()?;
+    let cs = db.query_row("SELECT * FROM combat_sessions WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok()?;
+    let template = cs.get("is_template").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    if cs.get("world_id")?.as_i64()? != w.get("id")?.as_i64()? || (template && (tv || !p.is_gm)) {
+        return None;
+    }
+    if !p.is_gm {
+        let level = nd_perm::sections::section_level(false, p.role.as_deref(), w.get("section_access_json").and_then(|v| v.as_str()), w.get("custom_kinds_json").and_then(|v| v.as_str()), "combat")?;
+        if level == "none" {
+            return None;
+        }
+    }
+    let state: Value = if p.is_gm && !tv { crate::edits::combat_full_state(&cs)? } else { crate::edits::combat_player_state(&cs)? };
+    crate::edits::json_response(&state)
+}
