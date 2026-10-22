@@ -679,3 +679,105 @@ def test_entity_field_rename_and_folder_writes_are_pythons(client, seed):
                 _same_rows(_row("entities", group_a[i]), _row("entities", group_b[i]), before[i], before[2 + i])
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 10, served   # the GM's
+
+
+def _access(entity_id):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        return sorted(r[0] for r in db.execute(text("SELECT user_id FROM entity_player_access WHERE entity_id = :e"), {"e": entity_id}))
+    finally:
+        db.close()
+
+
+def _entity_forms(seed):
+    p = str(seed.player_a.id)
+    return [
+        [("kind", "npc"), ("name", " Mara <m> "), ("subtype", "merchant"), ("folder", "  Town  "), ("tags", "a,b"), ("aliases", " Mar, mar ,, M2,  "),
+         ("roleplay_personality", "  gruff  "), ("image_url", " https://x/y.png "), ("summary", "s"), ("body", "b\r\nline"),
+         ("visibility_mode", "players"), ("allowed_player_ids", p), ("allowed_player_ids", p), ("allowed_player_ids", "99999"),
+         ("template_id", "3"), ("custom_fields_json", '{"hp": 5}'), ("rag_priority", "on")],
+        [("kind", "location"), ("name", "Keep"), ("visibility_mode", "gm"), ("allowed_player_ids", p), ("template_id", "x"), ("custom_fields_json", "{bad")],
+        [("kind", "item"), ("name", "Ünïcode ✓"), ("visibility_mode", ""), ("custom_fields_json", ""), ("rag_priority", ""), ("remove_image", "on")],
+        [("kind", "npc"), ("name", "")],
+        [("name", "x")],
+        [("kind", "npc"), ("name", "x"), ("allowed_player_ids", "x")],
+        [("kind", "npc"), ("name", "x"), ("custom_fields_json", "NaN")],
+        [("kind", "npc"), ("name", "x"), ("aliases", "Ärger, ärger")],
+        [("kind", "npc"), ("name", "x"), ("save_and_new", "1"), ("folder", " A/b c&d ")],
+    ]
+
+
+def _send(client, url, form, how):
+    """POST the entity form urlencoded, or as a browser sends it: multipart with an empty image_file part (no file chosen - httpx would
+    leave filename="" out), or with a real file ("upload", which is Python's)."""
+    if how == "urlencoded":
+        return client.post(url, content=urlencode(form), headers={"content-type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+    b = "----WebKitFormBoundaryNd7x"
+    parts = [f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n'.encode() + v.encode() + b"\r\n" for k, v in form]
+    fname, data = ("", b"") if how == "multipart" else ("a.png", b"\x89PNG")
+    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="image_file"; filename="{fname}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
+                 + data + b"\r\n")
+    body = b"".join(parts) + f"--{b}--\r\n".encode()
+    return client.post(url, content=body, headers={"content-type": f"multipart/form-data; boundary={b}"}, follow_redirects=False)
+
+
+def test_entity_create_edit_duplicate_delete_are_pythons(client, seed):
+    base = str(client.base_url)
+    served = 0
+    [other] = _entities(seed.world_b.id, 1)
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in _entity_forms(seed):
+            for how in ("urlencoded", "multipart", "upload"):
+                if how == "upload" and form[0][0] != "kind":
+                    continue
+                ra = _send(d, "/new", form, how)
+                na = _newest("entities")
+                rb = _send(via, "/new", form, how)
+                nb = _newest("entities")
+                created = ra.status_code == 303 and ra.headers["location"].startswith("/entity/")
+                _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+                if created:
+                    _same_rows(na, nb, ignore=("image_url",) if how == "upload" else ())
+                    assert _access(na["id"]) == _access(nb["id"])
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+                ea, eb = _entities(seed.world_a.id, 2)
+                for e in (ea, eb):
+                    d.post(f"/entity/{e}/edit", data={"kind": "npc", "name": "E", "image_url": "/uploads/keep.png", "visibility_mode": "players",
+                                                      "allowed_player_ids": str(seed.player_b.id)})
+                before = [_row("entities", ea), _row("entities", eb)]
+                ra = _send(d, f"/entity/{ea}/edit", form, how)
+                rb = _send(via, f"/entity/{eb}/edit", form, how)
+                _same_answer(ra, rb, ea, eb)
+                _same_rows(_row("entities", ea), _row("entities", eb), before[0], before[1], ignore=("image_url",) if how == "upload" else ())
+                assert _access(ea) == _access(eb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        ra = _send(d, f"/entity/{other}/edit", _entity_forms(seed)[1], "urlencoded")
+        rb = _send(via, f"/entity/{other}/edit", _entity_forms(seed)[1], "urlencoded")
+        _same_answer(ra, rb)
+        # duplicate and delete (with links, notes and access around it)
+        ea, eb = _entities(seed.world_a.id, 2)
+        [t] = _entities(seed.world_a.id, 1)
+        for e in (ea, eb):
+            d.post(f"/entity/{e}/edit", data={"kind": "npc", "name": "Gob", "aliases": "g", "custom_fields_json": '{"a": 1}', "visibility_mode": "players",
+                                              "allowed_player_ids": str(seed.player_a.id), "rag_priority": "on", "roleplay_personality": "rp"})
+            d.post(f"/entity/{e}/link/{t}"); d.post(f"/entity/{t}/link/{e}"); d.post(f"/entity/{e}/notes/new", data={"content": "n"})
+        ra = d.post(f"/entity/{ea}/duplicate", follow_redirects=False)
+        na = _newest("entities")
+        rb = via.post(f"/entity/{eb}/duplicate", follow_redirects=False)
+        nb = _newest("entities")
+        _same_answer(ra, rb, na["id"], nb["id"])
+        _same_rows(na, nb)
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+        for target_a, target_b in ((other, other), (999999, 999999), (ea, eb)):
+            ra = d.post(f"/entity/{target_a}/delete", follow_redirects=False)
+            rb = via.post(f"/entity/{target_b}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        assert _row("entities", ea) is None and _row("entities", eb) is None or (_row("entities", ea) is not None and _row("entities", eb) is not None)
+        assert _links(t) == 0 or email != seed.gm.email
+        assert _access(ea) == _access(eb) and _newest_note(ea) == _newest_note(eb) == None or email != seed.gm.email
+    assert served >= 12, served   # the GM's; invalid custom_fields_json, non-ASCII aliases and uploads are Python's

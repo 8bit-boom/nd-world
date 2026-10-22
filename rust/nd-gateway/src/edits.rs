@@ -14,7 +14,7 @@ use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
 use crate::config::Config;
-use crate::form::{content_type, py_int, Form};
+use crate::form::{content_type, parse_multipart, py_int, Form};
 use crate::layout::PageCtx;
 use crate::orm;
 use crate::proxy::Proxy;
@@ -159,6 +159,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/field", entity_field),
     ("/api/entity/{}/rename", entity_rename),
     ("/api/entities/bulk-folder", bulk_folder),
+    ("/new", entity_new),
+    ("/entity/{}/edit", entity_edit),
+    ("/entity/{}/duplicate", entity_duplicate),
+    ("/entity/{}/delete", entity_delete),
     ("/entity/{}/link/{}", entity_link),
     ("/entity/{}/unlink/{}", entity_unlink),
     ("/entity/{}/notes/new", note_add),
@@ -1151,4 +1155,180 @@ fn bulk_folder(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
         orm::update(&c.db, "entities", *id, &[("folder", folder.clone())])?;
     }
     json_response(&json!({"updated": hit.len()}))
+}
+
+/// `urllib.parse.quote(s)` (safe="/")
+const QUOTE: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC.remove(b'/').remove(b'_').remove(b'.').remove(b'-').remove(b'~');
+
+/// The entity form (multipart from the browser, or urlencoded): its fields, when the only file part is an empty `image_file` (no file
+/// chosen) - an upload is Python's
+fn entity_form(c: &Ctx) -> Option<Form> {
+    if content_type(c.headers) == "multipart/form-data" {
+        let (f, files) = parse_multipart(c.headers, c.body)?;
+        if files.iter().any(|p| p.name != "image_file" || !p.filename.is_empty() || p.len != 0) || f.has("image_file") {
+            return None;
+        }
+        return Some(f);
+    }
+    c.form()
+}
+
+/// A FastAPI `Form(default)` text: an empty value counts as missing
+fn opt<'a>(f: &'a Form, name: &str, default: &'a str) -> &'a str {
+    f.get(name).filter(|v| !v.is_empty()).unwrap_or(default)
+}
+
+/// `_normalize_aliases`; None when an alias is not ASCII (its casefold() is Python's)
+fn normalize_aliases(raw: &str) -> Option<Option<String>> {
+    let (mut seen, mut out): (Vec<String>, Vec<String>) = (vec![], vec![]);
+    for part in raw.split(',') {
+        let alias = strip(part);
+        if alias.is_empty() {
+            continue;
+        }
+        if !alias.is_ascii() {
+            return None;
+        }
+        let alias = take_chars(&alias, 64);
+        let key = alias.to_ascii_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(alias);
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    Some((!out.is_empty()).then(|| out.join(", ")))
+}
+
+/// The columns the create / edit forms set, as Python sets them, and the players for `_sync_entity_access`
+struct EntityFields {
+    cols: Vec<(&'static str, Sql)>,
+    players: Vec<i64>,
+    image_url: String,
+}
+
+fn entity_fields(f: &Form) -> Option<EntityFields> {
+    let (kind, name) = (required(f, "kind")?, required(f, "name")?);
+    // List[int] = Form([]): every value must be an int to pydantic (only plain digits here)
+    let ids: Vec<i64> = f.all("allowed_player_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
+    let template = match opt(f, "template_id", "") {
+        "" => Sql::Null,
+        v if v.bytes().all(|b| b.is_ascii_digit()) && v.len() <= 15 => Sql::Integer(v.parse().ok()?),
+        v if v.is_ascii() => Sql::Null,
+        _ => return None, // str.isdigit() knows other scripts' digits
+    };
+    let custom = opt(f, "custom_fields_json", "{}");
+    if serde_json::from_str::<Value>(custom).is_err() {
+        return None; // json.loads accepts more (NaN, ...) than serde: Python decides
+    }
+    let visibility = opt(f, "visibility_mode", "everyone");
+    let or_null = |v: &str| if v.is_empty() { Sql::Null } else { s(v) };
+    let folder = strip(opt(f, "folder", ""));
+    let cols = vec![
+        ("kind", s(&kind)),
+        ("subtype", or_null(opt(f, "subtype", ""))),
+        ("folder", or_null(&folder)),
+        ("name", s(&name)),
+        ("tags", or_null(opt(f, "tags", ""))),
+        ("aliases", normalize_aliases(opt(f, "aliases", ""))?.map_or(Sql::Null, |a| s(&a))),
+        ("roleplay_personality", s(&take_chars(&strip(opt(f, "roleplay_personality", "")), 4000))),
+        ("summary", or_null(opt(f, "summary", ""))),
+        ("body", or_null(opt(f, "body", ""))),
+        ("visible_to_players", Sql::Integer((visibility == "everyone") as i64)),
+        ("rag_priority", Sql::Integer(flag_param(f, "rag_priority"))),
+        ("template_id", template),
+        ("custom_fields_json", s(custom)),
+    ];
+    let mut players = vec![];
+    if visibility == "players" {
+        for id in ids {
+            if !players.contains(&id) {
+                players.push(id);
+            }
+        }
+    }
+    Some(EntityFields { cols, players, image_url: strip(opt(f, "image_url", "")) })
+}
+
+/// `_sync_entity_access`
+fn sync_access(db: &Connection, entity_id: i64, players: &[i64]) -> Option<()> {
+    db.execute("DELETE FROM entity_player_access WHERE entity_id = ?1", [entity_id]).ok()?;
+    for uid in players {
+        db.execute("INSERT INTO entity_player_access (entity_id, user_id) VALUES (?1, ?2)", [entity_id, *uid]).ok()?;
+    }
+    Some(())
+}
+
+fn entity_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let f = entity_form(c)?;
+    let world = c.world_id()?;
+    let slug = c.p.world.as_ref()?.get("slug")?.as_str()?.to_string();
+    let e = entity_fields(&f)?;
+    let mut cols = e.cols;
+    cols.push(("world_id", Sql::Integer(world)));
+    cols.push(("image_url", if e.image_url.is_empty() { Sql::Null } else { s(&e.image_url) }));
+    let id = orm::insert(&c.db, "entities", &cols)?;
+    sync_access(&c.db, id, &e.players)?;
+    if !opt(&f, "save_and_new", "").is_empty() {
+        let q = |v: &str| utf8_percent_encode(v, QUOTE).to_string();
+        let kind = required(&f, "kind")?;
+        return redirect(&format!("/new?kind={}&folder={}&w={slug}", q(&kind), q(&strip(opt(&f, "folder", "")))));
+    }
+    redirect(&format!("/entity/{id}"))
+}
+
+fn entity_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = entity_form(c)?;
+    world_entity(c, ids[0])?;
+    let e = entity_fields(&f)?;
+    let mut cols = e.cols;
+    if !e.image_url.is_empty() {
+        cols.push(("image_url", s(&e.image_url)));
+    } else if !opt(&f, "remove_image", "").is_empty() {
+        cols.push(("image_url", Sql::Null));
+    }
+    orm::update(&c.db, "entities", ids[0], &cols)?;
+    sync_access(&c.db, ids[0], &e.players)?;
+    redirect(&format!("/entity/{}", ids[0]))
+}
+
+fn entity_duplicate(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let src = world_entity(c, ids[0])?;
+    let v = |k: &str| -> Option<Sql> {
+        Some(match src.get(k)? {
+            Value::Null => Sql::Null,
+            Value::String(t) => s(t),
+            Value::Number(n) if n.is_i64() => Sql::Integer(n.as_i64()?),
+            Value::Bool(b) => Sql::Integer(*b as i64),
+            _ => return None,
+        })
+    };
+    let name = format!("{} (copy)", src.get("name")?.as_str()?);
+    let mut cols: Vec<(&str, Sql)> = vec![("name", s(&name))];
+    for k in ["world_id", "kind", "subtype", "folder", "tags", "aliases", "image_url", "summary", "body", "visible_to_players", "template_id",
+              "custom_fields_json"] {
+        cols.push((k, v(k)?));
+    }
+    let id = orm::insert(&c.db, "entities", &cols)?;
+    redirect(&format!("/entity/{id}"))
+}
+
+fn entity_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    world_entity(c, ids[0])?;
+    let id = ids[0];
+    for sql in [
+        "DELETE FROM entity_links WHERE source_id = ?1 OR target_id = ?1",
+        "DELETE FROM entity_player_access WHERE entity_id = ?1",
+        "DELETE FROM entity_notes WHERE entity_id = ?1",
+        "DELETE FROM entity_voice_hints WHERE entity_id = ?1",
+        "DELETE FROM entity_relations WHERE source_id = ?1 OR target_id = ?1",
+        "DELETE FROM entities WHERE id = ?1",
+    ] {
+        c.db.execute(sql, [id]).ok()?;
+    }
+    redirect("/")
 }

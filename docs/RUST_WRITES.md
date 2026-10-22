@@ -62,6 +62,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /sessions/new`, `/sessions/<id>/edit` (featured NPCs / characters), `/api/sessions/<id>/prep/toggle`, `/prep/add`, `/prep/<i>/delete` | 6 |
 | `POST /entity/<id>/link/<target>`, `/entity/<id>/unlink/<target>`, `/entity/<id>/notes/new`, `/notes/<n>/toggle`, `/notes/<n>/edit`, `/notes/<n>/delete` | 7 |
 | `POST /api/entity/<id>/field` (subtype), `/api/entity/<id>/rename`, `/api/entities/bulk-folder` (plain integer ids only) | 8 |
+| `POST /new`, `/entity/<id>/edit` (urlencoded, or multipart with no file chosen: `form::parse_multipart`; an upload is Python's), `/entity/<id>/duplicate`, `/entity/<id>/delete` | 9 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
