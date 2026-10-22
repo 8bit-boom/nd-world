@@ -226,6 +226,40 @@ pub fn py_json(v: &serde_json::Value, out: &mut String) {
     py_json_impl(v, out, true)
 }
 
+/// Python's `repr(float)`: the shortest round-trip digits, fixed notation for exponents -4..15, else "1.5e+16" / "1e-07"
+pub fn py_float_repr(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".into();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "Infinity" } else { "-Infinity" }.into();
+    }
+    let sci = format!("{f:e}"); // shortest round-trip digits: "-1.2345e-7"
+    let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let (neg, mant) = match mant.strip_prefix('-') {
+        Some(m) => (true, m),
+        None => (false, mant),
+    };
+    let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
+    let sign = if neg { "-" } else { "" };
+    if (-4..16).contains(&exp) {
+        let point = exp + 1; // digits before the decimal point
+        let body = if point <= 0 {
+            format!("0.{}{}", "0".repeat((-point) as usize), digits)
+        } else if (point as usize) >= digits.len() {
+            format!("{}{}.0", digits, "0".repeat(point as usize - digits.len()))
+        } else {
+            format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+        };
+        format!("{sign}{body}")
+    } else {
+        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+        let es = if exp < 0 { "-" } else { "+" };
+        format!("{sign}{m}e{es}{:02}", exp.abs())
+    }
+}
+
 /// Python's plain `json.dumps(x)`: keys in insertion order, otherwise as `py_json`
 pub fn py_dumps(v: &serde_json::Value) -> String {
     let mut out = String::new();
@@ -237,7 +271,10 @@ fn py_json_impl(v: &serde_json::Value, out: &mut String, sort_keys: bool) {
     match v {
         serde_json::Value::Null => out.push_str("null"),
         serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        serde_json::Value::Number(n) => out.push_str(&n.to_string()),
+        serde_json::Value::Number(n) => match n.as_f64().filter(|_| n.is_f64()) {
+            Some(f) => out.push_str(&py_float_repr(f)),
+            None => out.push_str(&n.to_string()),
+        },
         serde_json::Value::String(s) => {
             out.push('"');
             for c in s.chars() {

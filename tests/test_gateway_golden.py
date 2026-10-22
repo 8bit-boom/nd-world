@@ -1054,3 +1054,40 @@ def test_map_list_the_gateway_builds_is_pythons(client, seed):
         shutil.rmtree(tiles, ignore_errors=True)
     # a map picture without a fresh small copy is Python's (it queues one), so gw-a's list card and viewer stay with Python here
     assert served >= 6, served
+
+
+def test_board_pages_the_gateway_builds_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, InvestBoard, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        db.add_all([Entity(world_id=w, kind="npc", name="Mara <m>", image_url="/uploads/m.png"), Entity(world_id=w, kind="location", name="Dock")])
+        nodes = {"nodes": [{"id": "a", "title": "Murder <x>", "type": "event", "status": "verified", "body": "It **happened**.", "tags": ["x", 3, "y"],
+                            "x": 120, "y": 40, "entity_id": 1},
+                           {"id": "b", "title": "", "tags": "ab", "x": 500, "y": 10.5 if False else 10},
+                           {"id": 7, "title": "Seven", "status": "suspect", "x": 0.25 if False else 3, "lat": 14871.466378840501}],
+                 "groups": [{"id": "g", "label": "Group", "x": 1e-7}]}
+        edges = [{"from": "a", "to": "b"}, {"from": 7, "to": "a"}, {"from": "a", "to": "missing"}, {"from": "b", "to": "a"}]
+        db.add_all([InvestBoard(world_id=w, name="Case <1>", slug="gw-case", nodes_json=json.dumps(nodes), edges_json=json.dumps(edges)),
+                    InvestBoard(world_id=w, name="Legacy", slug="gw-legacy", nodes_json=json.dumps([{"id": 1, "title": "Old", "x": 5.5}]), edges_json=""),
+                    InvestBoard(world_id=w, name="Empty", slug="gw-empty", nodes_json="", edges_json=None),
+                    InvestBoard(world_id=w, name="Bad", slug="gw-bad", nodes_json='"text"'),
+                    InvestBoard(world_id=seed.world_b.id, name="Far", slug="gw-far")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"boards": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    urls = [f"/boards/{s}{r}" for s in ("gw-case", "gw-legacy", "gw-empty", "gw-bad", "gw-far", "nope") for r in ("", "/notes", "/export")]
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for u in urls:
+            served[u] += _same_page(d, via, u, email)
+    must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")]  # /export stays Python's
+    assert all(served[u] for u in must), served

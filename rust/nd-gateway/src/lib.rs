@@ -3,6 +3,7 @@
 //! In front of the Python app it answers what needs no Python: `/static/` (with the build's pre-compressed `.br` / `.gz` twins) and the file
 //! itself of an `/uploads/` request - after Python has decided that the request may have it. Everything else is passed on, streamed in both
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
+pub mod boards;
 pub mod calendar;
 pub mod config;
 pub mod idpages;
@@ -141,6 +142,22 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         let f = if uri.path() == "/maps" { maps::maps_page } else { maps::map_viewer };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/boards/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        // /boards/<slug>/export stays Python's: board_export.html fills a dict with `.update()`, which MiniJinja's values cannot do
+        let f = if uri.path().ends_with("/notes") {
+            Some(boards::board_notes as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
+        } else if uri.path().ends_with("/export") {
+            None
+        } else {
+            Some(boards::board_view as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
+        };
+        if let Some(f) = f {
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/new" && app.cfg.rust_routes.iter().any(|r| r == "pages") {

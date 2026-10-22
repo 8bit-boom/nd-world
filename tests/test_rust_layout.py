@@ -175,3 +175,20 @@ def test_autolinks_name_variants_headings_and_sections_match_python():
     bad = [(q, w, g) for q, w, g in zip(qs, want, got) if g is not None and w != g]
     assert not bad, f"{len(bad)} of {len(qs)} differ: {json.dumps(bad[:2])[:2000]}"
     assert unsure < 200, unsure
+
+
+def test_json_dumps_is_pythons_floats_included():
+    """nd_render::py_dumps (pages that embed json.dumps(...) of stored JSON): Python's separators, ensure_ascii and float repr."""
+    import random
+    import struct
+    rnd = random.Random(7)
+    floats = [0.0, -0.0, 1.0, 100.0, 0.1, 1e-7, 1e-4, 1.5e-4, 1e16, 1e15, 123456789012345.6, 1.5e16, 2.5e-300, 1.7976931348623157e308,
+              5e-324, 3.14159, -42.5, 1e22, 0.00012, 9999999999999998.0]
+    for _ in range(2000):
+        f = struct.unpack("d", struct.pack("Q", rnd.getrandbits(64)))[0]
+        if f == f and abs(f) != float("inf"):
+            floats.append(f)
+        floats.append(rnd.uniform(-1e6, 1e6))
+    values = [floats, {"b": 1, "a": [True, None, "é\u2028<x>\x7f\"\\"], "c": {"z": 2.5, "y": -3}}, [1, 2, [3, {"k": 1e-9}]], "plain", 7]
+    got = ask([{"op": "dumps", "value": v} for v in values])
+    assert got == [json.dumps(v) for v in values]
