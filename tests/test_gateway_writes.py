@@ -3188,3 +3188,61 @@ def test_map_rename_and_delete_are_pythons(client, seed):
         assert out[0][:4] == out[1][:4], (d2, out)
         served += out[1][4] == "gateway"
     assert served >= 2, served
+
+
+def test_map_new_and_upload_are_pythons(client, seed):
+    import json as _json
+    from pathlib import Path
+    from app.main import _MAPS_DIR
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    up = Path(_MAPS_DIR).parent / "uploads" / "maps"
+    src_dir = Path(_MAPS_DIR).parent / "uploads" / "ai-images"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    gen = src_dir / f"gw-{os_random_hex()}.PNG"
+    gen.write_bytes(b"\x89PNG generated")
+    served = 0
+
+    def files_for(slug):
+        return sorted((p.name.replace(slug, "S"), p.read_bytes()) for p in up.glob(f"{slug}.*")) if slug else []
+
+    cases = [({"name": "Big Map {}", "width": "100", "height": "200"}, ("x.PNG", b"pngdata")),
+             ({"name": "No pic {}"}, None), ({"name": "Bad ext {}"}, ("x.txt", b"t")),
+             ({"name": "From gen {}", "image_url": f" /uploads/ai-images/{gen.name} "}, None),
+             ({"name": "Escape {}", "image_url": "/uploads/../world.db"}, None),
+             ({"name": "???"}, None), ({"name": "W {}", "width": "wide"}, None)]
+    made = []
+    for form, pic in cases:
+        rid = os_random_hex()
+        out = []
+        for side, tag in ((d, "pa"), (via, "gw")):
+            f = dict(form); f["name"] = f["name"].format(tag + rid)
+            body, hdrs = _multipart(list(f.items()), [("image_file",) + (pic if pic else ("", b""))])
+            r = side.post("/maps/new", content=body, headers=hdrs, follow_redirects=False)
+            loc = r.headers.get("location") or ""
+            slug = loc.rsplit("/", 1)[-1] if r.status_code == 303 else ""
+            doc = _json.loads((_MAPS_DIR / f"{slug}.json").read_text()) if slug else None
+            if doc:
+                doc["name"] = doc["name"].replace(tag, "T")
+                made.append(slug)
+            out.append((r.status_code, doc, files_for(slug), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (form, out)
+        served += out[1][3] == "gateway"
+    for pic in (("new.webp", b"webpdata"), ("n.exe", b"x")):
+        out = []
+        for side in (d, via):
+            slug = f"gwup-{os_random_hex()}"
+            (_MAPS_DIR / f"{slug}.json").write_text(_json.dumps({"name": "U", "world_id": seed.world_a.id, "markers": []}))
+            (up / f"{slug}.png").write_bytes(b"old")
+            r = side.post(f"/maps/{slug}/upload", files={"file": pic}, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), files_for(slug), r.headers.get("x-nd-served-by")))
+            made.append(slug)
+        assert out[0][:3] == out[1][:3], (pic, out)
+        served += out[1][3] == "gateway"
+    for slug in made:
+        (_MAPS_DIR / f"{slug}.json").unlink(missing_ok=True)
+        for p in up.glob(f"{slug}.*"):
+            p.unlink()
+    gen.unlink()
+    assert served >= 5, served

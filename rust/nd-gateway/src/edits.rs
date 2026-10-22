@@ -258,6 +258,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/entity-templates/{}/delete", entity_template_delete),
     ("/api/entity/{}/image", entity_set_image),
     ("/races/new", race_new),
+    ("/maps/new", map_new),
     ("/races/add-builtin", race_add_builtin),
     ("/races/add-all-builtin", race_add_all_builtin),
     ("/professions/add-builtin", profession_add_builtin),
@@ -325,7 +326,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
-const PICTURE_FORM_ROUTES: &[&str] = &["/worlds/{}/home/edit", "/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
+const PICTURE_FORM_ROUTES: &[&str] = &["/maps/new", "/worlds/{}/home/edit", "/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
 
 fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
     let (h, ids) = route(path)?;
@@ -335,19 +336,26 @@ fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
 
 pub fn handles_upload(method: &Method, path: &str, headers: &HeaderMap) -> bool {
     let big = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok()).map_or(true, |n| n > MAX_BODY);
-    method == Method::POST && (route_in(UPLOAD_ROUTES, path).is_some() || (big && picture_route(path).is_some()))
+    method == Method::POST && (route_in(UPLOAD_ROUTES, path).is_some() || map_upload_slug(path).is_some() || (big && picture_route(path).is_some()))
 }
 
 pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
     crate::uploads::serve(cfg, proxy, req, peer, |cfg, method, uri, headers, up| {
         let up = up?;
-        let (h, ids) = route_in(UPLOAD_ROUTES, uri.path()).or_else(|| picture_route(uri.path()))?;
+        let slug = map_upload_slug(uri.path());
+        let (h, ids) = match &slug {
+            Some(_) => (map_new as Handler, vec![]), // unused: the slug handler answers below
+            None => route_in(UPLOAD_ROUTES, uri.path()).or_else(|| picture_route(uri.path()))?,
+        };
         let db = crate::writes::open(cfg)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
         db.execute_batch("BEGIN IMMEDIATE").ok()?;
         let mut ctx = Ctx { cfg, upload: Some(up), created: vec![], removals: vec![], db, p, uri, headers, body: &[] };
-        let answer = h(&mut ctx, &ids);
+        let answer = match &slug {
+            Some(sl) => map_upload(&mut ctx, sl),
+            None => h(&mut ctx, &ids),
+        };
         if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
             ctx.apply_removals();
             return answer;
@@ -6657,5 +6665,132 @@ fn map_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             c.removals.push(img);
         }
     }
+    redirect("/maps")
+}
+
+/// `/maps/<slug>/upload`: the slug
+fn map_upload_slug(path: &str) -> Option<String> {
+    let slug = path.strip_prefix("/maps/")?.strip_suffix("/upload")?;
+    (!slug.is_empty() && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).then(|| slug.to_string())
+}
+
+const MAP_EXTS: [&str; 6] = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"];
+
+fn map_uploads(c: &Ctx) -> Option<std::path::PathBuf> {
+    let dir = c.cfg.db_path.parent()?.join("uploads").join("maps");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// A FastAPI `int` form field: missing / empty -> the default; plain digits -> the number; anything else (pydantic's own reading): Python's
+fn form_plain_int(f: &Form, k: &str, default: i64) -> Option<i64> {
+    match f.get(k).filter(|v| !v.is_empty()) {
+        None => Some(default),
+        Some(v) => {
+            let body = v.strip_prefix('-').unwrap_or(v);
+            if body.is_empty() || body.len() > 15 || !body.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            v.parse().ok()
+        }
+    }
+}
+
+fn map_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let (f, file) = form_and_file(c, "image_file")?;
+    let name = f.get("name").filter(|n| !n.is_empty())?.to_string();
+    let (width, height) = (form_plain_int(&f, "width", 3072)?, form_plain_int(&f, "height", 3072)?);
+    let wid = c.world_id()?;
+    if !c.can_edit_section("maps")? || !name.is_ascii() {
+        return None;
+    }
+    let mut slug = String::new();
+    for ch in strip(&name.to_ascii_lowercase()).chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            slug.push(ch);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        return None;
+    }
+    let dir = crate::maps::maps_dir(c.cfg)?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let (base, mut slug, mut i) = (slug.clone(), slug, 2);
+    while dir.join(format!("{slug}.json")).exists() {
+        slug = format!("{base}-{i}");
+        i += 1;
+    }
+    // the picture first: one over the limit is Python's 413 (Python has written the map file by then - its own answer)
+    let mut copy: Option<(std::path::PathBuf, Option<std::path::PathBuf>)> = None;
+    if let Some(pick) = &file {
+        let fname = pick.filename(c)?.to_string();
+        if !fname.is_empty() {
+            let ext = py_suffix_lower(&fname)?;
+            if MAP_EXTS.contains(&ext.as_str()) {
+                if pick.len(c)? as i64 > general_cap(c)? {
+                    return None;
+                }
+                copy = Some((map_uploads(c)?.join(format!("{slug}{ext}")), None));
+            }
+        }
+    }
+    let url = strip(f.get("image_url").unwrap_or(""));
+    if file.as_ref().map_or(true, |p| p.filename(c).map_or(true, str::is_empty)) && !url.is_empty() {
+        if let Some(rel) = url.strip_prefix("/uploads/") {
+            let root = c.cfg.db_path.parent()?.join("uploads");
+            if let (Ok(cand), Ok(root)) = (root.join(rel).canonicalize(), root.canonicalize()) {
+                let ext = cand.extension().and_then(|e| e.to_str()).map(|e| format!(".{}", e.to_lowercase())).unwrap_or_default();
+                if cand.starts_with(&root) && cand.is_file() && MAP_EXTS.contains(&ext.as_str()) {
+                    copy = Some((map_uploads(c)?.join(format!("{slug}{ext}")), Some(cand)));
+                }
+            }
+        }
+    }
+    let jf = dir.join(format!("{slug}.json"));
+    let doc = json!({"name": name, "world_id": wid, "width": width, "height": height, "markers": []});
+    std::fs::write(&jf, nd_render::py_dumps(&doc)).ok()?;
+    c.created.push(jf);
+    if let Some((dest, src)) = copy {
+        match src {
+            Some(src) => {
+                std::fs::copy(&src, &dest).ok()?;
+                if let Ok(m) = std::fs::metadata(&src).and_then(|m| m.modified()) {
+                    let _ = std::fs::File::options().write(true).open(&dest).and_then(|fh| fh.set_modified(m));
+                }
+            }
+            None => file.as_ref()?.write_to(c, &dest)?,
+        }
+        c.created.push(dest);
+    }
+    redirect(&format!("/maps/{slug}"))
+}
+
+fn map_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let up = c.upload.as_ref()?;
+    if !up.form.0.is_empty() || up.files.len() != 1 || up.files[0].name != "file" {
+        return None;
+    }
+    let fname = up.files[0].filename.clone();
+    let len = up.files[0].len;
+    own_map(c, slug)?;
+    let ext = py_suffix_lower(&fname)?;
+    if !MAP_EXTS.contains(&ext.as_str()) || len as i64 > general_cap(c)? {
+        return None;
+    }
+    let dir = map_uploads(c)?;
+    // the new picture goes to a side name first; the old ones (and a same-named one) go after the commit
+    let tmp = dir.join(format!(".{slug}{ext}.gw-{}", std::process::id()));
+    FilePick::Disk(0).write_to(c, &tmp)?;
+    c.created.push(tmp.clone());
+    for old in MAP_EXTS {
+        let p = dir.join(format!("{slug}{old}"));
+        if p.exists() && old != ext {
+            c.removals.push(p);
+        }
+    }
+    std::fs::rename(&tmp, dir.join(format!("{slug}{ext}"))).ok()?;
     redirect("/maps")
 }

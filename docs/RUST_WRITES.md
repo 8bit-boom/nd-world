@@ -98,7 +98,8 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /worlds/<id>/ai-instructions/import`, `/ai-instructions/<id>/toggle`, `/toggle-players`, `/delete` (stored settings: no AI call) | 39 |
 | `POST /races/add-builtin`, `/races/add-all-builtin`, `/professions/add-builtin`, `/professions/add-all-builtin` (the catalogs, and markdown2's HTML for each, taken from Python by `scripts/gen_rust_data.py`; a race whose body was edited since: Python's). `/images/spotlight` stays Python's: it clears Python's in-process spotlight cache | 40 |
 | `POST /api/entity/<id>/markup` (wrap, unwrap, replace, restore, picture size) and `/api/entity/<id>/send-to-player`: `app/markup_locator.py` ported to `crate::markup` in code-point offsets; a refusal (its 422 message) and text whose `\w` / `\s` the two regex engines might read differently: Python's. Checked with fixed cases and 300 random selections | 41 |
-| `POST /maps/<slug>/rename`, `/maps/<slug>/delete` (the map file rewritten with Python's `json.dumps`; files removed after the commit). `/maps/new` and `/maps/<slug>/upload` stay Python's for now | 42 |
+| `POST /maps/<slug>/rename`, `/maps/<slug>/delete` (the map file rewritten with Python's `json.dumps`; files removed after the commit) | 42 |
+| `POST /maps/new` (an uploaded picture or a copied generated one; one over the limit: Python's 413) and `/maps/<slug>/upload` (streamed; the new picture is renamed in place, older ones removed after the commit) | 43 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
