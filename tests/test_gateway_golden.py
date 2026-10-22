@@ -861,3 +861,55 @@ def test_document_library_the_gateway_builds_is_pythons(client, seed):
         for url in urls:
             served[url] += _same_page(d, via, url, email)
     assert all(served[u] >= 2 for u in must), served
+
+
+def test_audio_and_video_libraries_the_gateway_builds_are_pythons(client, seed):
+    import os
+    from datetime import datetime
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal, get_app_settings
+    from app.models import AudioAlbum, AudioClip, Entity, VideoAlbum, VideoClip, World, entity_player_access
+    base = str(client.base_url)
+    uploads = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads" / "audio"
+    uploads.mkdir(parents=True, exist_ok=True)
+    (uploads / "gw-real.mp3").write_bytes(b"x" * 1234)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        st = get_app_settings(db)
+        st.max_audio_mb = 7
+        st.max_video_mb = None
+        urls = []
+        for Album, Clip, prefix in ((AudioAlbum, AudioClip, "/audio"), (VideoAlbum, VideoClip, "/video")):
+            top = Album(world_id=w, name="Ambience <a>"); far = Album(world_id=seed.world_b.id, name="Far")
+            db.add_all([top, far]); db.flush()
+            sub = Album(world_id=w, name="Sub", parent_id=top.id); db.add(sub); db.flush()
+            db.add_all([Clip(world_id=w, name="Rain", file_url="/uploads/audio/gw-real.mp3", created_at=datetime(2025, 5, 6, 7, 8, 9, 999)),
+                        Clip(world_id=w, name="Secret", file_url="/uploads/audio/missing.mp3", visible_to_players=False),
+                        Clip(world_id=w, name="Escape", file_url="/uploads/../world.db"),
+                        Clip(world_id=w, name="In top", album_id=top.id, file_url="/uploads/audio/gw-real.mp3", created_at=None),
+                        Clip(world_id=w, name="Hidden in top", album_id=top.id, file_url="x", visible_to_players=False),
+                        Clip(world_id=w, name="In sub", album_id=sub.id, file_url="/elsewhere/a.mp3")])
+            urls += [prefix, f"{prefix}/albums/{top.id}", f"{prefix}/albums/{sub.id}", f"{prefix}/albums/{far.id}", f"{prefix}/albums/999999"]
+        hidden = Entity(world_id=w, kind="npc", name="Hidden npc", visible_to_players=False)
+        shared = Entity(world_id=w, kind="npc", name="Shared npc", visible_to_players=False)
+        db.add_all([hidden, shared, Entity(world_id=w, kind="location", name="Open place")]); db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=shared.id, user_id=seed.player_a.id))
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"audio": {"player": "read"}, "video": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = {u: 0 for u in urls}
+    try:
+        for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                                 (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+            d = _signed_in(email, pw, world)
+            via = _via(d, base)
+            for url in urls:
+                served[url] += _same_page(d, via, url, email)
+    finally:
+        (uploads / "gw-real.mp3").unlink(missing_ok=True)
+    assert all(served[u] >= 2 for u in ("/audio", "/video")), served
+    assert sum(served.values()) >= 12, served

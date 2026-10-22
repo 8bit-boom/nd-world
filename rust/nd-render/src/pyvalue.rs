@@ -18,6 +18,11 @@ pub struct PyDateTime {
 
 impl PyDateTime {
     /// SQLAlchemy's SQLite text: "YYYY-MM-DD HH:MM:SS[.ffffff]" (or "YYYY-MM-DD" / an ISO "T").
+    /// `int(dt.timestamp())` for a naive datetime read as UTC (see `timestamp` below)
+    pub fn epoch_secs(&self) -> i64 {
+        days_from_civil(self.y, self.mo as i64, self.d as i64) * 86400 + (self.h * 3600 + self.mi * 60 + self.s) as i64
+    }
+
     pub fn parse(t: &str) -> Option<PyDateTime> {
         let t = t.trim();
         let (date, time) = match t.find([' ', 'T']) {

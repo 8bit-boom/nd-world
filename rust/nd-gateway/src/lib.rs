@@ -105,6 +105,21 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let lib = match req.uri().path() {
+            "/audio" => Some(&media::AUDIO),
+            "/video" => Some(&media::VIDEO),
+            p if p.starts_with("/audio/albums/") => Some(&media::AUDIO),
+            p if p.starts_with("/video/albums/") => Some(&media::VIDEO),
+            _ => None,
+        };
+        if let Some(lib) = lib {
+            let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || media::clip_library(lib, &pages_, &cfg, &uri, &headers)).await {
+                return resp;
+            }
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/kind/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::kind_list(&pages_, &cfg, &uri, &headers)).await {
