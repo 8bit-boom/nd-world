@@ -3812,3 +3812,40 @@ def _row_by(table, col, value):
         return dict(r) if r else None
     finally:
         db.close()
+
+
+def test_hub_turn_controls_are_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    served = 0
+
+    def fight(pid, other, **kw):
+        cbs = [{"id": "me", "name": "Me", "source": "pc", "pc_id": pid, "initiative": 12, "hp": 5, "max_hp": 10},
+               {"id": "ally", "name": "Ally Long Name", "source": "pc", "pc_id": other, "initiative": 15, "hp": 0, "max_hp": 10},
+               {"id": "orc", "name": "Orc", "source": "entity", "initiative": 7, "tiebreak": 1, "hp": 3, "max_hp": 8},
+               {"id": "rat", "name": "Rat", "source": "entity", "initiative": "7", "hp": 0, "max_hp": 2}]
+        return _add("CombatSession", world_id=w, name="Now", combatants_json=json.dumps(cbs), **kw)
+
+    cases = [("end-turn", None, {"ruleset": "nd", "active_idx": 1, "round_num": 2}),
+             ("end-turn", None, {"ruleset": "nd", "active_idx": 0}),
+             ("end-turn", None, {"ruleset": "hunt", "turn_json": json.dumps({"active_id": "me", "acted": ["orc"]})}),
+             ("end-turn", None, {"ruleset": "hunt", "turn_json": json.dumps({"active_id": "me", "acted": ["orc", "ally"]}), "round_num": 4}),
+             ("pass-turn", {"next": "ally"}, {"ruleset": "hunt", "turn_json": json.dumps({"active_id": None, "acted": ["me"], "picker": "me"})}),
+             ("pass-turn", {"next": "gm"}, {"ruleset": "asterion", "turn_json": json.dumps({"picker": "me", "acted": []})}),
+             ("pass-turn", {"next": "orc"}, {"ruleset": "hunt", "turn_json": json.dumps({"picker": "me"})}),
+             ("pass-turn", {"next": "ally"}, {"ruleset": "nd", "turn_json": json.dumps({"picker": "me", "mode": "fluid"})})]
+    for path, body, kw in cases:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Me")
+            other = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Ally")
+            cid = fight(pid, other, **kw)
+            r = side.post(f"/api/characters/{pid}/hub/{path}", json=body) if body is not None else side.post(f"/api/characters/{pid}/hub/{path}")
+            row = _row("combat_sessions", cid)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, (row["turn_json"], row["round_num"], row["active_idx"], row["rev"]),
+                        r.headers.get("x-nd-served-by")))
+            _drop_pc(pid) if "_drop_pc" in globals() else None
+        assert out[0][:3] == out[1][:3], (path, body, kw, out)
+        served += out[1][3] == "gateway"
+    assert served >= 5, served

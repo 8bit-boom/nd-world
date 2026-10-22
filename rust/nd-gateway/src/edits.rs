@@ -209,6 +209,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/feats", pc_feats),
     ("/api/characters/{}/ability-use", pc_ability_use),
     ("/api/characters/{}/advance", pc_advance),
+    ("/api/characters/{}/hub/end-turn", hub_end_turn),
+    ("/api/characters/{}/hub/pass-turn", hub_pass_turn),
     ("/api/characters/{}/resource", pc_resource),
     ("/api/characters/{}/ability-ready", pc_ability_ready),
     ("/api/characters/{}/equipment", pc_equipment),
@@ -8667,4 +8669,318 @@ fn sc_buy(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
     orm::touch(&c.db, wid)?;
     json_response(&json!({"ok": true, "item": {"name": item_name, "qty": 1}, "currency": {"abbr": entry_abbr, "value": left}}))
+}
+
+// ── the character hub's turn controls (app/routers/character_hub.py, app/combat_turns.py) ──
+
+/// `combat_turns._init` / `_tie`: int(v or 0), 0 when int() refuses; None for text int() reads its own way
+fn turn_num(v: Option<&Value>) -> Option<i64> {
+    Some(match v {
+        None | Some(Value::Null) => 0,
+        Some(Value::Bool(b)) => *b as i64,
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(i) => i,
+            None => {
+                let f = n.as_f64()?;
+                if !f.is_finite() || f.abs() > 1e15 {
+                    return None;
+                }
+                f.trunc() as i64
+            }
+        },
+        Some(Value::String(t)) => match py_int_text(t) {
+            Ok(i) => i,
+            Err(PyErr::Value) => 0,
+            Err(_) => return None,
+        },
+        Some(_) => 0,
+    })
+}
+
+/// An encounter as the turn helpers read it
+struct Fight {
+    cs: Map<String, Value>,
+    combatants: Vec<Value>,
+    rules: Value,
+    turn: Map<String, Value>,
+    fluid: bool,
+}
+
+impl Fight {
+    fn load(cs: Map<String, Value>) -> Option<Fight> {
+        let combatants: Vec<Value> = match serde_json::from_str::<Value>(cs.get("combatants_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+            Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_object()).collect(),
+            Ok(_) => vec![],
+            Err(_) => return None,
+        };
+        let raw = match serde_json::from_str::<Value>(cs.get("turn_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")) {
+            Ok(Value::Object(o)) => o,
+            Ok(_) | Err(_) => Map::new(),
+        };
+        let s_or_null = |k: &str| raw.get(k).filter(|v| v.is_string()).cloned().unwrap_or(Value::Null);
+        let acted: Vec<Value> = raw.get("acted").and_then(|a| a.as_array()).map(|a| a.iter().filter(|x| x.is_string()).cloned().collect()).unwrap_or_default();
+        let mode = match raw.get("mode").and_then(|m| m.as_str()) { Some(m @ ("initiative" | "fluid")) => m, _ => "" };
+        let mut turn = Map::new();
+        turn.insert("active_id".into(), s_or_null("active_id"));
+        turn.insert("acted".into(), Value::Array(acted));
+        turn.insert("picker".into(), s_or_null("picker"));
+        turn.insert("mode".into(), json!(mode));
+        let all = nd_render::app::data().get("combat_rulesets")?;
+        let rules = all.get(cs.get("ruleset").and_then(|v| v.as_str()).unwrap_or("")).unwrap_or(&all["generic"]).clone();
+        let fluid = match mode { "fluid" => true, "initiative" => false, _ => rules["fluid"].as_bool()? };
+        Some(Fight { cs, combatants, rules, turn, fluid })
+    }
+
+    fn order(&self) -> Option<Vec<usize>> {
+        let mut keys = vec![];
+        for (i, c) in self.combatants.iter().enumerate() {
+            keys.push((-turn_num(c.get("initiative"))?, -turn_num(c.get("tiebreak"))?, i));
+        }
+        keys.sort();
+        Some(keys.into_iter().map(|k| k.2).collect())
+    }
+
+    fn active_idx(&self) -> i64 {
+        self.cs.get("active_idx").and_then(|v| v.as_i64()).unwrap_or(0)
+    }
+
+    fn round(&self) -> i64 {
+        self.cs.get("round_num").and_then(|v| v.as_i64()).filter(|r| *r != 0).unwrap_or(1)
+    }
+
+    /// `current_index`
+    fn current(&self) -> Option<Option<usize>> {
+        if self.combatants.is_empty() {
+            return Some(None);
+        }
+        if self.fluid {
+            let aid = self.turn["active_id"].as_str();
+            return Some(aid.and_then(|a| self.combatants.iter().position(|c| c.get("id").and_then(|i| i.as_str()) == Some(a))));
+        }
+        let n = self.combatants.len() as i64;
+        Some(Some(self.order()?[self.active_idx().rem_euclid(n) as usize]))
+    }
+
+    fn find_pc(&self, pc_id: i64) -> Option<usize> {
+        self.combatants.iter().position(|c| c.get("pc_id").and_then(|v| v.as_i64()) == Some(pc_id) && !c.get("pc_id").is_some_and(|v| v.is_f64()))
+    }
+
+    fn out(&self, c: &Value) -> Option<bool> {
+        combat_is_out(c, &self.rules)
+    }
+
+    fn acted(&self) -> Vec<String> {
+        self.turn["acted"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    }
+
+    /// `advance`: (new round, new active_idx); the turn state is updated in place
+    fn advance(&mut self) -> Option<(i64, i64)> {
+        let mut round = self.round();
+        if self.fluid {
+            let who = self.turn["active_id"].as_str().map(str::to_string);
+            let mut acted = self.acted();
+            if let Some(w) = &who {
+                if !acted.contains(w) {
+                    acted.push(w.clone());
+                }
+            }
+            let mut all = true;
+            for c in &self.combatants {
+                if !self.out(c)? {
+                    let id = c.get("id");
+                    if !acted.iter().any(|a| id.and_then(|i| i.as_str()) == Some(a.as_str())) {
+                        all = false;
+                    }
+                }
+            }
+            if all {
+                acted.clear();
+                round += 1;
+            }
+            let picker = match who { Some(w) => json!(w), None => self.turn["picker"].clone() };
+            self.turn.insert("acted".into(), json!(acted));
+            self.turn.insert("picker".into(), picker);
+            self.turn.insert("active_id".into(), Value::Null);
+            return Some((round, self.active_idx()));
+        }
+        if self.combatants.is_empty() {
+            return Some((round + 1, self.active_idx()));
+        }
+        let order = self.order()?;
+        let n = self.combatants.len() as i64;
+        let mut nxt = self.active_idx() + 1;
+        let mut found = false;
+        for _ in 0..=n {
+            if nxt >= n {
+                nxt = 0;
+                round += 1;
+            }
+            if !self.out(&self.combatants[order[nxt as usize]])? {
+                found = true;
+                break;
+            }
+            nxt += 1;
+        }
+        if !found {
+            nxt = 0;
+        }
+        Some((round, nxt))
+    }
+
+    fn turn_json(&self) -> String {
+        nd_render::py_dumps(&json!({"active_id": self.turn["active_id"], "acted": self.turn["acted"], "picker": self.turn["picker"], "mode": self.turn["mode"]}))
+    }
+}
+
+/// `str(c.get("name") or "")[:60]`
+fn short_name(c: &Value) -> Option<String> {
+    Some(take_chars(&cs_text(c.get("name"), "").ok()?, 60))
+}
+
+/// `_combat_now(db, pc)` for the encounter `f` holding the character at `mine`
+fn hub_combat_now(f: &Fight, pc_id: i64, mine: usize) -> Option<Value> {
+    let me = &f.combatants[mine];
+    let my_init = turn_num(me.get("initiative"))?;
+    let mut out = Map::new();
+    out.insert("round".into(), json!(f.round()));
+    out.insert("fluid".into(), json!(f.fluid));
+    out.insert("next_is_me".into(), json!(false));
+    out.insert("my_initiative".into(), json!(my_init));
+    out.insert("can_roll_initiative".into(), json!(!f.fluid && my_init == 0));
+    out.insert("name".into(), Value::Null);
+    out.insert("choose".into(), json!([]));
+    let is_me = |c: &Value| c.get("pc_id").and_then(|v| v.as_i64()) == Some(pc_id);
+    let is_pc = |c: &Value| c.get("source").and_then(|v| v.as_str()) == Some("pc");
+    if f.fluid {
+        let cur = f.current()?.map(|i| &f.combatants[i]);
+        let picker = f.turn["picker"].as_str();
+        if let Some(cur) = cur {
+            let turn = if is_me(cur) { "me" } else if is_pc(cur) { "pc" } else { "enemy" };
+            out.insert("turn".into(), json!(turn));
+            out.insert("name".into(), if turn == "pc" { json!(short_name(cur)?) } else { Value::Null });
+        } else if picker.is_some() && picker == me.get("id").and_then(|i| i.as_str()) {
+            out.insert("turn".into(), json!("choose"));
+            let acted = f.acted();
+            let mut choose = vec![];
+            for c in &f.combatants {
+                let id = c.get("id").and_then(|i| i.as_str());
+                if is_pc(c) && c.get("visible") != Some(&Value::Bool(false)) && !id.is_some_and(|i| acted.iter().any(|a| a == i))
+                    && c.get("id") != me.get("id") && !f.out(c)? {
+                    if c.get("visible").is_some_and(|v| !py_truthy(Some(v))) {
+                        continue;
+                    }
+                    choose.push(json!({"id": c.get("id"), "name": short_name(c)?}));
+                }
+            }
+            out.insert("choose".into(), json!(choose));
+        } else {
+            let pk = f.combatants.iter().find(|c| picker.is_some() && c.get("id").and_then(|i| i.as_str()) == picker);
+            out.insert("turn".into(), json!("choosing"));
+            out.insert("name".into(), match pk { Some(p) if is_pc(p) => json!(short_name(p)?), _ => Value::Null });
+        }
+        return Some(Value::Object(out));
+    }
+    let order = f.order()?;
+    let n = f.combatants.len() as i64;
+    let pos = f.active_idx().rem_euclid(n);
+    let cur = &f.combatants[order[pos as usize]];
+    let nxt = &f.combatants[order[((pos + 1) % n) as usize]];
+    let (turn, name) = if is_me(cur) { ("me", Value::Null) } else if is_pc(cur) { ("pc", json!(short_name(cur)?)) } else { ("enemy", Value::Null) };
+    out.insert("turn".into(), json!(turn));
+    out.insert("name".into(), name);
+    out.insert("next_is_me".into(), json!(is_me(nxt) && turn != "me"));
+    Some(Value::Object(out))
+}
+
+/// `_owned_pc`: the caller's own character, in a world they may still use
+fn hub_owned_pc(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id)?;
+    if pc.get("owner_user_id").and_then(|v| v.as_i64()) != Some(c.p.user_id) {
+        return None;
+    }
+    let wid = pc.get("world_id")?.as_i64()?;
+    if !c.p.is_gm {
+        let member: Option<i64> = c.db.query_row("SELECT id FROM world_memberships WHERE world_id = ?1 AND user_id = ?2 LIMIT 1", [wid, c.p.user_id], |r| r.get(0)).ok();
+        member?;
+    }
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", wid)?;
+    Some(pc)
+}
+
+/// `_pc_encounter`: the freshest encounter of the last 12 hours with this character in it, and its place there
+fn hub_encounter(c: &Ctx, pc: &Map<String, Value>) -> Option<Option<(Fight, usize)>> {
+    let since = orm::stamp_after(-12 * 3600);
+    let mut st = c.db.prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND updated_at >= ?2 ORDER BY updated_at DESC LIMIT 8").ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map(rusqlite::params![pc.get("world_id")?.as_i64()?, since], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    let pid = pc.get("id")?.as_i64()?;
+    for cs in rows {
+        let f = Fight::load(cs)?;
+        if let Some(i) = f.find_pc(pid) {
+            return Some(Some((f, i)));
+        }
+    }
+    Some(None)
+}
+
+/// Writes the fight's turn state, round and active index, and bumps its revision (`combat_turns.touch`)
+fn hub_save_fight(c: &Ctx, f: &Fight, round: i64, active_idx: i64) -> Option<()> {
+    let id = f.cs.get("id")?.as_i64()?;
+    let mut set: Vec<(&str, Sql)> = vec![("round_num", Sql::Integer(round)), ("active_idx", Sql::Integer(active_idx))];
+    if f.fluid {
+        set.insert(0, ("turn_json", s(&f.turn_json()))); // an initiative-order fight's turn state is never written
+    }
+    orm::update(&c.db, "combat_sessions", id, &set)?;
+    combat_touch(c, &f.cs)?;
+    orm::touch(&c.db, f.cs.get("world_id")?.as_i64()?)?;
+    Some(())
+}
+
+fn hub_after(c: &Ctx, pc: &Map<String, Value>, cs_id: i64) -> Option<Response<Body>> {
+    let pid = pc.get("id")?.as_i64()?;
+    let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id)?;
+    let round = cs.get("round_num").cloned().unwrap_or(Value::Null);
+    let now = match hub_encounter(c, pc)? {
+        Some((f, i)) => hub_combat_now(&f, pid, i)?,
+        None => Value::Null,
+    };
+    json_response(&json!({"ok": true, "round": round, "combat": now}))
+}
+
+fn hub_end_turn(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let (mut f, _) = hub_encounter(c, &pc)??;
+    let pid = pc.get("id")?.as_i64()?;
+    if f.current()? != f.find_pc(pid) {
+        return None;
+    }
+    let (round, idx) = f.advance()?;
+    hub_save_fight(c, &f, round, idx)?;
+    hub_after(c, &pc, f.cs.get("id")?.as_i64()?)
+}
+
+fn hub_pass_turn(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let (mut f, mine) = hub_encounter(c, &pc)??;
+    if !f.fluid || !f.turn["active_id"].is_null() || f.turn["picker"].is_null() || f.turn.get("picker") != f.combatants[mine].get("id") {
+        return None;
+    }
+    let body = match serde_json::from_slice::<Value>(c.body) {
+        Ok(Value::Object(o)) => o,
+        _ if plain_numbers(c.body) => Map::new(),
+        _ => return None,
+    };
+    let choice = cs_text(body.get("next"), "").ok()?;
+    if choice == "gm" {
+        f.turn.insert("picker".into(), Value::Null);
+    } else {
+        let target = f.combatants.iter().find(|x| x.get("id").and_then(|i| i.as_str()) == Some(choice.as_str()))?;
+        if target.get("source").and_then(|v| v.as_str()) != Some("pc") || f.acted().contains(&choice) || f.out(target)? {
+            return None;
+        }
+        f.turn.insert("active_id".into(), json!(choice));
+        f.turn.insert("picker".into(), Value::Null);
+    }
+    let (round, idx) = (f.round(), f.active_idx());
+    hub_save_fight(c, &f, round, idx)?;
+    hub_after(c, &pc, f.cs.get("id")?.as_i64()?)
 }
