@@ -259,8 +259,17 @@ pub fn resolve_nav(c: &NavCtx) -> Option<(Vec<Value>, Vec<Value>)> {
 pub fn effective_kind_tables(world: Option<&Map<String, Value>>) -> Option<(Value, Value, Value)> {
     let raw = wstr(world, "custom_kinds_json");
     let kinds = nd_perm::sections::effective_kinds(raw)?;
-    let mut icons = data()["kind_icons"].as_object()?.clone();
-    let mut subtypes = data()["subtypes"].as_object()?.clone();
+    let ordered = |table: &str| -> Option<Map<String, Value>> {
+        let src = data()[table].as_object()?;
+        let mut m = Map::new();
+        for k in data()[&format!("{table}_order")].as_array()? {
+            let k = k.as_str()?;
+            m.insert(k.to_string(), src.get(k)?.clone());
+        }
+        Some(m)
+    };
+    let mut icons = ordered("kind_icons")?;
+    let mut subtypes = ordered("subtypes")?;
     let customs: Vec<Value> = match raw.filter(|s| !s.is_empty()).map(serde_json::from_str::<Value>) {
         Some(Ok(Value::Array(a))) => a,
         _ => vec![],

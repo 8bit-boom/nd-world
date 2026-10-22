@@ -963,3 +963,32 @@ def test_image_gallery_the_gateway_builds_is_pythons(client, seed):
         for u in urls:
             served[u] += _same_page(d, via, u, email)
     assert served["/images"] >= 2 and all(served[u] for u in urls[1:3]), served
+
+
+def test_new_entity_form_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, EntityTemplate, ImageAlbum
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        db.add_all([Entity(world_id=w, kind="npc", name="A", folder="Town/Inn"), Entity(world_id=w, kind="npc", name="B", folder="Town/Inn"),
+                    Entity(world_id=w, kind="npc", name="C", folder=""), Entity(world_id=w, kind="npc", name="D", folder="Árbol"),
+                    Entity(world_id=w, kind="location", name="E", folder="Places", image_url="/uploads/e.png"),
+                    EntityTemplate(world_id=w, name="Shop", slug="gw-new-shop", kind="location", fields_json=json.dumps([{"key": "o", "label": "Owner"}])),
+                    EntityTemplate(world_id=None, name="Any", slug="gw-new-any", fields_json=""),
+                    ImageAlbum(world_id=w, name="Art", image_urls_json=json.dumps(["/uploads/x.png"]))])
+        db.commit()
+    finally:
+        db.close()
+    urls = ["/new", "/new?kind=npc", "/new?kind=location&folder=Places&name=%20%20New%20place%20", "/new?kind=npc&kind=location",
+            "/new?name=" + "x" * 300, "/new?kind=custom_ship&name=a+b"]
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for u in urls:
+            served[u] += _same_page(d, via, u, email)
+    assert all(served.values()), served

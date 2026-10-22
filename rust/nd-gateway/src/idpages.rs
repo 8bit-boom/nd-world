@@ -246,3 +246,54 @@ fn quest_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers
     p.ctx.insert("can_edit_this".into(), json!(can_edit));
     render_with(pages, "quests/detail.html", p.ctx, headers)
 }
+
+/// `_entity_templates_payload`: [{id, name, kind, fields}] of the templates this world may use (built-in first, by name)
+pub fn entity_templates_payload(db: &Connection, wid: i64) -> Option<Vec<Value>> {
+    let mut out = vec![];
+    for t in rows(db, "SELECT * FROM entity_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id", wid)? {
+        let t = t.as_object()?;
+        out.push(json!({"id": t.get("id")?, "name": t.get("name")?, "kind": t.get("kind")?, "fields": json_or_empty_list(t.get("fields_json"))?}));
+    }
+    Some(out)
+}
+
+/// `GET /new?kind=&folder=&name=` (app/main.py `new_form`): the empty entity form, for a viewer with an active world
+pub fn new_entity_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let q = |k: &str| crate::pages::query_param(uri, k);
+    let kind = q("kind").unwrap_or_else(|| "character".into());
+    let folder = q("folder").unwrap_or_default();
+    let name: String = nd_render::text::py_strip(&q("name").unwrap_or_default()).chars().take(256).collect();
+    let players = rows(
+        &db,
+        "SELECT users.* FROM users JOIN world_memberships ON world_memberships.user_id = users.id WHERE world_memberships.world_id = ?1 \
+         ORDER BY users.display_name, world_memberships.id",
+        wid,
+    )?;
+    let mut st = db.prepare("SELECT DISTINCT folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND folder IS NOT NULL").ok()?;
+    let mut folders = st
+        .query_map(rusqlite::params![wid, kind], |r| r.get::<_, String>(0))
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?
+        .into_iter()
+        .filter(|f| !f.is_empty())
+        .collect::<Vec<_>>();
+    folders.sort();
+    folders.dedup();
+    let ctx = &mut p.ctx;
+    ctx.insert("entity".into(), Value::Null);
+    ctx.insert("kind".into(), json!(kind));
+    ctx.insert("world_players".into(), Value::Array(players));
+    ctx.insert("allowed_player_ids".into(), json!([]));
+    ctx.insert("folder_options".into(), json!(folders));
+    ctx.insert("prefill_folder".into(), json!(folder));
+    ctx.insert("prefill_name".into(), json!(name));
+    ctx.insert("entity_templates".into(), Value::Array(entity_templates_payload(&db, wid)?));
+    ctx.insert("custom_fields".into(), json!({}));
+    ctx.insert("gallery_images".into(), Value::Array(crate::gallery::all_world_image_urls(&db, wid)?));
+    render_with(pages, "entities/form.html", p.ctx, headers)
+}

@@ -566,6 +566,18 @@
   "profession": "🎭",
   "race": "🧬"
  },
+ "kind_icons_order": [
+  "character",
+  "location",
+  "organization",
+  "creature",
+  "event",
+  "item",
+  "feat",
+  "note",
+  "race",
+  "profession"
+ ],
  "kinds": [
   "character",
   "location",
@@ -1233,6 +1245,18 @@
    "exceptional"
   ]
  },
+ "subtypes_order": [
+  "character",
+  "location",
+  "organization",
+  "creature",
+  "event",
+  "item",
+  "feat",
+  "note",
+  "race",
+  "profession"
+ ],
  "view_default_size": 2,
  "view_sections": {
   "ai_chat": {

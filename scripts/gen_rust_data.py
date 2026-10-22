@@ -18,6 +18,8 @@ def make() -> dict:
         "view_sections": view_prefs.SECTIONS, "view_sizes": list(view_prefs.SIZES), "view_default_size": view_prefs.DEFAULT_SIZE,
         "nav_static_catalog": nav_menus.STATIC_CATALOG, "nav_default_menus": nav_menus.DEFAULT_NAV_MENUS,
         "kinds": constants.KINDS, "kind_icons": constants.KIND_ICONS, "subtypes": constants.SUBTYPES,
+        # Python's own key order of those two dicts (templates iterate them; the file itself is written with sorted keys)
+        "kind_icons_order": list(constants.KIND_ICONS), "subtypes_order": list(constants.SUBTYPES),
         "view_specs": {s: view_prefs.spec(s) for s in view_prefs.SECTIONS},
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,
