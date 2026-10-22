@@ -2465,3 +2465,67 @@ def test_view_pref_writes_are_pythons(client, seed):
         for a, b_, call in zip(results[0], results[1], calls + [("state",)]):
             assert a[:2] == b_[:2] if len(a) > 2 else a == b_, (call, a, b_)
     assert served >= 25, served
+
+
+def test_home_content_writes_are_pythons(client, seed):
+    import os
+    from pathlib import Path
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    cols = ("home_welcome_md", "home_sections_json", "home_pinned_tiles_json", "home_hidden_kinds_json", "home_title", "home_subtitle", "home_background_url")
+
+    def home():
+        r = _row("worlds", w)
+        return {k: r[k] for k in cols}
+
+    def set_home(vals):
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE worlds SET " + ", ".join(f"{k} = :{k}" for k in vals) + " WHERE id = :w"), {**vals, "w": w})
+            db.commit()
+        finally:
+            db.close()
+
+    start = {"home_sections_json": json.dumps([{"name": "Links", "links": [{"label": "L", "target_type": "url", "target_ref": "/x"}]}, {"name": "", "links": "ab"}]),
+             "home_pinned_tiles_json": json.dumps([{"label": "T", "target_type": "kind", "target_ref": "location"}, {"label": "J", "target_type": "url", "target_ref": "javascript:x"}]),
+             "home_hidden_kinds_json": json.dumps(["location", "location", "nope"]), "home_background_url": "/uploads/old.png", "home_title": "Old", "home_subtitle": None, "home_welcome_md": "w"}
+    pics = _pictures()
+    sections = json.dumps([{"name": "  Top ", "visible_to_players": 0, "links": [{"label": " A ", "target_type": "entity", "target_ref": " 5 ", "icon": "★"},
+                                                                               {"label": "B", "target_type": "url", "target_ref": "ftp://x"}, "junk"]}])
+    calls = [("form", "/worlds/W/home/edit", [("home_welcome_md", "  Hi  "), ("home_sections_json", sections), ("home_pinned_tiles_json", "{bad"),
+                                               ("home_hidden_kinds_json", '["location", "x"]'), ("home_title", " T "), ("home_background_url", " https://e/x.png ")], None),
+             ("form", "/worlds/W/home/edit", [("remove_home_background", "1")], None), ("form", "/worlds/W/home/edit", [("home_background_url", "javascript:alert(1)")], None),
+             ("form", "/worlds/W/home/edit", [("home_title", "Pic")], ("home_background_file", "Photo One.jpg", pics["Photo One.jpg"])),
+             ("form", "/worlds/W/home/edit", [("home_sections_json", json.dumps([{"name": 5}]))], None),
+             ("json", "/api/worlds/W/home/quick-link", {"label": "Q", "target_type": "kind", "target_ref": "location", "section_index": 1}, None),
+             ("json", "/api/worlds/W/home/quick-link", {"label": "Q", "target_type": "url", "target_ref": "/y", "section_index": 9}, None),
+             ("json", "/api/worlds/W/home/quick-link", {"label": "", "target_type": "url", "target_ref": "/y"}, None),
+             ("json", "/api/worlds/W/home/quick-link", {"label": "Q", "target_type": "url", "target_ref": "/y", "section_index": True}, None),
+             ("json", "/api/worlds/W/home/pinned-tile", {"label": "P", "target_type": "url", "target_ref": "https://z"}, None),
+             ("json", "/api/worlds/W/home/pinned-tile", {"label": 5, "target_type": "url", "target_ref": "/z"}, None),
+             ("json", "/api/worlds/W/home/pinned-tile/remove", {"index": 0}, None), ("json", "/api/worlds/W/home/pinned-tile/remove", {"index": 3}, None),
+             ("json", "/api/worlds/W/home/hide-kind", {"kind": "location"}, None), ("json", "/api/worlds/W/home/hide-kind", {"kind": "item"}, None),
+             ("json", "/api/worlds/W/home/hide-kind", {"kind": "zzz"}, None)]
+    served = 0
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    for how, path, payload, file in calls:
+        out = []
+        for side in (d, via):
+            set_home(start)
+            url = path.replace("W", str(w))
+            if how == "form":
+                body, hdr = _multipart(payload, [file] if file else [("home_background_file", "", b"")])
+                r = side.post(url, content=body, headers=hdr, follow_redirects=False)
+            else:
+                r = side.post(url, json=payload)
+            h = home()
+            facts = _picture_facts(up, h["home_background_url"]) if (h["home_background_url"] or "").startswith("/uploads/home/") else h["home_background_url"]
+            out.append((r.status_code, r.text if r.headers.get("content-type", "").startswith("application/json") else r.headers.get("location"),
+                        {**h, "home_background_url": facts}, r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (path, payload, out[0], out[1])
+        served += out[1][3] == "gateway"
+    assert served >= 9, served

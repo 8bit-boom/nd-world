@@ -259,6 +259,11 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/professions/new", profession_new),
     ("/races/{}/delete", race_delete),
     ("/professions/{}/delete", profession_delete),
+    ("/worlds/{}/home/edit", home_edit),
+    ("/api/worlds/{}/home/quick-link", home_quick_link),
+    ("/api/worlds/{}/home/pinned-tile", home_pin_tile),
+    ("/api/worlds/{}/home/pinned-tile/remove", home_unpin_tile),
+    ("/api/worlds/{}/home/hide-kind", home_hide_kind),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -290,7 +295,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
-const PICTURE_FORM_ROUTES: &[&str] = &["/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
+const PICTURE_FORM_ROUTES: &[&str] = &["/worlds/{}/home/edit", "/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
 
 fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
     let (h, ids) = route(path)?;
@@ -5473,4 +5478,217 @@ fn saved_view_delete(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
         return None;
     }
     json_response(&named_views(c, section)?)
+}
+
+// ── the home page's content (app/routers/home_content.py) ────────────────────
+
+const HOME_LINK_TYPES: [&str; 8] = ["entity", "session", "quest", "board", "schematic", "map", "kind", "url"];
+
+/// `str(raw.get(k, ""))` for text; anything else (str() of a number, a list...) is Python's
+fn text_of(m: &Map<String, Value>, k: &str) -> Option<String> {
+    match m.get(k) {
+        None => Some(String::new()),
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// `_sanitize_link(raw, kinds)`: Some(None) = dropped; None = Python's
+fn home_link(raw: &Value, kinds: &[String]) -> Option<Option<Value>> {
+    let Some(m) = raw.as_object() else { return Some(None) };
+    let label = take_chars(&strip(&text_of(m, "label")?), 200);
+    let tt = strip(&text_of(m, "target_type")?);
+    let tr = strip(&text_of(m, "target_ref")?);
+    if label.is_empty() || !HOME_LINK_TYPES.contains(&tt.as_str()) || tr.is_empty() {
+        return Some(None);
+    }
+    if tt == "url" && !(tr.starts_with("http://") || tr.starts_with("https://") || tr.starts_with('/')) {
+        return Some(None);
+    }
+    if tt == "kind" && !kinds.contains(&tr) {
+        return Some(None);
+    }
+    Some(Some(json!({"label": label, "icon": take_chars(&strip(&text_of(m, "icon")?), 32), "target_type": tt, "target_ref": tr,
+                     "visible_to_players": m.get("visible_to_players").map_or(true, |v| py_truthy(Some(v)))})))
+}
+
+/// `json.loads(raw or "[]")` for the sanitizers: bad JSON is [] there; text serde refuses but json.loads may take is Python's
+fn json_list_or_empty(raw: &str) -> Option<Vec<Value>> {
+    let raw = if raw.is_empty() { "[]" } else { raw };
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => Some(a),
+        Ok(_) => Some(vec![]),
+        Err(_) => None,
+    }
+}
+
+/// `_sanitize_sections(raw, kinds)`
+fn home_sections(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
+    let mut out = vec![];
+    for sec in json_list_or_empty(raw)?.iter().take(20) {
+        let Some(sm) = sec.as_object() else { continue };
+        let name = take_chars(&strip(&text_of(sm, "name")?), 100);
+        let links = match sm.get("links") {
+            None | Some(Value::Null) => vec![],
+            Some(v) if !py_truthy(Some(v)) => vec![],
+            Some(Value::Array(a)) => a.clone(),
+            Some(Value::String(_)) => vec![], // a string's characters are no links
+            _ => return None,
+        };
+        let mut kept = vec![];
+        for l in links.iter().take(50) {
+            if let Some(v) = home_link(l, kinds)? {
+                kept.push(v);
+            }
+        }
+        out.push(json!({"name": if name.is_empty() { "Untitled".to_string() } else { name },
+                        "visible_to_players": sm.get("visible_to_players").map_or(true, |v| py_truthy(Some(v))), "links": kept}));
+    }
+    Some(out)
+}
+
+/// `_sanitize_pinned_tiles(raw, kinds)`
+fn home_tiles(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
+    let mut out = vec![];
+    for l in json_list_or_empty(raw)?.iter().take(24) {
+        if let Some(v) = home_link(l, kinds)? {
+            out.push(v);
+        }
+    }
+    Some(out)
+}
+
+/// `_sanitize_hidden_kinds(raw, kinds)`
+fn home_hidden(raw: &str, kinds: &[String]) -> Option<Vec<String>> {
+    let mut seen: Vec<String> = vec![];
+    for k in json_list_or_empty(raw)? {
+        if let Some(k) = k.as_str() {
+            if kinds.iter().any(|x| x == k) && !seen.iter().any(|x| x == k) {
+                seen.push(k.to_string());
+            }
+        }
+    }
+    Some(seen)
+}
+
+/// The world of a home route: the active one (another world's: Python's) and its kinds
+fn home_world(c: &Ctx, id: i64) -> Option<(Map<String, Value>, Vec<String>)> {
+    if Some(id) != c.world_id() {
+        return None;
+    }
+    let w = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", id)?;
+    let kinds = kinds_of(Some(&w))?;
+    Some((w, kinds))
+}
+
+fn world_text(w: &Map<String, Value>, k: &str) -> String {
+    w.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+fn home_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (f, pick) = form_and_file(c, "home_background_file")?;
+    let (_, kinds) = home_world(c, ids[0])?;
+    let or_null = |v: String| if v.is_empty() { Sql::Null } else { s(&v) };
+    let mut set: Vec<(&str, Sql)> = vec![
+        ("home_welcome_md", or_null(strip(f.get("home_welcome_md").unwrap_or("")))),
+        ("home_sections_json", s(&nd_render::py_dumps(&json!(home_sections(f.get("home_sections_json").unwrap_or("[]"), &kinds)?)))),
+        ("home_pinned_tiles_json", s(&nd_render::py_dumps(&json!(home_tiles(f.get("home_pinned_tiles_json").unwrap_or("[]"), &kinds)?)))),
+        ("home_hidden_kinds_json", s(&nd_render::py_dumps(&json!(home_hidden(f.get("home_hidden_kinds_json").unwrap_or("[]"), &kinds)?)))),
+        ("home_title", or_null(take_chars(&strip(f.get("home_title").unwrap_or("")), 200))),
+        ("home_subtitle", or_null(take_chars(&strip(f.get("home_subtitle").unwrap_or("")), 300))),
+    ];
+    let uploaded = match &pick {
+        Some(p) => save_picture(c, p, "home", false)?,
+        None => None,
+    };
+    if let Some(u) = uploaded {
+        set.push(("home_background_url", s(&u)));
+    } else if !strip(f.get("remove_home_background").unwrap_or("")).is_empty() {
+        set.push(("home_background_url", Sql::Null));
+    } else {
+        let pasted = take_chars(&strip(f.get("home_background_url").unwrap_or("")), 512);
+        if !pasted.is_empty() && (pasted.starts_with("http://") || pasted.starts_with("https://") || pasted.starts_with('/')) {
+            set.push(("home_background_url", s(&pasted)));
+        }
+    }
+    orm::update(&c.db, "worlds", ids[0], &set)?;
+    redirect("/")
+}
+
+/// The link a quick-link / pinned-tile request describes (`_sanitize_link` of its label, type and ref)
+fn posted_link(b: &Map<String, Value>, kinds: &[String]) -> Option<Option<Value>> {
+    let mut m = Map::new();
+    for k in ["label", "target_type", "target_ref"] {
+        m.insert(k.into(), b.get(k).cloned().unwrap_or(json!("")));
+    }
+    m.insert("icon".into(), json!(""));
+    m.insert("visible_to_players".into(), json!(true));
+    home_link(&Value::Object(m), kinds)
+}
+
+fn home_quick_link(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (w, kinds) = home_world(c, ids[0])?;
+    let link = posted_link(&b, &kinds)??; // an invalid link's 400: Python's
+    let mut sections = home_sections(&world_text(&w, "home_sections_json"), &kinds)?;
+    let idx = match b.get("section_index").and_then(|v| v.as_i64()).filter(|_| !b.get("section_index").is_some_and(|v| v.is_boolean())) {
+        Some(i) if (0..sections.len() as i64).contains(&i) => i as usize,
+        _ => {
+            if sections.is_empty() {
+                sections.push(json!({"name": "Quick Links", "visible_to_players": true, "links": []}));
+            }
+            0
+        }
+    };
+    if b.get("section_index").is_some_and(|v| v.is_boolean()) {
+        return None; // True is section 1 to Python's isinstance(x, int)
+    }
+    let links = sections[idx].get_mut("links")?.as_array_mut()?;
+    if links.len() >= 50 {
+        return None;
+    }
+    links.push(link);
+    orm::update(&c.db, "worlds", ids[0], &[("home_sections_json", s(&nd_render::py_dumps(&json!(sections))))])?;
+    json_response(&json!({"ok": true, "section_index": idx}))
+}
+
+fn home_pin_tile(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (w, kinds) = home_world(c, ids[0])?;
+    let tile = posted_link(&b, &kinds)??;
+    let mut tiles = home_tiles(&world_text(&w, "home_pinned_tiles_json"), &kinds)?;
+    if tiles.len() >= 24 {
+        return None;
+    }
+    tiles.push(tile.clone());
+    orm::update(&c.db, "worlds", ids[0], &[("home_pinned_tiles_json", s(&nd_render::py_dumps(&json!(tiles))))])?;
+    json_response(&json!({"ok": true, "tile": tile}))
+}
+
+fn home_unpin_tile(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (w, kinds) = home_world(c, ids[0])?;
+    let index = b.get("index").filter(|v| !v.is_boolean())?.as_i64()?;
+    let mut tiles = home_tiles(&world_text(&w, "home_pinned_tiles_json"), &kinds)?;
+    if !(0..tiles.len() as i64).contains(&index) {
+        return None;
+    }
+    tiles.remove(index as usize);
+    orm::update(&c.db, "worlds", ids[0], &[("home_pinned_tiles_json", s(&nd_render::py_dumps(&json!(tiles))))])?;
+    json_response(&json!({"ok": true}))
+}
+
+fn home_hide_kind(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (w, kinds) = home_world(c, ids[0])?;
+    let kind = b.get("kind")?.as_str()?.to_string();
+    if !kinds.contains(&kind) {
+        return None;
+    }
+    let mut hidden = home_hidden(&world_text(&w, "home_hidden_kinds_json"), &kinds)?;
+    if !hidden.contains(&kind) {
+        hidden.push(kind);
+    }
+    orm::update(&c.db, "worlds", ids[0], &[("home_hidden_kinds_json", s(&nd_render::py_dumps(&json!(hidden))))])?;
+    json_response(&json!({"ok": true}))
 }
