@@ -166,6 +166,8 @@ pub struct Simple {
     /// the handler raises 404 without a world
     pub needs_world: bool,
     pub gm_only: bool,
+    /// the handler also needs edit rights on `section` (world_can_edit_section)
+    pub edit: bool,
     /// extra context: (name, SQL with ?1 = world id, one row per item)
     pub lists: &'static [(&'static str, &'static str)],
     /// anything else the handler adds (None = nothing)
@@ -183,14 +185,102 @@ fn android_url(db: &rusqlite::Connection, ctx: &mut serde_json::Map<String, serd
 }
 
 pub const SIMPLE: &[Simple] = &[
-    Simple { path: "/chronicler", template: "chronicler.html", section: Some("chronicler"), needs_world: false, gm_only: false, lists: &[], extra: None },
-    Simple { path: "/background-jobs", template: "background_jobs.html", section: Some("background_jobs"), needs_world: true, gm_only: false, lists: &[], extra: None },
-    Simple { path: "/tools/bulk-edit", template: "bulk_edit.html", section: Some("bulk_edit"), needs_world: false, gm_only: false, lists: &[], extra: None },
-    Simple { path: "/system", template: "system_monitor.html", section: None, needs_world: false, gm_only: true, lists: &[], extra: None },
-    Simple { path: "/boards", template: "boards.html", section: Some("boards"), needs_world: true, gm_only: false,
+    Simple { path: "/chronicler", template: "chronicler.html", section: Some("chronicler"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: None },
+    Simple { path: "/background-jobs", template: "background_jobs.html", section: Some("background_jobs"), needs_world: true, gm_only: false, edit: false, lists: &[], extra: None },
+    Simple { path: "/tools/bulk-edit", template: "bulk_edit.html", section: Some("bulk_edit"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: None },
+    Simple { path: "/system", template: "system_monitor.html", section: None, needs_world: false, gm_only: true, edit: false, lists: &[], extra: None },
+    Simple { path: "/boards", template: "boards.html", section: Some("boards"), needs_world: true, gm_only: false, edit: false,
              lists: &[("boards", "SELECT * FROM invest_boards WHERE world_id = ?1 ORDER BY rowid")], extra: None },
-    Simple { path: "/androidapp", template: "androidapp.html", section: Some("androidapp"), needs_world: false, gm_only: false, lists: &[], extra: Some(android_url) },
+    Simple { path: "/androidapp", template: "androidapp.html", section: Some("androidapp"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(android_url) },
+    Simple { path: "/professions/new", template: "profession_new.html", section: None, needs_world: true, gm_only: false, edit: false, lists: &[], extra: None },
+    Simple { path: "/races/new", template: "race_new.html", section: None, needs_world: true, gm_only: false, edit: false, lists: &[], extra: None },
+    Simple { path: "/boards/new", template: "board_new.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(kinds_and_icons) },
+    Simple { path: "/characters/templates/new", template: "characters/template_form.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[],
+             extra: Some(|_, c| { c.insert("tpl".into(), serde_json::Value::Null); c.insert("fields".into(), serde_json::json!([])); c.insert("system".into(), serde_json::json!({})); Some(()) }) },
+    Simple { path: "/maps/schematic/new", template: "schematic_form.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[],
+             extra: Some(|_, c| { c.insert("schematic".into(), serde_json::Value::Null); Some(()) }) },
+    Simple { path: "/entity-templates/new", template: "entity_template_form.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[],
+             extra: Some(|_, c| { c.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone()); c.insert("tpl".into(), serde_json::Value::Null); c.insert("fields".into(), serde_json::json!([])); Some(()) }) },
+    Simple { path: "/tables/new", template: "tables/form.html", section: Some("tables"), needs_world: false, gm_only: false, edit: true, lists: &[],
+             extra: Some(|_, c| { c.insert("tbl".into(), serde_json::Value::Null); c.insert("entries".into(), serde_json::json!([])); Some(()) }) },
+    Simple { path: "/display", template: "display.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[], extra: None },
+    Simple { path: "/handouts", template: "handouts_gallery.html", section: None, needs_world: false, gm_only: false, edit: false,
+             lists: &[("entities", "SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name, id")], extra: None },
+    Simple { path: "/dreamlands", template: "dreamlands.html", section: Some("dreamlands"), needs_world: false, gm_only: false, edit: false, lists: &[],
+             extra: Some(|db, _| app_flag(db, "dreamlands_enabled")) },
+    Simple { path: "/king-in-yellow", template: "king_in_yellow.html", section: Some("king-in-yellow"), needs_world: false, gm_only: false, edit: false, lists: &[],
+             extra: Some(|db, _| app_flag(db, "king_in_yellow_enabled")) },
+    Simple { path: "/sessions/new", template: "sessions/detail.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(session_new) },
+    Simple { path: "/quests/new", template: "quests/detail.html", section: Some("quests"), needs_world: true, gm_only: false, edit: true,
+             lists: &[("parties", "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id"), ("quests", "SELECT * FROM quests WHERE world_id = ?1 ORDER BY title, id"),
+                      ("entities", "SELECT * FROM entities WHERE world_id = ?1 ORDER BY name, id")],
+             extra: Some(|_, c| {
+                 let d = nd_render::app::data();
+                 c.insert("quest".into(), serde_json::Value::Null);
+                 c.insert("linked_entities".into(), serde_json::json!([]));
+                 c.insert("statuses".into(), d.get("quest_statuses")?.clone());
+                 c.insert("categories".into(), d.get("quest_categories")?.clone());
+                 c.insert("can_edit_this".into(), serde_json::json!(true));
+                 Some(())
+             }) },
+    Simple { path: "/editor", template: "editor_embed.html", section: Some("editor"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(editor) },
+    Simple { path: "/entity-templates", template: "entity_templates_list.html", section: None, needs_world: false, gm_only: false, edit: false,
+             lists: &[("tpls", "SELECT * FROM entity_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id")], extra: Some(entity_templates) },
 ];
+
+/// a feature switch in app_settings: off = Python's "feature disabled" page
+fn app_flag(db: &rusqlite::Connection, col: &str) -> Option<()> {
+    let on: Option<i64> = db.query_row(&format!("SELECT {col} FROM app_settings LIMIT 1"), [], |r| r.get(0)).ok()?;
+    (on == Some(1)).then_some(())
+}
+
+fn world_id_of(c: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
+    c.get("world").and_then(|w| w.get("id")).and_then(|v| v.as_i64())
+}
+
+fn session_new(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    let wid = world_id_of(c).unwrap_or(1);
+    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id").ok()?;
+    let parties = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let last: Option<i64> = db.query_row("SELECT session_num FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 1", [wid], |r| r.get(0)).ok().flatten();
+    let next = match db.query_row("SELECT count(*) FROM game_sessions WHERE world_id = ?1", [wid], |r| r.get::<_, i64>(0)).ok()? {
+        0 => 1,
+        _ => last? + 1,
+    };
+    c.insert("gsession".into(), serde_json::Value::Null);
+    c.insert("parties".into(), serde_json::Value::Array(parties.into_iter().map(serde_json::Value::Object).collect()));
+    c.insert("next_num".into(), serde_json::json!(next));
+    c.insert("linked_combats".into(), serde_json::json!([]));
+    Some(())
+}
+
+fn editor(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    let saved: Option<String> = db.query_row("SELECT editor_external_url FROM app_settings LIMIT 1", [], |r| r.get(0)).ok()?;
+    let env = std::env::var("EDITOR_EXTERNAL_URL").unwrap_or_default();
+    let url = match saved.filter(|s| !s.is_empty()) {
+        Some(s) => s,
+        None => env.trim_end_matches('/').to_string(),
+    };
+    c.insert("editor_url".into(), serde_json::json!(url.trim_end_matches('/')));
+    kinds_and_icons(db, c)
+}
+
+fn entity_templates(_: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    let mut m = serde_json::Map::new();
+    for t in c.get("tpls")?.as_array()? {
+        let raw = t.get("fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+        m.insert(t.get("id")?.as_i64()?.to_string(), serde_json::from_str(raw).ok()?);
+    }
+    c.insert("tpl_fields_map".into(), serde_json::json!({"__intkeys__": serde_json::Value::Object(m)}));
+    c.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone());
+    Some(())
+}
+
+fn kinds_and_icons(_: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    c.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone());
+    c.insert("kind_icons".into(), nd_render::app::data().get("kind_icons")?.clone());
+    Some(())
+}
 
 pub fn simple(pages: &Pages, cfg: &Config, page: &Simple, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
@@ -206,6 +296,13 @@ pub fn simple(pages: &Pages, cfg: &Config, page: &Simple, uri: &Uri, headers: &H
         let w = p.world.as_ref();
         let s = |k: &str| w.and_then(|w| w.get(k)).and_then(|v| v.as_str());
         if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), section)? == "none" {
+            return None;
+        }
+    }
+    if let (Some(section), true, false) = (page.section, page.edit, p.is_gm) {
+        let w = p.world.as_ref();
+        let s = |k: &str| w.and_then(|w| w.get(k)).and_then(|v| v.as_str());
+        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), section)? != "edit" {
             return None;
         }
     }

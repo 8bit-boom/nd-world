@@ -615,6 +615,17 @@
    "ql_type": null
   }
  ],
+ "quest_categories": [
+  "main",
+  "side",
+  "personal"
+ ],
+ "quest_statuses": [
+  "active",
+  "complete",
+  "failed",
+  "secret"
+ ],
  "subtypes": {
   "character": [
    "NPC",

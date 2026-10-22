@@ -688,3 +688,49 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
                 raise AssertionError(f"{email} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:60]))
             served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 2 * len(urls), served
+
+
+SIMPLE_FORM_URLS = ("/professions/new", "/races/new", "/boards/new", "/characters/templates/new", "/maps/schematic/new",
+                    "/entity-templates/new", "/tables/new", "/display", "/handouts", "/dreamlands", "/king-in-yellow", "/sessions/new",
+                    "/quests/new", "/editor", "/entity-templates")
+
+
+def _same_page(d, via, url, who):
+    a, b = d.get(url, follow_redirects=False), via.get(url, follow_redirects=False)
+    assert a.status_code == b.status_code, (who, url, a.status_code, b.status_code)
+    if a.status_code != 200:
+        assert a.headers.get("location") == b.headers.get("location"), (who, url)
+        return False
+    na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+    if na != nb:
+        import difflib
+        raise AssertionError(f"{who} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:60]))
+    return b.headers.get("x-nd-served-by") == "gateway"
+
+
+def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal, get_app_settings
+    from app.models import Entity, EntityTemplate, GameSession, Party, Quest
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        st = get_app_settings(db)
+        st.dreamlands_enabled = st.king_in_yellow_enabled = True
+        st.editor_external_url = "http://editor.example/"
+        w = seed.world_a.id
+        db.add_all([Entity(world_id=w, kind="npc", name="Zed <z>"), Entity(world_id=w, kind="location", name="Alley"),
+                    Party(world_id=w, name="Crew"), GameSession(world_id=w, session_num=7, title="Seven"), Quest(world_id=w, title="Find it"),
+                    EntityTemplate(world_id=w, name="Shop", slug="gw-shop", kind="location", fields_json=json.dumps([{"key": "owner", "label": "Owner"}])),
+                    EntityTemplate(world_id=None, name="Blank", slug="gw-blank", fields_json="")])
+        db.commit()
+    finally:
+        db.close()
+    served = {u: 0 for u in SIMPLE_FORM_URLS}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in SIMPLE_FORM_URLS:
+            served[url] += _same_page(d, via, url, email)
+    assert all(served.values()), served
