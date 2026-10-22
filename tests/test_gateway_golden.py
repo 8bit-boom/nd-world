@@ -1276,3 +1276,29 @@ def test_cockpit_page_is_pythons(client, seed):
         d = _signed_in(email, pw, world)
         served += _same_page(d, _via(d, base), "/cockpit", email)
     assert served >= 2, served
+
+
+def test_display_pages_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import CombatSession, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Schematic(world_id=w, name="TV <map>", slug="tv-map", canvas_width=900), Schematic(world_id=seed.world_b.id, name="B", slug="tv-other"),
+                    Schematic(world_id=w, name="Html", slug="tv-html", is_html=True, html_file="x.html")])
+        fight = CombatSession(world_id=w, name="  The <big> fight  ")
+        tmpl = CombatSession(world_id=w, name="Tmpl", is_template=True)
+        db.add_all([fight, tmpl])
+        db.commit()
+        ids = (fight.id, tmpl.id)
+    finally:
+        db.close()
+    urls = ["/display", "/display/map/tv-map", "/display/map/tv-other", "/display/map/tv-html", "/display/map/none",
+            f"/display/combat/{ids[0]}", f"/display/combat/{ids[1]}", "/display/combat/99999"]
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        for url in urls:
+            served += _same_page(d, _via(d, base), url, email)
+    assert served >= 3, served

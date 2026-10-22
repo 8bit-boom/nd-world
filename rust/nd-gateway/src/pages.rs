@@ -1263,3 +1263,41 @@ pub fn cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> O
     p.ctx.insert("parties_json".into(), Value::Array(parties));
     render_with(pages, "cockpit.html", p.ctx, headers)
 }
+
+/// The second screen (app/routers/display.py, GM only): `/display`, `/display/map/<slug>` (a live map for the table's TV) and
+/// `/display/combat/<id>` (a fight's turn order) - bare pages whose data arrives over the live bus
+pub fn display_pages(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !p.is_gm {
+        return None; // Python's 403
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let path = uri.path();
+    let template = if path == "/display" {
+        "display.html"
+    } else if let Some(slug) = path.strip_prefix("/display/map/").filter(|s| !s.is_empty() && !s.contains('/')) {
+        let sc = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+        let truthy = |v: Option<&Value>| v.is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)) && v != &json!(0) && v != &json!(""));
+        if sc.get("world_id")?.as_i64()? != wid || (truthy(sc.get("is_html")) && truthy(sc.get("html_file"))) {
+            return None;
+        }
+        p.ctx.insert("schematic".into(), Value::Object(sc));
+        "schematic_tv.html"
+    } else {
+        let id = path.strip_prefix("/display/combat/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()))?;
+        let id: i64 = id.parse().ok()?;
+        let (world, name, template): (i64, Option<String>, Option<i64>) =
+            db.query_row("SELECT world_id, name, is_template FROM combat_sessions WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?;
+        if world != wid || template.unwrap_or(0) != 0 {
+            return None;
+        }
+        let title: String = name.map(|n| nd_render::text::py_strip(&n).chars().take(200).collect()).unwrap_or_default();
+        p.ctx.insert("combat_id".into(), json!(id));
+        p.ctx.insert("title".into(), json!(title));
+        "display_combat.html"
+    };
+    render_with(pages, template, p.ctx, headers)
+}
