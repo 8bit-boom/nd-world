@@ -3441,3 +3441,31 @@ def test_advance_is_pythons(client, seed):
         assert out[0][:6] == out[1][:6], (body, out)
         served += out[1][6] == "gateway"
     assert served >= 6, served
+
+
+def test_resource_tracks_are_pythons(client, seed):
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    fields = [{"id": "hp", "type": "resource", "label": "Health (0 = Broken — Wound)", "default_value": "5/8"},
+              {"id": "stam", "type": "resource", "label": "", "default_value": "3"}, {"id": "luck", "type": "resource", "label": "Luck [d6]"},
+              {"id": "nm", "type": "number", "label": "N"}]
+    tpl = _add("SheetTemplate", world_id=seed.world_a.id, name="Custom R", slug=f"custom-r-{os_random_hex()}", sheet_mode="custom", fields_json=json.dumps(fields))
+
+    def fresh():
+        return _pc(world_id=seed.world_a.id, name="Res", sheet_template_id=tpl, custom_fields_json=json.dumps({"stam_current": "2", "other": [1, "x"]}))
+
+    steps = [{"field_id": "hp", "action": "delta", "value": -3}, {"field_id": "hp", "action": "delta", "value": 20}, {"field_id": "hp", "value": 0},
+             {"field_id": "stam", "action": "delta", "value": 4}, {"field_id": "stam", "value": 99}, {"field_id": "luck", "action": "delta", "value": 2},
+             {"field_id": "nm", "value": 1}, {"field_id": "", "value": 1}, {"field_id": "luck", "value": 2}]
+    pcs = (fresh(), fresh())
+    served = 0
+    for body in steps:
+        out = []
+        for side, pid in zip((d, via), pcs):
+            r = side.post(f"/api/characters/{pid}/resource", json=body)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, _row("player_characters", pid)["custom_fields_json"],
+                        [(l["kind"], l["text"], l["undo_json"]) for l in _logs(pid)], r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (body, out)
+        served += out[1][4] == "gateway"
+    assert served >= 6, served

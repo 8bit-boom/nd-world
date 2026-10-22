@@ -209,6 +209,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/feats", pc_feats),
     ("/api/characters/{}/ability-use", pc_ability_use),
     ("/api/characters/{}/advance", pc_advance),
+    ("/api/characters/{}/resource", pc_resource),
     ("/api/characters/{}/ability-ready", pc_ability_ready),
     ("/api/characters/{}/equipment", pc_equipment),
     ("/api/characters/{}/carry-limit", pc_carry_limit),
@@ -7452,4 +7453,106 @@ fn pc_advance(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
     let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
     json_response(&adv_options(c, &pc)?)
+}
+
+// ── custom-sheet resource tracks (characters.py character_resource_async, app/sheet_systems.py) ──
+
+/// `sheet_systems._num` for integers: Ok(Some(n)) / Ok(None) (nothing, or text that is no number); Err for a float (its repr) - Python's
+fn sheet_num(v: Option<&Value>) -> Result<Option<i64>, ()> {
+    match v {
+        None | Some(Value::Null) | Some(Value::Bool(_)) => Ok(None),
+        Some(Value::Number(n)) => n.as_i64().map(Some).ok_or(()),
+        Some(Value::String(t)) => sheet_num_text(t),
+        Some(_) => Err(()),
+    }
+}
+
+fn sheet_num_text(t: &str) -> Result<Option<i64>, ()> {
+    let t = strip(t);
+    if t.is_empty() {
+        return Ok(None);
+    }
+    match py_int_text(&t) {
+        Ok(n) => Ok(Some(n)),
+        Err(PyErr::Value) if t.parse::<f64>().is_err() && t.is_ascii() => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+/// `short_label`
+fn sheet_short_label(label: &str) -> Option<String> {
+    if label.contains('\n') || label.chars().any(|ch| ('\x1c'..='\x1f').contains(&ch)) {
+        return None;
+    }
+    let re = regex::Regex::new(r"\s*[(\[—–].*$").ok()?;
+    let cut = strip(&re.replace(label, ""));
+    Some(if cut.is_empty() { strip(label) } else { cut })
+}
+
+fn pc_resource(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let tid = pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0)?;
+    let tpl = row(&c.db, "SELECT * FROM sheet_templates WHERE id = ?1", tid)?;
+    if tpl.get("sheet_mode").and_then(|v| v.as_str()) != Some("custom") {
+        return None;
+    }
+    let fields = match serde_json::from_str::<Value>(tpl.get("fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => vec![],
+        Err(_) => return None,
+    };
+    let raw_cf = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}").to_string();
+    let mut cf = match canonical_json(&raw_cf) {
+        Some(Value::Object(o)) => o,
+        Some(_) => Map::new(),
+        None => return None,
+    };
+    let fid = match py_or(&[b.get("field_id")]) {
+        None => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        Some(_) => return None,
+    };
+    let field = fields.iter().filter_map(|f| f.as_object()).find(|f| {
+        f.get("type").and_then(|t| t.as_str()) == Some("resource") && py_truthy(f.get("id")) && f.get("id").and_then(|i| i.as_str()) == Some(fid.as_str())
+    })?;
+    // an earlier resource field with a non-string id would still be read by Python: only plain templates are ported
+    if fields.iter().filter_map(|f| f.as_object()).any(|f| f.get("type").and_then(|t| t.as_str()) == Some("resource") && py_truthy(f.get("id")) && !f["id"].is_string()) {
+        return None;
+    }
+    let dv = match py_or(&[field.get("default_value")]) {
+        None => "0/0".to_string(),
+        Some(Value::String(t)) => t.clone(),
+        Some(_) => return None,
+    };
+    let mut halves = dv.split('/');
+    let dcur = sheet_num_text(halves.next().unwrap_or("")).ok()?.unwrap_or(0);
+    let dmax = if dv.contains('/') { sheet_num_text(halves.next().unwrap_or("")).ok()?.unwrap_or(0) } else { 0 };
+    let cur = sheet_num(cf.get(&format!("{fid}_current"))).ok()?.unwrap_or(dcur);
+    let mx = sheet_num(cf.get(&format!("{fid}_max"))).ok()?.unwrap_or(dmax);
+    let label_src = match py_or(&[field.get("label")]) {
+        Some(Value::String(t)) => t.clone(),
+        Some(_) => String::new(),
+        None => fid.clone(),
+    };
+    let label = sheet_short_label(&label_src)?;
+    let val = body_int(&b, "value")?;
+    let delta = b.get("action").map_or(false, |a| a.as_str() == Some("delta"));
+    if !delta && b.get("action").is_some_and(|a| !a.is_string()) {
+        return None;
+    }
+    let mut new = if delta { (cur + val).max(0) } else { val.max(0) };
+    if mx != 0 {
+        new = new.min(mx);
+    }
+    if new != cur {
+        let prev = cf.get(&format!("{fid}_current")).cloned().unwrap_or(json!(cur));
+        let mut values = Map::new();
+        values.insert(format!("{fid}_current"), prev);
+        char_log(c, &pc, "resource", &format!("{label} {cur} \u{2192} {new}"), &json!({"op": "cf", "values": values}))?;
+    }
+    cf.insert(format!("{fid}_current"), json!(new));
+    orm::update(&c.db, "player_characters", ids[0], &[("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf))))])?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"field_id": fid, "current": new, "max": mx}))
 }
