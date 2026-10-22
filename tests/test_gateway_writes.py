@@ -6,6 +6,7 @@ compares the answers (status, redirect, JSON) and the rows afterwards: every col
 Runs only with a gateway to talk to (ND_TEST_BASE_URL) and Python directly (ND_GOLDEN_DIRECT_URL), like tests/test_gateway_golden.py.
 """
 import json
+import os
 from urllib.parse import urlencode
 
 import pytest
@@ -2529,3 +2530,53 @@ def test_home_content_writes_are_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (path, payload, out[0], out[1])
         served += out[1][3] == "gateway"
     assert served >= 9, served
+
+
+def test_account_plain_writes_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app.models import User
+    base = str(client.base_url)
+    served = 0
+    for email, pw, world in _people(seed):
+        db = SessionLocal()
+        try:
+            uid = db.query(User).filter(User.email == email).first().id
+            other = seed.gm.id if uid != seed.gm.id else seed.player_a.id
+        finally:
+            db.close()
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in ({"display_name": "  Pat  "}, {"display_name": ""}, {"display_name": "x" * 300}, {}):
+            out = []
+            for side in (d, via):
+                db = SessionLocal()
+                try:
+                    db.execute(text("UPDATE users SET display_name = 'Old' WHERE id = :u"), {"u": uid}); db.commit()
+                finally:
+                    db.close()
+                r = side.post("/account/name", data=form, follow_redirects=False)
+                out.append((r.status_code, r.headers.get("location"), _row("users", uid)["display_name"], r.headers.get("x-nd-served-by")))
+            assert out[0][:3] == out[1][:3], (form, out)
+            served += out[1][3] == "gateway"
+        for table in ("api_tokens", "trusted_devices"):
+            path = "tokens" if table == "api_tokens" else "trusted-devices"
+            for owner in (uid, other):
+                ids = []
+                for _ in range(2):
+                    db = SessionLocal()
+                    try:
+                        if table == "api_tokens":
+                            r = db.execute(text("INSERT INTO api_tokens (user_id, token_hash, label) VALUES (:u, :h, 'l')"), {"u": owner, "h": os.urandom(8).hex()})
+                        else:
+                            r = db.execute(text("INSERT INTO trusted_devices (user_id, token_hash, expires_at) VALUES (:u, :h, '2099-01-01 00:00:00')"),
+                                           {"u": owner, "h": os.urandom(8).hex()})
+                        db.commit(); ids.append(r.lastrowid)
+                    finally:
+                        db.close()
+                ra = d.post(f"/account/{path}/{ids[0]}/revoke", follow_redirects=False)
+                rb = via.post(f"/account/{path}/{ids[1]}/revoke", follow_redirects=False)
+                _same_answer(ra, rb)
+                assert (_row(table, ids[0]) is None) == (_row(table, ids[1]) is None)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 12, served

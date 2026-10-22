@@ -88,6 +88,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /races/new`, `/professions/new` (with an optional picture), `/races/<id>/delete`, `/professions/<id>/delete` (the built-in lists, parsed from the rules markdown: Python's) | 29 |
 | `POST /api/view-prefs/<section>`, `DELETE /api/view-prefs/<section>`, `POST /api/saved-views/<section>`, `DELETE /api/saved-views/<section>/<id>` (`view_prefs.clean` on the registry in app_data.json; the "site" layout and reset-all, which also live in the session cookie, and presets: Python's); DELETE routes, and requests with no body at all | 30 |
 | `POST /worlds/<id>/home/edit` (with its background picture), `/api/worlds/<id>/home/quick-link`, `/pinned-tile`, `/pinned-tile/remove`, `/hide-kind` (the home sanitizers; the active world only) | 31 |
+| `POST /account/name`, `/account/tokens/<id>/revoke`, `/account/trusted-devices/<id>/revoke` (password, 2FA and new tokens - hashing, one-time secrets on a rendered page: Python's) | 32 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
