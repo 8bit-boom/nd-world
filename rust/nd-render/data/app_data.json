@@ -17,6 +17,513 @@
    "Thirteen moons — 13 months × 28 days, 7-day weeks"
   ]
  ],
+ "calendar_presets_clean": [
+  [
+   "hunt_in_the_moonlight",
+   [
+    [
+     "label",
+     "Hunt in the Moonlight — Moonfall Calendar (13 × 25, 5-day weeks)"
+    ],
+    [
+     "era_name",
+     "After the Last Flight"
+    ],
+    [
+     "year_format",
+     "Year {year}"
+    ],
+    [
+     "days_per_week",
+     5
+    ],
+    [
+     "weekday_names",
+     []
+    ],
+    [
+     "months",
+     [
+      {
+       "days": 25,
+       "name": "Ashwake"
+      },
+      {
+       "days": 25,
+       "name": "Rainscar"
+      },
+      {
+       "days": 25,
+       "name": "Blackbloom"
+      },
+      {
+       "days": 25,
+       "name": "Cinderfast"
+      },
+      {
+       "days": 25,
+       "name": "Hollowtide"
+      },
+      {
+       "days": 25,
+       "name": "Gildfall"
+      },
+      {
+       "days": 25,
+       "name": "Veilwane"
+      },
+      {
+       "days": 25,
+       "name": "Glassfrost"
+      },
+      {
+       "days": 25,
+       "name": "Emberwane"
+      },
+      {
+       "days": 25,
+       "name": "Nightroot"
+      },
+      {
+       "days": 25,
+       "name": "Palevigil"
+      },
+      {
+       "days": 25,
+       "name": "Thawblood"
+      },
+      {
+       "days": 25,
+       "name": "Last Lantern"
+      }
+     ]
+    ],
+    [
+     "moons",
+     [
+      {
+       "color": "#888888",
+       "cycle_days": 25,
+       "name": "The Moon",
+       "offset": 0
+      }
+     ]
+    ],
+    [
+     "holidays",
+     []
+    ]
+   ]
+  ],
+  [
+   "earth_like",
+   [
+    [
+     "label",
+     "Earth-like — 12 months, 365 days, Monday–Sunday"
+    ],
+    [
+     "era_name",
+     "Common Era"
+    ],
+    [
+     "year_format",
+     "Year {year}"
+    ],
+    [
+     "days_per_week",
+     7
+    ],
+    [
+     "weekday_names",
+     [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday"
+     ]
+    ],
+    [
+     "months",
+     [
+      {
+       "color": "#7aa7d9",
+       "days": 31,
+       "name": "January",
+       "season": "Winter"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 28,
+       "name": "February",
+       "season": "Winter"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 31,
+       "name": "March",
+       "season": "Spring"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 30,
+       "name": "April",
+       "season": "Spring"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 31,
+       "name": "May",
+       "season": "Spring"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 30,
+       "name": "June",
+       "season": "Summer"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 31,
+       "name": "July",
+       "season": "Summer"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 31,
+       "name": "August",
+       "season": "Summer"
+      },
+      {
+       "color": "#d9824a",
+       "days": 30,
+       "name": "September",
+       "season": "Autumn"
+      },
+      {
+       "color": "#d9824a",
+       "days": 31,
+       "name": "October",
+       "season": "Autumn"
+      },
+      {
+       "color": "#d9824a",
+       "days": 30,
+       "name": "November",
+       "season": "Autumn"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 31,
+       "name": "December",
+       "season": "Winter"
+      }
+     ]
+    ],
+    [
+     "moons",
+     [
+      {
+       "color": "#d8d8c8",
+       "cycle_days": 29,
+       "name": "Moon",
+       "offset": 0
+      }
+     ]
+    ],
+    [
+     "holidays",
+     [
+      {
+       "day": 1,
+       "month": 0,
+       "name": "New Year's Day"
+      },
+      {
+       "day": 21,
+       "month": 5,
+       "name": "Midsummer"
+      },
+      {
+       "day": 21,
+       "month": 11,
+       "name": "Midwinter"
+      }
+     ]
+    ]
+   ]
+  ],
+  [
+   "fantasy_classic",
+   [
+    [
+     "label",
+     "Fantasy classic — 12 months × 30 days, 7-day weeks"
+    ],
+    [
+     "era_name",
+     "Age of Embers"
+    ],
+    [
+     "year_format",
+     "Year {year}"
+    ],
+    [
+     "days_per_week",
+     7
+    ],
+    [
+     "weekday_names",
+     [
+      "Starday",
+      "Moonday",
+      "Fireday",
+      "Waveday",
+      "Windday",
+      "Stoneday",
+      "Restday"
+     ]
+    ],
+    [
+     "months",
+     [
+      {
+       "color": "#7aa7d9",
+       "days": 30,
+       "name": "Frostwake",
+       "season": "Winter"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 30,
+       "name": "Thawmoon",
+       "season": "Spring"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 30,
+       "name": "Greentide",
+       "season": "Spring"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 30,
+       "name": "Sunhigh",
+       "season": "Spring"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 30,
+       "name": "Longlight",
+       "season": "Summer"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 30,
+       "name": "Harvestfall",
+       "season": "Summer"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 30,
+       "name": "Amberfall",
+       "season": "Summer"
+      },
+      {
+       "color": "#d9824a",
+       "days": 30,
+       "name": "Duskmere",
+       "season": "Autumn"
+      },
+      {
+       "color": "#d9824a",
+       "days": 30,
+       "name": "Stormtide",
+       "season": "Autumn"
+      },
+      {
+       "color": "#d9824a",
+       "days": 30,
+       "name": "Coldreach",
+       "season": "Autumn"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 30,
+       "name": "Deepwinter",
+       "season": "Winter"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 30,
+       "name": "Yearsend",
+       "season": "Winter"
+      }
+     ]
+    ],
+    [
+     "moons",
+     [
+      {
+       "color": "#c9d4e6",
+       "cycle_days": 30,
+       "name": "Moon",
+       "offset": 0
+      }
+     ]
+    ],
+    [
+     "holidays",
+     [
+      {
+       "day": 15,
+       "month": 4,
+       "name": "Midsummer Feast"
+      },
+      {
+       "day": 30,
+       "month": 11,
+       "name": "Year's End Vigil"
+      }
+     ]
+    ]
+   ]
+  ],
+  [
+   "lunar_13x28",
+   [
+    [
+     "label",
+     "Thirteen moons — 13 months × 28 days, 7-day weeks"
+    ],
+    [
+     "era_name",
+     "Year of the Moons"
+    ],
+    [
+     "year_format",
+     "Year {year}"
+    ],
+    [
+     "days_per_week",
+     7
+    ],
+    [
+     "weekday_names",
+     [
+      "Starday",
+      "Moonday",
+      "Fireday",
+      "Waveday",
+      "Windday",
+      "Stoneday",
+      "Restday"
+     ]
+    ],
+    [
+     "months",
+     [
+      {
+       "color": "#7aa7d9",
+       "days": 28,
+       "name": "Wolf Moon",
+       "season": "Winter"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 28,
+       "name": "Snow Moon",
+       "season": "Winter"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 28,
+       "name": "Worm Moon",
+       "season": "Spring"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 28,
+       "name": "Pink Moon",
+       "season": "Spring"
+      },
+      {
+       "color": "#6fbf73",
+       "days": 28,
+       "name": "Flower Moon",
+       "season": "Spring"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 28,
+       "name": "Strawberry Moon",
+       "season": "Summer"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 28,
+       "name": "Buck Moon",
+       "season": "Summer"
+      },
+      {
+       "color": "#e6b84a",
+       "days": 28,
+       "name": "Sturgeon Moon",
+       "season": "Summer"
+      },
+      {
+       "color": "#d9824a",
+       "days": 28,
+       "name": "Harvest Moon",
+       "season": "Autumn"
+      },
+      {
+       "color": "#d9824a",
+       "days": 28,
+       "name": "Hunter's Moon",
+       "season": "Autumn"
+      },
+      {
+       "color": "#d9824a",
+       "days": 28,
+       "name": "Beaver Moon",
+       "season": "Autumn"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 28,
+       "name": "Cold Moon",
+       "season": "Winter"
+      },
+      {
+       "color": "#7aa7d9",
+       "days": 28,
+       "name": "Blue Moon",
+       "season": "Winter"
+      }
+     ]
+    ],
+    [
+     "moons",
+     [
+      {
+       "color": "#d6dcec",
+       "cycle_days": 28,
+       "name": "The Moon",
+       "offset": 0
+      }
+     ]
+    ],
+    [
+     "holidays",
+     []
+    ]
+   ]
+  ]
+ ],
  "combat_rule_labels": [
   [
    "generic",

@@ -614,3 +614,39 @@ pub fn calendar_year(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     ctx.insert("year_delta".into(), json!(year - cur_year));
     render_with(pages, "calendar/year.html", p.ctx, headers)
 }
+
+/// `GET /calendar/config` (app/routers/calendar.py `calendar_config_form`): the calendar settings, for GM / assistant with calendar edit
+pub fn calendar_config(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !(edit_level(&p, &world, "calendar")? && (p.is_gm || p.role.as_deref() == Some("assistant"))) {
+        return None;
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let Cal { config, months, .. } = load(&db, wid)?;
+    let c = config.as_object()?;
+    let current_day = opt_int(c, "current_day", 1)?.max(1);
+    let (cur_year, cur_idx, cur_dom) = resolve_date(&months, current_day);
+    let mut presets = Map::new();
+    for pair in nd_render::app::data().get("calendar_presets_clean")?.as_array()? {
+        let mut inner = Map::new();
+        for kv in pair.get(1)?.as_array()? {
+            inner.insert(kv.get(0)?.as_str()?.to_string(), kv.get(1)?.clone());
+        }
+        presets.insert(pair.get(0)?.as_str()?.to_string(), Value::Object(inner));
+    }
+    let dpw = days_per_week(c)?;
+    let fmt = chars(nd_render::text::py_strip(opt_str(c, "year_format")?), 40);
+    let ctx = &mut p.ctx;
+    ctx.insert("config".into(), config.clone());
+    ctx.insert("calendar_presets".into(), Value::Object(presets));
+    ctx.insert("weekday_names_text".into(), json!(weekday_names(c, dpw as usize)?.join(", ")));
+    ctx.insert("year_format".into(), json!(if fmt.contains("{year}") { fmt } else { "Year {year}".to_string() }));
+    ctx.insert("holidays".into(), Value::Array(holidays(c, &months)?.into_iter().map(|(_, _, h)| h).collect()));
+    ctx.insert("cur_year".into(), json!(cur_year));
+    ctx.insert("cur_month_idx".into(), json!(cur_idx));
+    ctx.insert("cur_dom".into(), json!(cur_dom));
+    render_with(pages, "calendar/config.html", p.ctx, headers)
+}

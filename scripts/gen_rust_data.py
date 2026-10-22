@@ -22,6 +22,9 @@ def make() -> dict:
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,
         "calendar_preset_labels": [[k, v["label"]] for k, v in calendar_config.CALENDAR_PRESETS.items()],
+        # the calendar settings page's presets: label + the cleaned calendar, as ordered pairs (the file is written with sorted keys)
+        "calendar_presets_clean": [[k, list({"label": v["label"], **calendar_config.clean_calendar_config(v)}.items())]
+                                   for k, v in calendar_config.CALENDAR_PRESETS.items()],
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }
 

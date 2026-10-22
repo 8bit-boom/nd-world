@@ -678,7 +678,7 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
     urls = ("/calendar", "/calendar?year=1&month=0", "/calendar?month=-1", "/calendar?month=7&year=3", "/calendar?year=x",
             "/calendar?year=0&none=next", "/calendar?year=99999&month=2", "/calendar?year=500000", "/calendar?none=prev&month=1",
             "/calendar/agenda", "/calendar/year", "/calendar/year?year=2", "/calendar/year?year=0", "/calendar/year?year=x", "/calendar/year?year=99999",
-            "/calendar/year?year=%201")
+            "/calendar/year?year=%201", "/calendar/config")
     served = 0
     for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
                              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
@@ -694,7 +694,7 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
                 import difflib
                 raise AssertionError(f"{email} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:60]))
             served += b.headers.get("x-nd-served-by") == "gateway"
-    assert served >= 2 * (len(urls) - 1), served  # "?year=%201": a number with a space is Python's
+    assert served >= 2 * (len(urls) - 2) + 1, served  # "?year=%201" is Python's; /calendar/config is the GM's only
 
 
 SIMPLE_FORM_URLS = ("/professions/new", "/races/new", "/boards/new", "/characters/templates/new", "/maps/schematic/new",
