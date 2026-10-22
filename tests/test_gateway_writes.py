@@ -1800,3 +1800,60 @@ def test_media_library_writes_are_pythons(client, seed):
                 assert res[0][0].status_code == 400
                 assert _row("page_docs", res[0][1]) is not None and _row("page_docs", res[1][1]) is not None
     assert served >= 30, served
+
+
+def test_image_album_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"images": {"player": "edit", "assistant": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        parent = _add("ImageAlbum", world_id=w, name="P", image_urls_json="[]")
+        far = _add("ImageAlbum", world_id=seed.world_b.id, name="F", image_urls_json="[]")
+        for form in ({"name": " Maps "}, {}, {"parent_id": str(parent)}, {"parent_id": str(far)}, {"parent_id": "٣"}):
+            ra = d.post("/images/albums/new", data=form, follow_redirects=False)
+            na = _newest("image_albums")
+            rb = via.post("/images/albums/new", data=form, follow_redirects=False)
+            nb = _newest("image_albums")
+            created = ra.status_code == 303 and "/albums/" in ra.headers.get("location", "")
+            _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+            if created:
+                _same_rows(na, nb)
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for path, form in (("rename", {"name": " R "}), ("rename", {"name": ""}), ("move", {"parent_id": str(parent)}), ("move", {"parent_id": ""}),
+                           ("move", {"parent_id": "SELF"}), ("move", {"parent_id": "CHILD"}), ("move", {"parent_id": "x"}), ("move", {"parent_id": str(far)}), ("delete", {})):
+            pairs = []
+            for _ in range(2):
+                a = _add("ImageAlbum", world_id=w, name="A", image_urls_json="[]", parent_id=parent)
+                ch = _add("ImageAlbum", world_id=w, name="C", image_urls_json="[]", parent_id=a)
+                pairs.append((a, ch))
+            res = []
+            for side, (a, ch) in ((d, pairs[0]), (via, pairs[1])):
+                ff = {k: v.replace("SELF", str(a)).replace("CHILD", str(ch)) for k, v in form.items()}
+                res.append(side.post(f"/images/albums/{a}/{path}", data=ff, follow_redirects=False))
+            _same_answer(res[0], res[1], pairs[0][0], pairs[1][0])
+            for k in range(2):
+                _same_rows(_row("image_albums", pairs[0][k]), _row("image_albums", pairs[1][k]), ignore=("parent_id",))
+            served += res[1].headers.get("x-nd-served-by") == "gateway"
+        start = json.dumps(["/uploads/a.png", "/uploads/b.png", None])
+        for path, body in (("add", {"urls": ["/uploads/c.png", "/uploads/a.png", "", 5, "/uploads/c.png"]}), ("add", {"urls": "x"}), ("add", {}),
+                           ("remove", {"url": "/uploads/a.png"}), ("remove", {"urls": ["/uploads/b.png", "/uploads/zz.png"]}), ("remove", {}),
+                           ("remove", {"urls": [{"x": 1}]}), ("remove", {"urls": [5]})):
+            ids = [_add("ImageAlbum", world_id=w, name="U", image_urls_json=start) for _ in range(2)]
+            before = [_row("image_albums", i) for i in ids]
+            ra = d.post(f"/images/albums/{ids[0]}/{path}", json=body)
+            rb = via.post(f"/images/albums/{ids[1]}/{path}", json=body)
+            _same_answer(ra, rb)
+            _same_rows(_row("image_albums", ids[0]), _row("image_albums", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 10, served   # the GM's

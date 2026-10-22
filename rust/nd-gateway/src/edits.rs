@@ -205,6 +205,12 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/pages/albums/{}/delete", pages_album_delete),
     ("/pages/{}/edit", pages_item_edit),
     ("/pages/{}/delete", pages_item_delete),
+    ("/images/albums/new", image_album_new),
+    ("/images/albums/{}/rename", image_album_rename),
+    ("/images/albums/{}/move", image_album_move),
+    ("/images/albums/{}/delete", image_album_delete),
+    ("/images/albums/{}/add", image_album_add),
+    ("/images/albums/{}/remove", image_album_remove),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -3905,4 +3911,134 @@ fn lib_item_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>
         Some(a) if a != 0 => redirect(&format!("{}/albums/{a}", lib.base)),
         _ => redirect(lib.base),
     }
+}
+
+// ── image albums (app/routers/gallery.py) ────────────────────────────────────
+
+/// The gallery's library: albums only (image albums hold urls, not files)
+const IMAGES: Lib = Lib { section: "images", base: "/images", albums: "image_albums", items: "", files: &[], entity: false, now_playing: false, sheets: false };
+
+/// The gallery's write check (`_require_edit_section`; no require_can_edit there)
+fn images_editor(c: &Ctx) -> Option<i64> {
+    let wid = c.world_id()?;
+    c.can_edit_section("images")?.then_some(wid)
+}
+
+/// Every album nested under `root` (media_albums.descendant_albums)
+fn album_descendants(c: &Ctx, table: &str, root: i64) -> Option<Vec<i64>> {
+    let (mut all, mut frontier) = (vec![], vec![root]);
+    while !frontier.is_empty() {
+        let mut next = vec![];
+        for pid in &frontier {
+            let mut stmt = c.db.prepare(&format!("SELECT id FROM {table} WHERE parent_id = ?1")).ok()?;
+            for r in stmt.query_map([pid], |r| r.get::<_, i64>(0)).ok()? {
+                next.push(r.ok()?);
+            }
+        }
+        all.extend(next.iter().copied());
+        frontier = next;
+    }
+    Some(all)
+}
+
+fn image_album_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = images_editor(c)?;
+    let name = take_chars(&strip(f.get("name").unwrap_or("")), 120);
+    let name = if name.is_empty() { "Untitled Album".to_string() } else { name };
+    let count: i64 = c.db.query_row("SELECT COUNT(*) FROM image_albums WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    if count >= 100 {
+        return None;
+    }
+    let parent = match digit_field(f.get("parent_id").unwrap_or("")).ok()? {
+        Some(pid) => Sql::Integer(lib_album(c, &IMAGES, wid, pid)?.get("id")?.as_i64()?),
+        None => Sql::Null,
+    };
+    let id = orm::insert(&c.db, "image_albums", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("image_urls_json", s("[]")), ("parent_id", parent)])?;
+    redirect(&format!("/images/albums/{id}"))
+}
+
+fn image_album_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = images_editor(c)?;
+    lib_album(c, &IMAGES, wid, ids[0])?;
+    let name = take_chars(&strip(f.get("name").unwrap_or("")), 120);
+    if !name.is_empty() {
+        orm::update(&c.db, "image_albums", ids[0], &[("name", s(&name))])?;
+    }
+    redirect(&format!("/images/albums/{}", ids[0]))
+}
+
+fn image_album_move(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = images_editor(c)?;
+    lib_album(c, &IMAGES, wid, ids[0])?;
+    let raw = strip(f.get("parent_id").unwrap_or(""));
+    let parent = if raw.is_empty() {
+        Sql::Null
+    } else {
+        let pid = digit_field(&raw).ok()??; // not digits: the 400, Python's
+        let np = lib_album(c, &IMAGES, wid, pid)?.get("id")?.as_i64()?;
+        if np == ids[0] || album_descendants(c, "image_albums", ids[0])?.contains(&np) {
+            return None;
+        }
+        Sql::Integer(np)
+    };
+    orm::update(&c.db, "image_albums", ids[0], &[("parent_id", parent)])?;
+    redirect(&format!("/images/albums/{}", ids[0]))
+}
+
+fn image_album_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = images_editor(c)?;
+    lib_album(c, &IMAGES, wid, ids[0])?;
+    for d in album_descendants(c, "image_albums", ids[0])? {
+        c.db.execute("DELETE FROM image_albums WHERE id = ?1", [d]).ok()?;
+    }
+    c.db.execute("DELETE FROM image_albums WHERE id = ?1", [ids[0]]).ok()?;
+    redirect("/images")
+}
+
+/// `_load_urls(album)` (stored text serde would read differently: Python's)
+fn album_urls(album: &Map<String, Value>) -> Option<Vec<Value>> {
+    let raw = album.get("image_urls_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    Some(match canonical_json(raw)? {
+        Value::Array(a) => a,
+        _ => vec![],
+    })
+}
+
+fn image_album_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let wid = images_editor(c)?;
+    let album = lib_album(c, &IMAGES, wid, ids[0])?;
+    let urls = b.get("urls")?.as_array()?.clone();
+    let mut current = album_urls(&album)?;
+    for u in urls {
+        if u.as_str().is_some_and(|x| !x.is_empty()) && !current.contains(&u) && current.len() < 500 {
+            current.push(u);
+        }
+    }
+    let n = current.len();
+    orm::update(&c.db, "image_albums", ids[0], &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(current))))])?;
+    json_response(&json!({"ok": true, "count": n}))
+}
+
+fn image_album_remove(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let wid = images_editor(c)?;
+    let album = lib_album(c, &IMAGES, wid, ids[0])?;
+    let gone: Vec<Value> = match b.get("urls") {
+        Some(Value::Array(a)) => a.clone(),
+        _ => vec![b.get("url").cloned().unwrap_or(Value::Null)],
+    };
+    if gone.iter().any(|g| !(g.is_string() || g.is_null())) {
+        return None; // set() of other values (unhashable, or == across types): Python's
+    }
+    let current: Vec<Value> = album_urls(&album)?.into_iter().filter(|u| !gone.contains(u)).collect();
+    if current.iter().any(|u| !(u.is_string() || u.is_null())) {
+        return None;
+    }
+    let n = current.len();
+    orm::update(&c.db, "image_albums", ids[0], &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(current))))])?;
+    json_response(&json!({"ok": true, "count": n}))
 }
