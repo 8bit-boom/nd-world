@@ -1302,3 +1302,33 @@ def test_display_pages_are_pythons(client, seed):
         for url in urls:
             served += _same_page(d, _via(d, base), url, email)
     assert served >= 3, served
+
+
+def test_player_cockpit_page_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import Party, PlayerCharacter
+    base = str(client.base_url)
+    w = seed.world_a.id
+    stats = json.dumps([{"id": "str", "value": 3}, {"id": "dex", "value": 2}, {"id": "wil", "value": 2}])
+    db = SessionLocal()
+    try:
+        a1 = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Zora <z>", stats_json=stats, current_hp=0, xp=400, level=1,
+                             conditions_json=json.dumps(["Prone", 3, "Dazed", "a", "b", "c"]), armor_class=12)
+        a2 = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Abe", current_hp=5)
+        b1 = PlayerCharacter(world_id=w, owner_user_id=seed.player_b.id, name="Bea", stats_json=stats, current_hp=3, temp_hp=2)
+        free = PlayerCharacter(world_id=w, name="Nobody")
+        db.add_all([a1, a2, b1, free])
+        db.flush()
+        db.add_all([Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([a1.id, b1.id, 999])), Party(world_id=w, name="Other", member_pc_ids_json=json.dumps([b1.id])),
+                    Party(world_id=w, name="Bad", member_pc_ids_json="not json")])
+        db.commit()
+        ids = (a1.id, b1.id, free.id)
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        for url in ("/player-cockpit", f"/player-cockpit?pc={ids[0]}", f"/player-cockpit?pc={ids[1]}", f"/player-cockpit?pc={ids[2]}", "/player-cockpit?pc=x"):
+            served += _same_page(d, _via(d, base), url, email)
+    assert served >= 10, served

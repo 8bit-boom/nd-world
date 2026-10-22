@@ -1236,32 +1236,42 @@ pub fn cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> O
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
     let wid = p.world.as_ref()?.get("id")?.as_i64()?; // no world: Python's 404
-    let pairs = |sql: &str| -> Option<Vec<(Value, Value)>> {
-        let mut st = db.prepare(sql).ok()?;
-        let rows = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-        Some(rows.into_iter().map(|m| (m.get("a").cloned().unwrap_or(Value::Null), m.get("b").cloned().unwrap_or(Value::Null))).collect())
-    };
-    let maps: Vec<Value> = pairs("SELECT slug AS a, name AS b FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name")?
-        .into_iter().map(|(a, b)| json!({"slug": a, "name": b})).collect();
-    let parties: Vec<Value> = pairs("SELECT id AS a, name AS b FROM parties WHERE world_id = ?1 ORDER BY name")?
-        .into_iter().map(|(a, b)| json!({"id": a, "name": b})).collect();
+    cockpit_pickers(&db, cfg, wid, &mut p.ctx)?;
+    let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
+    let mut parties = vec![];
+    for r in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
+        let (id, name) = r.ok()?;
+        parties.push(json!({"id": id, "name": name}));
+    }
+    p.ctx.insert("parties_json".into(), Value::Array(parties));
+    render_with(pages, "cockpit.html", p.ctx, headers)
+}
+
+/// What both cockpits' Add-panel modal picks from: the world's drawn maps (not uploaded HTML ones) and its file maps, plus the caps
+fn cockpit_pickers(db: &rusqlite::Connection, cfg: &Config, wid: i64, ctx: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    use serde_json::{json, Value};
+    let mut maps = vec![];
+    let mut st = db.prepare("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name").ok()?;
+    for r in st.query_map([wid], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
+        let (slug, name) = r.ok()?;
+        maps.push(json!({"slug": slug, "name": name}));
+    }
+    // _world_maps
     let mut world_maps = vec![];
     for (slug, data) in crate::maps::world_maps(cfg, wid)? {
         let name = match data.get("name") {
             Some(Value::String(t)) if !t.is_empty() => t.clone(),
-            None | Some(Value::Null) => slug.clone(),
-            Some(Value::String(_)) => slug.clone(),
+            None | Some(Value::Null) | Some(Value::String(_)) => slug.clone(),
             _ => return None, // str() of another value: Python's
         };
         let markers = data.get("markers").and_then(|m| m.as_array()).map_or(0, |a| a.len());
         world_maps.push(json!({"slug": slug, "name": name.chars().take(120).collect::<String>(), "markers": markers}));
     }
-    p.ctx.insert("max_panels".into(), json!(24));
-    p.ctx.insert("max_presets".into(), json!(12));
-    p.ctx.insert("maps_json".into(), Value::Array(maps));
-    p.ctx.insert("world_maps_json".into(), Value::Array(world_maps));
-    p.ctx.insert("parties_json".into(), Value::Array(parties));
-    render_with(pages, "cockpit.html", p.ctx, headers)
+    ctx.insert("max_panels".into(), json!(24));
+    ctx.insert("max_presets".into(), json!(12));
+    ctx.insert("maps_json".into(), Value::Array(maps));
+    ctx.insert("world_maps_json".into(), Value::Array(world_maps));
+    Some(())
 }
 
 /// The second screen (app/routers/display.py, GM only): `/display`, `/display/map/<slug>` (a live map for the table's TV) and
@@ -1300,4 +1310,29 @@ pub fn display_pages(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         "display_combat.html"
     };
     render_with(pages, template, p.ctx, headers)
+}
+
+/// `GET /player-cockpit` (app/routers/cockpit.py): the cockpit in player mode - the viewer's parties with their vitals, their characters
+pub fn player_cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let pc = match query_param(uri, "pc") {
+        None => 0,
+        Some(t) if t.is_empty() => 0,
+        Some(t) if t.len() <= 15 && t.bytes().all(|b| b.is_ascii_digit()) => t.parse::<i64>().ok()?,
+        Some(t) if t.is_ascii() => 0, // not digits: Python's `pc.isdigit()` is false
+        Some(_) => return None,      // Unicode digits isdigit() takes
+    };
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let (parties, my_pcs, focus, view_as) = crate::edits::player_cockpit_data(&db, wid, p.user_id, p.is_gm, pc)?;
+    cockpit_pickers(&db, cfg, wid, &mut p.ctx)?;
+    p.ctx.insert("parties_json".into(), Value::Array(parties));
+    p.ctx.insert("my_pcs_json".into(), Value::Array(my_pcs));
+    p.ctx.insert("focus_pc_id".into(), json!(focus));
+    p.ctx.insert("view_as".into(), json!(view_as));
+    p.ctx.insert("exit_href".into(), json!(match focus { Some(f) => format!("/characters/{f}"), None => "/characters".into() }));
+    p.ctx.insert("player_mode".into(), json!(true));
+    render_with(pages, "cockpit.html", p.ctx, headers)
 }

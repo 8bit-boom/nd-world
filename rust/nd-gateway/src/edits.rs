@@ -10669,3 +10669,102 @@ fn hub_entry_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     c.db.execute("DELETE FROM character_journal_entries WHERE id = ?1", [ids[1]]).ok()?;
     json_response(&json!({"ok": true}))
 }
+
+// ── the player cockpit (app/routers/cockpit.py _player_cockpit) ──
+
+/// `party_refs.member_ids`: the int ids of a JSON list column, bad data tolerated (a bool, which `isinstance(int)` takes: Python's)
+fn member_ids(raw: Option<&Value>) -> Option<Vec<i64>> {
+    let raw = raw.and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    Some(match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => {
+            if a.iter().any(|x| x.is_boolean()) {
+                return None;
+            }
+            a.iter().filter(|x| x.is_i64()).filter_map(|x| x.as_i64()).collect()
+        }
+        _ => vec![],
+    })
+}
+
+/// `_member_vitals` for N&D characters (one on a sheet template - its system's tracks - stays Python's), sorted by name
+fn member_vitals(db: &Connection, pcs: &[Map<String, Value>]) -> Option<Vec<Value>> {
+    let mut sorted: Vec<&Map<String, Value>> = pcs.iter().collect();
+    sorted.sort_by(|a, b| a.get("name").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")));
+    let mut out = vec![];
+    for pc in sorted {
+        if pc.get("sheet_template_id").is_some_and(|v| !v.is_null()) {
+            return None;
+        }
+        let (hp_max, shock, _, _, native) = pc_maxima(db, pc)?;
+        if !native {
+            return None;
+        }
+        let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+            Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_string()).take(4).collect(),
+            Ok(Value::Object(_)) => return None,
+            _ => vec![],
+        };
+        let level = pc.get("level")?.as_i64()?;
+        let levelup = if level >= 20 {
+            false
+        } else if level < 1 {
+            return None; // a negative list index: Python's
+        } else {
+            col_int(pc, "xp") >= XP_THRESHOLDS[level.min(19) as usize]
+        };
+        let hp = pc.get("current_hp").cloned().unwrap_or(Value::Null);
+        out.push(json!({"id": pc.get("id"), "name": pc.get("name"), "native": true, "hp": hp, "max_hp": hp_max, "hp_label": "HP", "hp_id": null,
+            "temp_hp": pc.get("temp_hp"), "shock": col_int(pc, "shock_current"), "shock_max": shock, "ac": pc.get("armor_class"), "level": level,
+            "system": "", "down": hp_max > 0 && hp.as_i64().unwrap_or(0) <= 0, "levelup": levelup, "conditions": conds, "resources": []}));
+    }
+    Some(out)
+}
+
+/// `GET /player-cockpit`'s data: (parties with member vitals, the viewer's characters with vitals and XP, focus, view_as)
+pub fn player_cockpit_data(db: &Connection, world_id: i64, user_id: i64, is_gm: bool, as_pc: i64) -> Option<(Vec<Value>, Vec<Value>, Option<i64>, bool)> {
+    let rows = |sql: &str, params: &[i64]| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    // _viewer_pcs
+    let mut owner = user_id;
+    let mut mine: Option<Vec<Map<String, Value>>> = None;
+    if as_pc != 0 && is_gm {
+        if let Some(t) = rows("SELECT * FROM player_characters WHERE id = ?1", &[as_pc])?.into_iter().next() {
+            if t.get("world_id").and_then(|v| v.as_i64()) == Some(world_id) {
+                match t.get("owner_user_id").and_then(|v| v.as_i64()).filter(|o| *o != 0) {
+                    None => mine = Some(vec![t]),
+                    Some(o) => owner = o,
+                }
+            }
+        }
+    }
+    let mine = match mine {
+        Some(m) => m,
+        None => rows("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY name", &[world_id, owner])?,
+    };
+    let my_ids: Vec<i64> = mine.iter().filter_map(|p| p.get("id").and_then(|v| v.as_i64())).collect();
+    let mut parties = vec![];
+    if !my_ids.is_empty() {
+        for p in rows("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name", &[world_id])? {
+            let ids = member_ids(p.get("member_pc_ids_json"))?;
+            if !my_ids.iter().any(|i| ids.contains(i)) {
+                continue;
+            }
+            let members = if ids.is_empty() { vec![] } else {
+                let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+                rows(&format!("SELECT * FROM player_characters WHERE id IN ({})", marks.join(",")), &[])?
+            };
+            parties.push(json!({"id": p.get("id"), "name": p.get("name"), "members": member_vitals(db, &members)?}));
+        }
+    }
+    let vitals = member_vitals(db, &mine)?;
+    let my_pcs: Vec<Value> = vitals.iter().map(|v| json!({"id": v["id"], "name": v["name"]})).collect();
+    let focus = (as_pc != 0 && my_pcs.iter().any(|m| m["id"].as_i64() == Some(as_pc))).then_some(as_pc);
+    let view_as = match focus {
+        Some(f) if is_gm => rows("SELECT * FROM player_characters WHERE id = ?1", &[f])?.first().is_some_and(|t| t.get("owner_user_id").and_then(|v| v.as_i64()) != Some(user_id)),
+        _ => false,
+    };
+    Some((parties, my_pcs, focus, view_as))
+}

@@ -204,9 +204,10 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && req.uri().path() == "/cockpit" && app.cfg.rust_routes.iter().any(|r| r == "live") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/cockpit" | "/player-cockpit") && app.cfg.rust_routes.iter().any(|r| r == "live") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::cockpit(&pages, &cfg, &uri, &headers)).await {
+        let f = if uri.path() == "/cockpit" { pages::cockpit } else { pages::player_cockpit };
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }

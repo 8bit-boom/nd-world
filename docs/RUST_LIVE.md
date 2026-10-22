@@ -71,3 +71,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/parties/<id>/launch-combat` (a new encounter with every member; `entity_to_combatant` ported, characters on a custom sheet stay Python's) | P4-23 |
 | `GET /cockpit` (the GM's workspace page: the Add-panel pickers; golden-tested for a GM, a player and another world) | P4-24 |
 | `GET /display`, `/display/map/<slug>`, `/display/combat/<id>` (the GM's second-screen pages; golden-tested) | P4-25 |
+| `GET /player-cockpit` (the cockpit in player mode: the viewer's parties with `_member_vitals`, their characters, `?pc=` for a GM; a character on a sheet template stays Python's) | P4-26 |
