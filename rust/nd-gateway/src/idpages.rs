@@ -127,7 +127,7 @@ fn display_combat(pages: &Pages, db: &Connection, p: PageCtx, id: i64, headers: 
 }
 
 /// `deps.load_custom_kinds`: the world's valid custom kinds, malformed entries dropped
-fn load_custom_kinds(world: &Map<String, Value>) -> Vec<Value> {
+pub(crate) fn load_custom_kinds(world: &Map<String, Value>) -> Vec<Value> {
     let raw = world.get("custom_kinds_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let Ok(Value::Array(list)) = serde_json::from_str::<Value>(raw) else { return vec![] };
     let mut out = vec![];

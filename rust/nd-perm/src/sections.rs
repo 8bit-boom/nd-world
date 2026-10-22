@@ -77,7 +77,7 @@ pub fn default_levels(section_id: &str) -> (&'static str, &'static str) {
     (player, assistant)
 }
 
-fn floor(section_id: &str, role: &str, val: &'static str) -> &'static str {
+pub fn floor(section_id: &str, role: &str, val: &'static str) -> &'static str {
     if val != "edit" {
         return val;
     }

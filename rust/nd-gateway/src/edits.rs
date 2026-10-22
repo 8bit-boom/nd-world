@@ -280,6 +280,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/new", world_create),
     ("/worlds/{}/rules/edit", rules_edit),
     ("/worlds/{}/rules/import", rules_import),
+    ("/worlds/{}/kinds/new", kinds_new),
+    ("/worlds/{}/kinds/edit", kinds_save),
+    ("/worlds/{}/nav-menus/edit", nav_menus_save),
     ("/worlds/{}/theme/preset", theme_preset),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
@@ -399,6 +402,16 @@ fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
                 _ => return None,
             };
             return Some((h, format!("{}/{}", parts[0], parts[3])));
+        }
+    }
+    // /worlds/<id>/kinds/<kind id>/delete: the handler reads "<world id>/<kind id>"
+    if let Some(rest) = path.strip_prefix("/worlds/").and_then(|r| r.strip_suffix("/delete")) {
+        if let Some((wid, kid)) = rest.split_once("/kinds/") {
+            if !wid.is_empty() && wid.len() <= 15 && wid.bytes().all(|b| b.is_ascii_digit()) && !kid.is_empty()
+                && kid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Some((kinds_delete, format!("{wid}/{kid}")));
+            }
         }
     }
     for (pre, post, h) in SLUG_ROUTES {
@@ -6092,4 +6105,242 @@ fn rules_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::update(&c.db, "worlds", ids[0], &set)?;
     redirect("/rules")
+}
+
+// ── custom kinds and nav menus (app/routers/kinds_admin.py, nav_menus_admin.py) ──
+
+/// `re.sub(r"[^a-z0-9]+", "_", label.strip().lower()).strip("_")`, `or fallback`, first 24 characters
+fn underscore_slug(label: &str, fallback: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for ch in strip(label).to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+            gap = false;
+        } else if !gap {
+            out.push('_');
+            gap = true;
+        }
+    }
+    let t = out.trim_matches('_');
+    take_chars(if t.is_empty() { fallback } else { t }, 24)
+}
+
+/// `datetime.now(timezone.utc).isoformat()`
+fn utc_isoformat() -> String {
+    let st = orm::now_stamp().replacen(' ', "T", 1);
+    let st = st.strip_suffix(".000000").map(str::to_string).unwrap_or(st);
+    format!("{st}+00:00")
+}
+
+/// A form field read with `str(form.get(name, default))`
+fn form_str<'a>(f: &'a Form, name: &str, default: &'a str) -> &'a str {
+    f.get(name).unwrap_or(default)
+}
+
+fn world_row(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    row(&c.db, "SELECT * FROM worlds WHERE id = ?1", id)
+}
+
+fn kinds_new(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let w = world_row(c, ids[0])?;
+    let label = take_chars(&strip(form_str(&f, "label", "")), 40);
+    let mut kinds = crate::idpages::load_custom_kinds(&w);
+    if label.is_empty() || kinds.len() >= 25 {
+        return None; // Python's 400
+    }
+    let base = format!("custom_{}", underscore_slug(&label, "kind"));
+    let taken = |id: &str| kinds.iter().any(|k| k.get("id").and_then(|v| v.as_str()) == Some(id));
+    let mut kid = base.clone();
+    let mut n = 2;
+    while taken(&kid) {
+        kid = format!("{base}_{n}");
+        n += 1;
+    }
+    let icon = take_chars(&strip(form_str(&f, "icon", "")), 8);
+    let icon = if icon.is_empty() { "🏷".to_string() } else { icon };
+    let mut subtypes: Vec<String> = vec![];
+    let raw = form_str(&f, "subtypes", "");
+    if !raw.is_empty() {
+        for part in raw.split(',') {
+            let part = take_chars(&strip(part), 40);
+            if !part.is_empty() && !subtypes.contains(&part) {
+                subtypes.push(part);
+            }
+            if subtypes.len() >= 20 {
+                break;
+            }
+        }
+    }
+    kinds.push(json!({"id": kid, "label": label, "icon": icon, "subtypes": subtypes, "created_at": utc_isoformat()}));
+    orm::update(&c.db, "worlds", ids[0], &[("custom_kinds_json", s(&nd_render::py_dumps(&Value::Array(kinds))))])?;
+    redirect(&format!("/worlds/{}/kinds/edit", ids[0]))
+}
+
+/// `str(v)` of a posted kind field: a string, or the default when missing; anything else (Python's repr) is not ported
+fn posted_str(item: &Map<String, Value>, key: &str) -> Option<String> {
+    match item.get(key) {
+        None => Some(String::new()),
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => None,
+    }
+}
+
+fn kinds_save(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let w = world_row(c, ids[0])?;
+    let raw = form_str(&f, "custom_kinds_json", "[]");
+    let raw = if raw.is_empty() { "[]" } else { raw };
+    let posted = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => vec![],
+        // text serde refuses may be JSON to Python (NaN, Infinity): Python's
+        Err(_) => return None,
+    };
+    let stored = crate::idpages::load_custom_kinds(&w);
+    let mut out = vec![];
+    let mut seen: Vec<String> = vec![];
+    for item in posted.iter().take(25) {
+        let Some(item) = item.as_object() else { continue };
+        let kid = match item.get("id") {
+            Some(Value::String(k)) => k.clone(),
+            Some(Value::Array(_)) | Some(Value::Object(_)) => return None, // unhashable: Python's 500
+            _ => continue,
+        };
+        let Some(original) = stored.iter().find(|k| k.get("id").and_then(|v| v.as_str()) == Some(kid.as_str())) else { continue };
+        if seen.contains(&kid) {
+            continue;
+        }
+        seen.push(kid.clone());
+        let label = take_chars(&strip(&posted_str(item, "label")?), 40);
+        let label = if label.is_empty() { original.get("label")?.clone() } else { Value::String(label) };
+        let icon = take_chars(&strip(&posted_str(item, "icon")?), 8);
+        let icon = if icon.is_empty() { "🏷".to_string() } else { icon };
+        let subtypes = match item.get("subtypes") {
+            Some(Value::Array(a)) => {
+                let mut v = vec![];
+                for x in a {
+                    let t = strip(x.as_str()?);
+                    if !t.is_empty() {
+                        v.push(Value::String(take_chars(&t, 40)));
+                    }
+                }
+                v.truncate(20);
+                Value::Array(v)
+            }
+            _ => original.get("subtypes")?.clone(),
+        };
+        out.push(json!({"id": kid, "label": label, "icon": icon, "subtypes": subtypes, "created_at": original.get("created_at")?}));
+    }
+    orm::update(&c.db, "worlds", ids[0], &[("custom_kinds_json", s(&nd_render::py_dumps(&Value::Array(out))))])?;
+    redirect(&format!("/worlds/{}/kinds/edit?saved=1", ids[0]))
+}
+
+fn kinds_delete(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (wid, kid) = key.split_once('/')?;
+    let wid: i64 = wid.parse().ok()?;
+    let w = world_row(c, wid)?;
+    let kinds = crate::idpages::load_custom_kinds(&w);
+    if !kinds.iter().any(|k| k.get("id").and_then(|v| v.as_str()) == Some(kid)) {
+        return None;
+    }
+    let in_use: i64 = c.db.query_row("SELECT COUNT(*) FROM entities WHERE world_id = ?1 AND kind = ?2", rusqlite::params![wid, kid], |r| r.get(0)).ok()?;
+    if in_use > 0 {
+        return None;
+    }
+    let rest: Vec<Value> = kinds.into_iter().filter(|k| k.get("id").and_then(|v| v.as_str()) != Some(kid)).collect();
+    orm::update(&c.db, "worlds", wid, &[("custom_kinds_json", s(&nd_render::py_dumps(&Value::Array(rest))))])?;
+    redirect(&format!("/worlds/{wid}/kinds/edit"))
+}
+
+/// `deps.sanitize_section_access`: every section id of the world with both roles' levels (Python walks a set: its key order varies
+/// from one process to the next, so the order here is the sorted one)
+fn sanitize_section_access(raw: &str, w: &Map<String, Value>) -> Option<String> {
+    let data = if raw.is_empty() {
+        Map::new()
+    } else {
+        match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(o)) => o,
+            Ok(_) => Map::new(),
+            Err(_) => return None,
+        }
+    };
+    let kinds = nd_perm::sections::effective_kinds(w.get("custom_kinds_json").and_then(|v| v.as_str()))?;
+    let mut sids: Vec<String> = nd_perm::sections::SECTION_PERMISSION_IDS.iter().map(|x| x.to_string()).collect();
+    sids.extend(kinds.iter().map(|k| format!("kind_{k}")));
+    sids.sort();
+    sids.dedup();
+    let mut out = Map::new();
+    for sid in sids {
+        let entry = data.get(&sid).and_then(|e| e.as_object());
+        let mut levels = Map::new();
+        for role in ["player", "assistant"] {
+            let val = match entry.and_then(|e| e.get(role)).and_then(|v| v.as_str()) {
+                Some("read") => "read",
+                Some("edit") => "edit",
+                _ => "none",
+            };
+            levels.insert(role.into(), json!(nd_perm::sections::floor(&sid, role, val)));
+        }
+        out.insert(sid, Value::Object(levels));
+    }
+    Some(nd_render::py_dumps(&Value::Object(out)))
+}
+
+fn nav_menus_save(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let w = world_row(c, ids[0])?;
+    let catalog = nd_render::app::build_catalog(Some(&w))?;
+    let known = |id: &str| catalog.iter().any(|it| it.get("id").and_then(|v| v.as_str()) == Some(id));
+    let raw = form_str(&f, "nav_menus_json", "[]");
+    let raw = if raw.is_empty() { "[]" } else { raw };
+    let data = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => vec![],
+        Err(_) => return None,
+    };
+    let mut out = vec![];
+    let mut seen_ids: Vec<String> = vec![];
+    let mut seen_items: Vec<String> = vec![];
+    for m in data.iter().take(12) {
+        let Some(m) = m.as_object() else { continue };
+        let label = take_chars(&strip(&posted_str(m, "label")?), 40);
+        if label.is_empty() {
+            continue;
+        }
+        let icon = take_chars(&strip(&posted_str(m, "icon")?), 8);
+        let icon = if icon.is_empty() { "🗂".to_string() } else { icon };
+        let mid = match m.get("id") {
+            Some(Value::String(x)) if !x.is_empty() && !seen_ids.contains(x) => x.clone(),
+            _ => {
+                let base = format!("menu_{}", underscore_slug(&label, "menu"));
+                let (mut mid, mut n) = (base.clone(), 2);
+                while seen_ids.contains(&mid) {
+                    mid = format!("{base}_{n}");
+                    n += 1;
+                }
+                mid
+            }
+        };
+        seen_ids.push(mid.clone());
+        let mut items = vec![];
+        if let Some(Value::Array(raw_items)) = m.get("item_ids") {
+            for iid in raw_items {
+                if let Value::String(iid) = iid {
+                    if known(iid) && !seen_items.contains(iid) {
+                        items.push(json!(iid));
+                        seen_items.push(iid.clone());
+                    }
+                }
+            }
+        }
+        out.push(json!({"id": mid, "label": label, "icon": icon, "item_ids": items}));
+    }
+    let mut set: Vec<(&str, Sql)> = vec![("nav_menus_json", s(&nd_render::py_dumps(&Value::Array(out))))];
+    if f.has("section_access_json") {
+        set.push(("section_access_json", s(&sanitize_section_access(form_str(&f, "section_access_json", "{}"), &w)?)));
+    }
+    orm::update(&c.db, "worlds", ids[0], &set)?;
+    redirect("/settings?tab=navigation")
 }

@@ -2861,3 +2861,67 @@ def test_rules_edit_and_import_are_pythons(client, seed):
     finally:
         db.close()
     assert served >= 6, served
+
+
+def test_kinds_and_nav_menus_are_pythons(client, seed):
+    import json as _json
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    w = seed.world_b.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+    orig = _row("worlds", w)
+    start = _json.dumps([{"id": "custom_ships", "label": "Ships", "icon": "S", "subtypes": ["a", 3], "created_at": "2020"},
+                         {"id": "custom_gods", "label": "Gods"}, {"id": "bad", "label": "x"}])
+
+    def put(cols):
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE worlds SET " + ", ".join(f"{k} = :{k}" for k in cols) + " WHERE id = :w"), {"w": w, **cols}); db.commit()
+        finally:
+            db.close()
+
+    def state(cols):
+        r = _row("worlds", w)
+        out = {}
+        for k in cols:
+            v = _json.loads(r[k]) if r[k] else r[k]
+            if isinstance(v, list):
+                for e in v:
+                    if isinstance(e, dict) and e.get("created_at", "") not in ("2020", ""):
+                        assert e["created_at"].endswith("+00:00")
+                        e["created_at"] = "NOW"
+            out[k] = v
+        return out
+
+    cases = [("kinds/new", {"label": "  Star Ships!! ", "icon": " ", "subtypes": " a, b ,a,, c"}), ("kinds/new", {"label": "Ships"}),
+             ("kinds/new", {"label": "Ünïcode Kinds", "icon": "🚀🚀🚀🚀🚀🚀🚀🚀🚀"}), ("kinds/new", {"label": " "}),
+             ("kinds/edit", {"custom_kinds_json": _json.dumps([{"id": "custom_gods", "label": " Deities ", "subtypes": [" x ", "", "y"]},
+                                                               {"id": "custom_ships", "label": ""}, {"id": "custom_gods"}, {"id": "nope"}, 5])}),
+             ("kinds/edit", {"custom_kinds_json": ""}), ("kinds/edit", {"custom_kinds_json": "{bad"}), ("kinds/edit", {}),
+             ("kinds/custom_ships/delete", {}), ("kinds/custom_none/delete", {})]
+    for path, form in cases:
+        out = []
+        for side in (d, via):
+            put({"custom_kinds_json": start})
+            r = side.post(f"/worlds/{w}/{path}", data=form, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), state(["custom_kinds_json"]), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (path, form, out)
+        served += out[1][3] == "gateway"
+    menus = [{"label": " Lore ", "icon": "", "item_ids": ["custom_ships", "nope", 3]}, {"label": "Lore", "id": "x", "item_ids": ["custom_ships"]},
+             {"label": ""}, 7, {"label": "Ünï", "id": "x"}]
+    forms = [{"nav_menus_json": _json.dumps(menus)}, {"nav_menus_json": _json.dumps(menus), "section_access_json": _json.dumps(
+                 {"maps": {"player": "edit", "assistant": "edit"}, "kind_custom_ships": {"player": "read"}, "x": {"player": "edit"}})},
+             {"nav_menus_json": "", "section_access_json": ""}, {"nav_menus_json": "{}"}]
+    for form in forms:
+        out = []
+        for side in (d, via):
+            put({"custom_kinds_json": start, "nav_menus_json": None, "section_access_json": None})
+            r = side.post(f"/worlds/{w}/nav-menus/edit", data=form, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), state(["nav_menus_json", "section_access_json"]), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (form, out)
+        served += out[1][3] == "gateway"
+    put({k: orig[k] for k in ("custom_kinds_json", "nav_menus_json", "section_access_json")})
+    assert served >= 10, served
