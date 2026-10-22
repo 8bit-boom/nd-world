@@ -2347,3 +2347,52 @@ def test_folders_templates_and_entity_image_are_pythons(client, seed):
 def os_random_hex():
     import os
     return os.urandom(6).hex()
+
+
+def test_race_and_profession_writes_are_pythons(client, seed):
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import Entity, EntityRelation
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    pics = _pictures()
+    served = 0
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    for kind, path in (("race", "races"), ("profession", "professions")):
+        for fields, file in (([("name", "  Elf  "), ("tier", "advanced"), ("summary", " s "), ("body", "")], None), ([("name", "X"), ("tier", "godly")], None),
+                             ([("name", "")], None), ([("name", "Pic")], ("file", "Photo One.jpg", pics["Photo One.jpg"])),
+                             ([("name", "Txt")], ("file", "a.txt", b"x")), ([("name", "Bad")], ("file", "broken.png", pics["broken.png"]))):
+            res = []
+            for side in (d, via):
+                body, hdr = _multipart(fields, [file] if file else [("file", "", b"")])
+                before = (_newest("entities") or {}).get("id")
+                r = side.post(f"/{path}/new", content=body, headers=hdr, follow_redirects=False)
+                row = _newest("entities")
+                row = row if row and row["id"] != before else None
+                res.append((r, row, _picture_facts(up, row and row["image_url"])))
+            _same_answer(res[0][0], res[1][0])
+            _same_rows(res[0][1], res[1][1], ignore=("image_url",))
+            assert res[0][2] == res[1][2], (kind, fields, res[0][2], res[1][2])
+            served += res[1][0].headers.get("x-nd-served-by") == "gateway"
+        [other] = _entities(seed.world_b.id, 1)
+        for target in ("own", "wrong-kind", "other"):
+            ids = []
+            for _ in range(2):
+                db = SessionLocal()
+                try:
+                    e = Entity(world_id=w, kind=kind if target == "own" else "npc", name="R")
+                    db.add(e); db.commit()
+                    db.add(EntityRelation(world_id=w, source_id=e.id, target_id=e.id, label="x") if hasattr(EntityRelation, "label") else EntityRelation(world_id=w, source_id=e.id, target_id=e.id))
+                    db.commit()
+                    ids.append(e.id if target != "other" else other)
+                finally:
+                    db.close()
+            ra = d.post(f"/{path}/{ids[0]}/delete", follow_redirects=False)
+            rb = via.post(f"/{path}/{ids[1]}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            _same_rows(_row("entities", ids[0]), _row("entities", ids[1]))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 8, served

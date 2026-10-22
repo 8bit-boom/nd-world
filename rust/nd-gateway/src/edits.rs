@@ -255,6 +255,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/entity-templates/{}/edit", entity_template_edit),
     ("/entity-templates/{}/delete", entity_template_delete),
     ("/api/entity/{}/image", entity_set_image),
+    ("/races/new", race_new),
+    ("/professions/new", profession_new),
+    ("/races/{}/delete", race_delete),
+    ("/professions/{}/delete", profession_delete),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -286,7 +290,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
-const PICTURE_FORM_ROUTES: &[&str] = &["/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
+const PICTURE_FORM_ROUTES: &[&str] = &["/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
 
 fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
     let (h, ids) = route(path)?;
@@ -5194,4 +5198,60 @@ fn entity_set_image(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     world_entity(c, ids[0])?;
     orm::update(&c.db, "entities", ids[0], &[("image_url", s(&url))])?;
     json_response(&json!({"ok": true}))
+}
+
+// ── races and professions (app/routers/races.py, professions.py) ─────────────
+
+/// `races_new` / `professions_new`: an entity of `kind` with an optional picture under <uploads>/<folder>
+fn lore_entry_new(c: &mut Ctx, kind: &str, folder: &str, back: &str) -> Option<Response<Body>> {
+    let (f, pick) = form_and_file(c, "file")?;
+    let wid = c.world_id()?;
+    let name = strip(&required(&f, "name")?);
+    let tier = opt(&f, "tier", "standard");
+    let tier = if ["standard", "advanced", "exceptional"].contains(&tier) { tier.to_string() } else { "standard".to_string() };
+    let image = match &pick {
+        Some(p) => save_picture(c, p, folder, true)?,
+        None => None,
+    };
+    let or_null = |v: String| if v.is_empty() { Sql::Null } else { s(&v) };
+    orm::insert(
+        &c.db,
+        "entities",
+        &[
+            ("world_id", Sql::Integer(wid)),
+            ("kind", s(kind)),
+            ("subtype", s(&tier)),
+            ("name", s(&name)),
+            ("summary", or_null(strip(f.get("summary").unwrap_or("")))),
+            ("body", or_null(strip(f.get("body").unwrap_or("")))),
+            ("image_url", image.map_or(Sql::Null, |u| s(&u))),
+        ],
+    )?;
+    redirect(back)
+}
+
+fn race_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    lore_entry_new(c, "race", "races", "/races")
+}
+
+fn profession_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    lore_entry_new(c, "profession", "professions", "/professions")
+}
+
+fn lore_entry_delete(c: &mut Ctx, id: i64, kind: &str, back: &str) -> Option<Response<Body>> {
+    let e = world_entity(c, id)?;
+    if e.get("kind").and_then(|v| v.as_str()) != Some(kind) {
+        return None;
+    }
+    c.db.execute("DELETE FROM entity_relations WHERE source_id = ?1 OR target_id = ?1", [id]).ok()?;
+    c.db.execute("DELETE FROM entities WHERE id = ?1", [id]).ok()?;
+    redirect(back)
+}
+
+fn race_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lore_entry_delete(c, ids[0], "race", "/races")
+}
+
+fn profession_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lore_entry_delete(c, ids[0], "profession", "/professions")
 }
