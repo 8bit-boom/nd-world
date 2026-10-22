@@ -141,6 +141,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/quests/{}/delete", quest_delete),
     ("/api/quests/{}/status", quest_status),
     ("/facts/new", fact_create),
+    ("/api/facts/bulk", facts_bulk),
     ("/facts/{}/edit", fact_edit),
     ("/facts/{}/delete", fact_delete),
     ("/tables/new", table_create),
@@ -3389,4 +3390,116 @@ fn calendar_icon_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         remove_upload(c, url);
     }
     json_response(&json!({"ok": true}))
+}
+
+/// `_ai._normalized_fact_key` for ASCII text (Python's and Rust's lower() can part ways beyond it: None, Python's)
+fn fact_key(content: &str) -> Option<String> {
+    if !content.is_ascii() {
+        return None;
+    }
+    let low = strip(content).to_ascii_lowercase();
+    let collapsed: String = {
+        let mut out = String::new();
+        let mut ws = false;
+        for ch in low.chars() {
+            if ch.is_ascii_whitespace() || ch == '\x0b' || ('\x1c'..='\x1f').contains(&ch) {
+                if !ws {
+                    out.push(' ');
+                }
+                ws = true;
+            } else {
+                out.push(ch);
+                ws = false;
+            }
+        }
+        out
+    };
+    Some(collapsed.trim_end_matches(['.', '!', '?']).to_string())
+}
+
+/// `_normalize_tags_field` for a JSON value
+fn json_tags(v: Option<&Value>) -> Option<Sql> {
+    Some(match v {
+        Some(Value::Array(a)) => {
+            let parts: Vec<String> = a.iter().map(|x| x.as_str().map(strip)).collect::<Option<Vec<_>>>()?.into_iter().filter(|x| !x.is_empty()).collect();
+            if parts.is_empty() { Sql::Null } else { s(&parts.join(", ")) }
+        }
+        Some(Value::String(x)) => {
+            let x = strip(x);
+            if x.is_empty() { Sql::Null } else { s(&x) }
+        }
+        _ => Sql::Null,
+    })
+}
+
+fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("facts")? {
+        return None;
+    }
+    let items = b.get("facts")?.as_array().filter(|a| !a.is_empty())?.clone();
+    let session = match b.get("game_session_id") {
+        Some(v) if py_truthy(Some(v)) => Sql::Integer(py_int_value(v).ok()?),
+        _ => Sql::Null,
+    };
+    let mut seen: Vec<String> = vec![];
+    let mut stmt = c.db.prepare("SELECT content FROM facts WHERE world_id = ?1").ok()?;
+    let existing: Vec<Option<String>> = stmt.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+    drop(stmt);
+    for e in existing {
+        seen.push(fact_key(&e?)?);
+    }
+    let (mut created, mut skipped) = (0, 0);
+    for it in &items {
+        let Some(m) = it.as_object() else { continue };
+        let content = match m.get("content") {
+            None => String::new(),
+            Some(Value::String(x)) => strip(x),
+            _ => return None, // str() of other values: Python's
+        };
+        if content.is_empty() {
+            continue;
+        }
+        let key = fact_key(&content)?;
+        if seen.contains(&key) {
+            skipped += 1;
+            continue;
+        }
+        seen.push(key);
+        let visible = m.get("visible_to_players").map_or(true, |v| py_truthy(Some(v)));
+        orm::insert(
+            &c.db,
+            "facts",
+            &[
+                ("world_id", Sql::Integer(wid)),
+                ("game_session_id", session.clone()),
+                ("content", s(&content)),
+                ("visible_to_players", Sql::Integer(visible as i64)),
+                ("tags", json_tags(m.get("tags"))?),
+                ("author_id", Sql::Integer(c.p.user_id)),
+                ("updated_at", s(&orm::now_stamp())),
+            ],
+        )?;
+        created += 1;
+    }
+    // job_id: `str(job_id).isdigit()` - an int or digit text
+    let job = match b.get("job_id") {
+        Some(v) if py_truthy(Some(v)) => match v {
+            Value::Number(n) => n.as_i64().filter(|i| *i >= 0),
+            Value::String(x) if !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit()) && x.len() < 16 => x.parse().ok(),
+            Value::String(x) if !x.is_ascii() => return None,
+            Value::Bool(_) | Value::String(_) => None,
+            _ => return None,
+        },
+        _ => None,
+    };
+    if let Some(jid) = job {
+        if let Some(j) = row(&c.db, "SELECT * FROM audio_jobs WHERE id = ?1", jid) {
+            if j.get("purpose").and_then(|v| v.as_str()) == Some("facts_parse") && j.get("world_id").and_then(|v| v.as_i64()) == Some(wid) {
+                orm::update(&c.db, "audio_jobs", jid, &[("draft_consumed", Sql::Integer(1))])?;
+            }
+        }
+    }
+    json_response(&json!({"created": created, "skipped_duplicates": skipped}))
 }

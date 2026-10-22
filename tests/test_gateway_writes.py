@@ -1516,3 +1516,66 @@ def test_calendar_icon_delete_is_pythons(client, seed):
             assert files[0].exists() == files[1].exists(), kind
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 2, served
+
+
+def test_facts_bulk_is_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import AudioJob, Fact, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"facts": {"player": "edit", "assistant": "edit"}})
+        jobs = [AudioJob(world_id=w, purpose="facts_parse"), AudioJob(world_id=w, purpose="facts_parse"), AudioJob(world_id=seed.world_b.id, purpose="facts_parse")]
+        db.add_all(jobs); db.commit()
+        j1, j2, jb_ = (j.id for j in jobs)
+    finally:
+        db.close()
+
+    def facts_now():
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            return [dict(r) for r in db.execute(text("SELECT game_session_id, content, visible_to_players, tags, author_id FROM facts WHERE world_id = :w ORDER BY id"),
+                                                 {"w": w}).mappings()]
+        finally:
+            db.close()
+
+    def reset(extra=()):
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            db.execute(text("DELETE FROM facts WHERE world_id = :w"), {"w": w})
+            db.add_all([Fact(world_id=w, content="The party met Elyra.")] + [Fact(world_id=w, content=x) for x in extra])
+            db.execute(text("UPDATE audio_jobs SET draft_consumed = NULL"))
+            db.commit()
+        finally:
+            db.close()
+
+    bodies = [
+        ({"facts": [{"content": " the  party met ELYRA!! "}, {"content": "New\tthing", "tags": ["a", " ", "b "], "visible_to_players": 0},
+                    {"content": "new thing."}, "junk", {"content": ""}, {"content": "Tagged", "tags": " x, y "}], "game_session_id": "4", "job_id": "JOB1"}, ()),
+        ({"facts": []}, ()), ({"facts": "x"}, ()), ({"facts": [{"content": 5}]}, ()), ({"facts": [{"content": "Ünï"}]}, ()), ({"facts": [{"content": "ok"}]}, ("Ärger",)),
+        ({"facts": [{"content": "j"}], "job_id": "JOBB"}, ()), ({"facts": [{"content": "j"}], "job_id": True, "game_session_id": 0}, ()),
+        ({"facts": [{"content": "k", "tags": [1]}]}, ()),
+    ]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for body, extra in bodies:
+            body = json.loads(json.dumps(body).replace('"JOB1"', str(j1)).replace('"JOBB"', str(jb_)))
+            reset(extra)
+            ra = d.post("/api/facts/bulk", json=body)
+            fa = facts_now()
+            ja = [(_row("audio_jobs", j) or {}).get("draft_consumed") for j in (j1, j2, jb_)]
+            reset(extra)
+            rb = via.post("/api/facts/bulk", json=body)
+            fb = facts_now()
+            jb2 = [(_row("audio_jobs", j) or {}).get("draft_consumed") for j in (j1, j2, jb_)]
+            _same_answer(ra, rb)
+            assert fa == fb, (body, fa, fb)
+            assert ja == jb2
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 3, served
