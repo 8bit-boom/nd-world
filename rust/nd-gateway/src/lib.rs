@@ -197,6 +197,14 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
+        && ((req.uri().path().starts_with("/maps/schematic/") && (req.uri().path().ends_with("/view") || req.uri().path().ends_with("/view.json")))
+            || (req.uri().path().starts_with("/display/map/") && req.uri().path().ends_with("/data.json"))) {
+        let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::schematic_views(&pages, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && (req.uri().path() == "/display" || req.uri().path().starts_with("/display/map/") || req.uri().path().starts_with("/display/combat/"))
         && !req.uri().path().ends_with("/data.json") && app.cfg.rust_routes.iter().any(|r| r == "live") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());

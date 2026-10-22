@@ -10768,3 +10768,113 @@ pub fn player_cockpit_data(db: &Connection, world_id: i64, user_id: i64, is_gm: 
     };
     Some((parties, my_pcs, focus, view_as))
 }
+
+// ── what the table sees of a schematic (app/schematic_payload.py player_scene, main.py _schematic_player_payload) ──
+
+/// The player view of a schematic: everything the player view, view.json and the TV's data.json send
+pub struct PlayerScene {
+    pub visible: Vec<Value>,
+    pub image_url: Option<String>,
+    pub fog_part: Map<String, Value>,
+    pub own_pc_id: Value,
+    pub own_pc_ids: Vec<i64>,
+    pub own_pc_currency: Value,
+    pub active_combatant_id: Value,
+    pub combat_round: Value,
+}
+
+/// `player_scene` + `_schematic_player_payload`; None for strict secrecy (what the party has seen is computed and recorded: Python's)
+/// and for stored JSON Python reads its own way. `viewer` = (user id, is_gm); None = the TV (no own characters).
+pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i64, bool)>) -> Option<PlayerScene> {
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    let Value::Array(elements) = canonical_json(raw)? else { return None };
+    // player_visible
+    let visible: Vec<Value> = elements.iter().filter(|el| {
+        let Some(o) = el.as_object() else { return false };
+        !py_truthy(o.get("hidden")) && (o.get("type").and_then(|t| t.as_str()) != Some("token") || o.get("visible_to_players").map_or(true, |v| py_truthy(Some(v))))
+    }).cloned().collect();
+    if elements.iter().any(|el| el.as_object().is_some_and(|o| o.get("type").is_some_and(|t| t.is_array() || t.is_object()))) {
+        return None;
+    }
+    // fog_payload
+    let fog = clean_fog(sc_load(sc, "fog_json", false)?.as_object()?)?;
+    if fog["enabled"] == json!(true) && fog["strict"] == json!(true) {
+        return None;
+    }
+    let darkness = fog["darkness"].as_f64()?;
+    let active = fog["enabled"] == json!(true) || darkness > 0.0;
+    let mut walls = vec![];
+    if active {
+        for w in sc_load(sc, "walls_json", true)?.as_array()? {
+            let Some(w) = w.as_object() else { continue };
+            if w.get("kind").and_then(|v| v.as_str()) == Some("secret") {
+                let (id, pts) = (w.get("id").cloned().unwrap_or(Value::Null), w.get("pts").cloned().unwrap_or(Value::Null));
+                walls.push(if w.get("state").and_then(|v| v.as_str()) == Some("open") {
+                    json!({"id": id, "pts": pts, "kind": "door", "state": "open"})
+                } else {
+                    json!({"id": id, "pts": pts, "kind": "wall"})
+                });
+            } else {
+                let mut m = Map::new();
+                for k in ["id", "pts", "kind", "state"] {
+                    if let Some(v) = w.get(k) {
+                        m.insert(k.into(), v.clone());
+                    }
+                }
+                walls.push(Value::Object(m));
+            }
+        }
+    }
+    let mut lights = vec![];
+    if darkness > 0.0 {
+        let stored = sc_load(sc, "lights_json", true)?;
+        let (all, _) = clean_lights(stored.as_array()?, sc)?;
+        for l in all.into_iter().filter(|l| l["on"] == json!(true)) {
+            let mut m = Map::new();
+            for k in ["id", "x", "y", "range", "color", "intensity"] {
+                m.insert(k.into(), l[k].clone());
+            }
+            lights.push(Value::Object(m));
+        }
+    }
+    let mut fog_part = Map::new();
+    fog_part.insert("fog".into(), Value::Object(fog));
+    fog_part.insert("walls".into(), Value::Array(walls));
+    fog_part.insert("lights".into(), Value::Array(lights));
+    let image_url = sc.get("image_url").and_then(|v| v.as_str()).map(str::to_string);
+    // the viewer's own characters (a player's)
+    let (mut own_pc_id, mut own_pc_ids, mut own_pc_currency) = (Value::Null, vec![], json!([]));
+    if let Some((uid, false)) = viewer {
+        if !elements.iter().all(|e| e.is_object()) {
+            return None; // _active_own_pc's e.get on a non-object: Python's error
+        }
+        let wid = sc.get("world_id")?.as_i64()?;
+        let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
+        let own: Vec<Map<String, Value>> = st.query_map([wid, uid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        own_pc_ids = own.iter().filter_map(|p| p.get("id").and_then(|v| v.as_i64())).collect();
+        let on_map: Vec<i64> = elements.iter().filter_map(|e| e.as_object())
+            .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("token") && py_truthy(e.get("pc_id")))
+            .filter_map(|e| e.get("pc_id")?.as_i64()).collect();
+        if let Some(pc) = own.iter().find(|p| p.get("id").and_then(|v| v.as_i64()).is_some_and(|i| on_map.contains(&i))).or(own.first()) {
+            own_pc_id = pc.get("id")?.clone();
+            let raw = pc.get("currency_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+            own_pc_currency = canonical_json(raw)?;
+        }
+    }
+    // the linked fight's active combatant
+    let (mut active_combatant_id, mut combat_round) = (Value::Null, Value::Null);
+    if let Some(cs_id) = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
+        if let Ok(cs) = db.query_row("SELECT * FROM combat_sessions WHERE id = ?1", [cs_id], |r| crate::layout::row_map(r)) {
+            combat_round = cs.get("round_num").cloned().unwrap_or(Value::Null);
+            let f = Fight::load(cs)?;
+            if let Some(i) = f.current()? {
+                active_combatant_id = f.combatants[i].get("id").cloned().unwrap_or(Value::Null);
+            }
+        }
+    }
+    Some(PlayerScene { visible, image_url, fog_part, own_pc_id, own_pc_ids, own_pc_currency, active_combatant_id, combat_round })
+}
+
+pub fn safe_image(url: &str) -> String {
+    safe_image_url(Some(&json!(url)))
+}

@@ -1336,3 +1336,99 @@ pub fn player_cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
     p.ctx.insert("player_mode".into(), json!(true));
     render_with(pages, "cockpit.html", p.ctx, headers)
 }
+
+/// `/maps/schematic/<slug>/view` (the players' live map), its `view.json`, and the TV's `/display/map/<slug>/data.json` - for a map
+/// without strict secrecy (that one records what the party has seen: Python's)
+pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let path = uri.path();
+    let (slug, kind) = if let Some(s) = path.strip_prefix("/display/map/").and_then(|s| s.strip_suffix("/data.json")) {
+        (s, "tv")
+    } else if let Some(s) = path.strip_prefix("/maps/schematic/").and_then(|s| s.strip_suffix("/view.json")) {
+        (s, "json")
+    } else {
+        (path.strip_prefix("/maps/schematic/")?.strip_suffix("/view")?, "page")
+    };
+    if slug.is_empty() || slug.contains('/') {
+        return None;
+    }
+    if kind == "tv" && !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let sc = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    let truthy = |v: Option<&Value>| v.is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)) && v != &json!(0) && v != &json!(""));
+    if sc.get("world_id")?.as_i64()? != wid || (truthy(sc.get("is_html")) && truthy(sc.get("html_file"))) {
+        return None;
+    }
+    let scene = crate::edits::player_scene(&db, &sc, (kind != "tv").then_some((p.user_id, p.is_gm)))?;
+    let bg = |sc: &serde_json::Map<String, Value>| {
+        match sc.get("canvas_bg").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("dark") {
+            "dark" => "#111111", "blueprint" => "#0d1b2a", "grid-light" => "#1a1a2e", "light" => "#f0f0f0", _ => "#111111",
+        }
+    };
+    let dim = |k: &str, d: i64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(d);
+    if kind == "tv" {
+        let raw = sc.get("grid_config_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+        // json.loads(...) or {} when it is not an object (a NaN serde cannot read: Python's)
+        let grid = match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(o)) => Value::Object(o),
+            Ok(_) => json!({}),
+            Err(_) if raw.contains("NaN") || raw.contains("Infinity") => return None,
+            Err(_) => json!({}),
+        };
+        let image = crate::edits::safe_image(scene.image_url.as_deref().unwrap_or(""));
+        let mut out = serde_json::Map::new();
+        out.insert("elements".into(), Value::Array(scene.visible));
+        out.insert("image_url".into(), if image.is_empty() { Value::Null } else { json!(image) });
+        out.insert("canvas".into(), json!({"w": dim("canvas_width", 2000), "h": dim("canvas_height", 1500), "bg": bg(&sc)}));
+        out.insert("grid_type".into(), json!(sc.get("grid_type").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("none")));
+        out.insert("grid_config".into(), grid);
+        out.extend(scene.fog_part);
+        return crate::edits::json_response(&Value::Object(out));
+    }
+    // _party_pins_for(world, "schematic", slug)
+    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY id").ok()?;
+    let parties = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut pins = vec![];
+    for party in &parties {
+        let raw = party.get("location_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("{}");
+        let Value::Object(loc) = serde_json::from_str::<Value>(raw).ok()? else { return None };
+        if loc.get("kind").and_then(|v| v.as_str()) != Some("schematic") || loc.get("slug").and_then(|v| v.as_str()) != Some(slug) {
+            continue;
+        }
+        pins.push(json!({"id": party.get("id")?, "name": party.get("name")?, "member_count": party_member_count(&db, &p, party, wid)?,
+                         "x": loc.get("x").cloned().unwrap_or(Value::Null), "y": loc.get("y").cloned().unwrap_or(Value::Null)}));
+    }
+    if kind == "json" {
+        let mut out = serde_json::Map::new();
+        out.insert("elements".into(), Value::Array(scene.visible));
+        out.insert("image_url".into(), json!(scene.image_url));
+        out.insert("party_pins".into(), Value::Array(pins));
+        out.insert("own_pc_id".into(), scene.own_pc_id);
+        out.insert("own_pc_ids".into(), json!(scene.own_pc_ids));
+        out.insert("own_pc_currency".into(), scene.own_pc_currency);
+        out.insert("combat_active_combatant_id".into(), scene.active_combatant_id);
+        out.insert("combat_round".into(), scene.combat_round);
+        out.extend(scene.fog_part);
+        return crate::edits::json_response(&Value::Object(out));
+    }
+    let c = &mut p.ctx;
+    c.insert("elements_json".into(), json!(nd_render::py_dumps(&Value::Array(scene.visible))));
+    c.insert("canvas_bg_color".into(), json!(bg(&sc)));
+    c.insert("party_pins_json".into(), json!(nd_render::py_dumps(&Value::Array(pins))));
+    c.insert("grid_type".into(), json!(sc.get("grid_type").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("none")));
+    c.insert("grid_config_json".into(), json!(sc.get("grid_config_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")));
+    c.insert("own_pc_id".into(), scene.own_pc_id);
+    c.insert("own_pc_ids".into(), json!(scene.own_pc_ids));
+    c.insert("own_pc_currency_json".into(), json!(nd_render::py_dumps(&scene.own_pc_currency)));
+    c.insert("combat_active_combatant_id".into(), scene.active_combatant_id);
+    c.insert("combat_round".into(), scene.combat_round);
+    c.insert("fog_json".into(), json!(nd_render::py_dumps(&Value::Object(scene.fog_part))));
+    c.insert("bg_image_url".into(), json!(scene.image_url));
+    c.insert("schematic".into(), Value::Object(sc));
+    render_with(pages, "schematic_view.html", p.ctx, headers)
+}

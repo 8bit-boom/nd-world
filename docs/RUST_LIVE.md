@@ -72,3 +72,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `GET /cockpit` (the GM's workspace page: the Add-panel pickers; golden-tested for a GM, a player and another world) | P4-24 |
 | `GET /display`, `/display/map/<slug>`, `/display/combat/<id>` (the GM's second-screen pages; golden-tested) | P4-25 |
 | `GET /player-cockpit` (the cockpit in player mode: the viewer's parties with `_member_vitals`, their characters, `?pc=` for a GM; a character on a sheet template stays Python's) | P4-26 |
+| `GET /maps/schematic/<slug>/view`, `/view.json`, `/display/map/<slug>/data.json` (what the table sees of a map: hidden elements kept home, secret doors as walls, the lights that are on, the viewer's own characters, the fight's active combatant; a map with strict secrecy - which records what the party has seen - stays Python's) | P4-27 |

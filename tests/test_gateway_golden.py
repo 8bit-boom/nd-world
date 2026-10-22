@@ -1332,3 +1332,54 @@ def test_player_cockpit_page_is_pythons(client, seed):
         for url in ("/player-cockpit", f"/player-cockpit?pc={ids[0]}", f"/player-cockpit?pc={ids[1]}", f"/player-cockpit?pc={ids[2]}", "/player-cockpit?pc=x"):
             served += _same_page(d, _via(d, base), url, email)
     assert served >= 10, served
+
+
+def test_schematic_player_views_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import CombatSession, Party, PlayerCharacter, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        mine = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Mine", currency_json=json.dumps([{"label": "Gold", "value": 4}]))
+        other = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Second")
+        db.add_all([mine, other])
+        db.flush()
+        cs = CombatSession(world_id=w, name="F", active_idx=1, round_num=3,
+                           combatants_json=json.dumps([{"id": "a", "initiative": 5}, {"id": "b", "initiative": 9}, {"id": "c", "initiative": 1}]))
+        db.add(cs)
+        db.flush()
+        els = [{"id": "t1", "type": "token", "pc_id": other.id, "x": 1.5}, {"id": "h", "type": "rect", "hidden": True},
+               {"id": "t2", "type": "token", "visible_to_players": False}, {"id": "t3", "type": "token", "visible_to_players": 0}, {"id": "r", "type": "text", "label": "<b>"}]
+        walls = [{"id": "w", "pts": [[0, 0], [5, 5]], "kind": "wall", "extra": 1}, {"id": "s", "pts": [[1, 1], [2, 2]], "kind": "secret", "state": "open"},
+                 {"id": "s2", "pts": [[1, 1], [2, 2]], "kind": "secret"}, "junk"]
+        lights = [{"id": "l1", "x": 5, "y": 5, "range": 3, "on": True, "label": "x"}, {"id": "l2", "x": 5, "y": 5, "range": 3, "on": False}]
+        maps = [
+            Schematic(world_id=w, name="Plain <m>", slug="pv-plain", elements_json=json.dumps(els), canvas_bg="blueprint", grid_type="square",
+                      grid_config_json='{"cell_size": 40}', combat_session_id=cs.id, image_url="/uploads/schematics/pv.png"),
+            Schematic(world_id=w, name="Fog", slug="pv-fog", elements_json=json.dumps(els), walls_json=json.dumps(walls), lights_json=json.dumps(lights),
+                      fog_json=json.dumps({"enabled": True, "darkness": 0.5, "range": 6})),
+            Schematic(world_id=w, name="Dark", slug="pv-dark", walls_json=json.dumps(walls), lights_json=json.dumps(lights), fog_json=json.dumps({"darkness": 0.3})),
+            Schematic(world_id=w, name="Strict", slug="pv-strict", fog_json=json.dumps({"enabled": True, "strict": True})),
+            Schematic(world_id=seed.world_b.id, name="B", slug="pv-b"),
+        ]
+        db.add_all(maps)
+        db.add(Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([mine.id]), location_json=json.dumps({"kind": "schematic", "slug": "pv-plain", "x": 3, "y": 4})))
+        db.commit()
+    finally:
+        db.close()
+    slugs = ["pv-plain", "pv-fog", "pv-dark", "pv-strict", "pv-b", "pv-none"]
+    served = {"page": 0, "json": 0, "tv": 0}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for slug in slugs:
+            served["page"] += _same_page(d, via, f"/maps/schematic/{slug}/view", email)
+            a, b = d.get(f"/maps/schematic/{slug}/view.json"), via.get(f"/maps/schematic/{slug}/view.json")
+            assert (a.status_code, a.content) == (b.status_code, b.content), (email, slug, a.text[:300], b.text[:300])
+            served["json"] += b.headers.get("x-nd-served-by") == "gateway"
+            a, b = d.get(f"/display/map/{slug}/data.json"), via.get(f"/display/map/{slug}/data.json")
+            assert (a.status_code, a.content) == (b.status_code, b.content), (email, slug, a.text[:300], b.text[:300])
+            served["tv"] += b.headers.get("x-nd-served-by") == "gateway"
+    assert served["page"] >= 6 and served["json"] >= 6 and served["tv"] >= 3, served
