@@ -470,6 +470,15 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
             _ => None,
         };
     }
+    if let Some(id) = path.strip_prefix("/api/characters/").and_then(|r| r.strip_suffix("/share")) {
+        if !id.is_empty() && id.len() <= 15 && id.bytes().all(|b| b.is_ascii_digit()) {
+            return match *method {
+                Method::POST => Some((share_make as SlugHandler, id.to_string())),
+                Method::DELETE => Some((share_revoke as SlugHandler, id.to_string())),
+                _ => None,
+            };
+        }
+    }
     if let Some(rest) = path.strip_prefix("/api/saved-views/") {
         if *method == Method::POST && ok(rest) {
             return Some((saved_view_save as SlugHandler, rest.to_string()));
@@ -6907,4 +6916,44 @@ fn entity_note_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             ("visible_to_players", Sql::Integer(flag_param(&f, "visible"))), ("content_is_html", Sql::Integer(0))])?;
     }
     redirect(&format!("/entity/{}", ids[0]))
+}
+
+// ── character share links (app/routers/character_share.py) ──
+
+/// `_manageable`: the character id, when the caller owns it or is a GM (anything else is Python's 401 / 404)
+fn share_target(c: &Ctx, id: &str) -> Option<i64> {
+    let id: i64 = id.parse().ok()?;
+    let pc = row(&c.db, "SELECT owner_user_id FROM player_characters WHERE id = ?1", id)?;
+    (c.p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)).then_some(id)
+}
+
+fn share_revoke_all(c: &Ctx, id: i64) -> Option<()> {
+    c.db.execute("UPDATE character_shares SET revoked = 1 WHERE character_id = ?1", [id]).ok().map(|_| ())
+}
+
+fn share_make(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    let id = share_target(c, id)?;
+    // `request.base_url`: Python sees http and the client's Host; a forwarded scheme (behind TLS) is Python's to read
+    if c.headers.contains_key("x-forwarded-proto") || c.headers.contains_key("forwarded") {
+        return None;
+    }
+    let host = c.headers.get(header::HOST)?.to_str().ok()?.to_string();
+    if host.is_empty() || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b)) {
+        return None;
+    }
+    let world: i64 = c.db.query_row("SELECT world_id FROM player_characters WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+    share_revoke_all(c, id)?;
+    use base64::Engine;
+    use rand::RngCore;
+    let mut raw = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+    orm::insert(&c.db, "character_shares", &[("world_id", Sql::Integer(world)), ("character_id", Sql::Integer(id)), ("token", s(&token))])?;
+    json_response(&json!({"active": true, "url": format!("http://{host}/share/{token}")}))
+}
+
+fn share_revoke(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    let id = share_target(c, id)?;
+    share_revoke_all(c, id)?;
+    json_response(&json!({"active": false, "url": ""}))
 }

@@ -3300,3 +3300,34 @@ def test_entity_note_import_is_pythons(client, seed):
             assert out[0][2] == out[1][2], (name, out)
         served += out[1][4] == "gateway"
     assert served >= 3, served
+
+
+def test_character_share_links_are_pythons(client, seed):
+    import re
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    served = 0
+    pid = _pc(world_id=seed.world_a.id, owner_user_id=seed.player_a.id, name="Share Me")
+    for who, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD), (seed.player_b.email, PLAYER_PASSWORD)):
+        d = _signed_in(who, pw, seed.world_a.slug)
+        via = _via(d, base)
+        for method in ("post", "delete", "post"):
+            out = []
+            for side in (d, via):
+                r = getattr(side, method)(f"/api/characters/{pid}/share")
+                db = SessionLocal()
+                try:
+                    rows = db.execute(text("SELECT token, revoked FROM character_shares WHERE character_id = :c ORDER BY id"), {"c": pid}).all()
+                finally:
+                    db.close()
+                j = r.json() if r.status_code == 200 else None
+                if j and j["url"]:
+                    tok = j["url"].rsplit("/", 1)[-1]
+                    assert re.fullmatch(r"[A-Za-z0-9_-]{32}", tok) and rows[-1] == (tok, False)
+                    assert sum(1 for t, rv in rows if not rv) == 1
+                    j["url"] = re.sub(r"//[^/]+/", "//HOST/", j["url"].rsplit("/", 1)[0])
+                out.append((r.status_code, j, [bool(rv) for _, rv in rows][-1:], r.headers.get("x-nd-served-by")))
+            assert out[0][:3] == out[1][:3], (who, method, out)
+            served += out[1][3] == "gateway"
+    assert served >= 6, served
