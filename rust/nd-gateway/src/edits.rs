@@ -2130,11 +2130,16 @@ fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
             Some(Value::Number(n)) => format!("\u{0}#{n}"), // a number id: never a stat name
             _ => return None,
         };
-        let v = match o.get("value") {
-            None | Some(Value::Null) | Some(Value::Bool(false)) => 0,
-            Some(Value::Number(n)) => n.as_f64()?.trunc() as i64,
-            Some(Value::String(x)) if x.is_empty() => 0,
-            _ => return None,
+        // int(float(value or 0)); float()'s TypeError / ValueError is 0, int() of an infinity or NaN Python's error
+        let v = if py_truthy(o.get("value")) {
+            match py_float(o.get("value")).ok()? {
+                None => 0,
+                Some(f) if f.is_finite() && f.abs() < 9e15 => f.trunc() as i64,
+                Some(f) if f.is_nan() => 0,
+                Some(_) => return None,
+            }
+        } else {
+            0
         };
         out.retain(|(k, _)| *k != id);
         out.push((id, v));
@@ -2811,44 +2816,42 @@ fn py_num(v: Option<&Value>, default: PyNum) -> Option<PyNum> {
 
 /// `char_extras.carry_info(db, pc)` for the equipment list `equipment`
 fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[Value]) -> Option<Value> {
+    // used += float(weight or 0) * float(1 if qty is None else qty); an item float() refuses is skipped
     let mut used = 0.0f64;
     for it in equipment {
         let Some(m) = it.as_object() else { continue };
-        let w = match m.get("weight") {
-            None | Some(Value::Null) | Some(Value::Bool(false)) => 0.0,
-            Some(Value::Number(n)) => n.as_f64()?,
-            Some(Value::String(x)) if x.is_empty() => 0.0,
-            _ => return None,
-        };
+        let w = if py_truthy(m.get("weight")) { py_float(m.get("weight")).ok()? } else { Some(0.0) };
         let q = match m.get("qty") {
-            None | Some(Value::Null) => 1.0,
-            Some(Value::Number(n)) => n.as_f64()?,
-            _ => return None,
+            None | Some(Value::Null) => Some(1.0),
+            v => py_float(v).ok()?,
         };
-        used += w * q;
+        if let (Some(w), Some(q)) = (w, q) {
+            used += w * q;
+        }
     }
+    // {str(id): float(value or 0)}: one value float() refuses empties the whole table
     let raw = pc.get("stats_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let mut stats: Vec<(String, f64)> = vec![];
-    if let Value::Array(a) = serde_json::from_str::<Value>(raw).ok()? {
-        for x in a {
-            let Some(o) = x.as_object() else { continue };
-            let id = match o.get("id") {
-                Some(Value::String(v)) => v.clone(),
-                _ => continue, // str() of anything else is never "str" / "bod"
-            };
-            let v = match o.get("value") {
-                None | Some(Value::Null) | Some(Value::Bool(false)) => 0.0,
-                Some(Value::Number(n)) => n.as_f64()?,
-                Some(Value::String(x)) if x.is_empty() => 0.0,
-                _ => return None,
-            };
-            stats.retain(|(k, _)| *k != id);
-            stats.push((id, v));
+    match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Array(a) => {
+            for x in a {
+                let Some(o) = x.as_object() else { continue };
+                let v = if py_truthy(o.get("value")) { py_float(o.get("value")).ok()? } else { Some(0.0) };
+                let Some(v) = v else {
+                    stats.clear();
+                    break;
+                };
+                let Some(id) = o.get("id").and_then(|v| v.as_str()).map(str::to_string) else { continue }; // str() of another id is never "str" / "bod"
+                stats.retain(|(k, _)| *k != id);
+                stats.push((id, v));
+            }
         }
-    } else {
-        return None;
+        _ => return None,
     }
     let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0.0, |(_, v)| *v);
+    if !used.is_finite() || !(5.0 * (get("str") + get("bod"))).is_finite() {
+        return None;
+    }
     let auto = (5.0 * (get("str") + get("bod"))).trunc() as i64;
     let custom = pc_prefs(db, pc.get("id")?.as_i64()?)?.get("carry_limit").cloned();
     let custom = match custom {
@@ -2857,7 +2860,7 @@ fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[Value]) -> 
         _ => None,
     };
     let limit = custom.unwrap_or(auto);
-    let rounded: f64 = format!("{used:.1}").parse().ok()?;
+    let rounded = py_round(used, 1)?;
     Some(json!({"used": rounded, "limit": limit, "default": custom.is_none(), "over": limit > 0 && used > limit as f64}))
 }
 
@@ -11195,4 +11198,249 @@ pub fn combat_player_state(cs: &Map<String, Value>) -> Option<Value> {
     Some(json!({"rows": rows, "active_id": shown_active, "picker": seen_pick, "round_num": or("round_num", 1), "rev": or("rev", 0),
         "name": cs.get("name"), "ruleset": cs.get("ruleset").and_then(|v| v.as_str()).unwrap_or(""), "fluid": f.fluid,
         "combatants": combatants, "active_idx": or("active_idx", 0)}))
+}
+
+// ── the character sheet page, N&D (app/routers/characters.py character_sheet, _derived, _roll_cfg, character_hub.journey_context) ──
+
+/// Python's `float(v)`: Ok(Some(f)) when it reads, Ok(None) for its TypeError / ValueError, Err where it might read text its own way
+fn py_float(v: Option<&Value>) -> Result<Option<f64>, ()> {
+    Ok(match v {
+        None | Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => None,
+        Some(Value::Bool(b)) => Some(*b as i64 as f64),
+        Some(Value::Number(n)) => Some(n.as_f64().ok_or(())?),
+        Some(Value::String(t)) => {
+            if !t.is_ascii() || t.contains('_') {
+                return Err(());
+            }
+            let w = t.trim_matches(|ch: char| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1f'));
+            w.parse::<f64>().ok()
+        }
+    })
+}
+
+/// `int(_num(v, 0))` (an infinity or NaN is Python's error)
+fn num_int(v: Option<&Value>) -> Option<i64> {
+    match py_float(v).ok()? {
+        None => Some(0),
+        Some(f) if f.is_finite() && f.abs() < 9e15 => Some(f.trunc() as i64),
+        Some(_) => None,
+    }
+}
+
+/// A JSON list column read by `json.loads(col or "[]")` that must be a list (anything else: Python's)
+fn list_col(pc: &Map<String, Value>, col: &str) -> Option<Vec<Value>> {
+    let raw = pc.get(col).and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    match canonical_json(raw)? {
+        Value::Array(a) => Some(a),
+        _ => None,
+    }
+}
+
+/// The context of `characters/sheet.html` for an N&D character without a sheet template, viewed by someone who may see it; None for
+/// anything Python's own page would read its own way
+pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
+    if pc.get("sheet_template_id").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    let pid = pc.get("id")?.as_i64()?;
+    let wid = pc.get("world_id")?.as_i64()?;
+    let owner = pc.get("owner_user_id").and_then(|v| v.as_i64());
+    let can_manage = p.is_gm || owner == Some(p.user_id);
+    if !can_manage {
+        // _can_view_character: a member of the character's world, the GM letting players see the party, an owned character
+        let see: Option<i64> = db.query_row("SELECT players_see_party FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
+        if see.unwrap_or(0) == 0 || owner.is_none() {
+            return None;
+        }
+    }
+    // _derived
+    let stats = list_col(pc, "stats_json")?;
+    let currency = list_col(pc, "currency_json")?;
+    let equipment = list_col(pc, "equipment_json")?;
+    let feats = list_col(pc, "feats_json")?;
+    let attacks = list_col(pc, "attacks_json")?;
+    let cyberware = list_col(pc, "cyberware_json")?;
+    let conditions = list_col(pc, "conditions_json")?;
+    let level = pc.get("level")?.as_i64()?;
+    let xp = pc.get("xp")?.as_i64()?;
+    if level < 1 {
+        return None; // XP_THRESHOLDS[level - 1] with a negative index: Python's
+    }
+    let lvl = level.min(20);
+    let xp_lo = XP_THRESHOLDS[(lvl - 1) as usize];
+    let xp_hi = (lvl < 20).then(|| XP_THRESHOLDS[lvl as usize]);
+    let xp_pct = match xp_hi {
+        Some(hi) if hi > xp_lo => (100.0f64).min(((xp - xp_lo).max(0) as f64 * 100.0 / (hi - xp_lo) as f64).trunc()) as i64,
+        _ => 100,
+    };
+    // total_weight: sum(_num(weight, 0) * _num(qty, 1)) - an int while nothing reads as a float
+    let (mut tw, mut tw_float) = (0.0f64, false);
+    for it in equipment.iter().filter_map(|i| i.as_object()) {
+        let (w, q) = (py_float(it.get("weight")).ok()?, py_float(it.get("qty")).ok()?);
+        tw += w.unwrap_or(0.0) * q.unwrap_or(1.0);
+        tw_float |= w.is_some() || q.is_some();
+    }
+    let mut stat_val: Vec<(String, i64)> = vec![];
+    for s in stats.iter().filter_map(|s| s.as_object()) {
+        let id = match s.get("id") {
+            Some(Value::String(t)) if !t.is_empty() => t.clone(),
+            v if !py_truthy(v) => continue,
+            Some(Value::Array(_)) | Some(Value::Object(_)) => return None,
+            _ => continue, // a number id is never "str" / "dex" ...
+        };
+        let v = num_int(s.get("value"))?;
+        stat_val.retain(|(k, _)| *k != id);
+        stat_val.push((id, v));
+    }
+    let sv = |k: &str| stat_val.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+    let phys = sv("str") + sv("dex") + sv("bod") + sv("per");
+    let ment = sv("wil") + sv("int") + sv("cha") + sv("itu");
+    let max_hp = pc.get("max_hp")?.as_i64()?;
+    let hp_max = if max_hp > 0 { max_hp } else { phys + 10 };
+    let shock_stored = col_int(pc, "shock_max");
+    let shock_max = if shock_stored > 0 { shock_stored } else { ment };
+    let mut ca_used = 0.0f64;
+    for c in cyberware.iter().filter_map(|c| c.as_object()) {
+        ca_used += py_float(c.get("ca_cost")).ok()?.unwrap_or(0.0);
+    }
+    if !ca_used.is_finite() {
+        return None;
+    }
+    let text = |k: &str| pc.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut ctx = Map::new();
+    ctx.insert("pc".into(), Value::Object(pc.clone()));
+    ctx.insert("stats".into(), Value::Array(stats.clone()));
+    ctx.insert("currency".into(), Value::Array(currency));
+    ctx.insert("secondary".into(), json!({"name": "Shock", "max": shock_max, "current": col_int(pc, "shock_current")}));
+    ctx.insert("xp_lo".into(), json!(xp_lo));
+    ctx.insert("xp_hi".into(), json!(xp_hi));
+    ctx.insert("xp_pct".into(), json!(xp_pct));
+    ctx.insert("equipment".into(), Value::Array(equipment.clone()));
+    ctx.insert("feats".into(), Value::Array(feats));
+    ctx.insert("attacks".into(), Value::Array(attacks));
+    ctx.insert("total_weight".into(), if tw_float { json!(tw) } else { json!(0) });
+    ctx.insert("cyberware".into(), Value::Array(cyberware));
+    ctx.insert("ca_used".into(), json!(ca_used.trunc() as i64));
+    ctx.insert("conditions".into(), Value::Array(conditions));
+    ctx.insert("phys".into(), json!(phys));
+    ctx.insert("ment".into(), json!(ment));
+    ctx.insert("hp_max_derived".into(), json!(phys + 10));
+    ctx.insert("hp_max".into(), json!(hp_max));
+    ctx.insert("shock_max_derived".into(), json!(ment));
+    ctx.insert("ca_derived".into(), json!(sv("wil") + sv("bod")));
+    ctx.insert("speed_derived".into(), json!(sv("dex") + sv("itu")));
+    ctx.insert("shock_max".into(), json!(shock_max));
+    ctx.insert("shock_current".into(), json!(col_int(pc, "shock_current")));
+    ctx.insert("pp_current".into(), json!(col_int(pc, "pp_current")));
+    ctx.insert("mp_current".into(), json!(col_int(pc, "mp_current")));
+    ctx.insert("minor_edge".into(), json!(text("minor_edge")));
+    ctx.insert("major_edge".into(), json!(text("major_edge")));
+    ctx.insert("chosen_template".into(), Value::Null);
+    ctx.insert("tpl_fields".into(), json!([]));
+    let cf_raw = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+    ctx.insert("custom_fields".into(), canonical_json(cf_raw)?);
+    ctx.insert("condition_presets".into(), json!(["Burn", "Freeze", "Toxin", "Bleeding", "Blind", "Yellow", "Charm", "Daze", "Stunned"]));
+    ctx.insert("can_manage".into(), json!(can_manage));
+    let rows = |sql: &str, params: &[i64]| -> Option<Vec<Value>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r.into_iter().map(Value::Object).collect())
+    };
+    let members = if p.is_gm {
+        rows("SELECT u.* FROM users u JOIN world_memberships m ON m.user_id = u.id WHERE m.world_id = ?1 AND u.is_gm = 0 ORDER BY u.display_name", &[wid])?
+    } else {
+        vec![]
+    };
+    ctx.insert("world_members".into(), Value::Array(members));
+    let data = nd_render::app::data();
+    ctx.insert("equipment_catalog".into(), data.get("catalog_equipment")?.clone());
+    ctx.insert("feats_catalog".into(), data.get("catalog_feats")?.clone());
+    ctx.insert("linked_sheets".into(), Value::Array(rows("SELECT * FROM character_sheets WHERE player_character_id = ?1", &[pid])?));
+    ctx.insert("levelup_ready".into(), json!(level < 20 && xp >= XP_THRESHOLDS[level.min(19) as usize]));
+    ctx.insert("carry".into(), carry_info(db, pc, &equipment)?);
+    // _roll_cfg (the owner's or the GM's roll sheet: Stat + d10)
+    let roll = if can_manage {
+        let names = [("str", "Strength"), ("dex", "Dexterity"), ("bod", "Body"), ("per", "Perception"), ("wil", "Willpower"), ("int", "Intellect"), ("cha", "Charisma"), ("itu", "Intuition")];
+        let mut by_id: Vec<(String, i64)> = vec![];
+        for x in stats.iter().filter_map(|x| x.as_object()) {
+            let id = match x.get("id") {
+                Some(Value::String(t)) => t.clone(),
+                None | Some(Value::Null) => "None".into(),
+                _ => return None,
+            };
+            let v = num_int(x.get("value"))?;
+            by_id.retain(|(k, _)| *k != id);
+            by_id.push((id, v));
+        }
+        let list: Vec<Value> = names.iter().map(|(k, label)| json!({"id": k, "label": label,
+            "value": by_id.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v), "pool": if ["str", "dex", "bod", "per"].contains(k) { "pp" } else { "mp" }})).collect();
+        json!({"mode": "stat", "pc_id": pid, "pc_name": pc.get("name"), "stats": list})
+    } else {
+        Value::Null
+    };
+    ctx.insert("roll_cfg".into(), roll);
+    // the player hub (the owner's, or a GM looking in)
+    let hub_mode = if owner == Some(p.user_id) { Some("owner") } else if p.is_gm { Some("gm") } else { None };
+    ctx.insert("hub_enabled".into(), json!(hub_mode.is_some()));
+    ctx.insert("hub_mode".into(), json!(hub_mode));
+    let owner_name = match (hub_mode, owner) {
+        (Some("gm"), Some(o)) => db.query_row("SELECT display_name, email FROM users WHERE id = ?1", [o], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))
+            .ok().map(|(n, e)| json!(n.filter(|t| !t.is_empty()).or(e))).unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+    ctx.insert("hub_owner_name".into(), owner_name);
+    let (mut hub_party, mut hub_loot, mut hub_roster, mut hub_ledger, mut hub_sessions) = (Value::Null, vec![], vec![], vec![], vec![]);
+    if hub_mode.is_some() {
+        // journey_context: the first party (by name) that lists the character
+        let parties = rows("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name", &[wid])?;
+        let mut first = None;
+        for party in parties {
+            let ids = member_ids(party.get("member_pc_ids_json"))?;
+            if ids.contains(&pid) {
+                first = Some((party, ids));
+                break;
+            }
+        }
+        if let Some((party, ids)) = first {
+            let po = party.as_object()?;
+            let members: Vec<Map<String, Value>> = if ids.is_empty() { vec![] } else {
+                let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+                rows(&format!("SELECT * FROM player_characters WHERE id IN ({}) AND world_id = ?1", marks.join(",")), &[wid])?.into_iter().filter_map(|v| match v { Value::Object(o) => Some(o), _ => None }).collect()
+            };
+            let name_of = |id: i64| members.iter().find(|m| m.get("id").and_then(|v| v.as_i64()) == Some(id)).and_then(|m| m.get("name").cloned());
+            for it in load_loot(po)? {
+                let cl: Vec<i64> = it["claimed_by"].as_array()?.iter().filter_map(|x| x.as_i64()).collect();
+                hub_loot.push(json!({"lid": it["lid"], "name": it["name"], "qty": it["qty"], "notes": it["notes"], "claimed": !cl.is_empty(), "mine": cl.contains(&pid),
+                    "claimers": cl.iter().filter_map(|c| name_of(*c)).collect::<Vec<_>>()}));
+            }
+            let others: Vec<Map<String, Value>> = members.iter().filter(|m| m.get("id").and_then(|v| v.as_i64()) != Some(pid)).cloned().collect();
+            for v in member_vitals(db, &others)? {
+                let by = others.iter().find(|m| m.get("id") == v.get("id"))?;
+                let line: Vec<String> = ["race", "char_class"].iter().filter_map(|k| by.get(*k).and_then(|x| x.as_str()).filter(|t| !t.is_empty()).map(str::to_string)).collect();
+                hub_roster.push(json!({"id": v["id"], "name": v["name"], "native": v["native"], "level": v["level"], "line": line.join(" · "),
+                    "hp": if py_truthy(Some(&v["hp"])) { v["hp"].clone() } else { json!(0) }, "max_hp": v["max_hp"], "hp_label": v["hp_label"],
+                    "down": v["down"], "conditions": v["conditions"]}));
+            }
+            let raw = po.get("xp_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+            match serde_json::from_str::<Value>(raw) {
+                Ok(Value::Array(a)) => hub_ledger = a.into_iter().rev().take(5).collect(),
+                Ok(_) => return None,
+                Err(_) => {}
+            }
+            let sees = p.is_gm || match p.world.as_ref() {
+                Some(w) => nd_perm::sections::section_level(false, p.role.as_deref(), w.get("section_access_json").and_then(|v| v.as_str()), w.get("custom_kinds_json").and_then(|v| v.as_str()), "session_log")? != "none",
+                None => false,
+            };
+            if sees {
+                hub_sessions = rows("SELECT * FROM game_sessions WHERE party_id = ?1 ORDER BY session_num DESC LIMIT 5", &[po.get("id")?.as_i64()?])?;
+            }
+            hub_party = party;
+        }
+    }
+    ctx.insert("hub_party".into(), hub_party);
+    ctx.insert("hub_loot".into(), Value::Array(hub_loot));
+    ctx.insert("hub_roster".into(), Value::Array(hub_roster));
+    ctx.insert("hub_xp_ledger".into(), Value::Array(hub_ledger));
+    ctx.insert("hub_sessions".into(), Value::Array(hub_sessions));
+    Some(ctx)
 }

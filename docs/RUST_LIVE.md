@@ -41,8 +41,8 @@ workspace) and the player cockpit. Each live write is checked to wake the same l
 Still Python's, and why:
 - the masked background picture of a strict-secrecy map (`/maps/schematic/<slug>/bg.webp`: Pillow's LANCZOS resize and WebP encoder);
   what the party has seen is computed and recorded by the gateway (`rust/nd-gateway/src/strict.rs`, batch 32);
-- the character hub page itself (`/characters/<id>`), with the other pages on the character-sheet engine (custom sheet systems' tracks),
-  and anything a character on a custom sheet system touches (its Rest rules, vitals, combat tracks);
+- a character on a sheet template - its page (`characters/custom_sheet.html`), and anything its system touches (its Rest rules, vitals,
+  combat tracks): the custom sheet systems' engine (`app/sheet_systems.py`) is not ported;
 - the AI and chronicler streams - phase 5, with the other AI work.
 
 ## Phase 4, full port: the table tools' writes
@@ -88,3 +88,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /maps/schematic/<slug>/upload`, `/embed-image` (the map's background picture and a picture placed on it, stored as uploaded; a GM or Assistant, the active world) | P4-33 |
 | `POST /maps/schematic/<slug>/rooms/detect` (the enclosed rooms of the walls as room-tool state: `app/rooms_from_walls.py` ported, with Python's float `//`, `%` and round-half-to-even; its refusals stay Python's) | P4-34 |
 | `POST /api/characters/<id>/hub/keepsakes/upload` (a player's own picture, song or video kept on their character, within the world's per-kind limit) | P4-35 |
+| `GET /characters/<id>` for an N&D character (the sheet, the roll sheet and the player hub's Journey tab - party, loot, roster, XP ledger, sessions; `_derived` with Python's `float()` / `int()` readings) | P4-36 |

@@ -1524,3 +1524,41 @@ def test_strict_secrecy_map_views_are_pythons(client, seed):
                 assert answers[0] == answers[1], (fog, who[0], path, answers[0][1][:400], answers[1][1][:400])
                 assert records[0] == records[1], (fog, who[0], path, records)
     assert served >= 15, served
+
+
+def test_character_sheet_page_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import CharacterPref, GameSession, Party, PlayerCharacter, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    stats = json.dumps([{"id": "str", "label": "Strength", "value": 3}, {"id": "dex", "value": "2"}, {"id": "bod", "value": 2.7}, {"id": "wil", "value": None},
+                        {"id": "itu", "value": 1}, {"label": "no id"}])
+    db = SessionLocal()
+    try:
+        db.get(World, w).players_see_party = True
+        hero = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Hero <h>", race="Elf", char_class="Rogue", level=3, xp=2800, stats_json=stats,
+                               equipment_json=json.dumps([{"name": "Rope", "weight": "1.5", "qty": 2}, {"name": "Coin", "weight": None}, "junk"]),
+                               currency_json=json.dumps([{"label": "Gold", "abbr": "gp", "value": 12}]), feats_json=json.dumps([{"name": "Quick", "description": "fast"}]),
+                               cyberware_json=json.dumps([{"name": "Eye", "ca_cost": "2.5"}, {"name": "Arm", "ca_cost": 3}]),
+                               conditions_json=json.dumps(["Burn"]), current_hp=7, max_hp=0, shock_current=2, minor_edge="Lucky", attacks_json="[]")
+        mate = PlayerCharacter(world_id=w, owner_user_id=seed.player_b.id, name="Mate", race="Orc", current_hp=0, level=2, stats_json=stats, conditions_json='["Daze"]')
+        bare = PlayerCharacter(world_id=w, owner_user_id=seed.player_b.id, name="Bare")
+        db.add_all([hero, mate, bare])
+        db.flush()
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([hero.id, mate.id]),
+                      loot_json=json.dumps([{"lid": "aa11bb22", "name": "Gem", "qty": 1, "notes": "", "claimed_by": [mate.id]}]),
+                      xp_json=json.dumps([{"amount": 100, "note": "a"}, {"amount": 50, "note": "b"}]))
+        db.add(party)
+        db.flush()
+        db.add_all([GameSession(world_id=w, session_num=1, title="One", party_id=party.id), GameSession(world_id=w, session_num=2, title="Two <2>", party_id=party.id),
+                    CharacterPref(world_id=w, character_id=hero.id, prefs_json=json.dumps({"carry_limit": 40}))])
+        db.commit()
+        ids = (hero.id, mate.id, bare.id)
+    finally:
+        db.close()
+    served = 0
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD), (seed.player_b.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for i in ids:
+            served += _same_page(d, _via(d, base), f"/characters/{i}", email)
+    assert served >= 6, served

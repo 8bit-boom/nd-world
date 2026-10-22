@@ -1598,3 +1598,21 @@ pub fn combat_state_json(_pages: &Pages, cfg: &Config, uri: &Uri, headers: &Head
     let state: Value = if p.is_gm && !tv { crate::edits::combat_full_state(&cs)? } else { crate::edits::combat_player_state(&cs)? };
     crate::edits::json_response(&state)
 }
+
+/// `GET /characters/<id>` for an N&D character without a sheet template, in the viewer's active world (the sheet, the roll sheet and the
+/// player hub's Journey tab); a custom sheet system is Python's
+pub fn character_sheet(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let id = uri.path().strip_prefix("/characters/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()))?;
+    let id: i64 = id.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok()?;
+    if pc.get("world_id")?.as_i64()? != wid {
+        return None;
+    }
+    let ctx = crate::edits::character_sheet_ctx(&db, &p, &pc)?;
+    p.ctx.extend(ctx);
+    render_with(pages, "characters/sheet.html", p.ctx, headers)
+}
