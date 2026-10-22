@@ -212,6 +212,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/end-turn", hub_end_turn),
     ("/api/characters/{}/hub/handouts/seen", hub_handouts_seen),
     ("/api/characters/{}/hub/companions", hub_companion_add),
+    ("/api/characters/{}/hub/pins", hub_pin_toggle),
     ("/api/characters/{}/hub/entries", hub_entry_create),
     ("/api/characters/{}/hub/entries/{}", hub_entry_update),
     ("/api/characters/{}/hub/entries/{}/delete", hub_entry_delete),
@@ -9015,6 +9016,65 @@ fn hub_handouts_seen(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let newest: Option<i64> = c.db.query_row("SELECT id FROM world_handouts WHERE world_id = ?1 ORDER BY id DESC LIMIT 1", [pc.get("world_id")?.as_i64()?], |r| r.get(0)).ok();
     set_pc_pref(c, &pc, "handouts_seen", newest.map(|n| json!(n)))?;
     json_response(&json!({"ok": true}))
+}
+
+/// `_place_rows(world)`: the ids of the pages this world offers players (the navigation bar's visibility, as the PLAYER role)
+fn hub_place_ids(w: &Map<String, Value>) -> Option<Vec<String>> {
+    const SKIP: [&str; 7] = ["characters", "cockpit", "schedule", "androidapp", "character_sheets", "editor", "studio_console"];
+    let wtext = |k: &str| w.get(k).and_then(|v| v.as_str());
+    let mut out = vec![];
+    for item in nd_render::app::build_catalog(Some(w))? {
+        let id = item.get("id")?.as_str()?;
+        let cond = item.get("condition").and_then(|v| v.as_str());
+        if SKIP.contains(&id) || matches!(cond, Some("dreamlands_enabled") | Some("king_in_yellow_enabled")) {
+            continue;
+        }
+        match item.get("player_section").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            Some(section) => {
+                if nd_perm::sections::section_level(false, Some("player"), wtext("section_access_json"), wtext("custom_kinds_json"), section)? == "none" {
+                    continue;
+                }
+            }
+            None if nd_render::app::truthy(item.get("gm_only")) => continue,
+            None => {}
+        }
+        if let Some(cond) = cond {
+            if !nd_render::app::truthy(w.get(cond)) {
+                continue;
+            }
+        }
+        out.push(id.to_string());
+    }
+    Some(out)
+}
+
+/// `hub_pin_toggle`: pin or unpin one page ({id}); the refusals (a page not open to players, too many pins) stay Python's
+fn hub_pin_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    let page = match body.get("id") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        Some(_) => return None,
+    };
+    let w = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", pc.get("world_id")?.as_i64()?)?;
+    let valid = hub_place_ids(&w)?;
+    let stored = match pc_prefs(&c.db, ids[0])?.get("pins") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return None,
+    };
+    let mut pins: Vec<String> = stored.iter().filter_map(|v| v.as_str()).filter(|v| valid.iter().any(|x| x == v)).map(str::to_string).collect();
+    if let Some(i) = pins.iter().position(|p| *p == page) {
+        pins.remove(i);
+    } else {
+        if !valid.contains(&page) || pins.len() >= 8 {
+            return None;
+        }
+        pins.push(page);
+    }
+    set_pc_pref(c, &pc, "pins", (!pins.is_empty()).then(|| json!(pins)))?;
+    json_response(&json!({"pins": pins}))
 }
 
 fn hub_companions_json(c: &Ctx, pc_id: i64) -> Option<Value> {

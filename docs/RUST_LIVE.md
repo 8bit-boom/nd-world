@@ -53,3 +53,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/characters/<id>/hub/end-turn`, `/hub/pass-turn` (the player's turn controls, `combat_turns.advance` / `pick_next` ported, both turn systems; the answer's `_combat_now`) | P4-5 |
 | `POST /api/characters/<id>/hub/handouts/seen`, `POST /hub/companions`, `PATCH` / `DELETE /hub/companions/<id>` | P4-6 |
 | `POST /api/characters/<id>/hub/entries`, `PATCH` / `DELETE /hub/entries/<id>` (the player's journal, goals and notes; timestamps as Python's `isoformat()`) | P4-7 |
+| `POST /api/characters/<id>/hub/pins` (pin / unpin a page; the players' page list, `_place_rows`, ported) | P4-8 |

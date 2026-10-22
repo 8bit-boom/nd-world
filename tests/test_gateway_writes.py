@@ -3959,3 +3959,28 @@ def test_hub_journal_entries_are_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (kind, out)
         served += out[1][3] == "gateway"
     assert served >= 7, served
+
+
+def test_hub_pins_are_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    places = [p["id"] for g in pl.get(f"/api/characters/{_pc(world_id=w, owner_user_id=seed.player_a.id, name='P')}/hub/places").json()["groups"] for p in g["items"]]
+    assert len(places) >= 3, places
+    served = 0
+    # (stored pins, posted body): pin, unpin, a stale pin dropped, a page players can't open, the cap, a bad id
+    cases = [(None, {"id": places[0]}), ([places[0], places[1]], {"id": places[0]}), ([places[0]], {"id": places[0]}),
+             (["nope", places[1]], {"id": places[2]}), (None, {"id": "cockpit"}), (None, {}), (places[:8], {"id": "zzz"}), (None, {"id": 5})]
+    for pins, body in cases:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Owner")
+            if pins is not None:
+                _add("CharacterPref", world_id=w, character_id=pid, prefs_json=json.dumps({"pins": pins, "x": 1}))
+            r = side.post(f"/api/characters/{pid}/hub/pins", json=body)
+            out.append((r.status_code, r.json(), _prefs(pid), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (pins, body, out)
+        served += out[1][3] == "gateway"
+    other = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Theirs")
+    assert _via(pl, base).post(f"/api/characters/{other}/hub/pins", json={"id": places[0]}).status_code in (403, 404)
+    assert served >= 4, served
