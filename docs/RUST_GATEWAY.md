@@ -45,6 +45,7 @@ published port are unchanged.
 | `ND_GATEWAY` | `1` | `0` runs Python alone on 8000, exactly as before the gateway (rollback: set it and restart) |
 | `ND_GATEWAY_TRUST_PROXY` | `0` | see above |
 | `ND_RUST_ROUTES` | `login` | pages and writes the gateway answers itself (`docs/RUST_PAGES.md`, `docs/RUST_WRITES.md`); `dice_roll`, `live`, `pages` and `writes` (the phase 3 form / JSON writes) are opt-in; empty = Python answers everything |
+| `MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`, `MAX_VIDEO_UPLOAD_BYTES`, `MAX_GALLERY_UPLOAD_BYTES`, `MAX_PAGE_UPLOAD_BYTES` | as Python | the upload limits, read by the gateway too (the `writes` uploads): it must see the same values as the Python app - in the Docker image both share one environment |
 | `ND_GATEWAY_LISTEN` | `0.0.0.0:8000` | |
 | `ND_UPSTREAM`, `ND_STATIC_DIR`, `ND_ACCEL_ROOT` | `127.0.0.1:8001`, `/app/static`, folder of `DB_PATH` | set by the entrypoint |
 
