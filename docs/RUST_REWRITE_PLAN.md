@@ -243,3 +243,23 @@ search (FTS5 with the same weights) and the home dashboard. Exit criteria: golde
 three roles each); throughput is in `docs/RUST_PAGES.md`. Which GET pages are still Python's, and why, is in `docs/RUST_PAGES.md` ("Phase 2
 status"). Fixed on the way: `app/core_rules.md` lines that markdown2 turned into headings; dict and float fidelity (insertion order, exact
 round-trip, Python's `repr`); `|thumb` on a non-text value.
+
+## 17. Phase 3, full port: write routes (batches 1-51)
+
+The gateway now writes, behind `writes` in `ND_RUST_ROUTES`, the plan's phase 3 list: entities (create, edit, duplicate, delete, fields,
+aliases, links, bulk actions, notes and their import, read-view markup and send-to-player), sessions, facts, quests, tables, parties,
+characters (sheet edits, sync, level-up, feats, equipment, ability cards, XP advancement, custom-sheet resources, share links), the
+calendar, boards, galleries and the audio / video / document libraries (chunked uploads, albums), pictures (`crate::imaging`: AVIF / WebP /
+PNG / JPEG conversion and thumbnails sized as Pillow sizes them), maps (create, upload, rename, delete), world settings (create, edit,
+themes, rules, kinds, nav menus, invites, members, AI-instruction files), the home dashboard, saved layouts and the spotlight. The routes
+and what each leaves to Python are listed in `docs/RUST_WRITES.md`; each has a parity test in `tests/test_gateway_writes.py` that sends the
+same requests to Python and to the gateway and compares answers and stored rows. One transaction per request: an answer the gateway
+gives up on part-way leaves nothing behind.
+
+Still Python's in phase 3, and why:
+- video uploads and a session's video drops: ffmpeg remux / AV1 / poster generation (with the job work of phase 5);
+- `POST /worlds/<id>/delete`: it removes files through eight Python helpers (clips, props, documents, icons, live audio, session pictures,
+  schematics, maps) - a wrong file deleted is worse than a slower request;
+- note import of PDF and HTML files (pypdf, the HTML sanitizer / converter);
+- every answer that is a refusal (4xx), and inputs where Python and Rust would read text differently (non-ASCII case rules, floats'
+  repr, regex classes) - forwarded on purpose, by the strangler rule.
