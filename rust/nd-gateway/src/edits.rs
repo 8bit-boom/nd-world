@@ -218,6 +218,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/log/{}/undo", hub_log_undo),
     ("/api/characters/{}/hub/keepsakes", hub_keepsake_add),
     ("/api/characters/{}/hub/loot", hub_loot_claim),
+    ("/api/characters/{}/hub/initiative", hub_roll_initiative),
     ("/api/characters/{}/hub/keepsakes/{}", hub_keepsake_edit),
     ("/api/characters/{}/hub/keepsakes/{}/delete", hub_keepsake_delete),
     ("/api/characters/{}/hub/entries", hub_entry_create),
@@ -8970,6 +8971,53 @@ fn hub_after(c: &Ctx, pc: &Map<String, Value>, cs_id: i64) -> Option<Response<Bo
         None => Value::Null,
     };
     json_response(&json!({"ok": true, "round": round, "combat": now}))
+}
+
+/// `hub_roll_initiative`: Speed (Dexterity + Intuition) + d10 into the live encounter and the shared dice log, once
+fn hub_roll_initiative(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    if !pc_maxima(&c.db, &pc)?.4 {
+        return None;
+    }
+    let (mut f, mine) = hub_encounter(c, &pc)??;
+    if f.fluid || turn_num(f.combatants[mine].get("initiative"))? != 0 {
+        return None;
+    }
+    let name = pc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if !name.chars().all(|ch| (' '..='~').contains(&ch)) {
+        return None; // _clean_label's printability: Python's
+    }
+    let stats = stat_values(&pc)?;
+    let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+    let speed = get("dex") + get("itu");
+    if speed < 0 {
+        return None;
+    }
+    let notation = if speed != 0 { format!("1d10+{speed}") } else { "1d10".to_string() };
+    let rolled = crate::writes::roll(&notation, &mut rand::thread_rng())?;
+    let label: String = format!("Initiative \u{2014} {name}").trim().chars().take(80).collect();
+    let user_name: Option<String> = c.db.query_row("SELECT display_name FROM users WHERE id = ?1", [c.p.user_id], |r| r.get(0)).ok()?;
+    let user_name = user_name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Someone".into());
+    let wid = pc.get("world_id")?.as_i64()?;
+    let (stored, iso) = crate::writes::timestamps(std::time::SystemTime::now());
+    c.db.execute("INSERT INTO dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![wid, c.p.user_id, user_name, notation, label, rolled.breakdown_json, rolled.total, stored]).ok()?;
+    let roll_id = c.db.last_insert_rowid();
+    orm::signal(&c.db, wid, "dice")?;
+    // combat_turns.set_initiative: the same combatant stays active after the re-sort
+    let holder = f.current()?;
+    f.combatants[mine].as_object_mut()?.insert("initiative".into(), json!(rolled.total.max(1)));
+    let mut set: Vec<(&str, Sql)> = vec![("combatants_json", s(&nd_render::py_dumps(&Value::Array(f.combatants.clone()))))];
+    if let Some(h) = holder {
+        let at = f.order()?.iter().position(|i| *i == h)? as i64;
+        set.push(("active_idx", Sql::Integer(at)));
+    }
+    orm::update(&c.db, "combat_sessions", f.cs.get("id")?.as_i64()?, &set)?;
+    combat_touch(c, &f.cs)?;
+    orm::touch(&c.db, wid)?;
+    let breakdown: Value = serde_json::from_str(&rolled.breakdown_json).ok()?;
+    json_response(&json!({"initiative": rolled.total, "roll": {"id": roll_id, "user_name": user_name, "notation": notation, "label": label,
+        "breakdown": breakdown, "total": rolled.total, "created_at": format!("{iso}Z")}}))
 }
 
 fn hub_end_turn(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {

@@ -4127,3 +4127,33 @@ def test_hub_loot_claim_is_pythons(client, seed):
         assert out[0][:4] == out[1][:4], (body, out)
         served += out[1][4] == "gateway"
     assert served >= 4, served
+
+
+def test_hub_initiative_roll_is_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    stats = json.dumps([{"id": "dex", "value": 3}, {"id": "itu", "value": 2}])
+    served = 0
+    # (my initiative, ruleset, active_idx): a roll keeping the orc active, one already rolled, a fluid fight
+    for mine, ruleset, active in ((0, "nd", 1), (9, "nd", 0), (0, "hunt", 0)):
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Quick", stats_json=stats)
+            cbs = [{"id": "me", "name": "Me", "source": "pc", "pc_id": pid, "initiative": mine},
+                   {"id": "orc", "name": "Orc", "source": "entity", "initiative": 11}, {"id": "rat", "name": "Rat", "source": "entity", "initiative": 4}]
+            cid = _add("CombatSession", world_id=w, name="Now", ruleset=ruleset, active_idx=active, combatants_json=json.dumps(cbs))
+            r = side.post(f"/api/characters/{pid}/hub/initiative")
+            row = _row("combat_sessions", cid)
+            j = r.json()
+            shape = None
+            if r.status_code == 200:
+                got = json.loads(row["combatants_json"])
+                inits = sorted(range(3), key=lambda i: (-int(got[i].get("initiative") or 0), -int(got[i].get("tiebreak") or 0)))
+                assert 6 <= j["initiative"] <= 15 and got[0]["initiative"] == j["initiative"] == j["roll"]["total"], j
+                assert got[inits[row["active_idx"]]]["id"] == ("rat" if active == 1 else "orc"), (got, row["active_idx"])
+                shape = (sorted(j["roll"]), j["roll"]["notation"], j["roll"]["label"], j["roll"]["user_name"], [t["term"] for t in j["roll"]["breakdown"]])
+            out.append((r.status_code, shape, r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], out
+        served += out[1][2] == "gateway"
+    assert served >= 1, served

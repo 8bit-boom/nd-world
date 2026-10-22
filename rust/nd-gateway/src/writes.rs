@@ -158,7 +158,7 @@ pub fn actor_for(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers
 // ── the roll itself ──────────────────────────────────────────────────────────
 
 /// Python's `datetime.isoformat()` for a naive UTC time, and the form SQLAlchemy stores.
-fn timestamps(now: SystemTime) -> (String, String) {
+pub fn timestamps(now: SystemTime) -> (String, String) {
     let d = now.duration_since(UNIX_EPOCH).unwrap_or_default();
     let (secs, micros) = (d.as_secs() as i64, d.subsec_micros());
     let days = secs.div_euclid(86400);

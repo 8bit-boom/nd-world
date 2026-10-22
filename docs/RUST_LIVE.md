@@ -58,3 +58,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/characters/<id>/hub/log/<entry>/undo` (numbers, coins, conditions, resource columns; the equipment / advance / custom-field undos and every refusal stay Python's) | P4-10 |
 | `POST /api/characters/<id>/hub/keepsakes` (a handout, or a GM's raw file / text), `/hub/keepsakes/<id>` (rename), `/hub/keepsakes/<id>/delete` (not a player's own upload: its file goes too, Python's) | P4-11 |
 | `POST /api/characters/<id>/hub/loot` (claim / unclaim a party-stash item; a stash `load_loot` would repair stays Python's) | P4-12 |
+| `POST /api/characters/<id>/hub/initiative` (Speed + d10 into the dice log and the encounter, the active combatant kept after the re-sort; fluid fights and other systems stay Python's) | P4-13 |
