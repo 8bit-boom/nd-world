@@ -250,6 +250,11 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/audio/upload/complete", audio_complete),
     ("/images/albums/upload/complete", gallery_complete),
     ("/pages/upload/complete", pages_complete),
+    ("/folders/rename", folder_rename),
+    ("/entity-templates/new", entity_template_new),
+    ("/entity-templates/{}/edit", entity_template_edit),
+    ("/entity-templates/{}/delete", entity_template_delete),
+    ("/api/entity/{}/image", entity_set_image),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -5048,4 +5053,145 @@ fn calendar_icon_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let label = take_chars(&strip(f.get("label").unwrap_or("")), 120);
     let id = orm::insert(&c.db, "calendar_day_icons", &[("world_id", Sql::Integer(wid)), ("day", Sql::Integer(day)), ("image_url", s(&url)), ("label", s(&label))])?;
     json_response(&json!({"id": id, "day": day, "image_url": url, "label": label}))
+}
+
+// ── entity folders, templates and image (app/main.py) ────────────────────────
+
+/// `re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:max]` (None for the few letters lower() turns into ASCII: Python's)
+fn py_slug(text: &str, max: usize) -> Option<String> {
+    if text.chars().any(|ch| matches!(ch, '\u{212a}' | '\u{130}' | '\u{17f}' | '\u{1e9e}')) {
+        return None;
+    }
+    let mut slug = String::new();
+    let mut dash = false;
+    for ch in text.chars().flat_map(|c| c.to_lowercase()) {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            slug.push(ch);
+            dash = false;
+        } else if !dash {
+            slug.push('-');
+            dash = true;
+        }
+    }
+    Some(slug.trim_matches('-').chars().take(max).collect())
+}
+
+fn folder_rename(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    let kind = required(&f, "kind")?;
+    let old = strip(&required(&f, "old_path")?);
+    let new = strip(f.get("new_path").unwrap_or(""));
+    if old.is_empty() {
+        return None;
+    }
+    // the same SQL filter as Python's (LIKE: its wildcards and ASCII case-folding included)
+    let mut st = c.db.prepare("SELECT id, folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND (folder = ?3 OR folder LIKE ?4)").ok()?;
+    let rows: Vec<(i64, Option<String>)> =
+        st.query_map(rusqlite::params![wid, kind, old, format!("{old}/%")], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    drop(st);
+    let n = old.chars().count();
+    for (id, folder) in rows {
+        let folder = folder.unwrap_or_default();
+        let to = if new.is_empty() {
+            Sql::Null
+        } else if folder == old {
+            s(&new)
+        } else {
+            s(&format!("{new}{}", folder.chars().skip(n).collect::<String>()))
+        };
+        orm::update(&c.db, "entities", id, &[("folder", to)])?;
+    }
+    let mut url = format!("/kind/{kind}");
+    if !new.is_empty() {
+        url += &format!("?folder={}", utf8_percent_encode(&new, QUOTE));
+    }
+    redirect(&url)
+}
+
+/// `effective_kinds(world)[0]` for a world row (None: the built-ins)
+fn kinds_of(world: Option<&Map<String, Value>>) -> Option<Vec<String>> {
+    nd_perm::sections::effective_kinds(world.and_then(|w| w.get("custom_kinds_json")).and_then(|v| v.as_str()))
+}
+
+/// `raw if json.loads(raw) else "[]"` for a fields_json form value (text serde refuses that json.loads may take: Python's)
+fn fields_json(f: &Form) -> Option<String> {
+    let raw = f.get("fields_json").filter(|v| !v.is_empty()).unwrap_or("[]");
+    serde_json::from_str::<Value>(raw).ok()?;
+    Some(raw.to_string())
+}
+
+fn entity_template_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let world = c.p.world.clone();
+    let name = strip(f.get("name").unwrap_or(""));
+    let name = if name.is_empty() { "Unnamed Template".to_string() } else { name };
+    let desc = strip(f.get("description").unwrap_or(""));
+    let kind = strip(f.get("kind").unwrap_or(""));
+    let kind = (!kind.is_empty() && kinds_of(world.as_ref())?.contains(&kind)).then_some(kind);
+    let raw = fields_json(&f)?;
+    let base = py_slug(&name, 50)?;
+    let base = if base.is_empty() { "template".to_string() } else { base };
+    let (mut slug, mut n) = (base.clone(), 1);
+    while c.db.query_row("SELECT COUNT(*) FROM entity_templates WHERE slug = ?1", [&slug], |r| r.get::<_, i64>(0)).ok()? > 0 {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    let id = orm::insert(
+        &c.db,
+        "entity_templates",
+        &[
+            ("world_id", world.as_ref().and_then(|w| w.get("id")?.as_i64()).map_or(Sql::Null, Sql::Integer)),
+            ("name", s(&name)),
+            ("slug", s(&slug)),
+            ("kind", kind.map_or(Sql::Null, |k| s(&k))),
+            ("description", s(&desc)),
+            ("is_builtin", Sql::Integer(0)),
+            ("fields_json", s(&raw)),
+        ],
+    )?;
+    redirect(&format!("/entity-templates/{id}/edit"))
+}
+
+fn entity_template_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let tpl = row(&c.db, "SELECT * FROM entity_templates WHERE id = ?1", ids[0])?;
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if !py_truthy(tpl.get("is_builtin")) {
+        let old = tpl.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = strip(f.get("name").unwrap_or(&old));
+        set.push(("name", s(if name.is_empty() { &old } else { &name })));
+        set.push(("description", s(&strip(f.get("description").unwrap_or("")))));
+        let kind = strip(f.get("kind").unwrap_or(""));
+        let tpl_world = match tpl.get("world_id").and_then(|v| v.as_i64()).filter(|w| *w != 0) {
+            Some(w) => row(&c.db, "SELECT * FROM worlds WHERE id = ?1", w),
+            None => None,
+        };
+        let ok = !kind.is_empty() && kinds_of(tpl_world.as_ref())?.contains(&kind);
+        set.push(("kind", if ok { s(&kind) } else { Sql::Null }));
+    }
+    set.push(("fields_json", s(&fields_json(&f)?)));
+    orm::update(&c.db, "entity_templates", ids[0], &set)?;
+    redirect(&format!("/entity-templates/{}/edit?saved=1", ids[0]))
+}
+
+fn entity_template_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let tpl = row(&c.db, "SELECT * FROM entity_templates WHERE id = ?1", ids[0])?;
+    if py_truthy(tpl.get("is_builtin")) {
+        return None;
+    }
+    orm::bulk_update(&c.db, "entities", &[("template_id", Sql::Null)], "template_id = ?", &[Sql::Integer(ids[0])])?;
+    c.db.execute("DELETE FROM entity_templates WHERE id = ?1", [ids[0]]).ok()?;
+    redirect("/entity-templates")
+}
+
+fn entity_set_image(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let url = strip(b.get("image_url")?.as_str()?);
+    if !content_editor(c) || url.is_empty() {
+        return None;
+    }
+    world_entity(c, ids[0])?;
+    orm::update(&c.db, "entities", ids[0], &[("image_url", s(&url))])?;
+    json_response(&json!({"ok": true}))
 }

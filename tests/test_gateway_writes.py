@@ -2249,3 +2249,101 @@ def test_picture_form_uploads_are_pythons(client, seed):
         assert res[0][:3] == res[1][:3], (name, "icon", res)
         served += res[1][3] == "gateway"
     assert served >= 10, served
+
+
+def test_folders_templates_and_entity_image_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import Entity, EntityTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    served = 0
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+
+    def folders(tag):
+        db = SessionLocal()
+        try:
+            return sorted((e.name, e.folder) for e in db.query(Entity).filter(Entity.world_id == w, Entity.name.like(f"{tag}%")).all())
+        finally:
+            db.close()
+
+    for form in ({"kind": "npc", "old_path": " Town ", "new_path": " City/Old "}, {"kind": "npc", "old_path": "Town", "new_path": ""}, {"kind": "npc", "old_path": "T_wn"},
+                 {"kind": "npc", "old_path": "town"}, {"kind": "location", "old_path": "Town", "new_path": "X"}, {"kind": "npc", "old_path": " "}, {"old_path": "Town"}):
+        res = []
+        for side, tag in ((d, "fa"), (via, "fb")):
+            db = SessionLocal()
+            try:
+                db.add_all([Entity(world_id=w, kind="npc", name=f"{tag}{i}", folder=fo) for i, fo in enumerate(("Town", "Town/Inn", "Townhall", "TOWN/x", "Tewn/y", None))])
+                db.add(Entity(world_id=w, kind="location", name=f"{tag}L", folder="Town"))
+                db.commit()
+            finally:
+                db.close()
+            r = side.post("/folders/rename", data=form, follow_redirects=False)
+            res.append((r, [(n[len(tag):], f) for n, f in folders(tag)]))
+            db = SessionLocal()
+            try:
+                db.query(Entity).filter(Entity.name.like(f"{tag}%")).delete(synchronize_session=False); db.commit()
+            finally:
+                db.close()
+        _same_answer(res[0][0], res[1][0])
+        assert res[0][1] == res[1][1], (form, res[0][1], res[1][1])
+        served += res[1][0].headers.get("x-nd-served-by") == "gateway"
+    for form in ({"name": "  Shop Keeper ", "description": " d ", "kind": "npc", "fields_json": '[{"key": "hp"}]'}, {"name": "", "kind": "nope"}, {"fields_json": "{bad"},
+                 {"name": "Ünï Tëmplate", "kind": ""}, {"name": "Shop Keeper"}):
+        ra = d.post("/entity-templates/new", data=form, follow_redirects=False)
+        na = _newest("entity_templates")
+        rb = via.post("/entity-templates/new", data=form, follow_redirects=False)
+        nb = _newest("entity_templates")
+        created = ra.status_code == 303
+        _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+        if created:
+            assert na["slug"].rstrip("-0123456789") == nb["slug"].rstrip("-0123456789")
+            _same_rows(na, nb, ignore=("slug",))
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    for builtin in (False, True):
+        for form in ({"name": " Renamed ", "kind": "location", "fields_json": "[]"}, {"name": "", "kind": "zzz"}, {"fields_json": "NaN"}, {}):
+            ids = []
+            for _ in range(2):
+                db = SessionLocal()
+                try:
+                    t = EntityTemplate(world_id=w, name="T", slug=f"gwt-{os_random_hex()}", kind="npc", description="old", is_builtin=builtin, fields_json='[1]')
+                    db.add(t); db.commit(); ids.append(t.id)
+                finally:
+                    db.close()
+            before = [_row("entity_templates", i) for i in ids]
+            ra = d.post(f"/entity-templates/{ids[0]}/edit", data=form, follow_redirects=False)
+            rb = via.post(f"/entity-templates/{ids[1]}/edit", data=form, follow_redirects=False)
+            _same_answer(ra, rb, ids[0], ids[1])
+            _same_rows(_row("entity_templates", ids[0]), _row("entity_templates", ids[1]), before[0], before[1], ignore=("slug",))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        ids, ents = [], []
+        for _ in range(2):
+            db = SessionLocal()
+            try:
+                t = EntityTemplate(world_id=w, name="T", slug=f"gwt-{os_random_hex()}", is_builtin=builtin, fields_json="[]")
+                db.add(t); db.commit()
+                e = Entity(world_id=w, kind="npc", name="E", template_id=t.id); db.add(e); db.commit()
+                ids.append(t.id); ents.append(e.id)
+            finally:
+                db.close()
+        ra = d.post(f"/entity-templates/{ids[0]}/delete", follow_redirects=False)
+        rb = via.post(f"/entity-templates/{ids[1]}/delete", follow_redirects=False)
+        _same_answer(ra, rb)
+        _same_rows(_row("entity_templates", ids[0]), _row("entity_templates", ids[1]), ignore=("slug",))
+        assert (_row("entities", ents[0])["template_id"] is None) == (_row("entities", ents[1])["template_id"] is None)
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    [other] = _entities(seed.world_b.id, 1)
+    for body in ({"image_url": " /uploads/x.png "}, {"image_url": " "}, {"image_url": 5}, {}):
+        ea, eb = _entities(w, 2)
+        for ta, tb in ((ea, eb), (other, other)):
+            ra = d.post(f"/api/entity/{ta}/image", json=body)
+            rb = via.post(f"/api/entity/{tb}/image", json=body)
+            _same_answer(ra, rb)
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        _same_rows(_row("entities", ea), _row("entities", eb))
+    assert served >= 15, served
+
+
+def os_random_hex():
+    import os
+    return os.urandom(6).hex()
