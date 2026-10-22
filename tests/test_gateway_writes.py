@@ -3274,3 +3274,29 @@ def test_toolbar_uploads_are_pythons(client, seed):
             assert out[0][:3] == out[1][:3], (route, name, out)
             served += out[1][3] == "gateway"
     assert served >= 14, served
+
+
+def test_entity_note_import_is_pythons(client, seed):
+    from pathlib import Path
+    from app.main import UPLOADS_DIR
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    eid = _add("Entity", world_id=seed.world_a.id, kind="character", name="Note Import [x]")
+    pics = _pictures()
+    cases = [("notes.MD", "  # Head\r\nbody é \n".encode(), [("visible", "1")]), ("a.txt", b"   ", []), ("bad.txt", b"\xff\xfe x", []),
+             ("Photo One.jpg", pics["Photo One.jpg"], []), ("p.pdf", b"%PDF-1.4", []), ("x.exe", b"x", [])]
+    served = 0
+    for name, data, fields in cases:
+        out = []
+        for side in (d, via):
+            body, hdrs = _multipart(fields, [("file", name, data)])
+            r = side.post(f"/entity/{eid}/notes/import", content=body, headers=hdrs, follow_redirects=False)
+            n = _newest("entity_notes")
+            facts = n and (_masked_url(n["content"]), n["visible_to_players"], n["content_is_html"], n["entity_id"])
+            out.append((r.status_code, r.headers.get("location"), facts, n and n["id"], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (name, out)
+        if out[0][3] != out[1][3]:
+            assert out[0][2] == out[1][2], (name, out)
+        served += out[1][4] == "gateway"
+    assert served >= 3, served

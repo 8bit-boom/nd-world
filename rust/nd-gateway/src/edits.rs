@@ -77,6 +77,14 @@ impl Ctx<'_> {
         }
     }
 
+    /// A scratch file name in the uploads folder (removed by the caller)
+    pub fn uploads_scratch(&self) -> Option<std::path::PathBuf> {
+        let dir = self.cfg.db_path.parent()?.join("uploads").join("_gateway");
+        std::fs::create_dir_all(&dir).ok()?;
+        let n = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos();
+        Some(dir.join(format!("note-{}-{n}.tmp", std::process::id())))
+    }
+
     pub fn world_id(&self) -> Option<i64> {
         self.p.world.as_ref()?.get("id")?.as_i64()
     }
@@ -259,6 +267,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/image", entity_set_image),
     ("/races/new", race_new),
     ("/maps/new", map_new),
+    ("/entity/{}/notes/import", entity_note_import),
     ("/races/add-builtin", race_add_builtin),
     ("/races/add-all-builtin", race_add_all_builtin),
     ("/professions/add-builtin", profession_add_builtin),
@@ -330,7 +339,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
-const PICTURE_FORM_ROUTES: &[&str] = &["/maps/new", "/worlds/{}/home/edit", "/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
+const PICTURE_FORM_ROUTES: &[&str] = &["/entity/{}/notes/import", "/maps/new", "/worlds/{}/home/edit", "/races/new", "/professions/new", "/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
 
 fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
     let (h, ids) = route(path)?;
@@ -6861,4 +6870,41 @@ fn toolbar_pc_image(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 
 fn toolbar_pc_media(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     toolbar_any(c, "portraits")
+}
+
+/// `import_entity_note`: a text file or a picture becomes a note (PDF and HTML, which need pypdf / the HTML converters: Python's)
+fn entity_note_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (f, pick) = form_and_file(c, "file")?;
+    let pick = pick?;
+    let e = row(&c.db, "SELECT * FROM entities WHERE id = ?1", ids[0])?;
+    let ext = py_suffix_lower(pick.filename(c)?)?;
+    let content = if [".png", ".jpg", ".jpeg", ".gif", ".webp"].contains(&ext.as_str()) {
+        let url = save_picture(c, &pick, "entity_notes", true)??;
+        format!("![{}]({url})", e.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    } else if [".md", ".markdown", ".txt"].contains(&ext.as_str()) {
+        if pick.len(c)? as i64 > env_bytes("MAX_NOTE_IMPORT_BYTES", 10 * 1024 * 1024)? {
+            return None;
+        }
+        let tmp;
+        let data: &[u8] = match &pick {
+            FilePick::Mem(p) => &p.data,
+            FilePick::Disk(_) => {
+                let t = c.uploads_scratch()?;
+                pick.write_to(c, &t)?;
+                tmp = std::fs::read(&t).ok()?;
+                let _ = std::fs::remove_file(&t);
+                &tmp
+            }
+        };
+        // undecodable bytes (errors="replace" may differ in detail): Python's
+        strip(std::str::from_utf8(data).ok()?)
+    } else {
+        return None;
+    };
+    if !content.is_empty() {
+        let author = if c.p.user_id > 0 { Sql::Integer(c.p.user_id) } else { Sql::Null };
+        orm::insert(&c.db, "entity_notes", &[("entity_id", Sql::Integer(ids[0])), ("author_id", author), ("content", s(&content)),
+            ("visible_to_players", Sql::Integer(flag_param(&f, "visible"))), ("content_is_html", Sql::Integer(0))])?;
+    }
+    redirect(&format!("/entity/{}", ids[0]))
 }
