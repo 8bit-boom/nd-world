@@ -1425,7 +1425,11 @@ def test_combat_tracker_page_is_pythons(client, seed):
         db.add_all([gs, GameSession(world_id=w, session_num=9, title="Nine"), PlayerCharacter(world_id=w, name="Hero", current_hp=3),
                     Entity(world_id=w, kind="character", name="Guard", custom_fields_json=json.dumps({"health": "9", "speed": 2}))])
         db.flush()
-        cbs = [{"id": "a", "name": "A <a>", "initiative": 5, "hp": 2.5}, {"id": "b", "name": "B", "initiative": 9, "notes": "x"}, "junk"]
+        cbs = [{"id": "a", "name": "A <a>", "initiative": 5, "hp": 2.5}, {"id": "b", "name": "B", "initiative": 9, "notes": "x"}, "junk",
+               {"id": "p", "name": "Pal", "source": "pc", "initiative": 7, "hp": 3, "max_hp": 10, "shock": 1, "conditions": ["Prone"]},
+               {"id": "k", "name": "Known", "name_known": True, "initiative": 2, "hp": 4, "max_hp": 8},
+               {"id": "h", "name": "Hidden", "visible": False, "initiative": 8}, {"id": "d", "name": "Dead", "status": "dead", "initiative": 1},
+               {"name": "No id", "source": "pc", "initiative": 0, "hp": "6", "max_hp": "12"}]
         fights = [CombatSession(world_id=w, name="Init <i>", ruleset="nd", active_idx=1, round_num=2, rev=4, game_session_id=gs.id,
                                 combatants_json=json.dumps(cbs), log_json=json.dumps([{"t": "hit"}])),
                   CombatSession(world_id=w, name="Fluid", ruleset="hunt", combatants_json=json.dumps(cbs),
@@ -1434,6 +1438,8 @@ def test_combat_tracker_page_is_pythons(client, seed):
                   CombatSession(world_id=w, name="Old", ruleset=""),
                   CombatSession(world_id=seed.world_b.id, name="B", ruleset="nd")]
         db.add_all(fights)
+        from app.models import World
+        db.get(World, w).section_access_json = json.dumps({"combat": {"player": "read", "assistant": "edit"}})   # closed to players by default
         db.commit()
         ids = [f.id for f in fights]
     finally:
@@ -1443,4 +1449,4 @@ def test_combat_tracker_page_is_pythons(client, seed):
         d = _signed_in(email, pw, world)
         for i in ids[:3] + ids[4:] + [ids[3], 999999]:
             served += _same_page(d, _via(d, base), f"/combat/{i}", email)
-    assert served >= 3, served
+    assert served >= 5, served  # the GM: three encounters; a player: the two fights' read-only views

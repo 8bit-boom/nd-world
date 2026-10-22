@@ -10942,3 +10942,93 @@ pub fn combat_full_state(cs: &Map<String, Value>) -> Option<Value> {
         "rev": or("rev", 0), "name": cs.get("name"), "ruleset": cs.get("ruleset").and_then(|v| v.as_str()).unwrap_or(""),
         "turn": Value::Object(f.turn.clone()), "log": log}))
 }
+
+/// `combat._player_state(cs)` (`combat_state.player_view`): what a player may know of a fight - enemies as "Enemy A" with a word for
+/// their health, a GM-hidden combatant not mentioned (None for values Python reads its own way)
+pub fn combat_player_state(cs: &Map<String, Value>) -> Option<Value> {
+    let f = Fight::load(cs.clone())?;
+    let order: Vec<usize> = if f.fluid { (0..f.combatants.len()).collect() } else { f.order()? };
+    let active_id = match f.current()? {
+        Some(i) => f.combatants[i].get("id").cloned().unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    let acted: Vec<String> = if f.fluid { f.acted() } else { vec![] };
+    let picker = if f.fluid { f.turn["picker"].clone() } else { Value::Null };
+    let letter = |n: usize| -> String {
+        let (mut s, mut n) = (String::new(), n + 1);
+        while n > 0 {
+            let r = (n - 1) % 26;
+            n = (n - 1) / 26;
+            s.insert(0, (b'A' + r as u8) as char);
+        }
+        s
+    };
+    let (mut rows, mut enemy_n, mut seen_pick, mut shown_active) = (vec![], 0usize, Value::from(""), Value::Null);
+    for &i in &order {
+        let c = f.combatants[i].as_object()?;
+        let id = c.get("id").cloned().unwrap_or(Value::Null);
+        if id.is_array() || id.is_object() {
+            return None; // `in acted` of an unhashable id: Python's error
+        }
+        let is_enemy = c.get("source").and_then(|v| v.as_str()) != Some("pc");
+        let label = is_enemy.then(|| {
+            enemy_n += 1;
+            letter(enemy_n - 1)
+        });
+        let visible = c.get("visible").map_or(true, |v| py_truthy(Some(v)));
+        if id == picker && visible && !is_enemy {
+            seen_pick = match c.get("name") {
+                Some(v) if py_truthy(Some(v)) => v.clone(),
+                _ => json!(""),
+            };
+        }
+        if !active_id.is_null() && id == active_id && visible {
+            shown_active = active_id.clone();
+        }
+        if !visible {
+            continue;
+        }
+        let (max_hp, hp) = (cs_int(c.get("max_hp"), 0, 0, i64::MAX).ok()?, cs_int(c.get("hp"), 0, 0, i64::MAX).ok()?);
+        let state = if c.get("status").and_then(|v| v.as_str()) == Some("dead") || (max_hp > 0 && hp <= 0) {
+            "Down"
+        } else if max_hp <= 0 || hp >= max_hp {
+            "Unhurt"
+        } else if hp * 2 <= max_hp {
+            "Bloodied"
+        } else {
+            "Hurt"
+        };
+        let is_acted = id.as_str().is_some_and(|s| acted.iter().any(|a| a == s));
+        let mut row = Map::new();
+        row.insert("id".into(), id.clone());
+        row.insert("active".into(), json!(id == active_id));
+        row.insert("acted".into(), json!(is_acted));
+        row.insert("state".into(), json!(state));
+        if is_enemy {
+            row.insert("kind".into(), json!("enemy"));
+            let name = if py_truthy(c.get("name_known")) { c.get("name").cloned().unwrap_or(Value::Null) } else { json!(format!("Enemy {}", label?)) };
+            row.insert("name".into(), name);
+        } else {
+            row.insert("kind".into(), json!("pc"));
+            row.insert("name".into(), c.get("name").cloned().unwrap_or(Value::Null));
+            for (k, out) in [("hp", "hp"), ("max_hp", "max_hp"), ("shock", "shock"), ("max_shock", "max_shock")] {
+                row.insert(out.into(), c.get(k).cloned().unwrap_or(json!(0)));
+            }
+            let conds = match c.get("conditions") {
+                Some(Value::Array(a)) => Value::Array(a.clone()),
+                v if !py_truthy(v) => json!([]),
+                _ => return None, // list() of a string or an object: Python's
+            };
+            row.insert("conditions".into(), conds);
+        }
+        rows.push(Value::Object(row));
+    }
+    let or = |k: &str, d: i64| cs.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(d);
+    let combatants: Vec<Value> = order.iter().map(|&i| {
+        let c = &f.combatants[i];
+        json!({"id": c.get("id").cloned().unwrap_or(Value::Null), "initiative": c.get("initiative").cloned().unwrap_or(json!(0))})
+    }).collect();
+    Some(json!({"rows": rows, "active_id": shown_active, "picker": seen_pick, "round_num": or("round_num", 1), "rev": or("rev", 0),
+        "name": cs.get("name"), "ruleset": cs.get("ruleset").and_then(|v| v.as_str()).unwrap_or(""), "fluid": f.fluid,
+        "combatants": combatants, "active_idx": or("active_idx", 0)}))
+}

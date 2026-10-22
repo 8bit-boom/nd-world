@@ -1523,12 +1523,26 @@ pub fn combat_tracker(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
-    if !p.is_gm {
-        return None;
-    }
     let wid = p.world.as_ref()?.get("id")?.as_i64()?;
     let cs = db.query_row("SELECT * FROM combat_sessions WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok()?;
-    if cs.get("world_id")?.as_i64()? != wid || cs.get("ruleset").and_then(|v| v.as_str()).map_or(true, |r| r.is_empty()) {
+    if cs.get("world_id")?.as_i64()? != wid {
+        return None;
+    }
+    if !p.is_gm {
+        // the read-only view, built from the sanitized state; the Combat section must be open to the viewer's role
+        let w = p.world.as_ref()?;
+        let level = nd_perm::sections::section_level(false, p.role.as_deref(), w.get("section_access_json").and_then(|v| v.as_str()), w.get("custom_kinds_json").and_then(|v| v.as_str()), "combat")?;
+        if level == "none" || cs.get("is_template").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
+            return None;
+        }
+        let state = crate::edits::combat_player_state(&cs)?;
+        let rules = nd_render::app::data().get("combat_player_rules_json")?.as_str()?.to_string();
+        p.ctx.insert("state_json".into(), json!(nd_render::py_dumps(&state)));
+        p.ctx.insert("rules_json".into(), json!(rules));
+        p.ctx.insert("combat".into(), Value::Object(cs));
+        return render_with(pages, "combat/player.html", p.ctx, headers);
+    }
+    if cs.get("ruleset").and_then(|v| v.as_str()).map_or(true, |r| r.is_empty()) {
         return None;
     }
     let state = crate::edits::combat_full_state(&cs)?;
