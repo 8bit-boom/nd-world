@@ -1052,3 +1052,37 @@ def test_character_vitals_are_pythons(client, seed):
                 assert _logs(ids[0]) == _logs(ids[1]), (path, body, _logs(ids[0]), _logs(ids[1]))
                 served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 60, served
+
+
+def test_character_xp_conditions_and_currency_are_pythons(client, seed):
+    base = str(client.base_url)
+    w, o = seed.world_a.id, seed.player_a.id
+    coins = json.dumps([{"abbr": "GP", "label": "Gold", "value": 12}, {"label": "Scrip", "value": 2.5}, "junk", {"abbr": "sp", "value": None}])
+    variants = [dict(world_id=w, owner_user_id=o, name="A", level=3, xp=1000, conditions_json=json.dumps(["Burn", "stunned", " Prone  x ", 5, "burn"]), currency_json=coins),
+                dict(world_id=w, owner_user_id=o, name="B", level=20, xp=0, conditions_json="[]", currency_json="[]"),
+                dict(world_id=w, owner_user_id=o, name="C", level=1, xp=None, conditions_json=json.dumps([f"c{i}" for i in range(12)]),
+                     currency_json=json.dumps([{"abbr": "Ä", "value": 1}])),
+                dict(world_id=w, owner_user_id=seed.player_b.id, name="D", level=25, conditions_json="{bad", currency_json=json.dumps([{"abbr": "GP", "value": "7"}]))]
+    calls = [("xp", {"delta": 250}), ("xp", {"delta": -5000}), ("xp", {}), ("xp", {"delta": "5"}), ("xp", {"delta": 1.5}),
+             ("conditions", {"action": "add", "name": "  Blinded\x07  now "}), ("conditions", {"action": "add", "name": "BURN"}), ("conditions", {"name": "burn"}),
+             ("conditions", {"action": "remove", "name": "Stunned"}), ("conditions", {"action": "set", "conditions": ["a", "A", "", 3, "b" * 60]}),
+             ("conditions", {"action": "set", "conditions": "x"}), ("conditions", {"action": "add", "name": ""}), ("conditions", {"action": "add", "name": "Ünï"}),
+             ("conditions", {"action": "nope", "name": "x"}), ("conditions", {"action": "add", "name": "new"}),
+             ("currency", {"abbr": " gp ", "action": "delta", "value": -20}), ("currency", {"abbr": "gold", "value": 7}), ("currency", {"abbr": "scrip", "action": "delta", "value": 1}),
+             ("currency", {"abbr": "SP", "value": 3}), ("currency", {"abbr": "none", "value": 3}), ("currency", {"value": 3}), ("currency", {"abbr": "gp", "value": "3"}),
+             ("currency", {"abbr": "gp"})]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for variant in variants:
+            for path, body in calls:
+                ids = [_pc(**variant) for _ in range(2)]
+                before = [_row("player_characters", i) for i in ids]
+                ra = d.post(f"/api/characters/{ids[0]}/{path}", json=body)
+                rb = via.post(f"/api/characters/{ids[1]}/{path}", json=body)
+                _same_answer(ra, rb)
+                _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+                assert _logs(ids[0]) == _logs(ids[1]), (path, body, _logs(ids[0]), _logs(ids[1]))
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 50, served

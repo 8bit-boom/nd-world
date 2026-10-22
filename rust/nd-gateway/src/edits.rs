@@ -163,6 +163,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/alias", entity_alias),
     ("/api/characters/{}/hp-async", pc_hp),
     ("/api/characters/{}/shock", pc_shock),
+    ("/api/characters/{}/xp", pc_xp),
+    ("/api/characters/{}/conditions", pc_conditions),
+    ("/api/characters/{}/currency", pc_currency),
     ("/api/characters/{}/pp", pc_pp),
     ("/api/characters/{}/mp", pc_mp),
     ("/parties/new", party_new),
@@ -1957,4 +1960,151 @@ fn pc_pp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn pc_mp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     pc_pool(c, ids[0], "mp_current", "mp", "MP", 3, true, "mp_max")
+}
+
+const XP_THRESHOLDS: [i64; 20] = [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000,
+                                  305000, 355000];
+
+fn pc_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let delta = match b.get("delta") {
+        None => 0,
+        Some(Value::Number(n)) => n.as_i64().filter(|v| v.abs() < 1 << 40)?,
+        _ => return None,
+    };
+    let level = pc.get("level")?.as_i64().filter(|l| *l >= 1)?;
+    let before = col_int(&pc, "xp");
+    let xp = (before + delta).max(0);
+    orm::update(&c.db, "player_characters", ids[0], &[("xp", Sql::Integer(xp))])?;
+    log_num(c, &pc, "xp", "XP", before, xp)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let lvl = level.min(20) as usize;
+    let lo = XP_THRESHOLDS[lvl - 1];
+    let hi = (lvl < 20).then(|| XP_THRESHOLDS[lvl]);
+    let pct = match hi {
+        Some(h) if h > lo => ((xp - lo).max(0) * 100 / (h - lo)).min(100),
+        _ => 100,
+    };
+    json_response(&json!({"xp": xp, "xp_lo": lo, "xp_hi": hi, "xp_pct": pct}))
+}
+
+/// `clean_condition` for ASCII text (str.isprintable() beyond ASCII: Python's); None = Python's, Some("") = nothing usable
+fn clean_condition(v: &Value) -> Option<String> {
+    let Value::String(raw) = v else { return Some(String::new()) };
+    if !raw.is_ascii() {
+        return None;
+    }
+    let text: String = raw.chars().filter(|ch| (' '..='~').contains(ch)).collect();
+    Some(strip(&take_chars(&nd_render::text::py_split_join(&text), 40)))
+}
+
+fn clean_conditions(seq: &Value) -> Option<Vec<String>> {
+    let (mut out, mut seen): (Vec<String>, Vec<String>) = (vec![], vec![]);
+    for raw in seq.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        let cnd = clean_condition(raw)?;
+        if !cnd.is_empty() && !seen.contains(&cnd.to_ascii_lowercase()) {
+            seen.push(cnd.to_ascii_lowercase());
+            out.push(cnd);
+        }
+    }
+    out.truncate(12);
+    Some(out)
+}
+
+fn pc_conditions(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let raw = pc.get("conditions_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let current = match serde_json::from_str::<Value>(raw) {
+        Ok(v) => clean_conditions(&v)?,
+        Err(_) => return None, // json.loads' own idea of bad JSON: Python's
+    };
+    let action = b.get("action").cloned().unwrap_or(json!("toggle"));
+    let new = match action.as_str() {
+        Some("set") => {
+            let list = b.get("conditions").filter(|v| v.is_array())?;
+            clean_conditions(list)?
+        }
+        Some(a @ ("add" | "remove" | "toggle")) => {
+            let name = clean_condition(b.get("name").unwrap_or(&Value::Null))?;
+            if name.is_empty() {
+                return None;
+            }
+            let has = current.iter().any(|x| x.eq_ignore_ascii_case(&name));
+            if a == "remove" || (a == "toggle" && has) {
+                current.iter().filter(|x| !x.eq_ignore_ascii_case(&name)).cloned().collect()
+            } else if has {
+                current.clone()
+            } else if current.len() >= 12 {
+                return None;
+            } else {
+                current.iter().cloned().chain([name]).collect()
+            }
+        }
+        _ => return None,
+    };
+    if new != current {
+        let gained = new.iter().filter(|x| !current.contains(x)).map(|x| format!("+{x}"));
+        let lost = current.iter().filter(|x| !new.contains(x)).map(|x| format!("\u{2212}{x}"));
+        let text = gained.chain(lost).collect::<Vec<_>>().join(", ");
+        char_log(c, &pc, "condition", &text, &json!({"op": "conditions", "value": current}))?;
+    }
+    orm::update(&c.db, "player_characters", ids[0], &[("conditions_json", s(&nd_render::py_dumps(&json!(new))))])?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"conditions": new}))
+}
+
+/// A stored JSON column as Python's json.dumps wrote it (re-dumping it must give the same text, else its numbers or spacing are something
+/// serde would change: Python's)
+fn canonical_json(raw: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    (nd_render::py_dumps(&v) == raw).then_some(v)
+}
+
+fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let raw = pc.get("currency_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let mut coins = if raw == "[]" { json!([]) } else { canonical_json(raw)? };
+    let key = match b.get("abbr") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
+        Some(Value::String(v)) if v.is_ascii() => strip(v).to_ascii_lowercase(),
+        _ => return None,
+    };
+    let text_of = |m: &Map<String, Value>, k: &str| -> Option<String> {
+        match m.get(k) {
+            None | Some(Value::Null) => Some(String::new()),
+            Some(Value::String(v)) if v.is_ascii() => Some(v.clone()),
+            _ => None,
+        }
+    };
+    let mut hit = None;
+    for (i, coin) in coins.as_array()?.iter().enumerate() {
+        let Some(m) = coin.as_object() else { continue };
+        let (ab, lb) = (text_of(m, "abbr")?, text_of(m, "label")?);
+        if !key.is_empty() && (ab.to_ascii_lowercase() == key || lb.to_ascii_lowercase() == key) {
+            hit = Some((i, ab, lb));
+            break;
+        }
+    }
+    let (i, ab, lb) = hit?;
+    let coin = coins.as_array_mut()?.get_mut(i)?.as_object_mut()?;
+    let before = match coin.get("value") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.abs() < 1e15)?.trunc() as i64,
+        _ => return None,
+    };
+    let val = body_int(&b, "value")?;
+    let after = if b.get("action").and_then(|v| v.as_str()) == Some("delta") { (before + val).max(0) } else { val.max(0) };
+    coin.insert("value".into(), json!(after));
+    orm::update(&c.db, "player_characters", ids[0], &[("currency_json", s(&nd_render::py_dumps(&coins)))])?;
+    let name = if !ab.is_empty() { ab.clone() } else { lb.clone() };
+    if after != before {
+        let label = if name.is_empty() { "coins".to_string() } else { name.clone() };
+        let undo_abbr = if name.is_empty() { Value::Null } else { json!(name) };
+        char_log(c, &pc, "currency", &format!("{label} {before} \u{2192} {after}"), &json!({"op": "currency", "abbr": undo_abbr, "value": before}))?;
+    }
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"abbr": if name.is_empty() { Value::Null } else { json!(name) }, "value": after}))
 }

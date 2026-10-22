@@ -67,6 +67,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /parties/new`, `/parties/<id>/edit` (the GM; a member player's notes / goals), `/parties/<id>/delete`, `/api/parties/<id>/location`, `/api/parties/<id>/members/toggle` (assistants' hidden-companion rules: Python's) | 11 |
 | `POST /api/parties/<id>/loot` add / remove / claim / unclaim, on a clean stash (`give`, which writes the character's equipment by its system, and stashes `load_loot` would repair: Python's) | 12 |
 | `POST /api/characters/<id>/hp-async`, `/shock`, `/pp`, `/mp` (`pc_maxima` and the character log ported; text stat values and int() of non-integers: Python's) | 13 |
+| `POST /api/characters/<id>/xp`, `/conditions` (ASCII labels: `isprintable()` beyond is Python's), `/currency` (a purse stored as `json.dumps` writes it) | 14 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
