@@ -49,6 +49,7 @@ shares the machine, so read it as "several times faster", not as a limit.
 | `crate::form` | Starlette's urlencoded form (last value of a repeated name wins); a body Starlette could read differently (non-ASCII bytes, `;`, non-UTF-8 escapes) is Python's. `py_int`: Python's `int()` only for plain digits |
 | `crate::orm` | rows as SQLAlchemy writes them: every model's Python-side `default=` on INSERT and `onupdate=` on UPDATE (copied from the models into `app_data.json` by `scripts/gen_rust_data.py`); no UPDATE - so no `updated_at` bump - when nothing changed; a bulk `query.update()` sets `onupdate` columns too (both checked against SQLAlchemy itself) |
 | `orm::touch` | `live.touch(world)` where the Python handler calls it |
+| One transaction per request (`edits::run`) | Python's single commit: `BEGIN IMMEDIATE` before the handler, `COMMIT` only when the gateway answers; a handler that gives up part-way rolls back, so Python never applies the same write twice |
 | answers | Starlette's 303 redirect, FastAPI's compact JSON |
 
 A row of another world than the viewer's active one is left to Python (its cross-world access rule is not ported). Checked by
@@ -69,6 +70,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /api/characters/<id>/hp-async`, `/shock`, `/pp`, `/mp` (`pc_maxima` and the character log ported; text stat values and int() of non-integers: Python's) | 13 |
 | `POST /api/characters/<id>/xp`, `/conditions` (ASCII labels: `isprintable()` beyond is Python's), `/currency` (a purse stored as `json.dumps` writes it) | 14 |
 | `POST /characters/new`, `/characters/<id>/edit` (`_apply_form`; urlencoded or multipart without a portrait), `/characters/<id>/owner`, `/characters/<id>/delete` (journal, prefs, log, shares, party members / loot claims, calendar links) | 15 |
+| `POST /api/characters/<id>/level-up`, `/feats`, `/equipment` (int vs float weights as Python keeps them; `carry_info`), `/carry-limit` (character prefs) | 16 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

@@ -163,6 +163,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/alias", entity_alias),
     ("/api/characters/{}/hp-async", pc_hp),
     ("/api/characters/{}/shock", pc_shock),
+    ("/api/characters/{}/level-up", pc_level_up),
+    ("/api/characters/{}/feats", pc_feats),
+    ("/api/characters/{}/equipment", pc_equipment),
+    ("/api/characters/{}/carry-limit", pc_carry_limit),
     ("/characters/new", pc_new),
     ("/characters/{}/edit", pc_edit),
     ("/characters/{}/owner", pc_owner),
@@ -245,12 +249,20 @@ fn run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Resp
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
+    // Python) must leave nothing behind, or Python would apply the same write a second time
+    db.execute_batch("BEGIN IMMEDIATE").ok()?;
     let mut ctx = Ctx { db, p, uri, headers, body };
-    match (by_id, by_slug) {
+    let answer = match (by_id, by_slug) {
         (Some((h, ids)), _) => h(&mut ctx, &ids),
         (_, Some((h, slug))) => h(&mut ctx, &slug),
         _ => None,
+    };
+    if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
+        return answer;
     }
+    let _ = ctx.db.execute_batch("ROLLBACK");
+    None
 }
 
 /// Entry point: reads the (small) body, tries to answer, and otherwise forwards the request - body included - to Python.
@@ -361,9 +373,8 @@ fn quest_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     };
     let party = opt_int_field(&f, "assigned_party_id").ok()?;
     let links = links_json(&f)?;
-    let tx = c.db.unchecked_transaction().ok()?;
     orm::update(
-        &tx,
+        &c.db,
         "quests",
         id,
         &[
@@ -377,17 +388,14 @@ fn quest_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             ("linked_entities_json", s(&links)),
         ],
     )?;
-    tx.commit().ok()?;
     redirect(&format!("/quests/{id}?saved=1"))
 }
 
 fn quest_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
     editable_quest(c, id)?;
-    let tx = c.db.unchecked_transaction().ok()?;
-    orm::bulk_update(&tx, "quests", &[("parent_id", Sql::Null)], "quests.parent_id = ?", &[Sql::Integer(id)])?;
-    tx.execute("DELETE FROM quests WHERE id = ?1", [id]).ok()?;
-    tx.commit().ok()?;
+    orm::bulk_update(&c.db, "quests", &[("parent_id", Sql::Null)], "quests.parent_id = ?", &[Sql::Integer(id)])?;
+    c.db.execute("DELETE FROM quests WHERE id = ?1", [id]).ok()?;
     redirect("/quests")
 }
 
@@ -402,10 +410,8 @@ fn quest_status(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     };
     let mut current = q.get("status").cloned().unwrap_or(Value::Null);
     if !status.is_empty() {
-        let tx = c.db.unchecked_transaction().ok()?;
-        orm::update(&tx, "quests", id, &[("status", s(&status))])?;
-        orm::touch(&tx, q.get("world_id")?.as_i64()?)?;
-        tx.commit().ok()?;
+        orm::update(&c.db, "quests", id, &[("status", s(&status))])?;
+        orm::touch(&c.db, q.get("world_id")?.as_i64()?)?;
         current = json!(status);
     }
     json_response(&json!({"status": current}))
@@ -494,11 +500,9 @@ fn fact_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let next = facts_next(&c.form()?)?;
     editable_fact(c, id)?;
     let wid = c.world_id()?;
-    let tx = c.db.unchecked_transaction().ok()?;
-    tx.execute("DELETE FROM facts WHERE id = ?1", [id]).ok()?;
+    c.db.execute("DELETE FROM facts WHERE id = ?1", [id]).ok()?;
     // _bump_recap_content_touch: the world's recap-staleness watermark (a deleted fact leaves no row to timestamp)
-    orm::update(&tx, "worlds", wid, &[("recap_content_touch", s(&orm::now_stamp()))])?;
-    tx.commit().ok()?;
+    orm::update(&c.db, "worlds", wid, &[("recap_content_touch", s(&orm::now_stamp()))])?;
     redirect(&next)
 }
 
@@ -553,10 +557,9 @@ fn table_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     let name = field_or(&f, "name", "", "Unnamed Table");
     let owner = if c.p.is_gm || c.is_assistant() { Sql::Null } else { Sql::Integer(c.p.user_id) };
-    let tx = c.db.unchecked_transaction().ok()?;
-    let slug = table_slug(&tx, &name)?;
+    let slug = table_slug(&c.db, &name)?;
     let id = orm::insert(
-        &tx,
+        &c.db,
         "random_tables",
         &[
             ("world_id", Sql::Integer(wid)),
@@ -569,7 +572,6 @@ fn table_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
             ("created_by_user_id", owner),
         ],
     )?;
-    tx.commit().ok()?;
     redirect(&format!("/tables/{id}/edit"))
 }
 
@@ -816,8 +818,7 @@ fn board_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     let base = slug.trim_matches('-').to_string();
     let base = if base.is_empty() { "board".to_string() } else { base };
-    let tx = c.db.unchecked_transaction().ok()?;
-    let taken = |sl: &str| -> Option<bool> { tx.query_row("SELECT count(*) FROM invest_boards WHERE slug = ?1", [sl], |r| r.get::<_, i64>(0)).ok().map(|n| n > 0) };
+    let taken = |sl: &str| -> Option<bool> { c.db.query_row("SELECT count(*) FROM invest_boards WHERE slug = ?1", [sl], |r| r.get::<_, i64>(0)).ok().map(|n| n > 0) };
     let mut slug = base.clone();
     let mut i = 2;
     while taken(&slug)? {
@@ -825,7 +826,7 @@ fn board_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         i += 1;
     }
     orm::insert(
-        &tx,
+        &c.db,
         "invest_boards",
         &[
             ("world_id", Sql::Integer(wid)),
@@ -835,7 +836,6 @@ fn board_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
             ("canvas_bg", s(form_param(&f, "canvas_bg", Some("cork"))?)),
         ],
     )?;
-    tx.commit().ok()?;
     redirect(&format!("/boards/{slug}"))
 }
 
@@ -2355,4 +2355,315 @@ fn pc_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     c.db.execute("DELETE FROM player_characters WHERE id = ?1", [id]).ok()?;
     orm::touch(&c.db, world)?;
     redirect("/characters")
+}
+
+fn pc_level_up(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let id = _ids[0];
+    let pc = managed_pc(c, id)?;
+    let level = pc.get("level")?.as_i64()?;
+    let (.., native) = pc_maxima(&c.db, &pc)?;
+    // _levelup_ready (a level outside 1..19 or a level Python's list indexing reads its own way: Python's)
+    if !(1..20).contains(&level) || !native || col_int(&pc, "xp") < XP_THRESHOLDS[level.min(19) as usize] {
+        return None;
+    }
+    orm::update(&c.db, "player_characters", id, &[("level", Sql::Integer(level + 1))])?;
+    log_num(c, &pc, "level", "Level", level, level + 1)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"level": level + 1, "name": pc.get("name").cloned().unwrap_or(Value::Null)}))
+}
+
+/// `str(item.get(k, ""))` for text (`str()` of anything else - "None", "5" - is Python's)
+fn item_text(item: &Map<String, Value>, k: &str) -> Option<String> {
+    match item.get(k) {
+        None => Some(String::new()),
+        Some(Value::String(v)) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+/// A character's JSON list column (`json.loads(col or "[]")`), when it is canonical `json.dumps` output (or empty)
+fn pc_list(pc: &Map<String, Value>, k: &str) -> Option<Vec<Value>> {
+    let raw = pc.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    match canonical_json(raw)? {
+        Value::Array(a) => Some(a),
+        _ => None,
+    }
+}
+
+/// A JSON list index Python's `isinstance(index, int)` accepts (bools are ints there: Python's)
+fn list_index(b: &Map<String, Value>, len: usize) -> Option<usize> {
+    let i = b.get("index")?.as_i64()?;
+    (0..len as i64).contains(&i).then_some(i as usize)
+}
+
+fn pc_feats(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let mut feats = pc_list(&pc, "feats_json")?;
+    match b.get("action").cloned().unwrap_or(json!("add")).as_str() {
+        Some("add") => {
+            let item = match b.get("item") {
+                None | Some(Value::Null) => Map::new(),
+                Some(Value::Object(o)) => o.clone(),
+                _ => return None,
+            };
+            let name = strip(&item_text(&item, "name")?);
+            if name.is_empty() {
+                return None;
+            }
+            let mut e = Map::new();
+            e.insert("name".into(), json!(name));
+            for k in ["type", "rank", "notes"] {
+                e.insert(k.into(), json!(item_text(&item, k)?));
+            }
+            if let Some(v) = item.get("id").filter(|v| !v.is_null()) {
+                e.insert("id".into(), v.clone());
+            }
+            feats.push(Value::Object(e));
+        }
+        Some("remove") => {
+            let i = list_index(&b, feats.len())?;
+            feats.remove(i);
+        }
+        _ => return None,
+    }
+    let list = Value::Array(feats);
+    orm::update(&c.db, "player_characters", ids[0], &[("feats_json", s(&nd_render::py_dumps(&list)))])?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"feats": list}))
+}
+
+/// A Python number that remembers whether it is an int or a float (they print differently)
+#[derive(Clone, Copy)]
+enum PyNum {
+    I(i64),
+    F(f64),
+}
+
+impl PyNum {
+    fn f(self) -> f64 {
+        match self {
+            PyNum::I(i) => i as f64,
+            PyNum::F(f) => f,
+        }
+    }
+    fn json(self) -> Value {
+        match self {
+            PyNum::I(i) => json!(i),
+            PyNum::F(f) => json!(f),
+        }
+    }
+    fn mul(self, o: PyNum) -> PyNum {
+        match (self, o) {
+            (PyNum::I(a), PyNum::I(b)) => PyNum::I(a * b),
+            _ => PyNum::F(self.f() * o.f()),
+        }
+    }
+    fn add(self, o: PyNum) -> PyNum {
+        match (self, o) {
+            (PyNum::I(a), PyNum::I(b)) => PyNum::I(a + b),
+            _ => PyNum::F(self.f() + o.f()),
+        }
+    }
+}
+
+/// `_num(v, default)` = float(v), or the default for None / a missing key; None for what float() reads its own way (text, bools)
+fn py_num(v: Option<&Value>, default: PyNum) -> Option<PyNum> {
+    match v {
+        None | Some(Value::Null) => Some(default),
+        Some(Value::Number(n)) => Some(PyNum::F(n.as_f64()?)),
+        _ => None,
+    }
+}
+
+/// `char_extras.carry_info(db, pc)` for the equipment list `equipment`
+fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[Value]) -> Option<Value> {
+    let mut used = 0.0f64;
+    for it in equipment {
+        let Some(m) = it.as_object() else { continue };
+        let w = match m.get("weight") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => 0.0,
+            Some(Value::Number(n)) => n.as_f64()?,
+            Some(Value::String(x)) if x.is_empty() => 0.0,
+            _ => return None,
+        };
+        let q = match m.get("qty") {
+            None | Some(Value::Null) => 1.0,
+            Some(Value::Number(n)) => n.as_f64()?,
+            _ => return None,
+        };
+        used += w * q;
+    }
+    let raw = pc.get("stats_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let mut stats: Vec<(String, f64)> = vec![];
+    if let Value::Array(a) = serde_json::from_str::<Value>(raw).ok()? {
+        for x in a {
+            let Some(o) = x.as_object() else { continue };
+            let id = match o.get("id") {
+                Some(Value::String(v)) => v.clone(),
+                _ => continue, // str() of anything else is never "str" / "bod"
+            };
+            let v = match o.get("value") {
+                None | Some(Value::Null) | Some(Value::Bool(false)) => 0.0,
+                Some(Value::Number(n)) => n.as_f64()?,
+                Some(Value::String(x)) if x.is_empty() => 0.0,
+                _ => return None,
+            };
+            stats.retain(|(k, _)| *k != id);
+            stats.push((id, v));
+        }
+    } else {
+        return None;
+    }
+    let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0.0, |(_, v)| *v);
+    let auto = (5.0 * (get("str") + get("bod"))).trunc() as i64;
+    let custom = pc_prefs(db, pc.get("id")?.as_i64()?)?.get("carry_limit").cloned();
+    let custom = match custom {
+        Some(Value::Bool(_)) => return None,
+        Some(Value::Number(n)) if n.as_f64()? > 0.0 => Some(n.as_f64()?.trunc() as i64),
+        _ => None,
+    };
+    let limit = custom.unwrap_or(auto);
+    let rounded: f64 = format!("{used:.1}").parse().ok()?;
+    Some(json!({"used": rounded, "limit": limit, "default": custom.is_none(), "over": limit > 0 && used > limit as f64}))
+}
+
+/// `char_extras.prefs(db, pc_id)` (a stored value serde would read differently from json.loads: Python's)
+fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>> {
+    let raw: Option<Option<String>> = db.query_row("SELECT prefs_json FROM character_prefs WHERE character_id = ?1 LIMIT 1", [pc_id], |r| r.get(0)).ok();
+    let raw = raw.flatten().filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Object(o)) => Some(o),
+        Ok(_) => Some(Map::new()),
+        Err(_) => None,
+    }
+}
+
+fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let before = pc.get("equipment_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]").to_string();
+    let mut eq = pc_list(&pc, "equipment_json")?;
+    let action = b.get("action").cloned().unwrap_or(json!("add"));
+    let mut added_name = None;
+    match action.as_str() {
+        Some("add") => {
+            let item = match b.get("item") {
+                None | Some(Value::Null) => Map::new(),
+                Some(Value::Object(o)) if o.is_empty() => Map::new(),
+                Some(Value::Object(o)) => o.clone(),
+                _ => return None,
+            };
+            let raw_name = item_text(&item, "name")?;
+            let name = strip(&raw_name);
+            if name.is_empty() {
+                return None;
+            }
+            let qty = py_num(item.get("qty"), PyNum::I(1))?;
+            let qty = match qty {
+                PyNum::I(i) => i,
+                PyNum::F(f) if f.is_finite() && f.abs() < 1e15 => f.trunc() as i64,
+                _ => return None,
+            };
+            let mut e = Map::new();
+            e.insert("name".into(), json!(name));
+            e.insert("qty".into(), json!(qty));
+            e.insert("weight".into(), py_num(item.get("weight"), PyNum::I(0))?.json());
+            e.insert("equipped".into(), json!(py_truthy(item.get("equipped"))));
+            e.insert("notes".into(), json!(item_text(&item, "notes")?));
+            for k in ["id", "category", "cost"] {
+                if let Some(v) = item.get(k).filter(|v| !v.is_null()) {
+                    e.insert(k.into(), v.clone());
+                }
+            }
+            eq.push(Value::Object(e));
+            added_name = Some(raw_name);
+        }
+        Some("remove") => {
+            let i = list_index(&b, eq.len())?;
+            eq.remove(i);
+        }
+        Some(a @ ("qty" | "weight")) => {
+            let i = list_index(&b, eq.len())?;
+            let it = eq.get_mut(i)?.as_object_mut()?;
+            if a == "qty" {
+                let q = match py_num(it.get("qty"), PyNum::I(1))? {
+                    PyNum::I(v) => v,
+                    PyNum::F(f) if f.is_finite() && f.abs() < 1e15 => f.trunc() as i64,
+                    _ => return None,
+                };
+                let delta = body_int(&b, "delta")?;
+                it.insert("qty".into(), json!((q + delta).min(9999).max(0)));
+            } else {
+                // max(0, min(9999, float)): the int bound itself when it wins or ties (min / max return their first argument then)
+                let v = match py_num(b.get("value"), PyNum::I(0))? {
+                    PyNum::I(_) => PyNum::I(0),
+                    PyNum::F(f) => {
+                        let m = if f >= 9999.0 { PyNum::I(9999) } else { PyNum::F(f) };
+                        if m.f() <= 0.0 && !(m.f() > 0.0) { PyNum::I(0) } else { m }
+                    }
+                };
+                it.insert("weight".into(), v.json());
+            }
+        }
+        _ => return None,
+    }
+    let list = Value::Array(eq.clone());
+    let after = nd_render::py_dumps(&list);
+    orm::update(&c.db, "player_characters", ids[0], &[("equipment_json", s(&after))])?;
+    if after != before {
+        let what = match action.as_str() {
+            Some("add") => format!("added {}", added_name.unwrap_or_default()),
+            Some("remove") => "removed an item".into(),
+            _ => "changed a quantity / weight".into(),
+        };
+        let undo = if before.chars().count() <= 20000 { json!({"op": "equipment", "value": before}) } else { json!({}) };
+        char_log(c, &pc, "equipment", &format!("Equipment: {what}"), &undo)?;
+    }
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let mut total = PyNum::I(0);
+    for it in &eq {
+        if let Some(m) = it.as_object() {
+            total = total.add(py_num(m.get("weight"), PyNum::I(0))?.mul(py_num(m.get("qty"), PyNum::I(1))?));
+        }
+    }
+    let carry = carry_info(&c.db, &pc, &eq)?;
+    json_response(&json!({"equipment": list, "total_weight": total.json(), "carry": carry}))
+}
+
+fn pc_carry_limit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let val = body_int(&b, "value")?.clamp(0, 99999);
+    let existing: Option<i64> = c.db.query_row("SELECT id FROM character_prefs WHERE character_id = ?1 LIMIT 1", [ids[0]], |r| r.get(0)).ok();
+    let mut data = if existing.is_some() { pc_prefs(&c.db, ids[0])? } else { Map::new() };
+    if val == 0 {
+        data.remove("carry_limit");
+    } else {
+        data.insert("carry_limit".into(), json!(val));
+    }
+    let text = nd_render::py_dumps(&Value::Object(data));
+    match existing {
+        Some(pid) => {
+            orm::update(&c.db, "character_prefs", pid, &[("prefs_json", s(&text))])?;
+        }
+        None => {
+            orm::insert(&c.db, "character_prefs", &[("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)), ("character_id", Sql::Integer(ids[0])),
+                                                    ("prefs_json", s(&text))])?;
+        }
+    }
+    let eq = pc_list(&pc, "equipment_json")?;
+    json_response(&json!({"carry": carry_info(&c.db, &pc, &eq)?}))
+}
+
+/// Python's `bool(v)` for a JSON value
+fn py_truthy(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+    }
 }

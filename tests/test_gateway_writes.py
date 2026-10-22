@@ -1190,3 +1190,60 @@ def _drop_pc(pc_id):
         db.commit()
     finally:
         db.close()
+
+
+def test_character_level_feats_equipment_and_carry_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import CharacterPref
+    base = str(client.base_url)
+    w, o = seed.world_a.id, seed.player_a.id
+    gear = json.dumps([{"name": "Rope", "qty": 2, "weight": 1.5, "equipped": False, "notes": ""}, {"name": "Stim", "qty": 0, "weight": 0.1}, "junk",
+                       {"name": "Kit", "weight": None}])
+    stats = json.dumps([{"id": "str", "value": 3}, {"id": "bod", "value": 2.5}])
+    feats = json.dumps([{"name": "Dash", "type": "Minor", "rank": "1", "notes": ""}, {"name": "Grit"}])
+    variants = [dict(world_id=w, owner_user_id=o, name="A", level=2, xp=900, stats_json=stats, equipment_json=gear, feats_json=feats),
+                dict(world_id=w, owner_user_id=o, name="B", level=20, xp=999999, stats_json="[]", equipment_json="[]", feats_json="[]"),
+                dict(world_id=w, owner_user_id=o, name="C", level=1, xp=10, stats_json=stats, equipment_json="[1, 2", feats_json="[]"),
+                dict(world_id=w, owner_user_id=o, name="D", level=3, xp=2700, stats_json=json.dumps([{"id": "str", "value": "4"}]), equipment_json=gear)]
+    calls = [("level-up", None), ("feats", {"item": {"name": "  Leap  ", "type": "Major", "id": 7}}), ("feats", {"item": {"name": ""}}), ("feats", {"item": {"name": "x", "rank": 3}}),
+             ("feats", {"action": "remove", "index": 1}), ("feats", {"action": "remove", "index": 9}), ("feats", {"action": "remove", "index": True}), ("feats", {"action": "x"}),
+             ("equipment", {"item": {"name": " Sword ", "qty": 2.7, "weight": 3, "equipped": [], "cost": "5gp", "category": None}}), ("equipment", {"item": {"name": "Gem"}}),
+             ("equipment", {"item": {"name": "Gem", "weight": "1"}}), ("equipment", {"action": "remove", "index": 0}), ("equipment", {"action": "qty", "index": 0, "delta": -5}),
+             ("equipment", {"action": "qty", "index": 3, "delta": 1}), ("equipment", {"action": "weight", "index": 0, "value": 2.25}),
+             ("equipment", {"action": "weight", "index": 0, "value": 1e9}), ("equipment", {"action": "weight", "index": 0, "value": -3}),
+             ("equipment", {"action": "weight", "index": 0}), ("equipment", {"action": "weight", "index": 2, "value": 1}), ("equipment", {"action": "x"}),
+             ("carry-limit", {"value": 40}), ("carry-limit", {"value": 0}), ("carry-limit", {"value": 10 ** 6}), ("carry-limit", {"value": "5"})]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for variant in variants:
+            for prefs in (None, '{"carry_limit": 12, "x": [1]}'):
+                for path, body in calls:
+                    ids = [_pc(**variant) for _ in range(2)]
+                    if prefs:
+                        db = SessionLocal()
+                        try:
+                            db.add_all([CharacterPref(world_id=w, character_id=i, prefs_json=prefs) for i in ids]); db.commit()
+                        finally:
+                            db.close()
+                    before = [_row("player_characters", i) for i in ids]
+                    ra = d.post(f"/api/characters/{ids[0]}/{path}", json=body) if body is not None else d.post(f"/api/characters/{ids[0]}/{path}")
+                    rb = via.post(f"/api/characters/{ids[1]}/{path}", json=body) if body is not None else via.post(f"/api/characters/{ids[1]}/{path}")
+                    _same_answer(ra, rb)
+                    _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+                    assert _logs(ids[0]) == _logs(ids[1]), (path, body, _logs(ids[0]), _logs(ids[1]))
+                    assert _prefs(ids[0]) == _prefs(ids[1]), (path, body)
+                    served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 60, served
+
+
+def _prefs(pc_id):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        r = db.execute(text("SELECT prefs_json FROM character_prefs WHERE character_id = :c"), {"c": pc_id}).first()
+        return r[0] if r else None
+    finally:
+        db.close()
