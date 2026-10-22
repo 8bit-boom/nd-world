@@ -73,6 +73,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /api/characters/<id>/level-up`, `/feats`, `/equipment` (int vs float weights as Python keeps them; `carry_info`), `/carry-limit` (character prefs) | 16 |
 | `PUT /api/characters/<id>/sync`, `POST /api/worlds/<id>/characters/sync` (`_apply_sync_json`, the answer as `_pc_to_sync_dict`), `/characters/<id>/retire-to-npc`, `/api/characters/<id>/portrait-from-url`; PUT routes (`edits::PUT_ROUTES`) | 17 |
 | `POST /sessions/<id>/delete` (with its raw-recording folder; a session with its own uploaded pictures: Python's), `/sessions/<id>/recap-publish`, `/api/sessions/<id>/live-transcript/clear`, `/loot/transfer`, `/xp` (custom-system characters: Python's) | 18 |
+| `POST /calendar/config` (`calendar_config`'s cleaners: months, moons, holidays, weekday names, year format; `str()` / `int()` of values this port cannot read as Python does: Python's), `/api/calendar/icons/<id>/delete` (with its file) | 19 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

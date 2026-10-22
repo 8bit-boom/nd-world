@@ -150,6 +150,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/calendar/events", calendar_event_add),
     ("/api/calendar/events/{}/delete", calendar_event_delete),
     ("/api/calendar/advance", calendar_advance),
+    ("/calendar/config", calendar_config_save),
+    ("/api/calendar/icons/{}/delete", calendar_icon_delete),
     ("/api/calendar/set-date", calendar_set_date),
     ("/boards/new", board_create),
     ("/sessions/new", session_create),
@@ -2919,8 +2921,7 @@ fn session_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::bulk_update(&c.db, "facts", &[("game_session_id", Sql::Null)], "game_session_id = ?", &[Sql::Integer(id)])?;
     c.db.execute("DELETE FROM game_sessions WHERE id = ?1", [id]).ok()?;
     // the raw-recording archive, <DB_PATH dir>/uploads/live/<id> (shutil.rmtree(..., ignore_errors=True))
-    let root = std::path::Path::new(&c.cfg.db_path).parent()?.join("uploads").join("live").join(id.to_string());
-    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(uploads_root(c)?.join("live").join(id.to_string()));
     redirect("/sessions")
 }
 
@@ -3050,4 +3051,342 @@ fn session_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::touch(&c.db, gs.get("world_id")?.as_i64()?)?;
     json_response(&json!({"updated": updated, "xp_awarded": total}))
+}
+
+// ── calendar settings (app/routers/calendar.py calendar_config_save, app/calendar_config.py) ──
+
+/// Why a Python cleaner would stop: ValueError, TypeError, or a value this port does not read the way Python would (that request is Python's)
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PyErr {
+    Value,
+    Type,
+    Unsure,
+}
+
+/// Python's `int(text)` for ASCII text (whitespace, a sign, digits with single underscores); Err(Value) for what int() refuses
+fn py_int_text(s: &str) -> Result<i64, PyErr> {
+    if !s.is_ascii() {
+        return Err(PyErr::Unsure);
+    }
+    let t = s.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b' || ('\x1c'..='\x1f').contains(&c));
+    let body = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let ok = !body.is_empty() && !body.starts_with('_') && !body.ends_with('_') && !body.contains("__") && body.bytes().all(|b| b.is_ascii_digit() || b == b'_');
+    if !ok {
+        return Err(PyErr::Value);
+    }
+    let digits: String = body.chars().filter(|c| *c != '_').collect();
+    if digits.len() > 17 {
+        return Err(PyErr::Unsure);
+    }
+    let n: i64 = digits.parse().map_err(|_| PyErr::Unsure)?;
+    Ok(if t.starts_with('-') { -n } else { n })
+}
+
+/// Python's `int(v)` for a JSON value
+fn py_int_value(v: &Value) -> Result<i64, PyErr> {
+    match v {
+        Value::Bool(b) => Ok(*b as i64),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => Ok(i),
+            None => {
+                let f = n.as_f64().ok_or(PyErr::Unsure)?;
+                if f.is_finite() && f.abs() < 1e17 { Ok(f.trunc() as i64) } else { Err(PyErr::Unsure) }
+            }
+        },
+        Value::String(s) => py_int_text(s),
+        _ => Err(PyErr::Type),
+    }
+}
+
+/// `int(m.get(k) or default)`
+fn py_int_or(v: Option<&Value>, default: i64) -> Result<i64, PyErr> {
+    match v {
+        Some(x) if py_truthy(Some(x)) => py_int_value(x),
+        _ => Ok(default),
+    }
+}
+
+/// `str(m.get(k) or default)` for text (str() of other truthy values: Python's)
+fn py_str_or(v: Option<&Value>, default: &str) -> Result<String, PyErr> {
+    match v {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        Some(x) if py_truthy(Some(x)) => Err(PyErr::Unsure),
+        _ => Ok(default.to_string()),
+    }
+}
+
+/// `clean_color`
+fn clean_color(v: Option<&Value>) -> Result<String, PyErr> {
+    let text = strip(&py_str_or(v, "")?);
+    let b = text.as_bytes();
+    let hex = (b.len() == 4 || b.len() == 7) && b[0] == b'#' && b[1..].iter().all(|c| c.is_ascii_hexdigit());
+    Ok(if hex { text } else { String::new() })
+}
+
+fn clean_months(raw: &Value) -> Result<Vec<Value>, PyErr> {
+    let list = raw.as_array().ok_or(PyErr::Value)?;
+    let mut out = vec![];
+    for (i, m) in list.iter().take(60).enumerate() {
+        let m = m.as_object().ok_or(PyErr::Value)?;
+        let name = take_chars(&strip(&py_str_or(m.get("name"), "")?), 40);
+        let mut e = Map::new();
+        e.insert("name".into(), json!(if name.is_empty() { format!("Month {}", i + 1) } else { name }));
+        e.insert("days".into(), json!(py_int_or(m.get("days"), 1)?.clamp(1, 1000)));
+        let season = take_chars(&strip(&py_str_or(m.get("season"), "")?), 40);
+        if !season.is_empty() {
+            e.insert("season".into(), json!(season));
+        }
+        let color = clean_color(m.get("color"))?;
+        if !color.is_empty() {
+            e.insert("color".into(), json!(color));
+        }
+        out.push(Value::Object(e));
+    }
+    Ok(out)
+}
+
+fn clean_moons(raw: &Value) -> Result<Vec<Value>, PyErr> {
+    let list = raw.as_array().ok_or(PyErr::Value)?;
+    let mut out = vec![];
+    for m in list.iter().take(8) {
+        let m = m.as_object().ok_or(PyErr::Type)?; // m.get on a non-dict: AttributeError (the form path skips the moons)
+        let name = take_chars(&strip(&py_str_or(m.get("name"), "Moon")?), 64);
+        out.push(json!({
+            "name": if name.is_empty() { "Moon".to_string() } else { name },
+            "cycle_days": py_int_or(m.get("cycle_days"), 29)?.max(1),
+            "offset": py_int_or(m.get("offset"), 0)?,
+            "color": take_chars(&py_str_or(m.get("color"), "#cccccc")?, 16),
+        }));
+    }
+    Ok(out)
+}
+
+/// `month_index(value, months)` against the month names
+fn month_index(v: Option<&Value>, names: &[String]) -> Result<Option<usize>, PyErr> {
+    let n = names.len() as i64;
+    match v {
+        Some(Value::Bool(_)) => Ok(None),
+        Some(Value::Number(x)) if x.is_i64() => {
+            let i = x.as_i64().unwrap_or(-1);
+            Ok((0..n).contains(&i).then_some(i as usize))
+        }
+        Some(Value::Number(x)) if x.as_f64() == Some(0.0) => Ok(None),
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let text = strip(s);
+            if text.is_empty() {
+                return Ok(None);
+            }
+            if !text.is_ascii() {
+                return Err(PyErr::Unsure);
+            }
+            if text.bytes().all(|b| b.is_ascii_digit()) {
+                let i = py_int_text(&text)?;
+                return Ok((0..n).contains(&i).then_some(i as usize));
+            }
+            for (i, name) in names.iter().enumerate() {
+                if !name.is_ascii() {
+                    return Err(PyErr::Unsure);
+                }
+                if strip(name).eq_ignore_ascii_case(&text) {
+                    return Ok(Some(i));
+                }
+            }
+            Ok(None)
+        }
+        _ => Err(PyErr::Unsure),
+    }
+}
+
+fn clean_holidays(raw: &Value, months: &[(String, i64)]) -> Result<Vec<Value>, PyErr> {
+    let list = raw.as_array().ok_or(PyErr::Value)?;
+    let names: Vec<String> = months.iter().map(|m| m.0.clone()).collect();
+    let mut out: Vec<(usize, i64, Value)> = vec![];
+    for h in list.iter().take(100) {
+        let Some(h) = h.as_object() else { continue };
+        let name = take_chars(&strip(&py_str_or(h.get("name"), "")?), 60);
+        let idx = month_index(h.get("month"), &names)?;
+        let (false, Some(idx)) = (name.is_empty(), idx) else { continue };
+        let day = py_int_or(h.get("day"), 1)?.min(months[idx].1).max(1);
+        let mut e = Map::new();
+        e.insert("name".into(), json!(name));
+        e.insert("month".into(), json!(idx));
+        e.insert("day".into(), json!(day));
+        let notes = take_chars(&strip(&py_str_or(h.get("notes"), "")?), 200);
+        if !notes.is_empty() {
+            e.insert("notes".into(), json!(notes));
+        }
+        let color = clean_color(h.get("color"))?;
+        if !color.is_empty() {
+            e.insert("color".into(), json!(color));
+        }
+        out.push((idx, day, Value::Object(e)));
+    }
+    out.sort_by_key(|(m, d, _)| (*m, *d));
+    Ok(out.into_iter().map(|(_, _, v)| v).collect())
+}
+
+/// `clean_weekday_names(raw, days_per_week)`
+fn clean_weekday_names(raw: &Value, dpw: i64) -> Result<Vec<String>, PyErr> {
+    let parts: Vec<String> = match raw {
+        Value::String(s) => s.split([',', ';', '\n']).map(str::to_string).collect(),
+        Value::Array(a) => a.iter().map(|x| x.as_str().map(str::to_string).ok_or(PyErr::Unsure)).collect::<Result<_, _>>()?,
+        _ => return Err(PyErr::Value),
+    };
+    let mut names: Vec<String> = parts.iter().map(|p| take_chars(&strip(p), 24)).collect();
+    if names.iter().all(|n| n.is_empty()) {
+        return Ok(vec![]);
+    }
+    names.truncate(dpw as usize);
+    while (names.len() as i64) < dpw {
+        names.push(String::new());
+    }
+    Ok(names.into_iter().enumerate().map(|(i, n)| if n.is_empty() { format!("Day {}", i + 1) } else { n }).collect())
+}
+
+/// `clean_days_per_week(value)`
+fn clean_days_per_week(v: Option<&Value>) -> Result<i64, PyErr> {
+    match v.map(py_int_value) {
+        None | Some(Err(PyErr::Value)) | Some(Err(PyErr::Type)) => Ok(7),
+        Some(Err(e)) => Err(e),
+        Some(Ok(n)) => Ok(n.clamp(1, 60)),
+    }
+}
+
+/// The months of a config as `_months_of` gives them: (name, days); None for months this port cannot read
+fn config_months(config: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
+    match config.get("months") {
+        Some(Value::Array(a)) if !a.is_empty() => a
+            .iter()
+            .map(|m| Some((m.get("name")?.as_str()?.to_string(), m.get("days")?.as_i64()?)))
+            .collect(),
+        Some(v) if py_truthy(Some(v)) => None,
+        _ => Some(
+            ["Frostwake", "Thawmoon", "Greentide", "Sunhigh", "Longlight", "Harvestfall", "Amberfall", "Duskmere", "Stormtide", "Coldreach", "Deepwinter",
+             "Yearsend"]
+                .iter()
+                .map(|n| (n.to_string(), 30))
+                .collect(),
+        ),
+    }
+}
+
+/// `json.loads(str(form.get(k, "[]") or "[]"))` - None when serde refuses text json.loads might take (Python's)
+fn form_json(f: &Form, k: &str) -> Option<Value> {
+    let raw = f.get(k).filter(|v| !v.is_empty()).unwrap_or("[]");
+    serde_json::from_str(raw).ok()
+}
+
+fn calendar_config_save(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    if !can_manage_calendar(c)? {
+        return None;
+    }
+    let (config, _, _) = crate::calendar::for_write(&c.db, wid)?;
+    let mut config = config.as_object()?.clone();
+    let era = take_chars(&strip(f.get("era_name").unwrap_or("")), 64);
+    config.insert("era_name".into(), json!(if era.is_empty() { "Year".to_string() } else { era }));
+    let cur = match f.get("current_day") {
+        None => 1,
+        Some(v) => match py_int_text(v) {
+            Ok(n) => n,
+            Err(PyErr::Value) => 1,
+            Err(_) => return None,
+        },
+    };
+    config.insert("current_day".into(), json!(cur.max(1)));
+    let dpw = clean_days_per_week(f.get("days_per_week").map(|v| json!(v)).as_ref()).ok()?;
+    config.insert("days_per_week".into(), json!(dpw));
+    // each part on its own: one that fails is skipped (`except Exception: pass`), the stored part kept
+    match clean_months(&form_json(&f, "months_json")?) {
+        Ok(m) if !m.is_empty() => {
+            config.insert("months".into(), Value::Array(m));
+        }
+        Ok(_) | Err(PyErr::Value) | Err(PyErr::Type) => {}
+        Err(PyErr::Unsure) => return None,
+    }
+    match clean_moons(&form_json(&f, "moons_json")?) {
+        Ok(m) => {
+            config.insert("moons".into(), Value::Array(m));
+        }
+        Err(PyErr::Unsure) => return None,
+        Err(_) => {}
+    }
+    let months = config_months(&config)?;
+    if f.has("holidays_json") {
+        match clean_holidays(&form_json(&f, "holidays_json")?, &months) {
+            Ok(h) => {
+                config.insert("holidays".into(), Value::Array(h));
+            }
+            Err(PyErr::Unsure) => return None,
+            Err(_) => {}
+        }
+    }
+    if f.has("year_format") {
+        let yf = take_chars(&strip(f.get("year_format").unwrap_or("")), 40);
+        config.insert("year_format".into(), json!(if yf.contains("{year}") { yf } else { "Year {year}".to_string() }));
+    }
+    let names = if f.has("weekday_names") {
+        json!(f.get("weekday_names").unwrap_or(""))
+    } else {
+        config.get("weekday_names").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!([]))
+    };
+    let wn = match clean_weekday_names(&names, dpw) {
+        Ok(n) => n,
+        Err(PyErr::Value) => {
+            // weekday_names_of(config): the stored names fitted to the stored days_per_week, [] when they do not clean
+            let stored = config.get("weekday_names").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!([]));
+            match clean_weekday_names(&stored, clean_days_per_week(config.get("days_per_week")).ok()?) {
+                Ok(n) => n,
+                Err(PyErr::Value) => vec![],
+                Err(_) => return None,
+            }
+        }
+        Err(_) => return None,
+    };
+    config.insert("weekday_names".into(), json!(wn));
+    let stored_h = config.get("holidays").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!([]));
+    let h = match clean_holidays(&stored_h, &months) {
+        Ok(h) => h,
+        Err(PyErr::Value) => vec![],
+        Err(_) => return None, // a TypeError here is Python's 500
+    };
+    config.insert("holidays".into(), Value::Array(h));
+    let days: Vec<i64> = config_months(&config)?.iter().map(|m| m.1).collect();
+    let cur = config.get("current_day")?.as_i64()?;
+    config.insert("current_day".into(), json!(crate::calendar::clamp_day(&days, cur)));
+    save_calendar(&c.db, wid, &Value::Object(config))?;
+    redirect("/calendar?saved=1")
+}
+
+/// `<DB_PATH dir>/uploads`, where every stored upload lives (Python's UPLOADS_DIR)
+fn uploads_root(c: &Ctx) -> Option<std::path::PathBuf> {
+    Some(std::path::Path::new(&c.cfg.db_path).parent()?.join("uploads"))
+}
+
+/// Delete the file behind an `/uploads/...` url when it resolves inside the uploads folder and is a file (`_delete_icon_file` & co.)
+fn remove_upload(c: &Ctx, url: &str) {
+    let (Some(rel), Some(root)) = (url.strip_prefix("/uploads/"), uploads_root(c).and_then(|r| r.canonicalize().ok())) else { return };
+    if let Ok(path) = root.join(rel).canonicalize() {
+        if path.starts_with(&root) && path.is_file() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn calendar_icon_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = c.world_id()?;
+    if !can_manage_calendar(c)? {
+        return None;
+    }
+    let icon = row(&c.db, "SELECT * FROM calendar_day_icons WHERE id = ?1", ids[0])?;
+    if icon.get("world_id")?.as_i64() != Some(wid) {
+        return None;
+    }
+    c.db.execute("DELETE FROM calendar_day_icons WHERE id = ?1", [ids[0]]).ok()?;
+    if let Some(url) = icon.get("image_url").and_then(|v| v.as_str()) {
+        remove_upload(c, url);
+    }
+    json_response(&json!({"ok": true}))
 }

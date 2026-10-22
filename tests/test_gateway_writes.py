@@ -1413,3 +1413,106 @@ def test_session_delete_publish_loot_and_xp_are_pythons(client, seed):
             _same_rows(_row("game_sessions", sets[0][3]), _row("game_sessions", sets[1][3]), ignore=("party_id",))
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 15, served
+
+
+def test_calendar_config_save_is_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World, WorldCalendar
+    from sqlalchemy import text
+    base = str(client.base_url)
+    w = seed.world_a.id
+    config = {"era_name": "Ash", "current_day": 400, "months": [{"name": "Frost", "days": 30, "color": "#abc"}, {"name": "Thaw", "days": 20}],
+              "moons": [{"name": "Pale", "cycle_days": 28, "offset": 0}], "days_per_week": 5, "weekday_names": ["A", "B"],
+              "holidays": [{"name": "Feast", "month": 1, "day": 19}, {"name": "Old", "month": 0, "day": 3}], "extra": {"k": 1.5}}
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"calendar": {"player": "edit", "assistant": "edit"}})
+        db.add(WorldCalendar(world_id=w, config_json=json.dumps(config)))
+        db.commit()
+    finally:
+        db.close()
+
+    def cal():
+        db = SessionLocal()
+        try:
+            return db.execute(text("SELECT config_json FROM world_calendars WHERE world_id = :w"), {"w": w}).scalar()
+        finally:
+            db.close()
+
+    def set_cal(t):
+        db = SessionLocal()
+        try:
+            db.query(WorldCalendar).filter(WorldCalendar.world_id == w).update({"config_json": t})
+            db.commit()
+        finally:
+            db.close()
+
+    months = json.dumps([{"name": " Wolf ", "days": "31", "season": "Winter", "color": "#123456"}, {"name": "", "days": 2.9, "color": "red"}, {"days": 5000}])
+    forms = [
+        {"era_name": "  Age of Ash  ", "current_day": "50", "days_per_week": "6", "months_json": months, "moons_json": json.dumps([{"name": "", "cycle_days": "0", "color": None}]),
+         "holidays_json": json.dumps([{"name": " Yule ", "month": "wolf", "day": 99}, {"name": "x", "month": 7}, {"name": "", "month": 0}, {"name": "B", "month": "1", "day": "2"},
+                                      {"name": "A", "month": 1, "day": 1, "notes": " n ", "color": "#fff"}, "junk"]),
+         "year_format": " {year} {era} ", "weekday_names": "Mon, Tue;; Wed\nThu"},
+        {},
+        {"months_json": "{bad", "current_day": "x"},
+        {"months_json": json.dumps([{"name": "M", "days": "abc"}]), "moons_json": json.dumps(["x"]), "days_per_week": "99", "weekday_names": ""},
+        {"months_json": "[]", "holidays_json": "", "year_format": "no year"},
+        {"holidays_json": json.dumps([{"name": "Q", "month": "Ünï"}])},
+        {"months_json": json.dumps([{"name": 5, "days": 3}])},
+        {"current_day": " +7_0 ", "days_per_week": "-3", "months_json": json.dumps([{"name": "Solo", "days": 10}]), "moons_json": "[]"},
+        {"weekday_names": "only"},
+    ]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for start in (json.dumps(config), "{}", json.dumps({**config, "holidays": [{"name": "H", "month": 0, "day": "zz"}]}),
+                      json.dumps({**config, "weekday_names": 5})):
+            for form in forms:
+                set_cal(start)
+                ra = d.post("/calendar/config", data=form, follow_redirects=False)
+                after_a = cal()
+                set_cal(start)
+                rb = via.post("/calendar/config", data=form, follow_redirects=False)
+                after_b = cal()
+                _same_answer(ra, rb)
+                assert after_a == after_b, (form, start, after_a, after_b)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 15, served
+
+
+def test_calendar_icon_delete_is_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import CalendarDayIcon
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    (up / "calendar_icons").mkdir(parents=True, exist_ok=True)
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for kind in ("file", "escape", "missing", "other-world"):
+            ids, files = [], []
+            for side in ("a", "b"):
+                name = f"gw-{kind}-{side}-{email[:3]}.png"
+                f = up / "calendar_icons" / name
+                f.write_bytes(b"png")
+                url = {"file": f"/uploads/calendar_icons/{name}", "escape": f"/uploads/../{name}", "missing": "/uploads/calendar_icons/none.png",
+                       "other-world": f"/uploads/calendar_icons/{name}"}[kind]
+                db = SessionLocal()
+                try:
+                    icon = CalendarDayIcon(world_id=seed.world_b.id if kind == "other-world" else seed.world_a.id, day=3, image_url=url, label="l")
+                    db.add(icon); db.commit(); ids.append(icon.id)
+                finally:
+                    db.close()
+                files.append(f)
+            ra = d.post(f"/api/calendar/icons/{ids[0]}/delete")
+            rb = via.post(f"/api/calendar/icons/{ids[1]}/delete")
+            _same_answer(ra, rb)
+            assert (_row("calendar_day_icons", ids[0]) is None) == (_row("calendar_day_icons", ids[1]) is None)
+            assert files[0].exists() == files[1].exists(), kind
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 2, served
