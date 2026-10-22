@@ -66,6 +66,24 @@ players (`tests/test_gateway_golden.py`) and, for ported logic, differential tes
 Every page still answers only when sure: an unusual value, a row Python would create on the visit, a query parameter Python's `int()` reads
 differently, a template feature MiniJinja lacks - the request goes to Python unchanged.
 
+Throughput (8 clients, 4 s each, a GM on a world with 120 entities, 19 sessions, a 40-node board, a 40-section rulebook; Python directly vs
+through the gateway, pages/s and median ms):
+
+| Page | Python | Gateway |
+|---|---|---|
+| `/` | 66 (111 ms) | 275 (25 ms) |
+| `/search?q=ash` | 89 (77 ms) | 289 (25 ms) |
+| `/rules` | 88 (78 ms) | 272 (26 ms) |
+| `/calendar` | 73 (98 ms) | 288 (23 ms) |
+| `/images` | 93 (76 ms) | 305 (24 ms) |
+| `/maps` | 58 (117 ms) | 281 (25 ms) |
+| `/boards/<slug>` | 66 (107 ms) | 294 (24 ms) |
+| `/sessions` | 120 (60 ms) | 329 (22 ms) |
+| `/facts` | 106 (66 ms) | 305 (23 ms) |
+
+(A board, quest or map of a world other than the viewer's active one is still Python's - Python's own access check for that case is not
+ported - so the same board page opened without `?w=` from another world measures at Python's speed.)
+
 GET pages that stay Python's, and the phase they move with:
 
 | Pages | Why later | Phase |
