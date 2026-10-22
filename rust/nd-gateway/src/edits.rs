@@ -459,7 +459,7 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
-    ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
+    ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
     ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
     ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
@@ -8611,6 +8611,10 @@ fn sc_for_edit(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
     c.can_edit_section("maps")?.then_some(sc)
 }
 
+pub fn py_round_pub(x: f64, nd: i32) -> Option<f64> {
+    py_round(x, nd)
+}
+
 /// `round(x, nd)` where Python's correctly rounded result is certain (a value near a half: Python's)
 fn py_round(x: f64, nd: i32) -> Option<f64> {
     let k = 10f64.powi(nd);
@@ -9125,6 +9129,36 @@ fn clean_rooms(d: &Map<String, Value>) -> Option<Value> {
     out.insert("spaces".into(), Value::Array(spaces));
     out.insert("marks".into(), Value::Array(marks));
     Some(Value::Object(out))
+}
+
+/// `rooms_detect`: the enclosed rooms of the stored walls as room-tool state (nothing stored); a map without a square grid and the
+/// detector's refusals are Python's
+fn sc_rooms_detect(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let cfg = sc_load(&sc, "grid_config_json", false)?;
+    let grid = sc.get("grid_type").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("none");
+    let cell = wall_num(cfg.get("cell_size")).filter(|c| *c > 0.0)?;
+    if grid != "square" {
+        return None;
+    }
+    let off = |k: &str| -> Option<f64> {
+        match cfg.get(k) {
+            v if !py_truthy(v) => Some(0.0),
+            Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()),
+            _ => None, // `%` of a string or a bool: Python's
+        }
+    };
+    let (ox, oy) = (off("offset_x")?, off("offset_y")?);
+    let Value::Array(stored) = sc_load(&sc, "walls_json", true)? else { return None };
+    let (walls, _) = clean_walls(&stored, &sc)?;
+    let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64);
+    match crate::rooms::detect(&walls, dim("canvas_width", 2000.0), dim("canvas_height", 1500.0), cell, ox, oy)? {
+        crate::rooms::Detected::Refused => None,
+        crate::rooms::Detected::Rooms(state, info) => {
+            let state = clean_rooms(state.as_object()?)?;
+            json_response(&json!({"state": state, "info": info}))
+        }
+    }
 }
 
 fn sc_rooms(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {

@@ -4480,3 +4480,34 @@ def test_schematic_uploads_are_pythons(client, seed):
         assert out[0][:2] == out[1][:2], (fname, out)
         served += out[1][2] == "gateway"
     assert served >= 2, served
+
+
+def test_schematic_rooms_detect_is_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    box = lambda x0, y0, x1, y1, kind="wall": {"pts": [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], "kind": kind}
+    layouts = [
+        # two rooms side by side, a door between them, a window to the outside, a secret door
+        [box(100, 100, 300, 300), box(300, 100, 500, 300), {"pts": [[300, 160], [300, 200]], "kind": "door"},
+         {"pts": [[160, 100], [220, 100]], "kind": "window"}, {"pts": [[400, 300], [440, 300]], "kind": "secret"}],
+        [{"pts": [[10, 10], [500, 10]], "kind": "wall"}],                      # no enclosed room
+        [box(37, 41, 263, 199), box(263, 41, 401, 199.5)],                    # off-grid walls
+        [],
+    ]
+    n = [0]
+    served = 0
+    for walls in layouts:
+        for grid, cfg in (("square", {"cell_size": 40, "offset_x": 10, "offset_y": -7}), ("square", {"cell_size": 50}), ("hex", {"cell_size": 50}),
+                          ("square", {"cell_size": 2})):
+            out = []
+            for side in (gm, _via(gm, base)):
+                n[0] += 1
+                slug = f"rd-{n[0]}"
+                _add("Schematic", world_id=w, name="Map", slug=slug, walls_json=json.dumps(walls), grid_type=grid, grid_config_json=json.dumps(cfg),
+                     canvas_width=800, canvas_height=600)
+                r = side.post(f"/maps/schematic/{slug}/rooms/detect")
+                out.append((r.status_code, r.json(), r.headers.get("x-nd-served-by")))
+            assert out[0][:2] == out[1][:2], (walls, grid, cfg, out)
+            served += out[1][2] == "gateway"
+    assert served >= 4, served
