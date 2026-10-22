@@ -1091,3 +1091,30 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
             served[u] += _same_page(d, via, u, email)
     must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")]  # /export stays Python's
     assert all(served[u] for u in must), served
+
+
+def test_rules_page_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.rules_md = ('Intro &amp; welcome <a name="x"></a>\n\n## Combat\n\nRoll **d20** &lt;always&gt;.\n\n:::tip Cover\nUse it.\n:::\n\n'
+                       '### Initiative\n\nHighest first.\n\n:::gm\nSecret twist.\n:::\n\n## Magic\n\n```statblock\nImp\n**AC**: 12\nHP: 4\n```\n\n'
+                       '## Gear\n\nKnives.\n\n## Secrets\n\nOnly for the GM.\n')
+        wa.rules_json = json.dumps({"sections": {"magic": {"icon": "🔮", "title": "Arcana"}, "secrets": {"players_visible": False},
+                                                 "gear": {"order": 1}},
+                                    "tabs": [{"label": "Core", "sections": ["combat", "initiative"]}, {"label": "Other", "sections": ["magic", "secrets"]}]})
+        wa.section_access_json = json.dumps({"rules": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        served += _same_page(d, via, "/rules", email)
+    assert served >= 2, served

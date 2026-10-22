@@ -4,6 +4,7 @@ use minijinja::{escape_formatter, value::ValueKind, Environment, Error, ErrorKin
 use minijinja::{AutoEscape, Output};
 pub mod app;
 pub mod pyvalue;
+pub mod rules;
 pub mod md;
 pub mod text;
 use sha1::{Digest, Sha1};

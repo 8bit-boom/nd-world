@@ -335,3 +335,58 @@ fn entity_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers:
     ctx.insert("gallery_images".into(), Value::Array(crate::gallery::all_world_image_urls(db, wid)?));
     render_with(pages, "entities/form.html", p.ctx, headers)
 }
+
+/// `GET /rules` (app/main.py `rules_page`): the world's rules (or the bundled core rules) with ::: blocks, statblocks, heading ids,
+/// sections and the world's rules.json overlay
+pub fn rules_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use nd_render::rules;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone();
+    if let Some(w) = &world {
+        if !crate::pages::section_ok(&p, Some(w), "rules")? {
+            return None;
+        }
+    }
+    let own = world.as_ref().and_then(|w| w.get("rules_md")).and_then(|v| v.as_str()).filter(|s| !nd_render::text::py_strip(s).is_empty());
+    let md = match own {
+        Some(s) => s.to_string(),
+        None => {
+            let path = cfg.templates_dir.parent()?.join("core_rules.md");
+            match std::fs::read(&path) {
+                Ok(bytes) => String::from_utf8(bytes).ok()?, // invalid UTF-8 ("errors=ignore" in Python): Python's
+                Err(_) => String::new(),
+            }
+        }
+    };
+    let md = nd_render::text::strip_legacy_anchors(&md);
+    let md = nd_render::text::strip_legacy_anchors(&rules::strict_unescape(&md)?);
+    let content = if nd_render::text::py_strip(&md).is_empty() {
+        "<p>No rules have been added for this world yet.</p>".to_string()
+    } else {
+        rules::render_rules_content(&md, p.is_gm)
+    };
+    let mut sections = rules::split_sections_h23(&content);
+    let mut tabs = None;
+    if let Some(w) = &world {
+        let overlay = rules::parse_overlay(w.get("rules_json").and_then(|v| v.as_str())).ok()?;
+        let (s, t) = rules::apply_overlay(sections, overlay.as_ref(), p.is_gm)?;
+        sections = s;
+        tabs = t;
+    }
+    let toc: Vec<Value> = sections
+        .iter()
+        .filter(|s| s.get("id").and_then(|v| v.as_str()).map_or(false, |x| !x.is_empty()))
+        .map(|s| json!({"level": s["level"], "text": s["title"], "id": s["id"]}))
+        .collect();
+    let is_custom = own.is_some();
+    let c = &mut p.ctx;
+    c.insert("toc".into(), Value::Array(toc));
+    c.insert("sections".into(), Value::Array(sections));
+    c.insert("tabs_mode".into(), json!(tabs.is_some()));
+    c.insert("tabs".into(), tabs.map(Value::Array).unwrap_or(Value::Null));
+    c.insert("is_custom_rules".into(), json!(is_custom));
+    c.insert("can_edit_rules".into(), json!(p.is_gm));
+    render_with(pages, "rules.html", p.ctx, headers)
+}

@@ -192,3 +192,78 @@ def test_json_dumps_is_pythons_floats_included():
     values = [floats, {"b": 1, "a": [True, None, "é\u2028<x>\x7f\"\\"], "c": {"z": 2.5, "y": -3}}, [1, 2, [3, {"k": 1e-9}]], "plain", 7]
     got = ask([{"op": "dumps", "value": v} for v in values])
     assert got == [json.dumps(v) for v in values]
+
+
+_RULES_PIECES = ["## Combat\n\n", "### Initiative\n\nRoll **d20**.\n\n", ":::tip\nUse cover.\n:::\n\n", ":::gm Secret stuff\nThe *twist*.\n:::\n\n",
+                 ":::collapse More <b>\nHidden **text**\n:::\n\n", ":::weird Typo'd\nbody\n:::\n\n", ":::note\nunclosed note\n",
+                 "```statblock\nGoblin\n**AC**: 15\nHP: 7 (2d6)\nTime: 10:30\nFree text line\n\nmore free\n```\n\n", "```python\n:::tip\nnot a block\n```\n\n",
+                 "Plain paragraph with <tags> & ampersands.\n\n", "## Repeated\n\n", "## Repeated\n\n", "text right after\n:::lore\nlore!\n:::\n"]
+
+
+def test_rules_content_is_pythons():
+    """::: blocks, statblocks and heading ids (main.rules_page's pipeline) - same tolerance as the markdown renderer itself. (No list
+    pieces: loose lists and lazy continuation lines are the accepted CommonMark differences, not this pipeline's.)"""
+    import importlib.util
+    import random
+    from app import rules_render
+    from app.main import _rules_toc
+    from app.rendering import render_md as _render_md
+    spec = importlib.util.spec_from_file_location("golden", ROOT / "scripts" / "golden.py")
+    golden = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(golden)
+
+    def py(md, is_gm):
+        skeleton, blocks = rules_render.extract_blocks(md)
+        content, _ = _rules_toc(_render_md(skeleton))
+        return rules_render.restore_blocks(content, blocks, is_gm)
+    rng = random.Random(9)
+    cases = [("".join(rng.choice(_RULES_PIECES) for _ in range(rng.randint(1, 7))), rng.random() < 0.5) for _ in range(600)]
+    got = ask([{"op": "rules_content", "text": t, "is_gm": g} for t, g in cases])
+    n = lambda h: golden.normalise("text/html", h.encode())
+    bad = [(t, g) for (t, gm), g in zip(cases, got) if n(py(t, gm)) != n(g)]
+    assert len(bad) < len(cases) * 0.05, f"{len(bad)} of {len(cases)} differ, e.g. {bad[:2]}"
+    # the parts that are not markdown at all must match exactly
+    for t, gm in cases:
+        assert ("NDRULESBLOCK" in py(t, gm)) == ("NDRULESBLOCK" in got[cases.index((t, gm))])
+
+
+def test_rules_sections_and_overlay_are_pythons():
+    import random
+    from app import rules_render
+    html = ('<p>intro</p><h2 id="combat">Combat &amp; more</h2><p>a</p><h3 id="init">Init</h3><p>b</p><h2 id="magic">Magic</h2>'
+            '<p>c</p><h2 id="gear">Gear</h2><p>d</p>')
+    assert ask([{"op": "rules_sections", "html": html}])[0] == rules_render.split_rules_sections(html)
+    sections = rules_render.split_rules_sections(html)
+    rng = random.Random(4)
+    slugs = ["combat", "init", "magic", "gear", "nope", ""]
+
+    def rand_overlay():
+        sec = {}
+        for s in rng.sample(slugs, rng.randint(0, 4)):
+            sec[s] = rng.choice([None, {}, {"icon": "⚔"}, {"title": "New <t>"}, {"icon": "🔮", "title": "Both"}, {"players_visible": False},
+                                 {"order": rng.choice([1, 2, 0.5, -3])}, {"order": True}, {"title": 3}, "bad"])
+        ov = {"sections": sec}
+        if rng.random() < 0.6:
+            ov["tabs"] = [rng.choice([{"label": "Core", "sections": ["combat", "init"]}, {"id": "x", "label": "Magic", "sections": ["magic", "magic"]},
+                                      {"label": "  ", "sections": []}, {"label": "Dup", "id": "x", "sections": ["gear"]}, {"label": "Ghost", "sections": ["nope"]},
+                                      {"label": "Bad", "sections": [1]}, "junk", {"label": "Ünï Côde!", "sections": "gear"}])
+                         for _ in range(rng.randint(0, 3))]
+        return json.dumps(ov)
+    raws = [rand_overlay() for _ in range(400)] + ["", "  ", "{not json", "[]", '{"sections": []}', '{"tabs": {}}', "null"]
+    for gm in (True, False):
+        got = ask([{"op": "rules_overlay", "raw": r, "sections": sections, "is_gm": gm} for r in raws])
+        for r, g in zip(raws, got):
+            ov, _err = rules_render.parse_rules_overlay(r)
+            flat, tabs = rules_render.apply_rules_overlay(sections, ov, gm)
+            if g == "python":
+                continue
+            assert g == json.loads(json.dumps({"flat": flat, "tabs": tabs})), (r, gm)
+
+
+def test_rules_unescape_is_pythons_or_left_to_python():
+    import html
+    texts = ["plain", "a &amp; b", "&lt;b&gt; &quot;q&quot; &apos;", "&nbsp;x", "&#65;&#x42;&#X43;", "R&D", "a & b", "&amp", "&#0;", "&#128;",
+             "&#x1F600;", "&copy;", "&;", "& ", "&", "x&#9;y", "&#xD800;", "&#65", "&&amp;", "&#1114111;"]
+    for t, g in zip(texts, ask([{"op": "unescape", "text": t} for t in texts])):
+        assert g is None or g == html.unescape(t), t
+    assert ask([{"op": "unescape", "text": "a &amp; b &#65;"}])[0] == "a & b A"

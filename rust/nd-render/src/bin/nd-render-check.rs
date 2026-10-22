@@ -26,6 +26,17 @@ fn main() {
             }
             "md" => json!(md::render_md(q["text"].as_str().unwrap())),
             "dumps" => json!(nd_render::py_dumps(&q["value"])),
+            "rules_content" => json!(nd_render::rules::render_rules_content(q["text"].as_str().unwrap(), q["is_gm"].as_bool().unwrap())),
+            "rules_sections" => json!(nd_render::rules::split_sections_h23(q["html"].as_str().unwrap())),
+            "rules_overlay" => match nd_render::rules::parse_overlay(q["raw"].as_str()) {
+                Err(()) => json!("python"),
+                Ok(ov) => {
+                    let secs = q["sections"].as_array().unwrap().clone();
+                    let (flat, tabs) = nd_render::rules::apply_overlay(secs, ov.as_ref(), q["is_gm"].as_bool().unwrap()).unwrap();
+                    json!({"flat": flat, "tabs": tabs})
+                }
+            },
+            "unescape" => json!(nd_render::rules::strict_unescape(q["text"].as_str().unwrap())),
             "summary" => json!(text::body_summary(q["text"].as_str().unwrap())),
             "strip_md" => json!(text::strip_md(q["text"].as_str().unwrap())),
             "entry" => json!(text::entry_text(q["text"].as_str().unwrap())),

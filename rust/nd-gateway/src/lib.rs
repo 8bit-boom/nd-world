@@ -160,9 +160,10 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         }
         }
     }
-    if req.method() == axum::http::Method::GET && req.uri().path() == "/new" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/new" | "/rules") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || idpages::new_entity_form(&pages_, &cfg, &uri, &headers)).await {
+        let f = if uri.path() == "/new" { idpages::new_entity_form } else { idpages::rules_page };
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }

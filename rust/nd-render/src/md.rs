@@ -31,11 +31,16 @@ fn markdown(text: &str) -> String {
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     let events = Parser::new_ext(text, opts).map(|e| match e {
         Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
+        // markdown2 writes a fenced block as a plain <pre><code> whatever its info string ("```python")
+        Event::Start(pulldown_cmark::Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(_))) => {
+            Event::Start(pulldown_cmark::Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced("".into())))
+        }
         other => other,
     });
     let mut out = String::new();
     html::push_html(&mut out, events);
-    out
+    // table cell alignment as markdown2 writes it
+    re!(r#"<(t[hd]) style="text-align: (left|right|center)">"#).replace_all(&out, r#"<$1 style="text-align:$2;">"#).into_owned()
 }
 
 fn transform_media_tags(html: &str) -> String {
