@@ -1628,3 +1628,34 @@ def test_strict_map_masked_picture_is_pythons(client, seed):
         assert mism / (n / 3) < 0.01, mism          # the same squares hidden (a sliver of slack at cell edges)
         assert diff / n < 6, diff / n                # the visible picture alike
     assert served == 2, served
+
+
+def test_player_cockpit_with_custom_systems_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import Party, PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fields = [{"id": "flesh", "label": "Flesh [wounds]", "type": "resource", "default_value": "8/8", "vital": "hp"},
+              {"id": "stamina", "label": "Stamina", "type": "resource", "default_value": "4"}, {"id": "ichor", "label": "", "type": "resource"},
+              {"id": "a", "label": "A", "type": "resource"}, {"id": "b", "label": "B", "type": "resource"}, {"id": "xp", "label": "XP", "type": "number", "xp": True}]
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(name="Grim <g>", slug="cockpit-grim", sheet_mode="custom", fields_json=json.dumps(fields))
+        plain = SheetTemplate(name="Plain", slug="cockpit-plain", sheet_mode="custom", fields_json=json.dumps([{"id": "n", "type": "text"}]))
+        db.add_all([tpl, plain])
+        db.flush()
+        mine = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Grim one", sheet_template_id=tpl.id,
+                               custom_fields_json=json.dumps({"flesh_current": 0, "stamina_max": 6}), conditions_json='["Marked"]')
+        other = PlayerCharacter(world_id=w, owner_user_id=seed.player_b.id, name="Plain one", sheet_template_id=plain.id)
+        nd = PlayerCharacter(world_id=w, owner_user_id=seed.player_b.id, name="N&D one", current_hp=4)
+        db.add_all([mine, other, nd])
+        db.flush()
+        db.add(Party(world_id=w, name="Mixed", member_pc_ids_json=json.dumps([mine.id, other.id, nd.id])))
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        served += _same_page(d, _via(d, base), "/player-cockpit", email)
+    assert served == 2, served

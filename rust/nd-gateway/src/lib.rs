@@ -8,6 +8,7 @@ pub mod calendar;
 pub mod config;
 pub mod strict;
 pub mod rooms;
+pub mod sheets;
 pub mod idpages;
 pub mod edits;
 pub mod files;

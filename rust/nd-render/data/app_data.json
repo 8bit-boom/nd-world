@@ -13004,6 +13004,322 @@
    "tier": "exceptional"
   }
  ],
+ "builtin_systems": {
+  "asterion": {
+   "binds": {},
+   "conditions": [
+    "Blinded",
+    "Burning",
+    "Bleeding",
+    "Restrained",
+    "Stunned",
+    "Weakened",
+    "Vulnerable"
+   ],
+   "dice": {
+    "explode": true,
+    "pools": [
+     {
+      "dice": 2,
+      "id": "normal",
+      "label": "Standard action",
+      "override": {
+       "dice": 1,
+       "equals": "Mortal",
+       "field": "kind"
+      }
+     },
+     {
+      "dice": 3,
+      "id": "domain",
+      "label": "Domain (Spark / Lineage / Deed)"
+     }
+    ],
+    "spend": {
+     "field": "ichor",
+     "label": "Ichor",
+     "per": 1
+    },
+    "threshold": 6
+   },
+   "hp": "flesh",
+   "pages": [
+    {
+     "conditions": true,
+     "icon": "🧍",
+     "id": "hero",
+     "label": "Hero",
+     "sections": [
+      "Identity",
+      "Core Stats"
+     ]
+    },
+    {
+     "icon": "⚔",
+     "id": "powers",
+     "label": "Powers",
+     "sections": [
+      "Abilities",
+      "Progression"
+     ]
+    },
+    {
+     "icon": "🎒",
+     "id": "inventory",
+     "label": "Inventory",
+     "sections": [
+      "Inventory & Equipment"
+     ]
+    },
+    {
+     "icon": "🏛",
+     "id": "domain",
+     "label": "Domain",
+     "sections": [
+      "Domain",
+      "Followers"
+     ]
+    },
+    {
+     "icon": "📜",
+     "id": "journal",
+     "label": "Journal",
+     "sections": [
+      "Campaign Log",
+      "Relationships & Allies",
+      "Notes"
+     ]
+    }
+   ],
+   "rest": {
+    "long": [
+     [
+      "full",
+      "sparkShield"
+     ],
+     [
+      "full",
+      "flesh"
+     ],
+     [
+      "full",
+      "ichor"
+     ]
+    ],
+    "short": [
+     [
+      "full",
+      "sparkShield"
+     ],
+     [
+      "add",
+      "ichor",
+      2
+     ]
+    ]
+   },
+   "roster": [
+    [
+     "Identity",
+     [
+      "kind"
+     ]
+    ],
+    [
+     "Core",
+     [
+      "armor"
+     ]
+    ],
+    [
+     "Progress",
+     [
+      "glory",
+      "repScore",
+      "domainRank",
+      "drachma"
+     ]
+    ]
+   ],
+   "xp": [
+    "glory"
+   ]
+  },
+  "hunt-in-the-moonlight": {
+   "binds": {
+    "hunter": "name",
+    "player": "player_name"
+   },
+   "conditions": [
+    "Bleeding",
+    "Burning",
+    "Blinded",
+    "Marked",
+    "Prone",
+    "Restrained",
+    "Stunned",
+    "Weakened",
+    "Vulnerable"
+   ],
+   "dice": {
+    "explode": true,
+    "pools": [
+     {
+      "dice": 2,
+      "id": "normal",
+      "label": "Dangerous action"
+     },
+     {
+      "dice": 3,
+      "id": "ability",
+      "label": "Defined ability / tool"
+     }
+    ],
+    "spend": {
+     "every": 3,
+     "field": "stamina",
+     "into": "strain",
+     "label": "Stamina",
+     "per": 1,
+     "tally": "staminaSpent"
+    },
+    "threshold": 6
+   },
+   "hp": "health",
+   "pages": [
+    {
+     "icon": "🧍",
+     "id": "hunter",
+     "label": "Hunter",
+     "sections": [
+      "Identity"
+     ]
+    },
+    {
+     "icon": "🗡",
+     "id": "oath",
+     "label": "Oath",
+     "sections": [
+      "Hunter's Oath"
+     ]
+    },
+    {
+     "conditions": true,
+     "icon": "❤",
+     "id": "status",
+     "label": "Status",
+     "sections": [
+      "Core Tracks",
+      "Wounds",
+      "Marks & Crows",
+      "Experience"
+     ]
+    },
+    {
+     "icon": "⚔",
+     "id": "abilities",
+     "label": "Abilities",
+     "sections": [
+      "Abilities",
+      "Moon-Gifts & Occult Rites",
+      "Body Modifications"
+     ]
+    },
+    {
+     "icon": "🎒",
+     "id": "loadout",
+     "label": "Loadout",
+     "sections": [
+      "Hunter Tools & Loadout",
+      "Mounts & Companions"
+     ]
+    },
+    {
+     "icon": "🌙",
+     "id": "log",
+     "label": "Hunt log",
+     "sections": [
+      "Moon Calendar",
+      "Session Record",
+      "Notes"
+     ]
+    }
+   ],
+   "rest": {
+    "long": [
+     [
+      "full",
+      "stamina"
+     ],
+     [
+      "set",
+      "strain",
+      "0"
+     ],
+     [
+      "set",
+      "staminaSpent",
+      0
+     ]
+    ]
+   },
+   "roster": [
+    [
+     "Identity",
+     [
+      "race"
+     ]
+    ],
+    [
+     "Core",
+     [
+      "armor",
+      "movement",
+      "alteration",
+      "overcharge",
+      "strain"
+     ]
+    ],
+    [
+     "Progress",
+     [
+      "xpCurrent",
+      "xpLifetime",
+      "crows",
+      "marks"
+     ]
+    ]
+   ],
+   "xp": [
+    "xpCurrent",
+    "xpLifetime"
+   ]
+  },
+  "nd-default": {
+   "binds": {},
+   "conditions": [
+    "Burn",
+    "Freeze",
+    "Toxin",
+    "Bleeding",
+    "Blind",
+    "Yellow",
+    "Charm",
+    "Daze",
+    "Stunned"
+   ],
+   "hp": null,
+   "rest": {
+    "long": [
+     [
+      "empty",
+      "stims"
+     ]
+    ]
+   },
+   "xp": []
+  }
+ },
  "calendar_preset_labels": [
   [
    "hunt_in_the_moonlight",

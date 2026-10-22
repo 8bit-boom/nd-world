@@ -7604,6 +7604,18 @@ fn sheet_num_text(t: &str) -> Result<Option<i64>, ()> {
     }
 }
 
+pub fn sheet_num_pub(v: Option<&Value>) -> Result<Option<i64>, ()> {
+    sheet_num(v)
+}
+
+pub fn sheet_num_text_pub(t: &str) -> Result<Option<i64>, ()> {
+    sheet_num_text(t)
+}
+
+pub fn sheet_short_label_pub(label: &str) -> Option<String> {
+    sheet_short_label(label)
+}
+
 /// `short_label`
 fn sheet_short_label(label: &str) -> Option<String> {
     if label.contains('\n') || label.chars().any(|ch| ('\x1c'..='\x1f').contains(&ch)) {
@@ -10092,16 +10104,27 @@ fn hub_pin_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     json_response(&json!({"pins": pins}))
 }
 
-/// `hub_rest` for an N&D character without a sheet template (`apply_pc_rest`'s native branch): +half PP and MP, all Shock, the
-/// once-per-Rest feats back. A character on a template (its system's own Rest rules) stays Python's.
+/// `hub_rest` (`apply_pc_rest`): a Rest on the character's own system's rules - N&D: +half PP and MP, all Shock; a custom system its
+/// Rest rules on its custom fields - with the once-per-Rest feats back, and the snapshot for Undo
 fn hub_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let pc = hub_owned_pc(c, ids[0])?;
     let body = hub_body(c)?;
-    if body.get("kind").map_or(false, |k| k != "long") || pc.get("sheet_template_id").map_or(false, |v| !v.is_null()) {
+    let kind = match body.get("kind") {
+        None => "long".to_string(),
+        Some(Value::String(k)) if k == "short" || k == "long" => k.clone(),
+        _ => return None,
+    };
+    let (_, shock, pp, mp, native) = pc_maxima(&c.db, &pc)?;
+    let tpl = crate::sheets::pc_template(&c.db, &pc)?;
+    // _rest_kinds: N&D has one Rest ("long"); a custom system the kinds it defines
+    let kinds: Vec<&str> = if native { vec!["long"] } else {
+        ["short", "long"].into_iter().filter(|k| tpl.as_ref().is_some_and(|t| t.spec.get("rest").and_then(|r| r.as_object()).is_some_and(|_| !t.rest_ops(k).is_empty()))).collect()
+    };
+    if !kinds.contains(&kind.as_str()) {
         return None;
     }
-    let (_, shock, pp, mp, native) = pc_maxima(&c.db, &pc)?;
-    if !native {
+    let ops = tpl.as_ref().map(|t| t.rest_ops(&kind)).unwrap_or_default();
+    if !native && ops.is_empty() {
         return None;
     }
     // _refresh_feats_after_rest
@@ -10112,23 +10135,44 @@ fn hub_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             set_pc_pref(c, &pc, "feat_used", (!keep.is_empty()).then(|| Value::Object(keep)))?;
         }
     }
-    let (cur_pp, cur_mp, cur_shock) = (col_int(&pc, "pp_current"), col_int(&pc, "mp_current"), col_int(&pc, "shock_current"));
-    let (new_pp, new_mp) = (pp.min(cur_pp + pp.div_euclid(2)), mp.min(cur_mp + mp.div_euclid(2)));
-    orm::update(&c.db, "player_characters", ids[0], &[("pp_current", Sql::Integer(new_pp)), ("mp_current", Sql::Integer(new_mp)), ("shock_current", Sql::Integer(shock))])?;
-    char_log(c, &pc, "rest", "Took a rest", &json!({}))?;
-    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
     let (id, name) = (pc.get("id").cloned(), pc.get("name").cloned());
-    json_response(&json!({"kind": "long",
-        "result": {"id": id, "name": name, "pp_current": new_pp, "pp_max": pp, "mp_current": new_mp, "mp_max": mp, "shock_current": shock},
-        "snapshot": {"id": id, "name": name, "pp_current": cur_pp, "mp_current": cur_mp, "shock_current": cur_shock}}))
+    let mut entry = Map::new();
+    entry.insert("id".into(), json!(id));
+    entry.insert("name".into(), json!(name));
+    let mut result = entry.clone();
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if native {
+        let (cur_pp, cur_mp, cur_shock) = (col_int(&pc, "pp_current"), col_int(&pc, "mp_current"), col_int(&pc, "shock_current"));
+        let (new_pp, new_mp) = (pp.min(cur_pp + pp.div_euclid(2)), mp.min(cur_mp + mp.div_euclid(2)));
+        entry.insert("pp_current".into(), json!(cur_pp));
+        entry.insert("mp_current".into(), json!(cur_mp));
+        entry.insert("shock_current".into(), json!(cur_shock));
+        set.extend([("pp_current", Sql::Integer(new_pp)), ("mp_current", Sql::Integer(new_mp)), ("shock_current", Sql::Integer(shock))]);
+        for (k, v) in [("pp_current", new_pp), ("pp_max", pp), ("mp_current", new_mp), ("mp_max", mp), ("shock_current", shock)] {
+            result.insert(k.into(), json!(v));
+        }
+    }
+    if !ops.is_empty() {
+        let t = tpl.as_ref()?;
+        let raw = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}").to_string();
+        entry.insert("custom_fields_json".into(), json!(raw));
+        let cf = t.apply_rest(&crate::sheets::custom_fields(&pc)?, &kind)?;
+        set.push(("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf.clone())))));
+        result.insert("tracks".into(), Value::Array(t.tracks(&cf, true)?));
+    }
+    orm::update(&c.db, "player_characters", ids[0], &set)?;
+    char_log(c, &pc, "rest", if kind == "short" { "Took a short rest" } else { "Took a rest" }, &json!({}))?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"kind": kind, "result": result, "snapshot": entry}))
 }
 
-/// `hub_rest_undo` (`restore_pc_snapshot`) for a character without a sheet template: PP, MP and Shock put back
+/// `hub_rest_undo` (`restore_pc_snapshot`): PP, MP and Shock put back, and - on a custom system - only the custom fields its Rest can
+/// change
 fn hub_rest_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let pc = hub_owned_pc(c, ids[0])?;
     let body = hub_body(c)?;
     let snap = body.get("snapshot")?.as_object()?;
-    if pc.get("sheet_template_id").map_or(false, |v| !v.is_null()) || snap.get("id")?.as_i64()? != ids[0] || matches!(snap.get("id"), Some(Value::Bool(_))) {
+    if snap.get("id")?.as_i64()? != ids[0] || matches!(snap.get("id"), Some(Value::Bool(_))) || !snap.get("id")?.is_i64() {
         return None;
     }
     let mut set = vec![];
@@ -10150,6 +10194,32 @@ fn hub_rest_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             Some(_) => return None,
         };
         set.push((col, Sql::Integer(v.max(0))));
+    }
+    let tpl = crate::sheets::pc_template(&c.db, &pc)?;
+    if let (Some(Value::String(raw)), Some(t)) = (snap.get("custom_fields_json"), &tpl) {
+        if raw.chars().count() <= 200_000 {
+            if let Ok(Value::Object(before)) = serde_json::from_str::<Value>(raw) {
+                let mut cf = crate::sheets::custom_fields(&pc)?;
+                for key in t.rest_touched_keys() {
+                    match before.get(&key) {
+                        None => {
+                            cf.shift_remove(&key);
+                        }
+                        Some(v @ Value::Number(_)) => {
+                            cf.insert(key, v.clone());
+                        }
+                        Some(v @ Value::String(t)) if t.chars().count() <= 100 => {
+                            cf.insert(key, v.clone());
+                        }
+                        Some(Value::Bool(_)) => return None, // isinstance(bool, int): Python's
+                        Some(_) => {}
+                    }
+                }
+                set.push(("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf)))));
+            } else if raw.contains("NaN") || raw.contains("Infinity") {
+                return None;
+            }
+        }
     }
     orm::update(&c.db, "player_characters", ids[0], &set)?;
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
@@ -10835,18 +10905,22 @@ fn member_ids(raw: Option<&Value>) -> Option<Vec<i64>> {
     })
 }
 
-/// `_member_vitals` for N&D characters (one on a sheet template - its system's tracks - stays Python's), sorted by name
-fn member_vitals(db: &Connection, pcs: &[Map<String, Value>]) -> Option<Vec<Value>> {
+/// `_member_vitals(db, pcs, resource_limit)`, sorted by name: an N&D sheet reads its columns, a custom system its vital track (no AC,
+/// no level) and lists its resource tracks
+fn member_vitals(db: &Connection, pcs: &[Map<String, Value>], limit: Option<usize>) -> Option<Vec<Value>> {
     let mut sorted: Vec<&Map<String, Value>> = pcs.iter().collect();
     sorted.sort_by(|a, b| a.get("name").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")));
     let mut out = vec![];
     for pc in sorted {
-        if pc.get("sheet_template_id").is_some_and(|v| !v.is_null()) {
-            return None;
-        }
-        let (hp_max, shock, _, _, native) = pc_maxima(db, pc)?;
-        if !native {
-            return None;
+        let (hp_max_n, shock, _, _, native) = pc_maxima(db, pc)?;
+        let tpl = crate::sheets::pc_template(db, pc)?;
+        let cf = crate::sheets::custom_fields(pc)?;
+        let mut tracks = match &tpl {
+            Some(t) => t.tracks(&cf, true)?,
+            None => vec![],
+        };
+        if let Some(l) = limit {
+            tracks.truncate(l);
         }
         let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
             Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_string()).take(4).collect(),
@@ -10854,17 +10928,34 @@ fn member_vitals(db: &Connection, pcs: &[Map<String, Value>]) -> Option<Vec<Valu
             _ => vec![],
         };
         let level = pc.get("level")?.as_i64()?;
-        let levelup = if level >= 20 {
+        let levelup = if level >= 20 || !native {
             false
         } else if level < 1 {
             return None; // a negative list index: Python's
         } else {
             col_int(pc, "xp") >= XP_THRESHOLDS[level.min(19) as usize]
         };
-        let hp = pc.get("current_hp").cloned().unwrap_or(Value::Null);
-        out.push(json!({"id": pc.get("id"), "name": pc.get("name"), "native": true, "hp": hp, "max_hp": hp_max, "hp_label": "HP", "hp_id": null,
-            "temp_hp": pc.get("temp_hp"), "shock": col_int(pc, "shock_current"), "shock_max": shock, "ac": pc.get("armor_class"), "level": level,
-            "system": "", "down": hp_max > 0 && hp.as_i64().unwrap_or(0) <= 0, "levelup": levelup, "conditions": conds, "resources": []}));
+        let (hp, hp_max, hp_id, hp_label) = if native {
+            (pc.get("current_hp").cloned().unwrap_or(Value::Null), hp_max_n, Value::Null, json!("HP"))
+        } else {
+            let vital = match &tpl {
+                Some(t) => t.hp_track(&cf)?,
+                None => None,
+            };
+            match vital {
+                Some(v) => (v["current"].clone(), v["max"].as_i64()?, v["id"].clone(), v["label"].clone()),
+                None => (Value::Null, 0, Value::Null, json!("HP")),
+            }
+        };
+        let system = match (&tpl, native) {
+            (Some(t), false) => t.row.get("name").cloned().unwrap_or(Value::Null),
+            _ => json!(""),
+        };
+        out.push(json!({"id": pc.get("id"), "name": pc.get("name"), "native": native, "hp": hp, "max_hp": hp_max, "hp_label": hp_label, "hp_id": hp_id,
+            "temp_hp": if native { pc.get("temp_hp").cloned().unwrap_or(Value::Null) } else { json!(0) },
+            "shock": if native { json!(col_int(pc, "shock_current")) } else { Value::Null }, "shock_max": if native { json!(shock) } else { Value::Null },
+            "ac": if native { pc.get("armor_class").cloned().unwrap_or(Value::Null) } else { Value::Null }, "level": if native { json!(level) } else { Value::Null },
+            "system": system, "down": hp_max > 0 && hp.as_i64().unwrap_or(0) <= 0, "levelup": levelup, "conditions": conds, "resources": tracks}));
     }
     Some(out)
 }
@@ -10905,10 +10996,10 @@ pub fn player_cockpit_data(db: &Connection, world_id: i64, user_id: i64, is_gm: 
                 let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
                 rows(&format!("SELECT * FROM player_characters WHERE id IN ({})", marks.join(",")), &[])?
             };
-            parties.push(json!({"id": p.get("id"), "name": p.get("name"), "members": member_vitals(db, &members)?}));
+            parties.push(json!({"id": p.get("id"), "name": p.get("name"), "members": member_vitals(db, &members, Some(4))?}));
         }
     }
-    let vitals = member_vitals(db, &mine)?;
+    let vitals = member_vitals(db, &mine, None)?;
     let my_pcs: Vec<Value> = vitals.iter().map(|v| json!({"id": v["id"], "name": v["name"]})).collect();
     let focus = (as_pc != 0 && my_pcs.iter().any(|m| m["id"].as_i64() == Some(as_pc))).then_some(as_pc);
     let view_as = match focus {
@@ -11414,7 +11505,7 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
                     "claimers": cl.iter().filter_map(|c| name_of(*c)).collect::<Vec<_>>()}));
             }
             let others: Vec<Map<String, Value>> = members.iter().filter(|m| m.get("id").and_then(|v| v.as_i64()) != Some(pid)).cloned().collect();
-            for v in member_vitals(db, &others)? {
+            for v in member_vitals(db, &others, Some(4))? {
                 let by = others.iter().find(|m| m.get("id") == v.get("id"))?;
                 let line: Vec<String> = ["race", "char_class"].iter().filter_map(|k| by.get(*k).and_then(|x| x.as_str()).filter(|t| !t.is_empty()).map(str::to_string)).collect();
                 hub_roster.push(json!({"id": v["id"], "name": v["name"], "native": v["native"], "level": v["level"], "line": line.join(" · "),

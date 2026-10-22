@@ -80,7 +80,7 @@ def advance_feats() -> list:
 
 
 def make() -> dict:
-    from app import calendar_config, combat_rules, constants, game_catalog, nav_menus, view_prefs
+    from app import calendar_config, combat_rules, constants, game_catalog, nav_menus, sheet_systems, view_prefs
     from app.routers import quests
     return {
         "view_sections": view_prefs.SECTIONS, "view_sizes": list(view_prefs.SIZES), "view_default_size": view_prefs.DEFAULT_SIZE,
@@ -113,6 +113,8 @@ def make() -> dict:
                                 "skip": v.get("skip_down", combat_rules.SKIP_ENEMIES)} for k, v in combat_rules.RULESETS.items()},
         "combat_template_rulesets": combat_rules._BY_TEMPLATE_SLUG,
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
+        # the built-in sheet systems (Hunt in the Moonlight, Asterion, N&D): their vital / XP fields, conditions, Rest rules, dice
+        "builtin_systems": json.loads(json.dumps(sheet_systems.BUILTIN_SYSTEMS)),
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)
         "catalog_equipment": game_catalog.catalog_payload()["equipment"], "catalog_feats": game_catalog.catalog_payload()["feats"],
         # the tracker pages' rules_json, exactly as json.dumps spells it (the GM's whole table; a player's three keys of it)

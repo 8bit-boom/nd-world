@@ -4541,3 +4541,37 @@ def test_hub_keepsake_upload_is_pythons(client, seed):
         assert out[0][:2] == out[1][:2], (fname, out)
         served += out[1][2] == "gateway"
     assert served >= 2, served
+
+
+def test_hub_rest_on_a_custom_system_is_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    fields = [{"id": "health", "label": "Health (0 = Broken)", "type": "resource", "default_value": "6/6", "vital": "hp"},
+              {"id": "stamina", "label": "Stamina", "type": "resource", "default_value": "3/5"},
+              {"id": "strain", "label": "Strain", "type": "number"}, {"id": "notes", "label": "Notes", "type": "text"}]
+    systems = [{"rest": {"long": [["full", "stamina"], ["set", "strain", "0"], ["add", "health", 2], ["empty", "nope"]]}},
+               {"rest": {"short": [["add", "stamina", 1]], "long": [["full", "stamina"], ["full", "health"]]}}, {}]
+    served = undone = 0
+    for system in systems:
+        tid = _add("SheetTemplate", name="My System", slug=f"sys-{len(json.dumps(system))}", sheet_mode="custom", fields_json=json.dumps(fields),
+                   system_json=json.dumps(system))
+        for body in ({}, {"kind": "short"}, {"kind": "long"}):
+            out = []
+            for side in (pl, _via(pl, base)):
+                pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Hunter", sheet_template_id=tid,
+                          custom_fields_json=json.dumps({"stamina_current": 1, "health_current": 3, "strain": "4", "notes": "x"}))
+                r = side.post(f"/api/characters/{pid}/hub/rest", json=body)
+                j = r.json()
+                if r.status_code == 200:
+                    j["result"].pop("id"); j["snapshot"].pop("id")
+                row = _row_by("player_characters", "id", pid)
+                out.append((r.status_code, j, json.loads(row["custom_fields_json"] or "{}"), r.headers.get("x-nd-served-by")))
+                if r.status_code == 200:
+                    snap = r.json()["snapshot"]
+                    u = side.post(f"/api/characters/{pid}/hub/rest/undo", json={"snapshot": snap})
+                    out[-1] += (u.status_code, json.loads(_row_by("player_characters", "id", pid)["custom_fields_json"] or "{}"), u.headers.get("x-nd-served-by"))
+            assert out[0][:3] == out[1][:3] and out[0][4:6] == out[1][4:6], (system, body, out)
+            served += out[1][3] == "gateway"
+            undone += len(out[1]) > 4 and out[1][6] == "gateway"
+    assert served >= 4 and undone >= 4, (served, undone)
