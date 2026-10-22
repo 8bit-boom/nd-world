@@ -12,12 +12,14 @@ OUT = ROOT / "rust" / "nd-render" / "data" / "app_data.json"
 
 
 def make() -> dict:
-    from app import constants, nav_menus, view_prefs
+    from app import combat_rules, constants, nav_menus, view_prefs
     return {
         "view_sections": view_prefs.SECTIONS, "view_sizes": list(view_prefs.SIZES), "view_default_size": view_prefs.DEFAULT_SIZE,
         "nav_static_catalog": nav_menus.STATIC_CATALOG, "nav_default_menus": nav_menus.DEFAULT_NAV_MENUS,
         "kinds": constants.KINDS, "kind_icons": constants.KIND_ICONS, "subtypes": constants.SUBTYPES,
         "view_specs": {s: view_prefs.spec(s) for s in view_prefs.SECTIONS},
+        # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
+        "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }
 
 

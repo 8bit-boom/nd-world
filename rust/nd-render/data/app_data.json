@@ -1,4 +1,34 @@
 {
+ "combat_rule_labels": [
+  [
+   "generic",
+   "Generic"
+  ],
+  [
+   "nd",
+   "Neon & Dragons"
+  ],
+  [
+   "worm",
+   "Chronicles of the Worm"
+  ],
+  [
+   "hunt",
+   "Hunt in the Moonlight"
+  ],
+  [
+   "asterion",
+   "Game of Gods (Asterion)"
+  ],
+  [
+   "nd_asterion",
+   "Neon & Dragons (Asterion engine)"
+  ],
+  [
+   "worm_asterion",
+   "Chronicles of the Worm (Asterion engine)"
+  ]
+ ],
  "kind_icons": {
   "character": "👤",
   "creature": "☠",

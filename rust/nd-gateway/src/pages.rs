@@ -996,3 +996,57 @@ pub fn tables_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     p.ctx.insert("can_create".into(), json!(can_create));
     render_with(pages, "tables/list.html", p.ctx, headers)
 }
+
+/// `GET /combat` (app/routers/combat.py `combat_list`): running fights first, then finished ones, newest first; GM also sees encounter templates
+pub fn combat_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let page = page_param(uri)?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !section_ok(&p, p.world.as_ref(), "combat")? {
+        return None;
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
+    // combat_turns.load: the combatants list, keeping only objects
+    let count = |r: &Map<String, Value>| -> usize {
+        match r.get("combatants_json").and_then(|v| v.as_str()).map(serde_json::from_str::<Value>) {
+            Some(Ok(Value::Array(a))) => a.iter().filter(|c| c.is_object()).count(),
+            _ => 0,
+        }
+    };
+    let total: i64 = db.query_row("SELECT count(*) FROM combat_sessions WHERE world_id = ?1 AND is_template IS NOT 1", [wid], |r| r.get(0)).ok()?;
+    let total_pages = std::cmp::max(1, (total + 49) / 50);
+    let page = page.max(1).min(total_pages);
+    let mut st = db
+        .prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS NOT 1 ORDER BY finished_at IS NOT NULL, updated_at DESC LIMIT 50 OFFSET ?2")
+        .ok()?;
+    let sessions = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut counts = Map::new();
+    for s in &sessions {
+        counts.insert(s.get("id")?.as_i64()?.to_string(), json!(count(s)));
+    }
+    let mut tpl = vec![];
+    let mut tcounts = Map::new();
+    if p.is_gm {
+        let mut st = db.prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS 1 ORDER BY name").ok()?;
+        tpl = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        for t in &tpl {
+            tcounts.insert(t.get("id")?.as_i64()?.to_string(), json!(count(t)));
+        }
+    }
+    let mut labels = Map::new();
+    for pair in nd_render::app::data().get("combat_rule_labels")?.as_array()? {
+        labels.insert(pair.get(0)?.as_str()?.to_string(), pair.get(1)?.clone());
+    }
+    let is_gm = p.is_gm;
+    p.ctx.insert("sessions".into(), Value::Array(sessions.into_iter().map(Value::Object).collect()));
+    p.ctx.insert("combatant_counts".into(), json!({"__intkeys__": Value::Object(counts)}));
+    p.ctx.insert("page".into(), json!(page));
+    p.ctx.insert("total_pages".into(), json!(total_pages));
+    p.ctx.insert("is_gm".into(), json!(is_gm));
+    p.ctx.insert("enc_templates".into(), Value::Array(tpl.into_iter().map(Value::Object).collect()));
+    p.ctx.insert("template_counts".into(), json!({"__intkeys__": Value::Object(tcounts)}));
+    p.ctx.insert("rule_labels".into(), Value::Object(labels));
+    render_with(pages, "combat/list.html", p.ctx, headers)
+}

@@ -601,3 +601,41 @@ def test_random_table_list_the_gateway_builds_is_pythons(client, seed):
             raise AssertionError(f"{email}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
         served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 2, served
+
+
+def test_combat_list_the_gateway_builds_is_pythons(client, seed):
+    from datetime import datetime
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CombatSession, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        db.add_all([CombatSession(world_id=w, name="Bridge <ambush>", ruleset="nd", round_num=3,
+                                  combatants_json=json.dumps([{"id": "a"}, {"id": "b"}, 7])),
+                    CombatSession(world_id=w, name="Old fight", ruleset="mystery", finished_at=datetime(2026, 3, 4, 5, 6),
+                                  combatants_json="[{\"id\": \"x\"}]"),
+                    CombatSession(world_id=w, name="Broken", combatants_json="not json"),
+                    CombatSession(world_id=w, name="Goblin pack", ruleset="nd", is_template=True, combatants_json="[{}]")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"combat": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in ("/combat", "/combat?page=2", "/combat?page=x"):
+            a, b = d.get(url, follow_redirects=False), via.get(url, follow_redirects=False)
+            assert a.status_code == b.status_code, (email, url, a.status_code, b.status_code)
+            if a.status_code != 200:
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                raise AssertionError(f"{email} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 4, served
