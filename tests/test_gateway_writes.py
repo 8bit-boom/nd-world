@@ -3591,6 +3591,21 @@ def _shared(key):
         db.close()
 
 
+def _shared_settled(keys):
+    """The counters once Python's writer has flushed: app/shared_state.py buffers a bump and writes it from a background thread, so a
+    read from this process right after the answer can come before it (the gateway writes in its transaction). Read until two reads
+    0.2 s apart agree."""
+    import time
+    prev = None
+    for _ in range(25):
+        cur = [_shared(k) for k in keys]
+        if cur == prev:
+            return cur
+        prev = cur
+        time.sleep(0.2)
+    return prev
+
+
 def test_combat_writes_wake_the_same_live_listeners(client, seed):
     """What the other browsers hear: a tracker save, a finish and a reopen move the world's live counter and its "combat" signal exactly
     as much through the gateway as directly (the TV and the other open trackers fetch again on them)."""
@@ -3603,11 +3618,11 @@ def test_combat_writes_wake_the_same_live_listeners(client, seed):
         moved = []
         for side in (d, via):
             cid = _add("CombatSession", world_id=w, name="Live")
-            before = [_shared(k) for k in keys]
+            before = _shared_settled(keys)
             url = f"/combat/{cid}/state" if path == "state" else f"/api/combat/{cid}/{path}"
             r = side.post(url, json=body) if body is not None else side.post(url)
             assert r.status_code == 200
-            moved.append([_shared(k) - b for k, b in zip(keys, before)])
+            moved.append([a - b for a, b in zip(_shared_settled(keys), before)])
         assert moved[0] == moved[1], (path, moved)
 
 
