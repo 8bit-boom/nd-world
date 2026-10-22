@@ -1,12 +1,19 @@
 """Fan control (app/fan_control.py, /api/system/fans): hwmon PWM read / write against a fake sysfs tree, stable ids, the follow-the-GPU
 curve and its safety rules, the "is this output inverted?" check, the hand-back / shutdown rules, and the GM-only routes."""
 import os
+import types
+import time as _time
 
 import pytest
 
 from app import fan_control as fc
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+
+def _fake_sleep(monkeypatch, fn):
+    """Swap fan_control's own `time` for one whose sleep is `fn` - patching time.sleep itself would hit every thread of the test server too."""
+    monkeypatch.setattr(fc, "time", types.SimpleNamespace(**{k: getattr(_time, k) for k in dir(_time) if not k.startswith("_")} | {"sleep": fn}))
 
 FAN = "it8688@it87.2656/pwm4"
 
@@ -133,10 +140,10 @@ def test_set_percent_warns_when_the_chip_does_not_keep_the_value(hwmon, monkeypa
 def test_a_hold_is_read_back_after_a_pause_to_catch_firmware_putting_its_value_back(hwmon, monkeypatch):
     def firmware(_s):                                                    # the chip accepted the write, then firmware reset it
         (hwmon / "hwmon3/pwm4").write_text("128\n")
-    monkeypatch.setattr(fc.time, "sleep", firmware)
+    _fake_sleep(monkeypatch, firmware)
     r = fc.set_percent(FAN, 90, settle=1.0)
     assert r["ok"] and r["warning"] and "1 s later" in r["message"] and "will not hold" in r["message"]
-    monkeypatch.setattr(fc.time, "sleep", lambda s: None)
+    _fake_sleep(monkeypatch, lambda s: None)
     assert "warning" not in fc.set_percent(FAN, 90, settle=1.0)           # it stuck this time
 
 
@@ -404,7 +411,7 @@ def test_an_output_the_firmware_overwrites_may_not_follow_the_gpu(client, seed, 
 
 def test_a_hold_through_the_route_reports_a_value_that_does_not_stick(client, seed, hwmon, monkeypatch):
     monkeypatch.setattr(fc, "HOLD_SETTLE", 0.5)
-    monkeypatch.setattr(fc.time, "sleep", lambda _s: (hwmon / "hwmon3/pwm4").write_text("128\n"))
+    _fake_sleep(monkeypatch, lambda _s: (hwmon / "hwmon3/pwm4").write_text("128\n"))
     _gm(client, seed)
     r = client.post("/api/system/fans", json={"fan": FAN, "percent": 90})
     assert r.status_code == 200 and r.json()["warning"] is True and "will not hold" in r.json()["message"]
