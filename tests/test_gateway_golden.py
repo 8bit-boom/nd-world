@@ -666,14 +666,19 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
         db.add_all([CalendarEvent(world_id=w, day=47, title="Duel", notes="at dawn", color="#f00", entity_id=e.id, session_id=gs.id),
                     CalendarEvent(world_id=w, day=31, title="Gone link", session_id=999999, created_by_user_id=seed.player_a.id),
                     CalendarEvent(world_id=w, day=47, title="Second"),
-                    CalendarDayIcon(world_id=w, day=48, image_url="/uploads/calendar_icons/x.png", label="star")])
+                    CalendarDayIcon(world_id=w, day=48, image_url="/uploads/calendar_icons/x.png", label="star"),
+                    CalendarDayIcon(world_id=w, day=48, image_url="/uploads/calendar_icons/y.png", label="moon"),
+                    CalendarDayIcon(world_id=w, day=80, image_url="/uploads/calendar_icons/z.png", label="far"),
+                    *[CalendarEvent(world_id=w, day=33, title=f"Busy {i}") for i in range(6)]])
         wa = db.query(World).filter(World.id == w).first()
         wa.section_access_json = json.dumps({"calendar": {"player": "edit"}})
         db.commit()
     finally:
         db.close()
     urls = ("/calendar", "/calendar?year=1&month=0", "/calendar?month=-1", "/calendar?month=7&year=3", "/calendar?year=x",
-            "/calendar?year=0&none=next", "/calendar?year=99999&month=2", "/calendar?year=500000", "/calendar?none=prev&month=1")
+            "/calendar?year=0&none=next", "/calendar?year=99999&month=2", "/calendar?year=500000", "/calendar?none=prev&month=1",
+            "/calendar/agenda", "/calendar/year", "/calendar/year?year=2", "/calendar/year?year=0", "/calendar/year?year=x", "/calendar/year?year=99999",
+            "/calendar/year?year=%201")
     served = 0
     for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
                              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
@@ -689,7 +694,7 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
                 import difflib
                 raise AssertionError(f"{email} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:60]))
             served += b.headers.get("x-nd-served-by") == "gateway"
-    assert served >= 2 * len(urls), served
+    assert served >= 2 * (len(urls) - 1), served  # "?year=%201": a number with a space is Python's
 
 
 SIMPLE_FORM_URLS = ("/professions/new", "/races/new", "/boards/new", "/characters/templates/new", "/maps/schematic/new",

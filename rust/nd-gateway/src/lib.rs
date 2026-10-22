@@ -77,7 +77,7 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/sessions" => pages::sessions_list,
@@ -86,6 +86,8 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             "/tables" => pages::tables_list,
             "/combat" => pages::combat_list,
             "/calendar" => crate::calendar::calendar_view,
+            "/calendar/agenda" => crate::calendar::calendar_agenda,
+            "/calendar/year" => crate::calendar::calendar_year,
             _ => pages::facts_list,
         };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {

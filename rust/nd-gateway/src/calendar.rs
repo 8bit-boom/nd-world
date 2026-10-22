@@ -117,14 +117,9 @@ fn plural(n: i64, unit: &str) -> String {
     if n == 1 { format!("{n} {unit}") } else { format!("{n} {unit}s") }
 }
 
-fn relative_months_label(delta: i64, per_year: i64) -> String {
-    if delta == 0 {
-        return "this month".into();
-    }
-    if delta.abs() == 1 && per_year > 1 {
-        return if delta > 0 { "next month" } else { "last month" }.into();
-    }
-    let (years, months) = (delta.abs() / per_year.max(1), delta.abs() % per_year.max(1));
+/// `_span_label`: "2 years, 3 months" ("" for none)
+fn span_label(total_months: i64, per_year: i64) -> String {
+    let (years, months) = (total_months.div_euclid(per_year.max(1)), total_months.rem_euclid(per_year.max(1)));
     let mut parts = vec![];
     if years != 0 {
         parts.push(plural(years, "year"));
@@ -132,7 +127,17 @@ fn relative_months_label(delta: i64, per_year: i64) -> String {
     if months != 0 {
         parts.push(plural(months, "month"));
     }
-    let span = parts.join(", ");
+    parts.join(", ")
+}
+
+fn relative_months_label(delta: i64, per_year: i64) -> String {
+    if delta == 0 {
+        return "this month".into();
+    }
+    if delta.abs() == 1 && per_year > 1 {
+        return if delta > 0 { "next month" } else { "last month" }.into();
+    }
+    let span = span_label(delta.abs(), per_year);
     if delta > 0 { format!("in {span}") } else { format!("{span} ago") }
 }
 
@@ -241,20 +246,16 @@ fn holidays(cfg: &Map<String, Value>, months: &[Month]) -> Option<Vec<(usize, i6
     Some(out)
 }
 
-pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
-    let db = crate::writes::open(cfg)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
-    let world = p.world.clone()?;
-    if !section_ok(&p, Some(&world), "calendar")? {
-        return None;
-    }
-    let wid = world.get("id")?.as_i64()?;
-    // a confirmed session plan is shown at the top of the month: that line is still Python's
-    let plans: i64 = db.query_row("SELECT count(*) FROM session_plans WHERE world_id = ?1 AND status = 'confirmed'", [wid], |r| r.get(0)).ok()?;
-    if plans > 0 {
-        return None;
-    }
+/// A world's calendar as the month / year / agenda pages read it - only in the stored shape the app writes (None: Python's)
+struct Cal {
+    config: Value,
+    months_v: Vec<Value>,
+    months: Vec<Month>,
+    current_day: i64,
+}
+
+fn load(db: &rusqlite::Connection, wid: i64) -> Option<Cal> {
+    // no calendar row yet: Python creates one on this visit
     let raw: Option<String> = db.query_row("SELECT config_json FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)).ok()?;
     let raw = raw.filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
     let parsed: Value = serde_json::from_str(&raw).ok()?;
@@ -275,8 +276,58 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         opt_str(o, "color")?;
         months.push(Month { name: o.get("name")?.as_str()?.to_string(), days: o.get("days")?.as_i64()? });
     }
+    if months.iter().any(|m| m.days < 0) {
+        return None;
+    }
+    match c.get("era_name") {
+        None | Some(Value::String(_)) => {}
+        _ => return None,
+    }
     let max_day = MAX_YEAR * year_len(&months);
     let current_day = opt_int(c, "current_day", 1)?.clamp(1, max_day);
+    Some(Cal { config, months_v, months, current_day })
+}
+
+/// `days_per_week` as `clean_days_per_week` reads it (None: a value Python's int() might read differently)
+fn days_per_week(c: &Map<String, Value>) -> Option<i64> {
+    Some(match c.get("days_per_week") {
+        None | Some(Value::Null) => 7,
+        Some(Value::Number(n)) => match n.as_i64()?.clamp(1, 60) {
+            0 => 7,
+            x => x,
+        },
+        _ => return None,
+    })
+}
+
+/// The viewer's page context and world id for a read-only calendar page (section gate as `_calendar_ctx`)
+fn page_ctx(db: &rusqlite::Connection, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(crate::layout::PageCtx, i64)> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !section_ok(&p, Some(&world), "calendar")? {
+        return None;
+    }
+    let wid = world.get("id")?.as_i64()?;
+    Some((p, wid))
+}
+
+pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !section_ok(&p, Some(&world), "calendar")? {
+        return None;
+    }
+    let wid = world.get("id")?.as_i64()?;
+    // a confirmed session plan is shown at the top of the month: that line is still Python's
+    let plans: i64 = db.query_row("SELECT count(*) FROM session_plans WHERE world_id = ?1 AND status = 'confirmed'", [wid], |r| r.get(0)).ok()?;
+    if plans > 0 {
+        return None;
+    }
+    let Cal { config, months_v, months, current_day } = load(&db, wid)?;
+    let c = config.as_object()?;
     let (cur_year, cur_idx, cur_dom) = resolve_date(&months, current_day);
     let year_q = safe_int_param(query_param(uri, "year"), cur_year)?;
     let month_q = safe_int_param(query_param(uri, "month"), cur_idx as i64)?;
@@ -343,15 +394,7 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         d.insert("moons".into(), Value::Array(ms));
         days.push(Value::Object(d));
     }
-    let dpw = match c.get("days_per_week") {
-        None => 7,
-        Some(Value::Null) => 7,
-        Some(Value::Number(n)) => match n.as_i64()?.clamp(1, 60) {
-            0 => 7,
-            x => x,
-        },
-        _ => return None,
-    };
+    let dpw = days_per_week(c)?;
     let lead_pad = (start - 1).rem_euclid(dpw);
     let n = months.len() as i64;
     let first = (year, idx) == (1, 0);
@@ -447,4 +490,127 @@ fn py_text(v: &Value) -> Option<String> {
         Value::Number(n) if n.is_i64() => n.to_string(),
         _ => return None,
     })
+}
+
+fn era_name(c: &Map<String, Value>) -> Value {
+    c.get("era_name").cloned().unwrap_or_else(|| json!("Year"))
+}
+
+/// `GET /calendar/agenda` (app/routers/calendar.py `calendar_agenda`): every day with an event or icon, in order (at most 1,000 of each)
+pub fn calendar_agenda(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let (mut p, wid) = page_ctx(&db, cfg, uri, headers)?;
+    let Cal { config, months, .. } = load(&db, wid)?;
+    let c = config.as_object()?;
+    let mut st = db
+        .prepare(
+            "SELECT e.id, e.title, e.notes, e.color, en.name AS entity_label, gs.id AS gs_id, gs.session_num, gs.title AS gs_title, \
+             pc.name AS character_label, pa.name AS party_label, e.day FROM calendar_events e LEFT JOIN entities en ON en.id = e.entity_id \
+             LEFT JOIN game_sessions gs ON gs.id = e.session_id LEFT JOIN player_characters pc ON pc.id = e.character_id \
+             LEFT JOIN parties pa ON pa.id = e.party_id WHERE e.world_id = ?1 ORDER BY e.day, e.id LIMIT 1000",
+        )
+        .ok()?;
+    let events = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut st = db.prepare("SELECT image_url, label, day FROM calendar_day_icons WHERE world_id = ?1 ORDER BY day, id LIMIT 1000").ok()?;
+    let icons = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut by_day: std::collections::BTreeMap<i64, (Vec<Value>, Vec<Value>)> = Default::default();
+    for f in &events {
+        let session_label = if f.get("gs_id")?.is_null() {
+            Value::Null
+        } else {
+            json!(format!("#{} {}", py_text(f.get("session_num")?)?, py_text(f.get("gs_title")?)?))
+        };
+        let mut e = Map::new();
+        for k in ["id", "title", "notes", "color", "entity_label"] {
+            e.insert(k.into(), f.get(k)?.clone());
+        }
+        e.insert("session_label".into(), session_label);
+        for k in ["character_label", "party_label"] {
+            e.insert(k.into(), f.get(k)?.clone());
+        }
+        by_day.entry(f.get("day")?.as_i64()?).or_default().0.push(Value::Object(e));
+    }
+    for ic in &icons {
+        by_day.entry(ic.get("day")?.as_i64()?).or_default().1.push(json!({"image_url": ic.get("image_url")?, "label": ic.get("label")?}));
+    }
+    let mut rows = vec![];
+    for (day, (evs, ics)) in by_day {
+        let (year, idx, dom) = resolve_date(&months, day);
+        rows.push(json!({"day_num": day, "year": year, "month_idx": idx, "month_name": months[idx].name, "dom": dom,
+                         "year_text": format_year(c, year)?, "events": evs, "icons": ics}));
+    }
+    p.ctx.insert("era_name".into(), era_name(c));
+    p.ctx.insert("rows".into(), Value::Array(rows));
+    p.ctx.insert("truncated".into(), json!(events.len() >= 1000 || icons.len() >= 1000));
+    render_with(pages, "calendar/agenda.html", p.ctx, headers)
+}
+
+/// `GET /calendar/year` (app/routers/calendar.py `calendar_year`): every month of one year as a small grid
+pub fn calendar_year(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let (mut p, wid) = page_ctx(&db, cfg, uri, headers)?;
+    let Cal { config, months_v, months, current_day } = load(&db, wid)?;
+    let c = config.as_object()?;
+    let (cur_year, cur_idx, _) = resolve_date(&months, current_day);
+    let year = safe_int_param(query_param(uri, "year"), cur_year)?.clamp(1, MAX_YEAR);
+    let year_start = month_start(&months, year, 0);
+    let year_end = year_start + year_len(&months) - 1;
+    let mut titles: std::collections::HashMap<i64, Vec<String>> = Default::default();
+    let mut st = db
+        .prepare("SELECT day, title FROM calendar_events WHERE world_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day, id LIMIT 5000")
+        .ok()?;
+    for r in st.query_map(rusqlite::params![wid, year_start, year_end], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).ok()? {
+        let (d, t) = r.ok()?;
+        titles.entry(d).or_default().push(t);
+    }
+    let mut st = db.prepare("SELECT DISTINCT day FROM calendar_day_icons WHERE world_id = ?1 AND day >= ?2 AND day <= ?3").ok()?;
+    let icon_days = st.query_map(rusqlite::params![wid, year_start, year_end], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let dpw = days_per_week(c)?;
+    let hols = holidays(c, &months)?;
+    let mut grid = vec![];
+    for (idx, m) in months.iter().enumerate() {
+        let start = month_start(&months, year, idx);
+        let mut days = vec![];
+        let mut count = 0;
+        for i in 0..m.days {
+            let dn = start + i;
+            let t = titles.get(&dn).cloned().unwrap_or_default();
+            count += t.len();
+            let names: Vec<String> = hols.iter().filter(|(mi, d, _)| *mi == idx && *d == i + 1).filter_map(|(_, _, h)| h.get("name")?.as_str().map(|s| format!("✦ {s}"))).collect();
+            let mut parts = names.clone();
+            parts.extend(t.iter().take(4).cloned());
+            let title = parts.join("; ") + if t.len() > 4 { " …" } else { "" };
+            days.push(json!({"day_num": dn, "dom": i + 1, "is_current": dn == current_day, "has_content": !t.is_empty() || icon_days.contains(&dn),
+                             "is_holiday": !names.is_empty(), "title": title}));
+        }
+        let mo = months_v[idx].as_object()?;
+        grid.push(json!({"idx": idx, "name": m.name, "days": days, "lead_pad": (0..(start - 1).rem_euclid(dpw)).collect::<Vec<_>>(),
+                         "season": opt_str(mo, "season")?, "color": opt_str(mo, "color")?, "events": count, "href": month_href(year, idx),
+                         "is_current": (year, idx) == (cur_year, cur_idx)}));
+    }
+    let opt = |cond: bool, s: String| if cond { Value::Null } else { json!(s) };
+    let nav = json!({
+        "prev_year": opt(year <= 1, format!("/calendar/year?year={}", year - 1)),
+        "next_year": opt(year >= MAX_YEAR, format!("/calendar/year?year={}", year + 1)),
+        "prev_decade": opt(year <= 1, format!("/calendar/year?year={}", (year - 10).max(1))),
+        "next_decade": opt(year >= MAX_YEAR, format!("/calendar/year?year={}", (year + 10).min(MAX_YEAR))),
+        "today": format!("/calendar/year?year={cur_year}"),
+        "month_view": month_href(year, if year == cur_year { cur_idx } else { 0 }),
+    });
+    let n = months.len() as i64;
+    let ctx = &mut p.ctx;
+    ctx.insert("era_name".into(), era_name(c));
+    ctx.insert("year".into(), json!(year));
+    ctx.insert("cur_year".into(), json!(cur_year));
+    ctx.insert("max_year".into(), json!(MAX_YEAR));
+    ctx.insert("grid".into(), Value::Array(grid));
+    ctx.insert("weekday_names".into(), json!(weekday_names(c, dpw as usize)?));
+    ctx.insert("year_text".into(), json!(format_year(c, year)?));
+    ctx.insert("prev_year_text".into(), json!(format_year(c, (year - 1).max(1))?));
+    ctx.insert("next_year_text".into(), json!(format_year(c, (year + 1).min(MAX_YEAR))?));
+    ctx.insert("days_per_week".into(), json!(dpw));
+    ctx.insert("nav".into(), nav);
+    ctx.insert("offset_label".into(), json!(span_label((year - cur_year).abs() * n, n)));
+    ctx.insert("year_delta".into(), json!(year - cur_year));
+    render_with(pages, "calendar/year.html", p.ctx, headers)
 }
