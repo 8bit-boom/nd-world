@@ -256,6 +256,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/entity-templates/{}/delete", entity_template_delete),
     ("/api/entity/{}/image", entity_set_image),
     ("/races/new", race_new),
+    ("/races/add-builtin", race_add_builtin),
+    ("/races/add-all-builtin", race_add_all_builtin),
+    ("/professions/add-builtin", profession_add_builtin),
+    ("/professions/add-all-builtin", profession_add_all_builtin),
     ("/professions/new", profession_new),
     ("/races/{}/delete", race_delete),
     ("/professions/{}/delete", profession_delete),
@@ -6400,4 +6404,74 @@ fn ai_instruction_toggle_players(c: &mut Ctx, ids: &[i64]) -> Option<Response<Bo
 fn ai_instruction_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     c.db.execute("DELETE FROM ai_instructions WHERE id = ?1 AND world_id = ?2", [ids[1], ids[0]]).ok()?;
     redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+// ── the bundled race / profession catalogs (app/routers/races.py, professions.py `*_add_builtin`) ──
+
+fn builtin(kind: &str) -> Option<&'static Vec<Value>> {
+    nd_render::app::data().get(if kind == "race" { "builtin_races" } else { "builtin_professions" })?.as_array()
+}
+
+fn or_null(v: Option<&Value>) -> Sql {
+    match v.and_then(|x| x.as_str()) {
+        Some(t) if !t.is_empty() => s(t),
+        _ => Sql::Null,
+    }
+}
+
+/// The world's entity of this kind named like the catalog entry, adding it when missing: (entity id, added)
+fn builtin_entity(c: &Ctx, wid: i64, kind: &str, e: &Value) -> Option<(i64, bool)> {
+    let name = e.get("name")?.as_str()?;
+    let found: Option<i64> = c.db.query_row("SELECT id FROM entities WHERE world_id = ?1 AND kind = ?2 AND name = ?3 ORDER BY id LIMIT 1",
+        rusqlite::params![wid, kind, name], |r| r.get(0)).ok();
+    if let Some(id) = found {
+        return Some((id, false));
+    }
+    let id = orm::insert(&c.db, "entities", &[("world_id", Sql::Integer(wid)), ("kind", s(kind)), ("subtype", s(e.get("tier")?.as_str()?)),
+        ("name", s(name)), ("summary", or_null(e.get("summary"))), ("body", or_null(e.get("raw"))), ("image_url", or_null(e.get("image_url")))])?;
+    Some((id, true))
+}
+
+fn add_builtin(c: &mut Ctx, kind: &str) -> Option<Response<Body>> {
+    let wid = c.world_id()?;
+    let payload = c.json()?;
+    let (slug, tier) = (payload.get("slug").and_then(|v| v.as_str())?, payload.get("tier").and_then(|v| v.as_str())?);
+    let e = builtin(kind)?.iter().find(|e| e.get("slug").and_then(|v| v.as_str()) == Some(slug) && e.get("tier").and_then(|v| v.as_str()) == Some(tier))?;
+    let (id, _) = builtin_entity(c, wid, kind, e)?;
+    if kind != "race" {
+        return json_response(&json!({"ok": true}));
+    }
+    let ent = row(&c.db, "SELECT * FROM entities WHERE id = ?1", id)?;
+    let text = |k: &str| ent.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tier = Some(text("subtype")).filter(|t| !t.is_empty()).unwrap_or_else(|| "standard".into());
+    let body = text("body");
+    // markdown2's HTML for the catalog text (scripts/gen_rust_data.py); a body edited since: Python's
+    let body_html = if body.is_empty() { "" } else if Some(body.as_str()) == e.get("raw").and_then(|v| v.as_str()) { e.get("raw_html")?.as_str()? } else { return None };
+    json_response(&json!({"ok": true, "entity": {"id": id, "name": text("name"), "tier": tier, "image_url": text("image_url"), "summary": text("summary"),
+        "body_html": body_html}}))
+}
+
+fn add_all_builtin(c: &mut Ctx, kind: &str, back: &str) -> Option<Response<Body>> {
+    let wid = c.world_id()?;
+    let mut added = 0;
+    for e in builtin(kind)? {
+        added += builtin_entity(c, wid, kind, e)?.1 as i64;
+    }
+    redirect(&format!("{back}?added={added}"))
+}
+
+fn race_add_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    add_builtin(c, "race")
+}
+
+fn profession_add_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    add_builtin(c, "profession")
+}
+
+fn race_add_all_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    add_all_builtin(c, "race", "/races")
+}
+
+fn profession_add_all_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    add_all_builtin(c, "profession", "/professions")
 }

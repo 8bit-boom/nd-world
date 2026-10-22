@@ -41,6 +41,17 @@ def theme_presets_clean() -> list:
     return [[k, list(_sanitize_theme(v).items())] for k, v in THEME_PRESETS.items()]
 
 
+def builtin_catalog(kind: str) -> list:
+    if kind == "races":
+        from app.routers.races import _load_builtin_races as load
+    else:
+        from app.routers.professions import _load_builtin_professions as load
+    from app.rendering import render_md
+    # raw_html: render_md(raw) - what /races/add-builtin answers for an entity whose body is still the catalog's
+    return [{**{k: e[k] for k in ("slug", "tier", "name", "summary", "raw", "image_url")}, "raw_html": render_md(e["raw"]) if e["raw"] else ""}
+            for e in load()]
+
+
 def make() -> dict:
     from app import calendar_config, combat_rules, constants, nav_menus, view_prefs
     from app.routers import quests
@@ -67,6 +78,8 @@ def make() -> dict:
         # what /worlds/new stores for a picked calendar preset: the exact config_json text, per preset key
         "calendar_presets_world": [[k, json.dumps({**calendar_config.clean_calendar_config(v), "current_day": 1})]
                                    for k, v in calendar_config.CALENDAR_PRESETS.items()],
+        # the bundled race / profession catalogs (app/races, app/professions) as /races/add-builtin and /professions/add-builtin store them
+        "builtin_races": builtin_catalog("races"), "builtin_professions": builtin_catalog("professions"),
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }
 

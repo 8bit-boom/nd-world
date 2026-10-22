@@ -2968,3 +2968,58 @@ def test_ai_instructions_are_pythons(client, seed):
         r = via.post(f"/worlds/{seed.world_b.id}/ai-instructions/{ids[0]}/{action}", follow_redirects=False)
         assert r.status_code == 303
     assert served >= 6, served
+
+
+def test_builtin_races_and_professions_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app.routers.races import _load_builtin_races
+    from app.routers.professions import _load_builtin_professions
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_b.slug)
+    via = _via(d, base)
+    w = seed.world_b.id
+    served = 0
+
+    def wipe(kind):
+        db = SessionLocal()
+        try:
+            db.execute(text("DELETE FROM entities WHERE world_id = :w AND kind = :k"), {"w": w, "k": kind}); db.commit()
+        finally:
+            db.close()
+
+    def ents(kind):
+        db = SessionLocal()
+        try:
+            return [tuple(r) for r in db.execute(text("SELECT kind, subtype, name, summary, body, image_url FROM entities WHERE world_id = :w AND kind = :k ORDER BY name"),
+                                                 {"w": w, "k": kind})]
+        finally:
+            db.close()
+
+    for kind, path, cat in (("race", "races", _load_builtin_races()), ("profession", "professions", _load_builtin_professions())):
+        e = cat[0]
+        bodies = [{"slug": e["slug"], "tier": e["tier"]}, {"slug": e["slug"], "tier": e["tier"]}, {"slug": e["slug"], "tier": "nope"}, {}]
+        for body in bodies:
+            out = []
+            for side in (d, via):
+                if body is bodies[0]:
+                    wipe(kind)
+                r = side.post(f"/{path}/add-builtin", json=body)
+                j = r.json() if r.status_code == 200 else None
+                if j and "entity" in j:
+                    j["entity"].pop("id")
+                out.append((r.status_code, j, ents(kind), r.headers.get("x-nd-served-by")))
+                if body is bodies[0] and side is d:
+                    wipe(kind)
+            assert out[0][:3] == out[1][:3], (kind, body, out)
+            served += out[1][3] == "gateway"
+        out = []
+        for side in (d, via):
+            wipe(kind)
+            r = side.post(f"/{path}/add-builtin", json={"slug": e["slug"], "tier": e["tier"]})
+            r = side.post(f"/{path}/add-all-builtin", follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), ents(kind), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (kind, out)
+        served += out[1][3] == "gateway"
+        wipe(kind)
+    assert served >= 6, served

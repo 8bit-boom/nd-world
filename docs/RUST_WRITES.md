@@ -96,6 +96,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /worlds/<id>/rules/edit` (an overlay checked by the ported `parse_rules_overlay`; one it refuses: Python's 400), `/rules/import` (an overlay with a fractional `order`: Python's) | 37 |
 | `POST /worlds/<id>/kinds/new`, `/kinds/edit`, `/kinds/<kind>/delete`, `/nav-menus/edit` (with `section_access_json`: Python walks a set, so its key order changes between processes; the gateway writes the sorted order) | 38 |
 | `POST /worlds/<id>/ai-instructions/import`, `/ai-instructions/<id>/toggle`, `/toggle-players`, `/delete` (stored settings: no AI call) | 39 |
+| `POST /races/add-builtin`, `/races/add-all-builtin`, `/professions/add-builtin`, `/professions/add-all-builtin` (the catalogs, and markdown2's HTML for each, taken from Python by `scripts/gen_rust_data.py`; a race whose body was edited since: Python's). `/images/spotlight` stays Python's: it clears Python's in-process spotlight cache | 40 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
