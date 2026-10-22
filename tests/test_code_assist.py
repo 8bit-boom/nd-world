@@ -7,6 +7,7 @@ other assist-job test. A throwaway fixture file is written under static/
 (one of the two sandboxed-readable roots) rather than depending on any
 real source file's exact current content staying stable.
 """
+import os
 import json
 import time
 from pathlib import Path
@@ -18,7 +19,9 @@ from app.routers import code_assist as code_assist_module
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
-_FIXTURE_REL = "static/_code_assist_test_fixture.txt"
+# one file per pytest-xdist worker: workers run these tests at the same time, and a shared name let one worker's teardown delete the
+# file another was still using
+_FIXTURE_REL = f"static/_code_assist_test_fixture{('_' + os.environ['PYTEST_XDIST_WORKER']) if os.environ.get('PYTEST_XDIST_WORKER') else ''}.txt"
 _FIXTURE_CONTENT = "line one\nline two\nline three\n"
 
 
