@@ -104,6 +104,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/tables/{}/edit", table_update),
     ("/tables/{}/delete", table_delete),
     ("/api/tables/{}/roll", table_roll),
+    ("/api/calendar/events", calendar_event_add),
+    ("/api/calendar/events/{}/delete", calendar_event_delete),
+    ("/api/calendar/advance", calendar_advance),
+    ("/api/calendar/set-date", calendar_set_date),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -553,4 +557,124 @@ fn table_roll(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     let label = chosen.get("label").cloned().unwrap_or(json!(""));
     json_response(&json!({"result": label, "roll": roll, "total": total}))
+}
+
+// ── calendar (app/routers/calendar.py) ───────────────────────────────────────
+
+/// `_safe_int(value, default)` for a JSON value: whole numbers and missing / null only (anything else - a float, text, a bool - is
+/// read by Python's int() in its own way: Python's call)
+fn safe_int_json(v: Option<&Value>, default: i64) -> Option<i64> {
+    match v {
+        None | Some(Value::Null) => Some(default),
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+        _ => None,
+    }
+}
+
+/// `int(body[k]) if body.get(k) else None` for a JSON value
+fn opt_int_json(v: Option<&Value>) -> Result<Option<i64>, ()> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) if n.is_i64() => Ok(match n.as_i64() {
+            Some(0) => None,
+            x => x,
+        }),
+        Some(Value::String(t)) if t.is_empty() => Ok(None),
+        Some(Value::String(t)) => py_int(t).map(Some).ok_or(()),
+        Some(Value::Bool(false)) => Ok(None),
+        _ => Err(()),
+    }
+}
+
+/// `str(body.get(k, default))` for text (or a missing key)
+fn json_text<'a>(b: &'a Map<String, Value>, k: &str, default: &'a str) -> Option<&'a str> {
+    match b.get(k) {
+        None => Some(default),
+        Some(Value::String(t)) => Some(t),
+        Some(_) => None,
+    }
+}
+
+/// `_can_manage_calendar`: calendar edit rights, GM or assistant
+fn can_manage_calendar(c: &Ctx) -> Option<bool> {
+    Some(c.can_edit_section("calendar")? && (c.p.is_gm || c.is_assistant()))
+}
+
+fn calendar_event_add(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("calendar")? {
+        return None;
+    }
+    let (_, days, _) = crate::calendar::for_write(&c.db, wid)?;
+    let day = crate::calendar::clamp_day(&days, safe_int_json(body.get("day"), 1)?);
+    let title = strip(json_text(&body, "title", "")?);
+    let title = if title.is_empty() { "Event".to_string() } else { title };
+    let id_of = |k: &str| -> Option<Sql> { Some(opt_int_json(body.get(k)).ok()?.map_or(Sql::Null, Sql::Integer)) };
+    let owner = if c.p.is_gm || c.is_assistant() { Sql::Null } else { Sql::Integer(c.p.user_id) };
+    let id = orm::insert(
+        &c.db,
+        "calendar_events",
+        &[
+            ("world_id", Sql::Integer(wid)),
+            ("day", Sql::Integer(day)),
+            ("title", s(&title)),
+            ("notes", s(json_text(&body, "notes", "")?)),
+            ("entity_id", id_of("entity_id")?),
+            ("session_id", id_of("session_id")?),
+            ("character_id", id_of("character_id")?),
+            ("party_id", id_of("party_id")?),
+            ("color", s(json_text(&body, "color", "#4488ff")?)),
+            ("created_by_user_id", owner),
+        ],
+    )?;
+    json_response(&json!({"id": id, "day": day, "title": title}))
+}
+
+fn calendar_event_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let ev = row(&c.db, "SELECT * FROM calendar_events WHERE id = ?1", ids[0])?;
+    if ev.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_row("calendar", ev.get("created_by_user_id").and_then(|v| v.as_i64()))? {
+        return None;
+    }
+    c.db.execute("DELETE FROM calendar_events WHERE id = ?1", [ids[0]]).ok()?;
+    json_response(&json!({"ok": true}))
+}
+
+/// Writes the calendar's config back as `json.dumps(config)` does
+fn save_calendar(db: &Connection, wid: i64, config: &Value) -> Option<()> {
+    let id: i64 = db.query_row("SELECT id FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)).ok()?;
+    orm::update(db, "world_calendars", id, &[("config_json", s(&nd_render::py_dumps(config)))])?;
+    Some(())
+}
+
+fn calendar_advance(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let wid = c.world_id()?;
+    if !can_manage_calendar(c)? {
+        return None;
+    }
+    let (mut config, days, _) = crate::calendar::for_write(&c.db, wid)?;
+    let delta = safe_int_json(body.get("days"), 1)?;
+    let stored = safe_int_json(config.get("current_day"), 1)?;
+    let day = crate::calendar::clamp_day(&days, stored.checked_add(delta)?);
+    config.as_object_mut()?.insert("current_day".into(), json!(day));
+    save_calendar(&c.db, wid, &config)?;
+    let (y, m, d) = crate::calendar::resolve(&days, day);
+    json_response(&json!({"current_day": day, "year": y, "month_idx": m, "dom": d}))
+}
+
+fn calendar_set_date(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let wid = c.world_id()?;
+    if !can_manage_calendar(c)? {
+        return None;
+    }
+    let (mut config, days, _) = crate::calendar::for_write(&c.db, wid)?;
+    let year = safe_int_json(body.get("year"), 1)?.clamp(1, crate::calendar::MAX_YEAR_PUB);
+    let idx = safe_int_json(body.get("month_idx"), 0)?.clamp(0, days.len() as i64 - 1) as usize;
+    let dom = safe_int_json(body.get("dom"), 1)?.min(days[idx]).max(1);
+    let day = crate::calendar::start_of(&days, year, idx) + dom - 1;
+    config.as_object_mut()?.insert("current_day".into(), json!(day));
+    save_calendar(&c.db, wid, &config)?;
+    json_response(&json!({"current_day": day, "year": year, "month_idx": idx, "dom": dom}))
 }

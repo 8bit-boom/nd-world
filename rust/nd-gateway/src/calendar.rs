@@ -650,3 +650,33 @@ pub fn calendar_config(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     ctx.insert("cur_dom".into(), json!(cur_dom));
     render_with(pages, "calendar/config.html", p.ctx, headers)
 }
+
+// ── for the calendar writes (crate::edits) ──
+
+/// A world's calendar for a write: (the stored config as Python reads it - `json.loads(...) or _default_config()`, month lengths,
+/// current day clamped). None: no calendar row yet, or a config this port is not sure of (Python's)
+pub fn for_write(db: &rusqlite::Connection, wid: i64) -> Option<(Value, Vec<i64>, i64)> {
+    let Cal { config, months, current_day, .. } = load(db, wid)?;
+    Some((config, months.iter().map(|m| m.days).collect(), current_day))
+}
+
+fn months_of(days: &[i64]) -> Vec<Month> {
+    days.iter().map(|d| Month { name: String::new(), days: *d }).collect()
+}
+
+/// `_clamp_day`
+pub fn clamp_day(days: &[i64], day: i64) -> i64 {
+    day.clamp(1, MAX_YEAR * year_len(&months_of(days)))
+}
+
+/// `_resolve_date`: (year, month index, day of month)
+pub fn resolve(days: &[i64], day: i64) -> (i64, usize, i64) {
+    resolve_date(&months_of(days), day)
+}
+
+/// `_month_start_day`
+pub fn start_of(days: &[i64], year: i64, idx: usize) -> i64 {
+    month_start(&months_of(days), year, idx)
+}
+
+pub const MAX_YEAR_PUB: i64 = MAX_YEAR;

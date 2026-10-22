@@ -316,3 +316,76 @@ def test_table_writes_are_pythons(client, seed):
                 assert list(ja) == list(jb) and ja["total"] == jb["total"] and 1 <= jb["roll"] <= jb["total"]
                 assert jb["result"] in [e.get("label", "") for e in json.loads(entries)]
     assert served >= 6, served
+
+
+# ── calendar ──────────────────────────────────────────────────────────────────
+
+def test_calendar_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import CalendarEvent, World, WorldCalendar
+    base = str(client.base_url)
+    config = {"era_name": "Ash", "current_day": 40, "months": [{"name": "Frost", "days": 30, "color": "#abc"}, {"name": "Thaw", "days": 20}],
+              "moons": [{"name": "Pale", "cycle_days": 28, "offset": 0.5}], "days_per_week": 5}
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"calendar": {"player": "edit"}})
+        db.add(WorldCalendar(world_id=seed.world_a.id, config_json=json.dumps(config)))
+        db.commit()
+    finally:
+        db.close()
+
+    def cal():
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            return db.execute(text("SELECT config_json FROM world_calendars WHERE world_id = :w"), {"w": seed.world_a.id}).scalar()
+        finally:
+            db.close()
+
+    def set_cal(text_):
+        db = SessionLocal()
+        try:
+            db.query(WorldCalendar).filter(WorldCalendar.world_id == seed.world_a.id).update({"config_json": text_})
+            db.commit()
+        finally:
+            db.close()
+
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for body in ({"day": 12, "title": "  Duel ", "notes": "n", "color": "#f00", "entity_id": "3", "party_id": 0},
+                     {"day": 999999999, "title": ""}, {}, {"day": "x"}, {"day": 2.5}, {"title": 5}, {"entity_id": True}, {"session_id": "0"}):
+            ra = d.post("/api/calendar/events", json=body)
+            na = _newest("calendar_events")
+            rb = via.post("/api/calendar/events", json=body)
+            nb = _newest("calendar_events")
+            assert ra.status_code == rb.status_code, (body, ra.text, rb.text)
+            if ra.status_code == 200:
+                ja, jb = ra.json(), rb.json()
+                assert {k: v for k, v in ja.items() if k != "id"} == {k: v for k, v in jb.items() if k != "id"}
+                _same_rows(na, nb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for owner in (None, seed.player_a.id):
+            db = SessionLocal()
+            evs = [CalendarEvent(world_id=seed.world_a.id, day=3, title="E", created_by_user_id=owner) for _ in range(2)]
+            db.add_all(evs); db.commit(); ids = [e.id for e in evs]; db.close()
+            _same_answer(d.post(f"/api/calendar/events/{ids[0]}/delete"), via.post(f"/api/calendar/events/{ids[1]}/delete"))
+            assert (_row("calendar_events", ids[0]) is None) == (_row("calendar_events", ids[1]) is None)
+        # advance / set-date rewrite the stored config: run each on the same starting config through both servers
+        for start in (json.dumps(config), "{}", json.dumps({**config, "current_day": 2999999})):
+            for path, body in (("/api/calendar/advance", {"days": 5}), ("/api/calendar/advance", {}), ("/api/calendar/advance", {"days": -100}),
+                               ("/api/calendar/advance", {"days": "3"}), ("/api/calendar/set-date", {"year": 3, "month_idx": 1, "dom": 99}),
+                               ("/api/calendar/set-date", {"year": 0, "month_idx": -4}), ("/api/calendar/set-date", {})):
+                set_cal(start)
+                ra = d.post(path, json=body)
+                after_a = cal()
+                set_cal(start)
+                rb = via.post(path, json=body)
+                after_b = cal()
+                _same_answer(ra, rb)
+                assert after_a == after_b, (path, body, after_a, after_b)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        set_cal(json.dumps(config))
+    assert served >= 20, served
