@@ -787,3 +787,37 @@ def test_id_pages_the_gateway_builds_are_pythons(client, seed):
             served[url] += _same_page(d, via, url, email)
     must = [u for u in urls if "999999" not in u and u not in (f"/handout/{other.id}", f"/display/combat/{ctpl.id}", f"/worlds/{seed.world_b.id}/rules/edit", f"/pages/{far.id}")]
     assert all(served[u] for u in must), served
+
+
+def test_quest_page_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, Party, Quest, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        e1, e2 = Entity(world_id=w, kind="npc", name="Ally <a>"), Entity(world_id=seed.world_b.id, kind="npc", name="Elsewhere")
+        db.add_all([e1, e2, Party(world_id=w, name="Crew")]); db.flush()
+        q1 = Quest(world_id=w, title="Main <q>", summary="sum", body="Go **there**.\n\n[gmonly]secret[/gmonly]", status="active", category="main",
+                   linked_entities_json=json.dumps([{"entity_id": e1.id, "role": "giver"}, {"entity_id": e2.id}, {"entity_id": 999999, "role": "x"}]),
+                   created_by_user_id=seed.player_a.id)
+        q2 = Quest(world_id=w, title="Hidden", visible_to_players=False, linked_entities_json="")
+        q3 = Quest(world_id=w, title="Other's", linked_entities_json=json.dumps([{"entity_id": e1.id, "role": None}]))
+        q4 = Quest(world_id=seed.world_b.id, title="Far quest")
+        db.add_all([q1, q2, q3, q4])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"quests": {"player": "edit", "assistant": "edit"}})
+        db.commit()
+        urls = [f"/quests/{q.id}" for q in (q1, q2, q3, q4)] + ["/quests/999999"]
+        must = urls[:3]
+    finally:
+        db.close()
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in urls:
+            served[url] += _same_page(d, via, url, email)
+    assert all(served[u] for u in must), served

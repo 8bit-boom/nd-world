@@ -25,6 +25,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/worlds/", "/kinds/edit", kinds_edit),
     ("/worlds/", "/rules/edit", rules_edit),
     ("/pages/", "", page_viewer),
+    ("/quests/", "", quest_detail),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -189,4 +190,59 @@ fn page_viewer(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers:
     }
     p.ctx.insert("doc".into(), Value::Object(doc));
     render_with(pages, "page_viewer.html", p.ctx, headers)
+}
+
+fn rows(db: &Connection, sql: &str, id: i64) -> Option<Vec<Value>> {
+    let mut st = db.prepare(sql).ok()?;
+    let r = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    Some(r.into_iter().map(Value::Object).collect())
+}
+
+/// Python's truthiness of a stored boolean column (NULL and 0 are false)
+fn flag(v: Option<&Value>) -> bool {
+    v.and_then(|v| v.as_i64()).unwrap_or(0) != 0
+}
+
+/// `GET /quests/<id>` (app/routers/quests.py `quest_detail`) - for a quest of the viewer's active world (one of another world, which
+/// Python checks against the viewer's world access, is Python's)
+fn quest_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let world = p.world.clone()?;
+    let wid = world.get("id")?.as_i64()?;
+    let q = row(db, "SELECT * FROM quests WHERE id = ?1", id)?;
+    if q.get("world_id")?.as_i64() != Some(wid) || !crate::pages::section_ok(&p, Some(&world), "quests")? {
+        return None;
+    }
+    if !flag(q.get("visible_to_players")) && !p.is_gm {
+        return None;
+    }
+    let mut linked = vec![];
+    if let Some(list) = json_or_empty_list(q.get("linked_entities_json"))?.as_array() {
+        for l in list {
+            let l = l.as_object()?;
+            let eid = l.get("entity_id")?.as_i64()?;
+            let role = match l.get("role") {
+                None => json!(""),
+                Some(v) => v.clone(),
+            };
+            if let Some(e) = row(db, "SELECT id, name FROM entities WHERE id = ?1", eid) {
+                linked.push(json!({"entity": {"id": e.get("id")?, "name": e.get("name")?}, "role": role}));
+            }
+        }
+    } else {
+        return None;
+    }
+    let edit = crate::pages::edit_level(&p, &world, "quests")?;
+    let can_edit = edit && (p.is_gm || p.role.as_deref() == Some("assistant") || q.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(p.user_id));
+    let d = nd_render::app::data();
+    p.ctx.insert("parties".into(), Value::Array(rows(db, "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id", wid)?));
+    let mut st = db.prepare("SELECT * FROM quests WHERE world_id = ?1 AND id != ?2 ORDER BY title, id").ok()?;
+    let others = st.query_map([wid, id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    p.ctx.insert("quests".into(), Value::Array(others.into_iter().map(Value::Object).collect()));
+    p.ctx.insert("entities".into(), Value::Array(rows(db, "SELECT * FROM entities WHERE world_id = ?1 ORDER BY name, id", wid)?));
+    p.ctx.insert("quest".into(), Value::Object(q));
+    p.ctx.insert("linked_entities".into(), Value::Array(linked));
+    p.ctx.insert("statuses".into(), d.get("quest_statuses")?.clone());
+    p.ctx.insert("categories".into(), d.get("quest_categories")?.clone());
+    p.ctx.insert("can_edit_this".into(), json!(can_edit));
+    render_with(pages, "quests/detail.html", p.ctx, headers)
 }
