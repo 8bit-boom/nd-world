@@ -3023,3 +3023,127 @@ def test_builtin_races_and_professions_are_pythons(client, seed):
         served += out[1][3] == "gateway"
         wipe(kind)
     assert served >= 6, served
+
+
+def test_entity_markup_and_send_to_player_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    eid = _add("Entity", world_id=seed.world_a.id, kind="character", name="Markup Target")
+
+    def put(body):
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE entities SET body = :b, summary = :s WHERE id = :e"), {"b": body, "s": "A **cult** spy. The cult spy.", "e": eid}); db.commit()
+        finally:
+            db.close()
+
+    src = ("# The Cult\n\nThe **cult spy** waits in the *dark* hall.\n\n- a bullet with `code` here\n- another [u]under[/u] item\n\n"
+           "The cult spy waits again, by the ~~old~~ door. [gmonly]Secret plan[/gmonly] and more.\n\n| a | b |\n|---|---|\n| x | y |\n\n"
+           "![pic](/uploads/a.png) and ![two](/uploads/b.png \"size:50\") “quoted” text — dash.")
+    players = [u.id for u in (seed.player_a,)]
+    cases = [
+        {"field": "body", "action": "gmonly", "text": "cult spy waits in", "before": "The", "after": "the"},
+        {"field": "body", "action": "spoiler", "text": "The cult spy waits", "before": "", "after": "in the"},
+        {"field": "body", "action": "spoiler", "text": "The cult spy waits"},
+        {"field": "body", "action": "bold", "text": "dark hall"},
+        {"field": "body", "action": "italic", "text": "a bullet with code here another under"},
+        {"field": "body", "action": "color:#ff0000", "text": "old door"},
+        {"field": "body", "action": "color:red", "text": "old door"},
+        {"field": "body", "action": "underline", "text": "spy waits in the dark"},
+        {"field": "body", "action": "mark", "text": "\"quoted\" text - dash"},
+        {"field": "body", "action": "gmonly", "text": "Secret plan"},
+        {"field": "body", "action": "read", "text": "x y"},
+        {"field": "body", "action": f"for:{players[0]}", "text": "and more"},
+        {"field": "body", "action": "for:999999", "text": "and more"},
+        {"field": "body", "action": "reveal:2030-01-02T10:00", "text": "and more"},
+        {"field": "body", "action": "reveal:2030-13-02", "text": "and more"},
+        {"field": "body", "action": "unwrap:gmonly", "index": 0, "snippet": "Secret"},
+        {"field": "body", "action": "unwrap:gmonly", "index": 1},
+        {"field": "body", "action": "unwrap:u", "index": 0},
+        {"field": "body", "action": "replace", "text": "old door", "replacement": " new gate "},
+        {"field": "body", "action": "replace", "text": "dark hall. a bullet", "replacement": "x"},
+        {"field": "body", "action": "restore", "expected": src, "previous": "old text"},
+        {"field": "body", "action": "restore", "expected": "nope", "previous": "old text"},
+        {"field": "body", "action": "imgsize:75", "index": 0, "snippet": "/uploads/a.png"},
+        {"field": "body", "action": "imgsize:100", "index": 1, "snippet": "b.png"},
+        {"field": "body", "action": "imgsize:5000", "index": 0, "snippet": "/uploads/zz.png"},
+        {"field": "summary", "action": "gmonly", "text": "cult spy", "before": "The", "after": "."},
+        {"field": "summary", "action": "gmonly", "text": "cult spy", "before": "A", "after": ". The"},
+        {"field": "body", "action": "nope", "text": "dark"},
+        {"field": "body", "action": "gmonly", "text": "not in there"},
+        {"field": "other", "action": "gmonly", "text": "dark"},
+        {"field": "body", "action": "gmonly", "text": "dark", "index": "1"},
+    ]
+    served = 0
+    for body in cases:
+        out = []
+        for side in (d, via):
+            put(src)
+            r = side.post(f"/api/entity/{eid}/markup", json=body)
+            got = _row("entities", eid)
+            out.append((r.status_code, r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text, got["body"], got["summary"],
+                        r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (body, out)
+        served += out[1][4] == "gateway"
+    sends = [{"user_id": players[0], "text": "cult spy waits in", "before": "The", "after": "the", "title": " Psst "},
+             {"user_id": players[0], "text": "Secret plan"}, {"user_id": players[0], "field": "summary", "text": "A cult spy"},
+             {"user_id": seed.gm.id, "text": "dark hall"}, {"user_id": players[0], "text": "old door. Secret plan and more"}]
+    for body in sends:
+        out = []
+        for side in (d, via):
+            put(src)
+            r = side.post(f"/api/entity/{eid}/send-to-player", json=body)
+            n = _newest("private_notes")
+            out.append((r.status_code, r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text,
+                        n and (n["title"], n["content"], n["player_user_id"], n["author_id"]), n and n["id"], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (body, out)
+        if out[0][0] == 200:
+            assert out[0][2] == out[1][2] and out[0][3] != out[1][3], (body, out)
+        served += out[1][4] == "gateway"
+    db = SessionLocal()
+    try:
+        db.execute(text("DELETE FROM entities WHERE id = :e"), {"e": eid}); db.commit()
+    finally:
+        db.close()
+    assert served >= 18, served
+
+
+def test_entity_markup_random_selections_are_pythons(client, seed):
+    import random
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app.markup_locator import _project
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    eid = _add("Entity", world_id=seed.world_a.id, kind="character", name="Markup Fuzz")
+    rnd = random.Random(7)
+    srcs = ["A **bold _mixed_ text** and *it* here.\n\n> quoted line with `tick`\n\n1. one **two\n2. three** four\n\nplain __under__ end ~~gone~~.",
+            "[spoiler]hid[/spoiler] den [mark]marked text[/mark] tail\n\n## Head *line*\n\nrepeat word repeat word repeat\n\n[for=3]x[/for] [link](/a) after"]
+    served = 0
+    for _ in range(300):
+        src = rnd.choice(srcs)
+        shown = _project(src)[0]
+        a = rnd.randrange(len(shown)); z = min(len(shown), a + rnd.randint(1, 25))
+        body = {"field": "body", "action": rnd.choice(["gmonly", "spoiler", "bold", "italic", "strike", "underline", "mark", "replace"]),
+                "text": shown[a:z], "before": shown[max(0, a - 8):a], "after": shown[z:z + 8], "replacement": "NEW"}
+        out = []
+        for side in (d, via):
+            db = SessionLocal()
+            try:
+                db.execute(text("UPDATE entities SET body = :b WHERE id = :e"), {"b": src, "e": eid}); db.commit()
+            finally:
+                db.close()
+            r = side.post(f"/api/entity/{eid}/markup", json=body)
+            out.append((r.status_code, r.json(), _row("entities", eid)["body"], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (src, body, out)
+        served += out[1][3] == "gateway"
+    db = SessionLocal()
+    try:
+        db.execute(text("DELETE FROM entities WHERE id = :e"), {"e": eid}); db.commit()
+    finally:
+        db.close()
+    assert served >= 20, served

@@ -193,6 +193,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entities/bulk-folder", bulk_folder),
     ("/api/entities/bulk-visibility", bulk_visibility),
     ("/api/entity/{}/alias", entity_alias),
+    ("/api/entity/{}/markup", entity_markup),
+    ("/api/entity/{}/send-to-player", entity_send_to_player),
     ("/api/characters/{}/hp-async", pc_hp),
     ("/api/characters/{}/shock", pc_shock),
     ("/api/characters/{}/level-up", pc_level_up),
@@ -6474,4 +6476,142 @@ fn race_add_all_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 
 fn profession_add_all_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     add_all_builtin(c, "profession", "/professions")
+}
+
+// ── marking up the read view (app/main.py api_entity_markup / api_entity_send_to_player, crate::markup) ──
+
+/// The world's player accounts (`_world_player_list` without the GMs): (id, display name), by name
+fn world_players(c: &Ctx, wid: i64) -> Option<Vec<(i64, String)>> {
+    let mut st = c.db.prepare("SELECT u.id, u.display_name, u.is_gm FROM users u JOIN world_memberships m ON m.user_id = u.id WHERE m.world_id = ?1 ORDER BY u.display_name").ok()?;
+    let rows = st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<i64>>(2)?))).ok()?;
+    let mut out = vec![];
+    for r in rows {
+        let (id, name, gm) = r.ok()?;
+        if gm.unwrap_or(0) == 0 {
+            out.push((id, name.unwrap_or_default()));
+        }
+    }
+    Some(out)
+}
+
+/// A pydantic `str` field: a string, or the default when missing (anything else is a 422: Python's)
+fn body_str(b: &Map<String, Value>, k: &str, default: Option<&str>) -> Option<String> {
+    json_str(b, k, default).map(str::to_string)
+}
+
+/// A pydantic `int` / `Optional[int]` field given as a JSON integer (strings, floats and booleans pydantic may coerce: Python's)
+fn model_int(b: &Map<String, Value>, k: &str, default: Option<Option<i64>>) -> Option<Option<i64>> {
+    match b.get(k) {
+        None => default,
+        Some(Value::Null) => default.filter(|d| d.is_none()),
+        Some(Value::Number(n)) => n.as_i64().map(Some),
+        _ => None,
+    }
+}
+
+/// The marked-up field's text and where it lives: (source, note id for a note)
+fn markup_source(c: &Ctx, e: &Map<String, Value>, field: &str, note_id: Option<i64>) -> Option<(String, Option<i64>)> {
+    let text = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match field {
+        "body" => Some((text("body"), None)),
+        "summary" => Some((text("summary"), None)),
+        "note" => {
+            let n = row(&c.db, "SELECT * FROM entity_notes WHERE id = ?1", note_id.unwrap_or(0))?;
+            if n.get("entity_id") != e.get("id") || py_truthy(n.get("content_is_html")) {
+                return None;
+            }
+            Some((n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(), n.get("id")?.as_i64()))
+        }
+        _ => None,
+    }
+}
+
+fn entity_markup(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let field = body_str(&b, "field", None)?;
+    let action = body_str(&b, "action", None)?;
+    let note_id = model_int(&b, "note_id", Some(None))?;
+    let index = model_int(&b, "index", Some(Some(0)))??;
+    let [text, before, after, snippet, replacement, previous, expected] =
+        ["text", "before", "after", "snippet", "replacement", "previous", "expected"].map(|k| body_str(&b, k, Some("")));
+    let (text, before, after, snippet, replacement, previous, expected) = (text?, before?, after?, snippet?, replacement?, previous?, expected?);
+    if !c.p.is_gm {
+        return None;
+    }
+    let e = world_entity(c, ids[0])?;
+    let (source, note) = markup_source(c, &e, &field, note_id)?;
+    if ![&source, &text, &before, &after, &snippet, &replacement].iter().all(|t| crate::markup::plain(t)) {
+        return None;
+    }
+    if let Some(rest) = action.strip_prefix("for:") {
+        if !rest.is_ascii() {
+            return None;
+        }
+        let wanted: Vec<i64> = rest.split(|ch: char| !ch.is_ascii_digit()).filter(|x| !x.is_empty()).map(|x| x.parse::<i64>().ok()).collect::<Option<_>>()?;
+        let players: Vec<i64> = world_players(c, c.world_id()?)?.into_iter().map(|(id, _)| id).collect();
+        if wanted.is_empty() || !wanted.iter().all(|w| players.contains(w)) {
+            return None;
+        }
+    }
+    let out = if let Some(tag) = action.strip_prefix("unwrap:") {
+        crate::markup::unwrap(&source, tag, index, &snippet)
+    } else if action == "replace" {
+        crate::markup::replace(&source, &text, &before, &after, &replacement)
+    } else if action == "restore" {
+        if source == expected { Ok(previous.clone()) } else { Err(()) }
+    } else if let Some(pct) = action.strip_prefix("imgsize:").filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+        let pct = if pct.len() > 9 { 300 } else { pct.parse().ok()? };
+        crate::markup::resize_image(&source, index, &snippet, pct)
+    } else {
+        crate::markup::wrap(&source, &text, &before, &after, &action)
+    };
+    let out = out.ok()?; // a refusal: Python's 422 with its message
+    match note {
+        Some(nid) => orm::update(&c.db, "entity_notes", nid, &[("content", s(&out))])?,
+        None => orm::update(&c.db, "entities", ids[0], &[(if field == "body" { "body" } else { "summary" }, s(&out))])?,
+    };
+    let mut result = json!({"ok": true});
+    if action != "restore" && source.chars().count() + out.chars().count() <= 200_000 {
+        result["undo"] = json!({"previous": source, "expected": out});
+    }
+    json_response(&result)
+}
+
+fn entity_send_to_player(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let user_id = model_int(&b, "user_id", None)??;
+    let field = body_str(&b, "field", Some("body"))?;
+    let note_id = model_int(&b, "note_id", Some(None))?;
+    let text = body_str(&b, "text", None)?;
+    let [before, after, title] = ["before", "after", "title"].map(|k| body_str(&b, k, Some("")));
+    let (before, after, title) = (before?, after?, title?);
+    if !c.p.is_gm {
+        return None;
+    }
+    let e = world_entity(c, ids[0])?;
+    let (source, _) = markup_source(c, &e, &field, note_id)?;
+    if ![&source, &text, &before, &after].iter().all(|t| crate::markup::plain(t)) {
+        return None;
+    }
+    let ranges = crate::markup::locate(&source, &text, &before, &after).ok()?;
+    let src: Vec<char> = source.chars().collect();
+    let mut kept = vec![];
+    for (s0, e0) in ranges {
+        let (a, z) = crate::markup::widen(&source, s0, e0).ok()?;
+        if !crate::markup::inside(&source, a, "gmonly") {
+            kept.push(src[a..z].iter().collect::<String>());
+        }
+    }
+    let stripped = nd_perm::gmonly::strip_gm_only(&kept.join("\n\n"), None, nd_render::now_minute())?;
+    let body = strip(&stripped);
+    if body.is_empty() || body.chars().count() > 8000 {
+        return None;
+    }
+    let wid = c.world_id()?;
+    let (pid, pname) = world_players(c, wid)?.into_iter().find(|(id, _)| *id == user_id)?;
+    let title = take_chars(&strip(&title), 200);
+    let title = if title.is_empty() { format!("From {}", e.get("name").and_then(|v| v.as_str()).unwrap_or("")) } else { title };
+    orm::insert(&c.db, "private_notes", &[("world_id", Sql::Integer(wid)), ("player_user_id", Sql::Integer(pid)), ("author_id", Sql::Integer(c.p.user_id)),
+        ("title", s(&title)), ("content", s(&body))])?;
+    json_response(&json!({"ok": true, "player": pname}))
 }
