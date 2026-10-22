@@ -159,6 +159,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/field", entity_field),
     ("/api/entity/{}/rename", entity_rename),
     ("/api/entities/bulk-folder", bulk_folder),
+    ("/api/entities/bulk-visibility", bulk_visibility),
+    ("/api/entity/{}/alias", entity_alias),
     ("/new", entity_new),
     ("/entity/{}/edit", entity_edit),
     ("/entity/{}/duplicate", entity_duplicate),
@@ -200,7 +202,7 @@ fn route(path: &str) -> Option<(Handler, Vec<i64>)> {
 type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 
 /// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
-const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete)];
+const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     for (pre, post, h) in SLUG_ROUTES {
@@ -1331,4 +1333,119 @@ fn entity_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         c.db.execute(sql, [id]).ok()?;
     }
     redirect("/")
+}
+
+/// The ids of a JSON list as plain integers (None when one is anything else: Python's int() reads more, so that request is Python's)
+fn json_ids(v: Option<&Value>) -> Option<Vec<i64>> {
+    match v {
+        None | Some(Value::Null) => Some(vec![]),
+        Some(Value::Array(a)) => a.iter().map(|v| v.as_i64()).collect(),
+        Some(Value::Bool(false)) => Some(vec![]),
+        _ => None,
+    }
+}
+
+/// The ids among `ids` that are entities of `world`, each once (the `Entity.id.in_(ids)` query), in id order
+fn world_entity_ids(db: &Connection, world: i64, ids: &[i64], kind: Option<&str>) -> Vec<i64> {
+    let mut hit: Vec<i64> = vec![];
+    for id in ids {
+        let row: Option<(i64, String)> = db.query_row("SELECT world_id, kind FROM entities WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        if let Some((w, k)) = row {
+            if w == world && kind.map_or(true, |kd| kd == k) && !hit.contains(id) {
+                hit.push(*id);
+            }
+        }
+    }
+    hit.sort();
+    hit
+}
+
+fn bulk_visibility(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let world = c.world_id()?;
+    let ids = json_ids(b.get("entity_ids"))?;
+    let mode = strip(json_str(&b, "visibility_mode", Some(""))?);
+    if !matches!(mode.as_str(), "everyone" | "gm" | "players") {
+        return None; // the 400: Python's
+    }
+    let players = if mode == "players" { json_ids(b.get("allowed_player_ids"))? } else { vec![] };
+    let mut uniq: Vec<i64> = vec![];
+    for p in players {
+        if !uniq.contains(&p) {
+            uniq.push(p);
+        }
+    }
+    let hit = world_entity_ids(&c.db, world, &ids, None);
+    for id in &hit {
+        orm::update(&c.db, "entities", *id, &[("visible_to_players", Sql::Integer((mode == "everyone") as i64))])?;
+    }
+    for id in &hit {
+        sync_access(&c.db, *id, &uniq)?;
+    }
+    json_response(&json!({"updated": hit.len()}))
+}
+
+fn entity_alias(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let alias = json_str(&b, "alias", None)?;
+    if !c.p.is_gm {
+        return None;
+    }
+    let e = world_entity(c, ids[0])?;
+    let alias = take_chars(&nd_render::text::py_split_join(&alias.replace(',', " ")), 64);
+    let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if alias.chars().count() < 2 || !alias.is_ascii() || !name.is_ascii() || alias.eq_ignore_ascii_case(name) {
+        return None; // the 422s, and casefold() beyond ASCII: Python's
+    }
+    let existing: Vec<String> = e.get("aliases").and_then(|v| v.as_str()).unwrap_or("").split(',').map(strip).filter(|a| !a.is_empty()).collect();
+    if existing.iter().any(|a| !a.is_ascii() || a.eq_ignore_ascii_case(&alias)) {
+        return None;
+    }
+    let joined = existing.into_iter().chain([alias]).collect::<Vec<_>>().join(", ");
+    let aliases = normalize_aliases(&joined)?;
+    let v = aliases.as_ref().map_or(Sql::Null, |a| s(a));
+    orm::update(&c.db, "entities", ids[0], &[("aliases", v)])?;
+    json_response(&json!({"ok": true, "aliases": aliases}))
+}
+
+fn bulk_delete(c: &mut Ctx, kind: &str) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let world = c.world_id()?;
+    let slug = c.p.world.as_ref()?.get("slug")?.as_str()?.to_string();
+    let mut ids = vec![];
+    for v in f.all("entity_ids") {
+        match py_int(v) {
+            Some(n) => ids.push(n),
+            None if v.is_empty() => {}             // int("") fails: skipped
+            None => return None,                    // " 5", "+5", "1_0"...: Python's
+        }
+    }
+    let hit = world_entity_ids(&c.db, world, &ids, Some(kind));
+    for id in &hit {
+        // as Python's bulk delete: links, access, notes, relations, the entity (voice hints stay, unlike the single delete)
+        for sql in [
+            "DELETE FROM entity_links WHERE source_id = ?1 OR target_id = ?1",
+            "DELETE FROM entity_player_access WHERE entity_id = ?1",
+            "DELETE FROM entity_notes WHERE entity_id = ?1",
+            "DELETE FROM entity_relations WHERE source_id = ?1 OR target_id = ?1",
+            "DELETE FROM entities WHERE id = ?1",
+        ] {
+            c.db.execute(sql, [id]).ok()?;
+        }
+    }
+    let q = |v: &str| utf8_percent_encode(v, QUOTE).to_string();
+    let mut params = vec![];
+    if let Some(folder) = f.get("folder") {
+        params.push(format!("folder={}", q(folder)));
+    }
+    let query = f.get("q").unwrap_or("");
+    if !query.is_empty() {
+        params.push(format!("q={}", q(query)));
+    }
+    let mut url = format!("/kind/{kind}");
+    if !params.is_empty() {
+        url += &format!("?{}", params.join("&"));
+    }
+    url += if url.contains('?') { "&" } else { "?" };
+    redirect(&format!("{url}w={slug}"))
 }

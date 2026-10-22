@@ -781,3 +781,54 @@ def test_entity_create_edit_duplicate_delete_are_pythons(client, seed):
         assert _links(t) == 0 or email != seed.gm.email
         assert _access(ea) == _access(eb) and _newest_note(ea) == _newest_note(eb) == None or email != seed.gm.email
     assert served >= 12, served   # the GM's; invalid custom_fields_json, non-ASCII aliases and uploads are Python's
+
+
+def test_entity_bulk_visibility_alias_and_bulk_delete_are_pythons(client, seed):
+    base = str(client.base_url)
+    served = 0
+    [other] = _entities(seed.world_b.id, 1)
+    pa, pb = seed.player_a.id, seed.player_b.id
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for make in (lambda g: {"entity_ids": g, "visibility_mode": "gm"}, lambda g: {"entity_ids": g + g + [other], "visibility_mode": " players ", "allowed_player_ids": [pa, pa, pb]},
+                     lambda g: {"entity_ids": g, "visibility_mode": "everyone"}, lambda g: {"entity_ids": g, "visibility_mode": "nope"},
+                     lambda g: {"entity_ids": [str(g[0])], "visibility_mode": "gm"}, lambda g: {"visibility_mode": "gm"},
+                     lambda g: {"entity_ids": g, "visibility_mode": "players", "allowed_player_ids": ["1"]}, lambda g: {"entity_ids": g, "visibility_mode": 3}):
+            ga, gb = _entities(seed.world_a.id, 2), _entities(seed.world_a.id, 2)
+            before = [_row("entities", i) for i in ga + gb]
+            ra = d.post("/api/entities/bulk-visibility", json=make(ga))
+            rb = via.post("/api/entities/bulk-visibility", json=make(gb))
+            _same_answer(ra, rb)
+            for i in range(2):
+                _same_rows(_row("entities", ga[i]), _row("entities", gb[i]), before[i], before[2 + i])
+                assert _access(ga[i]) == _access(gb[i])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for start, body in ((None, {"alias": "  The,Old  Man "}), ("Mar, Bo", {"alias": "Kit"}), ("Mar", {"alias": "mar"}), (None, {"alias": "e"}),
+                            (None, {"alias": "x"}), (None, {"alias": "Ünï"}), (None, {"alias": 5}), (None, {}), (", ".join(f"a{i}" for i in range(20)), {"alias": "zz"}),
+                            (None, {"alias": "y" * 90})):
+            ea, eb = _entities(seed.world_a.id, 2)
+            if start:
+                for e in (ea, eb):
+                    d.post(f"/entity/{e}/edit", data={"kind": "npc", "name": "E", "aliases": start})
+            before = [_row("entities", ea), _row("entities", eb)]
+            for ta, tb in ((ea, eb), (other, other)):
+                ra = d.post(f"/api/entity/{ta}/alias", json=body)
+                rb = via.post(f"/api/entity/{tb}/alias", json=body)
+                _same_answer(ra, rb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+            _same_rows(_row("entities", ea), _row("entities", eb), before[0], before[1])
+        for make in (lambda g: [("entity_ids", str(i)) for i in g] + [("folder", "A b/c"), ("q", "x&y")], lambda g: [("entity_ids", str(g[0])), ("entity_ids", ""), ("folder", "")],
+                     lambda g: [("entity_ids", " 1")], lambda g: [("entity_ids", str(other))], lambda g: [("q", "")]):
+            ga, gb = _entities(seed.world_a.id, 2), _entities(seed.world_a.id, 2)
+            for e in ga + gb:
+                d.post(f"/entity/{e}/notes/new", data={"content": "n"})
+            for kind in ("npc", "location"):
+                ra = d.post(f"/kind/{kind}/bulk-delete", content=urlencode(make(ga)), headers={"content-type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+                rb = via.post(f"/kind/{kind}/bulk-delete", content=urlencode(make(gb)), headers={"content-type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+                _same_answer(ra, rb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+                for i in range(2):
+                    assert (_row("entities", ga[i]) is None) == (_row("entities", gb[i]) is None)
+                    assert (_newest_note(ga[i]) is None) == (_newest_note(gb[i]) is None)
+    assert served >= 15, served   # the GM's
