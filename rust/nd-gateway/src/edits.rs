@@ -332,6 +332,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/pages/upload", pages_upload),
     ("/images/albums/upload/chunk", gallery_chunk),
     ("/images/albums/{}/upload", gallery_upload),
+    ("/api/sessions/{}/media/upload", sm_upload),
     ("/api/upload-image", toolbar_image),
     ("/api/upload-media", toolbar_media),
     ("/api/characters/upload-image", toolbar_pc_image),
@@ -4376,6 +4377,10 @@ fn sm_video_dict(c: &Map<String, Value>, uid: &str) -> Value {
 
 /// `panel(db, gs)`: the GM's session media panel
 fn sm_panel(c: &Ctx, gs_id: i64) -> Option<Response<Body>> {
+    json_response(&sm_panel_value(c, gs_id)?)
+}
+
+fn sm_panel_value(c: &Ctx, gs_id: i64) -> Option<Value> {
     let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", gs_id)?;
     let wid = gs.get("world_id")?.as_i64()?;
     let (ids, items) = (sm_clip_ids(&gs)?, sm_items(&gs)?);
@@ -4412,8 +4417,8 @@ fn sm_panel(c: &Ctx, gs_id: i64) -> Option<Response<Body>> {
         .filter(|i| i.get("kind").and_then(|k| k.as_str()) == Some("image"))
         .map(|i| json!({"uid": i.get("uid"), "url": i.get("url"), "caption": i.get("caption"), "visible_to_players": i.get("visible"), "own": i.get("own")}))
         .collect();
-    json_response(&json!({"clips": clips, "library": library, "videos": videos, "video_library": video_library, "images": images,
-                          "max": sm_limit(c)?, "used": ids.len() + items.len()}))
+    Some(json!({"clips": clips, "library": library, "videos": videos, "video_library": video_library, "images": images,
+                "max": sm_limit(c)?, "used": ids.len() + items.len()}))
 }
 
 /// `_require_gm_edit`: the session of the active world, with sessions:edit
@@ -6956,4 +6961,88 @@ fn share_revoke(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
     let id = share_target(c, id)?;
     share_revoke_all(c, id)?;
     json_response(&json!({"active": false, "url": ""}))
+}
+
+/// `media_upload`: a dropped picture (kept on the session) or audio file (added to the audio library and attached); a video, which
+/// goes through ffmpeg, is Python's
+fn sm_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let wid = gs.get("world_id")?.as_i64()?;
+    let (f, pick) = form_and_file(c, "file")?;
+    let pick = pick?;
+    let filename = pick.filename(c)?.to_string();
+    if filename.is_empty() {
+        return None;
+    }
+    let ext = py_suffix_lower(&filename)?;
+    let mut candidates = vec![];
+    if IMAGE_EXTS.contains(&ext.as_str()) {
+        candidates.push("image");
+    }
+    if [".mp4", ".m4v", ".webm", ".ogv", ".mov", ".mkv", ".avi", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"].contains(&ext.as_str()) {
+        candidates.push("video");
+    }
+    if AUDIO_EXTS.contains(&ext.as_str()) {
+        candidates.push("audio");
+    }
+    let hint = strip(f.get("kind").unwrap_or("")).to_lowercase();
+    let kind = *candidates.iter().find(|k| **k == hint).or(candidates.first())?;
+    if kind == "video" {
+        return None;
+    }
+    if (sm_clip_ids(&gs)?.len() + sm_items(&gs)?.len()) as i64 >= sm_limit(c)? {
+        return None;
+    }
+    let cap = if kind == "image" {
+        gallery_cap(c)?
+    } else {
+        let n: i64 = c.db.query_row("SELECT COUNT(*) FROM audio_clips WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+        if n >= 300 {
+            return None;
+        }
+        upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?
+    };
+    if pick.len(c)? as i64 > cap {
+        return None;
+    }
+    let folder = if kind == "image" { "gallery" } else { "audio" };
+    let dir = uploads_root(c)?.join(folder);
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    pick.write_to(c, &dest)?;
+    let label = strip(f.get("name").unwrap_or(""));
+    let (stem, _) = py_path_parts(&filename)?;
+    let visible = ["1", "true", "on", "yes"].contains(&strip(f.get("visible_to_players").unwrap_or("")).to_lowercase().as_str());
+    let item = if kind == "image" {
+        let url = finalize_picture(c, &dest, "gallery")?;
+        let caption = take_chars(if label.is_empty() { &stem } else { &label }, 120);
+        let uid = format!("{:010x}", rand::random::<u64>() & 0xff_ffff_ffff);
+        let mut items = sm_items(&gs)?;
+        let mut m = Map::new();
+        m.insert("uid".into(), json!(uid));
+        m.insert("kind".into(), json!("image"));
+        m.insert("url".into(), json!(url));
+        m.insert("caption".into(), json!(caption));
+        m.insert("visible".into(), json!(visible));
+        m.insert("own".into(), json!(true));
+        items.push(m);
+        sm_store_media(c, ids[0], &items)?;
+        json!({"uid": uid, "url": url, "caption": caption, "visible_to_players": visible, "own": true})
+    } else {
+        let name = [take_chars(&label, 256), take_chars(&stem, 256)].into_iter().find(|n| !n.is_empty()).unwrap_or_else(|| "Session audio".into());
+        let title = gs.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = take_chars(&format!("Session audio for {title}"), 512);
+        let url = format!("/uploads/audio/{}", dest.file_name()?.to_string_lossy());
+        let cid = orm::insert(&c.db, "audio_clips", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("description", s(&desc)),
+            ("file_url", s(&url)), ("visible_to_players", Sql::Integer(visible as i64))])?;
+        let clip = row(&c.db, "SELECT * FROM audio_clips WHERE id = ?1", cid)?;
+        let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", ids[0])?;
+        sm_attach_audio(c, &gs, &clip, None)?;
+        sm_audio_dict(&clip)
+    };
+    let Value::Object(mut out) = sm_panel_value(c, ids[0])? else { return None };
+    out.insert("kind".into(), json!(kind));
+    out.insert("item".into(), item);
+    json_response(&Value::Object(out))
 }

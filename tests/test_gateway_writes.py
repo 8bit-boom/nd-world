@@ -3331,3 +3331,50 @@ def test_character_share_links_are_pythons(client, seed):
             assert out[0][:3] == out[1][:3], (who, method, out)
             served += out[1][3] == "gateway"
     assert served >= 6, served
+
+
+def test_session_media_upload_is_pythons(client, seed):
+    import re
+    from pathlib import Path
+    from app.main import UPLOADS_DIR
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    w = seed.world_a.id
+    pics = _pictures()
+    cases = [("Photo One.jpg", pics["Photo One.jpg"], [("name", " Map "), ("visible_to_players", "Yes")]), ("small alpha.png", pics["small alpha.png"], []),
+             ("theme.MP3", b"ID3data", [("visible_to_players", "1")]), ("both.webm", b"webm", [("kind", "audio")]),
+             ("x.txt", b"t", [])]
+    served = 0
+
+    def norm(j, ids):
+        if not isinstance(j, dict):
+            return j
+        s = json.dumps(j, sort_keys=True)
+        s = re.sub(r'"uid": "[0-9a-f]{10}"', '"uid": "U"', s)
+        for k, v in ids.items():
+            s = re.sub(rf'"id": {v}\b', f'"id": "{k}"', s)
+        s = _masked_url(s)
+        return json.loads(s)
+
+    for name, data, fields in cases:
+        out = []
+        for side in (d, via):
+            g = _gsession(world_id=w, title="Up")
+            before = set(r["id"] for r in [_newest("audio_clips")] if r)
+            body, hdrs = _multipart(fields, [("file", name, data)])
+            r = side.post(f"/api/sessions/{g}/media/upload", content=body, headers=hdrs)
+            n = _newest("audio_clips")
+            ids = {"NEW": n["id"]} if n and n["id"] not in before else {}
+            out.append((r.status_code, norm(r.json() if r.status_code == 200 else None, ids), r.headers.get("x-nd-served-by")))
+            if ids:
+                from sqlalchemy import text
+                from app.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    db.execute(text("DELETE FROM audio_clips WHERE id = :i"), {"i": ids["NEW"]}); db.commit()
+                finally:
+                    db.close()
+        assert out[0][:2] == out[1][:2], (name, out)
+        served += out[1][2] == "gateway"
+    assert served >= 4, served
