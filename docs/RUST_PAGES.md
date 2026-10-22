@@ -90,7 +90,7 @@ GET pages that stay Python's, and the phase they move with:
 |---|---|---|
 | `/characters`, `/characters/<id>`, `/characters/new`, `/characters/<id>/edit`, `/characters/templates/<id>/edit`, `/parties/<id>`, `/parties/<id>/roster`, `/parties/<id>/summary`, `/share/<token>`, `/pages/sheets`, `/pages/sheets/<id>` | built on the character-sheet engine (maxima, custom sheet systems, vitals) that the character edits port | 3 |
 | `/sessions/<id>`, `/sessions/<id>`'s log pages (`/session-log`, `/session-log/<id>`), `/races`, `/professions`, `/worlds/<id>/edit`, `/worlds/<id>/home/edit`, `/worlds/<id>/notes/<user>`, `/worlds/<id>/export/split`, `/settings`, `/settings/visibility-rows`, `/account`, `/account/2fa/setup`, `/login/2fa`, `/join/<code>`, `/import`, `/media-rename`, `/tools/code-assist`, `/schedule` | forms and pages whose data comes from the write paths (recaps, catalog imports, account security, settings) | 3 |
-| `/combat/<id>`, `/maps/schematic/<slug>`, `/maps/schematic/<slug>/view`, `/display/map/<slug>`, `/cockpit`, `/player-cockpit` | live table tools (fog, tokens, turn order) | 4 |
+| `/combat/<id>`, `/maps/schematic/<slug>`, `/maps/schematic/<slug>/view`, `/display/map/<slug>`, `/cockpit`, `/player-cockpit` | ported in phase 4 (`docs/RUST_LIVE.md`); a strict-secrecy map and characters on custom sheet systems stay Python's | 4 (done) |
 | `/ai`, `/ai-chat`, `/image-gen`, `/imagestudio`, `/studio`, `/npc-talk`, `/characters/ai-new`, `/characters/templates/ai-new` | AI and jobs | 5 |
 | `/boards/<slug>/export` | `dict.update()` in its template (above) | 3, with the template reworked |
 

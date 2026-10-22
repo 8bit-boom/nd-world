@@ -32,11 +32,20 @@ No real gain: Python's streams were already cheap (asyncio tasks, one table read
 second by design. What moving it buys is that open browsers no longer hold connections to the Python process (which matters for a Python
 restart: the gateway keeps the streams open and they continue when Python is back). It stays opt-in.
 
-## Not done (phase 4's exit criteria are NOT met)
+## Phase 4 status
 
-The other streams and table tools - the second screen's stream (`/api/display/stream`), AI and chronicler streams, cockpit, combat tracker,
-character hub, schematic maps (walls, fog, tokens, buy / pick-up with their locking) - are Python's. Two-browser tests for each live feature
-are the exit criterion; this is one stream.
+Done (the table below): the second screen's stream, the combat tracker (writes, the GM's and a player's page, the polling state), the
+character hub's writes, the schematic editor (writes, the GM's page, the players' view, view.json, the TV's data), the cockpit (page, saved
+workspace) and the player cockpit. Each live write is checked to wake the same listeners as Python's.
+
+Still Python's, and why:
+- strict secrecy on a map (`app/map_strict.py`: what the party has seen, recorded on each view, and the masked background picture) - the
+  vision computation is a port of its own;
+- the character hub page itself (`/characters/<id>`), with the other pages on the character-sheet engine (custom sheet systems' tracks),
+  and anything a character on a custom sheet system touches (its Rest rules, vitals, combat tracks);
+- uploads that write files Python names and resizes (the map's background, embedded pictures, a player's own keepsake files);
+- `rooms/detect` (finds rooms in the walls - computation, nothing stored);
+- the AI and chronicler streams - phase 5, with the other AI work.
 
 ## Phase 4, full port: the table tools' writes
 

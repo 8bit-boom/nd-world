@@ -263,3 +263,15 @@ Still Python's in phase 3, and why:
 - note import of PDF and HTML files (pypdf, the HTML sanitizer / converter);
 - every answer that is a refusal (4xx), and inputs where Python and Rust would read text differently (non-ASCII case rules, floats'
   repr, regex classes) - forwarded on purpose, by the strangler rule.
+
+## 18. Phase 4, full port: the table tools (batches 1-31)
+
+Behind `live` and `writes` in `ND_RUST_ROUTES`, the gateway now serves the live table: the second screen (its stream, pages and data), the
+combat tracker (every write, the GM's tracker and a player's read-only view, the polling state), the character hub's writes (turns,
+initiative, journal, pins, Rest, log undo, keepsakes, loot, companions), the schematic maps (the editor's writes and page, doors, fog,
+lights, walls, rooms, combat links, the players' view and view.json, players' moves / pick-ups / purchases with the same SQLite lock), the
+cockpit and the player cockpit. Each write has a parity test (`tests/test_gateway_writes.py`, which also checks the live counters move as
+Python's do), each page a golden test for a GM and players (`tests/test_gateway_golden.py`). What stays Python's, and why, is in
+`docs/RUST_LIVE.md` ("Phase 4 status"): strict map secrecy, the character-sheet engine's custom systems, file-writing uploads, and the AI
+streams (phase 5).
+
