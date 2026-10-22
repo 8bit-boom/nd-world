@@ -1320,3 +1320,96 @@ def test_character_sync_retire_and_portrait_are_pythons(client, seed):
             _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]))
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 15, served
+
+
+def test_session_delete_publish_loot_and_xp_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import Fact, SheetTemplate, World
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"sessions": {"player": "edit", "assistant": "edit"}})
+        t = SheetTemplate(name="Cust2", slug="cust2-gw-test", sheet_mode="custom", world_id=w)
+        db.add(t); db.commit()
+        tpl = t.id
+    finally:
+        db.close()
+    live_root = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads" / "live"
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for media in ("", json.dumps([{"kind": "image", "url": "/uploads/x.png", "own": True}]), json.dumps([{"kind": "image", "url": "/uploads/x.png"}])):
+            ids = [_gsession(world_id=w, title="D", recap_media_json=media) for _ in range(2)]
+            for i in ids:
+                (live_root / str(i) / "rec").mkdir(parents=True, exist_ok=True)
+                (live_root / str(i) / "rec" / "0001.webm").write_bytes(b"x")
+                db = SessionLocal()
+                try:
+                    db.add(Fact(world_id=w, content="f", game_session_id=i)); db.commit()
+                finally:
+                    db.close()
+            ra = d.post(f"/sessions/{ids[0]}/delete", follow_redirects=False)
+            rb = via.post(f"/sessions/{ids[1]}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]))
+            assert (live_root / str(ids[0])).exists() == (live_root / str(ids[1])).exists()
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for form in ({"player_summary": " Recap ", "publish": "1"}, {"player_summary": "  ", "publish": "1"}, {"player_summary": "x", "publish": ""}, {}):
+            ids = [_gsession(world_id=w, title="R", player_summary="old", player_summary_published=True) for _ in range(2)]
+            before = [_row("game_sessions", i) for i in ids]
+            ra = d.post(f"/sessions/{ids[0]}/recap-publish", data=form, follow_redirects=False)
+            rb = via.post(f"/sessions/{ids[1]}/recap-publish", data=form, follow_redirects=False)
+            _same_answer(ra, rb, ids[0], ids[1])
+            _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        ids = [_gsession(world_id=w, title="L", live_transcript="words", live_transcript_segments_json="[1]") for _ in range(2)]
+        before = [_row("game_sessions", i) for i in ids]
+        ra, rb = d.post(f"/api/sessions/{ids[0]}/live-transcript/clear"), via.post(f"/api/sessions/{ids[1]}/live-transcript/clear")
+        _same_answer(ra, rb)
+        _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]), before[0], before[1])
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body in ({"action": "add", "name": "Gem", "qty": 3, "notes": "n"}, {"action": "add"}, {"action": "add", "qty": "2"}, {"action": "add", "qty": 0, "name": ["x"]},
+                     {"action": "transfer", "index": 0}, {"action": "remove", "index": 1}, {"action": "transfer", "index": 9}, {"index": "0"}):
+            parties = [_party(world_id=w, name="P", loot_json=json.dumps([{"lid": "z", "name": "Old"}])) for _ in range(2)]
+            ids = [_gsession(world_id=w, title="T", party_id=p, loot_json=json.dumps([{"name": "Rope", "qty": 1, "notes": ""}, {"name": "Gold", "qty": 5.5}]))
+                   for p in parties]
+            before = [_row("game_sessions", i) for i in ids]
+            ra = d.post(f"/api/sessions/{ids[0]}/loot/transfer", json=body)
+            rb = via.post(f"/api/sessions/{ids[1]}/loot/transfer", json=body)
+            _same_answer(ra, rb)
+            _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]), before[0], before[1], ignore=("party_id",))
+            _same_rows(_row("parties", parties[0]), _row("parties", parties[1]))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body, custom in (({"delta": 100}, False), ({"delta": -50, "pc_ids": "pcs"}, False), ({"delta": 10}, True), ({"delta": "5"}, False), ({}, False),
+                             ({"delta": 20, "pcs": True}, False)):
+            sets = []
+            for _ in range(2):
+                a = _pc(world_id=w, name="Ann", xp=40)
+                b = _pc(world_id=w, name="Ann", xp=0, sheet_template_id=tpl if custom else None)
+                p = _party(world_id=w, name="P", member_pc_ids_json=json.dumps([b, a]), xp_json=json.dumps([{"ts": "x"}] * 100))
+                sets.append((a, b, p, _gsession(world_id=w, title="X", party_id=p, xp_awarded=5)))
+            reqs = []
+            for a, b, p, g in sets:
+                bb = dict(body)
+                if bb.get("pc_ids") == "pcs":
+                    bb["pc_ids"] = [b, a, b]
+                if bb.pop("pcs", None):
+                    bb["pc_ids"] = [a]
+                reqs.append(bb)
+            ra = d.post(f"/api/sessions/{sets[0][3]}/xp", json=reqs[0])
+            rb = via.post(f"/api/sessions/{sets[1][3]}/xp", json=reqs[1])
+            _same_answer(ra, rb)
+            for k in range(3):
+                _same_rows(_row(("player_characters", "player_characters", "parties")[k], sets[0][k]), _row(("player_characters", "player_characters", "parties")[k], sets[1][k]),
+                           ignore=("xp_json", "member_pc_ids_json"))
+            la, lb = json.loads(_row("parties", sets[0][2])["xp_json"]), json.loads(_row("parties", sets[1][2])["xp_json"])
+            assert [{**e, "ts": 0, "session_id": 0} for e in la] == [{**e, "ts": 0, "session_id": 0} for e in lb]
+            assert len(la[-1]["ts"]) == len(lb[-1]["ts"])
+            _same_rows(_row("game_sessions", sets[0][3]), _row("game_sessions", sets[1][3]), ignore=("party_id",))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 15, served

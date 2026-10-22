@@ -22,6 +22,7 @@ use crate::proxy::Proxy;
 const MAX_BODY: usize = 256 * 1024;
 
 pub struct Ctx<'a> {
+    pub cfg: &'a Config,
     pub db: Connection,
     pub p: PageCtx,
     pub uri: &'a Uri,
@@ -179,6 +180,11 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/currency", pc_currency),
     ("/api/characters/{}/pp", pc_pp),
     ("/api/characters/{}/mp", pc_mp),
+    ("/sessions/{}/delete", session_delete),
+    ("/sessions/{}/recap-publish", session_recap_publish),
+    ("/api/sessions/{}/live-transcript/clear", session_live_clear),
+    ("/api/sessions/{}/loot/transfer", session_loot),
+    ("/api/sessions/{}/xp", session_xp),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -262,7 +268,7 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
     // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
     // Python) must leave nothing behind, or Python would apply the same write a second time
     db.execute_batch("BEGIN IMMEDIATE").ok()?;
-    let mut ctx = Ctx { db, p, uri, headers, body };
+    let mut ctx = Ctx { cfg, db, p, uri, headers, body };
     let answer = match (by_id, by_slug) {
         (Some((h, ids)), _) => h(&mut ctx, &ids),
         (_, Some((h, slug))) => h(&mut ctx, &slug),
@@ -2889,4 +2895,159 @@ fn pc_sync_create(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     cols.push(("owner_user_id", Sql::Integer(c.p.user_id)));
     let id = orm::insert(&c.db, "player_characters", &cols)?;
     json_response(&pc_sync_dict(&row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id)?)?)
+}
+
+// ── sessions, continued ──────────────────────────────────────────────────────
+
+fn session_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = editable_session(c, ids[0])?;
+    // pictures uploaded for the session go with it (delete_own_pictures: files, thumbnails, display copies): Python's
+    let media = gs.get("recap_media_json").and_then(|v| v.as_str()).unwrap_or("");
+    if !media.is_empty() {
+        match serde_json::from_str::<Value>(media) {
+            Ok(Value::Array(items)) => {
+                if items.iter().any(|it| it.get("kind").and_then(|k| k.as_str()) == Some("image") && py_truthy(it.get("own"))) {
+                    return None;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    let id = ids[0];
+    orm::bulk_update(&c.db, "combat_sessions", &[("game_session_id", Sql::Null)], "game_session_id = ?", &[Sql::Integer(id)])?;
+    orm::bulk_update(&c.db, "facts", &[("game_session_id", Sql::Null)], "game_session_id = ?", &[Sql::Integer(id)])?;
+    c.db.execute("DELETE FROM game_sessions WHERE id = ?1", [id]).ok()?;
+    // the raw-recording archive, <DB_PATH dir>/uploads/live/<id> (shutil.rmtree(..., ignore_errors=True))
+    let root = std::path::Path::new(&c.cfg.db_path).parent()?.join("uploads").join("live").join(id.to_string());
+    let _ = std::fs::remove_dir_all(root);
+    redirect("/sessions")
+}
+
+fn session_recap_publish(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    editable_session(c, ids[0])?;
+    let text = f.get("player_summary").unwrap_or("").to_string();
+    let published = !opt(&f, "publish", "").is_empty() && !strip(&text).is_empty();
+    orm::update(&c.db, "game_sessions", ids[0], &[("player_summary", s(&text)), ("player_summary_published", Sql::Integer(published as i64))])?;
+    redirect(&format!("/sessions/{}", ids[0]))
+}
+
+fn session_live_clear(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    editable_session(c, ids[0])?;
+    orm::update(&c.db, "game_sessions", ids[0], &[("live_transcript", s("")), ("live_transcript_segments_json", s(""))])?;
+    json_response(&json!({"transcript": ""}))
+}
+
+/// A stored JSON list column as `json.loads(col or "[]")` reads it (canonical text only, else Python's)
+fn stored_list(m: &Map<String, Value>, k: &str) -> Option<Vec<Value>> {
+    let raw = m.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    match canonical_json(raw)? {
+        Value::Array(a) => Some(a),
+        _ => None,
+    }
+}
+
+fn session_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let gs = editable_session(c, ids[0])?;
+    let mut loot = stored_list(&gs, "loot_json")?;
+    let action = b.get("action");
+    if action.and_then(|v| v.as_str()) == Some("add") {
+        let qty = match b.get("qty") {
+            None => 1,
+            Some(v) if !py_truthy(Some(v)) => 1,
+            Some(Value::Number(n)) => n.as_i64()?,
+            _ => return None, // int() of text / floats: Python's
+        };
+        let mut item = Map::new();
+        item.insert("name".into(), b.get("name").cloned().unwrap_or(json!("Item")));
+        item.insert("qty".into(), json!(qty));
+        item.insert("notes".into(), b.get("notes").cloned().unwrap_or(json!("")));
+        loot.push(Value::Object(item));
+        let list = Value::Array(loot);
+        orm::update(&c.db, "game_sessions", ids[0], &[("loot_json", s(&nd_render::py_dumps(&list)))])?;
+        return json_response(&json!({"loot": list}));
+    }
+    let idx = match b.get("index") {
+        None => -1,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    if !(0..loot.len() as i64).contains(&idx) {
+        return None;
+    }
+    let item = loot.remove(idx as usize);
+    let list = Value::Array(loot);
+    orm::update(&c.db, "game_sessions", ids[0], &[("loot_json", s(&nd_render::py_dumps(&list)))])?;
+    if action.and_then(|v| v.as_str()) == Some("transfer") {
+        if let Some(pid) = gs.get("party_id").and_then(|v| v.as_i64()) {
+            if let Some(party) = row(&c.db, "SELECT * FROM parties WHERE id = ?1", pid) {
+                let mut pl = stored_list(&party, "loot_json")?;
+                pl.push(item);
+                orm::update(&c.db, "parties", pid, &[("loot_json", s(&nd_render::py_dumps(&Value::Array(pl))))])?;
+            }
+        }
+    }
+    json_response(&json!({"loot": list}))
+}
+
+fn session_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let gs = editable_session(c, ids[0])?;
+    let delta = match b.get("delta") {
+        None => 0,
+        Some(Value::Number(n)) => n.as_i64().filter(|v| v.abs() < 1 << 40)?,
+        _ => return None,
+    };
+    let party = gs.get("party_id").and_then(|v| v.as_i64()).and_then(|pid| row(&c.db, "SELECT * FROM parties WHERE id = ?1", pid));
+    let given = b.get("pc_ids").cloned().unwrap_or(Value::Null);
+    let pc_ids: Vec<i64> = if py_truthy(Some(&given)) {
+        given.as_array()?.iter().map(|v| v.as_i64()).collect::<Option<_>>()?
+    } else if let Some(p) = &party {
+        stored_list(p, "member_pc_ids_json")?.iter().map(|v| v.as_i64()).collect::<Option<_>>()?
+    } else {
+        vec![]
+    };
+    let mut pcs: Vec<Map<String, Value>> = vec![];
+    let mut seen: Vec<i64> = vec![];
+    let mut sorted = pc_ids.clone();
+    sorted.sort();
+    for id in sorted {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        if let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id) {
+            pcs.push(pc);
+        }
+    }
+    let (mut updated, mut awarded) = (vec![], Map::new());
+    for pc in &pcs {
+        let xp = pc.get("xp")?.as_i64()?; // a NULL xp is Python's TypeError
+        let tpl = pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0);
+        if tpl.is_some() && !pc_maxima(&c.db, pc)?.4 {
+            return None; // a custom system's own XP fields (apply_xp_award): Python's
+        }
+        orm::update(&c.db, "player_characters", pc.get("id")?.as_i64()?, &[("xp", Sql::Integer((xp + delta).max(0)))])?;
+        let name = pc.get("name").cloned().unwrap_or(Value::Null);
+        updated.push(name.clone());
+        match name {
+            Value::String(n) => {
+                awarded.insert(n, json!(delta));
+            }
+            _ => return None, // a None name as a dict key: Python's
+        }
+    }
+    let total = col_int(&gs, "xp_awarded") + delta;
+    orm::update(&c.db, "game_sessions", ids[0], &[("xp_awarded", Sql::Integer(total))])?;
+    if let (Some(p), false) = (&party, awarded.is_empty()) {
+        let mut ledger = stored_list(p, "xp_json")?;
+        let now = orm::now_stamp();
+        ledger.push(json!({"ts": now[..19].replacen(' ', "T", 1), "amount": delta, "session_id": ids[0], "awarded": Value::Object(awarded)}));
+        let keep = ledger.split_off(ledger.len().saturating_sub(100));
+        orm::update(&c.db, "parties", p.get("id")?.as_i64()?, &[("xp_json", s(&nd_render::py_dumps(&Value::Array(keep))))])?;
+    }
+    orm::touch(&c.db, gs.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"updated": updated, "xp_awarded": total}))
 }
