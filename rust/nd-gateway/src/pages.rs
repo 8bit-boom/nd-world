@@ -229,7 +229,24 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/characters/templates", template: "characters/templates_list.html", section: None, needs_world: false, gm_only: false, edit: false,
              lists: &[("sheet_templates", "SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id")], extra: None },
     Simple { path: "/worlds", template: "worlds.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(worlds_page) },
+    Simple { path: "/export", template: "export_hub.html", section: Some("export"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(export_hub) },
 ];
+
+/// `GET /export`: a staged restore waiting for confirmation (its manifest shown on the page) is Python's
+fn export_hub(_: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "/data/world.db".into());
+    let staged = std::path::Path::new(&db_path).parent()?.join("restore_staging").join("manifest.json");
+    if staged.exists() {
+        return None;
+    }
+    let name = match c.get("world") {
+        Some(serde_json::Value::Object(w)) => w.get("name")?.clone(),
+        _ => serde_json::json!("RESTORE"),
+    };
+    c.insert("staged_restore_manifest".into(), serde_json::Value::Null);
+    c.insert("restore_confirm_name".into(), name);
+    Some(())
+}
 
 fn worlds_page(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
     let current = c.remove("world")?;

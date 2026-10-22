@@ -24,6 +24,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/display/combat/", "", display_combat),
     ("/worlds/", "/kinds/edit", kinds_edit),
     ("/worlds/", "/rules/edit", rules_edit),
+    ("/pages/", "", page_viewer),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -167,4 +168,25 @@ fn rules_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: 
     p.ctx.insert("edit_world".into(), Value::Object(w));
     p.ctx.insert("rules_json_error".into(), Value::Null);
     render_with(pages, "rules_edit.html", p.ctx, headers)
+}
+
+/// `GET /pages/<id>` (app/routers/pages.py `pages_viewer`): one document, full page; a hidden one only for the GM
+fn page_viewer(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let world = p.world.clone()?;
+    if !p.is_gm {
+        let s = |k: &str| world.get(k).and_then(|v| v.as_str());
+        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), "pages")? == "none" {
+            return None;
+        }
+    }
+    let doc = row(db, "SELECT * FROM page_docs WHERE id = ?1", id)?;
+    if doc.get("world_id")?.as_i64() != world.get("id")?.as_i64() {
+        return None;
+    }
+    let visible = !matches!(doc.get("visible_to_players"), Some(Value::Null) | Some(Value::Number(_)) if doc.get("visible_to_players").and_then(|v| v.as_i64()).unwrap_or(0) == 0);
+    if !visible && !p.is_gm {
+        return None;
+    }
+    p.ctx.insert("doc".into(), Value::Object(doc));
+    render_with(pages, "page_viewer.html", p.ctx, headers)
 }
