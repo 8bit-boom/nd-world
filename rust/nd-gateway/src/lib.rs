@@ -9,6 +9,7 @@ pub mod config;
 pub mod idpages;
 pub mod files;
 pub mod gallery;
+pub mod home;
 pub mod layout;
 pub mod live;
 pub mod maps;
@@ -161,11 +162,12 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         }
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/new" | "/rules" | "/search") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/" | "/new" | "/rules" | "/search") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/new" => idpages::new_entity_form,
             "/search" => search::search_page,
+            "/" => home::home,
             _ => idpages::rules_page,
         };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {

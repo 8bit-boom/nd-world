@@ -47,7 +47,7 @@ pub fn world_maps(cfg: &Config, wid: i64) -> Option<Vec<(String, Map<String, Val
 }
 
 /// The picture of a map: bundled (static/maps) first, then uploaded (uploads/maps)
-fn map_image(cfg: &Config, slug: &str) -> Option<Option<String>> {
+pub fn map_image(cfg: &Config, slug: &str) -> Option<Option<String>> {
     let uploads = cfg.db_path.parent()?.join("uploads").join("maps");
     let statics = cfg.static_dir.join("maps");
     for ext in [".webp", ".jpg", ".jpeg", ".png", ".avif"] {

@@ -1159,3 +1159,54 @@ def test_search_the_gateway_builds_is_pythons(client, seed):
         for u in urls:
             served[u] += _same_page(d, via, u, email)
     assert all(v >= 2 for v in served.values()), served
+
+
+def test_home_page_the_gateway_builds_is_pythons(client, seed):
+    from datetime import datetime, timedelta
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, GameSession, InvestBoard, Quest, Schematic, World, entity_links, entity_player_access
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        t0 = datetime(2026, 1, 1)
+        ents = [Entity(world_id=w, kind="npc", name=f"N{i}", tags="crew, port" if i % 2 else "port,, spy", updated_at=t0 + timedelta(minutes=i))
+                for i in range(10)]
+        ents += [Entity(world_id=w, kind="location", name="Secret base", visible_to_players=False, tags="secret", updated_at=t0 + timedelta(hours=5)),
+                 Entity(world_id=w, kind="item", name="Shared", visible_to_players=False, updated_at=t0 + timedelta(hours=6))]
+        db.add_all(ents); db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=ents[11].id, user_id=seed.player_a.id))
+        for src, dst in ((0, 1), (2, 1), (3, 1), (0, 10), (2, 10), (4, 5)):
+            db.execute(entity_links.insert().values(source_id=ents[src].id, target_id=ents[dst].id))
+        b = InvestBoard(world_id=w, name="Case", slug="gw-home-case")
+        sc = Schematic(world_id=w, name="Base", slug="gw-home-base")
+        gs = GameSession(world_id=w, session_num=2, title="Two")
+        qu = Quest(world_id=w, title="Do it", status="active")
+        db.add_all([b, sc, gs, qu, Quest(world_id=w, title="Done", status="complete")]); db.flush()
+        wa = db.query(World).filter(World.id == w).first()
+        wa.home_sections_json = json.dumps([
+            {"name": "Links", "links": [{"label": "Hero", "icon": "🦸", "target_type": "entity", "target_ref": str(ents[0].id)},
+                                        {"label": "Gone", "target_type": "entity", "target_ref": "999999"},
+                                        {"label": "Board", "target_type": "board", "target_ref": "gw-home-case"},
+                                        {"label": "Base", "target_type": "schematic", "target_ref": "gw-home-base"},
+                                        {"label": "S2", "target_type": "session", "target_ref": gs.id},
+                                        {"label": "Q", "target_type": "quest", "target_ref": str(qu.id)},
+                                        {"label": "NPCs", "target_type": "kind", "target_ref": "npc"},
+                                        {"label": "Web", "target_type": "url", "target_ref": "https://example.com/?a=1"},
+                                        {"label": "Bad url", "target_type": "url", "target_ref": "javascript:alert(1)"},
+                                        {"label": "GM only", "target_type": "url", "target_ref": "/x", "visible_to_players": False}, "junk"]},
+            {"name": "", "visible_to_players": False, "links": []}, {"name": "Empty", "links": []}])
+        wa.home_pinned_tiles_json = json.dumps([{"label": "NPCs", "icon": "👤", "target_type": "kind", "target_ref": "npc"},
+                                                {"label": "Site", "target_type": "url", "target_ref": "/rules"}, {"label": "x", "target_type": "nope"}])
+        wa.home_hidden_kinds_json = json.dumps(["item", 3])
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug), (seed.gm.email, GM_PASSWORD, "neon-dragons")):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        served += _same_page(d, via, "/", email)
+    assert served >= 3, served
