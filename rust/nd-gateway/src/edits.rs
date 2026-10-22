@@ -190,6 +190,21 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/live-transcript/clear", session_live_clear),
     ("/api/sessions/{}/loot/transfer", session_loot),
     ("/api/sessions/{}/xp", session_xp),
+    ("/audio/albums/new", audio_album_new),
+    ("/audio/albums/{}/rename", audio_album_rename),
+    ("/audio/albums/{}/delete", audio_album_delete),
+    ("/audio/{}/edit", audio_item_edit),
+    ("/audio/{}/delete", audio_item_delete),
+    ("/video/albums/new", video_album_new),
+    ("/video/albums/{}/rename", video_album_rename),
+    ("/video/albums/{}/delete", video_album_delete),
+    ("/video/{}/edit", video_item_edit),
+    ("/video/{}/delete", video_item_delete),
+    ("/pages/albums/new", pages_album_new),
+    ("/pages/albums/{}/rename", pages_album_rename),
+    ("/pages/albums/{}/delete", pages_album_delete),
+    ("/pages/{}/edit", pages_item_edit),
+    ("/pages/{}/delete", pages_item_delete),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -3637,4 +3652,257 @@ fn quests_apply(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     orm::touch(&c.db, wid)?;
     json_response(&json!({"created": created, "updated": updated}))
+}
+
+// ── media libraries: audio, video, pages (app/routers/audio.py, video.py, pages.py) ──
+
+/// One media library's tables and rules
+struct Lib {
+    section: &'static str,
+    base: &'static str,
+    albums: &'static str,
+    items: &'static str,
+    /// the item's columns holding files it owns (deleted with it)
+    files: &'static [&'static str],
+    /// an entity can be attached (audio, video)
+    entity: bool,
+    /// the "now playing" broadcast follows its clips (audio)
+    now_playing: bool,
+    /// items can be character-sheet templates, and those in use cannot be deleted (pages)
+    sheets: bool,
+}
+
+const AUDIO: Lib = Lib { section: "audio", base: "/audio", albums: "audio_albums", items: "audio_clips", files: &["file_url"], entity: true, now_playing: true, sheets: false };
+const VIDEO: Lib =
+    Lib { section: "video", base: "/video", albums: "video_albums", items: "video_clips", files: &["file_url", "poster_url"], entity: true, now_playing: false, sheets: false };
+const PAGES: Lib = Lib { section: "pages", base: "/pages", albums: "page_albums", items: "page_docs", files: &["file_url"], entity: false, now_playing: false, sheets: true };
+
+fn audio_album_new(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_new(c, &AUDIO, ids)
+}
+fn audio_album_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_rename(c, &AUDIO, ids)
+}
+fn audio_album_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_delete(c, &AUDIO, ids)
+}
+fn audio_item_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_item_edit(c, &AUDIO, ids)
+}
+fn audio_item_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_item_delete(c, &AUDIO, ids)
+}
+fn video_album_new(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_new(c, &VIDEO, ids)
+}
+fn video_album_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_rename(c, &VIDEO, ids)
+}
+fn video_album_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_delete(c, &VIDEO, ids)
+}
+fn video_item_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_item_edit(c, &VIDEO, ids)
+}
+fn video_item_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_item_delete(c, &VIDEO, ids)
+}
+fn pages_album_new(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_new(c, &PAGES, ids)
+}
+fn pages_album_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_rename(c, &PAGES, ids)
+}
+fn pages_album_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_album_delete(c, &PAGES, ids)
+}
+fn pages_item_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_item_edit(c, &PAGES, ids)
+}
+fn pages_item_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_item_delete(c, &PAGES, ids)
+}
+
+/// `require_can_edit` + the library's `_require_edit_section`: the active world's id
+fn lib_editor(c: &Ctx, lib: &Lib) -> Option<i64> {
+    let wid = c.world_id()?;
+    (content_editor(c) && c.can_edit_section(lib.section)?).then_some(wid)
+}
+
+/// `str(value).strip()` that is digits (`isdigit()`): Ok(Some(n)); Ok(None) when it is not; Err for text whose isdigit() is Python's
+fn digit_field(v: &str) -> Result<Option<i64>, ()> {
+    let v = strip(v);
+    if !v.is_ascii() {
+        return Err(());
+    }
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(None);
+    }
+    if v.len() > 15 {
+        return Err(());
+    }
+    Ok(v.parse().ok())
+}
+
+/// `_album_or_404`: the album id, when it is one of the world's (a 404 is Python's)
+fn lib_album(c: &Ctx, lib: &Lib, wid: i64, id: i64) -> Option<Map<String, Value>> {
+    let a = row(&c.db, &format!("SELECT * FROM {} WHERE id = ?1", lib.albums), id)?;
+    (a.get("world_id")?.as_i64() == Some(wid)).then_some(a)
+}
+
+fn lib_album_new(c: &mut Ctx, lib: &Lib, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = lib_editor(c, lib)?;
+    let name = take_chars(&strip(f.get("name").unwrap_or("")), 120);
+    let name = if name.is_empty() { "Untitled Album".to_string() } else { name };
+    let count: i64 = c.db.query_row(&format!("SELECT COUNT(*) FROM {} WHERE world_id = ?1", lib.albums), [wid], |r| r.get(0)).ok()?;
+    if count >= 100 {
+        return None;
+    }
+    let parent = match digit_field(f.get("parent_id").unwrap_or("")).ok()? {
+        Some(pid) => Sql::Integer(lib_album(c, lib, wid, pid)?.get("id")?.as_i64()?),
+        None => Sql::Null,
+    };
+    let id = orm::insert(&c.db, lib.albums, &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("parent_id", parent)])?;
+    redirect(&format!("{}/albums/{id}", lib.base))
+}
+
+fn lib_album_rename(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = lib_editor(c, lib)?;
+    lib_album(c, lib, wid, ids[0])?;
+    let name = take_chars(&strip(f.get("name").unwrap_or("")), 120);
+    if !name.is_empty() {
+        orm::update(&c.db, lib.albums, ids[0], &[("name", s(&name))])?;
+    }
+    redirect(&format!("{}/albums/{}", lib.base, ids[0]))
+}
+
+/// The files an item owns (`_delete_clip_file` / `_delete_doc_file`)
+fn lib_item_files(lib: &Lib, item: &Map<String, Value>) -> Vec<String> {
+    lib.files.iter().filter_map(|k| item.get(*k).and_then(|v| v.as_str()).map(str::to_string)).collect()
+}
+
+/// `_sheets_referencing_count(db, doc_ids)`
+fn sheets_using(c: &Ctx, doc_ids: &[i64]) -> Option<i64> {
+    let mut n = 0;
+    for id in doc_ids {
+        n += c.db.query_row("SELECT COUNT(*) FROM character_sheets WHERE template_id = ?1", [id], |r| r.get::<_, i64>(0)).ok()?;
+    }
+    Some(n)
+}
+
+fn lib_album_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = lib_editor(c, lib)?;
+    let album = lib_album(c, lib, wid, ids[0])?;
+    // the album and everything nested under it (media_albums.descendant_albums)
+    let mut all = vec![ids[0]];
+    let mut frontier = vec![ids[0]];
+    while !frontier.is_empty() {
+        let mut next = vec![];
+        for pid in &frontier {
+            let mut stmt = c.db.prepare(&format!("SELECT id FROM {} WHERE parent_id = ?1", lib.albums)).ok()?;
+            for r in stmt.query_map([pid], |r| r.get::<_, i64>(0)).ok()? {
+                next.push(r.ok()?);
+            }
+        }
+        all.extend(next.iter().copied());
+        frontier = next;
+    }
+    let mut items = vec![];
+    for aid in &all {
+        let mut stmt = c.db.prepare(&format!("SELECT * FROM {} WHERE album_id = ?1", lib.items)).ok()?;
+        let rows: Vec<Map<String, Value>> = stmt.query_map([aid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        items.extend(rows);
+    }
+    let item_ids: Vec<i64> = items.iter().filter_map(|i| i.get("id").and_then(|v| v.as_i64())).collect();
+    if lib.sheets && sheets_using(c, &item_ids)? > 0 {
+        return None; // the 400: Python's
+    }
+    let mut files = vec![];
+    for it in &items {
+        files.extend(lib_item_files(lib, it));
+        c.db.execute(&format!("DELETE FROM {} WHERE id = ?1", lib.items), [it.get("id")?.as_i64()?]).ok()?;
+    }
+    for aid in &all {
+        c.db.execute(&format!("DELETE FROM {} WHERE id = ?1", lib.albums), [aid]).ok()?;
+    }
+    for f in files {
+        remove_upload(c, &f);
+    }
+    match album.get("parent_id").and_then(|v| v.as_i64()) {
+        Some(p) if p != 0 => redirect(&format!("{}/albums/{p}", lib.base)),
+        _ => redirect(lib.base),
+    }
+}
+
+/// `_clip_or_404` / `_doc_or_404`
+fn lib_item(c: &Ctx, lib: &Lib, wid: i64, id: i64) -> Option<Map<String, Value>> {
+    let it = row(&c.db, &format!("SELECT * FROM {} WHERE id = ?1", lib.items), id)?;
+    (it.get("world_id")?.as_i64() == Some(wid)).then_some(it)
+}
+
+/// The world's now-playing broadcast is this item's file
+fn now_playing_is(c: &Ctx, wid: i64, item: &Map<String, Value>) -> Option<bool> {
+    let w = row(&c.db, "SELECT now_playing_url FROM worlds WHERE id = ?1", wid)?;
+    Some(w.get("now_playing_url").filter(|v| !v.is_null()) == item.get("file_url"))
+}
+
+fn lib_item_edit(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = lib_editor(c, lib)?;
+    let item = lib_item(c, lib, wid, ids[0])?;
+    let mut set: Vec<(&str, Sql)> = vec![];
+    let name = take_chars(&strip(f.get("name").unwrap_or("")), 256);
+    if !name.is_empty() {
+        set.push(("name", s(&name)));
+    }
+    set.push(("description", s(&take_chars(&strip(f.get("description").unwrap_or("")), 512))));
+    let visible = flag_param(&f, "visible_to_players");
+    set.push(("visible_to_players", Sql::Integer(visible)));
+    if lib.sheets {
+        set.push(("is_character_sheet_template", Sql::Integer(flag_param(&f, "is_character_sheet_template"))));
+    }
+    if lib.entity {
+        let ent = match digit_field(f.get("entity_id").unwrap_or("")).ok()? {
+            Some(eid) => {
+                let w: Option<i64> = c.db.query_row("SELECT world_id FROM entities WHERE id = ?1", [eid], |r| r.get(0)).ok().flatten();
+                if w == Some(wid) { Sql::Integer(eid) } else { Sql::Null }
+            }
+            None => Sql::Null,
+        };
+        set.push(("entity_id", ent));
+    }
+    if lib.now_playing && visible == 0 && now_playing_is(c, wid, &item)? {
+        return None; // hiding the clip players are hearing stops the broadcast and clears Python's in-memory spotlight cache: Python's
+    }
+    let album = match digit_field(f.get("album_id").unwrap_or("")).ok()? {
+        Some(aid) => Some(lib_album(c, lib, wid, aid)?.get("id")?.as_i64()?),
+        None => None,
+    };
+    set.push(("album_id", album.map_or(Sql::Null, Sql::Integer)));
+    orm::update(&c.db, lib.items, ids[0], &set)?;
+    match album {
+        Some(a) => redirect(&format!("{}/albums/{a}", lib.base)),
+        None => redirect(lib.base),
+    }
+}
+
+fn lib_item_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = lib_editor(c, lib)?;
+    let item = lib_item(c, lib, wid, ids[0])?;
+    if lib.sheets && sheets_using(c, &[ids[0]])? > 0 {
+        return None;
+    }
+    if lib.now_playing && now_playing_is(c, wid, &item)? {
+        return None; // the broadcast of this clip ends with it: Python's
+    }
+    c.db.execute(&format!("DELETE FROM {} WHERE id = ?1", lib.items), [ids[0]]).ok()?;
+    for f in lib_item_files(lib, &item) {
+        remove_upload(c, &f);
+    }
+    match item.get("album_id").and_then(|v| v.as_i64()) {
+        Some(a) if a != 0 => redirect(&format!("{}/albums/{a}", lib.base)),
+        _ => redirect(lib.base),
+    }
 }

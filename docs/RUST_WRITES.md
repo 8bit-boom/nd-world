@@ -76,6 +76,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /calendar/config` (`calendar_config`'s cleaners: months, moons, holidays, weekday names, year format; `str()` / `int()` of values this port cannot read as Python does: Python's), `/api/calendar/icons/<id>/delete` (with its file) | 19 |
 | `POST /api/facts/bulk` (dedup by `_normalized_fact_key`; non-ASCII facts, where Python's and Rust's lower() can differ: Python's), the facts_parse job's `draft_consumed` | 20 |
 | `POST /tables/import` (a JSON file upload; two tables with one slug in a file: Python's), `/api/quests/apply` (reviewed suggestions: new quests and updates) | 21 |
+| `POST /audio`, `/video`, `/pages`: `/albums/new`, `/albums/<id>/rename`, `/albums/<id>/delete` (nested albums, their items and files), `/<id>/edit`, `/<id>/delete` (`edits::Lib`; hiding / deleting the clip players are hearing, and page templates still in use: Python's) | 22 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

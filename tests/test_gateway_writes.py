@@ -1663,3 +1663,140 @@ def test_tables_import_and_quests_apply_are_pythons(client, seed):
             _same_rows(res[0][2], res[1][2])
             served += res[1][0].headers.get("x-nd-served-by") == "gateway"
     assert served >= 4, served
+
+
+# ── media libraries ───────────────────────────────────────────────────────────
+
+_LIBS = {"audio": ("audio_albums", "audio_clips", "AudioAlbum", "AudioClip"), "video": ("video_albums", "video_clips", "VideoAlbum", "VideoClip"),
+         "pages": ("page_albums", "page_docs", "PageAlbum", "PageDoc")}
+
+
+def _add(model_name, **kw):
+    from app.database import SessionLocal
+    from app import models
+    db = SessionLocal()
+    try:
+        o = getattr(models, model_name)(**kw)
+        db.add(o)
+        db.commit()
+        return o.id
+    finally:
+        db.close()
+
+
+def test_media_library_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({s: {"player": "edit", "assistant": "edit"} for s in ("audio", "video", "pages")})
+        db.commit()
+    finally:
+        db.close()
+    [ent] = _entities(w, 1)
+    [far_ent] = _entities(seed.world_b.id, 1)
+    served = 0
+    n = [0]
+
+    def item(lib, album_id, **kw):
+        n[0] += 1
+        (up / lib).mkdir(parents=True, exist_ok=True)
+        f = up / lib / f"gw-{n[0]}.bin"
+        f.write_bytes(b"x")
+        extra = {"poster_url": f"/uploads/{lib}/gw-{n[0]}.bin.jpg"} if lib == "video" else {}
+        if lib == "video":
+            (up / lib / f"gw-{n[0]}.bin.jpg").write_bytes(b"p")
+        return _add(_LIBS[lib][3], world_id=w, name="I", file_url=f"/uploads/{lib}/gw-{n[0]}.bin", album_id=album_id, **extra, **kw), f
+
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for lib, (atab, itab, amodel, imodel) in _LIBS.items():
+            parent = _add(amodel, world_id=w, name="Parent")
+            far = _add(amodel, world_id=seed.world_b.id, name="Far")
+            for form in ({"name": "  Songs  "}, {}, {"name": "x" * 200, "parent_id": str(parent)}, {"parent_id": str(far)}, {"parent_id": "abc"}, {"parent_id": " 99999"}):
+                ra = d.post(f"/{lib}/albums/new", data=form, follow_redirects=False)
+                na = _newest(atab)
+                rb = via.post(f"/{lib}/albums/new", data=form, follow_redirects=False)
+                nb = _newest(atab)
+                created = ra.status_code == 303 and "/albums/" in ra.headers.get("location", "")
+                _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+                if created:
+                    _same_rows(na, nb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+            for form in ({"name": " New "}, {"name": "  "}):
+                ids = [_add(amodel, world_id=w, name="Old") for _ in range(2)]
+                ra = d.post(f"/{lib}/albums/{ids[0]}/rename", data=form, follow_redirects=False)
+                rb = via.post(f"/{lib}/albums/{ids[1]}/rename", data=form, follow_redirects=False)
+                _same_answer(ra, rb, ids[0], ids[1])
+                _same_rows(_row(atab, ids[0]), _row(atab, ids[1]))
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+            # album delete: a nested tree with items and their files
+            trees = []
+            for _ in range(2):
+                top = _add(amodel, world_id=w, name="Top", parent_id=parent)
+                sub = _add(amodel, world_id=w, name="Sub", parent_id=top)
+                items = [item(lib, top), item(lib, sub)]
+                trees.append((top, sub, items))
+            ra = d.post(f"/{lib}/albums/{trees[0][0]}/delete", follow_redirects=False)
+            rb = via.post(f"/{lib}/albums/{trees[1][0]}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            for k in range(2):
+                assert (_row(atab, trees[0][1]) is None) == (_row(atab, trees[1][1]) is None)
+                assert (_row(itab, trees[0][2][k][0]) is None) == (_row(itab, trees[1][2][k][0]) is None)
+                assert trees[0][2][k][1].exists() == trees[1][2][k][1].exists()
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+            # item edit / delete
+            forms = [{"name": " Renamed ", "description": " d ", "visible_to_players": "on", "album_id": str(parent), "entity_id": str(ent),
+                      "is_character_sheet_template": "1"},
+                     {}, {"album_id": str(far)}, {"entity_id": str(far_ent), "album_id": "x"}, {"name": "   ", "visible_to_players": ""}, {"entity_id": "٣"}]
+            for form in forms:
+                ids = [item(lib, None, visible_to_players=True)[0] for _ in range(2)]
+                before = [_row(itab, i) for i in ids]
+                ra = d.post(f"/{lib}/{ids[0]}/edit", data=form, follow_redirects=False)
+                rb = via.post(f"/{lib}/{ids[1]}/edit", data=form, follow_redirects=False)
+                _same_answer(ra, rb)
+                _same_rows(_row(itab, ids[0]), _row(itab, ids[1]), before[0], before[1], ignore=("file_url", "poster_url"))
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+            pairs = [item(lib, parent) for _ in range(2)]
+            ra = d.post(f"/{lib}/{pairs[0][0]}/delete", follow_redirects=False)
+            rb = via.post(f"/{lib}/{pairs[1][0]}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            assert (_row(itab, pairs[0][0]) is None) == (_row(itab, pairs[1][0]) is None)
+            assert pairs[0][1].exists() == pairs[1][1].exists()
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        # audio: hiding or deleting the clip players are hearing ends the broadcast (Python's, both ways)
+        if email == seed.gm.email:
+            for action in ("edit", "delete"):
+                for side in (d, via):
+                    cid, _f = item("audio", None)
+                    db = SessionLocal()
+                    try:
+                        wa = db.query(World).filter(World.id == w).first()
+                        wa.now_playing_url = _row("audio_clips", cid)["file_url"]
+                        db.commit()
+                    finally:
+                        db.close()
+                    r = side.post(f"/audio/{cid}/{action}", data={"visible_to_players": ""}, follow_redirects=False)
+                    assert r.status_code == 303
+                    assert _row("worlds", w)["now_playing_url"] is None, (action, side)
+        # a page still used as a character-sheet template cannot be deleted (alone or in its album)
+        if email == seed.gm.email:
+            for target in ("doc", "album"):
+                res = []
+                for side in (d, via):
+                    alb = _add("PageAlbum", world_id=w, name="Sheets")
+                    doc, _f = item("pages", alb)
+                    _add("CharacterSheet", world_id=w, template_id=doc, owner_user_id=seed.player_a.id, name="S")
+                    url = f"/pages/{doc}/delete" if target == "doc" else f"/pages/albums/{alb}/delete"
+                    res.append((side.post(url, follow_redirects=False), doc))
+                _same_answer(res[0][0], res[1][0])
+                assert res[0][0].status_code == 400
+                assert _row("page_docs", res[0][1]) is not None and _row("page_docs", res[1][1]) is not None
+    assert served >= 30, served
