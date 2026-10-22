@@ -1086,3 +1086,107 @@ def test_character_xp_conditions_and_currency_are_pythons(client, seed):
                 assert _logs(ids[0]) == _logs(ids[1]), (path, body, _logs(ids[0]), _logs(ids[1]))
                 served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 50, served
+
+
+def _pc_forms():
+    full = [("name", "  Kira  "), ("player_name", " Pat "), ("race", "Elf"), ("char_class", "Rogue"), ("level", "25"), ("xp", "-4"), ("backstory", "b\r\nx"),
+            ("notes", ""), ("race_id", " elf "), ("max_hp", "0"), ("current_hp", ""), ("shock_max", "3"), ("pp_current", "-2"), ("minor_edge", " Quick "),
+            ("minor_edge_count", "2"), ("sheet_template_id", ""), ("stats_json", json.dumps([{"id": "str", "value": 4}, {"id": "dex", "value": 3}])),
+            ("currency_json", ""), ("custom_fields_json", '{"a": 1}'), ("equipment_json", "{bad")]
+    return [full, [("name", "")], [], [("level", "x")], [("level", " 3")], [("current_hp", "7"), ("max_hp", "12")], [("sheet_template_id", "abc"), ("name", "T")],
+            [("stats_json", "NaN")], [("conditions_json", '["Burn"]'), ("app_extra_json", "")], [("name", "Ünï ✓"), ("level", "")]]
+
+
+def test_character_create_edit_owner_delete_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import CharacterLog, Party, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.max_characters_per_player = 100
+        db.commit()
+    finally:
+        db.close()
+    w = seed.world_a.id
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in _pc_forms():
+            for how in ("urlencoded", "multipart"):
+                ra = _send_file(d, "/characters/new", form, how)
+                na = _newest("player_characters")
+                if ra.status_code == 303:
+                    _drop_pc(na["id"])   # a player's character limit must see the same count for both requests
+                rb = _send_file(via, "/characters/new", form, how)
+                nb = _newest("player_characters")
+                created = ra.status_code == 303 and ra.headers["location"].startswith("/characters/")
+                _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+                if created:
+                    _same_rows(na, nb)
+                    _drop_pc(nb["id"])
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+                ids = [_pc(world_id=w, owner_user_id=seed.player_a.id, name="Old", level=4, xp=10, race_id=None, max_hp=9, current_hp=3,
+                           stats_json=json.dumps([{"id": "str", "value": 1}])) for _ in range(2)]
+                before = [_row("player_characters", i) for i in ids]
+                ra = _send_file(d, f"/characters/{ids[0]}/edit", form, how)
+                rb = _send_file(via, f"/characters/{ids[1]}/edit", form, how)
+                _same_answer(ra, rb, ids[0], ids[1])
+                _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for form in ({"owner_user_id": str(seed.player_a.id)}, {"owner_user_id": ""}, {"owner_user_id": str(seed.player_b.id)}, {"owner_user_id": str(seed.gm.id)},
+                     {"owner_user_id": "x"}, {"owner_user_id": " 99999 "}, {}):
+            for start_name in ("", "Kept"):
+                ids = [_pc(world_id=w, owner_user_id=None, name="O", player_name=start_name) for _ in range(2)]
+                before = [_row("player_characters", i) for i in ids]
+                ra = d.post(f"/characters/{ids[0]}/owner", data=form, follow_redirects=False)
+                rb = via.post(f"/characters/{ids[1]}/owner", data=form, follow_redirects=False)
+                _same_answer(ra, rb, ids[0], ids[1])
+                _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for owner in (seed.player_a.id, seed.player_b.id):
+            ids = [_pc(world_id=w, owner_user_id=owner, name="Del") for _ in range(2)]
+            parties = []
+            for i in ids:
+                other = _pc(world_id=w, owner_user_id=owner, name="Stay")
+                loot = json.dumps([{"lid": "a1", "name": "Rope", "qty": 1, "notes": "", "claimed_by": [i, other]}, {"lid": "a2", "name": "x", "claimed_by": []}])
+                parties.append(_party(world_id=w, name="P", member_pc_ids_json=json.dumps([other, i]), loot_json=loot))
+                db = SessionLocal()
+                try:
+                    db.add(CharacterLog(world_id=w, character_id=i, actor="a", kind="k", text="t")); db.commit()
+                finally:
+                    db.close()
+            before = [_row("parties", p) for p in parties]
+            ra = d.post(f"/characters/{ids[0]}/delete", follow_redirects=False)
+            rb = via.post(f"/characters/{ids[1]}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]))
+            pa, pb = _row("parties", parties[0]), _row("parties", parties[1])
+            _same_rows(pa, pb, before[0], before[1], ignore=("member_pc_ids_json", "loot_json"))
+            assert (pa["member_pc_ids_json"] == before[0]["member_pc_ids_json"]) == (pb["member_pc_ids_json"] == before[1]["member_pc_ids_json"])
+            assert (pa["loot_json"] == before[0]["loot_json"]) == (pb["loot_json"] == before[1]["loot_json"])
+            assert len(_logs(ids[0])) == len(_logs(ids[1]))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 20, served
+
+
+def _send_file(client, url, form, how):
+    """The character form: urlencoded, or multipart as a browser sends it with no portrait chosen"""
+    if how == "urlencoded":
+        return client.post(url, content=urlencode(form), headers={"content-type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+    b = "----WebKitFormBoundaryNd7x"
+    parts = [f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n'.encode() + v.encode() + b"\r\n" for k, v in form]
+    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="portrait"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n\r\n'.encode())
+    return client.post(url, content=b"".join(parts) + f"--{b}--\r\n".encode(), headers={"content-type": f"multipart/form-data; boundary={b}"}, follow_redirects=False)
+
+
+def _drop_pc(pc_id):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        db.execute(text("DELETE FROM player_characters WHERE id = :i"), {"i": pc_id})
+        db.commit()
+    finally:
+        db.close()

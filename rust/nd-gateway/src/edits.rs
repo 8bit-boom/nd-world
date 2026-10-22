@@ -163,6 +163,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/alias", entity_alias),
     ("/api/characters/{}/hp-async", pc_hp),
     ("/api/characters/{}/shock", pc_shock),
+    ("/characters/new", pc_new),
+    ("/characters/{}/edit", pc_edit),
+    ("/characters/{}/owner", pc_owner),
+    ("/characters/{}/delete", pc_delete),
     ("/api/characters/{}/xp", pc_xp),
     ("/api/characters/{}/conditions", pc_conditions),
     ("/api/characters/{}/currency", pc_currency),
@@ -1179,9 +1183,14 @@ const QUOTE: &percent_encoding::AsciiSet =
 /// The entity form (multipart from the browser, or urlencoded): its fields, when the only file part is an empty `image_file` (no file
 /// chosen) - an upload is Python's
 fn entity_form(c: &Ctx) -> Option<Form> {
+    upload_form(c, "image_file")
+}
+
+/// A form with one optional file input `file_field` (multipart or urlencoded): its fields, when no file was chosen - an upload is Python's
+fn upload_form(c: &Ctx, file_field: &str) -> Option<Form> {
     if content_type(c.headers) == "multipart/form-data" {
         let (f, files) = parse_multipart(c.headers, c.body)?;
-        if files.iter().any(|p| p.name != "image_file" || !p.filename.is_empty() || p.len != 0) || f.has("image_file") {
+        if files.iter().any(|p| p.name != file_field || !p.filename.is_empty() || p.len != 0) || f.has(file_field) {
             return None;
         }
         return Some(f);
@@ -2107,4 +2116,243 @@ fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"abbr": if name.is_empty() { Value::Null } else { json!(name) }, "value": after}))
+}
+
+/// `gi(k, d)`: `int(data.get(k) or d)` (an int() Python reads its own way - signs, spaces, other digits - is Python's)
+fn form_int(f: &Form, k: &str, d: i64) -> Option<i64> {
+    match f.get(k).filter(|v| !v.is_empty()) {
+        None => Some(d),
+        Some(v) => py_int(v),
+    }
+}
+
+/// `gs(k, d)`: `str(data.get(k) or d).strip()`
+fn form_text(f: &Form, k: &str, d: &str) -> String {
+    strip(f.get(k).filter(|v| !v.is_empty()).unwrap_or(d))
+}
+
+/// `_apply_form(pc, data, partial)`: the columns to write (`cur` = the stored row, empty for a new character)
+fn apply_pc_form(db: &Connection, f: &Form, cur: &Map<String, Value>, partial: bool) -> Option<Vec<(&'static str, Sql)>> {
+    let has = |k: &str| !partial || f.has(k);
+    let text_col = |k: &str| cur.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut cols: Vec<(&'static str, Sql)> = vec![];
+    let mut name = text_col("name");
+    for k in ["name", "player_name", "race", "char_class", "backstory", "notes"] {
+        if has(k) {
+            let v = form_text(f, k, "");
+            if k == "name" {
+                name = v;
+            } else {
+                cols.push((k, s(&v)));
+            }
+        }
+    }
+    cols.push(("name", s(if name.is_empty() { "Unnamed" } else { &name })));
+    cols.push(("race_id", s(&form_text(f, "race_id", &text_col("race_id")))));
+    cols.push(("profession_id", s(&form_text(f, "profession_id", &text_col("profession_id")))));
+    if has("level") {
+        cols.push(("level", Sql::Integer(form_int(f, "level", 1)?.clamp(1, 20))));
+    }
+    if has("xp") {
+        cols.push(("xp", Sql::Integer(form_int(f, "xp", 0)?.max(0))));
+    }
+    let mut max_hp = col_int(cur, "max_hp");
+    if has("max_hp") {
+        max_hp = form_int(f, "max_hp", 0)?.max(0);
+        cols.push(("max_hp", Sql::Integer(max_hp)));
+    }
+    let hp_given = has("current_hp") && !strip(f.get("current_hp").unwrap_or("")).is_empty();
+    if hp_given {
+        cols.push(("current_hp", Sql::Integer(form_int(f, "current_hp", max_hp)?)));
+    }
+    for k in ["shock_max", "shock_current", "pp_current", "mp_current"] {
+        if has(k) {
+            cols.push((k, Sql::Integer(form_int(f, k, 0)?.max(0))));
+        }
+    }
+    for k in ["minor_edge", "major_edge"] {
+        if has(k) {
+            cols.push((k, s(&form_text(f, k, ""))));
+        }
+    }
+    cols.push(("minor_edge_count", Sql::Integer(form_int(f, "minor_edge_count", col_int(cur, "minor_edge_count"))?.max(0))));
+    cols.push(("major_edge_count", Sql::Integer(form_int(f, "major_edge_count", col_int(cur, "major_edge_count"))?.max(0))));
+    let mut tpl = cur.get("sheet_template_id").and_then(|v| v.as_i64());
+    if has("sheet_template_id") {
+        tpl = match f.get("sheet_template_id").unwrap_or("") {
+            "" => None,
+            v if v.bytes().all(|b| b.is_ascii_digit()) && v.len() <= 15 => Some(v.parse().ok()?),
+            v if v.is_ascii() => None,
+            _ => return None, // str.isdigit() beyond ASCII: Python's
+        };
+        cols.push(("sheet_template_id", tpl.map_or(Sql::Null, Sql::Integer)));
+    }
+    for (k, empty) in [("custom_fields_json", "{}"), ("app_extra_json", "{}"), ("stats_json", "[]"), ("skills_json", "[]"), ("currency_json", "[]"),
+                       ("equipment_json", "[]"), ("feats_json", "[]"), ("attacks_json", "[]"), ("cyberware_json", "[]"), ("conditions_json", "[]")] {
+        if has(k) {
+            let raw = f.get(k).filter(|v| !v.is_empty()).unwrap_or(empty);
+            serde_json::from_str::<Value>(raw).ok()?; // what serde refuses, json.loads may take (NaN, ...): Python's
+            cols.push((k, s(raw)));
+        }
+    }
+    if !partial && !hp_given {
+        // pc_maxima of the new, unsaved character: its template relationship is not loaded yet, so a custom sheet counts as native here
+        let mut m = Map::new();
+        for (k, v) in &cols {
+            if let Sql::Text(x) = v {
+                m.insert(k.to_string(), json!(x));
+            } else if let Sql::Integer(x) = v {
+                m.insert(k.to_string(), json!(x));
+            }
+        }
+        let stats = stat_values(&m)?;
+        let native = !stats.is_empty() || tpl.filter(|t| *t != 0).is_none();
+        let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+        let phys = if native { get("str") + get("dex") + get("bod") + get("per") } else { 0 };
+        let _ = db;
+        cols.push(("current_hp", Sql::Integer(if max_hp > 0 { max_hp } else if native { phys + 10 } else { 0 })));
+    }
+    cols.push(("updated_at", s(&orm::now_stamp())));
+    Some(cols)
+}
+
+fn pc_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let f = upload_form(c, "portrait")?;
+    let world = c.world_id()?;
+    let mut owner = Sql::Null;
+    if !c.p.is_gm {
+        let owned: i64 = c.db.query_row("SELECT COUNT(*) FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2", [world, c.p.user_id], |r| r.get(0)).ok()?;
+        let limit = c.p.world.as_ref()?.get("max_characters_per_player").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(1).max(1);
+        if owned >= limit {
+            return None; // the limit's 400: Python's
+        }
+        owner = Sql::Integer(c.p.user_id);
+    }
+    let mut cols = apply_pc_form(&c.db, &f, &Map::new(), false)?;
+    cols.push(("world_id", Sql::Integer(world)));
+    cols.push(("owner_user_id", owner));
+    let id = orm::insert(&c.db, "player_characters", &cols)?;
+    redirect(&format!("/characters/{id}"))
+}
+
+fn pc_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = upload_form(c, "portrait")?;
+    let pc = managed_pc(c, ids[0])?;
+    let cols = apply_pc_form(&c.db, &f, &pc, true)?;
+    orm::update(&c.db, "player_characters", ids[0], &cols)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    redirect(&format!("/characters/{}", ids[0]))
+}
+
+fn pc_owner(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    if !c.p.is_gm {
+        return None;
+    }
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
+    let world = pc.get("world_id")?.as_i64()?;
+    if Some(world) != c.world_id() {
+        return None;
+    }
+    let raw = opt(&f, "owner_user_id", "");
+    if !raw.is_ascii() {
+        return None;
+    }
+    let want = strip(raw);
+    let mut cols: Vec<(&str, Sql)> = vec![];
+    if want.is_empty() {
+        cols.push(("owner_user_id", Sql::Null));
+    } else {
+        let uid = py_int(&want).filter(|_| !want.starts_with('-'))?;
+        let target: (i64, Option<String>, Option<String>) = c
+            .db
+            .query_row("SELECT id, display_name, email FROM users WHERE id = ?1 AND is_gm = 0", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .ok()?;
+        let member: i64 = c.db.query_row("SELECT COUNT(*) FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [world, uid], |r| r.get(0)).ok()?;
+        let others: i64 = c
+            .db
+            .query_row("SELECT COUNT(*) FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 AND id != ?3", [world, uid, ids[0]], |r| r.get(0))
+            .ok()?;
+        let limit = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", world)?.get("max_characters_per_player").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(1).max(1);
+        if member == 0 || others >= limit {
+            return None; // the 400s: Python's
+        }
+        cols.push(("owner_user_id", Sql::Integer(target.0)));
+        if pc.get("player_name").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+            // `target.display_name or target.email`
+            let who = match target.1.filter(|v| !v.is_empty()) {
+                Some(n) => Some(n),
+                None => target.2,
+            };
+            cols.push(("player_name", who.map_or(Sql::Null, |w| s(&w))));
+        }
+    }
+    orm::update(&c.db, "player_characters", ids[0], &cols)?;
+    redirect(&format!("/characters/{}", ids[0]))
+}
+
+fn pc_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = managed_pc(c, ids[0])?;
+    let (id, world) = (ids[0], pc.get("world_id")?.as_i64()?);
+    // detach_pc first, read-only, so anything it would rewrite that serde cannot (non-canonical JSON) sends the whole request to Python
+    let mut party_writes: Vec<(i64, Vec<(&str, Sql)>)> = vec![];
+    let mut stmt = c.db.prepare("SELECT id, member_pc_ids_json, loot_json FROM parties WHERE world_id = ?1").ok()?;
+    let parties: Vec<(i64, Option<String>, Option<String>)> =
+        stmt.query_map([world], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    drop(stmt);
+    for (pid, members, loot) in parties {
+        let mut set: Vec<(&str, Sql)> = vec![];
+        let members = members.filter(|m| !m.is_empty()).unwrap_or_else(|| "[]".into());
+        let ids_in: Vec<i64> = match serde_json::from_str::<Value>(&members) {
+            Ok(Value::Array(a)) => {
+                if a.iter().any(|x| x.is_f64() || x.is_boolean()) {
+                    return None; // isinstance(x, int) of bools / 1.0: Python's
+                }
+                a.iter().filter_map(|x| x.as_i64()).collect()
+            }
+            Ok(_) => vec![],
+            Err(_) => return None,
+        };
+        if ids_in.contains(&id) {
+            set.push(("member_pc_ids_json", s(&ints_json(&ids_in.into_iter().filter(|x| *x != id).collect::<Vec<_>>()))));
+        }
+        let loot = loot.filter(|l| !l.is_empty()).unwrap_or_else(|| "[]".into());
+        if let Ok(mut lv) = serde_json::from_str::<Value>(&loot) {
+            let mut changed = false;
+            if let Value::Array(items) = &mut lv {
+                for it in items.iter_mut() {
+                    let Some(m) = it.as_object_mut() else { continue };
+                    let claimed = match m.get("claimed_by") {
+                        None | Some(Value::Null) => continue,
+                        Some(Value::Array(a)) if !a.iter().any(|x| x.is_boolean()) => a.clone(),
+                        _ => return None,
+                    };
+                    if claimed.iter().any(|x| x.as_i64() == Some(id) || x.as_f64() == Some(id as f64)) {
+                        m.insert("claimed_by".into(), Value::Array(claimed.into_iter().filter(|x| x.as_f64() != Some(id as f64)).collect()));
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                canonical_json(&loot)?;
+                set.push(("loot_json", s(&nd_render::py_dumps(&lv))));
+            }
+        } else {
+            return None; // bad JSON is no loot to Python, but serde also refuses some JSON json.loads takes: Python's
+        }
+        if !set.is_empty() {
+            party_writes.push((pid, set));
+        }
+    }
+    orm::bulk_update(&c.db, "character_sheets", &[("player_character_id", Sql::Null)], "player_character_id = ?", &[Sql::Integer(id)])?;
+    for table in ["character_journal_entries", "character_prefs", "character_log", "character_shares", "character_companions", "character_keepsakes"] {
+        c.db.execute(&format!("DELETE FROM {table} WHERE character_id = ?1"), [id]).ok()?;
+    }
+    for (pid, set) in party_writes {
+        orm::update(&c.db, "parties", pid, &set)?;
+    }
+    orm::bulk_update(&c.db, "calendar_events", &[("character_id", Sql::Null)], "character_id = ?", &[Sql::Integer(id)])?;
+    c.db.execute("DELETE FROM player_characters WHERE id = ?1", [id]).ok()?;
+    orm::touch(&c.db, world)?;
+    redirect("/characters")
 }
