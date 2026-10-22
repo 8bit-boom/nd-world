@@ -134,9 +134,12 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && req.uri().path() == "/maps" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && (req.uri().path() == "/maps" || req.uri().path().starts_with("/maps/"))
+        && app.cfg.rust_routes.iter().any(|r| r == "pages")
+    {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || maps::maps_page(&pages_, &cfg, &uri, &headers)).await {
+        let f = if uri.path() == "/maps" { maps::maps_page } else { maps::map_viewer };
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }

@@ -975,34 +975,7 @@ pub fn parties_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap)
     let parties = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut counts = Map::new();
     for party in &parties {
-        let arr = |k: &str| -> Option<Vec<Value>> {
-            match party.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-                None => Some(vec![]),
-                Some(s) => serde_json::from_str::<Value>(s).ok()?.as_array().cloned(),
-            }
-        };
-        let pcs = arr("member_pc_ids_json")?;
-        let ents = arr("member_entity_ids_json")?;
-        let n = if p.is_gm {
-            pcs.len() + ents.len()
-        } else {
-            let ids: Vec<i64> = ents.iter().filter_map(|v| v.as_i64().or_else(|| v.as_bool().map(|b| b as i64))).collect();
-            let pwid = party.get("world_id").and_then(|v| v.as_i64()).unwrap_or(wid);
-            let mut seen: Vec<i64> = vec![];
-            for id in ids {
-                let ok: i64 = db
-                    .query_row(
-                        "SELECT count(*) FROM entities e WHERE e.id = ?1 AND e.world_id = ?2 AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))",
-                        [id, pwid, p.user_id],
-                        |r| r.get(0),
-                    )
-                    .ok()?;
-                if ok > 0 && !seen.contains(&id) {
-                    seen.push(id);
-                }
-            }
-            pcs.len() + seen.len()
-        };
+        let n = party_member_count(&db, &p, party, wid)?;
         counts.insert(party.get("id")?.as_i64()?.to_string(), json!(n));
     }
     let can_create = edit_level(&p, &world, "parties")? && (p.is_gm || p.role.as_deref() == Some("assistant"));
@@ -1221,4 +1194,36 @@ pub(crate) fn can_edit_table_row(db: &rusqlite::Connection, p: &crate::layout::P
             edit && (p.is_gm || is_assistant || t.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(p.user_id))
         }
     })
+}
+
+/// `_party_visible_member_count`: characters plus companions, a non-GM counting only companions they may see (once each)
+pub(crate) fn party_member_count(db: &rusqlite::Connection, p: &crate::layout::PageCtx, party: &serde_json::Map<String, serde_json::Value>, wid: i64) -> Option<usize> {
+    use serde_json::Value;
+    let arr = |k: &str| -> Option<Vec<Value>> {
+        match party.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            None => Some(vec![]),
+            Some(s) => serde_json::from_str::<Value>(s).ok()?.as_array().cloned(),
+        }
+    };
+    let pcs = arr("member_pc_ids_json")?;
+    let ents = arr("member_entity_ids_json")?;
+    if p.is_gm {
+        return Some(pcs.len() + ents.len());
+    }
+    let ids: Vec<i64> = ents.iter().filter_map(|v| v.as_i64().or_else(|| v.as_bool().map(|b| b as i64))).collect();
+    let pwid = party.get("world_id").and_then(|v| v.as_i64()).unwrap_or(wid);
+    let mut seen: Vec<i64> = vec![];
+    for id in ids {
+        let ok: i64 = db
+            .query_row(
+                "SELECT count(*) FROM entities e WHERE e.id = ?1 AND e.world_id = ?2 AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))",
+                [id, pwid, p.user_id],
+                |r| r.get(0),
+            )
+            .ok()?;
+        if ok > 0 && !seen.contains(&id) {
+            seen.push(id);
+        }
+    }
+    Some(pcs.len() + seen.len())
 }

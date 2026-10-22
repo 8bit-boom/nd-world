@@ -1006,7 +1006,9 @@ def test_map_list_the_gateway_builds_is_pythons(client, seed):
     from pathlib import Path
     from .conftest import PLAYER_PASSWORD
     from app.database import SessionLocal
-    from app.models import Schematic, World
+    import shutil
+    import zlib
+    from app.models import Entity, Party, Schematic, World
     base = str(client.base_url)
     maps = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "maps"
     maps.mkdir(parents=True, exist_ok=True)
@@ -1015,9 +1017,23 @@ def test_map_list_the_gateway_builds_is_pythons(client, seed):
             "gw-b.json": {"world_id": w}, "gw-c.json": {"world_id": str(w), "name": "string id"}, "gw-d.json": {"world_id": w, "markers": {"a": 1}}}
     for n, d in made.items():
         (maps / n).write_text(json.dumps(d))
+    # a map with an uploaded picture whose tile pyramid is already cut (its meta written by hand, at the key map_tiles computes)
+    pic = maps.parent / "uploads" / "maps" / "gw-a.png"
+    pic.parent.mkdir(parents=True, exist_ok=True)
+    pic.write_bytes(b"\x89PNG fake picture bytes" * 10)
+    raw = pic.read_bytes()
+    key = f"gw-a-{len(raw):x}{zlib.crc32(raw[:65536]):08x}"
+    tiles = maps.parent / "map_tiles" / key
+    tiles.mkdir(parents=True, exist_ok=True)
+    (tiles / "meta.json").write_text(json.dumps({"key": key, "w": 100, "h": 50, "zmin": 0, "native": 0, "tile": 256, "tiles": 1}))
     db = SessionLocal()
     try:
-        db.add_all([Schematic(world_id=w, name="Base <b>", slug="gw-base"), Schematic(world_id=w, name="Annex", slug="gw-annex")])
+        db.add_all([Schematic(world_id=w, name="Base <b>", slug="gw-base"), Schematic(world_id=w, name="Annex", slug="gw-annex"),
+                    Party(world_id=w, name="Crew <c>", member_pc_ids_json="[1]", location_json=json.dumps({"kind": "map", "slug": "gw-a", "lat": 1.5, "lng": -2})),
+                    Party(world_id=w, name="Elsewhere", location_json=json.dumps({"kind": "map", "slug": "gw-b"})),
+                    Party(world_id=w, name="Nowhere")])
+        db.add(Entity(world_id=w, kind="npc", name="Mara <M>", visible_to_players=False))
+        db.add(Entity(world_id=w, kind="npc", name="ÉLAN"))
         wa = db.query(World).filter(World.id == w).first()
         wa.section_access_json = json.dumps({"maps": {"player": "read"}})
         db.commit()
@@ -1029,8 +1045,12 @@ def test_map_list_the_gateway_builds_is_pythons(client, seed):
                                  (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
             d = _signed_in(email, pw, world)
             via = _via(d, base)
-            served += _same_page(d, via, "/maps", email)
+            for u in ("/maps", "/maps/gw-a", "/maps/gw-b", "/maps/gw-c", "/maps/nope", "/maps/gw-d"):
+                served += _same_page(d, via, u, email)
     finally:
         for n in made:
             (maps / n).unlink(missing_ok=True)
-    assert served >= 3, served
+        pic.unlink(missing_ok=True)
+        shutil.rmtree(tiles, ignore_errors=True)
+    # a map picture without a fresh small copy is Python's (it queues one), so gw-a's list card and viewer stay with Python here
+    assert served >= 6, served

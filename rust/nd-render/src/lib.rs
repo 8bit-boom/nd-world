@@ -223,6 +223,17 @@ fn py_urlencode(v: Value) -> String {
 
 /// Python's `json.dumps(x, sort_keys=True)` (ensure_ascii, ", " / ": ") made HTML-safe the way Jinja2's `tojson` does.
 pub fn py_json(v: &serde_json::Value, out: &mut String) {
+    py_json_impl(v, out, true)
+}
+
+/// Python's plain `json.dumps(x)`: keys in insertion order, otherwise as `py_json`
+pub fn py_dumps(v: &serde_json::Value) -> String {
+    let mut out = String::new();
+    py_json_impl(v, &mut out, false);
+    out
+}
+
+fn py_json_impl(v: &serde_json::Value, out: &mut String, sort_keys: bool) {
     match v {
         serde_json::Value::Null => out.push_str("null"),
         serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -255,21 +266,23 @@ pub fn py_json(v: &serde_json::Value, out: &mut String) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                py_json(x, out);
+                py_json_impl(x, out, sort_keys);
             }
             out.push(']');
         }
         serde_json::Value::Object(o) => {
             let mut keys: Vec<&String> = o.keys().collect();
-            keys.sort();
+            if sort_keys {
+                keys.sort();
+            }
             out.push('{');
             for (i, k) in keys.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                py_json(&serde_json::Value::String((*k).clone()), out);
+                py_json_impl(&serde_json::Value::String((*k).clone()), out, sort_keys);
                 out.push_str(": ");
-                py_json(&o[*k], out);
+                py_json_impl(&o[*k], out, sort_keys);
             }
             out.push('}');
         }
