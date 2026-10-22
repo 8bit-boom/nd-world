@@ -999,3 +999,38 @@ def test_new_entity_form_the_gateway_builds_is_pythons(client, seed):
         for u in urls:
             served[u] += _same_page(d, via, u, email)
     assert all(v for u, v in served.items() if u not in edit_urls[1:]), served
+
+
+def test_map_list_the_gateway_builds_is_pythons(client, seed):
+    import os
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Schematic, World
+    base = str(client.base_url)
+    maps = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "maps"
+    maps.mkdir(parents=True, exist_ok=True)
+    w = seed.world_a.id
+    made = {"gw-a.json": {"world_id": w, "name": "Docks <d>", "width": 100, "height": 50, "markers": [{"x": 1}, {"x": 2}]},
+            "gw-b.json": {"world_id": w}, "gw-c.json": {"world_id": str(w), "name": "string id"}, "gw-d.json": {"world_id": w, "markers": {"a": 1}}}
+    for n, d in made.items():
+        (maps / n).write_text(json.dumps(d))
+    db = SessionLocal()
+    try:
+        db.add_all([Schematic(world_id=w, name="Base <b>", slug="gw-base"), Schematic(world_id=w, name="Annex", slug="gw-annex")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"maps": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    try:
+        for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.gm.email, GM_PASSWORD, "neon-dragons"),
+                                 (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+            d = _signed_in(email, pw, world)
+            via = _via(d, base)
+            served += _same_page(d, via, "/maps", email)
+    finally:
+        for n in made:
+            (maps / n).unlink(missing_ok=True)
+    assert served >= 3, served

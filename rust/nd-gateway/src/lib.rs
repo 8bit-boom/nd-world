@@ -10,6 +10,7 @@ pub mod files;
 pub mod gallery;
 pub mod layout;
 pub mod live;
+pub mod maps;
 pub mod media;
 pub mod pages;
 pub mod proxy;
@@ -130,6 +131,12 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = if uri.path() == "/images" { gallery::images_gallery } else { gallery::album_detail };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/maps" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || maps::maps_page(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
