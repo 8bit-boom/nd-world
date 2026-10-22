@@ -233,3 +233,13 @@ Found on the way: `tests/test_unsloth_audit_fixes.py::test_no_studio_api_key_is_
 The user asked for the whole app in Rust, phase by phase. Batch 1 ports the context `base.html` needs (`docs/RUST_PAGES.md`, "The layout
 context") and the first signed-in page, `/dice`, identical to Python's for three roles and five URL variants; 84 -> 237 pages/s. Fixed on the way:
 the gateway's live stream kept counters of rows that were gone (a table reset); it now reads the table as it is.
+
+## 16. Phase 2 closed: read-only pages
+
+Batches 5-29 ported the rest of the plan's phase 2 list - sessions, quests, parties, facts and tables lists, combat list, the calendar (month,
+agenda, year, settings), small form pages, pages addressed by an id, the media libraries (documents, audio, video, images with
+`discover_world_images`), the map list and viewer (with tile pyramids), boards, rules (with `rules_render` ported and differential-tested),
+search (FTS5 with the same weights) and the home dashboard. Exit criteria: golden HTML matches for every ported page (`tests/test_gateway_golden.py`,
+three roles each); throughput is in `docs/RUST_PAGES.md`. Which GET pages are still Python's, and why, is in `docs/RUST_PAGES.md` ("Phase 2
+status"). Fixed on the way: `app/core_rules.md` lines that markdown2 turned into headings; dict and float fidelity (insertion order, exact
+round-trip, Python's `repr`); `|thumb` on a non-text value.
