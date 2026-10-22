@@ -980,3 +980,75 @@ def test_party_loot_is_pythons(client, seed):
                 _no_new_lids(_row("parties", ids[0])["loot_json"], _row("parties", ids[1])["loot_json"])
                 served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 12, served
+
+
+# ── characters ────────────────────────────────────────────────────────────────
+
+def _pc(**kw):
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter
+    db = SessionLocal()
+    try:
+        p = PlayerCharacter(**kw)
+        db.add(p)
+        db.commit()
+        return p.id
+    finally:
+        db.close()
+
+
+def _logs(pc_id):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        return [dict(r) for r in db.execute(text("SELECT actor, kind, text, undo_json, undone FROM character_log WHERE character_id = :c ORDER BY id"),
+                                             {"c": pc_id}).mappings()]
+    finally:
+        db.close()
+
+
+_STATS = json.dumps([{"id": k, "value": v} for k, v in (("str", 3), ("dex", 2.9), ("bod", ""), ("per", None), ("wil", 4), ("int", 1), ("cha", 0), ("itu", 2))]
+                    + [{"id": "", "value": 9}, {"value": 5}, "x", {"id": "str", "value": 5}])
+
+
+def _pc_variants(seed, tpl):
+    w, o = seed.world_a.id, seed.player_a.id
+    return [dict(world_id=w, owner_user_id=o, name="A", stats_json=_STATS, current_hp=5, shock_current=1, pp_current=2, mp_current=3),
+            dict(world_id=w, owner_user_id=o, name="B", stats_json="[]", max_hp=30, shock_max=6, current_hp=None, temp_hp=4),
+            dict(world_id=w, owner_user_id=o, name="C", stats_json=_STATS, sheet_template_id=tpl, current_hp=2),
+            dict(world_id=w, owner_user_id=seed.player_b.id, name="D", stats_json="{bad", current_hp=1),
+            dict(world_id=w, owner_user_id=o, name="E", stats_json=json.dumps([{"id": "str", "value": "4"}]), current_hp=1)]
+
+
+def test_character_vitals_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        t = SheetTemplate(name="Custom", slug="custom-gw-test", sheet_mode="custom", world_id=seed.world_a.id)
+        db.add(t); db.commit()
+        tpl = t.id
+    finally:
+        db.close()
+    served = 0
+    calls = [("hp-async", {"action": "delta", "value": -3}), ("hp-async", {"action": "delta", "value": 99}), ("hp-async", {"value": 7}), ("hp-async", {}),
+             ("hp-async", {"action": "temp", "value": 5}), ("hp-async", {"action": "max", "value": 3}), ("hp-async", {"action": "max", "value": -1}),
+             ("hp-async", {"value": "3"}), ("hp-async", {"value": True}), ("hp-async", {"value": 2.5}), ("hp-async", {"value": None}), ("hp-async", {"action": 5, "value": 1}),
+             ("shock", {"action": "delta", "value": 2}), ("shock", {"value": 100}), ("shock", {"action": "rest"}), ("pp", {"action": "rest"}), ("pp", {"action": "delta", "value": -9}),
+             ("mp", {"action": "rest"}), ("mp", {"value": 4}), ("mp", {"action": "other", "value": 4})]
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for variant in _pc_variants(seed, tpl):
+            for path, body in calls:
+                ids = [_pc(**variant) for _ in range(2)]
+                before = [_row("player_characters", i) for i in ids]
+                ra = d.post(f"/api/characters/{ids[0]}/{path}", json=body)
+                rb = via.post(f"/api/characters/{ids[1]}/{path}", json=body)
+                _same_answer(ra, rb)
+                _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1], ignore=("name",))
+                assert _logs(ids[0]) == _logs(ids[1]), (path, body, _logs(ids[0]), _logs(ids[1]))
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 60, served

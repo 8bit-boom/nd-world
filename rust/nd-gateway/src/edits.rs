@@ -161,6 +161,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entities/bulk-folder", bulk_folder),
     ("/api/entities/bulk-visibility", bulk_visibility),
     ("/api/entity/{}/alias", entity_alias),
+    ("/api/characters/{}/hp-async", pc_hp),
+    ("/api/characters/{}/shock", pc_shock),
+    ("/api/characters/{}/pp", pc_pp),
+    ("/api/characters/{}/mp", pc_mp),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -1763,4 +1767,194 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::update(&c.db, "parties", ids[0], &[("loot_json", s(&nd_render::py_dumps(&list)))])?;
     orm::touch(&c.db, p.get("world_id")?.as_i64()?)?;
     json_response(&json!({"loot": list}))
+}
+
+// ── characters (app/routers/characters.py, app/pc_stats.py, app/char_extras.py) ──
+
+/// The character by id, when it is of the active world and the viewer may manage it (`_can_manage_character`: the GM or its owner)
+fn managed_pc(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id)?;
+    if pc.get("world_id")?.as_i64() != c.world_id() {
+        return None;
+    }
+    (c.p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)).then_some(pc)
+}
+
+fn col_int(m: &Map<String, Value>, k: &str) -> i64 {
+    m.get(k).and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+/// `stat_values(pc)`; None for stats Python reads its own way (text values, unhashable ids, JSON serde does not take)
+fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
+    let raw = pc.get("stats_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let stats = match serde_json::from_str::<Value>(raw) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    let mut out: Vec<(String, i64)> = vec![];
+    for s in stats.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        let Some(o) = s.as_object() else { continue };
+        let id = match o.get("id") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => continue,
+            Some(Value::String(x)) if x.is_empty() => continue,
+            Some(Value::String(x)) => x.clone(),
+            Some(Value::Number(n)) if n.as_f64() == Some(0.0) => continue,
+            Some(Value::Number(n)) => format!("\u{0}#{n}"), // a number id: never a stat name
+            _ => return None,
+        };
+        let v = match o.get("value") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => 0,
+            Some(Value::Number(n)) => n.as_f64()?.trunc() as i64,
+            Some(Value::String(x)) if x.is_empty() => 0,
+            _ => return None,
+        };
+        out.retain(|(k, _)| *k != id);
+        out.push((id, v));
+    }
+    Some(out)
+}
+
+/// `pc_maxima(pc)`: (hp, shock, pp, mp, native)
+fn pc_maxima(db: &Connection, pc: &Map<String, Value>) -> Option<(i64, i64, i64, i64, bool)> {
+    let stats = stat_values(pc)?;
+    let tpl = pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0);
+    let mut native = !stats.is_empty() || tpl.is_none();
+    if native {
+        if let Some(t) = tpl {
+            let mode: Option<String> = db.query_row("SELECT sheet_mode FROM sheet_templates WHERE id = ?1", [t], |r| r.get(0)).ok().flatten();
+            native = mode.as_deref() != Some("custom");
+        }
+    }
+    let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+    let (phys, ment) = if native {
+        (get("str") + get("dex") + get("bod") + get("per"), get("wil") + get("int") + get("cha") + get("itu"))
+    } else {
+        (0, 0)
+    };
+    let (hp, shock) = (col_int(pc, "max_hp"), col_int(pc, "shock_max"));
+    Some((if hp > 0 { hp } else if native { phys + 10 } else { 0 }, if shock > 0 { shock } else { ment }, phys, ment, native))
+}
+
+/// `int_field(body, key)` for a JSON int (floats, numeric text and bools are int()'s: Python's)
+fn body_int(b: &Map<String, Value>, key: &str) -> Option<i64> {
+    match b.get(key) {
+        None => Some(0),
+        Some(Value::Number(n)) => n.as_i64().filter(|v| v.abs() < 1 << 53),
+        _ => None,
+    }
+}
+
+/// `char_extras.log` (with `actor_name` of the viewer), keeping the newest 200 per character
+fn char_log(c: &Ctx, pc: &Map<String, Value>, kind: &str, text: &str, undo: &Value) -> Option<()> {
+    let (name, email): (Option<String>, Option<String>) =
+        c.db.query_row("SELECT display_name, email FROM users WHERE id = ?1", [c.p.user_id], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let actor = [name, email].into_iter().flatten().find(|v| !v.is_empty()).unwrap_or_else(|| "Someone".into());
+    let pc_id = pc.get("id")?.as_i64()?;
+    orm::insert(
+        &c.db,
+        "character_log",
+        &[
+            ("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)),
+            ("character_id", Sql::Integer(pc_id)),
+            ("actor", s(&take_chars(&actor, 120))),
+            ("kind", s(&take_chars(kind, 24))),
+            ("text", s(&take_chars(text, 300))),
+            ("undo_json", s(&nd_render::py_dumps(undo))),
+        ],
+    )?;
+    c.db.execute(
+        "DELETE FROM character_log WHERE id IN (SELECT id FROM character_log WHERE character_id = ?1 ORDER BY id DESC LIMIT -1 OFFSET 200)",
+        [pc_id],
+    )
+    .ok()?;
+    Some(())
+}
+
+/// `_log_num`: a numeric change, with its undo
+fn log_num(c: &Ctx, pc: &Map<String, Value>, op: &str, label: &str, before: i64, after: i64) -> Option<()> {
+    if before != after {
+        char_log(c, pc, op, &format!("{label} {before} \u{2192} {after}"), &json!({"op": op, "value": before}))?;
+    }
+    Some(())
+}
+
+fn pc_hp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let action = b.get("action").cloned().unwrap_or(json!("set"));
+    let val = body_int(&b, "value")?;
+    let before = col_int(&pc, "current_hp");
+    let (max_hp, ..) = pc_maxima(&c.db, &pc)?;
+    let temp = col_int(&pc, "temp_hp");
+    let mut set: Vec<(&str, Sql)> = vec![];
+    let mut after = pc.clone();
+    let cur = match action.as_str() {
+        Some("delta") => (before + val).min(max_hp + temp).max(0),
+        Some("temp") => {
+            set.push(("temp_hp", Sql::Integer(val.max(0))));
+            after.insert("temp_hp".into(), json!(val.max(0)));
+            before
+        }
+        Some("max") => {
+            set.push(("max_hp", Sql::Integer(val.max(0))));
+            after.insert("max_hp".into(), json!(val.max(0)));
+            let (new_max, ..) = pc_maxima(&c.db, &after)?;
+            if new_max != 0 { before.min(new_max) } else { before }
+        }
+        _ => val.min(max_hp + temp).max(0),
+    };
+    if action.as_str() != Some("temp") {
+        set.push(("current_hp", Sql::Integer(cur)));
+        after.insert("current_hp".into(), json!(cur));
+    }
+    orm::update(&c.db, "player_characters", ids[0], &set)?;
+    log_num(c, &pc, "hp", "HP", before, cur)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let (max_after, ..) = pc_maxima(&c.db, &after)?;
+    let field = |k: &str| after.get(k).cloned().unwrap_or(Value::Null);
+    let or0 = |k: &str| if after.get(k).is_none_or(|v| v.is_null()) { json!(0) } else { field(k) };
+    json_response(&json!({
+        "current_hp": field("current_hp"),
+        "max_hp": max_after,
+        "temp_hp": or0("temp_hp"),
+        "death_success": or0("death_saves_success"),
+        "death_failure": or0("death_saves_failure"),
+        "secondary_current": field("secondary_resource_current"),
+    }))
+}
+
+/// The Shock / PP / MP steppers: (column, log op, label, which maximum, whether "rest" restores half)
+fn pc_pool(c: &mut Ctx, id: i64, col: &str, op: &str, label: &str, which: usize, rest: bool, max_key: &str) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, id)?;
+    let action = b.get("action").cloned().unwrap_or(json!("set"));
+    let val = body_int(&b, "value")?;
+    let before = col_int(&pc, col);
+    let m = pc_maxima(&c.db, &pc)?;
+    let max = [m.0, m.1, m.2, m.3][which];
+    let cur = match action.as_str() {
+        Some("delta") => (before + val).min(max).max(0),
+        Some("set") => val.min(max).max(0),
+        Some("rest") if rest => (before + max.div_euclid(2)).min(max),
+        _ => before,
+    };
+    orm::update(&c.db, "player_characters", id, &[(col, Sql::Integer(cur))])?;
+    log_num(c, &pc, op, label, before, cur)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let mut out = Map::new();
+    out.insert(col.into(), json!(cur));
+    out.insert(max_key.into(), json!(max));
+    json_response(&Value::Object(out))
+}
+
+fn pc_shock(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    pc_pool(c, ids[0], "shock_current", "shock", "Shock", 1, false, "shock_max")
+}
+
+fn pc_pp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    pc_pool(c, ids[0], "pp_current", "pp", "PP", 2, true, "pp_max")
+}
+
+fn pc_mp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    pc_pool(c, ids[0], "mp_current", "mp", "MP", 3, true, "mp_max")
 }
