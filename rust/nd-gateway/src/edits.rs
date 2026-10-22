@@ -141,6 +141,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/quests/{}/delete", quest_delete),
     ("/api/quests/{}/status", quest_status),
     ("/facts/new", fact_create),
+    ("/tables/import", tables_import),
+    ("/api/quests/apply", quests_apply),
     ("/api/facts/bulk", facts_bulk),
     ("/facts/{}/edit", fact_edit),
     ("/facts/{}/delete", fact_delete),
@@ -3502,4 +3504,137 @@ fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         }
     }
     json_response(&json!({"created": created, "skipped_duplicates": skipped}))
+}
+
+fn tables_import(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    if content_type(c.headers) != "multipart/form-data" {
+        return None;
+    }
+    let (f, files) = parse_multipart(c.headers, c.body)?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("tables")? || f.has("file") {
+        return None;
+    }
+    // form.get("file"): the last part named "file"
+    let file = files.iter().rev().find(|p| p.name == "file")?;
+    let text = std::str::from_utf8(&file.data).ok().filter(|t| !t.starts_with('\u{feff}'))?; // json.loads(bytes) also reads UTF-16/32 and BOMs: Python's
+    let Value::Array(items) = serde_json::from_str::<Value>(text).ok()? else { return None };
+    let owner = if content_editor(c) { Sql::Null } else { Sql::Integer(c.p.user_id) };
+    // every slug from the tables stored before the import (Python adds them all, then commits): two alike in one file are Python's
+    let mut rows = vec![];
+    let mut slugs: Vec<String> = vec![];
+    for it in &items {
+        let m = it.as_object()?;
+        let name = match m.get("name") {
+            None => String::new(),
+            Some(Value::String(x)) => strip(x),
+            _ => return None,
+        };
+        let name = if name.is_empty() { "Imported Table".to_string() } else { name };
+        let text_or = |k: &str, d: &str| -> Option<String> {
+            match m.get(k) {
+                None => Some(d.to_string()),
+                Some(Value::String(x)) => Some(x.clone()),
+                _ => None,
+            }
+        };
+        let slug = table_slug(&c.db, &name)?;
+        if slugs.contains(&slug) {
+            return None;
+        }
+        slugs.push(slug.clone());
+        let entries = nd_render::py_dumps(m.get("entries").unwrap_or(&json!([])));
+        rows.push((name, slug, text_or("category", "general")?, text_or("description", "")?, entries));
+    }
+    for (name, slug, cat, desc, entries) in rows {
+        orm::insert(
+            &c.db,
+            "random_tables",
+            &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("slug", s(&slug)), ("category", s(&cat)), ("description", s(&desc)),
+              ("is_builtin", Sql::Integer(0)), ("entries_json", s(&entries)), ("created_by_user_id", owner.clone())],
+        )?;
+    }
+    redirect("/tables")
+}
+
+fn quests_apply(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let wid = c.world_id()?;
+    if !c.p.is_gm {
+        return None;
+    }
+    const STATUSES: [&str; 4] = ["active", "complete", "failed", "secret"];
+    const CATEGORIES: [&str; 3] = ["main", "side", "personal"];
+    let list = |k: &str| -> Option<Vec<Value>> {
+        match b.get(k) {
+            Some(v) if py_truthy(Some(v)) => v.as_array().cloned(),
+            _ => Some(vec![]),
+        }
+    };
+    let text = |m: &Map<String, Value>, k: &str| -> Option<String> {
+        match m.get(k) {
+            Some(Value::String(x)) => Some(x.clone()),
+            Some(v) if py_truthy(Some(v)) => None, // str() of other values: Python's
+            _ => Some(String::new()),
+        }
+    };
+    let pick = |v: Option<&Value>, from: &[&str], d: &str| -> String {
+        v.and_then(|x| x.as_str()).filter(|x| from.contains(x)).unwrap_or(d).to_string()
+    };
+    // updates first (the unit of work flushes UPDATEs before INSERTs), then the new quests
+    let mut updated = 0;
+    for u in list("quest_updates")?.iter().take(24) {
+        let Some(u) = u.as_object() else { continue };
+        if u.get("quest_id").is_some_and(|v| v.is_boolean()) {
+            return None; // True is quest 1 to Python's isinstance(x, int) and dict lookup
+        }
+        let Some(qid) = u.get("quest_id").and_then(|v| v.as_i64()) else { continue };
+        let Some(q) = row(&c.db, "SELECT * FROM quests WHERE id = ?1", qid) else { continue };
+        if q.get("world_id")?.as_i64() != Some(wid) {
+            continue;
+        }
+        let mut set: Vec<(&str, Sql)> = vec![];
+        if let Some(st) = u.get("status").and_then(|v| v.as_str()).filter(|x| STATUSES.contains(x)) {
+            set.push(("status", s(st)));
+        }
+        let note = strip(&text(u, "note")?);
+        if !note.is_empty() {
+            set.push(("summary", s(&take_chars(&note, 512))));
+        }
+        orm::update(&c.db, "quests", qid, &set)?;
+        updated += 1;
+    }
+    let mut parties: Vec<i64> = vec![];
+    let mut stmt = c.db.prepare("SELECT id FROM parties WHERE world_id = ?1").ok()?;
+    for r in stmt.query_map([wid], |r| r.get(0)).ok()? {
+        parties.push(r.ok()?);
+    }
+    drop(stmt);
+    let mut created = 0;
+    for n in list("new_quests")?.iter().take(12) {
+        let Some(n) = n.as_object() else { continue };
+        let title = strip(&text(n, "title")?);
+        if title.is_empty() {
+            continue;
+        }
+        let party = n.get("assigned_party_id").filter(|v| !v.is_boolean()).and_then(|v| v.as_i64()).filter(|p| parties.contains(p));
+        orm::insert(
+            &c.db,
+            "quests",
+            &[
+                ("world_id", Sql::Integer(wid)),
+                ("title", s(&take_chars(&title, 256))),
+                ("assigned_party_id", party.map_or(Sql::Null, Sql::Integer)),
+                ("status", s(&pick(n.get("status"), &STATUSES, "active"))),
+                ("category", s(&pick(n.get("category"), &CATEGORIES, "side"))),
+                ("summary", s(&take_chars(&strip(&text(n, "summary")?), 512))),
+                ("body", s(&text(n, "body")?)),
+                ("visible_to_players", Sql::Integer(n.get("visible_to_players").map_or(true, |v| py_truthy(Some(v))) as i64)),
+                ("created_by_user_id", Sql::Integer(c.p.user_id)),
+            ],
+        )?;
+        created += 1;
+    }
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"created": created, "updated": updated}))
 }

@@ -55,6 +55,7 @@ pub struct FilePart {
     pub name: String,
     pub filename: String,
     pub len: usize,
+    pub data: Vec<u8>,
 }
 
 /// `multipart/form-data` as Starlette's MultiPartParser reads it, for the plain shape browsers send: `--boundary` CRLF parts, each with a
@@ -120,7 +121,7 @@ pub fn parse_multipart(headers: &axum::http::HeaderMap, body: &[u8]) -> Option<(
         }
         let name = name?;
         match filename {
-            Some(filename) => files.push(FilePart { name, filename, len: data.len() }),
+            Some(filename) => files.push(FilePart { name, filename, len: data.len(), data: data.to_vec() }),
             None => fields.push((name, std::str::from_utf8(data).ok()?.to_string())),
         }
         if let Some(tail) = after.strip_prefix(b"--") {

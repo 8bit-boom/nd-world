@@ -1579,3 +1579,87 @@ def test_facts_bulk_is_pythons(client, seed):
             assert ja == jb2
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 3, served
+
+
+def test_tables_import_and_quests_apply_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    from sqlalchemy import text
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"tables": {"player": "edit", "assistant": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+
+    def tables_now():
+        db = SessionLocal()
+        try:
+            return [dict(r) for r in db.execute(text("SELECT name, slug, category, description, is_builtin, entries_json, created_by_user_id FROM random_tables "
+                                                     "WHERE world_id = :w ORDER BY id"), {"w": w}).mappings()]
+        finally:
+            db.close()
+
+    def drop_tables():
+        db = SessionLocal()
+        try:
+            db.execute(text("DELETE FROM random_tables WHERE world_id = :w"), {"w": w})
+            db.execute(text("INSERT INTO random_tables (world_id, name, slug, category, description, is_builtin, entries_json) "
+                            "VALUES (:w, 'Loot', 'loot', 'general', '', 0, '[]')"), {"w": w})
+            db.commit()
+        finally:
+            db.close()
+
+    def upload(client, payload, field="file"):
+        b = "----WebKitFormBoundaryTbl"
+        body = (f'--{b}\r\nContent-Disposition: form-data; name="{field}"; filename="t.json"\r\nContent-Type: application/json\r\n\r\n'.encode() + payload
+                + f"\r\n--{b}--\r\n".encode())
+        return client.post("/tables/import", content=body, headers={"content-type": f"multipart/form-data; boundary={b}"}, follow_redirects=False)
+
+    payloads = [json.dumps([{"name": " Loot ", "category": "treasure", "entries": [{"roll": 1, "text": "Gem", "w": 0.5}]}, {"description": "d"}, {"name": "Keep"}]).encode(),
+                json.dumps([{"name": "Twin"}, {"name": "twin"}]).encode(), b"{bad", json.dumps({"x": 1}).encode(), json.dumps([{"name": 5}]).encode(),
+                json.dumps(["x"]).encode(), json.dumps([{"name": "Ünï"}]).encode(), "﻿[]".encode(), json.dumps([]).encode()]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for payload in payloads:
+            drop_tables()
+            ra = upload(d, payload)
+            ta = tables_now()
+            drop_tables()
+            rb = upload(via, payload)
+            tb = tables_now()
+            _same_answer(ra, rb)
+            assert ta == tb, (payload, ta, tb)
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        # quests apply
+        party_a = _party(world_id=w, name="P")
+        party_b = _party(world_id=seed.world_b.id, name="Far")
+        for body in ({"new_quests": [{"title": "  Find the key ", "status": "secret", "category": "main", "summary": " s ", "body": "b", "assigned_party_id": "PA",
+                                      "visible_to_players": 0}, {"title": ""}, "x", {"title": "t", "status": "weird", "assigned_party_id": "PB"},
+                                     {"title": "u", "assigned_party_id": True}],
+                      "quest_updates": [{"quest_id": "Q", "status": "complete", "note": "  done  "}, {"quest_id": "QB", "status": "failed"}, {"quest_id": "Q", "note": " "}]},
+                     {}, {"new_quests": "x"}, {"new_quests": [{"title": 5}]}, {"quest_updates": [{"quest_id": True}]}, {"quest_updates": [{"quest_id": "Q", "note": 5}]}):
+            qa = [_quest(world_id=w, title="Q", status="active", summary="old") for _ in range(2)]
+            qb = _quest(world_id=seed.world_b.id, title="Far")
+            res = []
+            for side, qid in ((d, qa[0]), (via, qa[1])):
+                bb = json.loads(json.dumps(body).replace('"PA"', str(party_a)).replace('"PB"', str(party_b)).replace('"QB"', str(qb)).replace('"Q"', str(qid)))
+                before_max = (_newest("quests") or {}).get("id", 0)
+                r = side.post("/api/quests/apply", json=bb)
+                db = SessionLocal()
+                try:
+                    new = [dict(x) for x in db.execute(text("SELECT title, status, category, summary, body, visible_to_players, assigned_party_id, created_by_user_id "
+                                                            "FROM quests WHERE id > :m ORDER BY id"), {"m": before_max}).mappings()]
+                finally:
+                    db.close()
+                res.append((r, new, _row("quests", qid)))
+            _same_answer(res[0][0], res[1][0])
+            assert res[0][1] == res[1][1], (body, res[0][1], res[1][1])
+            _same_rows(res[0][2], res[1][2])
+            served += res[1][0].headers.get("x-nd-served-by") == "gateway"
+    assert served >= 4, served
