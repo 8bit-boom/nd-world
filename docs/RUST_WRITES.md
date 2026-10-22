@@ -105,6 +105,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST` / `DELETE /api/characters/<id>/share` (the link is built from the request's Host as Python's `request.base_url` is; a request carrying a forwarded scheme: Python's) | 46 |
 | `POST /api/sessions/<id>/media/upload` for pictures (kept on the session) and audio (added to the library and attached); a video, which goes through ffmpeg: Python's. World delete stays Python's: it removes files through eight Python helpers | 47 |
 | `POST /api/characters/<id>/ability-use`, `/ability-ready` (`app/feat_use.py` ported; the feat catalog's two lookups generated from Python by `scripts/gen_rust_data.py`) | 48 |
+| `POST /api/characters/<id>/advance` (`app/advance.py` ported; the buyable feats, their costs and order generated from Python's catalog) | 49 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

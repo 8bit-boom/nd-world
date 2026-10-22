@@ -3410,3 +3410,34 @@ def test_ability_use_and_ready_are_pythons(client, seed):
         assert out[0][:5] == out[1][:5], (path, body, out)
         served += out[1][5] == "gateway"
     assert served >= 7, served
+
+
+def test_advance_is_pythons(client, seed):
+    from app import game_catalog
+    feats = game_catalog.catalog_payload()["feats"]
+    common = [f for f in feats if f.get("category") == "Common" and "1" in str(f.get("rank"))][:3]
+    race_feat = next(f for f in feats if f.get("category") == "Race" and f.get("associatedRace") and "1" in str(f.get("rank")))
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    stats = [{"id": "str", "label": "Strength", "value": 2}, {"id": "dex", "value": 1}, {"id": "wil", "value": 3}]
+
+    def fresh():
+        return _pc(world_id=seed.world_a.id, name="Adv", xp=60, race_id=race_feat["associatedRace"], stats_json=json.dumps(stats),
+                   feats_json=json.dumps([{"id": common[0]["id"], "name": common[0]["name"], "rank": "Rank 1"}]))
+
+    steps = [{"kind": "stat", "stat": "str"}, {"kind": "stat", "stat": "itu"}, {"kind": "feat", "id": common[1]["id"]}, {"kind": "feat", "id": common[0]["id"]},
+             {"kind": "feat", "id": race_feat["id"]}, {"kind": "spent", "value": 7}, {"kind": "spent", "value": 0}, {"kind": "stat", "stat": "nope"},
+             {"kind": "feat", "id": common[2]["id"]}, {"kind": "x"}, {"kind": "stat", "stat": "wil"}]
+    pcs = (fresh(), fresh())
+    served = 0
+    for body in steps:
+        out = []
+        for side, pid in zip((d, via), pcs):
+            r = side.post(f"/api/characters/{pid}/advance", json=body)
+            row = _row("player_characters", pid)
+            logs = [(l["kind"], l["text"], l["undo_json"]) for l in _logs(pid)]
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, row["stats_json"], row["feats_json"], _prefs(pid), logs, r.headers.get("x-nd-served-by")))
+        assert out[0][:6] == out[1][:6], (body, out)
+        served += out[1][6] == "gateway"
+    assert served >= 6, served

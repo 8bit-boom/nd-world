@@ -62,6 +62,23 @@ def feat_lookup() -> dict:
     return {"by_id": {k: slim(v) for k, v in catalog.items()}, "by_name": {k: slim(v) for k, v in by_name.items()}}
 
 
+def advance_feats() -> list:
+    """advance.options' feat rows that do not depend on the character, in its final order (rank, category, name): the catalog's buyable
+    feats with their cost and trimmed description, plus what the per-character filters read"""
+    from app import advance, game_catalog
+    out = []
+    for f in game_catalog.catalog_payload()["feats"]:
+        cat, rk = f.get("category"), advance.rank_num(f.get("rank"))
+        if cat not in advance.FEAT_MULT or not (1 <= rk <= advance.MAX_RANK):
+            continue
+        out.append({"id": f["id"], "name": f["name"], "category": cat, "rank": rk, "cost": advance.feat_cost(cat, rk),
+                    "description": str(f.get("description") or "")[:400].replace("\n---", "").strip(),
+                    "race": f.get("associatedRace"), "profession": f.get("associatedProfession"),
+                    "idl": str(f.get("id") or "").lower(), "namel": str(f.get("name") or "").lower()})
+    out.sort(key=lambda x: (x["rank"], x["category"], x["name"]))
+    return out
+
+
 def make() -> dict:
     from app import calendar_config, combat_rules, constants, nav_menus, view_prefs
     from app.routers import quests
@@ -89,7 +106,7 @@ def make() -> dict:
         "calendar_presets_world": [[k, json.dumps({**calendar_config.clean_calendar_config(v), "current_day": 1})]
                                    for k, v in calendar_config.CALENDAR_PRESETS.items()],
         # the bundled race / profession catalogs (app/races, app/professions) as /races/add-builtin and /professions/add-builtin store them
-        "feat_lookup": feat_lookup(),
+        "feat_lookup": feat_lookup(), "advance_feats": advance_feats(),
         "builtin_races": builtin_catalog("races"), "builtin_professions": builtin_catalog("professions"),
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }

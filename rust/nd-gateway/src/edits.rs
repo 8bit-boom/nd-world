@@ -208,6 +208,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/level-up", pc_level_up),
     ("/api/characters/{}/feats", pc_feats),
     ("/api/characters/{}/ability-use", pc_ability_use),
+    ("/api/characters/{}/advance", pc_advance),
     ("/api/characters/{}/ability-ready", pc_ability_ready),
     ("/api/characters/{}/equipment", pc_equipment),
     ("/api/characters/{}/carry-limit", pc_carry_limit),
@@ -7239,4 +7240,216 @@ fn pc_ability_ready(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let keep = if used_map.is_empty() { None } else { Some(used.clone()) };
     set_pc_pref(c, &pc, "feat_used", keep)?;
     json_response(&json!({"ok": true, "cards": ability_cards(c, &pc)?}))
+}
+
+// ── spending XP (app/advance.py, characters.py character_advance) ──
+
+const ADV_STATS: [(&str, &str); 8] = [("str", "Strength"), ("dex", "Dexterity"), ("bod", "Body"), ("per", "Perception"),
+    ("wil", "Willpower"), ("int", "Intellect"), ("cha", "Charisma"), ("itu", "Intuition")];
+
+/// `advance.rank_num`: the first digit of str(rank); a value read through repr, or another script's digit: Python's
+fn adv_rank(v: Option<&Value>) -> Option<i64> {
+    let t = match py_or(&[v]) {
+        None => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+        Some(_) => return None,
+    };
+    if t.chars().any(|ch| ch.is_numeric() && !ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(t.bytes().find(|b| b.is_ascii_digit()).map_or(0, |b| (b - b'0') as i64))
+}
+
+/// `advance.slug`
+fn adv_slug(v: Option<&Value>) -> Option<String> {
+    let t = match py_or(&[v]) {
+        None => String::new(),
+        Some(Value::String(t)) if t.is_ascii() => t.to_ascii_lowercase(),
+        _ => return None,
+    };
+    let mut out = String::new();
+    for ch in t.chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    Some(out.trim_matches('_').to_string())
+}
+
+/// `str(x or "").lower()` for an owned feat's id / name (ASCII only)
+fn adv_key(v: Option<&Value>) -> Option<String> {
+    let t = match py_or(&[v]) {
+        None => String::new(),
+        Some(x) => py_str_key(Some(x))?,
+    };
+    t.is_ascii().then(|| t.to_ascii_lowercase())
+}
+
+fn adv_unlocked(ranks: &[i64]) -> i64 {
+    let mut top = 1;
+    while top < 3 && ranks.iter().filter(|r| **r == top).count() >= 2 {
+        top += 1;
+    }
+    top
+}
+
+/// `advance.options(pc, catalog, earned, spent)`
+fn adv_options(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
+    let earned = pc.get("xp").and_then(|v| v.as_i64()).unwrap_or(0);
+    let spent = match py_or(&[pc_prefs(&c.db, pc.get("id")?.as_i64()?)?.get("xp_spent")]) {
+        None => 0,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        Some(_) => return None,
+    };
+    let mut stats: std::collections::HashMap<String, i64> = Default::default();
+    for st in pc_list(pc, "stats_json")? {
+        let Some(o) = st.as_object() else { continue };
+        let v = match py_or(&[o.get("value")]) {
+            None => 0,
+            Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+            Some(_) => return None,
+        };
+        stats.insert(py_str_key(o.get("id"))?, v);
+    }
+    let owned = pc_list(pc, "feats_json")?;
+    let mut ranks = vec![];
+    let mut have: Vec<String> = vec![];
+    for f in owned.iter().filter_map(|f| f.as_object()) {
+        ranks.push(adv_rank(f.get("rank"))?);
+        for k in [adv_key(f.get("id"))?, adv_key(f.get("name"))?] {
+            if !k.is_empty() {
+                have.push(k);
+            }
+        }
+    }
+    let available = (earned - spent).max(0);
+    let top = adv_unlocked(&ranks);
+    let race = match py_or(&[pc.get("race_id")]) {
+        Some(v) => v.clone(),
+        None => json!(adv_slug(pc.get("race"))?),
+    };
+    let prof = match py_or(&[pc.get("profession_id")]) {
+        Some(v) => v.clone(),
+        None => json!(adv_slug(pc.get("char_class"))?),
+    };
+    let get = |k: &str| stats.get(k).copied().unwrap_or(0);
+    let (phys, ment) = (["str", "dex", "bod", "per"].iter().map(|k| get(k)).sum::<i64>(), ["wil", "int", "cha", "itu"].iter().map(|k| get(k)).sum::<i64>());
+    let max_hp = pc.get("max_hp").and_then(|v| v.as_i64()).unwrap_or(0);
+    let shock_max = pc.get("shock_max").and_then(|v| v.as_i64()).unwrap_or(0);
+    let stat_rows: Vec<Value> = ADV_STATS
+        .iter()
+        .map(|(sid, label)| {
+            let v = get(sid);
+            let cost = (v + 1) * 2;
+            let mut bits = vec![];
+            if ["str", "dex", "bod", "per"].contains(sid) {
+                bits.push(format!("PP {phys}\u{2192}{}", phys + 1));
+                if max_hp <= 0 {
+                    bits.push(format!("HP {}\u{2192}{}", phys + 10, phys + 11));
+                }
+            } else {
+                bits.push(format!("MP {ment}\u{2192}{}", ment + 1));
+                if shock_max <= 0 {
+                    bits.push(format!("Shock {ment}\u{2192}{}", ment + 1));
+                }
+            }
+            if *sid == "dex" || *sid == "itu" {
+                let sp = get("dex") + get("itu");
+                bits.push(format!("Speed {sp}\u{2192}{}", sp + 1));
+            }
+            json!({"id": sid, "label": label, "value": v, "cost": cost, "can": v < 10 && cost <= available, "effect": bits.join(", "), "left": (available - cost).max(0)})
+        })
+        .collect();
+    let mut feats = vec![];
+    for f in nd_render::app::data().get("advance_feats")?.as_array()? {
+        let cat = f["category"].as_str()?;
+        if cat == "Race" && f["race"] != race {
+            continue;
+        }
+        if cat == "Profession" && f["profession"] != prof {
+            continue;
+        }
+        if have.iter().any(|h| Some(h.as_str()) == f["idl"].as_str() || Some(h.as_str()) == f["namel"].as_str()) {
+            continue;
+        }
+        let (rk, cost) = (f["rank"].as_i64()?, f["cost"].as_i64()?);
+        let mut why = if rk <= top { String::new() } else { format!("Rank {rk} unlocks after you own two Rank {} feats", rk - 1) };
+        if why.is_empty() && cost > available {
+            why = format!("needs {} more XP", cost - available);
+        }
+        let hint = if rk < 3 && top == rk && ranks.iter().filter(|r| **r == rk).count() == 1 { format!("unlocks Rank {} feats", rk + 1) } else { String::new() };
+        feats.push(json!({"id": f["id"], "name": f["name"], "category": cat, "rank": rk, "cost": cost, "description": f["description"],
+                          "can": why.is_empty(), "why": why, "effect": hint, "left": (available - cost).max(0)}));
+    }
+    Some(json!({"earned": earned, "spent": spent, "available": available, "unlocked_rank": top, "stats": stat_rows, "feats": feats,
+                "race": race, "profession": prof}))
+}
+
+fn pc_advance(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    if !pc_maxima(&c.db, &pc)?.4 {
+        return None;
+    }
+    let state = adv_options(c, &pc)?;
+    let spent0 = state["spent"].as_i64()?;
+    let available = state["available"].as_i64()?;
+    let (spent, text) = match b.get("kind").and_then(|k| k.as_str()) {
+        Some("spent") => {
+            let xp = pc.get("xp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let value = body_int(&b, "value")?.min(xp).max(0);
+            set_pc_pref(c, &pc, "xp_spent", (value != 0).then(|| json!(value)))?;
+            let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
+            return json_response(&adv_options(c, &pc)?);
+        }
+        Some("stat") => {
+            let want = match b.get("stat") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(t)) => t.clone(),
+                _ => return None,
+            };
+            let row_ = state["stats"].as_array()?.iter().find(|r| r["id"].as_str() == Some(want.as_str()))?;
+            let (v, cost, label) = (row_["value"].as_i64()?, row_["cost"].as_i64()?, row_["label"].as_str()?.to_string());
+            if v >= 10 || cost > available {
+                return None;
+            }
+            let mut stats = pc_list(&pc, "stats_json")?;
+            match stats.iter_mut().find(|x| x.get("id").and_then(|i| i.as_str()) == Some(want.as_str()) && x.is_object()) {
+                Some(entry) => {
+                    entry.as_object_mut()?.insert("value".into(), json!(v + 1));
+                }
+                None => stats.push(json!({"id": want, "label": label, "abbr": want.to_uppercase(), "value": v + 1})),
+            }
+            orm::update(&c.db, "player_characters", ids[0], &[("stats_json", s(&nd_render::py_dumps(&Value::Array(stats))))])?;
+            (spent0 + cost, format!("Bought {label} {v} \u{2192} {} for {cost} XP", v + 1))
+        }
+        Some("feat") => {
+            let want = py_str_key(b.get("id"))?;
+            let row_ = state["feats"].as_array()?.iter().find(|r| r["id"].as_str() == Some(want.as_str()))?.clone();
+            if row_["can"] != json!(true) {
+                return None;
+            }
+            let mut feats = pc_list(&pc, "feats_json")?;
+            let rk = row_["rank"].as_i64()?;
+            feats.push(json!({"name": row_["name"], "id": row_["id"], "type": row_["category"], "rank": format!("Rank {rk}"), "notes": ""}));
+            orm::update(&c.db, "player_characters", ids[0], &[("feats_json", s(&nd_render::py_dumps(&Value::Array(feats))))])?;
+            (spent0 + row_["cost"].as_i64()?, format!("Bought the {} feat {} (Rank {rk}) for {} XP", row_["category"].as_str()?, row_["name"].as_str()?, row_["cost"]))
+        }
+        _ => return None,
+    };
+    let txt = |k: &str| pc.get(k).and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]").to_string();
+    let feats_before = txt("feats_json");
+    let undo = if feats_before.chars().count() <= 30000 {
+        json!({"op": "advance", "stats_json": txt("stats_json"), "feats_json": feats_before, "spent": spent0})
+    } else {
+        json!({})
+    };
+    set_pc_pref(c, &pc, "xp_spent", Some(json!(spent)))?;
+    char_log(c, &pc, "advance", &text, &undo)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
+    json_response(&adv_options(c, &pc)?)
 }
