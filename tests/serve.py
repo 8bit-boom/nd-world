@@ -11,8 +11,8 @@ import argparse
 import os
 from pathlib import Path
 
-DATA = Path(__file__).parent / "_data"
-DATA.mkdir(exist_ok=True)
+DATA = Path(os.environ.get("ND_TEST_DATA_DIR") or Path(__file__).parent / "_data")      # the folder the test run uses (tests/conftest.py)
+DATA.mkdir(parents=True, exist_ok=True)
 os.environ.update(
     DB_PATH=str(DATA / "world.db"), SECRET_KEY="test-secret-key-not-for-production", MAX_UPLOAD_BYTES="1048576", MAX_NOTE_IMPORT_BYTES="1048576",
     ND_JOB_STOP_GRACE_SECONDS="0", OLLAMA_CONFIG_DIR=str(DATA / "ollama-config"),

@@ -9,8 +9,13 @@ directory, which is what makes setting them at module level reliable.
 import os
 from pathlib import Path
 
-_TEST_DATA_DIR = Path(__file__).parent / "_data"
-_TEST_DATA_DIR.mkdir(exist_ok=True)
+# ND_TEST_DATA_DIR: another folder for the database and uploads (one per CI shard, each with its own server). Under pytest-xdist every
+# worker of an in-process run gets its own subfolder - the tests drop and recreate the tables, so two workers must never share a database.
+# A run against a server (ND_TEST_BASE_URL) must use the server's folder, so it is never split per worker.
+_TEST_DATA_DIR = Path(os.environ.get("ND_TEST_DATA_DIR") or Path(__file__).parent / "_data")
+if os.environ.get("PYTEST_XDIST_WORKER") and not os.environ.get("ND_TEST_BASE_URL"):
+    _TEST_DATA_DIR = _TEST_DATA_DIR / os.environ["PYTEST_XDIST_WORKER"]
+_TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 os.environ["DB_PATH"] = str(_TEST_DATA_DIR / "world.db")
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"

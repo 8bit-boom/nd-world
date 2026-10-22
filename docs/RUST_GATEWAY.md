@@ -57,5 +57,19 @@ then `ND_ACCEL_TOKEN=<secret> ND_UPSTREAM=127.0.0.1:8001 ND_STATIC_DIR=$PWD/stat
 - `cargo test` (`rust/nd-gateway/tests/gateway.rs`): the gateway against a stand-in for Python - twins, stale twins, ranges, 304, traversal and symlink
   escapes, forged headers, streaming, Python down, hand-over inside and outside the data folder, session cookies.
 - `tests/test_accel.py`: Python's side (right token, wrong token, no token, strangers, the live-recording ban).
-- CI job `gateway` (`.github/workflows/tests.yml`): the whole Python suite over HTTP **through** the gateway.
+- CI job `gateway` (`.github/workflows/tests.yml`): the whole Python suite over HTTP **through** the gateway, in four parts on four
+  runners (`scripts/gateway_suite.sh`, below).
 - `scripts/golden.py compare --a <direct> --b <through the gateway>`: pages answer the same.
+
+## Running the suites fast
+
+- In-process: `python -m pytest -n auto` (pytest-xdist). Each worker uses its own folder under `tests/_data/<worker>` (`tests/conftest.py`);
+  4 workers: ~5 min instead of ~23.
+- Through the gateway: `scripts/gateway_suite.sh 4 all` (after `cd rust && cargo build --release`) splits the suite in four with
+  pytest-split and runs the parts side by side, each with its own data folder (`ND_TEST_DATA_DIR`), Python app and gateway. CI runs one part
+  per runner (`scripts/gateway_suite.sh 4 <n>`). Test paths after the two numbers run only those tests.
+- The parts are balanced by `.test_durations`, recorded through the gateway: `STORE_DURATIONS=1 scripts/gateway_suite.sh 4 all &&
+  python scripts/merge_durations.py`. Refresh it when the suite's shape changes a lot; a new test missing from it only counts as average.
+- CI: branches other than `main` run the in-process suite and, through the gateway, only `test_gateway_writes.py` / `test_gateway_golden.py`
+  (the same commit on `main` gets the full run); docs-only pushes run nothing; the Rust build is cached (`Swatinem/rust-cache`) and the
+  gateway built once per run, then handed to the four parts.

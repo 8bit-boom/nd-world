@@ -1,9 +1,21 @@
 name: tests
 
+# Full runs on main and on pull requests. Other branches get a quick check (the in-process suite, and through the gateway only the parity
+# tests) - a branch commit that is also pushed to main is fully tested there. Edits to docs alone run nothing. A newer push to the same
+# branch cancels the run still going for the older one.
 on:
   push:
     branches: ["**"]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FULL: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 jobs:
   pytest:
@@ -16,12 +28,12 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      # pytest-xdist: one worker per core, each with its own database (tests/conftest.py)
       - name: Run test suite
-        run: python -m pytest -q
+        run: python -m pytest -q -n auto
 
-  # The Rust gateway (rust/nd-gateway, docs/RUST_GATEWAY.md): its own tests, and the whole Python suite run over HTTP THROUGH it - the same
-  # tests that run in-process above, against the app started separately (tests/serve.py) with the gateway in front (docs/RUST_REWRITE_PLAN.md).
-  gateway:
+  # The Rust gateway (rust/nd-gateway, docs/RUST_GATEWAY.md): its own tests, and the binaries the suite runs through below - built once.
+  gateway-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,21 +45,56 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: The session-cookie fixture matches what Python signs
         run: python scripts/gen_session_fixture.py --check
+      # the compiled dependencies (image, ravif, rusqlite, ...) kept between runs, keyed by Cargo.lock
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: Gateway tests
         working-directory: rust
         run: cargo test --locked
       - name: Build the gateway
         working-directory: rust
         run: cargo build --release --locked
-      - name: Run the suite through the gateway
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nd-gateway-${{ github.run_id }}
+          path: |
+            rust/target/release/nd-gateway
+            rust/target/release/nd-perm-check
+            rust/target/release/nd-render-check
+          retention-days: 1
+
+  # The whole Python suite again, over HTTP THROUGH the gateway - the same tests as above, against the app started separately
+  # (tests/serve.py) with the gateway in front (docs/RUST_REWRITE_PLAN.md). Split in four (pytest-split, balanced by .test_durations), each
+  # part on its own runner with its own database, app and gateway (scripts/gateway_suite.sh).
+  gateway:
+    needs: gateway-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: nd-gateway-${{ github.run_id }}
+          path: rust/target/release
+      - name: Run part ${{ matrix.group }} of the suite through the gateway
         run: |
-          export ND_ACCEL_TOKEN=ci-token
-          python -m tests.serve --port 8951 > serve.log 2>&1 &
-          SECRET_KEY=test-secret-key-not-for-production MAX_UPLOAD_BYTES=1048576 MAX_NOTE_IMPORT_BYTES=1048576 ND_TEMPLATES_DIR=$PWD/app/templates DB_PATH=$PWD/tests/_data/world.db ND_RUST_ROUTES=login,dice_roll,live,pages,writes \
-          ND_UPSTREAM=127.0.0.1:8951 ND_GATEWAY_LISTEN=127.0.0.1:8952 ND_STATIC_DIR=$PWD/static ND_ACCEL_ROOT=$PWD/tests/_data \
-            rust/target/release/nd-gateway > gateway.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8952/__gateway/health | grep -q '"upstream":true' && break; sleep 1; done
-          ND_GOLDEN_DIRECT_URL=http://127.0.0.1:8951 ND_TEST_BASE_URL=http://127.0.0.1:8952 python -m pytest -q
+          chmod +x rust/target/release/*
+          if [ "$FULL" = "true" ]; then
+            scripts/gateway_suite.sh 4 ${{ matrix.group }}
+          else
+            # the quick check: the parity and golden tests only
+            scripts/gateway_suite.sh 4 ${{ matrix.group }} tests/test_gateway_writes.py tests/test_gateway_golden.py
+          fi
       - name: Server logs
         if: failure()
-        run: tail -n 80 serve.log gateway.log
+        run: tail -n 80 tests/_data/shard${{ matrix.group }}/serve.log tests/_data/shard${{ matrix.group }}/gateway.log
