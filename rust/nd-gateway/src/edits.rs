@@ -387,13 +387,14 @@ fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
 
 pub fn handles_upload(method: &Method, path: &str, headers: &HeaderMap) -> bool {
     let big = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok()).map_or(true, |n| n > MAX_BODY);
-    method == Method::POST && (route_in(UPLOAD_ROUTES, path).is_some() || map_upload_slug(path).is_some() || (big && picture_route(path).is_some()))
+    method == Method::POST && (route_in(UPLOAD_ROUTES, path).is_some() || map_upload_slug(path).is_some() || sc_upload_route(path).is_some()
+        || (big && picture_route(path).is_some()))
 }
 
 pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
     crate::uploads::serve(cfg, proxy, req, peer, |cfg, method, uri, headers, up| {
         let up = up?;
-        let slug = map_upload_slug(uri.path());
+        let slug: Option<(SlugHandler, String)> = map_upload_slug(uri.path()).map(|s| (map_upload as SlugHandler, s)).or_else(|| sc_upload_route(uri.path()));
         let (h, ids) = match &slug {
             Some(_) => (map_new as Handler, vec![]), // unused: the slug handler answers below
             None => route_in(UPLOAD_ROUTES, uri.path()).or_else(|| picture_route(uri.path()))?,
@@ -404,7 +405,7 @@ pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, p
         db.execute_batch("BEGIN IMMEDIATE").ok()?;
         let mut ctx = Ctx { cfg, upload: Some(up), created: vec![], removals: vec![], db, p, uri, headers, body: &[] };
         let answer = match &slug {
-            Some(sl) => map_upload(&mut ctx, sl),
+            Some((sh, sl)) => sh(&mut ctx, sl),
             None => h(&mut ctx, &ids),
         };
         if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
@@ -6883,6 +6884,67 @@ fn map_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
     std::fs::rename(&tmp, dir.join(format!("{slug}{ext}"))).ok()?;
     redirect("/maps")
+}
+
+/// The schematic editor's two uploads: `/maps/schematic/<slug>/upload` (the background picture) and `/embed-image`
+fn sc_upload_route(path: &str) -> Option<(SlugHandler, String)> {
+    let rest = path.strip_prefix("/maps/schematic/")?;
+    let (slug, h) = if let Some(s) = rest.strip_suffix("/upload") {
+        (s, sc_upload as SlugHandler)
+    } else {
+        (rest.strip_suffix("/embed-image")?, sc_embed_image as SlugHandler)
+    };
+    (!slug.is_empty() && !slug.contains('/')).then(|| (h, slug.to_string()))
+}
+
+/// The one `file` part with an allowed picture extension and within the upload limit: (pick, ext)
+fn sc_picture(c: &Ctx) -> Option<(FilePick, String, String)> {
+    let (f, pick) = form_and_file(c, "file")?;
+    if !f.0.is_empty() {
+        return None;
+    }
+    let pick = pick?;
+    let fname = pick.filename(c)?.to_string();
+    let ext = py_suffix_lower(&fname)?;
+    if !MAP_EXTS.contains(&ext.as_str()) || pick.len(c)? as i64 > general_cap(c)? {
+        return None;
+    }
+    Some((pick, ext, fname))
+}
+
+/// `schematic_upload_image`: the map's background picture, stored as uploaded at uploads/schematics/<slug><ext> (any other extension's
+/// copy removed)
+fn sc_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_manager(c, slug)?;
+    let (pick, ext, _) = sc_picture(c)?;
+    let dir = c.cfg.db_path.parent()?.join("uploads").join("schematics");
+    std::fs::create_dir_all(&dir).ok()?;
+    let tmp = dir.join(format!(".{slug}{ext}.gw-{}", std::process::id()));
+    pick.write_to(c, &tmp)?;
+    c.created.push(tmp.clone());
+    for old in MAP_EXTS {
+        let p = dir.join(format!("{slug}{old}"));
+        if p.exists() && old != ext {
+            c.removals.push(p);
+        }
+    }
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("image_url", s(&format!("/uploads/schematics/{slug}{ext}")))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    std::fs::rename(&tmp, dir.join(format!("{slug}{ext}"))).ok()?;
+    redirect(&format!("/maps/schematic/{slug}"))
+}
+
+/// `schematic_embed_image`: a picture placed on the map, stored under a unique name (nothing in the database changes)
+fn sc_embed_image(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    sc_for_manager(c, slug)?;
+    let (pick, ext, fname) = sc_picture(c)?;
+    let dir = c.cfg.db_path.parent()?.join("uploads").join("schematics").join("embeds");
+    std::fs::create_dir_all(&dir).ok()?;
+    let name = unique_upload_filename(&fname, &ext)?;
+    let dest = dir.join(&name);
+    pick.write_to(c, &dest)?;
+    c.created.push(dest);
+    json_response(&json!({"url": format!("/uploads/schematics/embeds/{name}")}))
 }
 
 // ── the formatting toolbar's uploads (app/main.py api_upload_image / api_upload_media, characters.py's player-reachable pair) ──

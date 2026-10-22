@@ -4438,3 +4438,45 @@ def test_party_launch_combat_is_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (pcs, ents, out)
         served += out[1][3] == "gateway"
     assert served >= 3, served
+
+
+def test_schematic_uploads_are_pythons(client, seed):
+    import re
+    from app.main import UPLOADS_DIR
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+    n = [0]
+    served = 0
+    for fname, data in (("bg.PNG", png), ("bg.txt", b"no"), ("noext", png)):
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"scup-{n[0]}"
+            sid = _add("Schematic", world_id=w, name="Map", slug=slug)
+            d = UPLOADS_DIR / "schematics"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{slug}.jpg").write_bytes(b"old")
+            r = side.post(f"/maps/schematic/{slug}/upload", files={"file": (fname, data, "image/png")}, follow_redirects=False)
+            row = _row("schematics", sid)
+            files = sorted(p.name.replace(slug, "S") for p in d.glob(f"{slug}.*"))
+            out.append((r.status_code, r.headers.get("location", "").replace(slug, "S"), (row["image_url"] or "").replace(slug, "S"), files,
+                        r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (fname, out)
+        served += out[1][4] == "gateway"
+    for fname in ("My Pic!.webp", "x.exe"):
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"scup-{n[0]}"
+            _add("Schematic", world_id=w, name="Map", slug=slug)
+            r = side.post(f"/maps/schematic/{slug}/embed-image", files={"file": (fname, png, "image/webp")})
+            url = r.json().get("url") if r.status_code == 200 else None
+            if url:
+                assert re.fullmatch(r"/uploads/schematics/embeds/[0-9a-f]{12}-my-pic\.webp", url), url
+                assert (UPLOADS_DIR / url[len("/uploads/"):]).read_bytes() == png
+            out.append((r.status_code, bool(url), r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (fname, out)
+        served += out[1][2] == "gateway"
+    assert served >= 2, served

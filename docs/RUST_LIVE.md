@@ -43,7 +43,7 @@ Still Python's, and why:
   what the party has seen is computed and recorded by the gateway (`rust/nd-gateway/src/strict.rs`, batch 32);
 - the character hub page itself (`/characters/<id>`), with the other pages on the character-sheet engine (custom sheet systems' tracks),
   and anything a character on a custom sheet system touches (its Rest rules, vitals, combat tracks);
-- uploads that write files Python names and resizes (the map's background, embedded pictures, a player's own keepsake files);
+- a player's own keepsake files (`_upload_media`: conversion and per-kind limits);
 - `rooms/detect` (finds rooms in the walls - computation, nothing stored);
 - the AI and chronicler streams - phase 5, with the other AI work.
 
