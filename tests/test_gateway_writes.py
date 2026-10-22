@@ -4511,3 +4511,33 @@ def test_schematic_rooms_detect_is_pythons(client, seed):
             assert out[0][:2] == out[1][:2], (walls, grid, cfg, out)
             served += out[1][2] == "gateway"
     assert served >= 4, served
+
+
+def test_hub_keepsake_upload_is_pythons(client, seed):
+    import io
+    from PIL import Image
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (200, 10, 10)).save(buf, "PNG")
+    png = buf.getvalue()
+    served = 0
+    cases = [("My  Map.png", png, {"name": "", "description": "  seen  it "}, 0), ("song.mp3", b"ID3" + b"x" * 50, {"name": " Theme "}, 0),
+             ("x.exe", b"MZ", {}, 0), ("pic.png", png, {}, 30)]
+    for fname, data, form, have in cases:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Keeper")
+            for _ in range(have):
+                _add("CharacterKeepsake", world_id=w, character_id=pid, kind="image", url="/uploads/x.png", name="K", saved_by="player", own=True)
+            r = side.post(f"/api/characters/{pid}/hub/keepsakes/upload", data=form, files={"file": (fname, data)})
+            j = r.json() if r.status_code == 200 else None
+            if j:
+                j.pop("id"); j.pop("at")
+                url = j.pop("url")
+                assert url.startswith("/uploads/"), url
+            out.append((r.status_code, j, r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (fname, out)
+        served += out[1][2] == "gateway"
+    assert served >= 2, served

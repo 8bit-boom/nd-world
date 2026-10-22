@@ -374,6 +374,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/upload-media", toolbar_media),
     ("/api/characters/upload-image", toolbar_pc_image),
     ("/api/characters/upload-media", toolbar_pc_media),
+    ("/api/characters/{}/hub/keepsakes/upload", hub_keepsake_upload),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -10396,6 +10397,51 @@ fn hub_keepsake_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let by = if c.p.is_gm && !owner { "gm" } else { "player" };
     let id = orm::insert(&c.db, "character_keepsakes", &[("world_id", Sql::Integer(wid)), ("character_id", Sql::Integer(ids[0])), ("kind", s(&kind)), ("url", s(&url)),
         ("text", s(&text)), ("name", s(&name)), ("description", s(&description)), ("saved_by", s(by))])?;
+    json_response(&keepsake_out(&row(&c.db, "SELECT * FROM character_keepsakes WHERE id = ?1", id)?))
+}
+
+/// `hub_keepsake_upload`: a player's OWN picture, song or video kept on their character, within the world's per-kind limit (checked before
+/// the file is written); the owner only
+fn hub_keepsake_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let (f, pick) = form_and_file(c, "file")?;
+    let pick = pick?;
+    let fname = pick.filename(c)?.to_string();
+    let ext = py_suffix_lower(&fname)?;
+    let (kind, col) = if IMAGE_EXTS.contains(&ext.as_str()) {
+        ("image", "personal_images_max")
+    } else if [".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"].contains(&ext.as_str()) {
+        ("audio", "personal_audio_max")
+    } else if [".mp4", ".m4v", ".ogv", ".mov"].contains(&ext.as_str()) {
+        ("video", "personal_video_max")
+    } else {
+        return None;
+    };
+    let wid = pc.get("world_id")?.as_i64()?;
+    let stored: Option<i64> = c.db.query_row(&format!("SELECT {col} FROM worlds WHERE id = ?1"), [wid], |r| r.get(0)).ok()?;
+    let cap = stored.map_or(match kind { "image" => 30, "audio" => 10, _ => 5 }, |n| n.clamp(0, 500));
+    let have: i64 = c.db.query_row("SELECT COUNT(*) FROM character_keepsakes WHERE character_id = ?1 AND own = 1 AND kind = ?2",
+        rusqlite::params![ids[0], kind], |r| r.get(0)).ok()?;
+    if cap == 0 || have >= cap {
+        return None;
+    }
+    let url = if kind == "image" {
+        save_picture(c, &pick, "portraits", true)??
+    } else {
+        let (url, saved) = save_inline_av(c, &pick)??;
+        if saved != kind {
+            return None;
+        }
+        url
+    };
+    let text = |k: &str, cap: usize| keepsake_text(f.get(k).map(|v| json!(v)).as_ref(), cap);
+    let stem = py_path_parts(if fname.is_empty() { "file" } else { &fname })?.0;
+    let label = Some(text("name", 120)?).filter(|t| !t.is_empty())
+        .or_else(|| keepsake_text(Some(&json!(stem)), 120).filter(|t| !t.is_empty()))
+        .unwrap_or_else(|| "My file".to_string());
+    let description = text("description", 400)?;
+    let id = orm::insert(&c.db, "character_keepsakes", &[("world_id", Sql::Integer(wid)), ("character_id", Sql::Integer(ids[0])), ("kind", s(kind)),
+        ("url", s(&url)), ("name", s(&label)), ("description", s(&description)), ("saved_by", s("player")), ("own", Sql::Integer(1))])?;
     json_response(&keepsake_out(&row(&c.db, "SELECT * FROM character_keepsakes WHERE id = ?1", id)?))
 }
 

@@ -43,7 +43,6 @@ Still Python's, and why:
   what the party has seen is computed and recorded by the gateway (`rust/nd-gateway/src/strict.rs`, batch 32);
 - the character hub page itself (`/characters/<id>`), with the other pages on the character-sheet engine (custom sheet systems' tracks),
   and anything a character on a custom sheet system touches (its Rest rules, vitals, combat tracks);
-- a player's own keepsake files (`_upload_media`: conversion and per-kind limits);
 - the AI and chronicler streams - phase 5, with the other AI work.
 
 ## Phase 4, full port: the table tools' writes
@@ -88,3 +87,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | Strict secrecy on a map (`app/map_strict.py` ported: the vision sweep, the explored cells - recorded on each view as Python records them -, what a player is sent, the masked picture's address), in the players' view, view.json and the TV's data | P4-32 |
 | `POST /maps/schematic/<slug>/upload`, `/embed-image` (the map's background picture and a picture placed on it, stored as uploaded; a GM or Assistant, the active world) | P4-33 |
 | `POST /maps/schematic/<slug>/rooms/detect` (the enclosed rooms of the walls as room-tool state: `app/rooms_from_walls.py` ported, with Python's float `//`, `%` and round-half-to-even; its refusals stay Python's) | P4-34 |
+| `POST /api/characters/<id>/hub/keepsakes/upload` (a player's own picture, song or video kept on their character, within the world's per-kind limit) | P4-35 |
