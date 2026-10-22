@@ -22,6 +22,7 @@ pub mod proxy;
 pub mod search;
 pub mod session;
 pub mod static_files;
+pub mod uploads;
 pub mod writes;
 
 use axum::{body::Body, extract::State, http::Request, response::Response, Router};
@@ -62,6 +63,9 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         return writes::dice_roll(app.cfg.clone(), &app.proxy, req, peer).await;
+    }
+    if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles_upload(req.method(), req.uri().path()) {
+        return edits::serve_upload(app.cfg.clone(), &app.proxy, req, peer).await;
     }
     if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles(req.method(), req.uri().path()) {
         return edits::serve(app.cfg.clone(), &app.proxy, req, peer).await;

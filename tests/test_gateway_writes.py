@@ -1961,3 +1961,110 @@ def test_session_media_writes_are_pythons(client, seed):
             assert out[0][:3] == out[1][:3], (path, body, out[0], out[1])
             served += out[1][3] == "gateway"
     assert served >= 15, served
+
+
+# ── uploads ───────────────────────────────────────────────────────────────────
+
+def _multipart(fields, files):
+    """A browser-shaped multipart body: fields [(name, value)], files [(name, filename, bytes)]"""
+    b = "----WebKitFormBoundaryUp1"
+    out = b""
+    for k, v in fields:
+        out += f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n'.encode() + v.encode() + b"\r\n"
+    for k, fn, data in files:
+        out += f'--{b}\r\nContent-Disposition: form-data; name="{k}"; filename="{fn}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode() + data + b"\r\n"
+    return out + f"--{b}--\r\n".encode(), {"content-type": f"multipart/form-data; boundary={b}"}
+
+
+def _masked_url(url):
+    """/uploads/audio/<12 hex>-slug.mp3 -> /uploads/audio/<hex>-slug.mp3 (the random prefix differs per upload)"""
+    import re
+    return re.sub(r"/([0-9a-f]{12}-|[0-9a-f]{32})", lambda m: "/<hex>-" if m.group(1).endswith("-") else "/<hex32>", url or "")
+
+
+def test_library_uploads_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({s: {"player": "edit", "assistant": "edit"} for s in ("audio", "video", "pages")})
+        db.commit()
+    finally:
+        db.close()
+    big = os.urandom(300 * 1024) + b"\r\n--not-a-boundary\r\n" + os.urandom(1000)
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for lib, ext, table in (("audio", ".mp3", "audio_clips"), ("pages", ".html", "page_docs"), ("video", ".mp4", "video_clips")):
+            album = _add(_LIBS[lib][2], world_id=w, name="Al")
+            for case in ("ok", "bad-id", "bad-index", "neg", "two-files", "nofile"):
+                res = []
+                for side in (d, via):
+                    uid = os.urandom(16).hex()
+                    fields = [("upload_id", uid if case != "bad-id" else "XYZ"), ("chunk_index", {"bad-index": "x", "neg": "-1"}.get(case, "0"))]
+                    files = [] if case == "nofile" else [("file", "blob", big)] * (2 if case == "two-files" else 1)
+                    body, hdr = _multipart(fields, files)
+                    r = side.post(f"/{lib}/upload/chunk", content=body, headers=hdr)
+                    part = up / lib / "_chunks" / uid / "000000.part"
+                    res.append((r, part.exists() and part.read_bytes() == big))
+                _same_answer(res[0][0], res[1][0])
+                assert res[0][1] == res[1][1], (lib, case)
+                served += res[1][0].headers.get("x-nd-served-by") == "gateway"
+            if lib == "video":
+                continue
+            # complete: two parts, then the clip / page
+            for case in ("ok", "missing", "badext", "album"):
+                res = []
+                for side in (d, via):
+                    uid = os.urandom(16).hex()
+                    for i, data in enumerate((b"first-", b"second")):
+                        if case == "missing" and i == 1:
+                            continue
+                        body, hdr = _multipart([("upload_id", uid), ("chunk_index", str(i))], [("file", "blob", data)])
+                        side.post(f"/{lib}/upload/chunk", content=body, headers=hdr)
+                    form = {"upload_id": uid, "filename": f"My Song (Live){ext if case != 'badext' else '.exe'}", "total_chunks": "2", "name": "",
+                            "description": " d ", "visible_to_players": "on"}
+                    if case == "album":
+                        form["album_id"] = str(album)
+                    before = (_newest(table) or {}).get("id")
+                    r = side.post(f"/{lib}/upload/complete", data=form)
+                    new = _newest(table)
+                    row = new if new and new.get("id") != before else None
+                    content = (up / row["file_url"][len("/uploads/"):]).read_bytes() if row else None
+                    res.append((r, row, content, (up / lib / "_chunks" / uid).exists()))
+                _same_answer(res[0][0], res[1][0])
+                if res[0][1]:
+                    assert _masked_url(res[0][1]["file_url"]) == _masked_url(res[1][1]["file_url"]), (res[0][1]["file_url"], res[1][1]["file_url"])
+                    _same_rows(res[0][1], res[1][1], ignore=("file_url",))
+                else:
+                    assert res[1][1] is None
+                assert res[0][2] == res[1][2] and res[0][3] == res[1][3], (lib, case)
+                served += res[1][0].headers.get("x-nd-served-by") == "gateway"
+            # direct upload
+            for fn, extra in ((f"Ünï cödé{ext}", [("entity_id", "1")]), (f"plain{ext}", [("album_id", str(album)), ("name", " Named ")]), ("x.exe", []), (f".{ext[1:]}", []),
+                              (f"{ext}", [])):
+                res = []
+                for side in (d, via):
+                    body, hdr = _multipart([("description", "x")] + extra, [("file", fn, big)])
+                    before = (_newest(table) or {}).get("id")
+                    r = side.post(f"/{lib}/upload", content=body, headers=hdr, follow_redirects=False)
+                    new = _newest(table)
+                    row = new if new and new.get("id") != before else None
+                    content = (up / row["file_url"][len("/uploads/"):]).read_bytes() if row else None
+                    res.append((r, row, content))
+                _same_answer(res[0][0], res[1][0])
+                if res[0][1]:
+                    assert _masked_url(res[0][1]["file_url"]) == _masked_url(res[1][1]["file_url"]), (res[0][1]["file_url"], res[1][1]["file_url"])
+                    _same_rows(res[0][1], res[1][1], ignore=("file_url",))
+                    assert res[0][2] == res[1][2] == big
+                else:
+                    assert res[1][1] is None
+                served += res[1][0].headers.get("x-nd-served-by") == "gateway"
+    assert served >= 10, served   # the GM's

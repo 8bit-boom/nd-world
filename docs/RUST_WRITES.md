@@ -50,6 +50,7 @@ shares the machine, so read it as "several times faster", not as a limit.
 | `crate::orm` | rows as SQLAlchemy writes them: every model's Python-side `default=` on INSERT and `onupdate=` on UPDATE (copied from the models into `app_data.json` by `scripts/gen_rust_data.py`); no UPDATE - so no `updated_at` bump - when nothing changed; a bulk `query.update()` sets `onupdate` columns too (both checked against SQLAlchemy itself) |
 | `orm::touch` | `live.touch(world)` where the Python handler calls it |
 | One transaction per request (`edits::run`) | Python's single commit: `BEGIN IMMEDIATE` before the handler, `COMMIT` only when the gateway answers; a handler that gives up part-way rolls back, so Python never applies the same write twice |
+| `uploads::serve` / `uploads::scan` | Upload bodies streamed to a temporary file under `<uploads>/_gateway` (never held in memory), multipart parts located in it, a file part copied into place from it; a request the gateway does not answer goes to Python with the body re-sent from the file. Files a handler wrote are removed when it gives up |
 | answers | Starlette's 303 redirect, FastAPI's compact JSON |
 
 A row of another world than the viewer's active one is left to Python (its cross-world access rule is not ported). Checked by
@@ -79,6 +80,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /audio`, `/video`, `/pages`: `/albums/new`, `/albums/<id>/rename`, `/albums/<id>/delete` (nested albums, their items and files), `/<id>/edit`, `/<id>/delete` (`edits::Lib`; hiding / deleting the clip players are hearing, and page templates still in use: Python's) | 22 |
 | `POST /images/albums/new`, `/images/albums/<id>/rename`, `/move`, `/delete`, `/add`, `/remove` (image albums hold urls; spotlight and image delete: Python's) | 23 |
 | `POST /api/sessions/<id>/recap-audio`, `/recap-audio/<clip>/visibility`, `/remove`, `/media/attach`, `/media/<kind>/<ref>/visibility`, `/rename`, `/remove` (the panel as `session_media.panel`; items still waiting for a uid, and removing a picture uploaded for the session: Python's) | 24 |
+| `POST /audio/upload/chunk`, `/video/upload/chunk`, `/pages/upload/chunk`, `/audio/upload/complete`, `/pages/upload/complete`, `/audio/upload`, `/pages/upload` (stored as `unique_upload_filename` names them; video files, which ffmpeg finishes, and over-limit files: Python's) | 25 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

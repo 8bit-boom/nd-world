@@ -4,6 +4,7 @@
 use percent_encoding::percent_decode_str;
 
 /// A urlencoded form: (name, value) pairs in order; `get` is Starlette's FormData.get (the last value of a repeated name)
+#[derive(Clone)]
 pub struct Form(pub Vec<(String, String)>);
 
 impl Form {
@@ -90,9 +91,7 @@ pub fn parse_multipart(headers: &axum::http::HeaderMap, body: &[u8]) -> Option<(
         let (part, after) = (&rest[..end], &rest[end + sep.len()..]);
         let head_end = find(part, b"\r\n\r\n")?;
         let (head, data) = (&part[..head_end], &part[head_end + 4..]);
-        if !head.is_ascii() {
-            return None;
-        }
+        // header values are UTF-8 to Starlette (`_user_safe_decode`); other bytes are Python's
         let (mut name, mut filename) = (None, None);
         for line in std::str::from_utf8(head).ok()?.split("\r\n") {
             let (h, v) = line.split_once(':')?;

@@ -23,6 +23,10 @@ const MAX_BODY: usize = 256 * 1024;
 
 pub struct Ctx<'a> {
     pub cfg: &'a Config,
+    /// a streamed upload's fields and file parts (crate::uploads)
+    pub upload: Option<crate::uploads::Upload>,
+    /// files this request wrote, removed again when the gateway does not answer after all
+    pub created: Vec<std::path::PathBuf>,
     pub db: Connection,
     pub p: PageCtx,
     pub uri: &'a Uri,
@@ -32,6 +36,14 @@ pub struct Ctx<'a> {
 
 impl Ctx<'_> {
     pub fn form(&self) -> Option<Form> {
+        if let Some(u) = &self.upload {
+            return Some(u.form.clone());
+        }
+        if content_type(self.headers) == "multipart/form-data" {
+            // request.form() reads multipart the same way; a body with a file in it is not a plain form
+            let (f, files) = parse_multipart(self.headers, self.body)?;
+            return files.is_empty().then_some(f);
+        }
         if self.body.is_empty() && content_type(self.headers).is_empty() {
             return Some(Form(vec![])); // no body at all: Starlette's request.form() is empty
         }
@@ -221,6 +233,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/media/video/{}/rename", sm_video_item_rename),
     ("/api/sessions/{}/media/audio/{}/remove", sm_audio_remove),
     ("/api/sessions/{}/media/video/{}/remove", sm_video_item_remove),
+    ("/audio/upload/complete", audio_complete),
+    ("/pages/upload/complete", pages_complete),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -240,6 +254,41 @@ const ROUTES: &[(&str, Handler)] = &[
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
+/// Upload routes: their bodies are streamed to disk first (crate::uploads)
+const UPLOAD_ROUTES: &[(&str, Handler)] = &[
+    ("/audio/upload/chunk", audio_chunk),
+    ("/video/upload/chunk", video_chunk),
+    ("/pages/upload/chunk", pages_chunk),
+    ("/audio/upload", audio_upload),
+    ("/pages/upload", pages_upload),
+];
+
+pub fn handles_upload(method: &Method, path: &str) -> bool {
+    method == Method::POST && route_in(UPLOAD_ROUTES, path).is_some()
+}
+
+pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
+    crate::uploads::serve(cfg, proxy, req, peer, |cfg, method, uri, headers, up| {
+        let up = up?;
+        let (h, ids) = route_in(UPLOAD_ROUTES, uri.path())?;
+        let db = crate::writes::open(cfg)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
+        db.execute_batch("BEGIN IMMEDIATE").ok()?;
+        let mut ctx = Ctx { cfg, upload: Some(up), created: vec![], db, p, uri, headers, body: &[] };
+        let answer = h(&mut ctx, &ids);
+        if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
+            return answer;
+        }
+        let _ = ctx.db.execute_batch("ROLLBACK");
+        for f in &ctx.created {
+            let _ = std::fs::remove_file(f);
+        }
+        None
+    })
+    .await
+}
+
 /// PUT routes, same patterns as ROUTES
 const PUT_ROUTES: &[(&str, Handler)] = &[("/api/characters/{}/sync", pc_sync_put)];
 
@@ -319,7 +368,7 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
     // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
     // Python) must leave nothing behind, or Python would apply the same write a second time
     db.execute_batch("BEGIN IMMEDIATE").ok()?;
-    let mut ctx = Ctx { cfg, db, p, uri, headers, body };
+    let mut ctx = Ctx { cfg, upload: None, created: vec![], db, p, uri, headers, body };
     let answer = match (by_id, by_slug) {
         (Some((h, ids)), _) => h(&mut ctx, &ids),
         (_, Some((h, slug))) => h(&mut ctx, &slug),
@@ -4451,4 +4500,291 @@ fn sm_attach(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         _ => return None,
     }
     sm_panel(c, ids[0])
+}
+
+// ── uploads: chunked parts, reassembly, direct uploads (app/uploads.py, audio.py, video.py, pages.py) ──
+
+/// `effective_upload_bytes(settings.<col>, int(os.environ.get(env, default)))`
+fn upload_cap(c: &Ctx, col: &str, env: &str, default: i64) -> Option<i64> {
+    let saved: Option<i64> = c.db.query_row(&format!("SELECT {col} FROM app_settings LIMIT 1"), [], |r| r.get(0)).ok()?;
+    match saved.filter(|v| *v > 0) {
+        Some(mb) => Some(mb * 1024 * 1024),
+        None => env_bytes(env, default),
+    }
+}
+
+/// `int(os.environ.get(env, default))`
+fn env_bytes(env: &str, default: i64) -> Option<i64> {
+    match std::env::var(env) {
+        Ok(v) => py_int_text(&v).ok(),
+        Err(_) => Some(default),
+    }
+}
+
+/// `Path(filename)`'s (stem, suffix) for a plain file name (one with a "/", or Python's own idea of other paths: None)
+fn py_path_parts(filename: &str) -> Option<(String, String)> {
+    if filename.contains('/') || filename.contains('\0') {
+        return None;
+    }
+    match filename.rfind('.') {
+        Some(i) if i > 0 && i < filename.len() - 1 => Some((filename[..i].to_string(), filename[i..].to_string())),
+        _ => Some((filename.to_string(), String::new())),
+    }
+}
+
+/// `Path(filename).suffix.lower()` (a non-ASCII suffix: Python's lower())
+fn py_suffix_lower(filename: &str) -> Option<String> {
+    let (_, ext) = py_path_parts(filename)?;
+    ext.is_ascii().then(|| ext.to_ascii_lowercase())
+}
+
+/// `unique_upload_filename(original, ext)`: "<12 hex>-<slug><ext>", or "<32 hex><ext>" when the name has nothing to slugify
+fn unique_upload_filename(original: &str, ext: &str) -> Option<String> {
+    let (stem, _) = py_path_parts(original)?;
+    if stem.chars().any(|ch| matches!(ch, '\u{212a}' | '\u{130}' | '\u{17f}' | '\u{1e9e}')) {
+        return None; // lower() turns these into ASCII letters (Kelvin sign, dotted I, ...): Python's
+    }
+    let mut slug = String::new();
+    let mut dash = false;
+    for ch in stem.chars().flat_map(|c| c.to_lowercase()) {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            slug.push(ch);
+            dash = false;
+        } else if !dash {
+            slug.push('-');
+            dash = true;
+        }
+    }
+    let slug: String = slug.trim_matches('-').chars().take(60).collect();
+    let hex = format!("{:032x}", rand::random::<u128>());
+    Some(if slug.is_empty() { format!("{hex}{ext}") } else { format!("{}-{slug}{ext}", &hex[..12]) })
+}
+
+/// A required `int = Form(...)`: plain digits (pydantic's own reading of other text, and an empty value's 422: Python's)
+fn form_int_required(f: &Form, k: &str) -> Option<i64> {
+    py_int(f.get(k).filter(|v| !v.is_empty())?)
+}
+
+/// `sweep_stale_chunk_sessions(root)`: chunk folders untouched for a day go
+fn sweep_chunks(root: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    let cutoff = SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60);
+    for e in rd.flatten() {
+        if let Ok(m) = e.metadata() {
+            if m.is_dir() && m.modified().map_or(false, |t| t < cutoff) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
+fn chunk_id_ok(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The one file part named `field` (more than one, or none: Python's)
+fn one_file<'a>(c: &'a Ctx, field: &str) -> Option<&'a crate::uploads::FileRef> {
+    let up = c.upload.as_ref()?;
+    let mut it = up.files.iter().filter(|p| p.name == field);
+    let first = it.next()?;
+    (it.next().is_none() && !up.form.has(field)).then_some(first)
+}
+
+/// `save_upload_chunk`: one part of a large file, stashed under <uploads>/<folder>/_chunks/<upload_id>/<index>.part
+fn save_chunk(c: &mut Ctx, lib: &Lib, folder: &str, cap: i64) -> Option<Response<Body>> {
+    lib_editor(c, lib)?;
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let index = form_int_required(&f, "chunk_index")?;
+    if !chunk_id_ok(&id) || !(0..=2000).contains(&index) {
+        return None;
+    }
+    if one_file(c, "file")?.len as i64 > cap {
+        return None; // the 413: Python's
+    }
+    let root = uploads_root(c)?.join(folder).join("_chunks");
+    let dir = root.join(&id);
+    if index == 0 && !dir.exists() {
+        sweep_chunks(&root);
+    }
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{index:06}.part"));
+    if !dest.exists() {
+        c.created.push(dest.clone());
+    }
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    json_response(&json!({"ok": true}))
+}
+
+fn audio_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?;
+    save_chunk(c, &AUDIO, "audio", cap)
+}
+
+fn video_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = upload_cap(c, "max_video_mb", "MAX_VIDEO_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024)?;
+    save_chunk(c, &VIDEO, "video", cap)
+}
+
+fn pages_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = env_bytes("MAX_PAGE_UPLOAD_BYTES", 50 * 1024 * 1024)?;
+    save_chunk(c, &PAGES, "pages", cap)
+}
+
+/// The parts of a chunked upload, all present, and their total size (`verify_upload_chunks_present`)
+fn chunk_parts(c: &Ctx, folder: &str, id: &str, total: i64) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>, u64)> {
+    if !chunk_id_ok(id) || !(1..=2001).contains(&total) {
+        return None;
+    }
+    let dir = uploads_root(c)?.join(folder).join("_chunks").join(id);
+    let parts: Vec<std::path::PathBuf> = (0..total).map(|i| dir.join(format!("{i:06}.part"))).collect();
+    let mut size = 0;
+    for p in &parts {
+        let m = std::fs::metadata(p).ok().filter(|m| m.is_file())?; // a missing part: the 400, Python's
+        size += m.len();
+    }
+    Some((dir, parts, size))
+}
+
+/// Concatenate the parts into `dest`
+fn reassemble(parts: &[std::path::PathBuf], dest: &std::path::Path) -> Option<()> {
+    let mut out = std::fs::File::create(dest).ok()?;
+    for p in parts {
+        let mut src = std::fs::File::open(p).ok()?;
+        std::io::copy(&mut src, &mut out).ok()?;
+    }
+    Some(())
+}
+
+/// Shared by the library uploads: the album a form names ("" / not digits = none; another world's: Python's 404)
+fn form_album(c: &Ctx, lib: &Lib, wid: i64, f: &Form) -> Option<Option<i64>> {
+    match digit_field(f.get("album_id").unwrap_or("")).ok()? {
+        Some(aid) => Some(Some(lib_album(c, lib, wid, aid)?.get("id")?.as_i64()?)),
+        None => Some(None),
+    }
+}
+
+/// Count of a world's items in a library table
+fn world_count(c: &Ctx, table: &str, wid: i64) -> Option<i64> {
+    c.db.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE world_id = ?1"), [wid], |r| r.get(0)).ok()
+}
+
+/// The name a new clip / page gets: the form's, else the file's stem, else `fallback`
+fn item_name(f: &Form, filename: &str, fallback: &str) -> Option<String> {
+    let n = take_chars(&strip(f.get("name").unwrap_or("")), 256);
+    if !n.is_empty() {
+        return Some(n);
+    }
+    let stem = take_chars(&py_path_parts(filename)?.0, 256);
+    Some(if stem.is_empty() { fallback.to_string() } else { stem })
+}
+
+const AUDIO_EXTS: [&str; 9] = [".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"];
+const PAGE_EXTS: [&str; 2] = [".html", ".htm"];
+
+/// Write a new library item from a finished file at `dest` (already in place under <uploads>/<folder>)
+fn add_library_item(c: &mut Ctx, lib: &Lib, wid: i64, f: &Form, filename: &str, file_name: &str, album: Option<i64>, with_entity: bool) -> Option<()> {
+    let fallback = if lib.sheets { "Untitled page" } else { "Untitled clip" };
+    let mut cols: Vec<(&str, Sql)> = vec![
+        ("world_id", Sql::Integer(wid)),
+        ("name", s(&item_name(f, filename, fallback)?)),
+        ("description", s(&take_chars(&strip(f.get("description").unwrap_or("")), 512))),
+        ("file_url", s(&format!("/uploads/{}/{file_name}", lib.section))),
+        ("visible_to_players", Sql::Integer(flag_param(f, "visible_to_players"))),
+        ("album_id", album.map_or(Sql::Null, Sql::Integer)),
+    ];
+    if lib.sheets {
+        cols.push(("is_character_sheet_template", Sql::Integer(flag_param(f, "is_character_sheet_template"))));
+    }
+    if with_entity {
+        let ent = match digit_field(f.get("entity_id").unwrap_or("")).ok()? {
+            Some(eid) => {
+                let w: Option<i64> = c.db.query_row("SELECT world_id FROM entities WHERE id = ?1", [eid], |r| r.get(0)).ok().flatten();
+                if w == Some(wid) { Sql::Integer(eid) } else { Sql::Null }
+            }
+            None => Sql::Null,
+        };
+        cols.push(("entity_id", ent));
+    }
+    orm::insert(&c.db, lib.items, &cols)?;
+    Some(())
+}
+
+/// The audio / pages `complete` routes: reassemble a chunked upload into the library
+fn library_complete(c: &mut Ctx, lib: &Lib, exts: &[&str], max_items: i64, cap: i64) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = lib_editor(c, lib)?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let filename = f.get("filename").filter(|v| !v.is_empty())?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let ext = py_suffix_lower(&filename)?;
+    if !exts.contains(&ext.as_str()) || world_count(c, lib.items, wid)? >= max_items {
+        return None;
+    }
+    let (dir, parts, size) = chunk_parts(c, lib.section, &id, total)?;
+    if size as i64 > cap {
+        return None; // the 413 (and its clean-up): Python's
+    }
+    let album = form_album(c, lib, wid, &f)?;
+    let target = uploads_root(c)?.join(lib.section);
+    std::fs::create_dir_all(&target).ok()?;
+    let name = unique_upload_filename(&filename, &ext)?;
+    let dest = target.join(&name);
+    c.created.push(dest.clone());
+    reassemble(&parts, &dest)?;
+    add_library_item(c, lib, wid, &f, &filename, &name, album, false)?;
+    let _ = std::fs::remove_dir_all(dir);
+    json_response(&json!({"ok": true}))
+}
+
+fn audio_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?;
+    library_complete(c, &AUDIO, &AUDIO_EXTS, 300, cap)
+}
+
+fn pages_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = env_bytes("MAX_PAGE_UPLOAD_BYTES", 50 * 1024 * 1024)?;
+    library_complete(c, &PAGES, &PAGE_EXTS, 200, cap)
+}
+
+/// The audio / pages direct uploads (one request, the file in it)
+fn library_upload(c: &mut Ctx, lib: &Lib, exts: &[&str], max_items: i64, cap: i64, with_entity: bool) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = lib_editor(c, lib)?;
+    if world_count(c, lib.items, wid)? >= max_items {
+        return None;
+    }
+    let part = one_file(c, "file")?;
+    if part.filename.is_empty() || part.len as i64 > cap {
+        return None;
+    }
+    let filename = part.filename.clone();
+    let ext = py_suffix_lower(&filename)?;
+    if !exts.contains(&ext.as_str()) {
+        return None;
+    }
+    let album = form_album(c, lib, wid, &f)?;
+    let target = uploads_root(c)?.join(lib.section);
+    std::fs::create_dir_all(&target).ok()?;
+    let name = unique_upload_filename(&filename, &ext)?;
+    let dest = target.join(&name);
+    c.created.push(dest.clone());
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    add_library_item(c, lib, wid, &f, &filename, &name, album, with_entity)?;
+    match album {
+        Some(a) => redirect(&format!("{}/albums/{a}", lib.base)),
+        None => redirect(lib.base),
+    }
+}
+
+fn audio_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?;
+    library_upload(c, &AUDIO, &AUDIO_EXTS, 300, cap, true)
+}
+
+fn pages_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = env_bytes("MAX_PAGE_UPLOAD_BYTES", 50 * 1024 * 1024)?;
+    library_upload(c, &PAGES, &PAGE_EXTS, 200, cap, false)
 }
