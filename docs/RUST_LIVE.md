@@ -62,3 +62,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /maps/schematic/<slug>/door`, `/fog` (the GM opens a door, changes fog and lighting; `clean_fog` ported, a rounding Python might do differently stays Python's) | P4-14 |
 | `POST /maps/schematic/<slug>/lights`, `/light` (save the lights, switch one on / off; `clean_lights` ported) | P4-15 |
 | `POST /maps/schematic/<slug>/walls` (save the walls; `clean_walls` ported) | P4-16 |
+| `POST /maps/schematic/<slug>/elements`, `/rename`, `/delete` (a GM or Assistant, a schematic of the active world; deleting a drawn map takes its background and embedded pictures with it, an uploaded HTML map stays Python's) | P4-17 |

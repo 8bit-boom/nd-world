@@ -4248,3 +4248,52 @@ def test_schematic_walls_save_is_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (walls, out)
         served += out[1][3] == "gateway"
     assert served >= 3, served
+
+
+def test_schematic_elements_rename_delete_are_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    n = [0]
+    served = 0
+
+    def run(path, kw, stored='[{"type": "rect", "x": 1}]', world=w):
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"sced-{n[0]}"
+            sid = _add("Schematic", world_id=world, name="Map", slug=slug, elements_json=stored)
+            r = side.post(f"/maps/schematic/{slug}/{path}", follow_redirects=False, **kw)
+            row = _row("schematics", sid)
+            out.append((r.status_code, r.json() if r.headers.get("content-type", "").startswith("application/json") else r.headers.get("location", "").replace(slug, "S"),
+                        row and (row["name"], row["elements_json"]), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (path, kw, out)
+        return out[1][3] == "gateway"
+
+    for body in ({"elements": [{"type": "token", "x": 1.5, "y": 2, "name": "Ré"}, {"type": "text", "big": 10 ** 15, "f": 0.1}]}, {"elements": []}, {},
+                 {"elements": [1]}, {"elements": "x"}):
+        served += run("elements", {"json": body})
+    for name in ("  New name ", "   ", ""):
+        served += run("rename", {"data": {"name": name}})
+    served += run("delete", {})
+    served += run("delete", {}, stored='[{"href": "/uploads/schematics/embeds/nope.png"}]')
+    served += run("rename", {"data": {"name": "x"}}, world=seed.world_b.id)
+    assert served >= 6, served
+
+
+def test_schematic_delete_removes_its_files_through_the_gateway(client, seed):
+    from app.main import UPLOADS_DIR
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    d = UPLOADS_DIR / "schematics"
+    (d / "embeds").mkdir(parents=True, exist_ok=True)
+    bg, emb = d / "gone-map.png", d / "embeds" / "gone-embed.png"
+    bg.write_bytes(b"x"); emb.write_bytes(b"y")
+    keep = d / "embeds" / "keep-embed.png"
+    keep.write_bytes(b"z")
+    _add("Schematic", world_id=seed.world_a.id, name="Map", slug="gone-map", image_url="/uploads/schematics/gone-map.png",
+         elements_json=json.dumps([{"href": "/uploads/schematics/embeds/gone-embed.png"}]))
+    r = _via(gm, base).post("/maps/schematic/gone-map/delete", follow_redirects=False)
+    assert (r.status_code, r.headers["location"], r.headers.get("x-nd-served-by")) == (303, "/maps", "gateway")
+    assert not bg.exists() and not emb.exists() and keep.exists()
+    assert _row_by("schematics", "slug", "gone-map") is None

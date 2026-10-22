@@ -456,7 +456,8 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
-    ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
+    ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8667,6 +8668,77 @@ fn sc_walls(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&v)))])?;
     orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"walls": v, "warnings": warnings}))
+}
+
+/// The editor's own routes check nothing past the GM / Assistant allowlist: the gateway answers only a GM or an Assistant, for a
+/// schematic in the active world (anything wider stays Python's)
+fn sc_for_manager(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
+    if !(c.p.is_gm || c.is_assistant()) {
+        return None;
+    }
+    let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    (sc.get("world_id")?.as_i64() == c.world_id()).then_some(sc)
+}
+
+fn sc_elements(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_manager(c, slug)?;
+    let body = c.json()?;
+    let elements = match body.get("elements") {
+        None => vec![],
+        Some(Value::Array(a)) if a.iter().all(|e| e.is_object()) => a.clone(),
+        _ => return None,
+    };
+    let text = nd_render::py_dumps(&Value::Array(elements));
+    if text.contains("NaN") || text.contains("Infinity") {
+        return None;
+    }
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&text))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true}))
+}
+
+fn sc_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let name = strip(f.get("name")?);
+    let sc = sc_for_manager(c, slug)?;
+    if name.is_empty() {
+        return None;
+    }
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("name", s(&name))])?;
+    redirect(&format!("/maps/schematic/{slug}"))
+}
+
+/// `schematic_delete` of a drawn schematic (an uploaded HTML one's file: Python's): the row, its background picture and its embedded images
+fn sc_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_manager(c, slug)?;
+    if py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file")) {
+        return None;
+    }
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    let Ok(Value::Array(elements)) = serde_json::from_str::<Value>(raw) else { return None };
+    let dir = c.cfg.db_path.parent()?.join("uploads").join("schematics");
+    if py_truthy(sc.get("image_url")) {
+        for ext in [".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"] {
+            let img = dir.join(format!("{slug}{ext}"));
+            if img.exists() {
+                c.removals.push(img);
+            }
+        }
+    }
+    for el in &elements {
+        if let Some(href) = el.get("href").and_then(|v| v.as_str()).filter(|h| h.starts_with("/uploads/schematics/embeds/")) {
+            let name = href.rsplit('/').next()?;
+            if name.is_empty() || name == ".." || name == "." {
+                return None;
+            }
+            let f = dir.join("embeds").join(name);
+            if f.exists() {
+                c.removals.push(f);
+            }
+        }
+    }
+    c.db.execute("DELETE FROM schematics WHERE id = ?1", [sc.get("id")?.as_i64()?]).ok()?;
+    redirect("/maps")
 }
 
 fn sc_lights(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
