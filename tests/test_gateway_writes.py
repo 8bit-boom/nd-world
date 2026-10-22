@@ -4398,3 +4398,28 @@ def test_cockpit_workspace_save_is_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (body, out)
         served += out[1][3] == "gateway"
     assert served >= 2, served
+
+
+def test_party_launch_combat_is_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    stats = json.dumps([{"id": "dex", "value": 2}, {"id": "itu", "value": 1}, {"id": "str", "value": 3}])
+    pc1 = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Ann", stats_json=stats, current_hp=4)
+    pc2 = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Bob")
+    e1 = _add("Entity", world_id=w, kind="creature", name="Wolf", custom_fields_json=json.dumps({"hp": "", "flesh": "12", "armor": 2.7, "speed": True}))
+    e2 = _add("Entity", world_id=w, kind="creature", name="Blob", custom_fields_json="{}")
+    e3 = _add("Entity", world_id=w, kind="creature", name="Odd", custom_fields_json=json.dumps({"health": "lots", "init": [1]}))
+    served = 0
+    for pcs, ents in (([pc2, pc1], [e2, e1, e3]), ([], []), ([pc1], [])):
+        out = []
+        for side in (gm, _via(gm, base)):
+            party = _add("Party", world_id=w, name="Crew", member_pc_ids_json=json.dumps(pcs), member_entity_ids_json=json.dumps(ents))
+            r = side.post(f"/api/parties/{party}/launch-combat")
+            j = r.json()
+            cs = _row("combat_sessions", int(j["redirect"].rsplit("/", 1)[1])) if r.status_code == 200 else None
+            cbs = [{k: v for k, v in x.items() if k != "id"} for x in json.loads(cs["combatants_json"])] if cs else None
+            out.append((r.status_code, cs and (cs["name"], cs["party_id"] == party, cs["world_id"]), cbs, r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (pcs, ents, out)
+        served += out[1][3] == "gateway"
+    assert served >= 3, served

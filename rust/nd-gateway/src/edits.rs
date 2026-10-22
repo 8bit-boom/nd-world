@@ -345,6 +345,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/parties/{}/delete", party_delete),
     ("/api/parties/{}/location", party_location),
     ("/api/parties/{}/loot", party_loot),
+    ("/api/parties/{}/launch-combat", party_launch_combat),
     ("/api/parties/{}/members/toggle", party_member_toggle),
     ("/new", entity_new),
     ("/entity/{}/edit", entity_edit),
@@ -8190,6 +8191,59 @@ fn pc_combatant(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
                 "id": new_cid(), "name": pc.get("name")?, "source": "pc", "pc_id": pc.get("id")?, "entity_id": null, "initiative": 0,
                 "init_bonus": get("dex") + get("itu"), "max_hp": hp, "hp": col_int(pc, "current_hp"), "max_shock": shock,
                 "shock": col_int(pc, "shock_current"), "armor": 0, "conditions": conds, "notes": ""}))
+}
+
+/// `entity_to_combatant`: health / armor / speed read from the entity's fields the way the creature templates name them
+fn entity_combatant(e: &Map<String, Value>) -> Option<Value> {
+    let raw = e.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+    let Value::Object(fields) = canonical_json(raw)? else { return None }; // not an object: Python's error
+    let int_or = |v: Option<&Value>, d: i64| -> Option<i64> {
+        match json_py_int(v)? {
+            Err(()) => Some(d),
+            Ok(n) => i64::try_from(n).ok(),
+        }
+    };
+    let pick = |keys: &[&str], d: i64| -> Option<i64> {
+        for k in keys {
+            match fields.get(*k) {
+                None | Some(Value::Null) => continue,
+                Some(Value::String(t)) if t.is_empty() => continue,
+                v => return int_or(v, d),
+            }
+        }
+        Some(d)
+    };
+    let health = pick(&["health", "hp", "flesh", "max_hp", "max_health", "hit_points"], 5)?;
+    Some(json!({"id": new_cid(), "name": e.get("name")?, "source": "entity", "pc_id": null, "entity_id": e.get("id")?, "initiative": 0,
+                "init_bonus": pick(&["speed", "initiative", "init"], 0)?, "max_hp": health, "hp": health, "max_shock": 0, "shock": 0,
+                "armor": int_or(fields.get("armor"), 0)?, "conditions": [], "notes": ""}))
+}
+
+/// `party_launch_combat` (full party access): a new encounter with every member in it
+fn party_launch_combat(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (p, level) = party_for_write(c, ids[0])?;
+    if level != "full" {
+        return None;
+    }
+    let mut combatants = vec![];
+    for (table, field) in [("player_characters", "member_pc_ids_json"), ("entities", "member_entity_ids_json")] {
+        let ids_in = int_list(p.get(field))?;
+        if ids_in.is_empty() {
+            continue;
+        }
+        let marks: Vec<String> = ids_in.iter().map(|i| i.to_string()).collect();
+        let mut st = c.db.prepare(&format!("SELECT * FROM {table} WHERE id IN ({}) ORDER BY id", marks.join(","))).ok()?;
+        let rows: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        for r in &rows {
+            combatants.push(if table == "entities" { entity_combatant(r)? } else { pc_combatant(c, r)? });
+        }
+    }
+    let wid = p.get("world_id")?.as_i64()?;
+    let name = format!("{} Encounter", p.get("name").and_then(|v| v.as_str()).unwrap_or("None"));
+    let id = orm::insert(&c.db, "combat_sessions", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("party_id", Sql::Integer(ids[0])),
+        ("combatants_json", s(&nd_render::py_dumps(&Value::Array(combatants))))])?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"redirect": format!("/combat/{id}")}))
 }
 
 fn combat_copy_with(c: &Ctx, src: &Map<String, Value>, name: &str, npcs_only: bool, template: bool, with_party: bool) -> Option<i64> {
