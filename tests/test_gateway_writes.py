@@ -234,3 +234,85 @@ def test_fact_writes_are_pythons(client, seed):
         _same_answer(d.post(f"/facts/{far[0]}/edit", data={"content": "x"}, follow_redirects=False),
                      via.post(f"/facts/{far[1]}/edit", data={"content": "x"}, follow_redirects=False))
     assert served >= 7, served   # the GM's creates (players may only read facts: auth_gate refuses them, through Python)
+
+
+# ── random tables ─────────────────────────────────────────────────────────────
+
+def _table(**kw):
+    from app.database import SessionLocal
+    from app.models import RandomTable
+    db = SessionLocal()
+    try:
+        t = RandomTable(**kw)
+        db.add(t)
+        db.commit()
+        return t.id
+    finally:
+        db.close()
+
+
+_TABLE_FORMS = [
+    {"name": "  Loot Table!  ", "category": " loot ", "description": " d ", "entries_json": '[{"label": "A", "weight": 2}]'},
+    {"name": "", "category": ""},
+    {},
+    {"name": "Loot Table!", "entries_json": "{bad"},
+    {"name": "x" * 80},
+    {"name": "Ünï"},
+    {"name": "---"},
+]
+
+
+def test_table_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"tables": {"player": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    wid = seed.world_a.id
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in _TABLE_FORMS:
+            ra = d.post("/tables/new", data=form, follow_redirects=False)
+            na = _newest("random_tables")
+            rb = via.post("/tables/new", data=form, follow_redirects=False)
+            nb = _newest("random_tables")
+            created = ra.status_code == 303
+            _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+            if created:
+                # the second one gets the next free slug: compare the slug's base
+                assert nb["slug"].startswith(na["slug"].rsplit("-", 1)[0]), (na["slug"], nb["slug"])
+                _same_rows(na, nb, ignore=("slug",))
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for owner, builtin, tw in ((None, False, wid), (seed.player_a.id, False, wid), (None, True, None), (None, False, None),
+                                   (None, False, seed.world_b.id)):
+            for form in _TABLE_FORMS:
+                ids = [_table(world_id=tw, name="T", slug=f"t-{owner}-{builtin}-{tw}-{i}-{json.dumps(form)[:20]}-{email}", is_builtin=builtin,
+                              created_by_user_id=owner, entries_json='[{"label": "x"}]') for i in range(2)]
+                before = [_row("random_tables", i) for i in ids]
+                ra = d.post(f"/tables/{ids[0]}/edit", data=form, follow_redirects=False)
+                rb = via.post(f"/tables/{ids[1]}/edit", data=form, follow_redirects=False)
+                _same_answer(ra, rb, ids[0], ids[1])
+                _same_rows(_row("random_tables", ids[0]), _row("random_tables", ids[1]), before[0], before[1], ignore=("slug",))
+            ids = [_table(world_id=tw, name="D", slug=f"del-{owner}-{builtin}-{tw}-{i}-{email}", is_builtin=builtin, created_by_user_id=owner)
+                   for i in range(2)]
+            ra = d.post(f"/tables/{ids[0]}/delete", follow_redirects=False)
+            rb = via.post(f"/tables/{ids[1]}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            assert (_row("random_tables", ids[0]) is None) == (_row("random_tables", ids[1]) is None)
+        # rolls: random, so the shape and the bounds
+        for entries in ('[{"label": "A", "weight": 3}, {"label": "B"}]', '[{"label": "Z", "weight": -1}]', "[]", '[{"label": 5, "weight": 0}]'):
+            tid = _table(world_id=wid, name="R", slug=f"roll-{email}-{entries}", entries_json=entries)
+            ra, rb = d.post(f"/api/tables/{tid}/roll"), via.post(f"/api/tables/{tid}/roll")
+            assert ra.status_code == rb.status_code, (entries, ra.text, rb.text)
+            if ra.status_code == 200:
+                ja, jb = ra.json(), rb.json()
+                assert list(ja) == list(jb) and ja["total"] == jb["total"] and 1 <= jb["roll"] <= jb["total"]
+                assert jb["result"] in [e.get("label", "") for e in json.loads(entries)]
+    assert served >= 6, served

@@ -100,6 +100,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/facts/new", fact_create),
     ("/facts/{}/edit", fact_edit),
     ("/facts/{}/delete", fact_delete),
+    ("/tables/new", table_create),
+    ("/tables/{}/edit", table_update),
+    ("/tables/{}/delete", table_delete),
+    ("/api/tables/{}/roll", table_roll),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -388,4 +392,165 @@ fn fact_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::update(&tx, "worlds", wid, &[("recap_content_touch", s(&orm::now_stamp()))])?;
     tx.commit().ok()?;
     redirect(&next)
+}
+
+// ── random tables (app/routers/tables.py) ────────────────────────────────────
+
+/// `_slugify`: lowercase ASCII words joined by "-", at most 50 characters, unique over every table ("-2", "-3", ...); None for a non-ASCII
+/// name (Python lowercases first, which can turn a non-ASCII letter into an ASCII one)
+fn table_slug(db: &Connection, name: &str) -> Option<String> {
+    if !name.is_ascii() {
+        return None;
+    }
+    let mut slug = String::new();
+    let mut dash = false;
+    for ch in name.to_ascii_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            slug.push(ch);
+            dash = false;
+        } else if !dash {
+            slug.push('-');
+            dash = true;
+        }
+    }
+    let base: String = slug.trim_matches('-').chars().take(50).collect();
+    let base = if base.is_empty() { "table".to_string() } else { base };
+    let taken = |sl: &str| -> Option<bool> {
+        db.query_row("SELECT count(*) FROM random_tables WHERE slug = ?1", [sl], |r| r.get::<_, i64>(0)).ok().map(|n| n > 0)
+    };
+    let mut slug = base.clone();
+    let mut n = 2;
+    while taken(&slug)? {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    Some(slug)
+}
+
+/// `str(form.get("entries_json", "[]") or "[]")` kept when it parses as JSON, else "[]"
+fn entries_json(f: &Form) -> Option<String> {
+    let raw = match f.get("entries_json") {
+        None | Some("") => "[]",
+        Some(v) => v,
+    };
+    serde_json::from_str::<Value>(raw).ok()?;
+    Some(raw.to_string())
+}
+
+fn table_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("tables")? {
+        return None;
+    }
+    let name = field_or(&f, "name", "", "Unnamed Table");
+    let owner = if c.p.is_gm || c.is_assistant() { Sql::Null } else { Sql::Integer(c.p.user_id) };
+    let tx = c.db.unchecked_transaction().ok()?;
+    let slug = table_slug(&tx, &name)?;
+    let id = orm::insert(
+        &tx,
+        "random_tables",
+        &[
+            ("world_id", Sql::Integer(wid)),
+            ("name", s(&name)),
+            ("slug", s(&slug)),
+            ("category", s(&field_or(&f, "category", "", "general"))),
+            ("description", s(&strip(f.get("description").unwrap_or("")))),
+            ("is_builtin", Sql::Integer(0)),
+            ("entries_json", s(&entries_json(&f)?)),
+            ("created_by_user_id", owner),
+        ],
+    )?;
+    tx.commit().ok()?;
+    redirect(&format!("/tables/{id}/edit"))
+}
+
+/// The table by id when it is global or of the viewer's active world and they may edit it (`_can_edit_table_row`)
+fn editable_table(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let t = row(&c.db, "SELECT * FROM random_tables WHERE id = ?1", id)?;
+    match t.get("world_id").and_then(|v| v.as_i64()) {
+        None => {}
+        Some(w) if Some(w) == c.world_id() => {}
+        Some(_) => return None,
+    }
+    crate::pages::can_edit_table_row(&c.db, &c.p, &t)?.then_some(t)
+}
+
+fn table_update(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let id = ids[0];
+    let f = c.form()?;
+    let t = editable_table(c, id)?;
+    let mut set: Vec<(&str, Sql)> = vec![];
+    let name;
+    if t.get("is_builtin").and_then(|v| v.as_i64()).unwrap_or(0) == 0 {
+        let old = t.get("name")?.as_str()?.to_string();
+        name = field_or(&f, "name", &old, &old);
+        set.push(("name", s(&name)));
+        set.push(("category", s(&field_or(&f, "category", "", "general"))));
+        set.push(("description", s(&strip(f.get("description").unwrap_or("")))));
+    }
+    set.push(("entries_json", s(&entries_json(&f)?)));
+    orm::update(&c.db, "random_tables", id, &set)?;
+    redirect(&format!("/tables/{id}/edit?saved=1"))
+}
+
+fn table_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let id = ids[0];
+    let t = editable_table(c, id)?;
+    if t.get("is_builtin").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
+        return None;
+    }
+    c.db.execute("DELETE FROM random_tables WHERE id = ?1", [id]).ok()?;
+    redirect("/tables")
+}
+
+fn table_roll(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    use rand::Rng;
+    let t = row(&c.db, "SELECT * FROM random_tables WHERE id = ?1", ids[0])?;
+    // world_row_visible: a global table, or one of the viewer's active world with the section open to them
+    if let Some(w) = t.get("world_id").and_then(|v| v.as_i64()) {
+        let world = c.p.world.clone()?;
+        if Some(w) != c.world_id() || !crate::pages::section_ok(&c.p, Some(&world), "tables")? {
+            return None;
+        }
+    }
+    let raw = t.get("entries_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let entries = serde_json::from_str::<Value>(raw).ok()?.as_array()?.clone();
+    if entries.is_empty() {
+        return None;
+    }
+    // weights: max(0, int(e.get("weight", 1) or 1)) - whole numbers only here
+    let mut weights = vec![];
+    for e in &entries {
+        let e = e.as_object()?;
+        let w = match e.get("weight") {
+            None | Some(Value::Null) => 1,
+            Some(Value::Number(n)) if n.is_i64() => match n.as_i64()? {
+                0 => 1,
+                x => x.max(0),
+            },
+            Some(Value::Bool(false)) => 1,
+            _ => return None,
+        };
+        weights.push(w);
+    }
+    let sum: i64 = weights.iter().sum();
+    let total = if sum == 0 { entries.len() as i64 } else { sum };
+    if sum == 0 {
+        weights = vec![1; entries.len()];
+    }
+    let mut rng = rand::thread_rng();
+    let roll = rng.gen_range(1..=total);
+    let pick_sum: i64 = weights.iter().sum();
+    let mut x = rng.gen_range(0..pick_sum);
+    let mut chosen = &entries[entries.len() - 1];
+    for (e, w) in entries.iter().zip(&weights) {
+        if x < *w {
+            chosen = e;
+            break;
+        }
+        x -= w;
+    }
+    let label = chosen.get("label").cloned().unwrap_or(json!(""));
+    json_response(&json!({"result": label, "roll": roll, "total": total}))
 }

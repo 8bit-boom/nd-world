@@ -59,6 +59,7 @@ player of another world, and compares the answers and every column afterwards (t
 |---|---|
 | `POST /quests/new`, `/quests/<id>/edit`, `/quests/<id>/delete`, `/api/quests/<id>/status` | 1 |
 | `POST /facts/new`, `/facts/<id>/edit`, `/facts/<id>/delete` (the recap watermark on the world) | 2 |
+| `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
 
 ## Not done (phase 3's exit criteria are NOT met)
 
