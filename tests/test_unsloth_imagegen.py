@@ -63,6 +63,8 @@ def unsloth_image_mode(monkeypatch):
     monkeypatch.setattr(ai_module, "UNSLOTH_URL", "http://unsloth:8000")
     monkeypatch.setattr(ai_module, "UNSLOTH_MODEL", "unsloth/gemma-4-26B-A4B-it-GGUF")
     monkeypatch.setattr(ai_module, "UNSLOTH_API_KEY", "sk-test")
+    # a key saved in Settings by an earlier test on this worker (test_studio_key_flow) would win over UNSLOTH_API_KEY
+    monkeypatch.setattr(ai_module, "_llm_api_key_override", "")
     monkeypatch.setattr(ai_module, "UNSLOTH_IMAGE_MODEL", "unsloth/z-image-turbo-GGUF")
     state = {"requests": []}
     return state
