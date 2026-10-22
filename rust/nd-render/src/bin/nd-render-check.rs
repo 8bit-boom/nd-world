@@ -26,6 +26,7 @@ fn main() {
             }
             "md" => json!(md::render_md(q["text"].as_str().unwrap())),
             "dumps" => json!(nd_render::py_dumps(&q["value"])),
+            "dumps_compact" => json!(nd_render::py_dumps_compact(&q["value"])),
             "rules_content" => json!(nd_render::rules::render_rules_content(q["text"].as_str().unwrap(), q["is_gm"].as_bool().unwrap())),
             "rules_sections" => json!(nd_render::rules::split_sections_h23(q["html"].as_str().unwrap())),
             "rules_overlay" => match nd_render::rules::parse_overlay(q["raw"].as_str()) {

@@ -17,8 +17,8 @@ pytestmark = pytest.mark.skipif(BIN is None, reason="rust/nd-render not built")
 
 
 def ask(qs):
-    out = subprocess.run([BIN], input="".join(json.dumps(q) + "\n" for q in qs), capture_output=True, text=True, check=True).stdout.splitlines()
-    return [json.loads(x) for x in out]
+    out = subprocess.run([BIN], input="".join(json.dumps(q) + "\n" for q in qs), capture_output=True, text=True, check=True).stdout.split("\n")
+    return [json.loads(x) for x in out if x]   # split on "\n" only: an answer may hold a raw U+2028, which splitlines() splits on
 
 
 _JUNK = [None, True, False, 0, 1, 2, 3, 7, -1, 2.5, "2", " 3 ", "x", "", "-name", "name", "-x", [], {}, ["a"], "tray", "log", "quick", "grid",
@@ -192,6 +192,9 @@ def test_json_dumps_is_pythons_floats_included():
     values = [floats, {"b": 1, "a": [True, None, "é\u2028<x>\x7f\"\\"], "c": {"z": 2.5, "y": -3}}, [1, 2, [3, {"k": 1e-9}]], "plain", 7]
     got = ask([{"op": "dumps", "value": v} for v in values])
     assert got == [json.dumps(v) for v in values]
+    # FastAPI's JSONResponse spelling
+    got = ask([{"op": "dumps_compact", "value": v} for v in values])
+    assert got == [json.dumps(v, ensure_ascii=False, separators=(",", ":")) for v in values]
 
 
 _RULES_PIECES = ["## Combat\n\n", "### Initiative\n\nRoll **d20**.\n\n", ":::tip\nUse cover.\n:::\n\n", ":::gm Secret stuff\nThe *twist*.\n:::\n\n",

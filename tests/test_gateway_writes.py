@@ -6,6 +6,7 @@ compares the answers (status, redirect, JSON) and the rows afterwards: every col
 Runs only with a gateway to talk to (ND_TEST_BASE_URL) and Python directly (ND_GOLDEN_DIRECT_URL), like tests/test_gateway_golden.py.
 """
 import json
+from urllib.parse import urlencode
 
 import pytest
 
@@ -459,3 +460,73 @@ def test_board_writes_are_pythons(client, seed):
         far = [_board(world_id=seed.world_b.id, name="F", slug=f"far-{n}-{i}") for i in range(2)]
         _same_answer(d.post(f"/boards/{far[0]}/save", json={}), via.post(f"/boards/{far[1]}/save", json={}))
     assert served >= 7, served   # the GM's (players may not write boards: auth_gate refuses them, through Python)
+
+
+# ── sessions ──────────────────────────────────────────────────────────────────
+
+def _gsession(**kw):
+    from app.database import SessionLocal
+    from app.models import GameSession
+    db = SessionLocal()
+    try:
+        g = GameSession(**kw)
+        db.add(g)
+        db.commit()
+        return g.id
+    finally:
+        db.close()
+
+
+def test_session_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import Entity, PlayerCharacter, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"sessions": {"player": "edit", "assistant": "edit"}})
+        e = Entity(world_id=seed.world_a.id, kind="npc", name="Mara <m>")
+        pc = PlayerCharacter(world_id=seed.world_a.id, name="Hero", owner_user_id=seed.player_a.id)
+        db.add_all([e, pc]); db.commit()
+        eid, pcid = e.id, pc.id
+    finally:
+        db.close()
+    served = 0
+    forms = [{"title": " Night ", "session_num": "4", "session_date": " 2026-01-02 ", "summary": "s\r\nx", "party_id": "2", "xp_awarded": "150"},
+             {}, {"title": "", "session_num": "", "xp_awarded": ""}, {"session_num": "four"}, {"session_num": " 4"}]
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in forms:
+            ra = d.post("/sessions/new", data=form, follow_redirects=False)
+            na = _newest("game_sessions")
+            rb = via.post("/sessions/new", data=form, follow_redirects=False)
+            nb = _newest("game_sessions")
+            created = ra.status_code == 303
+            _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+            if created:
+                _same_rows(na, nb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for form in forms + [[("title", "T"), ("npc_entity_ids", str(eid)), ("npc_entity_ids", f"pc:{pcid}"), ("npc_entity_ids", "99999"),
+                              ("npc_entity_ids", str(eid))], [("npc_entity_ids", "x")]]:
+            ids = [_gsession(world_id=seed.world_a.id, title="Old", session_num=9) for _ in range(2)]
+            before = [_row("game_sessions", i) for i in ids]
+            kw = ({"content": urlencode(form), "headers": {"content-type": "application/x-www-form-urlencoded"}} if isinstance(form, list)
+                  else {"data": form})
+            ra = d.post(f"/sessions/{ids[0]}/edit", follow_redirects=False, **kw)
+            rb = via.post(f"/sessions/{ids[1]}/edit", follow_redirects=False, **kw)
+            _same_answer(ra, rb, ids[0], ids[1])
+            _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        prep = json.dumps([{"task": "Map", "done": False}, {"task": "NPCs"}, {"task": "Ünï", "done": True, "x": 1.5e-7}])
+        for path, body in (("toggle", {"index": 1}), ("toggle", {"index": 9}), ("toggle", {}), ("toggle", {"index": None}), ("toggle", {"index": "1"}),
+                           ("add", {"task": "  Loot  "}), ("add", {"task": ""}), ("add", {}), ("0/delete", None), ("7/delete", None)):
+            ids = [_gsession(world_id=seed.world_a.id, title="P", prep_json=prep) for _ in range(2)]
+            before = [_row("game_sessions", i) for i in ids]
+            url = "/api/sessions/{}/prep/" + path
+            ra = d.post(url.format(ids[0]), json=body) if body is not None else d.post(url.format(ids[0]))
+            rb = via.post(url.format(ids[1]), json=body) if body is not None else via.post(url.format(ids[1]))
+            _same_answer(ra, rb)
+            _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 15, served   # the GM's (session writes are GM / assistant routes in auth_gate)

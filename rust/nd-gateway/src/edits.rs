@@ -127,7 +127,7 @@ pub fn json_response(v: &Value) -> Option<Response<Body>> {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-nd-served-by", "gateway")
-        .body(Body::from(serde_json::to_string(v).ok()?))
+        .body(Body::from(nd_render::py_dumps_compact(v)))
         .ok()
 }
 
@@ -151,6 +151,11 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/calendar/advance", calendar_advance),
     ("/api/calendar/set-date", calendar_set_date),
     ("/boards/new", board_create),
+    ("/sessions/new", session_create),
+    ("/sessions/{}/edit", session_edit),
+    ("/api/sessions/{}/prep/toggle", prep_toggle),
+    ("/api/sessions/{}/prep/add", prep_add),
+    ("/api/sessions/{}/prep/{}/delete", prep_delete),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -831,4 +836,145 @@ fn board_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let b = editable_board(c, slug)?;
     c.db.execute("DELETE FROM invest_boards WHERE id = ?1", [b.get("id")?.as_i64()?]).ok()?;
     redirect("/boards")
+}
+
+// ── sessions (app/routers/sessions.py) ───────────────────────────────────────
+
+/// `int(form.get(name) or default)`
+fn int_or(f: &Form, name: &str, default: i64) -> Option<i64> {
+    match f.get(name) {
+        None | Some("") => Some(default),
+        Some(v) => py_int(v),
+    }
+}
+
+fn session_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("sessions")? {
+        return None;
+    }
+    let date = strip(f.get("session_date").unwrap_or(""));
+    let id = orm::insert(
+        &c.db,
+        "game_sessions",
+        &[
+            ("world_id", Sql::Integer(wid)),
+            ("title", s(&field_or(&f, "title", "", "Untitled Session"))),
+            ("session_num", Sql::Integer(int_or(&f, "session_num", 1)?)),
+            ("session_date", if date.is_empty() { Sql::Null } else { s(&date) }),
+            ("summary", s(f.get("summary").unwrap_or(""))),
+            ("party_id", opt_int_field(&f, "party_id").ok()?.map_or(Sql::Null, Sql::Integer)),
+            ("xp_awarded", Sql::Integer(int_or(&f, "xp_awarded", 0)?)),
+        ],
+    )?;
+    redirect(&format!("/sessions/{id}"))
+}
+
+/// The session by id, of the viewer's active world, with session edit rights there (`_require_edit_section` by membership)
+fn editable_session(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", id)?;
+    if gs.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_section("sessions")? {
+        return None;
+    }
+    Some(gs)
+}
+
+fn session_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let id = ids[0];
+    let f = c.form()?;
+    let gs = editable_session(c, id)?;
+    let old_title = gs.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let old_num = gs.get("session_num").and_then(|v| v.as_i64())?;
+    let date = strip(f.get("session_date").unwrap_or(""));
+    // npc_entity_ids: entity ids, and "pc:<id>" for player characters (each list in the order given)
+    let (mut ents, mut pcs) = (vec![], vec![]);
+    for v in f.0.iter().filter(|(k, _)| k == "npc_entity_ids").map(|(_, v)| v.as_str()) {
+        match v.strip_prefix("pc:") {
+            Some(p) => pcs.push(py_int(p)?),
+            None => ents.push(py_int(v)?),
+        }
+    }
+    let name_of = |table: &str, i: i64| -> Value {
+        c.db.query_row(&format!("SELECT name FROM {table} WHERE id = ?1"), [i], |r| r.get::<_, Option<String>>(0)).ok().flatten().map_or(json!(""), |n| json!(n))
+    };
+    let mut npcs = vec![];
+    for i in &ents {
+        npcs.push(json!({"entity_id": i, "name": name_of("entities", *i), "kind": "entity"}));
+    }
+    for i in &pcs {
+        npcs.push(json!({"entity_id": i, "name": name_of("player_characters", *i), "kind": "player_character"}));
+    }
+    orm::update(
+        &c.db,
+        "game_sessions",
+        id,
+        &[
+            ("title", s(&field_or(&f, "title", &old_title, &old_title))),
+            ("session_num", Sql::Integer(int_or(&f, "session_num", old_num)?)),
+            ("session_date", if date.is_empty() { Sql::Null } else { s(&date) }),
+            ("summary", s(f.get("summary").unwrap_or(""))),
+            ("party_id", opt_int_field(&f, "party_id").ok()?.map_or(Sql::Null, Sql::Integer)),
+            ("npcs_json", s(&nd_render::py_dumps(&Value::Array(npcs)))),
+        ],
+    )?;
+    redirect(&format!("/sessions/{id}?saved=1"))
+}
+
+/// The session's prep list (`json.loads(gs.prep_json or "[]")`) - a list, or Python's call
+fn prep_list(gs: &Map<String, Value>) -> Option<Vec<Value>> {
+    let raw = gs.get("prep_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Array(a) => Some(a),
+        _ => None,
+    }
+}
+
+fn save_prep(c: &Ctx, id: i64, prep: Vec<Value>) -> Option<Response<Body>> {
+    let v = Value::Array(prep);
+    orm::update(&c.db, "game_sessions", id, &[("prep_json", s(&nd_render::py_dumps(&v)))])?;
+    json_response(&json!({"prep": v}))
+}
+
+fn prep_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let gs = editable_session(c, ids[0])?;
+    // int(body.get("index", -1)): a missing key is -1; null (int(None)) and other types are Python's
+    let idx = match body.get("index") {
+        None => -1,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        Some(_) => return None,
+    };
+    let mut prep = prep_list(&gs)?;
+    if idx >= 0 && (idx as usize) < prep.len() {
+        let item = prep[idx as usize].as_object_mut()?;
+        let done = match item.get("done") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            _ => return None, // `not` of another value: Python's truthiness rules
+        };
+        item.insert("done".into(), json!(!done));
+    }
+    save_prep(c, ids[0], prep)
+}
+
+fn prep_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let body = c.json()?;
+    let gs = editable_session(c, ids[0])?;
+    let task = strip(json_text(&body, "task", "")?);
+    let mut prep = prep_list(&gs)?;
+    if !task.is_empty() {
+        prep.push(json!({"task": task, "done": false}));
+    }
+    save_prep(c, ids[0], prep)
+}
+
+fn prep_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = editable_session(c, ids[0])?;
+    let mut prep = prep_list(&gs)?;
+    let idx = ids[1];
+    if idx >= 0 && (idx as usize) < prep.len() {
+        prep.remove(idx as usize);
+    }
+    save_prep(c, ids[0], prep)
 }

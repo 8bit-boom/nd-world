@@ -261,6 +261,59 @@ pub fn py_float_repr(f: f64) -> String {
     }
 }
 
+/// FastAPI's JSONResponse body: `json.dumps(x, ensure_ascii=False, separators=(",", ":"))` - keys in insertion order, only control
+/// characters escaped, floats as Python's `repr`
+pub fn py_dumps_compact(v: &serde_json::Value) -> String {
+    let mut out = String::new();
+    compact_impl(v, &mut out);
+    out
+}
+
+fn compact_impl(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::String(s) => {
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\u{8}' => out.push_str("\\b"),
+                    '\u{c}' => out.push_str("\\f"),
+                    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+        serde_json::Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                compact_impl(x, out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(o) => {
+            out.push('{');
+            for (i, (k, x)) in o.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                compact_impl(&serde_json::Value::String(k.clone()), out);
+                out.push(':');
+                compact_impl(x, out);
+            }
+            out.push('}');
+        }
+        other => py_json_impl(other, out, false),
+    }
+}
+
 /// Python's plain `json.dumps(x)`: keys in insertion order, otherwise as `py_json`
 pub fn py_dumps(v: &serde_json::Value) -> String {
     let mut out = String::new();
