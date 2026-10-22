@@ -159,3 +159,78 @@ def test_quest_writes_are_pythons(client, seed):
         _same_answer(d.post("/quests/999999/edit", data={"title": "x"}, follow_redirects=False),
                      via.post("/quests/999999/edit", data={"title": "x"}, follow_redirects=False))
     assert served >= 20, served
+
+
+# ── facts ─────────────────────────────────────────────────────────────────────
+
+def _fact(**kw):
+    from app.database import SessionLocal
+    from app.models import Fact
+    db = SessionLocal()
+    try:
+        f = Fact(**kw)
+        db.add(f)
+        db.commit()
+        return f.id
+    finally:
+        db.close()
+
+
+_FACT_FORMS = [
+    {"content": "  The door was red.  ", "tags": " door, red ", "visible_to_players": "on", "next": "/facts"},
+    {"content": "x", "next": "/sessions/12"},
+    {"content": "x", "next": "https://evil.example/"},
+    {"content": "", "next": "/sessions/3"},
+    {"content": "Hidden", "game_session_id": "7"},
+    {"content": "Bad id", "game_session_id": "seven"},
+    {"content": "y", "tags": "   ", "visible_to_players": ""},
+    {},
+]
+
+
+def test_fact_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"facts": {"player": "edit", "assistant": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    wid = seed.world_a.id
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in _FACT_FORMS:
+            ra = d.post("/facts/new", data=form, follow_redirects=False)
+            na = _newest("facts")
+            rb = via.post("/facts/new", data=form, follow_redirects=False)
+            nb = _newest("facts")
+            _same_answer(ra, rb)
+            if na and nb and na["id"] != nb["id"]:
+                _same_rows(na, nb)
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for form in _FACT_FORMS:
+            ids = [_fact(world_id=wid, content="Old", tags="a", visible_to_players=False, game_session_id=5) for _ in range(2)]
+            before = [_row("facts", i) for i in ids]
+            ra = d.post(f"/facts/{ids[0]}/edit", data=form, follow_redirects=False)
+            rb = via.post(f"/facts/{ids[1]}/edit", data=form, follow_redirects=False)
+            _same_answer(ra, rb)
+            _same_rows(_row("facts", ids[0]), _row("facts", ids[1]), before[0], before[1])
+        for form in ({"next": "/sessions/4"}, {}, {"next": "/x"}):
+            ids = [_fact(world_id=wid, content="Del") for _ in range(2)]
+            w0 = _row("worlds", wid)["recap_content_touch"]
+            ra = d.post(f"/facts/{ids[0]}/delete", data=form, follow_redirects=False)
+            w1 = _row("worlds", wid)["recap_content_touch"]
+            rb = via.post(f"/facts/{ids[1]}/delete", data=form, follow_redirects=False)
+            w2 = _row("worlds", wid)["recap_content_touch"]
+            _same_answer(ra, rb)
+            assert (_row("facts", ids[0]) is None) == (_row("facts", ids[1]) is None)
+            assert (w1 != w0) == (w2 != w1)
+        far = [_fact(world_id=seed.world_b.id, content="Far") for _ in range(2)]
+        _same_answer(d.post(f"/facts/{far[0]}/edit", data={"content": "x"}, follow_redirects=False),
+                     via.post(f"/facts/{far[1]}/edit", data={"content": "x"}, follow_redirects=False))
+    assert served >= 7, served   # the GM's creates (players may only read facts: auth_gate refuses them, through Python)

@@ -31,6 +31,9 @@ pub struct Ctx<'a> {
 
 impl Ctx<'_> {
     pub fn form(&self) -> Option<Form> {
+        if self.body.is_empty() && content_type(self.headers).is_empty() {
+            return Some(Form(vec![])); // no body at all: Starlette's request.form() is empty
+        }
         if content_type(self.headers) != "application/x-www-form-urlencoded" {
             return None;
         }
@@ -94,6 +97,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/quests/{}/edit", quest_edit),
     ("/quests/{}/delete", quest_delete),
     ("/api/quests/{}/status", quest_status),
+    ("/facts/new", fact_create),
+    ("/facts/{}/edit", fact_edit),
+    ("/facts/{}/delete", fact_delete),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -291,4 +297,95 @@ fn quest_status(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         current = json!(status);
     }
     json_response(&json!({"status": current}))
+}
+
+// ── facts (app/routers/facts.py) ─────────────────────────────────────────────
+
+/// `_safe_next`: "/facts" or "/sessions/<digits>", else "/facts" (None: a value Python's regex might read differently)
+fn facts_next(f: &Form) -> Option<String> {
+    let v = f.get("next").unwrap_or("");
+    if !v.is_ascii() {
+        return None;
+    }
+    let ok = v == "/facts" || v.strip_prefix("/sessions/").map_or(false, |d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+    Some(if ok { v.to_string() } else { "/facts".to_string() })
+}
+
+/// `_normalize_tags_field` for a form value (text or nothing)
+fn fact_tags(f: &Form) -> Sql {
+    match f.get("tags").map(strip) {
+        Some(t) if !t.is_empty() => s(&t),
+        _ => Sql::Null,
+    }
+}
+
+fn fact_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("facts")? {
+        return None;
+    }
+    let next = facts_next(&f)?;
+    let content = strip(f.get("content").unwrap_or(""));
+    if content.is_empty() {
+        return redirect(&next);
+    }
+    let session = opt_int_field(&f, "game_session_id").ok()?;
+    orm::insert(
+        &c.db,
+        "facts",
+        &[
+            ("world_id", Sql::Integer(wid)),
+            ("game_session_id", session.map_or(Sql::Null, Sql::Integer)),
+            ("content", s(&content)),
+            ("visible_to_players", Sql::Integer(f.has("visible_to_players") as i64)),
+            ("tags", fact_tags(&f)),
+            ("author_id", Sql::Integer(c.p.user_id)),
+            ("updated_at", s(&orm::now_stamp())),
+        ],
+    )?;
+    redirect(&next)
+}
+
+/// The fact by id, in the viewer's active world, and the right to edit facts there
+fn editable_fact(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let fact = row(&c.db, "SELECT * FROM facts WHERE id = ?1", id)?;
+    if fact.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_section("facts")? {
+        return None;
+    }
+    Some(fact)
+}
+
+fn fact_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let id = ids[0];
+    let f = c.form()?;
+    editable_fact(c, id)?;
+    let next = facts_next(&f)?;
+    let content = strip(f.get("content").unwrap_or(""));
+    let session = opt_int_field(&f, "game_session_id").ok()?;
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if !content.is_empty() {
+        set.push(("content", s(&content)));
+    }
+    set.push(("visible_to_players", Sql::Integer(f.has("visible_to_players") as i64)));
+    set.push(("tags", fact_tags(&f)));
+    if let Some(sid) = session {
+        set.push(("game_session_id", Sql::Integer(sid)));
+    }
+    set.push(("updated_at", s(&orm::now_stamp())));
+    orm::update(&c.db, "facts", id, &set)?;
+    redirect(&next)
+}
+
+fn fact_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let id = ids[0];
+    let next = facts_next(&c.form()?)?;
+    editable_fact(c, id)?;
+    let wid = c.world_id()?;
+    let tx = c.db.unchecked_transaction().ok()?;
+    tx.execute("DELETE FROM facts WHERE id = ?1", [id]).ok()?;
+    // _bump_recap_content_touch: the world's recap-staleness watermark (a deleted fact leaves no row to timestamp)
+    orm::update(&tx, "worlds", wid, &[("recap_content_touch", s(&orm::now_stamp()))])?;
+    tx.commit().ok()?;
+    redirect(&next)
 }

@@ -58,6 +58,7 @@ player of another world, and compares the answers and every column afterwards (t
 | Routes | Batch |
 |---|---|
 | `POST /quests/new`, `/quests/<id>/edit`, `/quests/<id>/delete`, `/api/quests/<id>/status` | 1 |
+| `POST /facts/new`, `/facts/<id>/edit`, `/facts/<id>/delete` (the recap watermark on the world) | 2 |
 
 ## Not done (phase 3's exit criteria are NOT met)
 
