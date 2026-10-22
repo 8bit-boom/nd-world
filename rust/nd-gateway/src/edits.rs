@@ -216,6 +216,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/rest", hub_rest),
     ("/api/characters/{}/hub/rest/undo", hub_rest_undo),
     ("/api/characters/{}/hub/log/{}/undo", hub_log_undo),
+    ("/api/characters/{}/hub/keepsakes", hub_keepsake_add),
+    ("/api/characters/{}/hub/keepsakes/{}", hub_keepsake_edit),
+    ("/api/characters/{}/hub/keepsakes/{}/delete", hub_keepsake_delete),
     ("/api/characters/{}/hub/entries", hub_entry_create),
     ("/api/characters/{}/hub/entries/{}", hub_entry_update),
     ("/api/characters/{}/hub/entries/{}/delete", hub_entry_delete),
@@ -9288,6 +9291,138 @@ fn hub_log_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::update(&c.db, "character_log", ids[1], &[("undone", Sql::Integer(1))])?;
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `_hub_pc`: (pc, is_owner) for the owning player, or a GM looking in
+fn hub_viewer_pc(c: &Ctx, id: i64) -> Option<(Map<String, Value>, bool)> {
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id)?;
+    let owner = pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id);
+    if !owner && !c.p.is_gm {
+        return None;
+    }
+    let wid = pc.get("world_id")?.as_i64()?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", wid)?;
+    if !c.p.is_gm {
+        let member: Option<i64> = c.db.query_row("SELECT id FROM world_memberships WHERE world_id = ?1 AND user_id = ?2 LIMIT 1", [wid, c.p.user_id], |r| r.get(0)).ok();
+        member?;
+    }
+    Some((pc, owner))
+}
+
+/// `_clean_keepsake_text`: " ".join(str(value or "").split())[:limit]; None for a value str() would spell its own way
+fn keepsake_text(v: Option<&Value>, limit: usize) -> Option<String> {
+    let t = match v {
+        Some(Value::String(t)) => t.as_str(),
+        v if !py_truthy(v) => "",
+        _ => return None,
+    };
+    if t.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch) || ch == '\u{85}') {
+        return None;
+    }
+    Some(take_chars(&t.split_whitespace().collect::<Vec<_>>().join(" "), limit))
+}
+
+/// `strftime("%Y-%m-%dT%H:%M:%SZ")` of a stored DATETIME (row_map's {"__dt__": ...})
+fn py_utc_z(v: Option<&Value>) -> Value {
+    match v.and_then(|x| x.get("__dt__").unwrap_or(x).as_str()).filter(|t| t.len() >= 19) {
+        Some(t) => json!(format!("{}Z", t[..19].replacen(' ', "T", 1))),
+        None => Value::Null,
+    }
+}
+
+fn keepsake_out(k: &Map<String, Value>) -> Value {
+    let txt = |key: &str| k.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    json!({"id": k.get("id"), "kind": k.get("kind"), "url": txt("url"), "text": txt("text"), "name": k.get("name"), "description": txt("description"),
+           "by": k.get("saved_by"), "own": py_truthy(k.get("own")), "at": py_utc_z(k.get("created_at"))})
+}
+
+/// `hub_keepsake_add` for a handout shown to the table, or a GM's raw file / text; private notes and Session Log media stay Python's
+fn hub_keepsake_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (pc, owner) = hub_viewer_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    let src = body.get("source")?.as_object()?;
+    let wid = pc.get("world_id")?.as_i64()?;
+    let (kind, url, text, default_name) = match src.get("type").and_then(|v| v.as_str())? {
+        "handout" => {
+            let hid = match src.get("id") {
+                Some(Value::Number(n)) => n.as_i64()?,
+                _ => return None,
+            };
+            let h = row(&c.db, "SELECT * FROM world_handouts WHERE id = ?1", hid)?;
+            if h.get("world_id")?.as_i64()? != wid {
+                return None;
+            }
+            let label = h.get("label").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("Handout").to_string();
+            ("image".to_string(), h.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(), String::new(), label)
+        }
+        "raw" if c.p.is_gm => match src.get("kind").and_then(|v| v.as_str())? {
+            "text" => {
+                let t = match src.get("text") {
+                    Some(Value::String(t)) => t.trim().to_string(),
+                    _ => return None,
+                };
+                if t.is_empty() || t.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch) || ch == '\u{85}') {
+                    return None;
+                }
+                ("text".to_string(), String::new(), take_chars(&t, 4000), String::new())
+            }
+            what @ ("image" | "video" | "audio") => {
+                let u = match src.get("url") {
+                    Some(Value::String(t)) => t.trim().to_string(),
+                    _ => return None,
+                };
+                if !u.starts_with("/uploads/") || u.contains("..") || u.chars().count() > 500 || u.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch) || ch == '\u{85}') {
+                    return None;
+                }
+                let tail = u.rsplit('/').next()?.to_string();
+                (what.to_string(), u, String::new(), tail)
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let name = Some(keepsake_text(body.get("name"), 120)?).filter(|n| !n.is_empty()).or_else(|| keepsake_text(Some(&json!(default_name)), 120)).filter(|n| !n.is_empty())?;
+    let description = keepsake_text(body.get("description"), 400)?;
+    let n: i64 = c.db.query_row("SELECT COUNT(*) FROM character_keepsakes WHERE character_id = ?1", [ids[0]], |r| r.get(0)).ok()?;
+    if n >= 100 {
+        return None;
+    }
+    let by = if c.p.is_gm && !owner { "gm" } else { "player" };
+    let id = orm::insert(&c.db, "character_keepsakes", &[("world_id", Sql::Integer(wid)), ("character_id", Sql::Integer(ids[0])), ("kind", s(&kind)), ("url", s(&url)),
+        ("text", s(&text)), ("name", s(&name)), ("description", s(&description)), ("saved_by", s(by))])?;
+    json_response(&keepsake_out(&row(&c.db, "SELECT * FROM character_keepsakes WHERE id = ?1", id)?))
+}
+
+fn hub_keepsake_of(c: &Ctx, ids: &[i64]) -> Option<Map<String, Value>> {
+    hub_viewer_pc(c, ids[0])?;
+    let k = row(&c.db, "SELECT * FROM character_keepsakes WHERE id = ?1", ids[1])?;
+    (k.get("character_id")?.as_i64()? == ids[0]).then_some(k)
+}
+
+fn hub_keepsake_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let k = hub_keepsake_of(c, ids)?;
+    let body = hub_body(c)?;
+    let mut set = vec![];
+    if body.contains_key("name") {
+        let name = keepsake_text(body.get("name"), 120).filter(|n| !n.is_empty())?;
+        set.push(("name", s(&name)));
+    }
+    if body.contains_key("description") {
+        set.push(("description", s(&keepsake_text(body.get("description"), 400)?)));
+    }
+    orm::update(&c.db, "character_keepsakes", ids[1], &set)?;
+    let _ = k;
+    json_response(&keepsake_out(&row(&c.db, "SELECT * FROM character_keepsakes WHERE id = ?1", ids[1])?))
+}
+
+/// `hub_keepsake_delete` of a kept thing that is not the player's own upload (that one's file goes too: Python's)
+fn hub_keepsake_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let k = hub_keepsake_of(c, ids)?;
+    if py_truthy(k.get("own")) && k.get("url").map_or(false, |u| py_truthy(Some(u))) {
+        return None;
+    }
+    c.db.execute("DELETE FROM character_keepsakes WHERE id = ?1", [ids[1]]).ok()?;
     json_response(&json!({"ok": true}))
 }
 

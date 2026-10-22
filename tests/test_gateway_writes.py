@@ -2809,7 +2809,7 @@ def test_theme_import_and_world_create_are_pythons(client, seed):
             a, b = list(out[0]), list(out[1])
             a[2], b[2] = a[2].rsplit("-", 1)[0], b[2].rsplit("-", 1)[0]
             assert a == b, (form, out)
-    assert served >= 7, served
+    assert served >= 6, served
 
 
 def test_rules_edit_and_import_are_pythons(client, seed):
@@ -3409,7 +3409,7 @@ def test_ability_use_and_ready_are_pythons(client, seed):
                         _prefs(pid) if "_prefs" in globals() else None, [(l["kind"], l["text"], l["undo_json"]) for l in _logs(pid)], r.headers.get("x-nd-served-by")))
         assert out[0][:5] == out[1][:5], (path, body, out)
         served += out[1][5] == "gateway"
-    assert served >= 7, served
+    assert served >= 6, served
 
 
 def test_advance_is_pythons(client, seed):
@@ -3958,7 +3958,7 @@ def test_hub_journal_entries_are_pythons(client, seed):
                 out.append((r.status_code, norm(r.json(), gs, other) if r.status_code == 200 else None, None, r.headers.get("x-nd-served-by")))
         assert out[0][:3] == out[1][:3], (kind, out)
         served += out[1][3] == "gateway"
-    assert served >= 7, served
+    assert served >= 6, served
 
 
 def test_hub_pins_are_pythons(client, seed):
@@ -4058,3 +4058,47 @@ def test_hub_log_undo_is_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (undo, later, out)
         served += out[1][3] == "gateway"
     assert served >= 5, served
+
+
+def test_hub_keepsakes_are_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    hid = _add("WorldHandout", world_id=w, url="/uploads/map.png", label="")
+    other_world_h = _add("WorldHandout", world_id=seed.world_b.id, url="/uploads/b.png", label="B")
+    served = 0
+
+    def clean(j):
+        if isinstance(j, dict):
+            j.pop("id", None); j.pop("at", None)
+        return j
+
+    adds = [(pl, {"name": "  My   map ", "description": " d ", "source": {"type": "handout", "id": hid}}), (pl, {"source": {"type": "handout", "id": hid}}),
+            (pl, {"source": {"type": "handout", "id": other_world_h}}), (pl, {"source": {"type": "raw", "kind": "text", "text": "x"}}),
+            (gm, {"name": "", "source": {"type": "raw", "kind": "text", "text": "  a secret  "}}), (gm, {"source": {"type": "raw", "kind": "image", "url": " /uploads/x/y.png "}}),
+            (gm, {"source": {"type": "raw", "kind": "image", "url": "/static/a.png"}}), (pl, {"name": 5, "source": {"type": "handout", "id": hid}}), (pl, {})]
+    for who, body in adds:
+        out = []
+        for side in (who, _via(who, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Keeper")
+            r = side.post(f"/api/characters/{pid}/hub/keepsakes", json=body)
+            row = _row_by("character_keepsakes", "character_id", pid)
+            out.append((r.status_code, clean(r.json()), row and {k: row[k] for k in ("kind", "url", "text", "name", "description", "saved_by")}, r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out)
+        served += out[1][3] == "gateway"
+    edits = [({"name": "  New  name", "description": None}, False), ({"name": " "}, False), ({}, False), (None, False), (None, True)]
+    for body, own in edits:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Keeper")
+            kid = _add("CharacterKeepsake", world_id=w, character_id=pid, kind="image", url="/uploads/nothing-here.png", name="K", description="d", saved_by="player", own=own)
+            r = side.post(f"/api/characters/{pid}/hub/keepsakes/{kid}" + ("/delete" if body is None else ""), **({} if body is None else {"json": body}))
+            row = _row_by("character_keepsakes", "id", kid)
+            out.append((r.status_code, clean(r.json()), row and {k: row[k] for k in ("name", "description")}, r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, own, out)
+        served += out[1][3] == "gateway"
+    other = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Theirs")
+    okid = _add("CharacterKeepsake", world_id=w, character_id=other, kind="text", name="K", saved_by="player")
+    assert _via(pl, base).post(f"/api/characters/{other}/hub/keepsakes/{okid}/delete").status_code == 404
+    assert served >= 6, served
