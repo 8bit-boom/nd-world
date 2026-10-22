@@ -454,7 +454,8 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 
 /// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
-    ("/api/maps/schematic/", "/buy-item", sc_buy), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/api/maps/schematic/", "/buy-item", sc_buy),
+    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8474,6 +8475,117 @@ fn sc_for_player(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Vec<Value>)
         return None;
     }
     Some((sc, elements))
+}
+
+/// `map_walls._map_for_edit`: the active world's schematic (not an uploaded HTML map), when the viewer may edit Maps
+fn sc_for_edit(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
+    let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    if sc.get("world_id")?.as_i64() != c.world_id() || (py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file"))) {
+        return None;
+    }
+    c.can_edit_section("maps")?.then_some(sc)
+}
+
+/// `round(x, nd)` where Python's correctly rounded result is certain (a value near a half: Python's)
+fn py_round(x: f64, nd: i32) -> Option<f64> {
+    let k = 10f64.powi(nd);
+    let scaled = x * k;
+    ((scaled.fract().abs() - 0.5).abs() > 1e-7).then(|| scaled.round() / k)
+}
+
+/// `map_walls._num`: a finite JSON number
+fn wall_num(v: Option<&Value>) -> Option<f64> {
+    match v {
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()),
+        _ => None,
+    }
+}
+
+/// `map_walls.clean_fog`; None when Python's rounding is not certain
+fn clean_fog(d: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let rng = wall_num(d.get("range"));
+    let dark = wall_num(d.get("darkness"));
+    let pers = wall_num(d.get("personal"));
+    let epoch = match d.get("epoch") {
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64().filter(|e| (0..1_000_000_000).contains(e)).unwrap_or(0),
+        Some(Value::Number(n)) if n.is_u64() => 0,
+        _ => 0,
+    };
+    let mut out = Map::new();
+    out.insert("enabled".into(), json!(d.get("enabled") == Some(&Value::Bool(true))));
+    out.insert("range".into(), json!(rng.map_or(0, |r| r.max(0.0).min(100.0).trunc() as i64)));
+    out.insert("epoch".into(), json!(epoch));
+    out.insert("darkness".into(), json!(match dark { None => 0.0, Some(x) => py_round(x.max(0.0).min(0.95), 2)? }));
+    out.insert("personal".into(), json!(if !d.contains_key("personal") { 2.0 } else { match pers { None => 0.0, Some(x) => py_round(x.max(0.0).min(20.0), 1)? } }));
+    out.insert("strict".into(), json!(d.get("strict") == Some(&Value::Bool(true))));
+    Some(out)
+}
+
+/// `_load(raw, default)`: the stored JSON when it has the default's type, else the default; None for text Python reads its own way
+fn sc_load(sc: &Map<String, Value>, col: &str, want_list: bool) -> Option<Value> {
+    let raw = sc.get(col).and_then(|v| v.as_str()).unwrap_or("");
+    let v = if raw.is_empty() { None } else { canonical_json(raw) };
+    if v.is_none() && !raw.is_empty() && serde_json::from_str::<Value>(raw).is_ok() {
+        return None;
+    }
+    Some(match v {
+        Some(Value::Array(a)) if want_list => Value::Array(a),
+        Some(Value::Object(o)) if !want_list => Value::Object(o),
+        _ if want_list => json!([]),
+        _ => json!({}),
+    })
+}
+
+fn sc_fog(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let body = c.json()?;
+    let cur = clean_fog(sc_load(&sc, "fog_json", false)?.as_object()?)?;
+    let mut new = cur.clone();
+    for key in ["enabled", "strict"] {
+        if let Some(v) = body.get(key) {
+            new.insert(key.into(), json!(v.as_bool()?));
+        }
+    }
+    if body.contains_key("range") {
+        let mut one = Map::new();
+        one.insert("range".into(), body["range"].clone());
+        new.insert("range".into(), clean_fog(&one)?["range"].clone());
+    }
+    for key in ["darkness", "personal"] {
+        if let Some(v) = body.get(key) {
+            if !v.is_number() {
+                return None;
+            }
+            new.insert(key.into(), v.clone());
+        }
+    }
+    if body.get("reset") == Some(&Value::Bool(true)) {
+        new.insert("epoch".into(), json!(cur["epoch"].as_i64()? + 1));
+    }
+    let new = clean_fog(&new)?;
+    let v = Value::Object(new);
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("fog_json", s(&nd_render::py_dumps(&v)))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&v)
+}
+
+fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let body = c.json()?;
+    let wid = body.get("wall_id")?.as_str()?.to_string();
+    let want = body.get("state").and_then(|v| v.as_str()).filter(|v| *v == "open" || *v == "closed").map(str::to_string);
+    let Value::Array(mut walls) = sc_load(&sc, "walls_json", true)? else { return None };
+    for w in walls.iter_mut() {
+        let w = w.as_object_mut()?; // a non-object wall: Python's error
+        if w.get("id").and_then(|v| v.as_str()) == Some(wid.as_str()) && matches!(w.get("kind").and_then(|v| v.as_str()), Some("door" | "secret")) {
+            let state = want.clone().unwrap_or_else(|| if w.get("state").and_then(|v| v.as_str()) == Some("open") { "closed".into() } else { "open".into() });
+            w.insert("state".into(), json!(state));
+            orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&Value::Array(walls.clone()))))])?;
+            orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+            return json_response(&json!({"wall_id": wid, "state": state}));
+        }
+    }
+    None
 }
 
 /// The viewer's characters in the map's world, oldest first

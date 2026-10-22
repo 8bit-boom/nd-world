@@ -4157,3 +4157,39 @@ def test_hub_initiative_roll_is_pythons(client, seed):
         assert out[0][:2] == out[1][:2], out
         served += out[1][2] == "gateway"
     assert served >= 1, served
+
+
+def test_schematic_door_and_fog_are_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    walls = [{"id": "w1", "pts": [[0, 0], [10, 0]], "kind": "wall"}, {"id": "d1", "pts": [[0, 0], [0, 10]], "kind": "door", "state": "open"},
+             {"id": "s1", "pts": [[5, 5], [9, 9]], "kind": "secret"}]
+    fog = {"enabled": True, "range": 7, "epoch": 3, "darkness": 0.4, "personal": 1.5}
+    n = [0]
+    served = 0
+
+    def run(who, path, body, stored_fog=json.dumps(fog), stored_walls=json.dumps(walls), world=w):
+        out = []
+        for side in (who, _via(who, base)):
+            n[0] += 1
+            slug = f"dfog-{n[0]}"
+            sid = _add("Schematic", world_id=world, name="Map", slug=slug, walls_json=stored_walls, fog_json=stored_fog)
+            r = side.post(f"/maps/schematic/{slug}/{path}", json=body)
+            row = _row("schematics", sid)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, row["walls_json"], row["fog_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (path, body, out)
+        return out[1][4] == "gateway"
+
+    for body in ({"wall_id": "d1"}, {"wall_id": "s1"}, {"wall_id": "d1", "state": "open"}, {"wall_id": "w1"}, {"wall_id": 5}, {}):
+        served += run(gm, "door", body)
+    served += run(gm, "door", {"wall_id": "d1"}, stored_walls="")
+    for body in ({"enabled": False}, {"range": 250.7, "darkness": 2, "personal": 3.14159}, {"reset": True, "strict": True}, {"darkness": -1, "personal": 0},
+                 {"enabled": "yes"}, {"darkness": True}, {}, {"range": "far"}):
+        served += run(gm, "fog", body)
+    served += run(gm, "fog", {"reset": True}, stored_fog="not json")
+    served += run(gm, "fog", {"enabled": True}, stored_fog='{"epoch": 2.0, "personal": null}')
+    served += run(pl, "fog", {"enabled": False})
+    served += run(gm, "fog", {"enabled": False}, world=seed.world_b.id)
+    assert served >= 11, served
