@@ -3679,3 +3679,136 @@ def test_combat_template_run_and_sync_are_pythons(client, seed):
     assert out[0][:3] == out[1][:3], out
     served += out[1][3] == "gateway"
     assert served == 2, served
+
+
+def _schem(world_id, elements, **kw):
+    slug = f"gw-sc-{os_random_hex()}"
+    _add("Schematic", world_id=world_id, name="Map", slug=slug, elements_json=json.dumps(elements), **kw)
+    return slug
+
+
+def test_schematic_player_moves_are_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    served = 0
+    pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Mine", equipment_json=json.dumps([{"name": "sword", "qty": 2, "weight": 3}]),
+              currency_json=json.dumps([{"abbr": "CR", "value": 100}, {"abbr": "gp", "value": 2.5}]))
+    other = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Theirs")
+
+    def els():
+        return [{"id": "t1", "type": "token", "pc_id": pid, "x": 1.5, "y": 2},
+                {"id": "t2", "type": "token", "pc_id": other, "x": 0, "y": 0},
+                {"id": "t3", "type": "token", "pc_id": pid, "locked": True},
+                {"id": "i1", "type": "token", "source": "item", "name": "Sword", "qty": 3},
+                {"id": "i2", "type": "token", "source": "item", "name": "Gem", "visible_to_players": False},
+                {"id": "m1", "type": "token", "source": "merchant", "inventory": [
+                    {"id": "s1", "name": "Rope", "price": 12.5, "qty": 1}, {"id": "s2", "name": "Ale", "price": "3", "qty": -1},
+                    {"id": "s3", "name": "Gold", "price": 1, "currency_abbr": " GP "}, {"id": "s4", "name": "Gone", "price": 1, "qty": 0},
+                    {"id": "s5", "name": "Pricey", "price": 1000}]},
+                {"id": "w1", "type": "wall", "x1": 0.1}]
+
+    def reset_pc():
+        from sqlalchemy import text
+        from app.database import SessionLocal
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE player_characters SET equipment_json = :e, currency_json = :c WHERE id = :i"),
+                       {"i": pid, "e": json.dumps([{"name": "sword", "qty": 2, "weight": 3}]), "c": json.dumps([{"abbr": "CR", "value": 100}, {"abbr": "gp", "value": 2.5}])})
+            db.commit()
+        finally:
+            db.close()
+
+    cases = [(pl, "move-token", {"token_id": "t1", "x": 99999, "y": -5}), (pl, "move-token", {"token_id": "t1", "x": 10, "y": 20.25}),
+             (pl, "move-token", {"token_id": "t2", "x": 1, "y": 1}), (pl, "move-token", {"token_id": "t3", "x": 1, "y": 1}),
+             (gm, "move-token", {"token_id": "t2", "x": 3, "y": 4}), (pl, "move-token", {"token_id": "t1", "x": "5", "y": 1}),
+             (pl, "pickup-item", {"token_id": "i1"}), (pl, "pickup-item", {"token_id": "i2"}), (pl, "pickup-item", {"token_id": "nope"}),
+             (pl, "buy-item", {"token_id": "m1", "stock_id": "s1"}), (pl, "buy-item", {"token_id": "m1", "stock_id": "s2"}),
+             (pl, "buy-item", {"token_id": "m1", "stock_id": "s3"}), (pl, "buy-item", {"token_id": "m1", "stock_id": "s4"}),
+             (pl, "buy-item", {"token_id": "m1", "stock_id": "s5"})]
+    for who, path, body in cases:
+        out = []
+        for side in (who, _via(who, base)):
+            reset_pc()
+            slug = _schem(w, els(), canvas_width=800)
+            r = side.post(f"/api/maps/schematic/{slug}/{path}", json=body)
+            from sqlalchemy import text
+            from app.database import SessionLocal
+            db = SessionLocal()
+            try:
+                stored = db.execute(text("SELECT elements_json FROM schematics WHERE slug = :s"), {"s": slug}).scalar()
+            finally:
+                db.close()
+            p_ = _row("player_characters", pid)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, stored, p_["equipment_json"], p_["currency_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (path, body, out)
+        served += out[1][5] == "gateway"
+    assert served >= 6, served
+
+
+def test_schematic_races_across_both_servers_have_one_winner(client, seed):
+    """Players racing for one item and for the last of a merchant's stock, half of them through Python and half through the gateway at
+    the same moment: exactly one pickup and one purchase succeed, and nothing is duplicated - both servers take the same SQLite write lock."""
+    import threading
+    base = str(client.base_url)
+    w = seed.world_a.id
+    players = [(seed.player_a.email, PLAYER_PASSWORD)]
+    from app import auth
+    from app.database import SessionLocal
+    from app.models import User, WorldMembership
+    db = SessionLocal()
+    try:
+        for i in range(5):
+            u = User(email=f"racer{i}-{os_random_hex()}@test.local", display_name=f"R{i}", password_hash=auth.hash_password(PLAYER_PASSWORD), is_gm=False)
+            db.add(u)
+            db.flush()
+            db.add(WorldMembership(world_id=w, user_id=u.id, role="player"))
+            players.append((u.email, PLAYER_PASSWORD))
+        db.commit()
+    finally:
+        db.close()
+    clients = []
+    for i, (email, pw) in enumerate(players):
+        c = _signed_in(email, pw, seed.world_a.slug)
+        uid = _row_by("users", "email", email)["id"]
+        _pc(world_id=w, owner_user_id=uid, name=f"P{i}", currency_json=json.dumps([{"abbr": "CR", "value": 50}]))
+        clients.append(c if i % 2 == 0 else _via(c, base))
+    for path, body, elements in (
+            ("pickup-item", {"token_id": "i1"}, [{"id": "i1", "type": "token", "source": "item", "name": "Relic", "qty": 1}]),
+            ("buy-item", {"token_id": "m1", "stock_id": "s1"}, [{"id": "m1", "type": "token", "source": "merchant", "inventory": [{"id": "s1", "name": "Last", "price": 5, "qty": 1}]}])):
+        slug = _schem(w, elements)
+        results = []
+        barrier = threading.Barrier(len(clients))
+
+        def go(c):
+            barrier.wait()
+            r = c.post(f"/api/maps/schematic/{slug}/{path}", json=body)
+            results.append((r.status_code, r.headers.get("x-nd-served-by")))
+
+        ts = [threading.Thread(target=go, args=(c,)) for c in clients]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert sorted(s for s, _ in results).count(200) == 1, (path, results)
+        assert all(s in (200, 404, 409) for s, _ in results), (path, results)
+        db = SessionLocal()
+        try:
+            from sqlalchemy import text
+            eqs = [json.loads(r[0] or "[]") for r in db.execute(text("SELECT equipment_json FROM player_characters WHERE world_id = :w AND name LIKE 'P%'"), {"w": w})]
+        finally:
+            db.close()
+        name = "Relic" if path == "pickup-item" else "Last"
+        assert sum(it.get("qty", 0) for eq in eqs for it in eq if it.get("name") == name) == 1, (path, eqs)
+
+
+def _row_by(table, col, value):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        r = db.execute(text(f"SELECT * FROM {table} WHERE {col} = :v"), {"v": value}).mappings().first()
+        return dict(r) if r else None
+    finally:
+        db.close()

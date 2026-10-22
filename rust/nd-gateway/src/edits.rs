@@ -437,7 +437,8 @@ fn route_in(table: &[(&str, Handler)], path: &str) -> Option<(Handler, Vec<i64>)
 type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 
 /// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
-const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
+    ("/api/maps/schematic/", "/buy-item", sc_buy), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8423,4 +8424,247 @@ fn display_clear(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         Some(())
     })?;
     json_response(&Value::Object(st))
+}
+
+// ── schematic maps, the players' moves (app/main.py schematic_move_own_token / _pickup_item / _buy_item) ──
+// Python runs each in BEGIN IMMEDIATE so two players racing for one item cannot both get it; every gateway write runs in BEGIN IMMEDIATE
+// too, so the same SQLite lock keeps a request on either server from reading the map while the other writes it.
+
+/// The map by slug and its elements (stored as Python wrote them, every element an object), when the viewer may play on it
+/// (`_require_schematic_world_access`: a GM, or a member of the map's world)
+fn sc_for_player(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Vec<Value>)> {
+    let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    let wid = sc.get("world_id")?.as_i64()?;
+    if !c.p.is_gm {
+        let member: Option<i64> = c.db.query_row("SELECT id FROM world_memberships WHERE world_id = ?1 AND user_id = ?2 LIMIT 1", [wid, c.p.user_id], |r| r.get(0)).ok();
+        member?;
+    }
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]").to_string();
+    let Value::Array(elements) = canonical_json(&raw)? else { return None };
+    if !elements.iter().all(|e| e.is_object()) {
+        return None;
+    }
+    Some((sc, elements))
+}
+
+/// The viewer's characters in the map's world, oldest first
+fn sc_own_pcs(c: &Ctx, wid: i64) -> Option<Vec<Map<String, Value>>> {
+    let mut st = c.db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map([wid, c.p.user_id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    Some(rows)
+}
+
+/// `_active_own_pc`: the viewer's character with a token on the map, else their first
+fn sc_active_pc(c: &Ctx, wid: i64, elements: &[Value]) -> Option<Option<Map<String, Value>>> {
+    let own = sc_own_pcs(c, wid)?;
+    let on_map: Vec<&Value> = elements.iter().filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("token") && py_truthy(e.get("pc_id"))).filter_map(|e| e.get("pc_id")).collect();
+    let hit = own.iter().find(|p| on_map.iter().any(|v| v.as_i64().is_some() && v.as_i64() == p.get("id").and_then(|i| i.as_i64()))).or(own.first());
+    Some(hit.cloned())
+}
+
+/// `_merge_equipment_item(pc, name, qty)`: the new equipment_json (a list Python reads its own way, or a name lower() changes beyond
+/// ASCII: None)
+fn sc_merge_item(pc: &Map<String, Value>, name: &str, qty: i64) -> Option<String> {
+    let raw = pc.get("equipment_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]").to_string();
+    let Value::Array(mut eq) = canonical_json(&raw)? else { return None };
+    if !name.is_ascii() || !eq.iter().all(|it| it.is_object()) {
+        return None;
+    }
+    let want = strip(name).to_ascii_lowercase();
+    let mut hit = None;
+    for (i, it) in eq.iter().enumerate() {
+        let n = match it.get("name") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(t)) if t.is_ascii() => strip(t).to_ascii_lowercase(),
+            Some(Value::String(t)) if t.is_empty() => String::new(),
+            _ => return None,
+        };
+        if n == want {
+            hit = Some(i);
+            break;
+        }
+    }
+    match hit {
+        Some(i) => {
+            let it = eq[i].as_object_mut()?;
+            let have = match it.get("qty") {
+                None | Some(Value::Null) | Some(Value::Bool(false)) => 0,
+                Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+                _ => return None,
+            };
+            it.insert("qty".into(), json!(have + qty));
+        }
+        None => eq.push(json!({"name": name, "qty": qty, "weight": 0, "equipped": false, "notes": ""})),
+    }
+    Some(nd_render::py_dumps(&Value::Array(eq)))
+}
+
+fn sc_find<'a>(elements: &'a mut [Value], token_id: &str, source: Option<&str>) -> Option<&'a mut Map<String, Value>> {
+    elements.iter_mut().filter_map(|e| e.as_object_mut()).find(|e| {
+        e.get("id").and_then(|i| i.as_str()) == Some(token_id) && e.get("type").and_then(|t| t.as_str()) == Some("token")
+            && source.is_none_or(|s| e.get("source").and_then(|v| v.as_str()) == Some(s))
+    })
+}
+
+/// `not el.get("visible_to_players", True)` / `el.get("locked")`: the token is hidden from players or locked
+fn sc_closed(el: &Map<String, Value>) -> bool {
+    el.get("visible_to_players").is_some_and(|v| !py_truthy(Some(v))) || py_truthy(el.get("locked"))
+}
+
+fn sc_move_token(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (sc, mut elements) = sc_for_player(c, slug)?;
+    let token = b.get("token_id")?.as_str()?.to_string(); // a number id compares by value in Python: Python's
+    let num = |k: &str| match b.get(k) {
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()),
+        _ => None, // text float() reads, a bool, a missing value: Python's
+    };
+    let (x, y) = (num("x")?, num("y")?);
+    let cw = sc.get("canvas_width").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(2000) as f64;
+    let ch = sc.get("canvas_height").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(1500) as f64;
+    if x == 0.0 || y == 0.0 {
+        if x.is_sign_negative() || y.is_sign_negative() {
+            return None; // max(-0.0, 0.0) keeps the -0.0 in Python
+        }
+    }
+    let fx = x.max(0.0).min(cw);
+    let fy = y.max(0.0).min(ch);
+    let wid = sc.get("world_id")?.as_i64()?;
+    let own: Vec<i64> = if c.p.is_gm { vec![] } else { sc_own_pcs(c, wid)?.iter().filter_map(|p| p.get("id").and_then(|i| i.as_i64())).collect() };
+    let is_gm = c.p.is_gm;
+    let el = sc_find(&mut elements, &token, None)?;
+    if !is_gm {
+        let mine = el.get("pc_id").and_then(|v| v.as_i64()).is_some_and(|p| own.contains(&p)) && !el.get("pc_id").is_some_and(|v| v.is_f64());
+        if !mine || sc_closed(el) {
+            return None;
+        }
+    }
+    el.insert("x".into(), Value::Number(serde_json::Number::from_f64(fx)?));
+    el.insert("y".into(), Value::Number(serde_json::Number::from_f64(fy)?));
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"ok": true}))
+}
+
+fn sc_pickup(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (sc, mut elements) = sc_for_player(c, slug)?;
+    let token = b.get("token_id").filter(|v| py_truthy(Some(v)))?.as_str()?.to_string();
+    let wid = sc.get("world_id")?.as_i64()?;
+    let pc = sc_active_pc(c, wid, &elements)??;
+    let el = sc_find(&mut elements, &token, Some("item"))?;
+    if sc_closed(el) {
+        return None;
+    }
+    let qty = match el.get("qty") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => 1,
+        Some(Value::Number(n)) if n.as_i64() == Some(0) => 1,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        _ => return None,
+    };
+    let name = match el.get("name") {
+        None | Some(Value::Null) => "Item".to_string(),
+        Some(Value::String(t)) if t.is_empty() => "Item".to_string(),
+        Some(Value::String(t)) => t.clone(),
+        _ => return None,
+    };
+    let eq = sc_merge_item(&pc, &name, qty)?;
+    elements.retain(|e| e.get("id").and_then(|i| i.as_str()) != Some(token.as_str()));
+    orm::update(&c.db, "player_characters", pc.get("id")?.as_i64()?, &[("equipment_json", s(&eq))])?;
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"ok": true, "name": name, "qty": qty}))
+}
+
+/// `float(v or 0)` for a JSON number (text float() reads: Python's)
+fn py_float_or0(v: Option<&Value>) -> Option<f64> {
+    match v {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Some(0.0),
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()),
+        Some(Value::String(t)) if t.is_empty() => Some(0.0),
+        _ => None,
+    }
+}
+
+fn sc_buy(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (sc, mut elements) = sc_for_player(c, slug)?;
+    let token = b.get("token_id").filter(|v| py_truthy(Some(v)))?.as_str()?.to_string();
+    let stock_id = b.get("stock_id").filter(|v| py_truthy(Some(v)))?.as_str()?.to_string();
+    let wid = sc.get("world_id")?.as_i64()?;
+    let pc = sc_active_pc(c, wid, &elements)??;
+    let el = sc_find(&mut elements, &token, Some("merchant"))?;
+    if sc_closed(el) {
+        return None;
+    }
+    let inv = match el.get_mut("inventory") {
+        Some(Value::Array(a)) => a,
+        _ => return None, // no stock (Python's 404), or one Python iterates its own way
+    };
+    if !inv.iter().all(|r| r.is_object()) {
+        return None;
+    }
+    let stock = inv.iter_mut().find(|r| r.get("id").and_then(|i| i.as_str()) == Some(stock_id.as_str()))?.as_object_mut()?;
+    let qty = match stock.get("qty") {
+        None => -1,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        _ => return None,
+    };
+    if qty != -1 && qty <= 0 {
+        return None;
+    }
+    let price = py_float_or0(stock.get("price"))?;
+    let abbr_raw = match stock.get("currency_abbr") {
+        None | Some(Value::Null) => "CR".to_string(),
+        Some(Value::String(t)) if t.is_empty() => "CR".to_string(),
+        Some(Value::String(t)) => t.clone(),
+        _ => return None,
+    };
+    if !abbr_raw.is_ascii() {
+        return None;
+    }
+    let abbr = strip(&abbr_raw).to_ascii_lowercase();
+    let raw_cur = pc.get("currency_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]").to_string();
+    let Value::Array(mut currency) = canonical_json(&raw_cur)? else { return None };
+    if !currency.iter().all(|e| e.is_object()) {
+        return None;
+    }
+    let mut idx = None;
+    for (i, e) in currency.iter().enumerate() {
+        let a = match e.get("abbr") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(t)) if t.is_ascii() => strip(t).to_ascii_lowercase(),
+            _ => return None,
+        };
+        if a == abbr {
+            idx = Some(i);
+            break;
+        }
+    }
+    let entry = currency.get_mut(idx?)?.as_object_mut()?;
+    let have = py_float_or0(entry.get("value"))?;
+    if have < price {
+        return None;
+    }
+    let left = have - price;
+    entry.insert("value".into(), Value::Number(serde_json::Number::from_f64(left)?));
+    let entry_abbr = entry.get("abbr").cloned().unwrap_or(Value::Null);
+    if qty != -1 {
+        stock.insert("qty".into(), json!(qty - 1));
+    }
+    let item_name = stock.get("name").cloned().unwrap_or(Value::Null);
+    let merge_name = match &item_name {
+        Value::Null => "Item".to_string(),
+        Value::String(t) if t.is_empty() => "Item".to_string(),
+        Value::String(t) => t.clone(),
+        _ => return None,
+    };
+    let mut pc2 = pc.clone();
+    let cur_text = nd_render::py_dumps(&Value::Array(currency));
+    pc2.insert("currency_json".into(), json!(cur_text));
+    let eq = sc_merge_item(&pc2, &merge_name, 1)?;
+    orm::update(&c.db, "player_characters", pc.get("id")?.as_i64()?, &[("currency_json", s(&cur_text)), ("equipment_json", s(&eq))])?;
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"ok": true, "item": {"name": item_name, "qty": 1}, "currency": {"abbr": entry_abbr, "value": left}}))
 }
