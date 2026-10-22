@@ -52,3 +52,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/maps/schematic/<slug>/move-token`, `/pickup-item`, `/buy-item` (the players' moves on a map; the gateway's BEGIN IMMEDIATE is the same SQLite lock Python takes, checked by a race of six players - half through Python, half through the gateway - for one item and the last stock: exactly one winner, nothing duplicated) | P4-4 |
 | `POST /api/characters/<id>/hub/end-turn`, `/hub/pass-turn` (the player's turn controls, `combat_turns.advance` / `pick_next` ported, both turn systems; the answer's `_combat_now`) | P4-5 |
 | `POST /api/characters/<id>/hub/handouts/seen`, `POST /hub/companions`, `PATCH` / `DELETE /hub/companions/<id>` | P4-6 |
+| `POST /api/characters/<id>/hub/entries`, `PATCH` / `DELETE /hub/entries/<id>` (the player's journal, goals and notes; timestamps as Python's `isoformat()`) | P4-7 |

@@ -212,6 +212,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/end-turn", hub_end_turn),
     ("/api/characters/{}/hub/handouts/seen", hub_handouts_seen),
     ("/api/characters/{}/hub/companions", hub_companion_add),
+    ("/api/characters/{}/hub/entries", hub_entry_create),
+    ("/api/characters/{}/hub/entries/{}", hub_entry_update),
+    ("/api/characters/{}/hub/entries/{}/delete", hub_entry_delete),
     ("/api/characters/{}/hub/pass-turn", hub_pass_turn),
     ("/api/characters/{}/resource", pc_resource),
     ("/api/characters/{}/ability-ready", pc_ability_ready),
@@ -9132,4 +9135,169 @@ fn hub_companion_remove(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
     let (pc, cur) = hub_companion_target(c, key)?;
     c.db.execute("DELETE FROM character_companions WHERE id = ?1", [cur.get("id")?.as_i64()?]).ok()?;
     json_response(&hub_companions_json(c, pc)?)
+}
+
+// ── the character hub's journal and goals (character_hub.py hub_entry_*) ──
+
+/// `_party_sessions(db, pc, _party_ids(db, pc))`: the sessions of the parties the character is in, newest number first (60)
+fn hub_party_sessions(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
+    let wid = pc.get("world_id")?.as_i64()?;
+    let pid = pc.get("id")?.as_i64()?;
+    let mut st = c.db.prepare("SELECT id, member_pc_ids_json FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
+    let parties: Vec<(i64, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    let mut ids = vec![];
+    for (id, raw) in parties {
+        let members = match raw.filter(|t| !t.is_empty()).map(|t| serde_json::from_str::<Value>(&t)) {
+            None => continue,
+            Some(Ok(Value::Array(a))) => a,
+            Some(Ok(_)) | Some(Err(_)) => continue,
+        };
+        if members.iter().any(|m| m.is_boolean()) {
+            return None; // True == 1 in Python's `in`
+        }
+        if members.iter().any(|m| m.as_i64() == Some(pid) && !m.is_f64()) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return Some(vec![]);
+    }
+    let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+    let mut st = c.db.prepare(&format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({}) ORDER BY session_num DESC LIMIT 60", marks.join(","))).ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    Some(rows)
+}
+
+/// A stored DateTime as Python's `.isoformat()`
+fn py_isoformat(v: Option<&Value>) -> Value {
+    // row_map wraps DATETIME columns as {"__dt__": "..."}
+    match v.and_then(|x| x.get("__dt__").unwrap_or(x).as_str()) {
+        Some(t) => {
+            let t = t.replacen(' ', "T", 1);
+            json!(t.strip_suffix(".000000").map(str::to_string).unwrap_or(t))
+        }
+        None => Value::Null,
+    }
+}
+
+fn hub_entry_out(e: &Map<String, Value>, sessions: &[Map<String, Value>]) -> Value {
+    let txt = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let label = e.get("session_id").and_then(|v| v.as_i64()).and_then(|sid| sessions.iter().find(|s| s.get("id").and_then(|i| i.as_i64()) == Some(sid))).map(|s| {
+        let num = s.get("session_num").and_then(|v| v.as_i64()).map_or("None".to_string(), |n| n.to_string());
+        let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("None");
+        json!(format!("#{num} {title}"))
+    });
+    json!({"id": e.get("id"), "kind": e.get("kind"), "title": txt("title"), "body": txt("body"), "status": txt("status"),
+           "session_id": e.get("session_id"), "session": label.unwrap_or(Value::Null),
+           "created_at": py_isoformat(e.get("created_at")), "updated_at": py_isoformat(e.get("updated_at"))})
+}
+
+/// `_clean_text(body, key, limit)`: Ok(None) when absent; Err for one too long (Python's 400) or read through str() its own way
+fn hub_clean(body: &Map<String, Value>, key: &str, limit: usize) -> Result<Option<String>, ()> {
+    if !body.contains_key(key) {
+        return Ok(None);
+    }
+    let v = strip(&cs_text(body.get(key), "")?);
+    if v.chars().count() > limit {
+        return Err(());
+    }
+    Ok(Some(v))
+}
+
+/// `_session_choice(body, allowed)`: Ok(None) absent, Ok(Some(0)) clear, Ok(Some(id)); Err = Python's 400
+fn hub_session_choice(body: &Map<String, Value>, sessions: &[Map<String, Value>]) -> Result<Option<i64>, ()> {
+    if !body.contains_key("session_id") {
+        return Ok(None);
+    }
+    let sid = match body.get("session_id") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => return Ok(Some(0)),
+        Some(Value::String(t)) if t.is_empty() => return Ok(Some(0)),
+        Some(Value::Number(n)) if n.as_f64() == Some(0.0) => return Ok(Some(0)),
+        Some(v) => comp_int(Some(v), i64::MIN, i64::MAX).ok_or(())?,
+    };
+    if !sessions.iter().any(|s| s.get("id").and_then(|i| i.as_i64()) == Some(sid)) {
+        return Err(());
+    }
+    Ok(Some(sid))
+}
+
+const GOAL_STATUSES: [&str; 4] = ["active", "achieved", "failed", "dropped"];
+
+fn hub_entry_create(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    let kind = match body.get("kind") {
+        None => "journal",
+        Some(Value::String(k)) if k == "journal" || k == "goal" => k.as_str(),
+        _ => return None,
+    };
+    let title = hub_clean(&body, "title", 200).ok()?.unwrap_or_default();
+    let text = hub_clean(&body, "body", 20000).ok()?.unwrap_or_default();
+    if title.is_empty() && text.is_empty() {
+        return None;
+    }
+    let sessions = hub_party_sessions(c, &pc)?;
+    let (status, sid) = if kind == "goal" {
+        let st = match body.get("status") {
+            None => "active",
+            Some(Value::String(t)) if GOAL_STATUSES.contains(&t.as_str()) => t.as_str(),
+            _ => return None,
+        };
+        (st.to_string(), Sql::Null)
+    } else {
+        let ch = hub_session_choice(&body, &sessions).ok()?;
+        (String::new(), ch.filter(|n| *n != 0).map_or(Sql::Null, Sql::Integer))
+    };
+    let id = orm::insert(&c.db, "character_journal_entries", &[("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)), ("character_id", Sql::Integer(ids[0])),
+        ("kind", s(kind)), ("title", s(&title)), ("body", s(&text)), ("status", s(&status)), ("session_id", sid)])?;
+    let e = row(&c.db, "SELECT * FROM character_journal_entries WHERE id = ?1", id)?;
+    json_response(&hub_entry_out(&e, &sessions))
+}
+
+fn hub_owned_entry(c: &Ctx, pc_id: i64, entry_id: i64) -> Option<Map<String, Value>> {
+    let e = row(&c.db, "SELECT * FROM character_journal_entries WHERE id = ?1", entry_id)?;
+    (e.get("character_id")?.as_i64()? == pc_id).then_some(e)
+}
+
+fn hub_entry_update(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let e = hub_owned_entry(c, ids[0], ids[1])?;
+    let body = hub_body(c)?;
+    let title = hub_clean(&body, "title", 200).ok()?;
+    let text = hub_clean(&body, "body", 20000).ok()?;
+    let txt = |k: &str| e.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let new_title = title.or_else(|| txt("title"));
+    let new_text = text.or_else(|| txt("body"));
+    if new_title.as_deref().unwrap_or("").is_empty() && new_text.as_deref().unwrap_or("").is_empty() {
+        return None;
+    }
+    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if body.contains_key("status") {
+        let st = body.get("status").and_then(|v| v.as_str()).filter(|t| GOAL_STATUSES.contains(t));
+        if kind != "goal" || st.is_none() {
+            return None;
+        }
+        set.push(("status", s(st?)));
+    }
+    let sessions = hub_party_sessions(c, &pc)?;
+    if body.contains_key("session_id") {
+        if kind != "journal" {
+            return None;
+        }
+        let ch = hub_session_choice(&body, &sessions).ok()??;
+        set.push(("session_id", if ch == 0 { Sql::Null } else { Sql::Integer(ch) }));
+    }
+    set.push(("title", new_title.map_or(Sql::Null, |t| s(&t))));
+    set.push(("body", new_text.map_or(Sql::Null, |t| s(&t))));
+    orm::update(&c.db, "character_journal_entries", ids[1], &set)?;
+    let e = row(&c.db, "SELECT * FROM character_journal_entries WHERE id = ?1", ids[1])?;
+    json_response(&hub_entry_out(&e, &sessions))
+}
+
+fn hub_entry_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    hub_owned_pc(c, ids[0])?;
+    hub_owned_entry(c, ids[0], ids[1])?;
+    c.db.execute("DELETE FROM character_journal_entries WHERE id = ?1", [ids[1]]).ok()?;
+    json_response(&json!({"ok": true}))
 }

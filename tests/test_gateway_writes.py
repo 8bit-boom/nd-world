@@ -3897,3 +3897,65 @@ def test_hub_companions_and_handouts_seen_are_pythons(client, seed):
     assert out[0][:3] == out[1][:3], out
     served += out[1][3] == "gateway"
     assert served >= 9, served
+
+
+def test_hub_journal_entries_are_pythons(client, seed):
+    import re
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    served = 0
+
+    def setup():
+        pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Writer")
+        party = _add("Party", world_id=w, name="Crew", member_pc_ids_json=json.dumps([pid, 999]))
+        gs = _gsession(world_id=w, title="Night One", session_num=3, party_id=party)
+        other = _gsession(world_id=w, title="Elsewhere", session_num=4)
+        return pid, gs, other
+
+    def norm(j, gs, other):
+        if not isinstance(j, dict):
+            return j
+        j = dict(j)
+        j.pop("id", None)
+        for k in ("created_at", "updated_at"):
+            if j.get(k):
+                assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?", j[k]), j[k]
+                j[k] = "T"
+        if j.get("session_id") == gs:
+            j["session_id"] = "GS"
+        return j
+
+    creates = [lambda gs, o: {"kind": "journal", "title": "  Day one ", "body": "we met", "session_id": gs},
+               lambda gs, o: {"kind": "goal", "title": "Find the relic", "status": "achieved"},
+               lambda gs, o: {"title": "", "body": ""}, lambda gs, o: {"kind": "goal", "title": "x", "status": "maybe"},
+               lambda gs, o: {"title": "t", "session_id": o}, lambda gs, o: {"title": "t", "session_id": ""},
+               lambda gs, o: {"kind": "note", "title": "t"}, lambda gs, o: {"title": "x" * 201}]
+    for make in creates:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid, gs, other = setup()
+            body = make(gs, other)
+            r = side.post(f"/api/characters/{pid}/hub/entries", json=body)
+            out.append((r.status_code, norm(r.json(), gs, other) if r.status_code == 200 else None, r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (body, out)
+        served += out[1][2] == "gateway"
+    updates = [("journal", lambda gs: {"title": "New", "session_id": gs}), ("journal", lambda gs: {"session_id": 0, "body": ""}),
+               ("goal", lambda gs: {"status": "failed"}), ("journal", lambda gs: {"status": "failed"}), ("goal", lambda gs: {"title": "", "body": ""}),
+               ("delete", None)]
+    for kind, make in updates:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid, gs, other = setup()
+            eid = _add("CharacterJournalEntry", world_id=w, character_id=pid, kind="goal" if kind == "goal" else "journal", title="Old", body="b",
+                       status="active" if kind == "goal" else "", session_id=None)
+            if kind == "delete":
+                r = side.post(f"/api/characters/{pid}/hub/entries/{eid}/delete")
+                gone = _row("character_journal_entries", eid) is None
+                out.append((r.status_code, r.json(), gone, r.headers.get("x-nd-served-by")))
+            else:
+                r = side.post(f"/api/characters/{pid}/hub/entries/{eid}", json=make(gs))
+                out.append((r.status_code, norm(r.json(), gs, other) if r.status_code == 200 else None, None, r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (kind, out)
+        served += out[1][3] == "gateway"
+    assert served >= 7, served
