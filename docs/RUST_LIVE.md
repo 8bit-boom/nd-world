@@ -47,3 +47,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | Routes | Batch |
 |---|---|
 | `POST /combat/<id>/state` (`combat_state.normalize_state` ported; a stale `rev` - the 409 with the current state - and values `int()` / `float()` / `casefold()` would read their own way: Python's), `/combat/new` (with `default_ruleset`), `/combat/<id>/delete`, `/link-session`, `/unlink-session`, `/api/combat/<id>/finish` (the summary fact), `/reopen` | P4-1 |
+| `POST /combat/<id>/duplicate`, `/combat/<id>/save-template`, `/combat/templates/<id>/run` (the world's characters added as combatants), `/api/combat/<id>/sync-characters` (HP, Shock, PP / MP, conditions back to the sheets) - for native sheets; a world with a custom-system character (vital and extra tracks from the template's sheet system): Python's | P4-2 |

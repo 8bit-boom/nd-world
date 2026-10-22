@@ -3609,3 +3609,73 @@ def test_combat_writes_wake_the_same_live_listeners(client, seed):
             assert r.status_code == 200
             moved.append([_shared(k) - b for k, b in zip(keys, before)])
         assert moved[0] == moved[1], (path, moved)
+
+
+def test_combat_duplicate_and_template_are_pythons(client, seed):
+    import re
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    w = seed.world_a.id
+    cbs = json.dumps([{"id": "a", "name": "Hero", "source": "pc", "pc_id": 3, "hp": 4, "max_hp": 10, "shock": 2, "max_shock": 5, "initiative": 14,
+                       "conditions": ["Prone"], "res": {"pp": {"cur": 1, "max": 4, "label": "PP"}}},
+                      {"id": "b", "name": "Orc", "source": "entity", "hp": 0, "max_hp": 8, "max_shock": 3, "initiative": 9, "tiebreak": 2,
+                       "status": "dead", "used": {"A": 1}, "res": {"ichor": {"cur": 0, "max": 5}, "z": {"cur": 2, "max": 0}}, "notes": "keep"}, "junk"])
+    served = 0
+    for path, form, kw in [("duplicate", None, {"turn_json": json.dumps({"mode": "fluid", "active_id": "a"}), "party_id": None}),
+                           ("save-template", {"name": "  Orc   pack "}, {}), ("save-template", {"name": " "}, {"ruleset": "hunt"})]:
+        out = []
+        for side in (d, via):
+            cid = _add("CombatSession", world_id=w, name="Ambush", combatants_json=cbs, round_num=5, **kw)
+            r = side.post(f"/combat/{cid}/{path}", data=form, follow_redirects=False) if form else side.post(f"/combat/{cid}/{path}", follow_redirects=False)
+            new = _newest("combat_sessions")
+            facts = {k: new[k] for k in ("name", "ruleset", "is_template", "round_num", "turn_json", "party_id", "rev")}
+            facts["combatants_json"] = re.sub(r'"c-[0-9a-f]{8}"', '"ID"', new["combatants_json"])
+            out.append((r.status_code, r.headers.get("location", "").replace(str(new["id"]), "NEW"), facts, r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (path, out)
+        served += out[1][3] == "gateway"
+    assert served >= 3, served
+
+
+def test_combat_template_run_and_sync_are_pythons(client, seed):
+    import re
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_b.slug)
+    via = _via(d, base)
+    w = seed.world_b.id
+    stats = json.dumps([{"id": "dex", "value": 3}, {"id": "itu", "value": 2}, {"id": "str", "value": 4}, {"id": "wil", "value": 5}])
+    pcs = [_pc(world_id=w, name=n, stats_json=stats, current_hp=c, shock_current=1, pp_current=2, conditions_json=json.dumps(["Old", 5]))
+           for n, c in (("Zed", 6), ("Amy", 12))]
+    served = 0
+    tpl_cbs = json.dumps([{"id": "o", "name": "Orc", "source": "entity", "hp": 2, "max_hp": 8}])
+    out = []
+    for side in (d, via):
+        tid = _add("CombatSession", world_id=w, name="Orcs", is_template=True, combatants_json=tpl_cbs, ruleset="nd")
+        r = side.post(f"/combat/templates/{tid}/run", follow_redirects=False)
+        new = _newest("combat_sessions")
+        out.append((r.status_code, r.headers.get("location", "").replace(str(new["id"]), "NEW"), new["name"], new["is_template"],
+                    re.sub(r'"c-[0-9a-f]{8}"', '"ID"', new["combatants_json"]), r.headers.get("x-nd-served-by")))
+    assert out[0][:5] == out[1][:5], out
+    served += out[1][5] == "gateway"
+    cbs = json.dumps([{"id": "a", "name": "Zed", "source": "pc", "pc_id": pcs[0], "hp": 99, "max_hp": 3, "shock": "4", "conditions": [" Prone  ", "prone", "Bleed\x01ing"],
+                       "res": {"pp": {"cur": 1}, "mp": {"cur": "x"}}},
+                      {"id": "b", "name": "Amy", "source": "pc", "pc_id": pcs[1], "hp": -5}, {"id": "c", "name": "Ghost", "source": "pc", "pc_id": 999999},
+                      {"id": "d", "name": "Orc", "source": "entity"}])
+    out = []
+    for side in (d, via):
+        for p_, hp in zip(pcs, (6, 12)):
+            from sqlalchemy import text
+            from app.database import SessionLocal
+            db = SessionLocal()
+            try:
+                db.execute(text("UPDATE player_characters SET current_hp = :h, shock_current = 1, pp_current = 2, mp_current = 0, conditions_json = '[]' WHERE id = :i"),
+                           {"h": hp, "i": p_}); db.commit()
+            finally:
+                db.close()
+        cid = _add("CombatSession", world_id=w, name="Sync", combatants_json=cbs)
+        r = side.post(f"/api/combat/{cid}/sync-characters")
+        rows = [{k: _row("player_characters", p_)[k] for k in ("current_hp", "shock_current", "pp_current", "mp_current", "conditions_json")} for p_ in pcs]
+        out.append((r.status_code, r.json(), rows, r.headers.get("x-nd-served-by")))
+    assert out[0][:3] == out[1][:3], out
+    served += out[1][3] == "gateway"
+    assert served == 2, served

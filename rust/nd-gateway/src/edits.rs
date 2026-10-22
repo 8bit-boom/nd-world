@@ -278,6 +278,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/combat/{}/unlink-session", combat_unlink_session),
     ("/api/combat/{}/finish", combat_finish),
     ("/api/combat/{}/reopen", combat_reopen),
+    ("/combat/{}/duplicate", combat_duplicate),
+    ("/combat/{}/save-template", combat_save_template),
+    ("/combat/templates/{}/run", combat_run_template),
+    ("/api/combat/{}/sync-characters", combat_sync_characters),
     ("/images/spotlight", spotlight_send),
     ("/images/spotlight/clear", spotlight_clear),
     ("/entity/{}/notes/import", entity_note_import),
@@ -8092,4 +8096,187 @@ fn combat_reopen(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::update(&c.db, "combat_sessions", ids[0], &[("finished_at", Sql::Null)])?;
     combat_touch(c, &cs)?;
     json_response(&json!({"ok": true}))
+}
+
+/// `_fresh(c, keep_hp)`: a combatant as it starts a fight
+fn combat_fresh(c: &Value, keep_hp: bool) -> Option<Value> {
+    let mut c = c.as_object()?.clone();
+    c.insert("id".into(), json!(new_cid()));
+    let pc = c.get("source").and_then(|v| v.as_str()) == Some("pc");
+    if !keep_hp {
+        let hp = c.get("max_hp").or_else(|| c.get("hp")).cloned().unwrap_or(json!(0));
+        c.insert("hp".into(), hp);
+        let shock = if pc { c.get("shock").cloned().unwrap_or(json!(0)) } else { c.get("max_shock").cloned().unwrap_or(json!(0)) };
+        c.insert("shock".into(), shock);
+        if let Some(Value::Object(res)) = c.get_mut("res") {
+            for r in res.values_mut() {
+                if let Some(r) = r.as_object_mut() {
+                    if py_truthy(r.get("max")) {
+                        let mx = r.get("max").cloned()?;
+                        r.insert("cur".into(), mx);
+                    }
+                }
+            }
+        }
+    }
+    for (k, v) in [("temp_hp", json!(0)), ("conditions", json!([])), ("cond_dur", json!({})), ("used", json!({})),
+                   ("saves", json!({"ok": 0, "fail": 0, "ko": 0})), ("status", json!("")), ("press_on", json!(false))] {
+        c.insert(k.into(), v);
+    }
+    if !pc {
+        c.insert("initiative".into(), json!(0));
+        c.insert("tiebreak".into(), json!(0));
+    }
+    Some(Value::Object(c))
+}
+
+/// `_copy_encounter`: the new encounter's id (`with_party`: the world's characters not in it yet are added - native sheets only)
+fn combat_copy(c: &Ctx, src: &Map<String, Value>, name: &str, npcs_only: bool, template: bool) -> Option<i64> {
+    combat_copy_with(c, src, name, npcs_only, template, false)
+}
+
+/// `pc_to_combatant(pc, db)` for a native (Neon & Dragons / Worm) sheet; None for a custom system's (its vital and extra tracks come
+/// from the template's sheet system: Python's)
+fn pc_combatant(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
+    let (hp, shock, pp, mp, native) = pc_maxima(&c.db, pc)?;
+    if !native {
+        return None;
+    }
+    let stats = stat_values(pc)?;
+    let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+    let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_string()).collect(),
+        Ok(_) | Err(_) => vec![],
+    };
+    Some(json!({"res": {"pp": {"cur": col_int(pc, "pp_current"), "max": pp, "label": "PP"}, "mp": {"cur": col_int(pc, "mp_current"), "max": mp, "label": "MP"}},
+                "id": new_cid(), "name": pc.get("name")?, "source": "pc", "pc_id": pc.get("id")?, "entity_id": null, "initiative": 0,
+                "init_bonus": get("dex") + get("itu"), "max_hp": hp, "hp": col_int(pc, "current_hp"), "max_shock": shock,
+                "shock": col_int(pc, "shock_current"), "armor": 0, "conditions": conds, "notes": ""}))
+}
+
+fn combat_copy_with(c: &Ctx, src: &Map<String, Value>, name: &str, npcs_only: bool, template: bool, with_party: bool) -> Option<i64> {
+    let rows: Vec<Value> = match serde_json::from_str::<Value>(src.get("combatants_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_object()).collect(),
+        Ok(_) => vec![],
+        Err(_) => return None,
+    };
+    let mut fresh = vec![];
+    for r in rows.iter().filter(|r| !(npcs_only && r.get("source").and_then(|v| v.as_str()) == Some("pc"))) {
+        fresh.push(combat_fresh(r, r.get("source").and_then(|v| v.as_str()) == Some("pc"))?);
+    }
+    if with_party {
+        let have: Vec<Value> = fresh.iter().filter_map(|f| f.get("pc_id").filter(|v| py_truthy(Some(v))).cloned()).collect();
+        let wid = src.get("world_id")?.as_i64()?;
+        let mut st = c.db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
+        let pcs: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        for pc in &pcs {
+            if !have.iter().any(|h| Some(h) == pc.get("id")) {
+                fresh.push(pc_combatant(c, pc)?);
+            }
+        }
+    }
+    let mut body = Map::new();
+    body.insert("combatants".into(), Value::Array(fresh));
+    let state = cs_normalize(&body).ok()?;
+    let mode = match serde_json::from_str::<Value>(src.get("turn_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")) {
+        Ok(Value::Object(t)) => match t.get("mode").and_then(|m| m.as_str()) { Some(m @ ("initiative" | "fluid")) => m.to_string(), _ => String::new() },
+        Ok(_) | Err(_) => String::new(),
+    };
+    let party = if template { Sql::Null } else { src.get("party_id").and_then(|v| v.as_i64()).map_or(Sql::Null, Sql::Integer) };
+    orm::insert(&c.db, "combat_sessions", &[("world_id", Sql::Integer(src.get("world_id")?.as_i64()?)), ("name", s(&take_chars(name, 256))),
+        ("ruleset", s(src.get("ruleset").and_then(|v| v.as_str()).unwrap_or(""))), ("is_template", Sql::Integer(template as i64)),
+        ("combatants_json", s(&nd_render::py_dumps(&state["combatants"]))), ("party_id", party),
+        ("turn_json", s(&nd_render::py_dumps(&json!({"active_id": null, "acted": [], "picker": null, "mode": mode}))))])
+}
+
+fn combat_duplicate(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let cs = combat_scoped(c, ids[0])?;
+    let name = format!("{} (again)", cs.get("name").and_then(|v| v.as_str())?);
+    let id = combat_copy(c, &cs, &name, false, false)?;
+    redirect(&format!("/combat/{id}"))
+}
+
+fn combat_save_template(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let cs = combat_scoped(c, ids[0])?;
+    let name = nd_render::text::py_split_join(f.get("name").unwrap_or(""));
+    let name = if name.is_empty() { cs.get("name").and_then(|v| v.as_str())?.to_string() } else { name };
+    combat_copy(c, &cs, &name, true, true)?;
+    redirect("/combat")
+}
+
+fn combat_run_template(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let tpl = combat_scoped(c, ids[0])?;
+    if !py_truthy(tpl.get("is_template")) {
+        return None;
+    }
+    let id = combat_copy_with(c, &tpl, tpl.get("name").and_then(|v| v.as_str())?, false, false, true)?;
+    redirect(&format!("/combat/{id}"))
+}
+
+/// `_as_int(v, default)`: int(v), else the default (text int() reads its own way: Python's)
+fn as_int(v: Option<&Value>, default: i64) -> Option<i64> {
+    Some(match v {
+        None | Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => default,
+        Some(Value::Bool(b)) => *b as i64,
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(i) => i,
+            None => {
+                let f = n.as_f64()?;
+                if !f.is_finite() || f.abs() > 1e15 {
+                    return None;
+                }
+                f.trunc() as i64
+            }
+        },
+        Some(Value::String(t)) => match py_int_text(t) {
+            Ok(i) => i,
+            Err(PyErr::Value) => default,
+            Err(_) => return None,
+        },
+    })
+}
+
+fn combat_sync_characters(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let cs = combat_scoped(c, ids[0])?;
+    let wid = cs.get("world_id")?.as_i64()?;
+    let combatants: Vec<Value> = match serde_json::from_str::<Value>(cs.get("combatants_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_object()).collect(),
+        Ok(_) => vec![],
+        Err(_) => return None,
+    };
+    let (mut synced, mut skipped) = (vec![], vec![]);
+    for cb in &combatants {
+        let name = cb.get("name").cloned().unwrap_or(Value::Null);
+        if cb.get("source").and_then(|v| v.as_str()) != Some("pc") || !py_truthy(cb.get("pc_id")) {
+            skipped.push(name);
+            continue;
+        }
+        let pid = cb.get("pc_id")?.as_i64()?; // a pc_id Python would compare as something else: Python's
+        let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", pid).filter(|p| p.get("world_id").and_then(|v| v.as_i64()) == Some(wid)) else {
+            skipped.push(name);
+            continue;
+        };
+        let (mhp, mshock, mpp, mmp, native) = pc_maxima(&c.db, &pc)?;
+        if !native {
+            return None; // the custom system's tracks: Python's
+        }
+        let mut set: Vec<(&str, Sql)> = vec![];
+        let max_hp = if mhp != 0 { mhp } else { as_int(cb.get("max_hp"), 0)? };
+        set.push(("current_hp", Sql::Integer(as_int(cb.get("hp"), col_int(&pc, "current_hp"))?.min(max_hp).max(0))));
+        let res = cb.get("res").and_then(|r| r.as_object()).cloned().unwrap_or_default();
+        for (key, top, col) in [("pp", mpp, "pp_current"), ("mp", mmp, "mp_current")] {
+            if let Some(r) = res.get(key).and_then(|r| r.as_object()) {
+                let v = if top != 0 { as_int(r.get("cur"), col_int(&pc, col))?.min(top).max(0) } else { as_int(r.get("cur"), 0)?.max(0) };
+                set.push((col, Sql::Integer(v)));
+            }
+        }
+        set.push(("shock_current", Sql::Integer(as_int(cb.get("shock"), col_int(&pc, "shock_current"))?.min(mshock).max(0))));
+        let conds = clean_conditions(cb.get("conditions").unwrap_or(&Value::Null))?;
+        set.push(("conditions_json", s(&nd_render::py_dumps(&json!(conds)))));
+        orm::update(&c.db, "player_characters", pid, &set)?;
+        synced.push(pc.get("name").cloned().unwrap_or(Value::Null));
+    }
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"synced": synced, "skipped": skipped}))
 }
