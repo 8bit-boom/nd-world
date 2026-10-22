@@ -7,6 +7,7 @@ pub mod calendar;
 pub mod config;
 pub mod idpages;
 pub mod files;
+pub mod gallery;
 pub mod layout;
 pub mod live;
 pub mod media;
@@ -118,6 +119,15 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || media::clip_library(lib, &pages_, &cfg, &uri, &headers)).await {
                 return resp;
             }
+        }
+    }
+    if req.method() == axum::http::Method::GET && (req.uri().path() == "/images" || req.uri().path().starts_with("/images/albums/"))
+        && app.cfg.rust_routes.iter().any(|r| r == "pages")
+    {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        let f = if uri.path() == "/images" { gallery::images_gallery } else { gallery::album_detail };
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/kind/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {

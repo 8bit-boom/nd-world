@@ -562,7 +562,7 @@ pub fn kind_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
 }
 
 /// Python's `str(x)` for a custom-field value from JSON; `None` = not sure (floats, containers).
-fn py_str_value(v: &serde_json::Value) -> Option<String> {
+pub(crate) fn py_str_value(v: &serde_json::Value) -> Option<String> {
     use serde_json::Value;
     Some(match v {
         Value::String(s) => s.clone(),

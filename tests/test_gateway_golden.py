@@ -913,3 +913,47 @@ def test_audio_and_video_libraries_the_gateway_builds_are_pythons(client, seed):
         (uploads / "gw-real.mp3").unlink(missing_ok=True)
     assert all(served[u] >= 2 for u in ("/audio", "/video")), served
     assert sum(served.values()) >= 12, served
+
+
+def test_image_gallery_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import (CharacterKeepsake, Entity, EntityNote, GameSession, ImageAlbum, MediaTitle, PlayerCharacter, World)
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        e = Entity(world_id=w, kind="npc", name="Zed", image_url="/uploads/z.png", body="see ![a](/uploads/a.png) and ![b](/uploads/b c.png) ![](/uploads/z.png)")
+        db.add(e); db.flush()
+        db.add_all([EntityNote(entity_id=e.id, content="note ![n](/uploads/n.webp)"), EntityNote(entity_id=e.id, content="no image")])
+        db.add_all([Entity(world_id=w, kind="npc", name=f"Bulk {i:03d}", image_url=f"/uploads/bulk/{i:03d}.png") for i in range(205)])
+        pc = PlayerCharacter(world_id=w, name="Hero", owner_user_id=seed.player_a.id, portrait_url="/uploads/0123456789ab-hero.png",
+                             backstory="![x](/uploads/back.png)", notes="![y](/uploads/notes.png)")
+        db.add(pc); db.flush()
+        db.add(GameSession(world_id=w, session_num=1, title="Night", recap_media_json=json.dumps(
+            [{"kind": "image", "url": "/uploads/s1.png"}, {"kind": "image", "url": "/uploads/s1.png"}, {"kind": "image", "url": "http://x/y.png"},
+             {"kind": "video", "clip_id": 3}, "junk"])))
+        db.add_all([CharacterKeepsake(world_id=w, character_id=pc.id, kind="image", url="/uploads/kept.png", name="k"),
+                    CharacterKeepsake(world_id=w, character_id=pc.id, kind="image", url="/uploads/own.png", name="o", own=True),
+                    MediaTitle(world_id=w, url="/uploads/a.png", title="Named <a>")])
+        top = ImageAlbum(world_id=w, name="Art", image_urls_json=json.dumps(["/uploads/a.png", "/uploads/only.png"]))
+        db.add_all([top, ImageAlbum(world_id=w, name="Broken", image_urls_json="{bad")]); db.flush()
+        sub = ImageAlbum(world_id=w, name="Sub", parent_id=top.id, image_urls_json=json.dumps(["/uploads/z.png", "/uploads/fedcba987654-shot.jpg", "/x/"]))
+        db.add(sub); db.flush()
+        deep = ImageAlbum(world_id=w, name="Deep", parent_id=sub.id); far = ImageAlbum(world_id=seed.world_b.id, name="Far")
+        db.add_all([deep, far]); db.flush()
+        db.add(ImageAlbum(world_id=w, name="Bad urls", parent_id=deep.id, image_urls_json="[1, 2]"))
+        urls = ["/images", f"/images/albums/{top.id}", f"/images/albums/{sub.id}", f"/images/albums/{deep.id}", f"/images/albums/{far.id}", "/images/albums/999999"]
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"images": {"player": "read"}})
+        db.commit()
+    finally:
+        db.close()
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for u in urls:
+            served[u] += _same_page(d, via, u, email)
+    assert served["/images"] >= 2 and all(served[u] for u in urls[1:3]), served

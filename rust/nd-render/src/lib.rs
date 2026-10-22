@@ -127,6 +127,22 @@ pub fn display_url(url: Value) -> Result<Value, Error> {
 
 /// `templating.thumb_url`: the picture's small copy when it exists (and, for bundled / map pictures, is fresh), else the URL unchanged.
 /// A bundled or map picture without a fresh copy makes Python queue one: that page is left to Python (an error here).
+/// `templating.thumb_url` for page builders (None = a picture whose small copy Python would queue: the page is Python's)
+pub fn thumb_url(url: &str) -> Option<String> {
+    thumb(Some(url.to_string())).ok()?.as_str().map(|s| s.to_string())
+}
+
+/// `|thumb`: text or nothing; anything else fails in Python (str methods on it), so it is an error here too and the page is Python's
+fn thumb_filter(url: Value) -> Result<Value, Error> {
+    if !url.is_true() {
+        return Ok(url); // `if not url: return url`
+    }
+    match url.as_str() {
+        Some(s) => thumb(Some(s.to_string())),
+        None => Err(Error::new(ErrorKind::InvalidOperation, "thumb: not text")),
+    }
+}
+
 fn thumb(url: Option<String>) -> Result<Value, Error> {
     let url = url.unwrap_or_default();
     if url.is_empty() {
@@ -308,7 +324,7 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
         let v = v.split(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
         html_escape::decode_html_entities(&v).into_owned()
     });
-    env.add_filter("thumb", thumb);
+    env.add_filter("thumb", thumb_filter);
     env.add_filter("display", display_url);
     env.add_filter("fromjson", fromjson);
     env.add_function("thumb_url", thumb);
