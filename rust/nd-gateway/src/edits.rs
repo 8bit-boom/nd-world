@@ -271,6 +271,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/image", entity_set_image),
     ("/races/new", race_new),
     ("/maps/new", map_new),
+    ("/images/spotlight", spotlight_send),
+    ("/images/spotlight/clear", spotlight_clear),
     ("/entity/{}/notes/import", entity_note_import),
     ("/races/add-builtin", race_add_builtin),
     ("/races/add-all-builtin", race_add_all_builtin),
@@ -475,6 +477,9 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
             _ => None,
         };
     }
+    if path == "/api/spotlight" && *method == Method::GET {
+        return Some((spotlight_state as SlugHandler, String::new()));
+    }
     if let Some(id) = path.strip_prefix("/api/characters/").and_then(|r| r.strip_suffix("/share")) {
         if !id.is_empty() && id.len() <= 15 && id.bytes().all(|b| b.is_ascii_digit()) {
             return match *method {
@@ -508,7 +513,7 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
     let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
     // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
     // Python) must leave nothing behind, or Python would apply the same write a second time
-    db.execute_batch("BEGIN IMMEDIATE").ok()?;
+    db.execute_batch(if *method == Method::GET { "BEGIN" } else { "BEGIN IMMEDIATE" }).ok()?;
     let mut ctx = Ctx { cfg, upload: None, created: vec![], removals: vec![], db, p, uri, headers, body };
     let answer = match (by_id, by_slug) {
         (Some((h, ids)), _) => h(&mut ctx, &ids),
@@ -7555,4 +7560,48 @@ fn pc_resource(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::update(&c.db, "player_characters", ids[0], &[("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf))))])?;
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"field_id": fid, "current": new, "max": mx}))
+}
+
+// ── the spotlight (gallery.py image_spotlight_send / _clear, main.py api_spotlight) ──
+// Python keeps a 2-second in-process cache of GET /api/spotlight that its own writes clear; with the gateway answering that GET as
+// well, a spotlight the gateway writes is seen at once.
+
+fn spotlight_state(c: &mut Ctx, _: &str) -> Option<Response<Body>> {
+    let w = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", c.world_id()?)?;
+    let num = |k: &str| w.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let val = |k: &str| w.get(k).cloned().unwrap_or(Value::Null);
+    json_response(&json!({"version": num("spotlight_version"), "image_url": val("spotlight_image_url"), "label": val("spotlight_label"),
+        "audio_version": num("now_playing_version"), "audio_url": val("now_playing_url"), "audio_label": val("now_playing_label"),
+        "audio_loop": py_truthy(w.get("now_playing_loop"))}))
+}
+
+/// `live.signal_all("spot")`: open pages fetch the spotlight again
+fn signal_spot(c: &Ctx) -> Option<()> {
+    c.db.execute("INSERT INTO shared_state (key, n) VALUES ('sigall:spot', 1) ON CONFLICT(key) DO UPDATE SET n = n + 1", []).ok().map(|_| ())
+}
+
+fn spotlight_send(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let wid = images_editor(c)?;
+    let b = c.json()?;
+    let url = b.get("url").and_then(|u| u.as_str()).filter(|u| !u.is_empty())?.to_string();
+    let entries = crate::gallery::all_world_image_urls(&c.db, wid)?;
+    let label = take_chars(entries.iter().find(|e| e.get("url").and_then(|u| u.as_str()) == Some(url.as_str()))?.get("name")?.as_str()?, 256);
+    let w = row(&c.db, "SELECT spotlight_version FROM worlds WHERE id = ?1", wid)?;
+    let version = w.get("spotlight_version").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+    orm::update(&c.db, "worlds", wid, &[("spotlight_image_url", s(&url)), ("spotlight_label", s(&label)), ("spotlight_version", Sql::Integer(version))])?;
+    let last: Option<String> = c.db.query_row("SELECT url FROM world_handouts WHERE world_id = ?1 ORDER BY id DESC LIMIT 1", [wid], |r| r.get(0)).ok();
+    if last.as_deref() != Some(url.as_str()) {
+        orm::insert(&c.db, "world_handouts", &[("world_id", Sql::Integer(wid)), ("url", s(&url)), ("label", s(&label))])?;
+    }
+    signal_spot(c)?;
+    json_response(&json!({"ok": true, "version": version}))
+}
+
+fn spotlight_clear(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let wid = images_editor(c)?;
+    let w = row(&c.db, "SELECT spotlight_version FROM worlds WHERE id = ?1", wid)?;
+    let version = w.get("spotlight_version").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+    orm::update(&c.db, "worlds", wid, &[("spotlight_image_url", Sql::Null), ("spotlight_label", Sql::Null), ("spotlight_version", Sql::Integer(version))])?;
+    signal_spot(c)?;
+    json_response(&json!({"ok": true, "version": version}))
 }

@@ -3469,3 +3469,33 @@ def test_resource_tracks_are_pythons(client, seed):
         assert out[0][:4] == out[1][:4], (body, out)
         served += out[1][4] == "gateway"
     assert served >= 6, served
+
+
+def test_spotlight_is_pythons(client, seed):
+    import time
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pvia = _via(p, base)
+    alb = _add("ImageAlbum", world_id=seed.world_a.id, name="Spot", image_urls_json=json.dumps(["/uploads/gallery/spot-a.png", "/uploads/gallery/spot-b.png"]))
+    served = 0
+    for path, body in [("/images/spotlight", {"url": "/uploads/gallery/spot-a.png"}), ("/images/spotlight", {"url": "/uploads/gallery/spot-a.png"}),
+                       ("/images/spotlight", {"url": "/uploads/nope.png"}), ("/images/spotlight", {}), ("/images/spotlight/clear", None),
+                       ("/images/spotlight", {"url": "/uploads/gallery/spot-b.png"})]:
+        out = []
+        for side in (d, via):
+            before = _row("worlds", seed.world_a.id)["spotlight_version"] or 0
+            r = side.post(path, json=body) if body is not None else side.post(path)
+            w = _row("worlds", seed.world_a.id)
+            j = r.json() if r.status_code == 200 else None
+            if j:
+                j["version"] -= before
+            h = _newest("world_handouts")
+            out.append((r.status_code, j, w["spotlight_image_url"], w["spotlight_label"], h and (h["url"], h["label"]), r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (path, body, out)
+        served += out[1][5] == "gateway"
+        time.sleep(2.1)   # Python's own spotlight cache
+        a, b = p.get("/api/spotlight").json(), pvia.get("/api/spotlight")
+        assert b.json() == a and b.headers.get("x-nd-served-by") == "gateway", (a, b.json())
+    assert served >= 4, served

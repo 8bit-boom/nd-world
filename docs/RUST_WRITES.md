@@ -96,7 +96,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /worlds/<id>/rules/edit` (an overlay checked by the ported `parse_rules_overlay`; one it refuses: Python's 400), `/rules/import` (an overlay with a fractional `order`: Python's) | 37 |
 | `POST /worlds/<id>/kinds/new`, `/kinds/edit`, `/kinds/<kind>/delete`, `/nav-menus/edit` (with `section_access_json`: Python walks a set, so its key order changes between processes; the gateway writes the sorted order) | 38 |
 | `POST /worlds/<id>/ai-instructions/import`, `/ai-instructions/<id>/toggle`, `/toggle-players`, `/delete` (stored settings: no AI call) | 39 |
-| `POST /races/add-builtin`, `/races/add-all-builtin`, `/professions/add-builtin`, `/professions/add-all-builtin` (the catalogs, and markdown2's HTML for each, taken from Python by `scripts/gen_rust_data.py`; a race whose body was edited since: Python's). `/images/spotlight` stays Python's: it clears Python's in-process spotlight cache | 40 |
+| `POST /races/add-builtin`, `/races/add-all-builtin`, `/professions/add-builtin`, `/professions/add-all-builtin` (the catalogs, and markdown2's HTML for each, taken from Python by `scripts/gen_rust_data.py`; a race whose body was edited since: Python's) | 40 |
 | `POST /api/entity/<id>/markup` (wrap, unwrap, replace, restore, picture size) and `/api/entity/<id>/send-to-player`: `app/markup_locator.py` ported to `crate::markup` in code-point offsets; a refusal (its 422 message) and text whose `\w` / `\s` the two regex engines might read differently: Python's. Checked with fixed cases and 300 random selections | 41 |
 | `POST /maps/<slug>/rename`, `/maps/<slug>/delete` (the map file rewritten with Python's `json.dumps`; files removed after the commit) | 42 |
 | `POST /maps/new` (an uploaded picture or a copied generated one; one over the limit: Python's 413) and `/maps/<slug>/upload` (streamed; the new picture is renamed in place, older ones removed after the commit) | 43 |
@@ -107,6 +107,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /api/characters/<id>/ability-use`, `/ability-ready` (`app/feat_use.py` ported; the feat catalog's two lookups generated from Python by `scripts/gen_rust_data.py`) | 48 |
 | `POST /api/characters/<id>/advance` (`app/advance.py` ported; the buyable feats, their costs and order generated from Python's catalog) | 49 |
 | `POST /api/characters/<id>/resource` (custom-sheet tracks; a fractional number anywhere in the track or the stored fields: Python's) | 50 |
+| `POST /images/spotlight`, `/images/spotlight/clear`, and `GET /api/spotlight` (answered by the gateway too, so Python's 2-second in-process cache, which only its own writes clear, is out of the way; the "spot" live signal bumped in `shared_state`) | 51 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |
