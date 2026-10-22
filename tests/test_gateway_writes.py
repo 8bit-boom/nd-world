@@ -530,3 +530,104 @@ def test_session_writes_are_pythons(client, seed):
             _same_rows(_row("game_sessions", ids[0]), _row("game_sessions", ids[1]), before[0], before[1])
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 15, served   # the GM's (session writes are GM / assistant routes in auth_gate)
+
+
+# ── entity links and notes ────────────────────────────────────────────────────
+
+def _entities(world_id, n):
+    from app.database import SessionLocal
+    from app.models import Entity
+    db = SessionLocal()
+    try:
+        es = [Entity(world_id=world_id, kind="npc", name=f"E{i}") for i in range(n)]
+        db.add_all(es)
+        db.commit()
+        return [e.id for e in es]
+    finally:
+        db.close()
+
+
+def _links(src):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        return db.execute(text("SELECT COUNT(*) FROM entity_links WHERE source_id = :s"), {"s": src}).scalar()
+    finally:
+        db.close()
+
+
+def _note(entity_id, **kw):
+    from app.database import SessionLocal
+    from app.models import EntityNote
+    db = SessionLocal()
+    try:
+        n = EntityNote(entity_id=entity_id, content="old", **kw)
+        db.add(n)
+        db.commit()
+        return n.id
+    finally:
+        db.close()
+
+
+def test_entity_link_and_note_writes_are_pythons(client, seed):
+    base = str(client.base_url)
+    served = 0
+    [other] = _entities(seed.world_b.id, 1)
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        # link / unlink: a fresh pair, a duplicate link, another world's target, a missing one
+        for twice, foreign, missing in ((False, False, False), (True, False, False), (False, True, False), (False, False, True)):
+            sa, ta, sb, tb = _entities(seed.world_a.id, 4)
+            if foreign:
+                ta = tb = other
+            if missing:
+                ta = tb = 999999
+            for _ in range(2 if twice else 1):
+                ra = d.post(f"/entity/{sa}/link/{ta}", follow_redirects=False)
+                rb = via.post(f"/entity/{sb}/link/{tb}", follow_redirects=False)
+                _same_answer(ra, rb, sa, sb)
+                assert _links(sa) == _links(sb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+            ra = d.post(f"/entity/{sa}/unlink/{ta}", follow_redirects=False)
+            rb = via.post(f"/entity/{sb}/unlink/{tb}", follow_redirects=False)
+            _same_answer(ra, rb, sa, sb)
+            assert _links(sa) == _links(sb)
+        # notes
+        for form in ({"content": "  A <note>  ", "visible": "on"}, {"content": "x", "visible": ""}, {"content": ""}, {"content": "   "}, {},
+                     {"content": "Ünï\r\nline"}):
+            ea, eb = _entities(seed.world_a.id, 2)
+            ra = d.post(f"/entity/{ea}/notes/new", data=form, follow_redirects=False)
+            rb = via.post(f"/entity/{eb}/notes/new", data=form, follow_redirects=False)
+            _same_answer(ra, rb, ea, eb)
+            _same_rows(_newest_note(ea), _newest_note(eb), ignore=("entity_id",))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+            for action, data in (("toggle", None), ("edit", form), ("delete", None)):
+                na, nb = _note(ea, visible_to_players=True), _note(eb, visible_to_players=True)
+                before = [_row("entity_notes", na), _row("entity_notes", nb)]
+                for ent_a, ent_b in ((ea, eb), (other, other), (999999, 999999)):
+                    kw = {"data": data} if data is not None else {}
+                    ra = d.post(f"/entity/{ent_a}/notes/{na}/{action}", follow_redirects=False, **kw)
+                    rb = via.post(f"/entity/{ent_b}/notes/{nb}/{action}", follow_redirects=False, **kw)
+                    _same_answer(ra, rb, ea, eb)
+                    _same_rows(_row("entity_notes", na), _row("entity_notes", nb), before[0], before[1], ignore=("entity_id",))
+                    served += rb.headers.get("x-nd-served-by") == "gateway"
+            # a note of another entity
+            na = _note(eb)
+            ra = d.post(f"/entity/{ea}/notes/{na}/delete", follow_redirects=False)
+            rb = via.post(f"/entity/{ea}/notes/{na}/delete", follow_redirects=False)
+            _same_answer(ra, rb)
+            assert _row("entity_notes", na) is not None
+    assert served >= 20, served   # the GM's (players reach entity writes only through Python's permission checks)
+
+
+def _newest_note(entity_id):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        r = db.execute(text("SELECT * FROM entity_notes WHERE entity_id = :e ORDER BY id DESC LIMIT 1"), {"e": entity_id}).mappings().first()
+        return dict(r) if r else None
+    finally:
+        db.close()

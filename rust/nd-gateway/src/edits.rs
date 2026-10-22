@@ -156,6 +156,12 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/prep/toggle", prep_toggle),
     ("/api/sessions/{}/prep/add", prep_add),
     ("/api/sessions/{}/prep/{}/delete", prep_delete),
+    ("/entity/{}/link/{}", entity_link),
+    ("/entity/{}/unlink/{}", entity_unlink),
+    ("/entity/{}/notes/new", note_add),
+    ("/entity/{}/notes/{}/toggle", note_toggle),
+    ("/entity/{}/notes/{}/delete", note_delete),
+    ("/entity/{}/notes/{}/edit", note_edit),
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
@@ -977,4 +983,94 @@ fn prep_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         prep.remove(idx as usize);
     }
     save_prep(c, ids[0], prep)
+}
+
+// ── entity links and notes (app/main.py; auth_gate lets only the GM / assistants reach these) ──
+
+/// The entity by id, when it is of the viewer's active world (another world's is Python's)
+fn world_entity(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let e = row(&c.db, "SELECT * FROM entities WHERE id = ?1", id)?;
+    (e.get("world_id")?.as_i64() == c.world_id()).then_some(e)
+}
+
+fn entity_link(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (src, tgt) = (world_entity(c, ids[0])?, world_entity(c, ids[1])?);
+    if src.get("world_id") != tgt.get("world_id") {
+        return None;
+    }
+    c.db.execute("INSERT OR IGNORE INTO entity_links (source_id, target_id) VALUES (?1, ?2)", [ids[0], ids[1]]).ok()?;
+    redirect(&format!("/entity/{}", ids[0]))
+}
+
+fn entity_unlink(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    world_entity(c, ids[0])?;
+    world_entity(c, ids[1])?;
+    c.db.execute("DELETE FROM entity_links WHERE source_id = ?1 AND target_id = ?2", [ids[0], ids[1]]).ok()?;
+    redirect(&format!("/entity/{}", ids[0]))
+}
+
+/// A required FastAPI `Form(...)` text: present and non-empty (an empty value is FastAPI's 422: Python's)
+fn required(f: &Form, name: &str) -> Option<String> {
+    f.get(name).filter(|v| !v.is_empty()).map(str::to_string)
+}
+
+/// `bool(visible)` for an optional `Form(None)`: an empty value counts as missing
+fn flag_param(f: &Form, name: &str) -> i64 {
+    f.get(name).map_or(0, |v| !v.is_empty() as i64)
+}
+
+fn note_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    world_entity(c, ids[0])?;
+    let content = strip(&required(&f, "content")?);
+    if !content.is_empty() {
+        orm::insert(
+            &c.db,
+            "entity_notes",
+            &[
+                ("entity_id", Sql::Integer(ids[0])),
+                ("author_id", Sql::Integer(c.p.user_id)),
+                ("content", s(&content)),
+                ("visible_to_players", Sql::Integer(flag_param(&f, "visible"))),
+            ],
+        )?;
+    }
+    redirect(&format!("/entity/{}", ids[0]))
+}
+
+/// The note, when it belongs to the entity (of the active world)
+fn entity_note(c: &Ctx, entity_id: i64, note_id: i64) -> Option<Map<String, Value>> {
+    world_entity(c, entity_id)?;
+    let n = row(&c.db, "SELECT * FROM entity_notes WHERE id = ?1", note_id)?;
+    (n.get("entity_id")?.as_i64() == Some(entity_id)).then_some(n)
+}
+
+fn note_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let n = entity_note(c, ids[0], ids[1])?;
+    let shown = n.get("visible_to_players").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    orm::update(&c.db, "entity_notes", ids[1], &[("visible_to_players", Sql::Integer(!shown as i64))])?;
+    redirect(&format!("/entity/{}", ids[0]))
+}
+
+fn note_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    world_entity(c, ids[0])?;
+    if let Some(n) = row(&c.db, "SELECT * FROM entity_notes WHERE id = ?1", ids[1]) {
+        if n.get("entity_id")?.as_i64() == Some(ids[0]) {
+            c.db.execute("DELETE FROM entity_notes WHERE id = ?1", [ids[1]]).ok()?;
+        }
+    }
+    redirect(&format!("/entity/{}", ids[0]))
+}
+
+fn note_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    entity_note(c, ids[0], ids[1])?;
+    let content = strip(&required(&f, "content")?);
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if !content.is_empty() {
+        set.push(("content", s(&content)));
+    }
+    set.push(("visible_to_players", Sql::Integer(flag_param(&f, "visible"))));
+    orm::update(&c.db, "entity_notes", ids[1], &set)?;
+    redirect(&format!("/entity/{}", ids[0]))
 }
