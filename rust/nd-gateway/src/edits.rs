@@ -207,6 +207,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/shock", pc_shock),
     ("/api/characters/{}/level-up", pc_level_up),
     ("/api/characters/{}/feats", pc_feats),
+    ("/api/characters/{}/ability-use", pc_ability_use),
+    ("/api/characters/{}/ability-ready", pc_ability_ready),
     ("/api/characters/{}/equipment", pc_equipment),
     ("/api/characters/{}/carry-limit", pc_carry_limit),
     ("/characters/new", pc_new),
@@ -7045,4 +7047,196 @@ fn sm_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     out.insert("kind".into(), json!(kind));
     out.insert("item".into(), item);
     json_response(&Value::Object(out))
+}
+
+// ── ability cards (characters.py `_ability_cards`, app/feat_use.py) ──
+
+/// `str(v)` of a JSON id / name: a string, an integer, or None ("None"); anything else (a float's repr...) is Python's
+fn py_str_key(v: Option<&Value>) -> Option<String> {
+    match v {
+        None | Some(Value::Null) => Some("None".into()),
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// `x or y`: the first truthy JSON value
+fn py_or<'a>(vals: &[Option<&'a Value>]) -> Option<&'a Value> {
+    vals.iter().copied().flatten().find(|v| py_truthy(Some(v)))
+}
+
+/// `feat_use.parse_cost`
+fn feat_cost(desc: &str) -> Map<String, Value> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<(regex::Regex, regex::Regex)> = OnceLock::new();
+    let (cost, token) = RE.get_or_init(|| {
+        (regex::Regex::new(r"(?i)\bCost:\s*([^\n]{0,80})").unwrap(), regex::Regex::new(r"(?i)(?:(\d+)\s*)?\b(PP|MP|Shock|Health|HP)\b").unwrap())
+    });
+    let text = desc.replace('*', "");
+    let mut out = Map::new();
+    let Some(m) = cost.captures(&text) else { return out };
+    for t in token.captures_iter(&m[1]) {
+        let key = match t[2].to_ascii_lowercase().as_str() {
+            "pp" => "pp",
+            "mp" => "mp",
+            "shock" => "shock",
+            _ => "hp",
+        };
+        let n: i64 = t.get(1).map_or(1, |d| d.as_str().parse().unwrap_or(i64::MAX / 4));
+        let cur = out.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+        out.insert(key.into(), json!(cur.saturating_add(n)));
+    }
+    for v in out.values_mut() {
+        *v = json!(v.as_i64().unwrap_or(0).min(10));
+    }
+    out
+}
+
+/// `feat_use.parse_limit`
+fn feat_limit(desc: &str) -> Option<&'static str> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?i)\bonce\s+(?:per|a|each)\s+(rest|session|day|scene)\b").unwrap());
+    let m = re.captures(desc)?;
+    Some(if m[1].eq_ignore_ascii_case("session") { "session" } else { "rest" })
+}
+
+/// `feat_use.feat_key`
+fn feat_key(feat: &Map<String, Value>) -> Option<String> {
+    let k = match py_or(&[feat.get("id"), feat.get("name")]) {
+        None => String::new(),
+        Some(v) => py_str_key(Some(v))?,
+    };
+    k.is_ascii().then(|| k.to_ascii_lowercase())
+}
+
+/// `_ability_cards(db, pc)`; None when a feat holds a value Python would read through str() or a non-ASCII lower()
+fn ability_cards(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Value>> {
+    let look = nd_render::app::data().get("feat_lookup")?;
+    let used = pc_prefs(&c.db, pc.get("id")?.as_i64()?)?.get("feat_used").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!({}));
+    let used = used.as_object()?.clone();
+    let mut cards = vec![];
+    for (i, feat) in pc_list(pc, "feats_json")?.iter().enumerate() {
+        let Some(feat) = feat.as_object() else { continue };
+        let id = py_str_key(feat.get("id"))?;
+        let name = py_str_key(Some(feat.get("name").unwrap_or(&json!(""))))?;
+        if !name.is_ascii() {
+            return None;
+        }
+        let empty = json!({});
+        let cat = look["by_id"].get(&id).or_else(|| look["by_name"].get(name.to_ascii_lowercase())).unwrap_or(&empty);
+        let desc = match py_or(&[cat.get("description"), feat.get("notes")]) {
+            None => String::new(),
+            Some(Value::String(t)) => t.clone(),
+            Some(_) => return None,
+        };
+        if desc.chars().any(|ch| ch.is_numeric() && !ch.is_ascii_digit()) {
+            return None;
+        }
+        let desc = strip(&desc.replace("\n---", ""));
+        let key = feat_key(feat)?;
+        cards.push(json!({"index": i, "name": py_or(&[feat.get("name")]).cloned().unwrap_or(json!("Feat")),
+            "type": py_or(&[feat.get("type"), cat.get("category")]).cloned().unwrap_or(json!("")),
+            "rank": py_or(&[feat.get("rank"), cat.get("rank")]).cloned().unwrap_or(json!("")),
+            "description": take_chars(&desc, 900), "cost": feat_cost(&desc), "limit": feat_limit(&desc), "used": used.get(&key).cloned().unwrap_or(Value::Null)}));
+    }
+    Some(cards)
+}
+
+/// `char_extras.set_prefs(db, pc, key=value)` (None removes the key)
+fn set_pc_pref(c: &Ctx, pc: &Map<String, Value>, key: &str, value: Option<Value>) -> Option<()> {
+    let pid = pc.get("id")?.as_i64()?;
+    let existing: Option<i64> = c.db.query_row("SELECT id FROM character_prefs WHERE character_id = ?1 LIMIT 1", [pid], |r| r.get(0)).ok();
+    let mut data = if existing.is_some() { pc_prefs(&c.db, pid)? } else { Map::new() };
+    match value {
+        Some(v) => {
+            data.insert(key.into(), v);
+        }
+        None => {
+            data.remove(key);
+        }
+    }
+    let text = nd_render::py_dumps(&Value::Object(data));
+    match existing {
+        Some(id) => {
+            orm::update(&c.db, "character_prefs", id, &[("prefs_json", s(&text))])?;
+        }
+        None => {
+            orm::insert(&c.db, "character_prefs", &[("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)), ("character_id", Sql::Integer(pid)), ("prefs_json", s(&text))])?;
+        }
+    };
+    Some(())
+}
+
+fn pools(pc: &Map<String, Value>) -> Value {
+    json!({"pp": col_int(pc, "pp_current"), "mp": col_int(pc, "mp_current"), "shock": col_int(pc, "shock_current"), "hp": col_int(pc, "current_hp")})
+}
+
+fn pc_ability_use(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let index = match b.get("index") {
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        _ => return None, // a float, a bool (== an int in Python) or a miss: Python's
+    };
+    let cards = ability_cards(c, &pc)?;
+    let card = cards.iter().find(|k| k["index"].as_i64() == Some(index))?.clone();
+    if !card["used"].is_null() && py_truthy(Some(&card["used"])) {
+        return None;
+    }
+    let card_name = card["name"].as_str()?.to_string();
+    let cols = [("pp", "pp_current"), ("mp", "mp_current"), ("shock", "shock_current"), ("hp", "current_hp")];
+    let mut spend = vec![];
+    for (k, _) in cols {
+        spend.push(body_int(&b, k)?.clamp(0, 10));
+    }
+    let mut before = Map::new();
+    let mut set: Vec<(&str, Sql)> = vec![];
+    for (i, (_, col)) in cols.iter().enumerate() {
+        if spend[i] > 0 {
+            let have = col_int(&pc, col);
+            if spend[i] > have {
+                return None;
+            }
+            before.insert(col.to_string(), json!(have));
+            set.push((col, Sql::Integer(have - spend[i])));
+        }
+    }
+    if !set.is_empty() {
+        orm::update(&c.db, "player_characters", ids[0], &set)?;
+    }
+    let feats = pc_list(&pc, "feats_json")?;
+    let key = feat_key(feats.get(index as usize)?.as_object()?)?;
+    let limit = card["limit"].as_str();
+    if let Some(l) = limit {
+        let mut used = pc_prefs(&c.db, ids[0])?.get("feat_used").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!({}));
+        used.as_object_mut()?.insert(key.clone(), json!(l));
+        set_pc_pref(c, &pc, "feat_used", Some(used))?;
+    }
+    let label = |k: &str| if k == "hp" { "Health".to_string() } else { k.to_uppercase() };
+    let paid: Vec<String> = cols.iter().enumerate().filter(|(i, _)| spend[*i] > 0).map(|(i, (k, _))| format!("{} {}", spend[i], label(k))).collect();
+    let text = if paid.is_empty() { format!("Used {card_name}") } else { format!("Used {card_name} ({})", paid.join(", ")) };
+    char_log(c, &pc, "ability", &text, &json!({"op": "cols", "values": before, "unuse": if limit.is_some() { json!(key) } else { Value::Null }}))?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
+    json_response(&json!({"ok": true, "cards": ability_cards(c, &pc)?, "pools": pools(&pc)}))
+}
+
+fn pc_ability_ready(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let feats = pc_list(&pc, "feats_json")?;
+    let i = match b.get("index") {
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        _ => return None,
+    };
+    let feat = feats.get(usize::try_from(i).ok()?)?.as_object()?;
+    let key = feat_key(feat)?;
+    let mut used = pc_prefs(&c.db, ids[0])?.get("feat_used").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!({}));
+    let used_map = used.as_object_mut()?;
+    used_map.shift_remove(&key);
+    let keep = if used_map.is_empty() { None } else { Some(used.clone()) };
+    set_pc_pref(c, &pc, "feat_used", keep)?;
+    json_response(&json!({"ok": true, "cards": ability_cards(c, &pc)?}))
 }

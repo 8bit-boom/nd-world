@@ -52,6 +52,16 @@ def builtin_catalog(kind: str) -> list:
             for e in load()]
 
 
+def feat_lookup() -> dict:
+    """`_ability_cards`' two catalog lookups (characters.py): by str(id) and by lower-cased name, last one winning as in Python"""
+    from app import game_catalog
+    feats = game_catalog.catalog_payload()["feats"]
+    slim = lambda x: {"category": x.get("category"), "rank": x.get("rank"), "description": x.get("description")}
+    catalog = {str(x.get("id")): x for x in feats}
+    by_name = {str(x.get("name", "")).lower(): x for x in catalog.values()}
+    return {"by_id": {k: slim(v) for k, v in catalog.items()}, "by_name": {k: slim(v) for k, v in by_name.items()}}
+
+
 def make() -> dict:
     from app import calendar_config, combat_rules, constants, nav_menus, view_prefs
     from app.routers import quests
@@ -79,6 +89,7 @@ def make() -> dict:
         "calendar_presets_world": [[k, json.dumps({**calendar_config.clean_calendar_config(v), "current_day": 1})]
                                    for k, v in calendar_config.CALENDAR_PRESETS.items()],
         # the bundled race / profession catalogs (app/races, app/professions) as /races/add-builtin and /professions/add-builtin store them
+        "feat_lookup": feat_lookup(),
         "builtin_races": builtin_catalog("races"), "builtin_professions": builtin_catalog("professions"),
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }

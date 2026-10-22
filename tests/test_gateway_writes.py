@@ -3378,3 +3378,35 @@ def test_session_media_upload_is_pythons(client, seed):
         assert out[0][:2] == out[1][:2], (name, out)
         served += out[1][2] == "gateway"
     assert served >= 4, served
+
+
+def test_ability_use_and_ready_are_pythons(client, seed):
+    from app import game_catalog
+    from app.feat_use import parse_cost, parse_limit
+    feats = game_catalog.catalog_payload()["feats"]
+    costly = [f for f in feats if parse_cost(f.get("description") or "")][:3]
+    limited = [f for f in feats if parse_limit(f.get("description") or "")][:2]
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    pc_feats = ([{"id": f["id"], "name": f["name"]} for f in costly + limited] + ["junk", {"name": "Homebrew", "notes": "Cost: 2 MP. Once per session."},
+                {"name": costly[0]["name"]}])
+    served = 0
+
+    def fresh():
+        return _pc(world_id=seed.world_a.id, name="Able", feats_json=json.dumps(pc_feats), pp_current=5, mp_current=3, shock_current=4, current_hp=10)
+
+    steps = [("ability-use", {"index": 0, "pp": 1, "mp": 1}), ("ability-use", {"index": 3}), ("ability-use", {"index": 3}), ("ability-ready", {"index": 3}),
+             ("ability-use", {"index": 6, "mp": 2}), ("ability-use", {"index": 1, "hp": 20}), ("ability-use", {"index": 5}), ("ability-use", {"index": 99}),
+             ("ability-ready", {"index": 5}), ("ability-ready", {"index": 6}), ("ability-use", {"index": 7, "shock": 2}), ("ability-use", {"index": True})]
+    pcs = (fresh(), fresh())
+    for path, body in steps:
+        out = []
+        for side, pid in zip((d, via), pcs):
+            r = side.post(f"/api/characters/{pid}/{path}", json=body)
+            row = _row("player_characters", pid)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, (row["pp_current"], row["mp_current"], row["shock_current"], row["current_hp"]),
+                        _prefs(pid) if "_prefs" in globals() else None, [(l["kind"], l["text"], l["undo_json"]) for l in _logs(pid)], r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (path, body, out)
+        served += out[1][5] == "gateway"
+    assert served >= 7, served
