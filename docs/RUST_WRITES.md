@@ -100,6 +100,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /api/entity/<id>/markup` (wrap, unwrap, replace, restore, picture size) and `/api/entity/<id>/send-to-player`: `app/markup_locator.py` ported to `crate::markup` in code-point offsets; a refusal (its 422 message) and text whose `\w` / `\s` the two regex engines might read differently: Python's. Checked with fixed cases and 300 random selections | 41 |
 | `POST /maps/<slug>/rename`, `/maps/<slug>/delete` (the map file rewritten with Python's `json.dumps`; files removed after the commit) | 42 |
 | `POST /maps/new` (an uploaded picture or a copied generated one; one over the limit: Python's 413) and `/maps/<slug>/upload` (streamed; the new picture is renamed in place, older ones removed after the commit) | 43 |
+| `POST /api/upload-image`, `/api/upload-media`, `/api/characters/upload-image`, `/api/characters/upload-media` (streamed; pictures through `imaging::finish_upload`, audio / video stored as uploaded) | 44 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

@@ -323,6 +323,10 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/pages/upload", pages_upload),
     ("/images/albums/upload/chunk", gallery_chunk),
     ("/images/albums/{}/upload", gallery_upload),
+    ("/api/upload-image", toolbar_image),
+    ("/api/upload-media", toolbar_media),
+    ("/api/characters/upload-image", toolbar_pc_image),
+    ("/api/characters/upload-media", toolbar_pc_media),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -6793,4 +6797,68 @@ fn map_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
     std::fs::rename(&tmp, dir.join(format!("{slug}{ext}"))).ok()?;
     redirect("/maps")
+}
+
+// ── the formatting toolbar's uploads (app/main.py api_upload_image / api_upload_media, characters.py's player-reachable pair) ──
+
+/// The one required `file` part, with a name (no name: Python's 400 / 422)
+fn toolbar_file(c: &Ctx) -> Option<FilePick> {
+    let (_, pick) = form_and_file(c, "file")?;
+    let pick = pick?;
+    (!pick.filename(c)?.is_empty()).then_some(pick)
+}
+
+/// `save_inline_av`: an audio / video file stored as uploaded, (url, kind); Some(None) for another extension
+fn save_inline_av(c: &mut Ctx, pick: &FilePick) -> Option<Option<(String, &'static str)>> {
+    let filename = pick.filename(c)?.to_string();
+    let ext = py_suffix_lower(&filename)?;
+    let (kind, cap) = if [".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"].contains(&ext.as_str()) {
+        ("audio", env_bytes("MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?)
+    } else if [".mp4", ".m4v", ".ogv", ".mov"].contains(&ext.as_str()) {
+        ("video", env_bytes("MAX_VIDEO_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024)?)
+    } else {
+        return Some(None);
+    };
+    if pick.len(c)? as i64 > cap {
+        return None;
+    }
+    let dir = uploads_root(c)?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    pick.write_to(c, &dest)?;
+    Some(Some((format!("/uploads/{}", dest.file_name()?.to_string_lossy()), kind)))
+}
+
+fn toolbar_picture(c: &mut Ctx, subdir: &str) -> Option<Response<Body>> {
+    let pick = toolbar_file(c)?;
+    let url = save_picture(c, &pick, subdir, true)??;
+    json_response(&json!({"url": url}))
+}
+
+fn toolbar_any(c: &mut Ctx, subdir: &str) -> Option<Response<Body>> {
+    let pick = toolbar_file(c)?;
+    let ext = py_suffix_lower(pick.filename(c)?)?;
+    if IMAGE_EXTS.contains(&ext.as_str()) {
+        let url = save_picture(c, &pick, subdir, true)??;
+        return json_response(&json!({"url": url, "kind": "image"}));
+    }
+    let (url, kind) = save_inline_av(c, &pick)??;
+    json_response(&json!({"url": url, "kind": kind}))
+}
+
+fn toolbar_image(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    toolbar_picture(c, "")
+}
+
+fn toolbar_media(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    toolbar_any(c, "")
+}
+
+fn toolbar_pc_image(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    toolbar_picture(c, "portraits")
+}
+
+fn toolbar_pc_media(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    toolbar_any(c, "portraits")
 }

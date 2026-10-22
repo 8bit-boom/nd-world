@@ -3246,3 +3246,31 @@ def test_map_new_and_upload_are_pythons(client, seed):
             p.unlink()
     gen.unlink()
     assert served >= 5, served
+
+
+def test_toolbar_uploads_are_pythons(client, seed):
+    from pathlib import Path
+    from app.main import UPLOADS_DIR
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    up = Path(UPLOADS_DIR)
+    pics = _pictures()
+    files = [("Photo One.jpg", pics["Photo One.jpg"]), ("small alpha.png", pics["small alpha.png"]), ("clip.MP3", b"ID3audio"),
+             ("film.mov", b"movdata"), ("song.webm", b"webm"), ("doc.pdf", b"%PDF"), ("", b"x")]
+    served = 0
+    for route in ("/api/upload-image", "/api/upload-media", "/api/characters/upload-image", "/api/characters/upload-media"):
+        for name, data in files:
+            out = []
+            for side in (d, via):
+                body, hdrs = _multipart([], [("file", name, data)])
+                r = side.post(route, content=body, headers=hdrs)
+                j = r.json() if r.status_code == 200 else None
+                facts = None
+                if j:
+                    facts = _picture_facts(up, j["url"]) if j.get("kind", "image") == "image" else (_masked_url(j["url"]), (up / j["url"][9:]).read_bytes())
+                    j = {**j, "url": _masked_url(j["url"])}
+                out.append((r.status_code, j, facts, r.headers.get("x-nd-served-by")))
+            assert out[0][:3] == out[1][:3], (route, name, out)
+            served += out[1][3] == "gateway"
+    assert served >= 14, served
