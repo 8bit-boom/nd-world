@@ -1,4 +1,5 @@
 """Pre-compressed static files (performance plan, step 6): app.precompress writes .br / .gz twins, app.http_perf serves them as-is."""
+import pytest
 import gzip
 import os
 from pathlib import Path
@@ -6,6 +7,9 @@ from pathlib import Path
 from app import precompress
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
+# these tests share one probe file under static/: one xdist worker runs them all, so no test removes the file another is using
+pytestmark = pytest.mark.xdist_group("static_probe")
+
 PROBE = STATIC / "js" / "_pc_probe.js"
 TEXT = ("// probe\n" + "function probe() { return 'hello precompressed world'; }\n" * 80).encode()
 
