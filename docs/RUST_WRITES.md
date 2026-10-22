@@ -83,6 +83,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /api/sessions/<id>/recap-audio`, `/recap-audio/<clip>/visibility`, `/remove`, `/media/attach`, `/media/<kind>/<ref>/visibility`, `/rename`, `/remove` (the panel as `session_media.panel`; items still waiting for a uid, and removing a picture uploaded for the session: Python's) | 24 |
 | `POST /audio/upload/chunk`, `/video/upload/chunk`, `/pages/upload/chunk`, `/audio/upload/complete`, `/pages/upload/complete`, `/audio/upload`, `/pages/upload` (stored as `unique_upload_filename` names them; video files, which ffmpeg finishes, and over-limit files: Python's) | 25 |
 | `POST /images/albums/<id>/upload`, `/images/albums/upload/chunk`, `/images/albums/upload/complete` (pictures converted and thumbnailed by `imaging`) | 26 |
+| Pictures on ordinary forms: `POST /new` and `/entity/<id>/edit` (`image_file`), `/characters/new` and `/characters/<id>/edit` (`portrait`), `/api/calendar/days/<day>/icons` (converted, no thumbnail); streamed like an upload when bigger than 256 KB | 27 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

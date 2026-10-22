@@ -2176,3 +2176,76 @@ def test_gallery_uploads_are_pythons(client, seed):
             served += r.headers.get("x-nd-served-by") == "gateway"
         assert res[0] == res[1], (name, res[0], res[1])
     assert served >= 8, served
+
+
+def test_picture_form_uploads_are_pythons(client, seed):
+    import io
+    import os
+    from pathlib import Path
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import World, WorldCalendar
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "uploads"
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"calendar": {"player": "edit", "assistant": "edit"}})
+        wa.max_characters_per_player = 1000
+        db.add(WorldCalendar(world_id=w, config_json=json.dumps({"months": [{"name": "M", "days": 30}], "current_day": 1})))
+        db.commit()
+    finally:
+        db.close()
+    pics = _pictures()
+    noisy = Image.effect_noise((900, 700), 90).convert("RGB")
+    b = io.BytesIO(); noisy.save(b, "PNG"); pics["big noisy.png"] = b.getvalue()      # over 256 KB: streamed to disk
+    assert len(pics["big noisy.png"]) > 1024 * 1024                                      # over MAX_UPLOAD_BYTES: the 413
+    mid = Image.effect_noise((520, 420), 90).convert("RGB")
+    b = io.BytesIO(); mid.save(b, "PNG"); pics["mid noisy.png"] = b.getvalue()
+    assert 300 * 1024 < len(pics["mid noisy.png"]) < 1024 * 1024                          # streamed, under the limit
+    served = 0
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    for name in ("Photo One.jpg", "small alpha.png", "mid noisy.png", "big noisy.png", "broken.png", "anim.webp", "notes.txt"):
+        data = pics.get(name, b"plain text")
+        # entity create / edit
+        for path in ("/new", "EDIT"):
+            res = []
+            for side in (d, via):
+                url = path
+                if path == "EDIT":
+                    [eid] = _entities(w, 1)
+                    url = f"/entity/{eid}/edit"
+                body, hdr = _multipart([("kind", "npc"), ("name", "Pic"), ("image_url", "")], [("image_file", name, data)])
+                before = (_newest("entities") or {}).get("id")
+                r = side.post(url, content=body, headers=hdr, follow_redirects=False)
+                row = _newest("entities") if path == "/new" else _row("entities", eid)
+                if path == "/new" and row and row["id"] == before:
+                    row = None
+                res.append((r.status_code, _picture_facts(up, row and row["image_url"]), r.headers.get("x-nd-served-by")))
+            assert res[0][:2] == res[1][:2], (name, path, res)
+            served += res[1][2] == "gateway"
+        # character portrait
+        res = []
+        for side in (d, via):
+            body, hdr = _multipart([("name", "Por")], [("portrait", name, data)])
+            r = side.post("/characters/new", content=body, headers=hdr, follow_redirects=False)
+            row = _newest("player_characters")
+            res.append((r.status_code, _picture_facts(up, row["portrait_url"]), r.headers.get("x-nd-served-by")))
+        assert res[0][:2] == res[1][:2], (name, "portrait", res)
+        served += res[1][2] == "gateway"
+        # calendar day icon (converted, no thumbnail)
+        res = []
+        for side in (d, via):
+            body, hdr = _multipart([("label", "  Feast  ")], [("file", name, data)])
+            r = side.post("/api/calendar/days/45/icons", content=body, headers=hdr)
+            ans = r.json() if r.status_code == 200 else None
+            facts = None
+            if ans:
+                facts = _picture_facts(up, ans["image_url"])
+                ans = {**ans, "id": 0, "image_url": _masked_url(ans["image_url"])}
+            res.append((r.status_code, ans, facts, r.headers.get("x-nd-served-by")))
+        assert res[0][:3] == res[1][:3], (name, "icon", res)
+        served += res[1][3] == "gateway"
+    assert served >= 10, served

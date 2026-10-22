@@ -65,7 +65,7 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         return writes::dice_roll(app.cfg.clone(), &app.proxy, req, peer).await;
     }
-    if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles_upload(req.method(), req.uri().path()) {
+    if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles_upload(req.method(), req.uri().path(), req.headers()) {
         return edits::serve_upload(app.cfg.clone(), &app.proxy, req, peer).await;
     }
     if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles(req.method(), req.uri().path()) {

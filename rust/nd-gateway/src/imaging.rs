@@ -95,6 +95,15 @@ pub struct Finished {
 /// `convert_image(path, static_format, animated_format)` then `make_thumbnail(path)` - None when this port would not do it as Pillow
 /// does (the request is then Python's). The original is listed in `remove` (delete it once the request is answered).
 pub fn finish_upload(path: &Path, static_format: &str, preview_format: &str) -> Option<Finished> {
+    finish(path, static_format, Some(preview_format))
+}
+
+/// `convert_image` alone (no thumbnail: calendar day icons)
+pub fn convert_upload(path: &Path, static_format: &str) -> Option<Finished> {
+    finish(path, static_format, None)
+}
+
+fn finish(path: &Path, static_format: &str, preview_format: Option<&str>) -> Option<Finished> {
     let img = readable(path)?;
     let (target, ext) = match static_format {
         "avif" => ("avif", "avif"),
@@ -117,6 +126,7 @@ pub fn finish_upload(path: &Path, static_format: &str, preview_format: &str) -> 
             out = dest;
         }
     }
+    let Some(preview_format) = preview_format else { return Some(Finished { path: out, written, remove }) };
     // the thumbnail, from the converted picture's pixels as Pillow reads them back (same size and alpha as `img`)
     let (pil, suffix, q) = match preview_format {
         "webp" | "original" => ("webp", "_thumb.webp", 74u8),

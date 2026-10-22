@@ -180,6 +180,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/calendar/advance", calendar_advance),
     ("/calendar/config", calendar_config_save),
     ("/api/calendar/icons/{}/delete", calendar_icon_delete),
+    ("/api/calendar/days/{}/icons", calendar_icon_add),
     ("/api/calendar/set-date", calendar_set_date),
     ("/boards/new", board_create),
     ("/sessions/new", session_create),
@@ -279,14 +280,24 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/images/albums/{}/upload", gallery_upload),
 ];
 
-pub fn handles_upload(method: &Method, path: &str) -> bool {
-    method == Method::POST && route_in(UPLOAD_ROUTES, path).is_some()
+/// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
+const PICTURE_FORM_ROUTES: &[&str] = &["/new", "/entity/{}/edit", "/characters/new", "/characters/{}/edit", "/api/calendar/days/{}/icons"];
+
+fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
+    let (h, ids) = route(path)?;
+    let table: Vec<(&str, Handler)> = PICTURE_FORM_ROUTES.iter().map(|p| (*p, h)).collect();
+    route_in(&table, path).map(|_| (h, ids))
+}
+
+pub fn handles_upload(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    let big = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok()).map_or(true, |n| n > MAX_BODY);
+    method == Method::POST && (route_in(UPLOAD_ROUTES, path).is_some() || (big && picture_route(path).is_some()))
 }
 
 pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
     crate::uploads::serve(cfg, proxy, req, peer, |cfg, method, uri, headers, up| {
         let up = up?;
-        let (h, ids) = route_in(UPLOAD_ROUTES, uri.path())?;
+        let (h, ids) = route_in(UPLOAD_ROUTES, uri.path()).or_else(|| picture_route(uri.path()))?;
         let db = crate::writes::open(cfg)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
@@ -1317,24 +1328,6 @@ fn bulk_folder(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
 const QUOTE: &percent_encoding::AsciiSet =
     &percent_encoding::NON_ALPHANUMERIC.remove(b'/').remove(b'_').remove(b'.').remove(b'-').remove(b'~');
 
-/// The entity form (multipart from the browser, or urlencoded): its fields, when the only file part is an empty `image_file` (no file
-/// chosen) - an upload is Python's
-fn entity_form(c: &Ctx) -> Option<Form> {
-    upload_form(c, "image_file")
-}
-
-/// A form with one optional file input `file_field` (multipart or urlencoded): its fields, when no file was chosen - an upload is Python's
-fn upload_form(c: &Ctx, file_field: &str) -> Option<Form> {
-    if content_type(c.headers) == "multipart/form-data" {
-        let (f, files) = parse_multipart(c.headers, c.body)?;
-        if files.iter().any(|p| p.name != file_field || !p.filename.is_empty() || p.len != 0) || f.has(file_field) {
-            return None;
-        }
-        return Some(f);
-    }
-    c.form()
-}
-
 /// A FastAPI `Form(default)` text: an empty value counts as missing
 fn opt<'a>(f: &'a Form, name: &str, default: &'a str) -> &'a str {
     f.get(name).filter(|v| !v.is_empty()).unwrap_or(default)
@@ -1425,13 +1418,19 @@ fn sync_access(db: &Connection, entity_id: i64, players: &[i64]) -> Option<()> {
 }
 
 fn entity_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
-    let f = entity_form(c)?;
+    let (f, pick) = form_and_file(c, "image_file")?;
     let world = c.world_id()?;
     let slug = c.p.world.as_ref()?.get("slug")?.as_str()?.to_string();
     let e = entity_fields(&f)?;
+    let saved = match &pick {
+        Some(p) => save_picture(c, p, "", true)?,
+        None => None,
+    };
     let mut cols = e.cols;
     cols.push(("world_id", Sql::Integer(world)));
-    cols.push(("image_url", if e.image_url.is_empty() { Sql::Null } else { s(&e.image_url) }));
+    // save_upload(image_file) or (image_url.strip() or None)
+    let image = saved.unwrap_or(e.image_url);
+    cols.push(("image_url", if image.is_empty() { Sql::Null } else { s(&image) }));
     let id = orm::insert(&c.db, "entities", &cols)?;
     sync_access(&c.db, id, &e.players)?;
     if !opt(&f, "save_and_new", "").is_empty() {
@@ -1443,11 +1442,17 @@ fn entity_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
 }
 
 fn entity_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
-    let f = entity_form(c)?;
+    let (f, pick) = form_and_file(c, "image_file")?;
     world_entity(c, ids[0])?;
     let e = entity_fields(&f)?;
+    let uploaded = match &pick {
+        Some(p) => save_picture(c, p, "", true)?,
+        None => None,
+    };
     let mut cols = e.cols;
-    if !e.image_url.is_empty() {
+    if let Some(u) = uploaded {
+        cols.push(("image_url", s(&u)));
+    } else if !e.image_url.is_empty() {
         cols.push(("image_url", s(&e.image_url)));
     } else if !opt(&f, "remove_image", "").is_empty() {
         cols.push(("image_url", Sql::Null));
@@ -2354,7 +2359,7 @@ fn apply_pc_form(db: &Connection, f: &Form, cur: &Map<String, Value>, partial: b
 }
 
 fn pc_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
-    let f = upload_form(c, "portrait")?;
+    let (f, pick) = form_and_file(c, "portrait")?;
     let world = c.world_id()?;
     let mut owner = Sql::Null;
     if !c.p.is_gm {
@@ -2368,14 +2373,24 @@ fn pc_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     let mut cols = apply_pc_form(&c.db, &f, &Map::new(), false)?;
     cols.push(("world_id", Sql::Integer(world)));
     cols.push(("owner_user_id", owner));
+    if let Some(p) = &pick {
+        if let Some(url) = save_picture(c, p, "portraits", true)? {
+            cols.push(("portrait_url", s(&url)));
+        }
+    }
     let id = orm::insert(&c.db, "player_characters", &cols)?;
     redirect(&format!("/characters/{id}"))
 }
 
 fn pc_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
-    let f = upload_form(c, "portrait")?;
+    let (f, pick) = form_and_file(c, "portrait")?;
     let pc = managed_pc(c, ids[0])?;
-    let cols = apply_pc_form(&c.db, &f, &pc, true)?;
+    let mut cols = apply_pc_form(&c.db, &f, &pc, true)?;
+    if let Some(p) = &pick {
+        if let Some(url) = save_picture(c, p, "portraits", true)? {
+            cols.push(("portrait_url", s(&url)));
+        }
+    }
     orm::update(&c.db, "player_characters", ids[0], &cols)?;
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
     redirect(&format!("/characters/{}", ids[0]))
@@ -4918,4 +4933,119 @@ fn gallery_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     orm::update(&c.db, "image_albums", album_id, &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(current))))])?;
     c.removals.push(dir);
     json_response(&json!({"url": url}))
+}
+
+// ── picture inputs of ordinary forms (entity image, character portrait, calendar day icon) ──
+
+/// A file part: in memory (a small request) or in the streamed body file (crate::uploads)
+enum FilePick {
+    Mem(crate::form::FilePart),
+    Disk(usize),
+}
+
+impl FilePick {
+    fn filename<'a>(&'a self, c: &'a Ctx) -> Option<&'a str> {
+        match self {
+            FilePick::Mem(p) => Some(&p.filename),
+            FilePick::Disk(i) => Some(&c.upload.as_ref()?.files.get(*i)?.filename),
+        }
+    }
+    fn len(&self, c: &Ctx) -> Option<u64> {
+        match self {
+            FilePick::Mem(p) => Some(p.data.len() as u64),
+            FilePick::Disk(i) => Some(c.upload.as_ref()?.files.get(*i)?.len),
+        }
+    }
+    fn write_to(&self, c: &Ctx, dest: &std::path::Path) -> Option<()> {
+        match self {
+            FilePick::Mem(p) => std::fs::write(dest, &p.data).ok(),
+            FilePick::Disk(i) => {
+                let up = c.upload.as_ref()?;
+                up.copy_part(up.files.get(*i)?, dest)
+            }
+        }
+    }
+}
+
+/// A form with one optional file input `field`: the fields, and the file when one was chosen (a part with no name and no bytes is
+/// the browser's "no file"). Any other file part, or two of it: Python's.
+fn form_and_file(c: &Ctx, field: &str) -> Option<(Form, Option<FilePick>)> {
+    if let Some(up) = &c.upload {
+        if up.form.has(field) || up.files.iter().any(|p| p.name != field) || up.files.len() > 1 {
+            return None;
+        }
+        let pick = up.files.first().filter(|p| !(p.filename.is_empty() && p.len == 0)).map(|_| FilePick::Disk(0));
+        return Some((up.form.clone(), pick));
+    }
+    if content_type(c.headers) == "multipart/form-data" {
+        let (f, mut files) = parse_multipart(c.headers, c.body)?;
+        if f.has(field) || files.iter().any(|p| p.name != field) || files.len() > 1 {
+            return None;
+        }
+        let pick = files.pop().filter(|p| !(p.filename.is_empty() && p.len == 0)).map(FilePick::Mem);
+        return Some((f, pick));
+    }
+    Some((c.form()?, None))
+}
+
+/// `effective_upload_bytes(settings.max_upload_mb, MAX_UPLOAD_BYTES)`
+fn general_cap(c: &Ctx) -> Option<i64> {
+    upload_cap(c, "max_upload_mb", "MAX_UPLOAD_BYTES", 20 * 1024 * 1024)
+}
+
+/// `save_upload(file, subdir)` / `_upload_portrait`: Some(None) for no usable file (no name, not a picture extension); the url of
+/// the stored, converted (and, with `thumbnail`, thumbnailed) picture; None when the request is Python's (too big, a picture
+/// crate::imaging leaves to Pillow)
+fn save_picture(c: &mut Ctx, pick: &FilePick, subdir: &str, thumbnail: bool) -> Option<Option<String>> {
+    let filename = pick.filename(c)?.to_string();
+    if filename.is_empty() {
+        return Some(None);
+    }
+    let ext = py_suffix_lower(&filename)?;
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return Some(None);
+    }
+    if pick.len(c)? as i64 > general_cap(c)? {
+        return None;
+    }
+    let root = uploads_root(c)?;
+    let dir = if subdir.is_empty() { root } else { root.join(subdir) };
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    pick.write_to(c, &dest)?;
+    let st: (Option<String>, Option<String>) =
+        c.db.query_row("SELECT static_format, preview_format FROM app_settings LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let static_format = st.0.unwrap_or_else(|| "avif".into());
+    let preview = st.1.filter(|p| matches!(p.as_str(), "avif" | "webp" | "original")).unwrap_or_else(|| "avif".into());
+    let done = if thumbnail { crate::imaging::finish_upload(&dest, &static_format, &preview)? } else { crate::imaging::convert_upload(&dest, &static_format)? };
+    c.created.extend(done.written.iter().cloned());
+    if let Some(r) = done.remove {
+        c.removals.push(r);
+    }
+    let name = done.path.file_name()?.to_string_lossy().to_string();
+    Some(Some(if subdir.is_empty() { format!("/uploads/{name}") } else { format!("/uploads/{subdir}/{name}") }))
+}
+
+fn calendar_icon_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (f, pick) = form_and_file(c, "file")?;
+    let wid = c.world_id()?;
+    if !can_manage_calendar(c)? {
+        return None;
+    }
+    let pick = pick?; // File(...) is required
+    let (_, days, _) = crate::calendar::for_write(&c.db, wid)?;
+    let day = crate::calendar::clamp_day(&days, ids[0]);
+    let ext = py_suffix_lower(pick.filename(c)?)?;
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let n: i64 = c.db.query_row("SELECT COUNT(*) FROM calendar_day_icons WHERE world_id = ?1 AND day = ?2", [wid, day], |r| r.get(0)).ok()?;
+    if n >= 24 {
+        return None;
+    }
+    let url = save_picture(c, &pick, "calendar_icons", false)??;
+    let label = take_chars(&strip(f.get("label").unwrap_or("")), 120);
+    let id = orm::insert(&c.db, "calendar_day_icons", &[("world_id", Sql::Integer(wid)), ("day", Sql::Integer(day)), ("image_url", s(&url)), ("label", s(&label))])?;
+    json_response(&json!({"id": id, "day": day, "image_url": url, "label": label}))
 }
