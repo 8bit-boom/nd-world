@@ -69,3 +69,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /maps/schematic/<slug>/rooms` (the room-drawing state; `clean_rooms` ported, its refusals stay Python's) | P4-21 |
 | `POST /api/cockpit/workspace` (the GM's saved cockpit arrangement and presets; `_sanitize_workspace` ported, its refusals stay Python's) | P4-22 |
 | `POST /api/parties/<id>/launch-combat` (a new encounter with every member; `entity_to_combatant` ported, characters on a custom sheet stay Python's) | P4-23 |
+| `GET /cockpit` (the GM's workspace page: the Add-panel pickers; golden-tested for a GM, a player and another world) | P4-24 |

@@ -1227,3 +1227,39 @@ pub(crate) fn party_member_count(db: &rusqlite::Connection, p: &crate::layout::P
     }
     Some(pcs.len() + seen.len())
 }
+
+/// `GET /cockpit` (app/routers/cockpit.py): the GM's table workspace - the pickers of its Add-panel modal (the world's drawn maps, its
+/// file maps, its parties); the panels themselves load in the browser
+pub fn cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?; // no world: Python's 404
+    let pairs = |sql: &str| -> Option<Vec<(Value, Value)>> {
+        let mut st = db.prepare(sql).ok()?;
+        let rows = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(rows.into_iter().map(|m| (m.get("a").cloned().unwrap_or(Value::Null), m.get("b").cloned().unwrap_or(Value::Null))).collect())
+    };
+    let maps: Vec<Value> = pairs("SELECT slug AS a, name AS b FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name")?
+        .into_iter().map(|(a, b)| json!({"slug": a, "name": b})).collect();
+    let parties: Vec<Value> = pairs("SELECT id AS a, name AS b FROM parties WHERE world_id = ?1 ORDER BY name")?
+        .into_iter().map(|(a, b)| json!({"id": a, "name": b})).collect();
+    let mut world_maps = vec![];
+    for (slug, data) in crate::maps::world_maps(cfg, wid)? {
+        let name = match data.get("name") {
+            Some(Value::String(t)) if !t.is_empty() => t.clone(),
+            None | Some(Value::Null) => slug.clone(),
+            Some(Value::String(_)) => slug.clone(),
+            _ => return None, // str() of another value: Python's
+        };
+        let markers = data.get("markers").and_then(|m| m.as_array()).map_or(0, |a| a.len());
+        world_maps.push(json!({"slug": slug, "name": name.chars().take(120).collect::<String>(), "markers": markers}));
+    }
+    p.ctx.insert("max_panels".into(), json!(24));
+    p.ctx.insert("max_presets".into(), json!(12));
+    p.ctx.insert("maps_json".into(), Value::Array(maps));
+    p.ctx.insert("world_maps_json".into(), Value::Array(world_maps));
+    p.ctx.insert("parties_json".into(), Value::Array(parties));
+    render_with(pages, "cockpit.html", p.ctx, headers)
+}

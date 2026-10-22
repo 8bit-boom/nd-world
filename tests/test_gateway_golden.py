@@ -1255,3 +1255,24 @@ def test_home_page_the_gateway_builds_is_pythons(client, seed):
         via = _via(d, base)
         served += _same_page(d, via, "/", email)
     assert served >= 3, served
+
+
+def test_cockpit_page_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import Party, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Schematic(world_id=w, name="Zeta <map>", slug="ck-zeta"), Schematic(world_id=w, name="Alpha", slug="ck-alpha"),
+                    Schematic(world_id=w, name="Html", slug="ck-html", is_html=True), Schematic(world_id=seed.world_b.id, name="Other", slug="ck-other"),
+                    Party(world_id=w, name="B team"), Party(world_id=w, name="A team")])
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.gm.email, GM_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        served += _same_page(d, _via(d, base), "/cockpit", email)
+    assert served >= 2, served
