@@ -4266,7 +4266,7 @@ def test_schematic_elements_rename_delete_are_pythons(client, seed):
             r = side.post(f"/maps/schematic/{slug}/{path}", follow_redirects=False, **kw)
             row = _row("schematics", sid)
             out.append((r.status_code, r.json() if r.headers.get("content-type", "").startswith("application/json") else r.headers.get("location", "").replace(slug, "S"),
-                        row and (row["name"], row["elements_json"]), r.headers.get("x-nd-served-by")))
+                        row and (row["name"], row["elements_json"], row["grid_type"], row["grid_config_json"]), r.headers.get("x-nd-served-by")))
         assert out[0][:3] == out[1][:3], (path, kw, out)
         return out[1][3] == "gateway"
 
@@ -4275,10 +4275,12 @@ def test_schematic_elements_rename_delete_are_pythons(client, seed):
         served += run("elements", {"json": body})
     for name in ("  New name ", "   ", ""):
         served += run("rename", {"data": {"name": name}})
+    for body in ({"grid_type": "hex", "config": {"cell_size": 40.5, "offset_x": 3}}, {"grid_type": "cube", "config": [1]}, {}):
+        served += run("grid", {"json": body})
     served += run("delete", {})
     served += run("delete", {}, stored='[{"href": "/uploads/schematics/embeds/nope.png"}]')
     served += run("rename", {"data": {"name": "x"}}, world=seed.world_b.id)
-    assert served >= 6, served
+    assert served >= 9, served
 
 
 def test_schematic_delete_removes_its_files_through_the_gateway(client, seed):

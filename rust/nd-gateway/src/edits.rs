@@ -457,7 +457,8 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
-    ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
+    ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8693,6 +8694,23 @@ fn sc_elements(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         return None;
     }
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&text))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true}))
+}
+
+fn sc_grid(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_manager(c, slug)?;
+    let body = c.json()?;
+    let grid = body.get("grid_type").and_then(|v| v.as_str()).filter(|g| ["none", "hex", "square"].contains(g)).unwrap_or("none");
+    let config = match body.get("config") {
+        Some(Value::Object(o)) => Value::Object(o.clone()),
+        _ => json!({}),
+    };
+    let text = nd_render::py_dumps(&config);
+    if text.contains("NaN") || text.contains("Infinity") {
+        return None;
+    }
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("grid_type", s(grid)), ("grid_config_json", s(&text))])?;
     orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"ok": true}))
 }
