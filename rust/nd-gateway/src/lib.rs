@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod calendar;
 pub mod config;
+pub mod idpages;
 pub mod files;
 pub mod layout;
 pub mod live;
@@ -86,6 +87,12 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             _ => pages::facts_list,
         };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages") && idpages::route(req.uri().path()).is_some() {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || idpages::serve(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }

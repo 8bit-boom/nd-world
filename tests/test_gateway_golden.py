@@ -734,3 +734,43 @@ def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
         for url in SIMPLE_FORM_URLS:
             served[url] += _same_page(d, via, url, email)
     assert all(served.values()), served
+
+
+def test_id_pages_the_gateway_builds_are_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CombatSession, Entity, EntityTemplate, RandomTable, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        mine = RandomTable(world_id=w, name="Mine", slug="gw-mine", entries_json=json.dumps([{"text": "a <b>", "weight": 2}]),
+                           created_by_user_id=seed.player_a.id)
+        gm_t = RandomTable(world_id=w, name="GM", slug="gw-gm", entries_json="")
+        glob = RandomTable(world_id=None, name="Global", slug="gw-glob", entries_json="[]")
+        ent = Entity(world_id=w, kind="npc", name="Hand <out>", summary="sum", body="# Hi\n\n**bold** [link](http://x)\n\n- a\n- b",
+                     image_url="/uploads/x/pic.png")
+        bare = Entity(world_id=w, kind="item", name="Bare")
+        other = Entity(world_id=seed.world_b.id, kind="npc", name="Other world")
+        tpl = EntityTemplate(world_id=w, name="Tpl", slug="gw-tpl", fields_json=json.dumps([{"key": "k", "label": "K <l>"}]))
+        cs = CombatSession(world_id=w, name="  Fight at <the> bridge  ")
+        ctpl = CombatSession(world_id=w, name="Template", is_template=True)
+        db.add_all([mine, gm_t, glob, ent, bare, other, tpl, cs, ctpl])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"tables": {"player": "edit"}})
+        db.commit()
+        urls = [f"/tables/{mine.id}/edit", f"/tables/{gm_t.id}/edit", f"/tables/{glob.id}/edit", "/tables/999999/edit",
+                f"/handout/{ent.id}", f"/handout/{bare.id}", f"/handout/{other.id}", "/handout/999999",
+                f"/entity-templates/{tpl.id}/edit", "/entity-templates/999999/edit",
+                f"/display/combat/{cs.id}", f"/display/combat/{ctpl.id}", "/display/combat/999999"]
+    finally:
+        db.close()
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in urls:
+            served[url] += _same_page(d, via, url, email)
+    must = [u for u in urls if "999999" not in u and u not in (f"/handout/{other.id}", f"/display/combat/{ctpl.id}")]
+    assert all(served[u] for u in must), served

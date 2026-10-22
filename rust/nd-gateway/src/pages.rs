@@ -1066,21 +1066,9 @@ pub fn tables_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     let wid = world.get("id")?.as_i64()?;
     let mut st = db.prepare("SELECT * FROM random_tables WHERE world_id IS NULL OR world_id = ?1 ORDER BY category, name").ok()?;
     let tables = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-    let is_assistant = p.role.as_deref() == Some("assistant");
     let mut grouped: Vec<(String, Vec<Value>)> = vec![];
     for mut t in tables {
-        // _can_edit_table_row
-        let can = match t.get("world_id").and_then(|v| v.as_i64()) {
-            None => p.is_gm || is_assistant,
-            Some(tw) => {
-                let tworld = db.query_row("SELECT section_access_json, custom_kinds_json FROM worlds WHERE id = ?1", [tw], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).ok();
-                let edit = p.is_gm || match tworld {
-                    Some((a, k)) => nd_perm::sections::section_level(false, p.role.as_deref(), a.as_deref(), k.as_deref(), "tables")? == "edit",
-                    None => nd_perm::sections::section_level(false, p.role.as_deref(), None, None, "tables")? == "edit",
-                };
-                edit && (p.is_gm || is_assistant || t.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(p.user_id))
-            }
-        };
+        let can = can_edit_table_row(&db, &p, &t)?;
         t.insert("__nd_can_edit".into(), json!(can));
         let cat = t.get("category").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("general").to_string();
         match grouped.iter_mut().find(|(c, _)| *c == cat) {
@@ -1146,4 +1134,26 @@ pub fn combat_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     p.ctx.insert("template_counts".into(), json!({"__intkeys__": Value::Object(tcounts)}));
     p.ctx.insert("rule_labels".into(), Value::Object(labels));
     render_with(pages, "combat/list.html", p.ctx, headers)
+}
+
+/// `_can_edit_table_row` (app/routers/tables.py): a global table by GM / assistant, a world's table by its section's edit rights and
+/// ownership (a player edits only the tables they made)
+pub(crate) fn can_edit_table_row(db: &rusqlite::Connection, p: &crate::layout::PageCtx, t: &serde_json::Map<String, serde_json::Value>) -> Option<bool> {
+    let is_assistant = p.role.as_deref() == Some("assistant");
+    Some(match t.get("world_id").and_then(|v| v.as_i64()) {
+        None => p.is_gm || is_assistant,
+        Some(tw) => {
+            let tworld = db
+                .query_row("SELECT section_access_json, custom_kinds_json FROM worlds WHERE id = ?1", [tw], |r| {
+                    Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+                })
+                .ok();
+            let edit = p.is_gm
+                || match tworld {
+                    Some((a, k)) => nd_perm::sections::section_level(false, p.role.as_deref(), a.as_deref(), k.as_deref(), "tables")? == "edit",
+                    None => nd_perm::sections::section_level(false, p.role.as_deref(), None, None, "tables")? == "edit",
+                };
+            edit && (p.is_gm || is_assistant || t.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(p.user_id))
+        }
+    })
 }

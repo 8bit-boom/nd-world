@@ -99,6 +99,22 @@ fn mtime_ns(p: &Path) -> Option<u128> {
     std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_nanos())
 }
 
+/// `templating.display_url`: an uploaded picture's 2,560 px display copy (`?display=1`); map pictures and small copies keep their URL
+/// (a URL with a line break, where Python's `$` behaves differently, is left to Python: an error here)
+pub fn display_url(url: Value) -> Result<Value, Error> {
+    let Some(u) = url.as_str() else { return Ok(url) };
+    if u.contains('\n') {
+        return Err(Error::new(ErrorKind::InvalidOperation, "display: line break in URL"));
+    }
+    let l = u.to_ascii_lowercase();
+    let ok = l.starts_with("/uploads/")
+        && !l.starts_with("/uploads/maps/")
+        && !u.contains(['?', '#'])
+        && [".jpg", ".jpeg", ".png", ".webp", ".avif"].iter().any(|e| l.len() > "/uploads/".len() + e.len() && l.ends_with(e))
+        && !["_thumb.webp", "_thumb.avif", "_display.webp", "_display.avif"].iter().any(|e| l.ends_with(e));
+    Ok(if ok { Value::from(format!("{u}?display=1")) } else { url })
+}
+
 /// `templating.thumb_url`: the picture's small copy when it exists (and, for bundled / map pictures, is fresh), else the URL unchanged.
 /// A bundled or map picture without a fresh copy makes Python queue one: that page is left to Python (an error here).
 fn thumb(url: Option<String>) -> Result<Value, Error> {
@@ -283,6 +299,7 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
         html_escape::decode_html_entities(&v).into_owned()
     });
     env.add_filter("thumb", thumb);
+    env.add_filter("display", display_url);
     env.add_function("thumb_url", thumb);
     // the random-table list's per-row edit check, worked out by the page builder (rust/nd-gateway/src/pages.rs tables_list)
     env.add_function("can_edit_table", |t: Value| -> bool { t.get_attr("__nd_can_edit").map_or(false, |v| v.is_true()) });
