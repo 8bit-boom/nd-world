@@ -30,7 +30,7 @@ jobs:
         run: pip install -r requirements-dev.txt
       # pytest-xdist: one worker per core, each with its own database (tests/conftest.py)
       - name: Run test suite
-        run: python -m pytest -q -n auto
+        run: python -m pytest -q -n auto --dist loadgroup
 
   # The Rust gateway (rust/nd-gateway, docs/RUST_GATEWAY.md): its own tests, and the binaries the suite runs through below - built once.
   gateway-build:

@@ -24,7 +24,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: python -m pytest tests/ -q -n auto
+        run: python -m pytest tests/ -q -n auto --dist loadgroup
 
   build-and-push:
     needs: test

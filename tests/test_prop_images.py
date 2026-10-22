@@ -7,6 +7,8 @@ from PIL import Image
 
 from app import prop_images as P
 
+pytestmark = pytest.mark.xdist_group("big_pictures")      # see tests/test_display_copies.py
+
 
 def _png(size=(200, 120), box=(40, 30, 160, 90), colour=(200, 40, 40, 255), fmt="PNG"):
     im = Image.new("RGBA", size, (0, 0, 0, 0))

@@ -1,4 +1,5 @@
 """Display-size copies of large uploads (efficiency plan, step 13): the lightbox gets a 2,560 px WebP, the original stays one click away."""
+import pytest
 from PIL import Image
 
 from app import imaging
@@ -6,17 +7,19 @@ from app import imaging
 from .conftest import GM_PASSWORD, login
 
 
+# Big pictures through the AVIF / WebP encoders take a gigabyte or more of memory each: these tests run one after another on one xdist worker
+# (CI runs with --dist loadgroup), never side by side on a runner that has room for one at a time.
+pytestmark = pytest.mark.xdist_group("big_pictures")
+
+
 def test_a_large_picture_gets_a_display_copy_and_a_small_one_does_not(tmp_path):
     big, small = tmp_path / "big.png", tmp_path / "small.png"
-    Image.new("RGB", (4000, 3000), "blue").save(big)
+    Image.new("RGB", (2800, 2100), "blue").save(big)
     Image.new("RGB", (800, 600), "blue").save(small)
     d = imaging.make_display(big)
     assert d == imaging.display_path_for(big) and max(Image.open(d).size) == imaging.DISPLAY_MAX_DIM
     assert imaging.make_display(big) == d                                   # reused
     assert imaging.make_display(small) is None and imaging.make_display(d) is None
-
-
-import pytest
 
 
 @pytest.mark.parametrize("fmt, ctype", [("avif", "image/avif"), ("webp", "image/webp"), ("original", "image/png")])
@@ -26,8 +29,8 @@ def test_the_upload_route_serves_the_copy_only_when_asked(client, seed, fmt, cty
     try:
         imaging.set_preview_format(fmt)
         (UPLOADS_DIR / "p").mkdir(parents=True, exist_ok=True)
-        pic = Image.merge("RGB", [Image.radial_gradient("L").resize((3200, 2000)), Image.linear_gradient("L").resize((3200, 2000)),
-                                  Image.effect_noise((3200, 2000), 30)])
+        pic = Image.merge("RGB", [Image.radial_gradient("L").resize((2800, 1800)), Image.linear_gradient("L").resize((2800, 1800)),
+                                  Image.effect_noise((2800, 1800), 30)])
         pic.save(UPLOADS_DIR / "p" / f"huge_{fmt}.png")
         orig = client.get(f"/uploads/p/huge_{fmt}.png")
         shown = client.get(f"/uploads/p/huge_{fmt}.png?display=1")
@@ -103,8 +106,8 @@ def test_a_copy_from_the_first_version_is_made_again_sharper(tmp_path):
     import os
     from PIL import ImageDraw
     big = tmp_path / "map.jpg"
-    im = Image.merge("RGB", [Image.radial_gradient("L").resize((4000, 3000)), Image.linear_gradient("L").resize((4000, 3000)),
-                             Image.effect_noise((4000, 3000), 40)])
+    im = Image.merge("RGB", [Image.radial_gradient("L").resize((2800, 2100)), Image.linear_gradient("L").resize((2800, 2100)),
+                             Image.effect_noise((2800, 2100), 40)])
     im.save(big, quality=95)
     old = imaging.display_path_for(big)
     small = im.copy(); small.thumbnail((1600, 1600)); small.save(old, "WEBP", quality=82)
