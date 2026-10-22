@@ -283,6 +283,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/kinds/new", kinds_new),
     ("/worlds/{}/kinds/edit", kinds_save),
     ("/worlds/{}/nav-menus/edit", nav_menus_save),
+    ("/worlds/{}/ai-instructions/import", ai_instruction_import),
+    ("/worlds/{}/ai-instructions/{}/toggle", ai_instruction_toggle),
+    ("/worlds/{}/ai-instructions/{}/toggle-players", ai_instruction_toggle_players),
+    ("/worlds/{}/ai-instructions/{}/delete", ai_instruction_delete),
     ("/worlds/{}/theme/preset", theme_preset),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
@@ -6343,4 +6347,57 @@ fn nav_menus_save(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::update(&c.db, "worlds", ids[0], &set)?;
     redirect("/settings?tab=navigation")
+}
+
+// ── AI instructions (app/routers/ai_instructions.py): stored settings, no AI call ──
+
+fn ai_instruction_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if content_type(c.headers) != "multipart/form-data" {
+        return None;
+    }
+    let (f, files) = parse_multipart(c.headers, c.body)?;
+    if f.has("file") || c.world_id()? != ids[0] {
+        return None;
+    }
+    let file = files.iter().rev().find(|p| p.name == "file")?;
+    let ext = py_suffix_lower(&file.filename)?;
+    if ![".md", ".markdown", ".txt"].contains(&ext.as_str()) || file.data.len() > 200 * 1024 {
+        return None; // Python's 400 / 413
+    }
+    let content = strip(&String::from_utf8_lossy(&file.data));
+    if !content.is_empty() {
+        let title = strip(f.get("title").unwrap_or(""));
+        let title = if !title.is_empty() {
+            title
+        } else {
+            let (stem, _) = py_path_parts(&file.filename)?;
+            if stem.is_empty() { "Untitled".to_string() } else { stem }
+        };
+        orm::insert(&c.db, "ai_instructions", &[("world_id", Sql::Integer(ids[0])), ("title", s(&title)), ("content", s(&content)),
+            ("enabled", Sql::Integer(1)), ("applies_to_players", Sql::Integer(flag_param(&f, "applies_to_players")))])?;
+    }
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn ai_instruction_flip(c: &mut Ctx, ids: &[i64], col: &str) -> Option<Response<Body>> {
+    if let Some(r) = row(&c.db, "SELECT * FROM ai_instructions WHERE id = ?1", ids[1]) {
+        if r.get("world_id").and_then(|v| v.as_i64()) == Some(ids[0]) {
+            let on = py_truthy(r.get(col));
+            orm::update(&c.db, "ai_instructions", ids[1], &[(col, Sql::Integer(!on as i64))])?;
+        }
+    }
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn ai_instruction_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    ai_instruction_flip(c, ids, "enabled")
+}
+
+fn ai_instruction_toggle_players(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    ai_instruction_flip(c, ids, "applies_to_players")
+}
+
+fn ai_instruction_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    c.db.execute("DELETE FROM ai_instructions WHERE id = ?1 AND world_id = ?2", [ids[1], ids[0]]).ok()?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
 }

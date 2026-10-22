@@ -2925,3 +2925,46 @@ def test_kinds_and_nav_menus_are_pythons(client, seed):
         served += out[1][3] == "gateway"
     put({k: orig[k] for k in ("custom_kinds_json", "nav_menus_json", "section_access_json")})
     assert served >= 10, served
+
+
+def test_ai_instructions_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    w = seed.world_a.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+    uploads = [("Rules.MD", b"  be terse \xff\n", {"title": "  ", "applies_to_players": "1"}), ("a.b.txt", b"x", {"title": " T "}),
+               ("x.pdf", b"x", {}), ("e.md", b"   ", {}), ("big.md", b"x" * (200 * 1024 + 1), {}), (".md", b"x", {})]
+    for name, body, form in uploads:
+        out = []
+        for side in (d, via):
+            r = side.post(f"/worlds/{w}/ai-instructions/import", data=form, files={"file": (name, body, "text/markdown")}, follow_redirects=False)
+            n = _newest("ai_instructions")
+            out.append((r.status_code, r.headers.get("location"), n and {k: n[k] for k in ("title", "content", "enabled", "applies_to_players")},
+                        n and n["id"], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (name, out)
+        if out[0][0] == 303 and out[0][3] != out[1][3]:
+            assert out[0][2] == out[1][2], (name, out)
+        served += out[1][4] == "gateway"
+    for action in ("toggle", "toggle-players", "delete"):
+        ids = []
+        db = SessionLocal()
+        try:
+            for _ in range(2):
+                ids.append(db.execute(text("INSERT INTO ai_instructions (world_id, title, content, enabled, applies_to_players) VALUES (:w, 't', 'c', 1, 0)"),
+                                      {"w": w}).lastrowid)
+            db.commit()
+        finally:
+            db.close()
+        out = []
+        for side, i in ((d, ids[0]), (via, ids[1])):
+            r = side.post(f"/worlds/{w}/ai-instructions/{i}/{action}", follow_redirects=False)
+            row = _row("ai_instructions", i)
+            out.append((r.status_code, r.headers.get("location"), row and (row["enabled"], row["applies_to_players"]), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (action, out)
+        served += out[1][3] == "gateway"
+        r = via.post(f"/worlds/{seed.world_b.id}/ai-instructions/{ids[0]}/{action}", follow_redirects=False)
+        assert r.status_code == 303
+    assert served >= 6, served
