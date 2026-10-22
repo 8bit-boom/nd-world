@@ -236,12 +236,12 @@ def test_rolls_written_by_both_servers_at_once_all_land_and_the_live_counter_is_
 
 # ── GET /api/live streamed by the gateway (ND_RUST_ROUTES=...,live) ──────────────────────────────────────────────────────────────────────
 
-def _events(base, cookies, seconds, out):
+def _events(base, cookies, seconds, out, path="/api/live"):
     """Collect the SSE frames one client receives for `seconds`."""
     import time
     end = time.monotonic() + seconds
     try:
-        with httpx.Client(base_url=base, cookies=cookies, timeout=seconds + 5) as c, c.stream("GET", "/api/live") as r:
+        with httpx.Client(base_url=base, cookies=cookies, timeout=seconds + 5) as c, c.stream("GET", path) as r:
             out.append(("status", r.status_code, r.headers.get("content-type"), r.headers.get("x-nd-served-by")))
             buf = ""
             for chunk in r.iter_text():
@@ -284,6 +284,51 @@ def test_the_live_stream_from_the_gateway_says_what_pythons_says(client, seed):
     signals = lambda fs: sorted(f for f in fs if f.startswith("event: signal"))
     assert versions(fp) == versions(fg) and len(versions(fp)) == 2, (fp, fg)
     assert signals(fp) == signals(fg) == ["event: signal\ndata: spot"], (fp, fg)
+
+
+def test_the_display_stream_and_stage_from_the_gateway_are_pythons(client, seed):
+    """Two browsers on the second screen: one stream straight from Python, one through the gateway. The GM shows a picture (through the
+    gateway), shows it again, a fight changes, the screen is cleared (directly): both streams send the same frames, and the stage answers
+    are Python's."""
+    import re
+    import threading
+    import time
+    base = str(client.base_url)
+    d = httpx.Client(base_url=DIRECT, timeout=60)
+    assert d.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"}, follow_redirects=False).status_code == 303
+    d.cookies.set("active_world", seed.world_a.slug)
+    d.get("/")                                    # a page view writes the site layout into the session, as for a real browser
+    cookies = dict(d.cookies)
+    via = httpx.Client(base_url=base, cookies=cookies, timeout=60)
+    got_py, got_gw = [], []
+    threads = [threading.Thread(target=_events, args=(DIRECT, cookies, 9, got_py, "/api/display/stream")),
+               threading.Thread(target=_events, args=(base, cookies, 9, got_gw, "/api/display/stream"))]
+    for t in threads:
+        t.start()
+    time.sleep(2)
+    r = via.post("/api/display/show", json={"kind": "image", "url": " /uploads/gallery/a.png ", "title": " Map ", "caption": "c"})
+    assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", r.text
+    time.sleep(1.5)
+    r2 = d.post("/api/display/show", json={"kind": "image", "url": "/uploads/gallery/b.png"})
+    assert r2.status_code == 200
+    time.sleep(1.5)
+    r3 = via.post("/api/display/show", json={"kind": "image", "url": "/uploads/gallery/a.png", "title": "again"})
+    time.sleep(1.5)
+    r4 = via.post("/api/display/clear")
+    assert r4.status_code == 200 and r4.headers.get("x-nd-served-by") == "gateway"
+    for t in threads:
+        t.join()
+    mask = lambda t: re.sub(r'"ts": "[^"]+"', '"ts": "T"', t)
+    assert got_py[0][:3] == got_gw[0][:3] == ("status", 200, "text/event-stream; charset=utf-8") and got_gw[0][3] == "gateway"
+    frames = lambda got: [mask(f) for kind, *rest in got if kind == "frame" for f in rest if not f.startswith(":")]
+    assert frames(got_py) == frames(got_gw), (frames(got_py), frames(got_gw))
+    assert len([f for f in frames(got_py) if f.startswith("event: state")]) == 5
+    st = r3.json()
+    assert [x["url"] for x in st["recent"]] == ["/uploads/gallery/a.png", "/uploads/gallery/b.png"] and st["current"]["title"] == "again"
+    # refusals and text cards stay Python's
+    for body in ({"kind": "image", "url": "javascript:x"}, {"kind": "text", "text": "hi"}, {"kind": "map", "slug": "nope"}, {"kind": "combat", "combat_id": True}):
+        r = via.post("/api/display/show", json=body)
+        assert r.headers.get("x-nd-served-by") is None, body
 
 
 def test_the_live_stream_is_refused_through_the_gateway_as_python_refuses_it(client, seed):

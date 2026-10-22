@@ -72,6 +72,11 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles(req.method(), req.uri().path()) {
         return edits::serve(app.cfg.clone(), &app.proxy, req, peer).await;
     }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/api/display/stream" && app.cfg.rust_routes.iter().any(|r| r == "live") {
+        if let Some(resp) = live::serve_display(app.cfg.clone(), req.uri(), req.headers()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/live" && app.cfg.rust_routes.iter().any(|r| r == "live") {
         if let Some(resp) = live::serve(app.cfg.clone(), req.uri(), req.headers()).await {
             return resp;

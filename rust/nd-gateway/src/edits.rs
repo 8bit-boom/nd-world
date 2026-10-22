@@ -272,6 +272,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/races/new", race_new),
     ("/maps/new", map_new),
     ("/combat/new", combat_new),
+    ("/api/display/show", display_show),
+    ("/api/display/clear", display_clear),
     ("/combat/{}/state", combat_save_state),
     ("/combat/{}/delete", combat_delete),
     ("/combat/{}/link-session", combat_link_session),
@@ -8279,4 +8281,146 @@ fn combat_sync_characters(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::touch(&c.db, wid)?;
     json_response(&json!({"synced": synced, "skipped": skipped}))
+}
+
+// ── the second screen (app/routers/display.py): the stage of each world lives in shared_state under stage:<world> ──
+
+fn stage_blank() -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert("seq".into(), json!(0));
+    m.insert("current".into(), Value::Null);
+    m.insert("recent".into(), json!([]));
+    m
+}
+
+/// `shared_state.update_json("stage:<w>", fn)` inside the request's transaction; the new state
+fn stage_update(c: &Ctx, wid: i64, f: impl FnOnce(&mut Map<String, Value>) -> Option<()>) -> Option<Map<String, Value>> {
+    let key = format!("stage:{wid}");
+    let row: Option<(Option<String>, i64)> = c.db.query_row("SELECT value, n FROM shared_state WHERE key = ?1", [&key], |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0)))).ok();
+    let mut st = match row.as_ref().and_then(|(v, _)| v.as_deref()).filter(|v| !v.is_empty()) {
+        Some(v) => match serde_json::from_str::<Value>(v).ok()? {
+            Value::Object(o) => o,
+            _ => return None,
+        },
+        None => stage_blank(),
+    };
+    f(&mut st)?;
+    let blob = nd_render::py_dumps(&Value::Object(st.clone()));
+    match row {
+        None => c.db.execute("INSERT OR IGNORE INTO shared_state(key, value, n) VALUES (?1, ?2, 1)", rusqlite::params![key, blob]).ok()?,
+        Some(_) => c.db.execute("UPDATE shared_state SET value = ?2, n = n + 1 WHERE key = ?1", rusqlite::params![key, blob]).ok()?,
+    };
+    orm::touch(&c.db, wid)?;
+    Some(st)
+}
+
+/// `safe_image_url`: a site-local /path or an http(s) address that can only load as a picture, else ""
+fn safe_image_url(v: Option<&Value>) -> String {
+    let Some(Value::String(u)) = v else { return String::new() };
+    let u = strip(u);
+    let clean = |t: &str| !t.chars().any(|ch| crate::markup::py_space(ch) || ch < ' ' || ch == '\\');
+    let local = u.starts_with('/') && !u.starts_with("//") && clean(&u);
+    let lower = u.to_ascii_lowercase();
+    let abs = ["http://", "https://"].iter().find(|p| lower.starts_with(*p)).is_some_and(|p| u.len() > p.len() && clean(&u[p.len()..]));
+    if local || abs { u } else { String::new() }
+}
+
+/// `_text(value, cap)`
+fn stage_text(v: Option<&Value>, cap: usize) -> String {
+    match v {
+        Some(Value::String(t)) => take_chars(&strip(t), cap),
+        _ => String::new(),
+    }
+}
+
+/// `_build_item`; None for a text card (rendered with markdown2: Python's) and every refusal
+fn stage_item(c: &Ctx, wid: i64, b: &Map<String, Value>) -> Option<Value> {
+    let plain_id = |k: &str| match b.get(k) {
+        Some(Value::Number(n)) => n.as_i64(),
+        _ => None, // a bool is an int to isinstance(): Python's
+    };
+    match b.get("kind").and_then(|k| k.as_str())? {
+        "combat" => {
+            let id = plain_id("combat_id")?;
+            let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", id)?;
+            if cs.get("world_id")?.as_i64() != Some(wid) || py_truthy(cs.get("is_template")) {
+                return None;
+            }
+            Some(json!({"kind": "map", "url": format!("/display/combat/{id}"), "title": stage_text(cs.get("name"), 200), "source": {"type": "combat", "id": id}}))
+        }
+        "map" => {
+            let slug = b.get("slug")?.as_str()?;
+            let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+            if sc.get("world_id")?.as_i64() != Some(wid) || (py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file"))) {
+                return None;
+            }
+            let sl = sc.get("slug")?.as_str()?;
+            Some(json!({"kind": "map", "url": format!("/display/map/{sl}"), "title": stage_text(sc.get("name"), 200), "source": {"type": "map", "slug": sl}}))
+        }
+        "entity" => {
+            let id = plain_id("entity_id")?;
+            let e = row(&c.db, "SELECT * FROM entities WHERE id = ?1", id)?;
+            if e.get("world_id")?.as_i64() != Some(wid) {
+                return None;
+            }
+            let image = safe_image_url(Some(&json!(e.get("image_url").and_then(|v| v.as_str()).unwrap_or(""))));
+            if b.get("mode").and_then(|m| m.as_str()) == Some("text") || image.is_empty() {
+                return None; // the text card: Python's
+            }
+            Some(json!({"kind": "image", "url": image, "title": stage_text(e.get("name"), 200),
+                        "caption": stage_text(Some(&json!(e.get("summary").and_then(|v| v.as_str()).unwrap_or(""))), 600), "source": {"type": "entity", "id": id}}))
+        }
+        "image" => {
+            let url = safe_image_url(b.get("url"));
+            if url.is_empty() {
+                return None;
+            }
+            Some(json!({"kind": "image", "url": url, "title": stage_text(b.get("title"), 200), "caption": stage_text(b.get("caption"), 600), "source": {"type": "image"}}))
+        }
+        _ => None,
+    }
+}
+
+fn display_show(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let wid = c.world_id()?;
+    let b = c.json()?;
+    let item = stage_item(c, wid, &b)?;
+    let st = stage_update(c, wid, |st| {
+        let seq = st.get("seq")?.as_i64()? + 1;
+        st.insert("seq".into(), json!(seq));
+        let mut it = item.as_object()?.clone();
+        it.insert("id".into(), json!(seq));
+        let ts = orm::now_stamp();
+        it.insert("ts".into(), json!(format!("{}Z", ts.get(..19)?.replacen(' ', "T", 1))));
+        let basis = it.get("url").or_else(|| it.get("html")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        use sha1::Digest;
+        let digest = sha1::Sha1::digest(basis.as_bytes());
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let key = format!("{}:{}", it.get("kind").and_then(|k| k.as_str()).unwrap_or("None"), &hex[..16]);
+        it.insert("key".into(), json!(key));
+        let recent: Vec<Value> = st.get("recent")?.as_array()?.iter().filter(|r| r.get("key").and_then(|k| k.as_str()) != Some(key.as_str())).take(11).cloned().collect();
+        let mut all = vec![Value::Object(it.clone())];
+        all.extend(recent);
+        st.insert("current".into(), Value::Object(it));
+        st.insert("recent".into(), Value::Array(all));
+        Some(())
+    })?;
+    json_response(&Value::Object(st))
+}
+
+fn display_clear(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let wid = c.world_id()?;
+    let st = stage_update(c, wid, |st| {
+        let seq = st.get("seq")?.as_i64()? + 1;
+        st.insert("seq".into(), json!(seq));
+        st.insert("current".into(), Value::Null);
+        Some(())
+    })?;
+    json_response(&Value::Object(st))
 }

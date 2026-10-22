@@ -124,3 +124,79 @@ fn async_stream(c: Counters, world: i64) -> impl futures_util::Stream<Item = Res
         Some((Ok(bytes::Bytes::from(out)), (c, world, round + 1, last, sig, since_beat)))
     })
 }
+
+/// `GET /api/display/stream` (app/routers/display.py `stream_stage`): the second screen's stream - `retry: 2000`, an `event: state` frame (the
+/// world's stage, `shared_state` key stage:<world>) at the start and whenever its `seq` moves, `event: combat` when the world's "combat"
+/// signal moves, `: keep-alive` after 15 quiet seconds. GM only (anyone else: Python's 403).
+pub async fn serve_display(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (cfg2, uri2, headers2) = (cfg.clone(), uri.clone(), headers.clone());
+    let world = tokio::task::spawn_blocking(move || {
+        let db = writes::open(&cfg2)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let actor = writes::actor_for(&db, &cfg2, "GET", &uri2, &headers2, now, None)?;
+        let gm: Option<i64> = db.query_row("SELECT is_gm FROM users WHERE id = ?1", [actor.user_id], |r| r.get(0)).ok()?;
+        (gm.unwrap_or(0) != 0).then_some(actor.world_id)
+    })
+    .await
+    .ok()??;
+    let c = counters(&cfg);
+    tokio::time::sleep(Duration::from_millis(260)).await;
+    let state = (c, cfg, world, 0u64, None::<i64>, None::<(i64, i64)>, 0u32);
+    let stream = futures_util::stream::unfold(state, |(c, cfg, world, round, last, last_combat, since_beat)| async move {
+        if round == 0 {
+            let combat = read(&c, world).1.get("combat").copied();
+            return Some((Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"retry: 2000\n\n")), (c, cfg, world, 1, last, combat, since_beat)));
+        }
+        if round > 1 {
+            tokio::time::sleep(POLL).await;
+        }
+        let cfg2 = cfg.clone();
+        let stage = tokio::task::spawn_blocking(move || stage_state(&cfg2, world)).await.ok().flatten();
+        let mut out = String::new();
+        let (mut last, mut last_combat, mut since_beat) = (last, last_combat, since_beat);
+        let mut sent = false;
+        if let Some((seq, text)) = stage {
+            if Some(seq) != last {
+                last = Some(seq);
+                out.push_str(&format!("event: state\ndata: {text}\n\n"));
+                sent = true;
+            }
+        }
+        let combat = read(&c, world).1.get("combat").copied();
+        if combat != last_combat {
+            last_combat = combat;
+            out.push_str("event: combat\ndata: 1\n\n");
+            sent = true;
+        }
+        if sent {
+            since_beat = 0;
+        } else {
+            since_beat += 1;
+            if since_beat >= HEARTBEAT_EVERY {
+                since_beat = 0;
+                out.push_str(": keep-alive\n\n");
+            }
+        }
+        Some((Ok(bytes::Bytes::from(out)), (c, cfg, world, round + 1, last, last_combat, since_beat)))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("x-accel-buffering", "no")
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from_stream(stream))
+        .ok()
+}
+
+/// `get_state(world)` as the stream sends it: (seq, json.dumps(state)); a blank stage when nothing was shown yet
+fn stage_state(cfg: &Config, world: i64) -> Option<(i64, String)> {
+    let db = writes::open(cfg)?;
+    let raw: Option<String> = db.query_row("SELECT value FROM shared_state WHERE key = ?1", [format!("stage:{world}")], |r| r.get(0)).ok().flatten();
+    let v: serde_json::Value = match raw.filter(|r| !r.is_empty()).map(|r| serde_json::from_str(&r)) {
+        Some(Ok(v)) => v,
+        _ => serde_json::json!({"seq": 0, "current": null, "recent": []}),
+    };
+    let state = serde_json::json!({"seq": v.get("seq")?, "current": v.get("current")?, "recent": v.get("recent")?});
+    Some((state["seq"].as_i64()?, nd_render::py_dumps(&state)))
+}
