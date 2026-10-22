@@ -93,6 +93,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /worlds/<id>/invites/new`, `/invites/<id>/revoke`, `/members/<user>/remove`, `/members/<user>/role`, `/members/<user>/clear-2fa` (a reset password, shown once on a rendered page: Python's) | 34 |
 | `POST /worlds/<id>/notes/<kind>/<id>/new`, `/notes/<kind>/<id>/<note>/delete` (private notes), `/worlds/<id>/theme/clear`, `/theme/preset` | 35 |
 | `POST /worlds/new` (the `active_world` cookie as Starlette writes it; a picked calendar preset stored as the text `scripts/gen_rust_data.py` takes from Python), `/worlds/<id>/theme/import` (`_sanitize_theme` ported; a non-string field value: Python's) | 36 |
+| `POST /worlds/<id>/rules/edit` (an overlay checked by the ported `parse_rules_overlay`; one it refuses: Python's 400), `/rules/import` (an overlay with a fractional `order`: Python's) | 37 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

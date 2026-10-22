@@ -2810,3 +2810,54 @@ def test_theme_import_and_world_create_are_pythons(client, seed):
             a[2], b[2] = a[2].rsplit("-", 1)[0], b[2].rsplit("-", 1)[0]
             assert a == b, (form, out)
     assert served >= 7, served
+
+
+def test_rules_edit_and_import_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    w = seed.world_a.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+    orig = _row("worlds", w)
+
+    def reset():
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE worlds SET rules_md = 'old', rules_json = '{}' WHERE id = :w"), {"w": w}); db.commit()
+        finally:
+            db.close()
+
+    def state():
+        r = _row("worlds", w)
+        return r["rules_md"], r["rules_json"]
+
+    overlay = '{"sections": {"combat": {"icon": "x", "order": 2, "players_visible": false}, "b": null}, "tabs": [{"label": " Fight ", "sections": ["combat"]}, {"label": "Fight"}]}'
+    edits = [{"rules_md": "  # Rules\n", "rules_json": ""}, {"rules_md": "", "rules_json": f"  {overlay} "}, {"rules_json": "[1]"},
+             {"rules_json": "nope"}, {"rules_json": '{"tabs": [{"label": ""}]}'}, {}]
+    for form in edits:
+        out = []
+        for side in (d, via):
+            reset()
+            r = side.post(f"/worlds/{w}/rules/edit", data=form, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), state(), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (form, out)
+        served += out[1][3] == "gateway"
+    imports = [b'{"rules_md": "  # Imported  "}', overlay.encode(), b'{"rules_md": "m", "rules_json": ' + overlay.encode() + b'}',
+               b'{"rules_json": "text"}', b'{"name": "x"}', b'[]', b'{"sections": 5}', b'{"sections": {"a": {"order": 1.5}}}',
+               b'{"rules_md": 7}', b'bad']
+    for body in imports:
+        out = []
+        for side in (d, via):
+            reset()
+            r = side.post(f"/worlds/{w}/rules/import", files={"file": ("r.json", body, "application/json")}, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), state(), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out)
+        served += out[1][3] == "gateway"
+    db = SessionLocal()
+    try:
+        db.execute(text("UPDATE worlds SET rules_md = :m, rules_json = :j WHERE id = :w"), {"w": w, "m": orig["rules_md"], "j": orig["rules_json"]}); db.commit()
+    finally:
+        db.close()
+    assert served >= 6, served

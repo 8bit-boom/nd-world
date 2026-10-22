@@ -278,6 +278,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/theme/clear", theme_clear),
     ("/worlds/{}/theme/import", theme_import),
     ("/worlds/new", world_create),
+    ("/worlds/{}/rules/edit", rules_edit),
+    ("/worlds/{}/rules/import", rules_import),
     ("/worlds/{}/theme/preset", theme_preset),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
@@ -6031,4 +6033,63 @@ fn world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let mut r = redirect("/worlds")?;
     r.headers_mut().insert(header::SET_COOKIE, format!("active_world={slug}; Max-Age=31536000; Path=/; SameSite=lax").parse().ok()?);
     Some(r)
+}
+
+/// A parsed overlay whose every `order` is an integer (a float is written by Python's repr: Python's)
+fn overlay_plain(v: &Value) -> bool {
+    v.get("sections").and_then(|x| x.as_object()).is_none_or(|m| m.values().all(|e| e.get("order").is_none_or(|o| o.is_i64())))
+}
+
+fn rules_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    let raw = strip(f.get("rules_json").unwrap_or(""));
+    let rules_json = if raw.is_empty() {
+        Sql::Null
+    } else {
+        nd_render::rules::parse_overlay(Some(&raw)).ok()??;
+        s(&raw)
+    };
+    let md = strip(f.get("rules_md").unwrap_or(""));
+    orm::update(&c.db, "worlds", ids[0], &[("rules_json", rules_json), ("rules_md", if md.is_empty() { Sql::Null } else { s(&md) })])?;
+    redirect("/rules")
+}
+
+fn rules_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if content_type(c.headers) != "multipart/form-data" {
+        return None;
+    }
+    let (f, files) = parse_multipart(c.headers, c.body)?;
+    if f.has("file") {
+        return None;
+    }
+    let file = files.iter().rev().find(|p| p.name == "file")?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    if file.data.len() as i64 > env_bytes("MAX_UPLOAD_BYTES", 20 * 1024 * 1024)? {
+        return None;
+    }
+    let text = std::str::from_utf8(&file.data).ok().filter(|t| !t.starts_with('\u{feff}'))?;
+    let Value::Object(payload) = serde_json::from_str::<Value>(text).ok()? else { return None };
+    let md = strip(&theme_text(payload.get("rules_md")).ok()?);
+    let overlay = if payload.contains_key("sections") || payload.contains_key("tabs") {
+        Some(Value::Object(payload.clone()))
+    } else {
+        payload.get("rules_json").filter(|v| v.is_object()).cloned()
+    };
+    if md.is_empty() && overlay.is_none() {
+        return None;
+    }
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if !md.is_empty() {
+        set.push(("rules_md", s(&md)));
+    }
+    if let Some(o) = overlay {
+        let parsed = nd_render::rules::parse_overlay(Some(&o.to_string())).ok()??;
+        if !overlay_plain(&parsed) {
+            return None;
+        }
+        set.push(("rules_json", s(&nd_render::py_dumps(&parsed))));
+    }
+    orm::update(&c.db, "worlds", ids[0], &set)?;
+    redirect("/rules")
 }
