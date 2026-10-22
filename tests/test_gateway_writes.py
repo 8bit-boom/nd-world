@@ -4102,3 +4102,28 @@ def test_hub_keepsakes_are_pythons(client, seed):
     okid = _add("CharacterKeepsake", world_id=w, character_id=other, kind="text", name="K", saved_by="player")
     assert _via(pl, base).post(f"/api/characters/{other}/hub/keepsakes/{okid}/delete").status_code == 404
     assert served >= 6, served
+
+
+def test_hub_loot_claim_is_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    mate = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Mate")
+    served = 0
+    cases = [{"action": "claim", "lid": "aaaa0001"}, {"action": "unclaim", "lid": "aaaa0002"}, {"action": "claim", "lid": "aaaa0002"},
+             {"action": "claim", "lid": "bbbb0001"}, {"action": "claim", "lid": "gone"}, {"action": "take", "lid": "aaaa0001"}, {"action": "claim"}]
+    for body in cases:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Looter")
+            loot = [{"lid": "aaaa0001", "name": "Sword", "qty": 1, "notes": "", "claimed_by": [mate]},
+                    {"lid": "aaaa0002", "name": "Rope", "qty": 2, "notes": "n", "claimed_by": [pid, mate]}]
+            pa = _add("Party", world_id=w, name="A team", member_pc_ids_json=json.dumps([pid, mate]), loot_json=json.dumps(loot))
+            pb = _add("Party", world_id=w, name="B team", member_pc_ids_json=json.dumps([pid]),
+                      loot_json=json.dumps([{"lid": "bbbb0001", "name": "Gem", "qty": 1, "notes": "", "claimed_by": []}]))
+            r = side.post(f"/api/characters/{pid}/hub/loot", json=body)
+            stash = lambda party: [{**i, "claimed_by": ["ME" if c == pid else c for c in i["claimed_by"]]} for i in json.loads(_row_by("parties", "id", party)["loot_json"])]
+            out.append((r.status_code, r.json(), stash(pa), stash(pb), r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (body, out)
+        served += out[1][4] == "gateway"
+    assert served >= 4, served

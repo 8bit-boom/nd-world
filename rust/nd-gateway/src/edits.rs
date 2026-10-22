@@ -217,6 +217,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/rest/undo", hub_rest_undo),
     ("/api/characters/{}/hub/log/{}/undo", hub_log_undo),
     ("/api/characters/{}/hub/keepsakes", hub_keepsake_add),
+    ("/api/characters/{}/hub/loot", hub_loot_claim),
     ("/api/characters/{}/hub/keepsakes/{}", hub_keepsake_edit),
     ("/api/characters/{}/hub/keepsakes/{}/delete", hub_keepsake_delete),
     ("/api/characters/{}/hub/entries", hub_entry_create),
@@ -9551,6 +9552,19 @@ fn hub_companion_remove(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
 /// `_party_sessions(db, pc, _party_ids(db, pc))`: the sessions of the parties the character is in, newest number first (60)
 fn hub_party_sessions(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
     let wid = pc.get("world_id")?.as_i64()?;
+    let ids = pc_party_ids(c, pc)?;
+    if ids.is_empty() {
+        return Some(vec![]);
+    }
+    let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+    let mut st = c.db.prepare(&format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({}) ORDER BY session_num DESC LIMIT 60", marks.join(","))).ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    Some(rows)
+}
+
+/// `parties_for_pc`: the ids of the world's parties that list the character, name-ordered
+fn pc_party_ids(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<i64>> {
+    let wid = pc.get("world_id")?.as_i64()?;
     let pid = pc.get("id")?.as_i64()?;
     let mut st = c.db.prepare("SELECT id, member_pc_ids_json FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
     let parties: Vec<(i64, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
@@ -9568,13 +9582,54 @@ fn hub_party_sessions(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Map<String
             ids.push(id);
         }
     }
-    if ids.is_empty() {
-        return Some(vec![]);
+    Some(ids)
+}
+
+/// `hub_loot_claim`: claim / unclaim a party-stash item for the character in the URL (owner only)
+fn hub_loot_claim(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    let action = body.get("action").and_then(|v| v.as_str()).filter(|a| *a == "claim" || *a == "unclaim")?.to_string();
+    let lid = body.get("lid").and_then(|v| v.as_str()).filter(|l| !l.is_empty())?.to_string();
+    let mut hit = None;
+    for party_id in pc_party_ids(c, &pc)? {
+        let p = row(&c.db, "SELECT * FROM parties WHERE id = ?1", party_id)?;
+        let loot = load_loot(&p)?;
+        if let Some(i) = loot.iter().position(|it| it.get("lid").and_then(|v| v.as_str()) == Some(lid.as_str())) {
+            hit = Some((p, loot, i));
+            break;
+        }
     }
-    let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
-    let mut st = c.db.prepare(&format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({}) ORDER BY session_num DESC LIMIT 60", marks.join(","))).ok()?;
-    let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
-    Some(rows)
+    let (p, mut loot, i) = hit?;
+    let claimed = loot[i].get_mut("claimed_by")?.as_array_mut()?;
+    let at = claimed.iter().position(|x| x.as_i64() == Some(ids[0]));
+    match (action.as_str(), at) {
+        ("claim", None) => claimed.push(json!(ids[0])),
+        ("unclaim", Some(k)) => {
+            claimed.remove(k);
+        }
+        _ => {}
+    }
+    let list = Value::Array(loot.iter().cloned().map(Value::Object).collect());
+    orm::update(&c.db, "parties", p.get("id")?.as_i64()?, &[("loot_json", s(&nd_render::py_dumps(&list)))])?;
+    orm::touch(&c.db, p.get("world_id")?.as_i64()?)?;
+    let mut names: Vec<(i64, String)> = vec![];
+    for it in &loot {
+        for cid in it.get("claimed_by")?.as_array()? {
+            let cid = cid.as_i64()?;
+            if !names.iter().any(|(k, _)| *k == cid) {
+                if let Ok(n) = c.db.query_row("SELECT name FROM player_characters WHERE id = ?1", [cid], |r| r.get::<_, String>(0)) {
+                    names.push((cid, n));
+                }
+            }
+        }
+    }
+    let view: Vec<Value> = loot.iter().map(|it| {
+        let cl: Vec<i64> = it["claimed_by"].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
+        json!({"lid": it["lid"], "name": it["name"], "qty": it["qty"], "notes": it["notes"], "claimed": !cl.is_empty(), "mine": cl.contains(&ids[0]),
+               "claimers": cl.iter().filter_map(|x| names.iter().find(|(k, _)| k == x).map(|(_, n)| n.clone())).collect::<Vec<_>>()})
+    }).collect();
+    json_response(&json!({"loot": view}))
 }
 
 /// A stored DateTime as Python's `.isoformat()`

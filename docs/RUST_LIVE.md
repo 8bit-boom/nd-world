@@ -57,3 +57,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/characters/<id>/hub/rest`, `/hub/rest/undo` (an N&D character without a sheet template; a system's own Rest rules stay Python's) | P4-9 |
 | `POST /api/characters/<id>/hub/log/<entry>/undo` (numbers, coins, conditions, resource columns; the equipment / advance / custom-field undos and every refusal stay Python's) | P4-10 |
 | `POST /api/characters/<id>/hub/keepsakes` (a handout, or a GM's raw file / text), `/hub/keepsakes/<id>` (rename), `/hub/keepsakes/<id>/delete` (not a player's own upload: its file goes too, Python's) | P4-11 |
+| `POST /api/characters/<id>/hub/loot` (claim / unclaim a party-stash item; a stash `load_loot` would repair stays Python's) | P4-12 |
