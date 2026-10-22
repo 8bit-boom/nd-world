@@ -10924,3 +10924,21 @@ pub fn fight_now(db: &Connection, cs_id: i64) -> Option<Option<(Map<String, Valu
     };
     Some(Some((cs, active, round)))
 }
+
+/// `combat._full_state(cs)`: everything the GM's tracker holds (None for stored JSON Python reads its own way)
+pub fn combat_full_state(cs: &Map<String, Value>) -> Option<Value> {
+    let log = match serde_json::from_str::<Value>(cs.get("log_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => Value::Array(a),
+        Ok(_) => json!([]),
+        Err(_) => return None, // a NaN serde cannot read, or the [] Python falls back to: not worth telling apart
+    };
+    let f = Fight::load(cs.clone())?;
+    let active = match f.current()? {
+        Some(i) => f.combatants[i].get("id").cloned().unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    let or = |k: &str, d: i64| cs.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(d);
+    Some(json!({"combatants": f.combatants, "round_num": or("round_num", 1), "active_idx": or("active_idx", 0), "active_id": active,
+        "rev": or("rev", 0), "name": cs.get("name"), "ruleset": cs.get("ruleset").and_then(|v| v.as_str()).unwrap_or(""),
+        "turn": Value::Object(f.turn.clone()), "log": log}))
+}

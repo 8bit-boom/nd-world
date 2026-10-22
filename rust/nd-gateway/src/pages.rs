@@ -1513,3 +1513,41 @@ pub fn schematic_editor(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
     c.insert("schematic".into(), Value::Object(sc));
     render_with(pages, "schematic.html", p.ctx, headers)
 }
+
+/// `GET /combat/<id>` for the GM: the tracker (a player's read-only view, an encounter of another world or one without a ruleset - which
+/// Python settles and saves on the visit - stay Python's)
+pub fn combat_tracker(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let id = uri.path().strip_prefix("/combat/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()))?;
+    let id: i64 = id.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let cs = db.query_row("SELECT * FROM combat_sessions WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok()?;
+    if cs.get("world_id")?.as_i64()? != wid || cs.get("ruleset").and_then(|v| v.as_str()).map_or(true, |r| r.is_empty()) {
+        return None;
+    }
+    let state = crate::edits::combat_full_state(&cs)?;
+    let (pcs, ents) = crate::edits::combat_candidates(&db, wid)?;
+    let mut st = db.prepare("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC").ok()?;
+    let sessions: Vec<serde_json::Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    let linked = match cs.get("game_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
+        Some(g) => db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [g], |r| crate::layout::row_map(r)).ok().map_or(Value::Null, Value::Object),
+        None => Value::Null,
+    };
+    let rules = nd_render::app::data().get("combat_rules_json")?.as_str()?.to_string();
+    let c = &mut p.ctx;
+    c.insert("combatants_json".into(), json!(nd_render::py_dumps(&state["combatants"])));
+    c.insert("state_json".into(), json!(nd_render::py_dumps(&state)));
+    c.insert("rules_json".into(), json!(rules));
+    c.insert("pc_payload_json".into(), json!(nd_render::py_dumps(&Value::Array(pcs))));
+    c.insert("entity_payload_json".into(), json!(nd_render::py_dumps(&Value::Array(ents))));
+    c.insert("game_sessions".into(), Value::Array(sessions.into_iter().map(Value::Object).collect()));
+    c.insert("linked_session".into(), linked);
+    c.insert("combat".into(), Value::Object(cs));
+    render_with(pages, "combat/detail.html", p.ctx, headers)
+}

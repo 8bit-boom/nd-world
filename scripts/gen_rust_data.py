@@ -113,6 +113,9 @@ def make() -> dict:
                                 "skip": v.get("skip_down", combat_rules.SKIP_ENEMIES)} for k, v in combat_rules.RULESETS.items()},
         "combat_template_rulesets": combat_rules._BY_TEMPLATE_SLUG,
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
+        # the tracker pages' rules_json, exactly as json.dumps spells it (the GM's whole table; a player's three keys of it)
+        "combat_rules_json": json.dumps(combat_rules.RULESETS),
+        "combat_player_rules_json": json.dumps({k: {"label": v["label"], "turns": v["turns"], "hp_label": v["hp_label"]} for k, v in combat_rules.RULESETS.items()}),
     }
 
 

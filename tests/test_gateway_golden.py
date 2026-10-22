@@ -1412,3 +1412,35 @@ def test_schematic_editor_page_is_pythons(client, seed):
         for slug in ("ed-map", "ed-empty", "ed-b", "ed-none"):
             served += _same_page(d, _via(d, base), f"/maps/schematic/{slug}", email)
     assert served >= 2, served
+
+
+def test_combat_tracker_page_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import CombatSession, Entity, GameSession, PlayerCharacter
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=w, session_num=4, title="Four <4>")
+        db.add_all([gs, GameSession(world_id=w, session_num=9, title="Nine"), PlayerCharacter(world_id=w, name="Hero", current_hp=3),
+                    Entity(world_id=w, kind="character", name="Guard", custom_fields_json=json.dumps({"health": "9", "speed": 2}))])
+        db.flush()
+        cbs = [{"id": "a", "name": "A <a>", "initiative": 5, "hp": 2.5}, {"id": "b", "name": "B", "initiative": 9, "notes": "x"}, "junk"]
+        fights = [CombatSession(world_id=w, name="Init <i>", ruleset="nd", active_idx=1, round_num=2, rev=4, game_session_id=gs.id,
+                                combatants_json=json.dumps(cbs), log_json=json.dumps([{"t": "hit"}])),
+                  CombatSession(world_id=w, name="Fluid", ruleset="hunt", combatants_json=json.dumps(cbs),
+                                turn_json=json.dumps({"active_id": "b", "acted": ["a", 3], "picker": None, "mode": "x"}), log_json="{}"),
+                  CombatSession(world_id=w, name="Tmpl", ruleset="nd", is_template=True),
+                  CombatSession(world_id=w, name="Old", ruleset=""),
+                  CombatSession(world_id=seed.world_b.id, name="B", ruleset="nd")]
+        db.add_all(fights)
+        db.commit()
+        ids = [f.id for f in fights]
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        for i in ids[:3] + ids[4:] + [ids[3], 999999]:
+            served += _same_page(d, _via(d, base), f"/combat/{i}", email)
+    assert served >= 3, served
