@@ -1432,3 +1432,84 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     c.insert("schematic".into(), Value::Object(sc));
     render_with(pages, "schematic_view.html", p.ctx, headers)
 }
+
+/// `GET /maps/schematic/<slug>` - the GM's (or an Assistant's) map editor, for a drawn map of the active world (an uploaded HTML map
+/// is served from its file: Python's)
+pub fn schematic_editor(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let slug = uri.path().strip_prefix("/maps/schematic/").filter(|s| !s.is_empty() && !s.contains('/'))?;
+    if slug == "new" {
+        return None;
+    }
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let sc = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    let truthy = |v: Option<&Value>| v.is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)) && v != &json!(0) && v != &json!(""));
+    if sc.get("world_id")?.as_i64()? != wid || truthy(sc.get("is_html")) {
+        return None;
+    }
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    let elements: Value = serde_json::from_str(raw).ok()?;
+    if nd_render::py_dumps(&elements) != raw && raw != "[]" {
+        return None; // json.dumps(json.loads(...)) would respell it: Python's
+    }
+    let (pcs, ents) = crate::edits::combat_candidates(&db, wid)?;
+    let rows = |sql: &str| -> Option<Vec<serde_json::Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    let items: Vec<Value> = rows("SELECT * FROM entities WHERE world_id = ?1 AND kind = 'item' ORDER BY name")?.iter().map(|e| json!({
+        "id": e.get("id"), "name": e.get("name"), "summary": e.get("summary").and_then(|v| v.as_str()).unwrap_or(""),
+        "image_url": e.get("image_url").and_then(|v| v.as_str()).unwrap_or("")})).collect();
+    let fights: Vec<Value> = rows("SELECT * FROM combat_sessions WHERE world_id = ?1 AND (is_template IS NULL OR is_template != 1) ORDER BY updated_at DESC")?
+        .into_iter().map(Value::Object).collect();
+    let (mut linked, mut active, mut round) = (Value::Null, Value::Null, Value::Null);
+    if let Some(cs_id) = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
+        if let Some((cs, a, r)) = crate::edits::fight_now(&db, cs_id)? {
+            (linked, active, round) = (Value::Object(cs), a, r);
+        }
+    }
+    let mut parties_payload = vec![];
+    let mut pins = vec![];
+    let mut parties = rows("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name")?;
+    for party in &parties {
+        parties_payload.push(json!({"id": party.get("id")?, "name": party.get("name")?, "member_count": party_member_count(&db, &p, party, wid)?}));
+    }
+    parties.sort_by_key(|x| x.get("id").and_then(|v| v.as_i64()));
+    for party in &parties {
+        let raw = party.get("location_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("{}");
+        let Value::Object(loc) = serde_json::from_str::<Value>(raw).ok()? else { return None };
+        if loc.get("kind").and_then(|v| v.as_str()) != Some("schematic") || loc.get("slug").and_then(|v| v.as_str()) != Some(slug) {
+            continue;
+        }
+        pins.push(json!({"id": party.get("id")?, "name": party.get("name")?, "member_count": party_member_count(&db, &p, party, wid)?,
+                         "x": loc.get("x").cloned().unwrap_or(Value::Null), "y": loc.get("y").cloned().unwrap_or(Value::Null)}));
+    }
+    let bg = match sc.get("canvas_bg").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("dark") {
+        "blueprint" => "#0d1b2a", "grid-light" => "#1a1a2e", "light" => "#f0f0f0", _ => "#111111",
+    };
+    let gallery = crate::gallery::all_world_image_urls(&db, wid)?;
+    let c = &mut p.ctx;
+    c.insert("elements_json".into(), json!(nd_render::py_dumps(&elements)));
+    c.insert("canvas_bg_color".into(), json!(bg));
+    c.insert("world_parties_json".into(), json!(nd_render::py_dumps(&Value::Array(parties_payload))));
+    c.insert("party_pins_json".into(), json!(nd_render::py_dumps(&Value::Array(pins))));
+    c.insert("grid_type".into(), json!(sc.get("grid_type").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("none")));
+    c.insert("grid_config_json".into(), json!(sc.get("grid_config_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")));
+    c.insert("pc_payload_json".into(), json!(nd_render::py_dumps(&Value::Array(pcs))));
+    c.insert("entity_payload_json".into(), json!(nd_render::py_dumps(&Value::Array(ents))));
+    c.insert("item_payload_json".into(), json!(nd_render::py_dumps(&Value::Array(items))));
+    c.insert("combat_sessions".into(), Value::Array(fights));
+    c.insert("linked_combat".into(), linked);
+    c.insert("combat_active_combatant_id".into(), active);
+    c.insert("combat_round".into(), round);
+    c.insert("gallery_images".into(), Value::Array(gallery));
+    c.insert("schematic".into(), Value::Object(sc));
+    render_with(pages, "schematic.html", p.ctx, headers)
+}

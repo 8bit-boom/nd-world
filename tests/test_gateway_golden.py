@@ -1383,3 +1383,32 @@ def test_schematic_player_views_are_pythons(client, seed):
             assert (a.status_code, a.content) == (b.status_code, b.content), (email, slug, a.text[:300], b.text[:300])
             served["tv"] += b.headers.get("x-nd-served-by") == "gateway"
     assert served["page"] >= 6 and served["json"] >= 6 and served["tv"] >= 3, served
+
+
+def test_schematic_editor_page_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import CombatSession, Entity, Party, PlayerCharacter, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Hero <h>", stats_json=json.dumps([{"id": "dex", "value": 2}]),
+                                    conditions_json='["Prone", 1]', portrait_url="/uploads/p.png"),
+                    Entity(world_id=w, kind="creature", name="Wolf", custom_fields_json=json.dumps({"hp": 7, "armor": 1})),
+                    Entity(world_id=w, kind="item", name="Sword", summary="sharp", image_url="/uploads/s.png"),
+                    Party(world_id=w, name="Crew", location_json=json.dumps({"kind": "schematic", "slug": "ed-map", "x": 1, "y": 2}))])
+        cs = CombatSession(world_id=w, name="Fight <f>", round_num=2, combatants_json=json.dumps([{"id": "x", "initiative": 3}]))
+        db.add_all([cs, CombatSession(world_id=w, name="Tmpl", is_template=True)])
+        db.flush()
+        db.add_all([Schematic(world_id=w, name="Editor <e>", slug="ed-map", combat_session_id=cs.id, canvas_bg="light",
+                              elements_json=json.dumps([{"id": "a", "type": "rect", "x": 1.5}])),
+                    Schematic(world_id=w, name="Empty", slug="ed-empty"), Schematic(world_id=seed.world_b.id, name="B", slug="ed-b")])
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        for slug in ("ed-map", "ed-empty", "ed-b", "ed-none"):
+            served += _same_page(d, _via(d, base), f"/maps/schematic/{slug}", email)
+    assert served >= 2, served

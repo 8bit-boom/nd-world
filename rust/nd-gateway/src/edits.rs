@@ -10878,3 +10878,49 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
 pub fn safe_image(url: &str) -> String {
     safe_image_url(Some(&json!(url)))
 }
+
+/// `combat._candidates(world)`'s payloads: (characters, creatures) the fight pickers offer; a character on a custom system (its vital
+/// track) makes it Python's
+pub fn combat_candidates(db: &Connection, wid: i64) -> Option<(Vec<Value>, Vec<Value>)> {
+    let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    let mut pcs = vec![];
+    for pc in rows("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name")? {
+        let (hp, shock, pp, mp, native) = pc_maxima(db, &pc)?;
+        if !native {
+            return None;
+        }
+        let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+            Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_string()).collect(),
+            _ => vec![],
+        };
+        let stats = stat_values(&pc)?;
+        let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+        pcs.push(json!({"id": pc.get("id"), "name": pc.get("name"), "max_hp": hp, "hp": col_int(&pc, "current_hp"), "max_shock": shock,
+            "shock": col_int(&pc, "shock_current"), "conditions": conds, "portrait_url": pc.get("portrait_url").and_then(|v| v.as_str()).unwrap_or(""),
+            "res": {"pp": {"cur": col_int(&pc, "pp_current"), "max": pp, "label": "PP"}, "mp": {"cur": col_int(&pc, "mp_current"), "max": mp, "label": "MP"}},
+            "speed": get("dex") + get("itu")}));
+    }
+    let mut ents = vec![];
+    for e in rows("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character', 'creature') ORDER BY name")? {
+        let pre = entity_combatant(&e)?;
+        ents.push(json!({"id": e.get("id"), "name": e.get("name"), "kind": e.get("kind"), "max_hp": pre["max_hp"], "armor": pre["armor"],
+            "speed": pre["init_bonus"], "image_url": e.get("image_url").and_then(|v| v.as_str()).unwrap_or("")}));
+    }
+    Some((pcs, ents))
+}
+
+/// The active combatant and round of a fight (`combat_turns.active_combatant_id`, `round_num`)
+pub fn fight_now(db: &Connection, cs_id: i64) -> Option<Option<(Map<String, Value>, Value, Value)>> {
+    let Ok(cs) = db.query_row("SELECT * FROM combat_sessions WHERE id = ?1", [cs_id], |r| crate::layout::row_map(r)) else { return Some(None) };
+    let round = cs.get("round_num").cloned().unwrap_or(Value::Null);
+    let f = Fight::load(cs.clone())?;
+    let active = match f.current()? {
+        Some(i) => f.combatants[i].get("id").cloned().unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    Some(Some((cs, active, round)))
+}
