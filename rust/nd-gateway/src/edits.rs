@@ -458,7 +458,7 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
-    ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8713,6 +8713,28 @@ fn sc_grid(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("grid_type", s(grid)), ("grid_config_json", s(&text))])?;
     orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"ok": true}))
+}
+
+fn sc_link_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let raw = f.get("combat_session_id").unwrap_or("");
+    let sc = sc_for_manager(c, slug)?;
+    let t = raw.trim_matches(|ch: char| ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r');
+    if !t.is_empty() {
+        if t.len() > 15 || !t.bytes().all(|b| b.is_ascii_digit()) || t != strip(raw) {
+            return None; // int()'s other spellings: Python's
+        }
+        let cs_id: i64 = t.parse().ok()?;
+        let found: i64 = c.db.query_row("SELECT id FROM combat_sessions WHERE id = ?1 AND world_id = ?2", [cs_id, sc.get("world_id")?.as_i64()?], |r| r.get(0)).ok()?;
+        orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Integer(found))])?;
+    }
+    redirect(&format!("/maps/schematic/{slug}"))
+}
+
+fn sc_unlink_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_manager(c, slug)?;
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Null)])?;
+    redirect(&format!("/maps/schematic/{slug}"))
 }
 
 fn sc_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
