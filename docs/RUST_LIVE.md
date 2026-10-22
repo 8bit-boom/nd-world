@@ -65,3 +65,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /maps/schematic/<slug>/elements`, `/rename`, `/delete` (a GM or Assistant, a schematic of the active world; deleting a drawn map takes its background and embedded pictures with it, an uploaded HTML map stays Python's) | P4-17 |
 | `POST /maps/schematic/<slug>/grid` (the grid type and settings; a GM or Assistant, the active world) | P4-18 |
 | `POST /maps/schematic/<slug>/link-combat`, `/unlink-combat` (a GM or Assistant, the active world) | P4-19 |
+| `POST /maps/schematic/<slug>/pull-combat`, `/push-combat` (combat to map tokens and back, matched by combatant id; ids or conditions Python would read its own way stay Python's) | P4-20 |

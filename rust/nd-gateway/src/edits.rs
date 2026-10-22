@@ -458,7 +458,8 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
     ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
-    ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
+    ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8735,6 +8736,126 @@ fn sc_unlink_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let sc = sc_for_manager(c, slug)?;
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Null)])?;
     redirect(&format!("/maps/schematic/{slug}"))
+}
+
+/// A stored JSON list of objects exactly as Python reads it (anything else: Python's)
+fn obj_list(raw: Option<&Value>) -> Option<Vec<Map<String, Value>>> {
+    let raw = raw.and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    let Value::Array(a) = canonical_json(raw)? else { return None };
+    a.into_iter().map(|v| match v { Value::Object(o) => Some(o), _ => None }).collect()
+}
+
+/// `list(x.get("conditions", []))` for a list (a string's characters, None's error: Python's)
+fn cond_list(m: &Map<String, Value>) -> Option<Value> {
+    match m.get("conditions") {
+        None => Some(json!([])),
+        Some(Value::Array(a)) => Some(Value::Array(a.clone())),
+        _ => None,
+    }
+}
+
+/// The linked fight of a schematic the viewer manages
+fn sc_linked(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Map<String, Value>)> {
+    let sc = sc_for_manager(c, slug)?;
+    let cs_id = sc.get("combat_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0)?;
+    let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs_id)?;
+    Some((sc, cs))
+}
+
+/// `schematic_pull_combat`: a token for every combatant (matched by its combatant_id), refreshed or added
+fn sc_pull_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let (sc, cs) = sc_linked(c, slug)?;
+    let combatants = obj_list(cs.get("combatants_json"))?;
+    let mut elements = obj_list(sc.get("elements_json"))?;
+    // by_combatant_id: the LAST token with that id wins, as a dict built in order keeps it
+    let mut by_cid: Vec<(String, usize)> = vec![];
+    for (i, e) in elements.iter().enumerate() {
+        if e.get("type").and_then(|v| v.as_str()) != Some("token") || !py_truthy(e.get("combatant_id")) {
+            continue;
+        }
+        let cid = e.get("combatant_id")?.as_str()?.to_string();
+        by_cid.retain(|(k, _)| *k != cid);
+        by_cid.push((cid, i));
+    }
+    let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64);
+    let (cx, cy) = (dim("canvas_width", 2000.0) / 2.0, dim("canvas_height", 1500.0) / 2.0);
+    let mut new_count = 0i64;
+    for cb in &combatants {
+        let id = cb.get("id")?.as_str()?.to_string();
+        let conditions = cond_list(cb)?;
+        if let Some(&(_, i)) = by_cid.iter().find(|(k, _)| *k == id) {
+            let t = &mut elements[i];
+            for key in ["name", "hp", "max_hp"] {
+                if let Some(v) = cb.get(key) {
+                    t.insert(key.into(), v.clone());
+                } else {
+                    let keep = t.get(key).cloned().unwrap_or(Value::Null);
+                    t.insert(key.into(), keep);
+                }
+            }
+            t.insert("conditions".into(), conditions);
+        } else {
+            let source = cb.get("source").cloned().unwrap_or(json!("manual"));
+            let src = source.as_str();
+            let mut m = Map::new();
+            m.insert("id".into(), json!(format!("{:08x}", rand::random::<u32>())));
+            m.insert("type".into(), json!("token"));
+            m.insert("x".into(), json!(cx + ((new_count % 5) * 45 - 90) as f64));
+            m.insert("y".into(), json!(cy + ((new_count / 5) * 45 - 45) as f64));
+            m.insert("r".into(), json!(20));
+            m.insert("layer".into(), json!("Tracks"));
+            m.insert("combatant_id".into(), json!(id));
+            m.insert("source".into(), source.clone());
+            m.insert("pc_id".into(), cb.get("pc_id").cloned().unwrap_or(Value::Null));
+            m.insert("entity_id".into(), cb.get("entity_id").cloned().unwrap_or(Value::Null));
+            m.insert("name".into(), cb.get("name").cloned().unwrap_or(json!("Combatant")));
+            m.insert("color".into(), json!(match src { Some("pc") => "#4488ff", Some("entity") => "#e63946", _ => "#888888" }));
+            m.insert("hp".into(), cb.get("hp").cloned().unwrap_or(json!(0)));
+            m.insert("max_hp".into(), cb.get("max_hp").cloned().unwrap_or(json!(0)));
+            m.insert("conditions".into(), conditions);
+            m.insert("visible_to_players".into(), json!(matches!(src, Some("pc" | "entity"))));
+            elements.push(m);
+            new_count += 1;
+        }
+    }
+    let list = Value::Array(elements.into_iter().map(Value::Object).collect());
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&list)))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"elements": list}))
+}
+
+/// `schematic_push_combat`: each token's hp / max_hp / conditions back onto its combatant
+fn sc_push_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let (sc, cs) = sc_linked(c, slug)?;
+    let elements = obj_list(sc.get("elements_json"))?;
+    let mut combatants = obj_list(cs.get("combatants_json"))?;
+    // by_id: every combatant needs a (string) id; the last of equal ids wins
+    let mut ids = vec![];
+    for cb in &combatants {
+        ids.push(cb.get("id")?.as_str()?.to_string());
+    }
+    let mut synced = vec![];
+    for el in &elements {
+        if el.get("type").and_then(|v| v.as_str()) != Some("token") || !py_truthy(el.get("combatant_id")) {
+            continue;
+        }
+        let cid = el.get("combatant_id")?.as_str()?;
+        let Some(i) = ids.iter().rposition(|k| k == cid) else { continue };
+        let conditions = cond_list(el)?;
+        let cb = &mut combatants[i];
+        for key in ["hp", "max_hp"] {
+            let v = el.get(key).cloned().unwrap_or_else(|| cb.get(key).cloned().unwrap_or(Value::Null));
+            cb.insert(key.into(), v);
+        }
+        cb.insert("conditions".into(), conditions);
+        synced.push(cb.get("name").cloned().unwrap_or(Value::Null));
+    }
+    let list = Value::Array(combatants.into_iter().map(Value::Object).collect());
+    orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("combatants_json", s(&nd_render::py_dumps(&list)))])?;
+    let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", cs.get("id")?.as_i64()?)?;
+    combat_touch(c, &cs)?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"synced": synced}))
 }
 
 fn sc_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {

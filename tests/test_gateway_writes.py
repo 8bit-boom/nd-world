@@ -4304,3 +4304,44 @@ def test_schematic_delete_removes_its_files_through_the_gateway(client, seed):
     assert (r.status_code, r.headers["location"], r.headers.get("x-nd-served-by")) == (303, "/maps", "gateway")
     assert not bg.exists() and not emb.exists() and keep.exists()
     assert _row_by("schematics", "slug", "gone-map") is None
+
+
+def test_schematic_pull_and_push_combat_are_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    n = [0]
+    served = 0
+    cbs = [{"id": "c1", "name": "Hero", "source": "pc", "pc_id": 4, "hp": 7, "max_hp": 10, "conditions": ["Prone"]},
+           {"id": "c2", "name": "Orc", "source": "entity", "entity_id": 9, "hp": 3},
+           {"id": "c3", "source": "manual"}, {"id": "c4", "name": "Rat"}] + [{"id": f"m{i}", "name": f"M{i}"} for i in range(5)]
+    els = [{"id": "t1", "type": "token", "combatant_id": "c1", "x": 5, "y": 6, "name": "Old", "hp": 1, "conditions": ["Dazed"]},
+           {"id": "t2", "type": "token", "combatant_id": "c2", "max_hp": 12}, {"id": "r", "type": "rect"},
+           {"id": "t9", "type": "token", "combatant_id": "gone", "hp": 2}]
+
+    def run(path, combatants=cbs, elements=els, link=True):
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"pull-{n[0]}"
+            cs = _add("CombatSession", world_id=w, name="Fight", combatants_json=json.dumps(combatants))
+            sid = _add("Schematic", world_id=w, name="Map", slug=slug, elements_json=json.dumps(elements), canvas_width=1000,
+                       combat_session_id=cs if link else None)
+            r = side.post(f"/maps/schematic/{slug}/{path}")
+            j = r.json() if r.status_code == 200 else None
+            known = {e["id"] for e in elements}
+            strip = lambda lst: [{k: v for k, v in e.items() if not (k == "id" and v not in known)} for e in lst]
+            if j and "elements" in j:
+                j = strip(j["elements"])
+            row, crow = _row("schematics", sid), _row("combat_sessions", cs)
+            out.append((r.status_code, j, strip(json.loads(row["elements_json"])), crow["combatants_json"], crow["rev"],
+                        r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (path, out)
+        return out[1][5] == "gateway"
+
+    for path in ("pull-combat", "push-combat"):
+        served += run(path)
+        served += run(path, elements=[])
+        served += run(path, link=False)
+        served += run(path, combatants=[{"id": "c1", "conditions": "Prone"}])
+    assert served >= 4, served
