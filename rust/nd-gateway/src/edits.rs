@@ -276,6 +276,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/notes/{}/new", private_note_new),
     ("/worlds/{}/notes/{}/{}/delete", private_note_delete),
     ("/worlds/{}/theme/clear", theme_clear),
+    ("/worlds/{}/theme/import", theme_import),
+    ("/worlds/new", world_create),
     ("/worlds/{}/theme/preset", theme_preset),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
@@ -5919,4 +5921,114 @@ fn theme_preset(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     set.push(("theme_json", s(&nd_render::py_dumps(&Value::Object(theme)))));
     orm::update(&c.db, "worlds", ids[0], &set)?;
     redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+/// `str(v or "")` for a theme field: a string as is, a falsy value as "", anything else (Python's repr of it) is not ported
+fn theme_text(v: Option<&Value>) -> Result<String, ()> {
+    match v {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(String::new()),
+        Some(Value::String(x)) => Ok(x.clone()),
+        Some(Value::Array(a)) if a.is_empty() => Ok(String::new()),
+        Some(Value::Object(o)) if o.is_empty() => Ok(String::new()),
+        Some(Value::Number(n)) if n.as_f64() == Some(0.0) => Ok(String::new()),
+        _ => Err(()),
+    }
+}
+
+/// main._sanitize_theme: the whitelisted fields, in Python's order
+fn sanitize_theme(data: &Map<String, Value>) -> Option<Map<String, Value>> {
+    use std::sync::OnceLock;
+    static RES: OnceLock<[regex::Regex; 4]> = OnceLock::new();
+    let [hex, font, gf_re, ls_re] = RES.get_or_init(|| [
+        regex::Regex::new(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$").unwrap(),
+        regex::Regex::new(r"^[A-Za-z0-9 ,'\-]{1,120}$").unwrap(),
+        regex::Regex::new(r"^https://fonts\.googleapis\.com/css2\?[A-Za-z0-9:;,._=&+%/@\-]+$").unwrap(),
+        regex::Regex::new(r"^-?\d*\.?\d+(em|rem|px)$|^normal$").unwrap(),
+    ]);
+    let get = |k: &str| theme_text(data.get(k)).ok().map(|t| strip(&t));
+    let mut out = Map::new();
+    for k in ["accent", "bg", "bg2", "bg3", "border", "neon2", "neon3", "yellow", "text", "text_dim", "hero_glow_color"] {
+        let v = get(k)?;
+        if !v.is_empty() && hex.is_match(&v) {
+            out.insert(k.into(), Value::String(v));
+        }
+    }
+    for k in ["font", "font_heading", "font_display"] {
+        let v = get(k)?;
+        if !v.is_empty() && font.is_match(&v) {
+            out.insert(k.into(), Value::String(v));
+        }
+    }
+    let gf = get("google_fonts_url")?;
+    if gf_re.is_match(&gf) {
+        out.insert("google_fonts_url".into(), Value::String(gf));
+    }
+    let ls = get("hero_letter_spacing")?;
+    if !ls.is_empty() && ls_re.is_match(&ls) {
+        out.insert("hero_letter_spacing".into(), Value::String(ls));
+    }
+    let graphic = get("hero_graphic")?;
+    if !graphic.is_ascii() {
+        return None; // str.lower() on other scripts: Python's
+    }
+    let graphic = graphic.to_ascii_lowercase();
+    if ["moon", "circle", "none"].contains(&graphic.as_str()) {
+        out.insert("hero_graphic".into(), Value::String(graphic));
+    }
+    let name = get("name")?;
+    if !name.is_empty() {
+        out.insert("name".into(), Value::String(take_chars(&name, 120)));
+    }
+    Some(out)
+}
+
+fn theme_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if content_type(c.headers) != "multipart/form-data" {
+        return None;
+    }
+    let (f, files) = parse_multipart(c.headers, c.body)?;
+    if f.has("file") {
+        return None;
+    }
+    let file = files.iter().rev().find(|p| p.name == "file")?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    let text = std::str::from_utf8(&file.data).ok().filter(|t| !t.starts_with('\u{feff}'))?;
+    let Value::Object(data) = serde_json::from_str::<Value>(text).ok()? else { return None };
+    let mut cleaned = sanitize_theme(&data)?;
+    if cleaned.is_empty() {
+        return None;
+    }
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if let Some(Value::String(a)) = cleaned.shift_remove("accent") {
+        set.push(("accent", s(&a)));
+    }
+    set.push(("theme_json", s(&nd_render::py_dumps(&Value::Object(cleaned)))));
+    orm::update(&c.db, "worlds", ids[0], &set)?;
+    redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let name = f.get("name")?.to_string();
+    // an empty or non-ASCII name (str.lower/isalnum over other scripts, a cookie value SimpleCookie quotes): Python's
+    if name.is_empty() || !name.is_ascii() {
+        return None;
+    }
+    let slug: String = name.to_ascii_lowercase().replace(' ', "-").replace('&', "and").chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-').collect();
+    if slug.is_empty() {
+        return None;
+    }
+    let description = f.get("description").unwrap_or("");
+    let accent = strip(f.get("accent").unwrap_or("#00f0ff"));
+    let hex = regex::Regex::new(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$").ok()?;
+    let accent = if hex.is_match(&accent) { accent } else { "#00f0ff".to_string() };
+    let desc = if description.is_empty() { Sql::Null } else { s(description) };
+    let wid = orm::insert(&c.db, "worlds", &[("name", s(&name)), ("slug", s(&slug)), ("description", desc), ("accent", s(&accent))])?;
+    let preset = f.get("calendar_preset").unwrap_or("");
+    if let Some(cfg) = nd_render::app::data().get("calendar_presets_world")?.as_array()?.iter().find(|p| p.get(0).and_then(|k| k.as_str()) == Some(preset)) {
+        orm::insert(&c.db, "world_calendars", &[("world_id", Sql::Integer(wid)), ("config_json", s(cfg.get(1)?.as_str()?))])?;
+    }
+    let mut r = redirect("/worlds")?;
+    r.headers_mut().insert(header::SET_COOKIE, format!("active_world={slug}; Max-Age=31536000; Path=/; SameSite=lax").parse().ok()?);
+    Some(r)
 }

@@ -2746,3 +2746,67 @@ def test_private_notes_and_themes_are_pythons(client, seed):
         assert out[0][:3] == out[1][:3], (path, form, out)
         served += out[1][3] == "gateway"
     assert served >= 8, served
+
+
+def test_theme_import_and_world_create_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app import calendar_config
+    base = str(client.base_url)
+    w = seed.world_b.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    served = 0
+
+    def reset():
+        db = SessionLocal()
+        try:
+            db.execute(text("UPDATE worlds SET accent = '#111111', theme_json = :t WHERE id = :w"), {"w": w, "t": '{"x": 1}'}); db.commit()
+        finally:
+            db.close()
+
+    themes = [
+        b'{"accent": " #abc ", "bg": "#123456", "bg2": "nope", "font": "\'EB Garamond\', serif", "font_heading": "x;y",'
+        b' "google_fonts_url": "https://fonts.googleapis.com/css2?family=EB+Garamond", "hero_letter_spacing": "-0.03em",'
+        b' "hero_graphic": " MOON ", "name": "  ' + b"n" * 130 + b'  ", "extra": 5}',
+        b'{"name": "Only a name \\u00e9"}', b'{"bg": "#fff", "hero_graphic": "square", "hero_letter_spacing": "wide"}',
+        b'{"bg": "zzz"}', b'[1]', b'not json', b'{"font": 12}', b'{"name": null, "bg": "#000", "neon2": false}',
+    ]
+    for body in themes:
+        out = []
+        for side in (d, via):
+            reset()
+            r = side.post(f"/worlds/{w}/theme/import", files={"file": ("t.json", body, "application/json")}, follow_redirects=False)
+            r2 = _row("worlds", w)
+            out.append((r.status_code, r.headers.get("location"), (r2["accent"], r2["theme_json"]), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out)
+        served += out[1][3] == "gateway"
+
+    presets = list(calendar_config.CALENDAR_PRESETS)[:2]
+    forms = [{"name": "My World & Co", "description": "d", "accent": " #ABCDEF ", "calendar_preset": presets[0]},
+             {"name": "Plain", "accent": "red", "calendar_preset": presets[-1]}, {"name": "No cal", "calendar_preset": "nope"}]
+    for i, form in enumerate(forms):
+        out = []
+        for side, tag in ((d, "pa"), (via, "gw")):
+            f = dict(form)
+            if f["name"]:
+                f["name"] = f"{f['name']} {tag}{i}{os_random_hex()}"
+            r = side.post("/worlds/new", data=f, follow_redirects=False)
+            got = (r.status_code, r.headers.get("location"))
+            if r.status_code == 303:
+                wr = _newest("worlds")
+                db = SessionLocal()
+                try:
+                    cal = db.execute(text("SELECT config_json FROM world_calendars WHERE world_id = :w"), {"w": wr["id"]}).scalar()
+                finally:
+                    db.close()
+                cookie = r.headers.get("set-cookie", "").replace(wr["slug"], "SLUG")
+                got += (wr["slug"].replace(tag, "T"), wr["description"], wr["accent"], cal, cookie)
+            out.append(got)
+            served += r.headers.get("x-nd-served-by") == "gateway"
+        assert [o[:2] for o in out] == [o[:2] for o in out[:1]] * 2, (form, out)
+        if len(out[0]) > 2:
+            a, b = list(out[0]), list(out[1])
+            a[2], b[2] = a[2].rsplit("-", 1)[0], b[2].rsplit("-", 1)[0]
+            assert a == b, (form, out)
+    assert served >= 7, served

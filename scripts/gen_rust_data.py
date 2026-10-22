@@ -64,6 +64,9 @@ def make() -> dict:
         # the calendar settings page's presets: label + the cleaned calendar, as ordered pairs (the file is written with sorted keys)
         "calendar_presets_clean": [[k, list({"label": v["label"], **calendar_config.clean_calendar_config(v)}.items())]
                                    for k, v in calendar_config.CALENDAR_PRESETS.items()],
+        # what /worlds/new stores for a picked calendar preset: the exact config_json text, per preset key
+        "calendar_presets_world": [[k, json.dumps({**calendar_config.clean_calendar_config(v), "current_day": 1})]
+                                   for k, v in calendar_config.CALENDAR_PRESETS.items()],
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }
 
