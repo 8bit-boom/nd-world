@@ -66,3 +66,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /maps/schematic/<slug>/grid` (the grid type and settings; a GM or Assistant, the active world) | P4-18 |
 | `POST /maps/schematic/<slug>/link-combat`, `/unlink-combat` (a GM or Assistant, the active world) | P4-19 |
 | `POST /maps/schematic/<slug>/pull-combat`, `/push-combat` (combat to map tokens and back, matched by combatant id; ids or conditions Python would read its own way stay Python's) | P4-20 |
+| `POST /maps/schematic/<slug>/rooms` (the room-drawing state; `clean_rooms` ported, its refusals stay Python's) | P4-21 |

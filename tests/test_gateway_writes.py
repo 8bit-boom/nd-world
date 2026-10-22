@@ -4345,3 +4345,27 @@ def test_schematic_pull_and_push_combat_are_pythons(client, seed):
         served += run(path, link=False)
         served += run(path, combatants=[{"id": "c1", "conditions": "Prone"}])
     assert served >= 4, served
+
+
+def test_schematic_rooms_save_is_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    n = [0]
+    served = 0
+    good = {"cell": 40, "ox": 50, "oy": -3, "cols": 3, "rows": 2, "clear": True,
+            "spaces": [{"id": 1, "name": "  Great   hall ", "kind": "hall"}, {"id": 2, "kind": "lair"}, {"id": 1, "name": "dup"}, {"id": 3}, {"id": 0}, "x"],
+            "cells": [1, 2, 1, 1, 7, 1, 2, 2], "marks": [[0, 0, "h", "door"], [0, 0, "h", "window"], [3, 0, "h", "door"], [3, 1, "v", "secret"], [1, 1, "z", "door"], [1]]}
+    bodies = [good, {}, {**good, "cells": [1, 2]}, {**good, "cell": 4}, {**good, "cols": 401}, {**good, "cells": [1, 2, 1]}, {**good, "spaces": "no", "marks": None},
+              {**good, "cell": 33.333, "ox": 1.005}]
+    for body in bodies:
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"rooms-{n[0]}"
+            sid = _add("Schematic", world_id=w, name="Map", slug=slug)
+            r = side.post(f"/maps/schematic/{slug}/rooms", json=body)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, _row("schematics", sid)["rooms_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out)
+        served += out[1][3] == "gateway"
+    assert served >= 3, served

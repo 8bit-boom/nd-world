@@ -456,7 +456,7 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
     ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
-    ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
+    ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
     ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
     ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
@@ -8900,6 +8900,118 @@ fn sc_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
     c.db.execute("DELETE FROM schematics WHERE id = ?1", [sc.get("id")?.as_i64()?]).ok()?;
     redirect("/maps")
+}
+
+/// `map_rooms._int`: a JSON whole number (a bool is not one); Err for a number past i64 (Python's)
+fn room_int(v: Option<&Value>) -> Result<Option<i64>, ()> {
+    match v {
+        Some(Value::Number(n)) if n.is_i64() => Ok(n.as_i64()),
+        Some(Value::Number(n)) if n.is_u64() => Err(()),
+        _ => Ok(None),
+    }
+}
+
+/// `map_rooms.clean_rooms` for a drawing (the refusals, and anything Python spells or rounds its own way: None)
+fn clean_rooms(d: &Map<String, Value>) -> Option<Value> {
+    if d.is_empty() {
+        return Some(json!({}));
+    }
+    let cell = wall_num(d.get("cell")).filter(|c| (8.0..=400.0).contains(c))?;
+    let ox = wall_num(d.get("ox")).unwrap_or(0.0);
+    let oy = wall_num(d.get("oy")).unwrap_or(0.0);
+    let (cols, rows) = (room_int(d.get("cols")).ok()??, room_int(d.get("rows")).ok()??);
+    if !((1..=400).contains(&cols) && (1..=400).contains(&rows)) || cols * rows > 40000 {
+        return None;
+    }
+    let (ox, oy) = (ox.max(0.0).min(cell), oy.max(0.0).min(cell));
+    let mut spaces: Vec<Value> = vec![];
+    let mut ids: Vec<i64> = vec![];
+    if let Some(Value::Array(list)) = d.get("spaces") {
+        for sp in list.iter().take(80) {
+            let Some(sp) = sp.as_object() else { continue };
+            let Some(sid) = room_int(sp.get("id")).ok()? else { continue };
+            if !(1..=9999).contains(&sid) || ids.contains(&sid) {
+                continue;
+            }
+            let name = keepsake_text(sp.get("name"), 60)?;
+            let name = if name.is_empty() { format!("Room {sid}") } else { name };
+            let kind = match sp.get("kind").and_then(|v| v.as_str()) {
+                Some(k) if ["hall", "tavern", "bedroom", "kitchen", "storage", "corridor", "cell", "shrine", "library", "armory", "cave", "outdoor", "other"].contains(&k) => k,
+                _ => "other",
+            };
+            ids.push(sid);
+            spaces.push(json!({"id": sid, "name": name, "kind": kind}));
+        }
+    }
+    let raw = d.get("cells")?.as_array()?;
+    if raw.len() % 2 != 0 {
+        return None;
+    }
+    let (mut runs, mut total): (Vec<i64>, i64) = (vec![], 0);
+    for pair in raw.chunks(2) {
+        let (sid, n) = (room_int(pair.first()).ok()??, room_int(pair.get(1)).ok()??);
+        if n < 1 || sid < 0 {
+            return None;
+        }
+        total = total.checked_add(n)?;
+        if total > cols * rows {
+            return None;
+        }
+        let sid = if sid != 0 && !ids.contains(&sid) { 0 } else { sid };
+        if runs.len() >= 2 && runs[runs.len() - 2] == sid {
+            *runs.last_mut()? += n;
+        } else {
+            runs.push(sid);
+            runs.push(n);
+        }
+    }
+    if total != cols * rows {
+        return None;
+    }
+    let mut marks: Vec<Value> = vec![];
+    let mut seen: Vec<(i64, i64, String)> = vec![];
+    if let Some(Value::Array(list)) = d.get("marks") {
+        for m in list.iter().take(5000) {
+            let Some(m) = m.as_array().filter(|m| m.len() == 4) else { continue };
+            let (Some(x), Some(y)) = (room_int(m.first()).ok()?, room_int(m.get(1)).ok()?) else { continue };
+            let (Some(axis), Some(kind)) = (m[2].as_str(), m[3].as_str()) else { continue };
+            if !(axis == "h" || axis == "v") || !["door", "window", "secret", "open"].contains(&kind) {
+                continue;
+            }
+            if !((0..=cols).contains(&x) && (0..=rows).contains(&y)) || (axis == "h" && x >= cols) || (axis == "v" && y >= rows) {
+                continue;
+            }
+            let key = (x, y, axis.to_string());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            marks.push(json!([x, y, axis, kind]));
+        }
+    }
+    let used: Vec<i64> = runs.iter().step_by(2).copied().filter(|s| *s != 0).collect();
+    spaces.retain(|sp| sp["id"].as_i64().is_some_and(|i| used.contains(&i)));
+    let mut out = Map::new();
+    out.insert("cell".into(), json!(py_round(cell, 2)?));
+    out.insert("ox".into(), json!(py_round(ox, 2)?));
+    out.insert("oy".into(), json!(py_round(oy, 2)?));
+    out.insert("cols".into(), json!(cols));
+    out.insert("rows".into(), json!(rows));
+    if d.get("clear") == Some(&Value::Bool(true)) {
+        out.insert("clear".into(), json!(true));
+    }
+    out.insert("cells".into(), json!(runs));
+    out.insert("spaces".into(), Value::Array(spaces));
+    out.insert("marks".into(), Value::Array(marks));
+    Some(Value::Object(out))
+}
+
+fn sc_rooms(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let body = c.json()?;
+    let state = clean_rooms(&body)?;
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("rooms_json", s(&nd_render::py_dumps(&state)))])?;
+    json_response(&json!({"rooms": state, "warnings": []}))
 }
 
 fn sc_lights(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
