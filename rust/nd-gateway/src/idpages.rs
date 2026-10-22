@@ -26,6 +26,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/worlds/", "/rules/edit", rules_edit),
     ("/pages/", "", page_viewer),
     ("/quests/", "", quest_detail),
+    ("/entity/", "/edit", entity_edit),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -295,5 +296,42 @@ pub fn new_entity_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     ctx.insert("entity_templates".into(), Value::Array(entity_templates_payload(&db, wid)?));
     ctx.insert("custom_fields".into(), json!({}));
     ctx.insert("gallery_images".into(), Value::Array(crate::gallery::all_world_image_urls(&db, wid)?));
+    render_with(pages, "entities/form.html", p.ctx, headers)
+}
+
+/// `GET /entity/<id>/edit` (app/main.py `edit_form`) - for an entity of the viewer's active world (the auth gate has already let
+/// only an editor through)
+fn entity_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let e = row(db, "SELECT * FROM entities WHERE id = ?1", id)?;
+    if e.get("world_id")?.as_i64() != Some(wid) {
+        return None;
+    }
+    let kind = e.get("kind")?.as_str()?.to_string();
+    let players = rows(
+        db,
+        "SELECT users.* FROM users JOIN world_memberships ON world_memberships.user_id = users.id WHERE world_memberships.world_id = ?1 \
+         ORDER BY users.display_name, world_memberships.id",
+        wid,
+    )?;
+    let mut st = db.prepare("SELECT DISTINCT user_id FROM entity_player_access WHERE entity_id = ?1 ORDER BY user_id").ok()?;
+    let allowed = st.query_map([id], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut st = db.prepare("SELECT DISTINCT folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND folder IS NOT NULL").ok()?;
+    let mut folders: Vec<String> =
+        st.query_map(rusqlite::params![wid, kind], |r| r.get::<_, String>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?.into_iter().filter(|f| !f.is_empty()).collect();
+    folders.sort();
+    folders.dedup();
+    let raw = e.get("custom_fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("{}");
+    let custom: Value = serde_json::from_str(raw).ok()?;
+    let ctx = &mut p.ctx;
+    ctx.insert("entity".into(), Value::Object(e));
+    ctx.insert("kind".into(), json!(kind));
+    ctx.insert("world_players".into(), Value::Array(players));
+    ctx.insert("allowed_player_ids".into(), json!(allowed));
+    ctx.insert("folder_options".into(), json!(folders));
+    ctx.insert("prefill_folder".into(), json!(""));
+    ctx.insert("entity_templates".into(), Value::Array(entity_templates_payload(db, wid)?));
+    ctx.insert("custom_fields".into(), custom);
+    ctx.insert("gallery_images".into(), Value::Array(crate::gallery::all_world_image_urls(db, wid)?));
     render_with(pages, "entities/form.html", p.ctx, headers)
 }

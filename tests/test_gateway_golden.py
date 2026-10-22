@@ -968,7 +968,7 @@ def test_image_gallery_the_gateway_builds_is_pythons(client, seed):
 def test_new_entity_form_the_gateway_builds_is_pythons(client, seed):
     from .conftest import PLAYER_PASSWORD
     from app.database import SessionLocal
-    from app.models import Entity, EntityTemplate, ImageAlbum
+    from app.models import Entity, EntityTemplate, ImageAlbum, entity_player_access
     base = str(client.base_url)
     db = SessionLocal()
     try:
@@ -979,11 +979,18 @@ def test_new_entity_form_the_gateway_builds_is_pythons(client, seed):
                     EntityTemplate(world_id=w, name="Shop", slug="gw-new-shop", kind="location", fields_json=json.dumps([{"key": "o", "label": "Owner"}])),
                     EntityTemplate(world_id=None, name="Any", slug="gw-new-any", fields_json=""),
                     ImageAlbum(world_id=w, name="Art", image_urls_json=json.dumps(["/uploads/x.png"]))])
+        hid = Entity(world_id=w, kind="npc", name="Hidden <h>", visible_to_players=False, folder="Town/Inn", summary="s", body="b",
+                     custom_fields_json=json.dumps({"o": "Owner <x>", "n": 3}))
+        far = Entity(world_id=seed.world_b.id, kind="npc", name="Far")
+        bad = Entity(world_id=w, kind="npc", name="Bad fields", custom_fields_json="{nope")
+        db.add_all([hid, far, bad]); db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=hid.id, user_id=seed.player_a.id))
+        edit_urls = [f"/entity/{hid.id}/edit", f"/entity/{far.id}/edit", f"/entity/{bad.id}/edit", "/entity/999999/edit"]
         db.commit()
     finally:
         db.close()
     urls = ["/new", "/new?kind=npc", "/new?kind=location&folder=Places&name=%20%20New%20place%20", "/new?kind=npc&kind=location",
-            "/new?name=" + "x" * 300, "/new?kind=custom_ship&name=a+b"]
+            "/new?name=" + "x" * 300, "/new?kind=custom_ship&name=a+b", *edit_urls]
     served = {u: 0 for u in urls}
     for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
                              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
@@ -991,4 +998,4 @@ def test_new_entity_form_the_gateway_builds_is_pythons(client, seed):
         via = _via(d, base)
         for u in urls:
             served[u] += _same_page(d, via, u, email)
-    assert all(served.values()), served
+    assert all(v for u, v in served.items() if u not in edit_urls[1:]), served
