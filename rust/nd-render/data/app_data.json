@@ -2644,6 +2644,22 @@
   "profession"
  ],
  "view_default_size": 2,
+ "view_lists_order": {
+  "home": [
+   "order",
+   "hidden"
+  ]
+ },
+ "view_options_order": {
+  "site": [
+   "nav",
+   "width",
+   "density",
+   "theme",
+   "scale",
+   "motion"
+  ]
+ },
  "view_sections": {
   "ai_chat": {
    "default": "withside",

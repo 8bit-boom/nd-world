@@ -46,6 +46,9 @@ def make() -> dict:
         # Python's own key order of those two dicts (templates iterate them; the file itself is written with sorted keys)
         "kind_icons_order": list(constants.KIND_ICONS), "subtypes_order": list(constants.SUBTYPES),
         "view_specs": {s: view_prefs.spec(s) for s in view_prefs.SECTIONS},
+        # Python's key order of a section's "options" and "lists" (view_prefs.clean writes them in that order; the file sorts keys)
+        "view_options_order": {s: list(v["options"]) for s, v in view_prefs.SECTIONS.items() if v.get("options")},
+        "view_lists_order": {s: list(v["lists"]) for s, v in view_prefs.SECTIONS.items() if v.get("lists")},
         "column_defaults": column_defaults(),
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,

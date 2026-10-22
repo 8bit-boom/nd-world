@@ -391,11 +391,35 @@ fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
 
 pub fn handles(method: &Method, path: &str) -> bool {
     (method == Method::POST && (route(path).is_some() || slug_route(path).is_some())) || (method == Method::PUT && route_in(PUT_ROUTES, path).is_some())
+        || view_route(method, path).is_some()
+}
+
+/// The saved-layout routes (app/routers/view_prefs_api.py): a section name in the path, POST and DELETE
+fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
+    let ok = |s: &str| !s.is_empty() && s.len() <= 40 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if let Some(sec) = path.strip_prefix("/api/view-prefs/").filter(|s| ok(s)) {
+        return match *method {
+            Method::POST => Some((view_pref_save as SlugHandler, sec.to_string())),
+            Method::DELETE => Some((view_pref_reset as SlugHandler, sec.to_string())),
+            _ => None,
+        };
+    }
+    if let Some(rest) = path.strip_prefix("/api/saved-views/") {
+        if *method == Method::POST && ok(rest) {
+            return Some((saved_view_save as SlugHandler, rest.to_string()));
+        }
+        if let Some((sec, id)) = rest.split_once('/') {
+            if *method == Method::DELETE && ok(sec) && !id.is_empty() && id.len() <= 15 && id.bytes().all(|b| b.is_ascii_digit()) {
+                return Some((saved_view_delete as SlugHandler, rest.to_string()));
+            }
+        }
+    }
+    None
 }
 
 fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     let by_id = if method == Method::PUT { route_in(PUT_ROUTES, uri.path()) } else { route(uri.path()) };
-    let by_slug = if by_id.is_none() { slug_route(uri.path()) } else { None };
+    let by_slug = if by_id.is_none() { view_route(method, uri.path()).or_else(|| if *method == Method::POST { slug_route(uri.path()) } else { None }) } else { None };
     if by_id.is_none() && by_slug.is_none() {
         return None;
     }
@@ -424,7 +448,11 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
 
 /// Entry point: reads the (small) body, tries to answer, and otherwise forwards the request - body included - to Python.
 pub async fn serve(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
-    let small = req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok()).map_or(false, |n| n <= MAX_BODY);
+    // a body of known, small length - or none at all (no Content-Length and no Transfer-Encoding: a DELETE, a bare POST)
+    let small = match req.headers().get(header::CONTENT_LENGTH) {
+        Some(v) => v.to_str().ok().and_then(|v| v.parse::<usize>().ok()).map_or(false, |n| n <= MAX_BODY),
+        None => req.headers().get(header::TRANSFER_ENCODING).is_none(),
+    };
     if !small {
         return proxy.forward(req, peer).await;
     }
@@ -5254,4 +5282,195 @@ fn race_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn profession_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     lore_entry_delete(c, ids[0], "profession", "/professions")
+}
+
+// ── saved layouts (app/view_prefs.py, app/routers/view_prefs_api.py) ─────────
+
+/// A section's spec from app_data.json (view_prefs.SECTIONS)
+fn view_section(section: &str) -> Option<&'static Map<String, Value>> {
+    nd_render::app::data().get("view_sections")?.get(section)?.as_object()
+}
+
+fn str_list(v: Option<&Value>) -> Vec<String> {
+    v.and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// Python's `str(v)` of a JSON scalar ("" can never be produced by a list / dict, which never match an allowed value)
+fn py_str_value(v: Option<&Value>) -> String {
+    match v {
+        None | Some(Value::Null) => "None".into(),
+        Some(Value::Bool(b)) => (if *b { "True" } else { "False" }).into(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(i) => i.to_string(),
+            None => n.as_f64().map(nd_render::py_float_repr).unwrap_or_default(),
+        },
+        Some(_) => "\u{0}".into(),
+    }
+}
+
+fn id_ok(x: &str) -> bool {
+    (1..=40).contains(&x.len()) && x.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// `view_prefs.clean(section, raw)`; None for an unknown section or a value this port reads differently
+fn view_clean(section: &str, raw: Option<&Value>) -> Option<Value> {
+    let s = view_section(section)?;
+    let empty = Map::new();
+    let raw = raw.and_then(|v| v.as_object()).unwrap_or(&empty);
+    let modes = str_list(s.get("modes"));
+    let mode = raw.get("mode").and_then(|v| v.as_str()).filter(|m| modes.iter().any(|x| x == m)).map(str::to_string)
+        .unwrap_or_else(|| s.get("default").and_then(|v| v.as_str()).unwrap_or("").to_string());
+    let size = match raw.get("size").map(py_int_value) {
+        Some(Ok(n)) => n,
+        Some(Err(PyErr::Unsure)) => return None,
+        _ => 2,
+    };
+    let size = if (1..=3).contains(&size) { size } else { 2 };
+    let sorts = str_list(s.get("sorts"));
+    let default_sort = s.get("default_sort").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let sort = match raw.get("sort") {
+        Some(Value::String(x)) => {
+            let (desc, key) = match x.strip_prefix('-') { Some(k) => (true, k), None => (false, x.as_str()) };
+            if sorts.iter().any(|k| k == key) { format!("{}{key}", if desc { "-" } else { "" }) } else { default_sort }
+        }
+        _ => default_sort, // str() of anything else is never a sort key
+    };
+    let groups = str_list(s.get("groups"));
+    let group = match raw.get("group") {
+        Some(Value::String(g)) if groups.iter().any(|x| x == g) => g.clone(),
+        Some(Value::String(g)) if g.is_empty() => String::new(),
+        _ => s.get("default_group").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    };
+    let allowed_filters = str_list(s.get("filters"));
+    let mut filters: Vec<String> = vec![];
+    for f in str_list(raw.get("filters")) {
+        if allowed_filters.contains(&f) && !filters.contains(&f) {
+            filters.push(f);
+        }
+    }
+    if let Some(cap) = s.get("max_filters").and_then(|v| v.as_u64()) {
+        filters.truncate(cap as usize);
+    }
+    let mut out = Map::new();
+    out.insert("mode".into(), json!(mode));
+    out.insert("size".into(), json!(size));
+    out.insert("sort".into(), json!(sort));
+    out.insert("group".into(), json!(group));
+    out.insert("filters".into(), json!(filters));
+    let ids = |v: Option<&Value>, cap: usize| -> Vec<String> {
+        let mut got: Vec<String> = vec![];
+        for x in v.and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+            if let Some(x) = x.as_str().filter(|x| id_ok(x)) {
+                if !got.iter().any(|g| g == x) {
+                    got.push(x.to_string());
+                }
+            }
+        }
+        got.truncate(cap);
+        got
+    };
+    if let Some(order) = nd_render::app::data().get("view_lists_order")?.get(section).and_then(|v| v.as_array()) {
+        for name in order.iter().filter_map(|v| v.as_str()) {
+            let cap = s.get("lists")?.get(name)?.as_u64()? as usize;
+            out.insert(name.into(), json!(ids(raw.get(name), cap)));
+        }
+    }
+    if let Some(order) = nd_render::app::data().get("view_options_order")?.get(section).and_then(|v| v.as_array()) {
+        let given = raw.get("options").and_then(|v| v.as_object()).unwrap_or(&empty);
+        let mut opts = Map::new();
+        for k in order.iter().filter_map(|v| v.as_str()) {
+            let allowed = str_list(s.get("options")?.get(k));
+            let v = py_str_value(given.get(k));
+            opts.insert(k.into(), json!(if allowed.contains(&v) { v } else { allowed.first()?.clone() }));
+        }
+        out.insert("options".into(), Value::Object(opts));
+        out.insert("pins".into(), json!(ids(raw.get("pins"), s.get("max_pins").and_then(|v| v.as_u64()).unwrap_or(6) as usize)));
+    }
+    Some(Value::Object(out))
+}
+
+fn view_pref_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
+    if section == "site" {
+        return None; // remembered in the session cookie too (site_layout.remember): Python's
+    }
+    let raw: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let cleaned = view_clean(section, Some(&raw))?;
+    let text = nd_render::py_dumps(&cleaned);
+    let row: Option<i64> = c.db.query_row("SELECT id FROM user_view_prefs WHERE user_id = ?1 AND section = ?2 LIMIT 1", rusqlite::params![c.p.user_id, section], |r| r.get(0)).ok();
+    match row {
+        Some(id) => {
+            orm::update(&c.db, "user_view_prefs", id, &[("prefs_json", s(&text))])?;
+        }
+        None => {
+            orm::insert(&c.db, "user_view_prefs", &[("user_id", Sql::Integer(c.p.user_id)), ("section", s(section)), ("prefs_json", s(&text))])?;
+        }
+    }
+    json_response(&cleaned)
+}
+
+fn view_pref_reset(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
+    if section == "site" || view_section(section).is_none() {
+        return None;
+    }
+    c.db.execute("DELETE FROM user_view_prefs WHERE user_id = ?1 AND section = ?2", rusqlite::params![c.p.user_id, section]).ok()?;
+    json_response(&json!({"reset": section}))
+}
+
+/// `_named(db, user_id, section)`: the person's saved views of a section, by name
+fn named_views(c: &Ctx, section: &str) -> Option<Value> {
+    let mut st = c.db.prepare("SELECT id, name, prefs_json FROM saved_views WHERE user_id = ?1 AND section = ?2 ORDER BY name").ok()?;
+    let rows: Vec<(i64, Option<String>, Option<String>)> =
+        st.query_map(rusqlite::params![c.p.user_id, section], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    let mut out = vec![];
+    for (id, name, raw) in rows {
+        let state = match serde_json::from_str::<Value>(raw.as_deref().filter(|s| !s.is_empty()).unwrap_or("{}")) {
+            Ok(v) => v,
+            Err(_) => return None, // json.loads' own reading of bad text: Python's
+        };
+        out.push(json!({"id": id, "name": name, "state": view_clean(section, Some(&state))?}));
+    }
+    Some(json!({"views": out}))
+}
+
+fn saved_view_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
+    view_section(section)?;
+    let b = c.json()?;
+    let name = match b.get("name") {
+        Some(Value::String(n)) => take_chars(&nd_render::text::py_split_join(n), 40),
+        Some(v) if py_truthy(Some(v)) => return None,
+        _ => String::new(),
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let cleaned = view_clean(section, b.get("state"))?;
+    let text = nd_render::py_dumps(&cleaned);
+    let row: Option<i64> = c
+        .db
+        .query_row("SELECT id FROM saved_views WHERE user_id = ?1 AND section = ?2 AND name = ?3 LIMIT 1", rusqlite::params![c.p.user_id, section, name], |r| r.get(0))
+        .ok();
+    match row {
+        Some(id) => {
+            orm::update(&c.db, "saved_views", id, &[("prefs_json", s(&text))])?;
+        }
+        None => {
+            let n: i64 = c.db.query_row("SELECT COUNT(*) FROM saved_views WHERE user_id = ?1 AND section = ?2", rusqlite::params![c.p.user_id, section], |r| r.get(0)).ok()?;
+            if n >= 20 {
+                return None;
+            }
+            orm::insert(&c.db, "saved_views", &[("user_id", Sql::Integer(c.p.user_id)), ("section", s(section)), ("name", s(&name)), ("prefs_json", s(&text))])?;
+        }
+    }
+    json_response(&named_views(c, section)?)
+}
+
+fn saved_view_delete(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (section, id) = key.split_once('/')?;
+    let id: i64 = id.parse().ok()?;
+    let n = c.db.execute("DELETE FROM saved_views WHERE id = ?1 AND user_id = ?2 AND section = ?3", rusqlite::params![id, c.p.user_id, section]).ok()?;
+    if n == 0 {
+        return None;
+    }
+    json_response(&named_views(c, section)?)
 }

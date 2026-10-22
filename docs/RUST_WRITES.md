@@ -86,6 +86,7 @@ player of another world, and compares the answers and every column afterwards (t
 | Pictures on ordinary forms: `POST /new` and `/entity/<id>/edit` (`image_file`), `/characters/new` and `/characters/<id>/edit` (`portrait`), `/api/calendar/days/<day>/icons` (converted, no thumbnail); streamed like an upload when bigger than 256 KB | 27 |
 | `POST /folders/rename` (the same LIKE filter), `/entity-templates/new`, `/entity-templates/<id>/edit`, `/entity-templates/<id>/delete`, `/api/entity/<id>/image` | 28 |
 | `POST /races/new`, `/professions/new` (with an optional picture), `/races/<id>/delete`, `/professions/<id>/delete` (the built-in lists, parsed from the rules markdown: Python's) | 29 |
+| `POST /api/view-prefs/<section>`, `DELETE /api/view-prefs/<section>`, `POST /api/saved-views/<section>`, `DELETE /api/saved-views/<section>/<id>` (`view_prefs.clean` on the registry in app_data.json; the "site" layout and reset-all, which also live in the session cookie, and presets: Python's); DELETE routes, and requests with no body at all | 30 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

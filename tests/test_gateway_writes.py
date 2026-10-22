@@ -2396,3 +2396,72 @@ def test_race_and_profession_writes_are_pythons(client, seed):
             _same_rows(_row("entities", ids[0]), _row("entities", ids[1]))
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 8, served
+
+
+def test_view_pref_writes_are_pythons(client, seed):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    base = str(client.base_url)
+    served = 0
+
+    def state(uid):
+        db = SessionLocal()
+        try:
+            prefs = [tuple(r) for r in db.execute(text("SELECT section, prefs_json FROM user_view_prefs WHERE user_id = :u ORDER BY section"), {"u": uid})]
+            views = [tuple(r) for r in db.execute(text("SELECT section, name, prefs_json FROM saved_views WHERE user_id = :u ORDER BY section, name"), {"u": uid})]
+            return prefs, views
+        finally:
+            db.close()
+
+    def wipe(uid):
+        db = SessionLocal()
+        try:
+            db.execute(text("DELETE FROM user_view_prefs WHERE user_id = :u"), {"u": uid})
+            db.execute(text("DELETE FROM saved_views WHERE user_id = :u"), {"u": uid})
+            db.commit()
+        finally:
+            db.close()
+
+    calls = [("post", "/api/view-prefs/images", {"mode": "masonry", "size": "3", "sort": "-uses", "group": "usage", "filters": ["unused", "unused", "x"]}),
+             ("post", "/api/view-prefs/images", {"mode": "nope", "size": 2.9, "sort": 5, "group": "", "filters": "x"}),
+             ("post", "/api/view-prefs/home", {"mode": "night", "order": ["a", "a", "B", "c_d", "x" * 41], "hidden": ["z"], "size": True}),
+             ("post", "/api/view-prefs/hub", {"mode": "play", "filters": ["sheet", "notes", "log", "world", "quests"]}),
+             ("post", "/api/view-prefs/tables", {"group": None}), ("post", "/api/view-prefs/images", [1, 2]), ("post", "/api/view-prefs/nosuch", {}),
+             ("post", "/api/view-prefs/site", {"options": {"nav": "rail"}}), ("post", "/api/view-prefs/images", {"size": " 3 "}),
+             ("delete", "/api/view-prefs/images", None), ("delete", "/api/view-prefs/nosuch", None),
+             ("post", "/api/saved-views/images", {"name": "  My   view ", "state": {"mode": "list"}}), ("post", "/api/saved-views/images", {"name": "My view", "state": {"mode": "grid"}}),
+             ("post", "/api/saved-views/images", {"name": " "}), ("post", "/api/saved-views/images", {"name": 5}), ("post", "/api/saved-views/nosuch", {"name": "x"}),
+             ("delete", "/api/saved-views/images/FIRST", None), ("delete", "/api/saved-views/images/999999", None)]
+    for email, pw, world in _people(seed):
+        from app.models import User
+        db = SessionLocal()
+        try:
+            uid = db.query(User).filter(User.email == email).first().id
+        finally:
+            db.close()
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        results = []
+        for side in (d, via):
+            wipe(uid)
+            out = []
+            for method, path, body in calls:
+                if "FIRST" in path:
+                    db = SessionLocal()
+                    try:
+                        first = db.execute(text("SELECT id FROM saved_views WHERE user_id = :u ORDER BY id LIMIT 1"), {"u": uid}).scalar() or 0
+                    finally:
+                        db.close()
+                    path = path.replace("FIRST", str(first))
+                r = side.request(method.upper(), path, json=body) if body is not None else side.request(method.upper(), path)
+                ans = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.status_code
+                if isinstance(ans, dict) and "views" in ans:
+                    ans = {"views": [{**v, "id": 0} for v in ans["views"]]}
+                out.append((r.status_code, ans, r.text if r.status_code == 200 else ""))
+                if side is via:
+                    served += r.headers.get("x-nd-served-by") == "gateway"
+            out.append(state(uid))
+            results.append(out)
+        for a, b_, call in zip(results[0], results[1], calls + [("state",)]):
+            assert a[:2] == b_[:2] if len(a) > 2 else a == b_, (call, a, b_)
+    assert served >= 25, served
