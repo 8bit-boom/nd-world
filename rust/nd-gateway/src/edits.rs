@@ -156,6 +156,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/prep/toggle", prep_toggle),
     ("/api/sessions/{}/prep/add", prep_add),
     ("/api/sessions/{}/prep/{}/delete", prep_delete),
+    ("/api/entity/{}/field", entity_field),
+    ("/api/entity/{}/rename", entity_rename),
+    ("/api/entities/bulk-folder", bulk_folder),
     ("/entity/{}/link/{}", entity_link),
     ("/entity/{}/unlink/{}", entity_unlink),
     ("/entity/{}/notes/new", note_add),
@@ -1073,4 +1076,79 @@ fn note_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     set.push(("visible_to_players", Sql::Integer(flag_param(&f, "visible"))));
     orm::update(&c.db, "entity_notes", ids[1], &set)?;
     redirect(&format!("/entity/{}", ids[0]))
+}
+
+/// `s[:n]` in code points
+fn take_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// A pydantic `str` field: a JSON string (anything else is pydantic's 422: Python's); `default` when absent
+fn json_str<'a>(b: &'a Map<String, Value>, name: &str, default: Option<&'a str>) -> Option<&'a str> {
+    match b.get(name) {
+        None => default,
+        Some(Value::String(v)) => Some(v),
+        _ => None,
+    }
+}
+
+/// `deps.can_edit_content`: the GM or a GM-assistant
+fn content_editor(c: &Ctx) -> bool {
+    c.p.is_gm || c.is_assistant()
+}
+
+fn entity_field(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (field, value) = (json_str(&b, "field", None)?, json_str(&b, "value", Some(""))?);
+    if !content_editor(c) || field != "subtype" {
+        return None;
+    }
+    let e = world_entity(c, ids[0])?;
+    let value = take_chars(&nd_render::text::py_split_join(value), 64);
+    let old = e.get("subtype").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if !value.is_empty() || e.get("subtype").is_some_and(|v| !v.is_null()) {
+        let new = if value.is_empty() { Sql::Null } else { s(&value) };
+        orm::update(&c.db, "entities", ids[0], &[("subtype", new)])?;
+    }
+    json_response(&json!({"ok": true, "id": ids[0], "field": "subtype", "value": value, "old": old}))
+}
+
+fn entity_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let name = json_str(&b, "name", None)?;
+    if !content_editor(c) {
+        return None;
+    }
+    let e = world_entity(c, ids[0])?;
+    let name = take_chars(&nd_render::text::py_split_join(name), 256);
+    let old = e.get("name").and_then(|v| v.as_str())?.to_string();
+    if name.is_empty() || name == old {
+        return None; // the 422s: Python's
+    }
+    orm::update(&c.db, "entities", ids[0], &[("name", s(&name))])?;
+    json_response(&json!({"ok": true, "id": ids[0], "name": name, "old": old}))
+}
+
+fn bulk_folder(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let world = c.world_id()?;
+    // only plain integer ids (Python's int() also takes numeric strings, floats and bools: those requests are Python's)
+    let ids: Vec<i64> = match b.get("entity_ids") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(a)) => a.iter().map(|v| v.as_i64()).collect::<Option<_>>()?,
+        _ => return None,
+    };
+    let folder = strip(json_str(&b, "folder", Some(""))?);
+    let folder = if folder.is_empty() { Sql::Null } else { s(&folder) };
+    let mut hit: Vec<i64> = vec![];
+    for id in ids {
+        let w: Option<i64> = c.db.query_row("SELECT world_id FROM entities WHERE id = ?1", [id], |r| r.get(0)).ok().flatten();
+        if w == Some(world) && !hit.contains(&id) {
+            hit.push(id);
+        }
+    }
+    for id in &hit {
+        orm::update(&c.db, "entities", *id, &[("folder", folder.clone())])?;
+    }
+    json_response(&json!({"updated": hit.len()}))
 }

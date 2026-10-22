@@ -20,6 +20,11 @@ pub fn py_strip(s: &str) -> &str {
     s.trim_matches(py_ws)
 }
 
+/// `" ".join(s.split())`: runs of whitespace to one space, none at the ends
+pub fn py_split_join(s: &str) -> String {
+    s.split(py_ws).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
 /// `str.splitlines()`
 pub fn py_splitlines(s: &str) -> Vec<&str> {
     let mut out = vec![];

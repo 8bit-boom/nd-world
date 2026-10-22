@@ -539,7 +539,7 @@ def _entities(world_id, n):
     from app.models import Entity
     db = SessionLocal()
     try:
-        es = [Entity(world_id=world_id, kind="npc", name=f"E{i}") for i in range(n)]
+        es = [Entity(world_id=world_id, kind="npc", name="E") for _ in range(n)]
         db.add_all(es)
         db.commit()
         return [e.id for e in es]
@@ -631,3 +631,51 @@ def _newest_note(entity_id):
         return dict(r) if r else None
     finally:
         db.close()
+
+
+def test_entity_field_rename_and_folder_writes_are_pythons(client, seed):
+    base = str(client.base_url)
+    served = 0
+    [other] = _entities(seed.world_b.id, 1)
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for start, body in ((None, {"field": "subtype", "value": "  Big   tower  "}), (None, {"field": "subtype"}), ("x", {"field": "subtype", "value": "x"}),
+                            ("x", {"field": "subtype", "value": " "}), (None, {"field": "name", "value": "y"}), (None, {"field": "subtype", "value": 3}),
+                            (None, {"value": "y"}), (None, {"field": "subtype", "value": "é" * 80}), (None, {"field": "subtype", "value": "a\x1cb"})):
+            ea, eb = _entities(seed.world_a.id, 2)
+            if start:
+                d.post(f"/api/entity/{ea}/field", json={"field": "subtype", "value": start}); d.post(f"/api/entity/{eb}/field", json={"field": "subtype", "value": start})
+            before = [_row("entities", ea), _row("entities", eb)]
+            ra = d.post(f"/api/entity/{ea}/field", json=body)
+            rb = via.post(f"/api/entity/{eb}/field", json=body)
+            if ra.headers.get("content-type", "").startswith("application/json") and isinstance(ra.json(), dict) and "id" in ra.json():
+                assert ra.json() | {"id": 0} == rb.json() | {"id": 0}, (ra.text, rb.text)
+                assert ra.status_code == rb.status_code
+            else:
+                _same_answer(ra, rb)
+            _same_rows(_row("entities", ea), _row("entities", eb), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body in ({"name": "  New\tname  "}, {"name": ""}, {"name": "E"}, {"name": 5}, {}, {"name": "ü" * 300}):
+            ea, eb = _entities(seed.world_a.id, 2)
+            for target_a, target_b in ((ea, eb), (other, other)):
+                ra = d.post(f"/api/entity/{target_a}/rename", json=body)
+                rb = via.post(f"/api/entity/{target_b}/rename", json=body)
+                if ra.status_code == 200:
+                    assert ra.json() | {"id": 0} == rb.json() | {"id": 0}, (ra.text, rb.text)
+                else:
+                    _same_answer(ra, rb)
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+            _same_rows(_row("entities", ea), _row("entities", eb))
+        for make in (lambda a, b: {"entity_ids": a, "folder": "  Dungeon  "}, lambda a, b: {"entity_ids": a}, lambda a, b: {"entity_ids": a + [other, 999999], "folder": ""},
+                     lambda a, b: {"entity_ids": [str(a[0])], "folder": "f"}, lambda a, b: {"folder": "f"}, lambda a, b: {"entity_ids": a + a, "folder": 3},
+                     lambda a, b: {"entity_ids": a + a, "folder": "dup"}):
+            group_a, group_b = _entities(seed.world_a.id, 2), _entities(seed.world_a.id, 2)
+            before = [_row("entities", i) for i in group_a + group_b]
+            ra = d.post("/api/entities/bulk-folder", json=make(group_a, None))
+            rb = via.post("/api/entities/bulk-folder", json=make(group_b, None))
+            _same_answer(ra, rb)
+            for i in range(2):
+                _same_rows(_row("entities", group_a[i]), _row("entities", group_b[i]), before[i], before[2 + i])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 10, served   # the GM's
