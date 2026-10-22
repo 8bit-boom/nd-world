@@ -316,3 +316,29 @@ pub fn album_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap)
     c.insert("move_targets".into(), Value::Array(targets));
     render_with(pages, "gallery_album.html", p.ctx, headers)
 }
+
+/// `all_world_image_urls`: every picture in use plus every album picture not used yet, as [{url, name}] sorted by URL
+pub fn all_world_image_urls(db: &Connection, wid: i64) -> Option<Vec<Value>> {
+    let mut names: std::collections::BTreeMap<String, Value> = Default::default();
+    for e in discover(db, wid)? {
+        names.insert(e["url"].as_str()?.to_string(), e["name"].clone());
+    }
+    let overrides = title_overrides(db, wid)?;
+    let mut st = db.prepare("SELECT image_urls_json FROM image_albums WHERE world_id = ?1 ORDER BY id").ok()?;
+    let raws = st.query_map([wid], |r| r.get::<_, Option<String>>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    for raw in raws {
+        let Ok(Value::Array(list)) = serde_json::from_str::<Value>(raw.as_deref().filter(|s| !s.is_empty()).unwrap_or("[]")) else { continue };
+        for u in list {
+            let Some(u) = u.as_str() else { continue };
+            if names.contains_key(u) {
+                continue;
+            }
+            let name = match overrides.get(u).filter(|t| t.as_str().map_or(false, |s| !s.is_empty())) {
+                Some(t) => t.clone(),
+                None => json!(display_name(u, &[])?),
+            };
+            names.insert(u.to_string(), name);
+        }
+    }
+    Some(names.into_iter().map(|(u, n)| json!({"url": u, "name": n})).collect())
+}

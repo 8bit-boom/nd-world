@@ -699,7 +699,7 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
 
 SIMPLE_FORM_URLS = ("/professions/new", "/races/new", "/boards/new", "/characters/templates/new", "/maps/schematic/new",
                     "/entity-templates/new", "/tables/new", "/display", "/handouts", "/dreamlands", "/king-in-yellow", "/sessions/new",
-                    "/quests/new", "/editor", "/entity-templates", "/characters/templates", "/worlds", "/export")
+                    "/quests/new", "/editor", "/entity-templates", "/characters/templates", "/worlds", "/export", "/maps/new")
 
 
 def _same_page(d, via, url, who):
@@ -718,7 +718,7 @@ def _same_page(d, via, url, who):
 def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
     from .conftest import PLAYER_PASSWORD
     from app.database import SessionLocal, get_app_settings
-    from app.models import Entity, EntityTemplate, GameSession, Party, Quest, World
+    from app.models import Entity, EntityTemplate, GameSession, ImageAlbum, Party, Quest, World
     base = str(client.base_url)
     db = SessionLocal()
     try:
@@ -726,7 +726,8 @@ def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
         st.dreamlands_enabled = st.king_in_yellow_enabled = True
         st.editor_external_url = "http://editor.example/"
         w = seed.world_a.id
-        db.add_all([Entity(world_id=w, kind="npc", name="Zed <z>"), Entity(world_id=w, kind="location", name="Alley"),
+        db.add(ImageAlbum(world_id=w, name="Art", image_urls_json=json.dumps(["/uploads/b.png", "/uploads/0123456789ab-a.png", 3])))
+        db.add_all([Entity(world_id=w, kind="npc", name="Zed <z>", image_url="/uploads/b.png"), Entity(world_id=w, kind="location", name="Alley"),
                     Party(world_id=w, name="Crew"), GameSession(world_id=w, session_num=7, title="Seven"), Quest(world_id=w, title="Find it"),
                     EntityTemplate(world_id=w, name="Shop", slug="gw-shop", kind="location", fields_json=json.dumps([{"key": "owner", "label": "Owner"}])),
                     EntityTemplate(world_id=None, name="Blank", slug="gw-blank", fields_json="")])

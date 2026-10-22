@@ -230,6 +230,8 @@ pub const SIMPLE: &[Simple] = &[
              lists: &[("sheet_templates", "SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id")], extra: None },
     Simple { path: "/worlds", template: "worlds.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(worlds_page) },
     Simple { path: "/export", template: "export_hub.html", section: Some("export"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(export_hub) },
+    Simple { path: "/maps/new", template: "map_form.html", section: Some("maps"), needs_world: true, gm_only: false, edit: true, lists: &[],
+             extra: Some(|db, c| { let wid = world_id_of(c)?; c.insert("gallery_images".into(), serde_json::Value::Array(crate::gallery::all_world_image_urls(db, wid)?)); Some(()) }) },
 ];
 
 /// `GET /export`: a staged restore waiting for confirmation (its manifest shown on the page) is Python's
