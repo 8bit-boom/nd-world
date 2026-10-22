@@ -922,3 +922,61 @@ def test_party_writes_are_pythons(client, seed):
         assert (_row("quests", qa)["assigned_party_id"] is None) == (_row("quests", qb)["assigned_party_id"] is None)
         served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 25, served
+
+
+def _no_new_lids(loot_a, loot_b):
+    """The two stashes alike, except the random lid each server gives a newly added item"""
+    import re
+    new = re.compile(r'"lid": "(?!old)[0-9a-f]{8}"')
+    assert new.sub('"lid": "<new>"', loot_a or "") == new.sub('"lid": "<new>"', loot_b or ""), (loot_a, loot_b)
+    a, b = json.loads(loot_a or "[]"), json.loads(loot_b or "[]")
+    assert len(a) == len(b), (a, b)
+    for x, y in zip(a, b):
+        if x.get("lid", "").startswith("old") or y.get("lid", "").startswith("old"):
+            assert x == y, (x, y)
+        else:
+            assert {**x, "lid": 0} == {**y, "lid": 0}, (x, y)
+            assert list(x) == list(y)
+
+
+def test_party_loot_is_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"parties": {"player": "edit", "assistant": "edit"}})
+        mine = PlayerCharacter(world_id=seed.world_a.id, name="Hero", owner_user_id=seed.player_a.id)
+        theirs = PlayerCharacter(world_id=seed.world_a.id, name="Rogue", owner_user_id=seed.player_b.id)
+        db.add_all([mine, theirs]); db.commit()
+        pc1, pc2 = mine.id, theirs.id
+    finally:
+        db.close()
+    stash = json.dumps([{"lid": "old1", "name": "Rope", "qty": 2, "notes": "n", "claimed_by": [pc2], "x": 1},
+                        {"name": "Gem", "lid": "old2", "qty": 0, "claimed_by": []}])
+    odd = json.dumps([{"name": "No lid"}])
+    served = 0
+    bodies = [{"action": "add", "name": "  Sword  ", "qty": 3, "notes": " sharp "}, {"action": "add", "name": "Ünï"}, {"action": "add", "name": " "},
+              {"action": "add", "name": "x", "qty": 0}, {"action": "add", "name": "x", "qty": "2"}, {"action": "add", "name": "x", "notes": 5},
+              {"action": "remove", "lid": "old2"}, {"action": "remove", "index": 0}, {"action": "remove", "index": 5}, {"action": "remove", "lid": "gone"},
+              {"action": "claim", "lid": "old1", "pc_id": pc1}, {"action": "claim", "lid": "old1", "pc_id": pc2}, {"action": "unclaim", "lid": "old1", "pc_id": pc2},
+              {"action": "claim", "index": 1, "pc_id": 999}, {"action": "give", "lid": "old1", "pc_id": pc1}, {"action": "nope"}, {}]
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for loot in (stash, odd):
+            for body in bodies:
+                ids = [_party(world_id=seed.world_a.id, name="P", member_pc_ids_json=json.dumps([pc1, pc2]), loot_json=loot) for _ in range(2)]
+                before = [_row("parties", i) for i in ids]
+                ra = d.post(f"/api/parties/{ids[0]}/loot", json=body)
+                rb = via.post(f"/api/parties/{ids[1]}/loot", json=body)
+                assert ra.status_code == rb.status_code, (body, ra.text, rb.text)
+                if ra.status_code == 200:
+                    _no_new_lids(json.dumps(ra.json()["loot"]), json.dumps(rb.json()["loot"]))
+                else:
+                    _same_answer(ra, rb)
+                _same_rows(_row("parties", ids[0]), _row("parties", ids[1]), before[0], before[1], ignore=("loot_json",))
+                _no_new_lids(_row("parties", ids[0])["loot_json"], _row("parties", ids[1])["loot_json"])
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 12, served

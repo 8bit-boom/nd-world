@@ -165,6 +165,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
     ("/api/parties/{}/location", party_location),
+    ("/api/parties/{}/loot", party_loot),
     ("/api/parties/{}/members/toggle", party_member_toggle),
     ("/new", entity_new),
     ("/entity/{}/edit", entity_edit),
@@ -1638,4 +1639,128 @@ fn party_member_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::update(&c.db, "parties", ids[0], &[(field, s(&ints_json(&list)))])?;
     orm::touch(&c.db, world)?;
     json_response(&json!({"ok": true, "added": added}))
+}
+
+const LOOT_NAME_MAX: usize = 120;
+const LOOT_NOTES_MAX: usize = 500;
+const LOOT_QTY_MAX: i64 = 9999;
+
+/// `load_loot` for a stash that is already clean (every item an object with its own string `lid`, text name / notes, an int qty and int
+/// claims); None for anything `load_loot` would repair (derived lids, str() of other values): Python's
+fn load_loot(p: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
+    let raw = p.get("loot_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let Value::Array(items) = serde_json::from_str::<Value>(raw).ok()? else { return None };
+    let mut seen: Vec<String> = vec![];
+    let mut out = vec![];
+    for it in items {
+        let Value::Object(mut m) = it else { return None };
+        let lid = m.get("lid")?.as_str().filter(|l| !l.is_empty() && !seen.iter().any(|x| x == l))?.to_string();
+        seen.push(lid.clone());
+        let name = match m.get("name") {
+            None | Some(Value::Null) => "Item".to_string(),
+            Some(Value::String(n)) if n.is_empty() => "Item".to_string(),
+            Some(Value::String(n)) => take_chars(n, LOOT_NAME_MAX),
+            _ => return None,
+        };
+        let qty = match m.get("qty") {
+            None | Some(Value::Null) => 1,
+            Some(Value::Number(n)) => n.as_i64()?.max(1),
+            _ => return None,
+        };
+        let notes = match m.get("notes") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(n)) => take_chars(n, LOOT_NOTES_MAX),
+            _ => return None,
+        };
+        let claimed: Vec<i64> = match m.get("claimed_by") {
+            None | Some(Value::Null) => vec![],
+            Some(Value::Array(a)) => a.iter().map(|x| x.as_i64()).collect::<Option<_>>()?,
+            _ => return None,
+        };
+        m.insert("lid".into(), json!(lid));
+        m.insert("name".into(), json!(name));
+        m.insert("qty".into(), json!(qty));
+        m.insert("notes".into(), json!(notes));
+        m.insert("claimed_by".into(), json!(claimed));
+        out.push(m);
+    }
+    Some(out)
+}
+
+/// `_loot_int` for a JSON int (strings, floats and bools are int()'s: Python's; out of range is the 400: Python's)
+fn loot_int(b: &Map<String, Value>, key: &str, default: Option<i64>, lo: Option<i64>, hi: Option<i64>) -> Option<i64> {
+    let v = match b.get(key) {
+        None => default?,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    (lo.map_or(true, |l| v >= l) && hi.map_or(true, |h| v <= h)).then_some(v)
+}
+
+fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (p, level) = party_for_write(c, ids[0])?;
+    if level == "none" {
+        return None;
+    }
+    let mut loot = load_loot(&p)?;
+    let members = int_list(p.get("member_pc_ids_json"))?;
+    let index = |loot: &[Map<String, Value>]| -> Option<usize> {
+        match b.get("lid") {
+            Some(Value::Null) | None => {
+                let i = loot_int(&b, "index", Some(-1), None, None)?;
+                (0..loot.len() as i64).contains(&i).then_some(i as usize)
+            }
+            Some(lid) => loot.iter().position(|it| it.get("lid") == Some(lid)), // gone: the 409, Python's
+        }
+    };
+    match b.get("action").and_then(|v| v.as_str()) {
+        Some("add") => {
+            let name = strip(b.get("name")?.as_str()?);
+            if name.is_empty() {
+                return None;
+            }
+            let notes = json_str(&b, "notes", Some(""))?;
+            let qty = loot_int(&b, "qty", Some(1), Some(1), Some(LOOT_QTY_MAX))?;
+            let lid = format!("{:08x}", rand::random::<u32>());
+            let mut m = Map::new();
+            m.insert("lid".into(), json!(lid));
+            m.insert("name".into(), json!(take_chars(&name, LOOT_NAME_MAX)));
+            m.insert("qty".into(), json!(qty));
+            m.insert("notes".into(), json!(take_chars(&strip(notes), LOOT_NOTES_MAX)));
+            m.insert("claimed_by".into(), json!([]));
+            loot.push(m);
+        }
+        Some("remove") => {
+            let i = index(&loot)?;
+            loot.remove(i);
+        }
+        Some(a @ ("claim" | "unclaim")) => {
+            let i = index(&loot)?;
+            let pc = loot_int(&b, "pc_id", None, None, None)?;
+            if !members.contains(&pc) {
+                return None;
+            }
+            if level != "full" {
+                let owner: Option<i64> = c.db.query_row("SELECT owner_user_id FROM player_characters WHERE id = ?1", [pc], |r| r.get(0)).ok().flatten();
+                if owner != Some(c.p.user_id) {
+                    return None;
+                }
+            }
+            let claimed = loot[i].get_mut("claimed_by")?.as_array_mut()?;
+            let at = claimed.iter().position(|x| x.as_i64() == Some(pc));
+            match (a, at) {
+                ("claim", None) => claimed.push(json!(pc)),
+                ("unclaim", Some(k)) => {
+                    claimed.remove(k);
+                }
+                _ => {}
+            }
+        }
+        _ => return None, // give (the character's equipment, by its system) and bad actions: Python's
+    }
+    let list = Value::Array(loot.into_iter().map(Value::Object).collect());
+    orm::update(&c.db, "parties", ids[0], &[("loot_json", s(&nd_render::py_dumps(&list)))])?;
+    orm::touch(&c.db, p.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"loot": list}))
 }
