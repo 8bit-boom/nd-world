@@ -108,6 +108,10 @@ def make() -> dict:
         # the bundled race / profession catalogs (app/races, app/professions) as /races/add-builtin and /professions/add-builtin store them
         "feat_lookup": feat_lookup(), "advance_feats": advance_feats(),
         "builtin_races": builtin_catalog("races"), "builtin_professions": builtin_catalog("professions"),
+        # per ruleset: what the combat routes read (label, hp_label, fluid turns, who a drop to 0 HP takes out of the turn order)
+        "combat_rulesets": {k: {"label": v["label"], "hp_label": v["hp_label"], "fluid": v["turns"] == combat_rules.TURNS_FLUID,
+                                "skip": v.get("skip_down", combat_rules.SKIP_ENEMIES)} for k, v in combat_rules.RULESETS.items()},
+        "combat_template_rulesets": combat_rules._BY_TEMPLATE_SLUG,
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }
 

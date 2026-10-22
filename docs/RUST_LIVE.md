@@ -37,3 +37,13 @@ restart: the gateway keeps the streams open and they continue when Python is bac
 The other streams and table tools - the second screen's stream (`/api/display/stream`), AI and chronicler streams, cockpit, combat tracker,
 character hub, schematic maps (walls, fog, tokens, buy / pick-up with their locking) - are Python's. Two-browser tests for each live feature
 are the exit criterion; this is one stream.
+
+## Phase 4, full port: the table tools' writes
+
+Behind `writes` in `ND_RUST_ROUTES`, answered like the phase 3 writes (`docs/RUST_WRITES.md`: success only, one transaction, everything
+else to Python). Every batch also checks that the gateway wakes the same live listeners as Python: the world's `live:<id>` counter and
+the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same amount (`tests/test_gateway_writes.py`).
+
+| Routes | Batch |
+|---|---|
+| `POST /combat/<id>/state` (`combat_state.normalize_state` ported; a stale `rev` - the 409 with the current state - and values `int()` / `float()` / `casefold()` would read their own way: Python's), `/combat/new` (with `default_ruleset`), `/combat/<id>/delete`, `/link-session`, `/unlink-session`, `/api/combat/<id>/finish` (the summary fact), `/reopen` | P4-1 |

@@ -14963,6 +14963,55 @@
    "Chronicles of the Worm (Asterion engine)"
   ]
  ],
+ "combat_rulesets": {
+  "asterion": {
+   "fluid": true,
+   "hp_label": "Flesh",
+   "label": "Game of Gods (Asterion)",
+   "skip": "all"
+  },
+  "generic": {
+   "fluid": false,
+   "hp_label": "HP",
+   "label": "Generic",
+   "skip": "enemies"
+  },
+  "hunt": {
+   "fluid": true,
+   "hp_label": "Health",
+   "label": "Hunt in the Moonlight",
+   "skip": "all"
+  },
+  "nd": {
+   "fluid": false,
+   "hp_label": "Health",
+   "label": "Neon & Dragons",
+   "skip": "enemies"
+  },
+  "nd_asterion": {
+   "fluid": true,
+   "hp_label": "Health",
+   "label": "Neon & Dragons (Asterion engine)",
+   "skip": "all"
+  },
+  "worm": {
+   "fluid": false,
+   "hp_label": "Health",
+   "label": "Chronicles of the Worm",
+   "skip": "enemies"
+  },
+  "worm_asterion": {
+   "fluid": true,
+   "hp_label": "Health",
+   "label": "Chronicles of the Worm (Asterion engine)",
+   "skip": "all"
+  }
+ },
+ "combat_template_rulesets": {
+  "asterion": "asterion",
+  "hunt-in-the-moonlight": "hunt",
+  "nd-default": "nd"
+ },
  "feat_lookup": {
   "by_id": {
    "aberrant_amalgam": {

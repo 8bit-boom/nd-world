@@ -271,6 +271,13 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/image", entity_set_image),
     ("/races/new", race_new),
     ("/maps/new", map_new),
+    ("/combat/new", combat_new),
+    ("/combat/{}/state", combat_save_state),
+    ("/combat/{}/delete", combat_delete),
+    ("/combat/{}/link-session", combat_link_session),
+    ("/combat/{}/unlink-session", combat_unlink_session),
+    ("/api/combat/{}/finish", combat_finish),
+    ("/api/combat/{}/reopen", combat_reopen),
     ("/images/spotlight", spotlight_send),
     ("/images/spotlight/clear", spotlight_clear),
     ("/entity/{}/notes/import", entity_note_import),
@@ -7604,4 +7611,485 @@ fn spotlight_clear(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     orm::update(&c.db, "worlds", wid, &[("spotlight_image_url", Sql::Null), ("spotlight_label", Sql::Null), ("spotlight_version", Sql::Integer(version))])?;
     signal_spot(c)?;
     json_response(&json!({"ok": true, "version": version}))
+}
+
+// ── the combat tracker (app/routers/combat.py, app/combat_state.py, app/combat_turns.py) ──
+
+/// `combat_state._int(v, default, lo, hi)`: int(v), else int(float(v)), else the default; clamped. Err for text Python's int() / float()
+/// might read in its own way (underscores, "inf", other scripts' digits)
+fn cs_int(v: Option<&Value>, default: i64, lo: i64, hi: i64) -> Result<i64, ()> {
+    let n = match v {
+        None | Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => default,
+        Some(Value::Bool(b)) => *b as i64,
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(i) => i,
+            None => {
+                let f = n.as_f64().ok_or(())?;
+                if !f.is_finite() {
+                    return Err(());
+                }
+                f.trunc().clamp(-1e18, 1e18) as i64
+            }
+        },
+        Some(Value::String(t)) => {
+            if !t.is_ascii() || t.contains('_') {
+                return Err(());
+            }
+            match py_int_text(t) {
+                Ok(i) => i,
+                Err(PyErr::Value) => {
+                    let st = t.trim();
+                    let plain = regex::Regex::new(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$").map_err(|_| ())?;
+                    if plain.is_match(st) {
+                        let f: f64 = st.parse().map_err(|_| ())?;
+                        if !f.is_finite() {
+                            return Err(());
+                        }
+                        f.trunc().clamp(-1e18, 1e18) as i64
+                    } else if ["inf", "infinity", "nan"].contains(&st.trim_start_matches(['+', '-']).to_ascii_lowercase().as_str()) {
+                        return Err(()); // int(float("inf")) raises, int(float("nan")) too: Python's
+                    } else {
+                        default
+                    }
+                }
+                Err(_) => return Err(()),
+            }
+        }
+    };
+    Ok(n.clamp(lo, hi))
+}
+
+/// `" ".join(str(v or default).split())`: a string, an integer or a bool (Python's str() of them); anything else: Err
+fn cs_text(v: Option<&Value>, default: &str) -> Result<String, ()> {
+    let t = match v {
+        None | Some(Value::Null) => default.to_string(),
+        Some(Value::Bool(false)) => default.to_string(),
+        Some(Value::Bool(true)) => "True".into(),
+        Some(Value::String(s)) if s.is_empty() => default.to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) if n.as_i64() == Some(0) => default.to_string(),
+        Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+        Some(Value::Array(a)) if a.is_empty() => default.to_string(),
+        Some(Value::Object(o)) if o.is_empty() => default.to_string(),
+        _ => return Err(()),
+    };
+    Ok(t)
+}
+
+fn new_cid() -> String {
+    format!("c-{:08x}", rand::random::<u32>())
+}
+
+/// `_conditions`: condition names, a name repeated is a stack (up to 9 of one), at most 30
+fn cs_conditions(raw: Option<&Value>) -> Result<Vec<String>, ()> {
+    let mut out: Vec<String> = vec![];
+    let mut count: Vec<(String, usize)> = vec![];
+    for c in raw.and_then(|r| r.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+        let Some(c) = c.as_str() else { continue };
+        let name = take_chars(&nd_render::text::py_split_join(c), 40);
+        if !name.is_ascii() {
+            return Err(()); // casefold() beyond ASCII: Python's
+        }
+        let key = name.to_ascii_lowercase();
+        let n = count.iter().find(|(k, _)| *k == key).map_or(0, |(_, n)| *n);
+        if !name.is_empty() && n < 9 {
+            match count.iter_mut().find(|(k, _)| *k == key) {
+                Some(e) => e.1 += 1,
+                None => count.push((key, 1)),
+            }
+            out.push(name);
+        }
+        if out.len() >= 30 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// `_counts(raw, cap)`
+fn cs_counts(raw: Option<&Value>, cap: i64) -> Result<Map<String, Value>, ()> {
+    let mut out = Map::new();
+    if let Some(Value::Object(o)) = raw {
+        for (k, v) in o {
+            if !strip(k).is_empty() && out.len() < 12 {
+                out.insert(take_chars(&nd_render::text::py_split_join(k), 40), json!(cs_int(Some(v), 0, 0, cap)?));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `normalize_combatant`
+fn cs_combatant(c: &Map<String, Value>) -> Result<Map<String, Value>, ()> {
+    let source = match c.get("source").and_then(|v| v.as_str()) {
+        Some(s @ ("pc" | "entity" | "manual")) => s.to_string(),
+        _ => "manual".into(),
+    };
+    let max_hp = cs_int(c.get("max_hp"), 0, 0, 100_000)?;
+    let max_shock = cs_int(c.get("max_shock"), 0, 0, 100_000)?;
+    let conditions = cs_conditions(c.get("conditions"))?;
+    let mut durations = Map::new();
+    if let Some(Value::Object(raw)) = c.get("cond_dur") {
+        for (k, v) in raw {
+            if !k.is_ascii() {
+                return Err(());
+            }
+            if let Some(name) = conditions.iter().rev().find(|x| x.eq_ignore_ascii_case(k)) {
+                let n = cs_int(Some(v), 0, 0, 99)?;
+                if n != 0 {
+                    durations.insert(name.clone(), json!(n));
+                }
+            }
+        }
+    }
+    let mut res = Map::new();
+    if let Some(Value::Object(raw)) = c.get("res") {
+        for (k, v) in raw {
+            let Some(v) = v.as_object() else { continue };
+            if res.len() >= 12 {
+                continue;
+            }
+            let mx = cs_int(v.get("max"), 0, 0, 9999)?;
+            let label = take_chars(&nd_render::text::py_split_join(&cs_text(v.get("label"), k)?), 40);
+            res.insert(take_chars(k, 32), json!({"cur": cs_int(v.get("cur"), mx, 0, mx)?, "max": mx, "label": label}));
+        }
+    }
+    let saves = c.get("saves").and_then(|s| s.as_object());
+    let save = |k: &str| cs_int(saves.and_then(|s| s.get(k)).or(Some(&json!(0))), 0, 0, 3);
+    let id = take_chars(&cs_text(c.get("id"), "")?, 40);
+    let name = take_chars(&nd_render::text::py_split_join(&cs_text(c.get("name"), "")?), 120);
+    let opt_id = |k: &str| -> Result<Value, ()> {
+        let n = cs_int(c.get(k), 0, 0, (1i64 << 31) - 1)?;
+        Ok(if n == 0 { Value::Null } else { json!(n) })
+    };
+    let notes = take_chars(&cs_text(c.get("notes"), "")?, 2000);
+    let mut m = Map::new();
+    m.insert("id".into(), json!(if id.is_empty() { new_cid() } else { id }));
+    m.insert("name".into(), json!(if name.is_empty() { "Combatant".to_string() } else { name }));
+    m.insert("source".into(), json!(source));
+    m.insert("pc_id".into(), opt_id("pc_id")?);
+    m.insert("entity_id".into(), opt_id("entity_id")?);
+    m.insert("initiative".into(), json!(cs_int(c.get("initiative"), 0, -9999, 9999)?));
+    m.insert("tiebreak".into(), json!(cs_int(c.get("tiebreak"), 0, -9999, 9999)?));
+    m.insert("init_bonus".into(), json!(cs_int(c.get("init_bonus"), 0, -99, 99)?));
+    m.insert("max_hp".into(), json!(max_hp));
+    m.insert("hp".into(), json!(cs_int(c.get("hp"), max_hp, 0, max_hp)?));
+    m.insert("temp_hp".into(), json!(cs_int(c.get("temp_hp"), 0, 0, 9999)?));
+    m.insert("max_shock".into(), json!(max_shock));
+    m.insert("shock".into(), json!(cs_int(c.get("shock"), 0, 0, max_shock)?));
+    m.insert("armor".into(), json!(cs_int(c.get("armor"), 0, 0, 999)?));
+    m.insert("conditions".into(), json!(conditions));
+    m.insert("cond_dur".into(), Value::Object(durations));
+    m.insert("res".into(), Value::Object(res));
+    m.insert("used".into(), Value::Object(cs_counts(c.get("used"), 9)?));
+    m.insert("saves".into(), json!({"ok": save("ok")?, "fail": save("fail")?, "ko": save("ko")?}));
+    m.insert("wounds".into(), json!(cs_int(c.get("wounds"), 0, 0, 99)?));
+    m.insert("press_on".into(), json!(py_truthy(c.get("press_on"))));
+    m.insert("counters".into(), Value::Object(cs_counts(c.get("counters"), 99)?));
+    m.insert("notes".into(), json!(notes));
+    m.insert("status".into(), json!(if c.get("status").and_then(|v| v.as_str()) == Some("dead") { "dead" } else { "" }));
+    m.insert("visible".into(), json!(c.get("visible") != Some(&Value::Bool(false))));
+    m.insert("name_known".into(), json!(match c.get("name_known") { None => source == "pc", Some(v) => py_truthy(Some(v)) }));
+    Ok(m)
+}
+
+/// `normalize_state(body)`: Err(()) both for a body Python refuses (its 400 / 422) and one this port leaves to it
+fn cs_normalize(body: &Map<String, Value>) -> Result<Map<String, Value>, ()> {
+    let raw = body.get("combatants").and_then(|v| v.as_array()).ok_or(())?;
+    if raw.len() > 60 {
+        return Err(());
+    }
+    let mut combatants: Vec<Value> = vec![];
+    let mut seen: Vec<String> = vec![];
+    for c in raw {
+        let mut n = cs_combatant(c.as_object().ok_or(())?)?;
+        let id = n["id"].as_str().unwrap_or("").to_string();
+        if seen.contains(&id) {
+            n.insert("id".into(), json!(new_cid()));
+        }
+        seen.push(n["id"].as_str().unwrap_or("").to_string());
+        combatants.push(Value::Object(n));
+    }
+    let mut out = Map::new();
+    let last = (combatants.len() as i64 - 1).max(0);
+    out.insert("round_num".into(), json!(cs_int(body.get("round_num"), 1, 1, 9999)?));
+    out.insert("active_idx".into(), json!(cs_int(body.get("active_idx"), 0, 0, last)?));
+    if let Some(r) = body.get("ruleset") {
+        let known = nd_render::app::data().get("combat_rulesets").and_then(|m| m.as_object()).ok_or(())?;
+        out.insert("ruleset".into(), json!(match r.as_str() { Some(s) if s.is_empty() || known.contains_key(s) => s, _ => "" }));
+    }
+    if body.contains_key("turn") {
+        let raw = body.get("turn").and_then(|t| t.as_object()).cloned().unwrap_or_default();
+        let ids: Vec<&str> = combatants.iter().filter_map(|c| c["id"].as_str()).collect();
+        let mut acted: Vec<String> = vec![];
+        for i in raw.get("acted").and_then(|a| a.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+            if let Some(i) = i.as_str() {
+                if ids.contains(&i) && !acted.iter().any(|a| a == i) {
+                    acted.push(i.to_string());
+                }
+            }
+        }
+        let pick = |k: &str| raw.get(k).and_then(|v| v.as_str()).filter(|v| ids.contains(v)).map_or(Value::Null, |v| json!(v));
+        let mode = match raw.get("mode").and_then(|v| v.as_str()) { Some(m @ ("initiative" | "fluid")) => m, _ => "" };
+        out.insert("turn".into(), json!({"active_id": pick("active_id"), "acted": acted, "picker": pick("picker"), "mode": mode}));
+    }
+    if let Some(Value::String(n)) = body.get("name") {
+        if !strip(n).is_empty() {
+            out.insert("name".into(), json!(take_chars(&nd_render::text::py_split_join(n), 256)));
+        }
+    }
+    if body.contains_key("log") {
+        let mut log = vec![];
+        for e in body.get("log").and_then(|l| l.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+            let Some(e) = e.as_object() else { continue };
+            if !py_truthy(e.get("text")) {
+                continue;
+            }
+            log.push(json!({"t": cs_int(e.get("t"), 0, 0, 1i64 << 53)?, "round": cs_int(e.get("round"), 1, 1, 9999)?,
+                            "text": take_chars(&nd_render::text::py_split_join(&cs_text(e.get("text"), "")?), 200)}));
+        }
+        let skip = log.len().saturating_sub(300);
+        out.insert("log".into(), Value::Array(log.split_off(skip)));
+    }
+    out.insert("combatants".into(), Value::Array(combatants));
+    Ok(out)
+}
+
+/// `_scoped`: the encounter of the active world, for a GM
+fn combat_scoped(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", id)?;
+    (cs.get("world_id")?.as_i64() == c.world_id()).then_some(cs)
+}
+
+/// `combat_turns.touch(cs)` + commit: the revision moves on, the TV and the other trackers hear "combat"; returns the new revision
+fn combat_touch(c: &Ctx, cs: &Map<String, Value>) -> Option<i64> {
+    let rev = cs.get("rev").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+    orm::update(&c.db, "combat_sessions", cs.get("id")?.as_i64()?, &[("rev", Sql::Integer(rev))])?;
+    orm::signal(&c.db, cs.get("world_id")?.as_i64()?, "combat")?;
+    Some(rev)
+}
+
+fn combat_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id().unwrap_or(1);
+    let known = nd_render::app::data().get("combat_rulesets")?.as_object()?;
+    let wanted = f.get("ruleset").unwrap_or("");
+    let rules = if known.contains_key(wanted) {
+        wanted.to_string()
+    } else {
+        // default_ruleset: what the world's characters play (Hunt / Asterion before anything else), else Neon & Dragons
+        let by_slug = nd_render::app::data().get("combat_template_rulesets")?.as_object()?;
+        let mut st = c.db.prepare("SELECT t.slug FROM player_characters p LEFT JOIN sheet_templates t ON t.id = p.sheet_template_id WHERE p.world_id = ?1 ORDER BY p.id").ok()?;
+        let slugs: Vec<Option<String>> = st.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+        let hit = slugs.iter().flatten().find_map(|s| by_slug.get(s).and_then(|r| r.as_str()).filter(|r| *r == "hunt" || *r == "asterion"));
+        match hit {
+            Some(r) => r.to_string(),
+            None => "nd".to_string(),
+        }
+    };
+    let name = take_chars(&strip(f.get("name").filter(|n| !n.is_empty()).unwrap_or("New Encounter")), 256);
+    let name = if name.is_empty() { "New Encounter".to_string() } else { name };
+    let id = orm::insert(&c.db, "combat_sessions", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("ruleset", s(&rules))])?;
+    redirect(&format!("/combat/{id}"))
+}
+
+fn combat_save_state(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let cs = combat_scoped(c, ids[0])?;
+    let body = c.json()?;
+    let state = cs_normalize(&body).ok()?;
+    let rev = cs.get("rev").and_then(|v| v.as_i64()).unwrap_or(0);
+    let sent = match body.get("rev") {
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+        Some(Value::Bool(b)) => Some(*b as i64),
+        _ => None,
+    };
+    if sent.is_some_and(|r| r != rev) {
+        return None; // the 409 with the current state: Python's
+    }
+    let mut set: Vec<(&str, Sql)> = vec![
+        ("combatants_json", s(&nd_render::py_dumps(&state["combatants"]))),
+        ("round_num", Sql::Integer(state["round_num"].as_i64()?)),
+        ("active_idx", Sql::Integer(state["active_idx"].as_i64()?)),
+    ];
+    if let Some(n) = state.get("name") {
+        set.push(("name", s(n.as_str()?)));
+    }
+    if let Some(r) = state.get("ruleset") {
+        set.push(("ruleset", s(r.as_str()?)));
+    }
+    if let Some(t) = state.get("turn") {
+        set.push(("turn_json", s(&nd_render::py_dumps(t))));
+    }
+    if let Some(l) = state.get("log") {
+        set.push(("log_json", s(&nd_render::py_dumps(l))));
+    }
+    orm::update(&c.db, "combat_sessions", ids[0], &set)?;
+    let rev = combat_touch(c, &cs)?;
+    orm::touch(&c.db, cs.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true, "rev": rev}))
+}
+
+fn combat_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    combat_scoped(c, ids[0])?;
+    c.db.execute("DELETE FROM combat_sessions WHERE id = ?1", [ids[0]]).ok()?;
+    redirect("/combat")
+}
+
+fn combat_link_session(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    combat_scoped(c, ids[0])?;
+    let wid = c.world_id()?;
+    let gs = match f.get("game_session_id").filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let n = match py_int_text(v) {
+                Ok(n) => n,
+                Err(PyErr::Value) => 0,
+                Err(_) => return None,
+            };
+            let gs: i64 = c.db.query_row("SELECT id FROM game_sessions WHERE id = ?1 AND world_id = ?2", [n, wid], |r| r.get(0)).ok()?;
+            Sql::Integer(gs)
+        }
+        None => Sql::Null,
+    };
+    orm::update(&c.db, "combat_sessions", ids[0], &[("game_session_id", gs)])?;
+    redirect(&format!("/combat/{}", ids[0]))
+}
+
+fn combat_unlink_session(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    combat_scoped(c, ids[0])?;
+    orm::update(&c.db, "combat_sessions", ids[0], &[("game_session_id", Sql::Null)])?;
+    redirect(&format!("/combat/{}", ids[0]))
+}
+
+/// `combat_rules.is_out(c, ruleset)` for a stored combatant; None for a value int() would read in its own way
+fn combat_is_out(c: &Value, rules: &Value) -> Option<bool> {
+    if c.get("status").and_then(|v| v.as_str()) == Some("dead") {
+        return Some(true);
+    }
+    let num = |k: &str| -> Option<i64> {
+        match c.get(k) {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => Some(0),
+            Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+            _ => None,
+        }
+    };
+    let down = num("max_hp")? > 0 && num("hp")? <= 0;
+    if !down {
+        return Some(false);
+    }
+    let skip = rules["skip"].as_str()?;
+    Some(skip == "all" || (skip == "enemies" && c.get("source").and_then(|v| v.as_str()) != Some("pc")))
+}
+
+/// `_summary_text(cs)`
+fn combat_summary(cs: &Map<String, Value>) -> Option<String> {
+    let all = nd_render::app::data().get("combat_rulesets")?;
+    let ruleset = cs.get("ruleset").and_then(|v| v.as_str()).unwrap_or("");
+    let rules = all.get(ruleset).unwrap_or(&all["generic"]);
+    let combatants: Vec<Value> = match serde_json::from_str::<Value>(cs.get("combatants_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|c| c.is_object()).collect(),
+        Ok(_) => vec![],
+        Err(_) => return None,
+    };
+    let num = |c: &Value, k: &str| -> Option<i64> {
+        match c.get(k) {
+            None | Some(Value::Null) => Some(0),
+            Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+            _ => None,
+        }
+    };
+    let name = |c: &Value| -> Option<String> {
+        match c.get("name") {
+            Some(Value::String(t)) => Some(t.clone()),
+            Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()),
+            None | Some(Value::Null) => Some("None".into()),
+            _ => None,
+        }
+    };
+    let mut standing = vec![];
+    let mut down = vec![];
+    let mut dead = vec![];
+    for c in &combatants {
+        let up = !combat_is_out(c, rules)? && !(num(c, "hp")? <= 0 && num(c, "max_hp")? > 0);
+        if up {
+            standing.push(c);
+        } else if c.get("status").and_then(|v| v.as_str()) == Some("dead") {
+            dead.push(c);
+        } else {
+            down.push(c);
+        }
+    }
+    let hp_label = rules["hp_label"].as_str()?;
+    let mut lines = vec![format!("⚔ {} — ended in round {} ({}).", name(&Value::Object(cs.clone()))?,
+                                 cs.get("round_num").and_then(|v| v.as_i64()).filter(|n| *n != 0).unwrap_or(1), rules["label"].as_str()?)];
+    if !standing.is_empty() {
+        let parts: Option<Vec<String>> = standing.iter().map(|c| Some(format!("{} ({}/{} {hp_label})", name(c)?,
+            c.get("hp").map_or(Some(0), |v| v.as_i64())?, c.get("max_hp").map_or(Some(0), |v| v.as_i64())?))).collect();
+        lines.push(format!("Standing: {}.", parts?.join(", ")));
+    }
+    if !down.is_empty() {
+        lines.push(format!("Down: {}.", down.iter().map(|c| name(c)).collect::<Option<Vec<_>>>()?.join(", ")));
+    }
+    if !dead.is_empty() {
+        lines.push(format!("Dead: {}.", dead.iter().map(|c| name(c)).collect::<Option<Vec<_>>>()?.join(", ")));
+    }
+    let log: Vec<Value> = match serde_json::from_str::<Value>(cs.get("log_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => return None, // iterating a non-list: Python's
+        Err(_) => vec![],
+    };
+    let mut notable = vec![];
+    for e in &log {
+        let Some(o) = e.as_object() else { continue };
+        if !py_truthy(o.get("text")) {
+            continue;
+        }
+        let text = o.get("text")?.as_str()?.to_string();
+        if ["—", "↶", "↷"].iter().any(|p| text.starts_with(p)) {
+            continue;
+        }
+        if [" is down", " is Broken", "Shattered", "dies", "executed", "Wound", "Presses On", "takes "].iter().any(|w| text.contains(w)) {
+            let round = match o.get("round") {
+                None => "1".to_string(),
+                Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+                Some(Value::String(t)) => t.clone(),
+                _ => return None,
+            };
+            notable.push(format!("R{round} {text}"));
+        }
+    }
+    if !notable.is_empty() {
+        let skip = notable.len().saturating_sub(10);
+        lines.push(format!("Highlights: {}", notable[skip..].join("; ")));
+    }
+    Some(lines.join("\n"))
+}
+
+fn combat_finish(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let cs = combat_scoped(c, ids[0])?;
+    if py_truthy(cs.get("is_template")) {
+        return None;
+    }
+    if !cs.get("finished_at").is_none_or(|v| v.is_null()) {
+        return json_response(&json!({"ok": true, "already": true}));
+    }
+    let text = combat_summary(&cs)?;
+    let wid = c.world_id()?;
+    let now = orm::now_stamp();
+    let fact = orm::insert(&c.db, "facts", &[("world_id", Sql::Integer(wid)), ("game_session_id", cs.get("game_session_id").and_then(|v| v.as_i64()).map_or(Sql::Null, Sql::Integer)),
+        ("content", s(&text)), ("visible_to_players", Sql::Integer(0)), ("tags", s("combat")), ("author_id", Sql::Integer(c.p.user_id)), ("updated_at", s(&now))])?;
+    orm::update(&c.db, "combat_sessions", ids[0], &[("finished_at", s(&now))])?;
+    combat_touch(c, &cs)?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"ok": true, "fact_id": fact}))
+}
+
+fn combat_reopen(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let cs = combat_scoped(c, ids[0])?;
+    orm::update(&c.db, "combat_sessions", ids[0], &[("finished_at", Sql::Null)])?;
+    combat_touch(c, &cs)?;
+    json_response(&json!({"ok": true}))
 }

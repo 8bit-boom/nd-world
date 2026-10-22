@@ -106,6 +106,12 @@ fn same(a: &Sql, b: &Sql) -> bool {
     }
 }
 
+/// `live.signal(world, name)`: open pages listening for that signal (the combat TV, the dice log ...) fetch again
+pub fn signal(db: &Connection, world_id: i64, name: &str) -> Option<()> {
+    db.execute("INSERT INTO shared_state (key, n) VALUES (?1, 1) ON CONFLICT(key) DO UPDATE SET n = n + 1", [format!("sig:{world_id}:{name}")]).ok()?;
+    Some(())
+}
+
 /// `live.touch(world)`: open live pages of the world learn something changed (app/shared_state.py)
 pub fn touch(db: &Connection, world_id: i64) -> Option<()> {
     db.execute("INSERT INTO shared_state (key, n) VALUES (?1, 1) ON CONFLICT(key) DO UPDATE SET n = n + 1", [format!("live:{world_id}")]).ok()?;

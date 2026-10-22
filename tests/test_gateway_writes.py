@@ -3499,3 +3499,113 @@ def test_spotlight_is_pythons(client, seed):
         a, b = p.get("/api/spotlight").json(), pvia.get("/api/spotlight")
         assert b.json() == a and b.headers.get("x-nd-served-by") == "gateway", (a, b.json())
     assert served >= 4, served
+
+
+def test_combat_tracker_writes_are_pythons(client, seed):
+    import random
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pvia = _via(p, base)
+    w = seed.world_a.id
+    served = 0
+
+    def enc(**kw):
+        return _add("CombatSession", world_id=w, name="Fight", **kw)
+
+    def facts(cs_id):
+        r = _row("combat_sessions", cs_id)
+        return None if r is None else {k: r[k] for k in ("name", "combatants_json", "round_num", "active_idx", "rev", "ruleset", "turn_json", "log_json",
+                                                          "game_session_id", "is_template")} | {"finished": r["finished_at"] is not None}
+
+    rnd = random.Random(3)
+
+    def junk():
+        return rnd.choice([None, True, False, 0, 7, -3, "12", " 5 ", "2.7", "x", "", [], {}, 3.9, 10**9, "1e3", "-0"])
+
+    bodies = [
+        {"combatants": [{"id": "a", "name": "  Orc   Boss ", "source": "entity", "max_hp": 20, "hp": 25, "conditions": ["Prone", "prone", "Burning", 3],
+                         "cond_dur": {"PRONE": 2, "x": 1}, "res": {"ichor": {"cur": 9, "max": 5}}, "used": {" A ": 1, "": 2}, "saves": {"ok": 5},
+                         "counters": {"Phase": 200}, "visible": False}, {"id": "b", "name": "", "source": "pc", "pc_id": "4"}],
+         "round_num": 3, "active_idx": 9, "ruleset": "hunt", "turn": {"active_id": "a", "acted": ["a", "a", "zz"], "mode": "fluid"},
+         "name": "  Big   Fight ", "log": [{"t": 5, "round": 2, "text": "  Orc  takes 3 "}, {"text": ""}, "x"]},
+        {"combatants": [], "ruleset": "nope", "rev": 0},
+        {"combatants": [{"name": "Rev"}], "rev": 999},
+        {"combatants": "x"}, {"combatants": [1]}, [1],
+    ]
+    for _ in range(25):
+        bodies.append({"combatants": [{k: junk() for k in ("name", "max_hp", "hp", "shock", "max_shock", "initiative", "armor", "notes", "pc_id", "temp_hp")}
+                                      | {"id": f"r{i}"} for i in range(rnd.randint(0, 3))], "round_num": junk(), "active_idx": junk(), "log": junk()})
+    for body in bodies:
+        out = []
+        for side in (d, via):
+            cid = enc()
+            r = side.post(f"/combat/{cid}/state", json=body)
+            out.append((r.status_code, r.json() if r.status_code in (200, 409) and "state" not in r.text else r.status_code, facts(cid),
+                        r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out)
+        served += out[1][3] == "gateway"
+    # a player may not write the tracker
+    cid = enc()
+    assert pvia.post(f"/combat/{cid}/state", json={"combatants": []}).status_code == p.post(f"/combat/{cid}/state", json={"combatants": []}).status_code
+    gs = _gsession(world_id=w, title="Night")
+    log = json.dumps([{"round": 2, "text": "Orc takes 5"}, {"round": 3, "text": "↶ undo"}, {"text": "Rat dies"}])
+    cbs = json.dumps([{"id": "a", "name": "Hero", "source": "pc", "hp": 4, "max_hp": 10}, {"id": "b", "name": "Orc", "source": "entity", "hp": 0, "max_hp": 8},
+                      {"id": "c", "name": "Rat", "status": "dead", "hp": 0, "max_hp": 2}])
+    for path, form, kw in [("link-session", {"game_session_id": str(gs)}, {}), ("link-session", {"game_session_id": ""}, {"game_session_id": gs}),
+                           ("link-session", {"game_session_id": "999999"}, {}), ("unlink-session", None, {"game_session_id": gs}), ("delete", None, {}),
+                           ("finish", None, {"combatants_json": cbs, "log_json": log, "round_num": 4, "ruleset": "nd", "game_session_id": gs}),
+                           ("finish", None, {"is_template": True}), ("reopen", None, {})]:
+        out = []
+        for side in (d, via):
+            cid = enc(**kw)
+            url = f"/api/combat/{cid}/{path}" if path in ("finish", "reopen") else f"/combat/{cid}/{path}"
+            r = side.post(url, data=form, follow_redirects=False) if form is not None else side.post(url, follow_redirects=False)
+            j = r.json() if r.headers.get("content-type", "").startswith("application/json") else None
+            fact = None
+            if j and "fact_id" in j:
+                f = _row("facts", j.pop("fact_id"))
+                fact = (f["content"], f["visible_to_players"], f["tags"], f["game_session_id"])
+            out.append((r.status_code, r.headers.get("location", "").replace(str(cid), "ID"), j, fact, facts(cid), r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (path, form, out)
+        served += out[1][5] == "gateway"
+    for form in ({"name": "  Goblins ", "ruleset": "asterion"}, {"ruleset": "bad"}, {}):
+        out = []
+        for side in (d, via):
+            r = side.post("/combat/new", data=form, follow_redirects=False)
+            new = _newest("combat_sessions")
+            out.append((r.status_code, new["name"], new["ruleset"], r.headers.get("location") == f"/combat/{new['id']}", r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (form, out)
+        served += out[1][4] == "gateway"
+    assert served >= 25, served
+
+
+def _shared(key):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return db.execute(text("SELECT n FROM shared_state WHERE key = :k"), {"k": key}).scalar() or 0
+    finally:
+        db.close()
+
+
+def test_combat_writes_wake_the_same_live_listeners(client, seed):
+    """What the other browsers hear: a tracker save, a finish and a reopen move the world's live counter and its "combat" signal exactly
+    as much through the gateway as directly (the TV and the other open trackers fetch again on them)."""
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    w = seed.world_a.id
+    keys = (f"live:{w}", f"sig:{w}:combat")
+    for path, body in (("state", {"combatants": [{"id": "a", "name": "A"}]}), ("finish", None), ("reopen", None)):
+        moved = []
+        for side in (d, via):
+            cid = _add("CombatSession", world_id=w, name="Live")
+            before = [_shared(k) for k in keys]
+            url = f"/combat/{cid}/state" if path == "state" else f"/api/combat/{cid}/{path}"
+            r = side.post(url, json=body) if body is not None else side.post(url)
+            assert r.status_code == 200
+            moved.append([_shared(k) - b for k, b in zip(keys, before)])
+        assert moved[0] == moved[1], (path, moved)
