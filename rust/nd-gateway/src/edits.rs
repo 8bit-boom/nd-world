@@ -11444,3 +11444,21 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
     ctx.insert("hub_sessions".into(), Value::Array(hub_sessions));
     Some(ctx)
 }
+
+/// `schematic_payload.strict_view`: the View when strict secrecy is on (newly explored squares recorded), Some(None) when it is off
+pub fn strict_view(db: &Connection, sc: &Map<String, Value>) -> Option<Option<crate::strict::View>> {
+    let fog = clean_fog(sc_load(sc, "fog_json", false)?.as_object()?)?;
+    if !(fog["enabled"] == json!(true) && fog["strict"] == json!(true)) {
+        return Some(None);
+    }
+    let raw = sc.get("elements_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    let elements = match canonical_json(raw)? {
+        Value::Array(a) => a,
+        _ => vec![],
+    };
+    let (view, record) = crate::strict::compute(sc, &elements, &fog)?;
+    if let Some(rec) = record {
+        let _ = db.execute("UPDATE schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
+    }
+    Some(Some(view))
+}

@@ -18,7 +18,7 @@ fn suffix_lower(p: &Path) -> String {
 }
 
 /// A picture this port reads exactly as Pillow would: not animated, not a GIF (Pillow keeps its palette mode), not AVIF
-fn readable(path: &Path) -> Option<DynamicImage> {
+pub fn readable(path: &Path) -> Option<DynamicImage> {
     let ext = suffix_lower(path);
     if !CONVERTIBLE.contains(&ext.as_str()) || ext == ".gif" || ext == ".avif" {
         return None;

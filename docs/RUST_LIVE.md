@@ -39,8 +39,6 @@ character hub's writes, the schematic editor (writes, the GM's page, the players
 workspace) and the player cockpit. Each live write is checked to wake the same listeners as Python's.
 
 Still Python's, and why:
-- the masked background picture of a strict-secrecy map (`/maps/schematic/<slug>/bg.webp`: Pillow's LANCZOS resize and WebP encoder);
-  what the party has seen is computed and recorded by the gateway (`rust/nd-gateway/src/strict.rs`, batch 32);
 - a character on a sheet template - its page (`characters/custom_sheet.html`), and anything its system touches (its Rest rules, vitals,
   combat tracks): the custom sheet systems' engine (`app/sheet_systems.py`) is not ported;
 - the AI and chronicler streams - phase 5, with the other AI work.
@@ -89,3 +87,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /maps/schematic/<slug>/rooms/detect` (the enclosed rooms of the walls as room-tool state: `app/rooms_from_walls.py` ported, with Python's float `//`, `%` and round-half-to-even; its refusals stay Python's) | P4-34 |
 | `POST /api/characters/<id>/hub/keepsakes/upload` (a player's own picture, song or video kept on their character, within the world's per-kind limit) | P4-35 |
 | `GET /characters/<id>` for an N&D character (the sheet, the roll sheet and the player hub's Journey tab - party, loot, roster, XP ledger, sessions; `_derived` with Python's `float()` / `int()` readings) | P4-36 |
+| `GET /maps/schematic/<slug>/bg.webp` (a strict-secrecy map's picture with the unseen squares painted over: libwebp at quality 88 as Pillow; the Lanczos resize is not bit-identical to Pillow's - measured mean difference 0.08-0.45 of 255 per channel, the same squares hidden) | P4-37 |

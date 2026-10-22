@@ -215,6 +215,13 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         }
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
+        && req.uri().path().starts_with("/maps/schematic/") && req.uri().path().ends_with("/bg.webp") {
+        let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::schematic_masked_background(&pages, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && req.uri().path().strip_prefix("/characters/").is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::character_sheet(&pages, &cfg, &uri, &headers)).await {

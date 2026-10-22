@@ -1616,3 +1616,62 @@ pub fn character_sheet(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     p.ctx.extend(ctx);
     render_with(pages, "characters/sheet.html", p.ctx, headers)
 }
+
+/// `GET /maps/schematic/<slug>/bg.webp` (`map_strict.mask_image`): the picture of a strict-secrecy map with every square the party has
+/// not seen painted the background colour, at most 2,400 px a side - the only form of the picture a player can fetch
+pub fn schematic_masked_background(_pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let slug = uri.path().strip_prefix("/maps/schematic/")?.strip_suffix("/bg.webp").filter(|s| !s.is_empty() && !s.contains('/'))?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let w = p.world.as_ref()?;
+    let sc = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    let truthy = |v: Option<&Value>| v.is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)) && v != &json!(0) && v != &json!(""));
+    let image_url = sc.get("image_url").and_then(|v| v.as_str()).filter(|u| !u.is_empty())?.to_string();
+    if (truthy(sc.get("is_html")) && truthy(sc.get("html_file"))) || sc.get("world_id")?.as_i64() != w.get("id")?.as_i64() {
+        return None;
+    }
+    if !p.is_gm {
+        let level = nd_perm::sections::section_level(false, p.role.as_deref(), w.get("section_access_json").and_then(|v| v.as_str()), w.get("custom_kinds_json").and_then(|v| v.as_str()), "maps")?;
+        if level == "none" {
+            return None;
+        }
+    }
+    let view = crate::edits::strict_view(&db, &sc)??;
+    // the file under uploads/ (a path that leaves it, or no such file: Python's 404)
+    let rel = image_url.split_once("/uploads/").map_or(image_url.as_str(), |(_, r)| r);
+    if rel.split('/').any(|seg| seg == ".." || seg.is_empty()) {
+        return None;
+    }
+    let src = cfg.db_path.parent()?.join("uploads").join(rel);
+    let img = crate::imaging::readable(&src)?.to_rgb8();
+    let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64);
+    let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
+    let scale = (2400.0 / cw.max(ch)).min(1.0);
+    let (ow, oh) = (((cw * scale).round_ties_even() as u32).max(1), ((ch * scale).round_ties_even() as u32).max(1));
+    let pic = image::imageops::resize(&img, ow, oh, image::imageops::FilterType::Lanczos3);
+    // the mask: one pixel per cell, scaled (nearest) to the cell grid's size, cropped to the picture
+    let (mw, mh) = (((view.cell * view.cols as f64 * scale).round_ties_even() as u32).max(1), ((view.cell * view.rows as f64 * scale).round_ties_even() as u32).max(1));
+    let bg = match sc.get("canvas_bg").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("dark") {
+        "blueprint" => [0x0d, 0x1b, 0x2a], "grid-light" => [0x1a, 0x1a, 0x2e], "light" => [0xf0, 0xf0, 0xf0], _ => [0x11, 0x11, 0x11],
+    };
+    let mut out = image::RgbImage::from_pixel(ow, oh, image::Rgb(bg));
+    for y in 0..oh.min(mh) {
+        let r = ((y as f64 + 0.5) * view.rows as f64 / mh as f64) as i64;
+        for x in 0..ow.min(mw) {
+            let c = ((x as f64 + 0.5) * view.cols as f64 / mw as f64) as i64;
+            if view.explored.contains(&(r.min(view.rows - 1) * view.cols + c.min(view.cols - 1))) {
+                out.put_pixel(x, y, *pic.get_pixel(x, y));
+            }
+        }
+    }
+    let data = webp::Encoder::from_rgb(out.as_raw(), ow, oh).encode_simple(false, 88.0).ok()?.to_vec();
+    axum::http::Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "image/webp")
+        .header(axum::http::header::CACHE_CONTROL, "private, no-cache")
+        .header("x-content-type-options", "nosniff")
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(data))
+        .ok()
+}

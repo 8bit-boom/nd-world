@@ -1562,3 +1562,69 @@ def test_character_sheet_page_is_pythons(client, seed):
         for i in ids:
             served += _same_page(d, _via(d, base), f"/characters/{i}", email)
     assert served >= 6, served
+
+
+def test_strict_map_masked_picture_is_pythons(client, seed):
+    """The masked picture of a strict-secrecy map: the gateway's resize is Lanczos like Pillow's but not bit-identical, so the pictures
+    are compared decoded - same size, every unseen square exactly the background colour on both, the rest within a small difference."""
+    import io
+    from PIL import Image
+    from .conftest import PLAYER_PASSWORD
+    from app.main import UPLOADS_DIR
+    from app.models import PlayerCharacter, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    d = UPLOADS_DIR / "schematics"
+    d.mkdir(parents=True, exist_ok=True)
+    src = Image.new("RGB", (900, 700))
+    px = src.load()
+    for y in range(700):
+        for x in range(900):
+            px[x, y] = ((x * 7) % 256, (y * 5) % 256, ((x + y) * 3) % 256)
+    src.save(d / "masked-src.png")
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Eye")
+        db.add(pc)
+        db.commit()
+        pid = pc.id
+    finally:
+        db.close()
+    els = [{"id": "me", "type": "token", "pc_id": pid, "x": 300, "y": 250}]
+    walls = [{"id": "w", "pts": [[500, 0], [500, 1000]], "kind": "wall"}]
+    served = 0
+    for cw, chh, bg in ((1200, 900, "blueprint"), (3000, 2000, "dark")):
+        pics = []
+        for i, who in enumerate(("direct", "gateway")):
+            slug = f"masked-{cw}-{i}"
+            db = SessionLocal()
+            try:
+                db.add(Schematic(world_id=w, name="M", slug=slug, elements_json=json.dumps(els), walls_json=json.dumps(walls), canvas_bg=bg,
+                                 fog_json=json.dumps({"enabled": True, "strict": True, "range": 8}), canvas_width=cw, canvas_height=chh,
+                                 image_url="/uploads/schematics/masked-src.png"))
+                db.commit()
+            finally:
+                db.close()
+            pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+            side = pl if who == "direct" else _via(pl, base)
+            r = side.get(f"/maps/schematic/{slug}/bg.webp")
+            assert r.status_code == 200 and r.headers["content-type"] == "image/webp", (who, r.status_code)
+            if who == "gateway":
+                served += r.headers.get("x-nd-served-by") == "gateway"
+            pics.append(Image.open(io.BytesIO(r.content)).convert("RGB"))
+        a, b = pics
+        assert a.size == b.size, (a.size, b.size)
+        bgc = {"blueprint": (13, 27, 42), "dark": (17, 17, 17)}[bg]
+        pa, pb = a.load(), b.load()
+        diff = n = mism = 0
+        for y in range(0, a.size[1], 3):
+            for x in range(0, a.size[0], 3):
+                ca, cb = pa[x, y], pb[x, y]
+                near_a = all(abs(u - v) <= 6 for u, v in zip(ca, bgc))
+                near_b = all(abs(u - v) <= 6 for u, v in zip(cb, bgc))
+                mism += near_a != near_b
+                diff += sum(abs(u - v) for u, v in zip(ca, cb))
+                n += 3
+        assert mism / (n / 3) < 0.01, mism          # the same squares hidden (a sliver of slack at cell edges)
+        assert diff / n < 6, diff / n                # the visible picture alike
+    assert served == 2, served
