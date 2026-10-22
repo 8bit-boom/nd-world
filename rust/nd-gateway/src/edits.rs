@@ -161,6 +161,11 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entities/bulk-folder", bulk_folder),
     ("/api/entities/bulk-visibility", bulk_visibility),
     ("/api/entity/{}/alias", entity_alias),
+    ("/parties/new", party_new),
+    ("/parties/{}/edit", party_edit),
+    ("/parties/{}/delete", party_delete),
+    ("/api/parties/{}/location", party_location),
+    ("/api/parties/{}/members/toggle", party_member_toggle),
     ("/new", entity_new),
     ("/entity/{}/edit", entity_edit),
     ("/entity/{}/duplicate", entity_duplicate),
@@ -1448,4 +1453,189 @@ fn bulk_delete(c: &mut Ctx, kind: &str) -> Option<Response<Body>> {
     }
     url += if url.contains('?') { "&" } else { "?" };
     redirect(&format!("{url}w={slug}"))
+}
+
+// ── parties (app/routers/parties.py) ─────────────────────────────────────────
+
+/// `_can_manage_parties`: the GM or an assistant, with parties:edit
+fn can_manage_parties(c: &Ctx) -> Option<bool> {
+    Some(c.can_edit_section("parties")? && content_editor(c))
+}
+
+/// A stored JSON list of plain integers (None for anything else: Python's `in` / `==` would compare it its own way)
+fn int_list(v: Option<&Value>) -> Option<Vec<i64>> {
+    let raw = v.and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Array(a) => a.iter().map(|x| x.as_i64()).collect(),
+        _ => None,
+    }
+}
+
+fn ints_json(ids: &[i64]) -> String {
+    nd_render::py_dumps(&json!(ids))
+}
+
+/// `_party_for_write` + `_party_edit_level`: the party of the active world and the viewer's level ("full" / "member" / "none")
+fn party_for_write(c: &Ctx, id: i64) -> Option<(Map<String, Value>, &'static str)> {
+    let p = row(&c.db, "SELECT * FROM parties WHERE id = ?1", id)?;
+    if p.get("world_id")?.as_i64() != c.world_id() {
+        return None; // a GM's write in another world, or a 404: Python's
+    }
+    if can_manage_parties(c)? {
+        return Some((p, "full"));
+    }
+    if !c.can_edit_section("parties")? {
+        return Some((p, "none"));
+    }
+    let pcs = int_list(p.get("member_pc_ids_json"))?;
+    let mut mine = false;
+    for pc in pcs {
+        let owner: Option<i64> = c.db.query_row("SELECT owner_user_id FROM player_characters WHERE id = ?1", [pc], |r| r.get(0)).ok().flatten();
+        mine |= owner == Some(c.p.user_id);
+    }
+    Some((p, if mine { "member" } else { "none" }))
+}
+
+fn party_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let world = c.world_id()?;
+    if !can_manage_parties(c)? {
+        return None;
+    }
+    let name = strip(opt(&f, "name", "New Party"));
+    let name = if name.is_empty() { "New Party".to_string() } else { name };
+    let id = orm::insert(&c.db, "parties", &[("world_id", Sql::Integer(world)), ("name", s(&name))])?;
+    orm::touch(&c.db, world)?;
+    redirect(&format!("/parties/{id}"))
+}
+
+fn party_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let (p, level) = party_for_write(c, ids[0])?;
+    let world = p.get("world_id")?.as_i64()?;
+    let mut cols: Vec<(&str, Sql)> = vec![("notes", s(&strip(f.get("notes").unwrap_or("")))), ("goals", s(&strip(f.get("goals").unwrap_or(""))))];
+    match level {
+        "none" => return None,
+        "full" => {
+            if !c.p.is_gm {
+                return None; // an assistant's view of hidden companions (filter_visible_entities): Python's
+            }
+            let old = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = strip(f.get("name").unwrap_or(&old));
+            cols.push(("name", s(if name.is_empty() { &old } else { &name })));
+            let pcs: Vec<i64> = f.all("member_pc_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
+            let ents: Vec<i64> = f.all("member_entity_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
+            let in_world = |table: &str, id: i64| -> bool {
+                c.db.query_row(&format!("SELECT world_id FROM {table} WHERE id = ?1"), [id], |r| r.get::<_, Option<i64>>(0)).ok().flatten() == Some(world)
+            };
+            let pcs: Vec<i64> = pcs.into_iter().filter(|i| in_world("player_characters", *i)).collect();
+            let ents: Vec<i64> = ents.into_iter().filter(|i| in_world("entities", *i)).collect();
+            cols.push(("member_pc_ids_json", s(&ints_json(&pcs))));
+            cols.push(("member_entity_ids_json", s(&ints_json(&ents))));
+        }
+        _ => {}
+    }
+    orm::update(&c.db, "parties", ids[0], &cols)?;
+    orm::touch(&c.db, world)?;
+    redirect(&format!("/parties/{}", ids[0]))
+}
+
+fn party_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (p, level) = party_for_write(c, ids[0])?;
+    if level != "full" {
+        return None;
+    }
+    orm::bulk_update(&c.db, "quests", &[("assigned_party_id", Sql::Null)], "assigned_party_id = ?", &[Sql::Integer(ids[0])])?;
+    c.db.execute("DELETE FROM parties WHERE id = ?1", [ids[0]]).ok()?;
+    orm::touch(&c.db, p.get("world_id")?.as_i64()?)?;
+    redirect("/parties")
+}
+
+fn party_location(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (p, level) = party_for_write(c, ids[0])?;
+    if level != "full" {
+        return None;
+    }
+    let kind = b.get("kind").and_then(|v| v.as_str());
+    let loc = match kind {
+        Some(k @ ("map" | "schematic")) => {
+            let slug = strip(json_str(&b, "slug", Some(""))?);
+            if slug.is_empty() {
+                return None;
+            }
+            // float(x) of a JSON number (strings, bools and the rest: Python's)
+            let num = |k: &str| -> Option<f64> { b.get(k).filter(|v| v.is_number())?.as_f64() };
+            let (a, bk) = if k == "map" { ("lat", "lng") } else { ("x", "y") };
+            let mut m = Map::new();
+            m.insert("kind".into(), json!(k));
+            m.insert("slug".into(), json!(slug));
+            m.insert(a.into(), Value::from(num(a)?));
+            m.insert(bk.into(), Value::from(num(bk)?));
+            Value::Object(m)
+        }
+        _ if b.get("kind").map_or(true, |v| v.is_string() || v.is_null()) => json!({}),
+        _ => return None,
+    };
+    if !loc.as_object()?.values().all(|v| !v.as_f64().is_some_and(|f| !f.is_finite())) {
+        return None;
+    }
+    orm::update(&c.db, "parties", ids[0], &[("location_json", s(&nd_render::py_dumps(&loc)))])?;
+    orm::touch(&c.db, p.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"location": loc}))
+}
+
+fn party_member_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let (p, level) = party_for_write(c, ids[0])?;
+    if level != "full" {
+        return None;
+    }
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => Some(String::new()),
+            Some(Value::String(v)) => Some(v.clone()),
+            _ => None,
+        }
+    };
+    let kind = text("kind")?;
+    if kind != "pc" && (kind != "entity" || !c.p.is_gm) {
+        return None; // a bad kind's 400, and a non-GM's view of hidden entities: Python's
+    }
+    let member_id = match b.get("id") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => 0,
+        Some(Value::String(v)) if v.is_empty() => 0,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    let name = strip(&text("name")?);
+    let world = p.get("world_id")?.as_i64()?;
+    let table = if kind == "pc" { "player_characters" } else { "entities" };
+    let found: Option<(i64, Option<i64>)> = if member_id != 0 {
+        c.db.query_row(&format!("SELECT id, world_id FROM {table} WHERE id = ?1"), [member_id], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    } else if !name.is_empty() {
+        c.db.query_row(&format!("SELECT id, world_id FROM {table} WHERE world_id = ?1 AND name = ?2 LIMIT 1"), rusqlite::params![world, name],
+                       |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    } else {
+        None
+    };
+    let (mid, mw) = found?;
+    if mw != Some(world) {
+        return None;
+    }
+    let field = if kind == "pc" { "member_pc_ids_json" } else { "member_entity_ids_json" };
+    let mut list = int_list(p.get(field))?;
+    let added = match list.iter().position(|x| *x == mid) {
+        Some(i) => {
+            list.remove(i);
+            false
+        }
+        None => {
+            list.push(mid);
+            true
+        }
+    };
+    orm::update(&c.db, "parties", ids[0], &[(field, s(&ints_json(&list)))])?;
+    orm::touch(&c.db, world)?;
+    json_response(&json!({"ok": true, "added": added}))
 }

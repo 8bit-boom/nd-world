@@ -832,3 +832,93 @@ def test_entity_bulk_visibility_alias_and_bulk_delete_are_pythons(client, seed):
                     assert (_row("entities", ga[i]) is None) == (_row("entities", gb[i]) is None)
                     assert (_newest_note(ga[i]) is None) == (_newest_note(gb[i]) is None)
     assert served >= 15, served   # the GM's
+
+
+# ── parties ───────────────────────────────────────────────────────────────────
+
+def _party(**kw):
+    from app.database import SessionLocal
+    from app.models import Party
+    db = SessionLocal()
+    try:
+        p = Party(**kw)
+        db.add(p)
+        db.commit()
+        return p.id
+    finally:
+        db.close()
+
+
+def test_party_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == seed.world_a.id).first()
+        wa.section_access_json = json.dumps({"parties": {"player": "edit", "assistant": "edit"}})
+        mine = PlayerCharacter(world_id=seed.world_a.id, name="Hero", owner_user_id=seed.player_a.id)
+        theirs = PlayerCharacter(world_id=seed.world_a.id, name="Rogue", owner_user_id=seed.player_b.id)
+        far = PlayerCharacter(world_id=seed.world_b.id, name="Far", owner_user_id=seed.player_b.id)
+        db.add_all([mine, theirs, far]); db.commit()
+        pc1, pc2, pc3 = mine.id, theirs.id, far.id
+    finally:
+        db.close()
+    [ent] = _entities(seed.world_a.id, 1)
+    [far_ent] = _entities(seed.world_b.id, 1)
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for form in ({"name": "  Crew  "}, {"name": ""}, {}, {"name": "   "}):
+            ra = d.post("/parties/new", data=form, follow_redirects=False)
+            na = _newest("parties")
+            rb = via.post("/parties/new", data=form, follow_redirects=False)
+            nb = _newest("parties")
+            created = ra.status_code == 303
+            _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+            if created:
+                _same_rows(na, nb)
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        forms = [[("notes", " n "), ("goals", " g "), ("name", " New "), ("member_pc_ids", str(pc1)), ("member_pc_ids", str(pc3)), ("member_pc_ids", str(pc1)),
+                  ("member_entity_ids", str(ent)), ("member_entity_ids", str(far_ent)), ("member_entity_ids", "999999")],
+                 [("name", "")], [], [("member_pc_ids", "x")], [("member_pc_ids", " 1")], [("notes", "Ünï\r\nx")]]
+        for form in forms:
+            for members in (json.dumps([pc1]), json.dumps([pc2]), "[]"):
+                ids = [_party(world_id=seed.world_a.id, name="P", member_pc_ids_json=members, member_entity_ids_json=json.dumps([ent])) for _ in range(2)]
+                before = [_row("parties", i) for i in ids]
+                ra = d.post(f"/parties/{ids[0]}/edit", content=urlencode(form), headers={"content-type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+                rb = via.post(f"/parties/{ids[1]}/edit", content=urlencode(form), headers={"content-type": "application/x-www-form-urlencoded"}, follow_redirects=False)
+                _same_answer(ra, rb, ids[0], ids[1])
+                _same_rows(_row("parties", ids[0]), _row("parties", ids[1]), before[0], before[1])
+                served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body in ({"kind": "map", "slug": " m ", "lat": 1, "lng": 2.5}, {"kind": "schematic", "slug": "s", "x": -0.1, "y": 1e20}, {"kind": "none"}, {},
+                     {"kind": "map", "slug": "", "lat": 1, "lng": 2}, {"kind": "map", "slug": "m", "lat": "1", "lng": 2}, {"kind": "map", "slug": "m", "lat": 1},
+                     {"kind": 5}, {"kind": "map", "slug": 3, "lat": 1, "lng": 2}):
+            ids = [_party(world_id=seed.world_a.id, name="P", location_json='{"kind": "map"}') for _ in range(2)]
+            before = [_row("parties", i) for i in ids]
+            ra = d.post(f"/api/parties/{ids[0]}/location", json=body)
+            rb = via.post(f"/api/parties/{ids[1]}/location", json=body)
+            _same_answer(ra, rb)
+            _same_rows(_row("parties", ids[0]), _row("parties", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body in ({"kind": "pc", "id": pc1}, {"kind": "pc", "id": pc2}, {"kind": "pc", "id": pc3}, {"kind": "pc", "name": " Rogue "}, {"kind": "pc", "name": "Nobody"},
+                     {"kind": "entity", "id": ent}, {"kind": "entity", "name": "E"}, {"kind": "x", "id": 1}, {"kind": "pc", "id": "1"}, {"kind": "pc"}, {"kind": "pc", "id": 1.0}):
+            ids = [_party(world_id=seed.world_a.id, name="P", member_pc_ids_json=json.dumps([pc2])) for _ in range(2)]
+            before = [_row("parties", i) for i in ids]
+            ra = d.post(f"/api/parties/{ids[0]}/members/toggle", json=body)
+            rb = via.post(f"/api/parties/{ids[1]}/members/toggle", json=body)
+            _same_answer(ra, rb)
+            _same_rows(_row("parties", ids[0]), _row("parties", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        ids = [_party(world_id=seed.world_a.id, name="P", member_pc_ids_json=json.dumps([pc1])) for _ in range(2)]
+        qa, qb = _quest(world_id=seed.world_a.id, title="Q", assigned_party_id=ids[0]), _quest(world_id=seed.world_a.id, title="Q", assigned_party_id=ids[1])
+        before = [_row("quests", qa), _row("quests", qb)]
+        ra = d.post(f"/parties/{ids[0]}/delete", follow_redirects=False)
+        rb = via.post(f"/parties/{ids[1]}/delete", follow_redirects=False)
+        _same_answer(ra, rb)
+        _same_rows(_row("parties", ids[0]), _row("parties", ids[1]))
+        _same_rows(_row("quests", qa), _row("quests", qb), before[0], before[1], ignore=("assigned_party_id",))
+        assert (_row("quests", qa)["assigned_party_id"] is None) == (_row("quests", qb)["assigned_party_id"] is None)
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 25, served
