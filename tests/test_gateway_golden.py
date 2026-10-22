@@ -821,3 +821,43 @@ def test_quest_page_the_gateway_builds_is_pythons(client, seed):
         for url in urls:
             served[url] += _same_page(d, via, url, email)
     assert all(served[u] for u in must), served
+
+
+def test_document_library_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CharacterSheet, PageAlbum, PageDoc, World
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        top = PageAlbum(world_id=w, name="Lore <l>")
+        empty = PageAlbum(world_id=w, name="Empty")
+        far = PageAlbum(world_id=seed.world_b.id, name="Far")
+        db.add_all([top, empty, far]); db.flush()
+        mid = PageAlbum(world_id=w, name="Mid", parent_id=top.id); db.add(mid); db.flush()
+        leaf = PageAlbum(world_id=w, name="Leaf", parent_id=mid.id); db.add(leaf); db.flush()
+        t = PageDoc(world_id=w, name="Sheet tpl", file_url="/uploads/pages/t.html", is_character_sheet_template=True)
+        db.add_all([t, PageDoc(world_id=w, name="Root doc", file_url="/uploads/pages/r.html", description="desc <d>"),
+                    PageDoc(world_id=w, name="Hidden root", file_url="/uploads/pages/h.html", visible_to_players=False),
+                    PageDoc(world_id=w, name="In top", album_id=top.id, file_url="/uploads/pages/a.html"),
+                    PageDoc(world_id=w, name="Hidden in top", album_id=top.id, file_url="/uploads/pages/b.html", visible_to_players=False),
+                    PageDoc(world_id=w, name="In leaf", album_id=leaf.id, file_url="/uploads/pages/c.html")]); db.flush()
+        db.add_all([CharacterSheet(world_id=w, template_id=t.id, owner_user_id=seed.player_a.id, name="S1"),
+                    CharacterSheet(world_id=w, template_id=t.id, owner_user_id=seed.player_a.id, name="S2")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"pages": {"player": "read"}})
+        db.commit()
+        urls = ["/pages", f"/pages/albums/{top.id}", f"/pages/albums/{mid.id}", f"/pages/albums/{leaf.id}", f"/pages/albums/{empty.id}",
+                f"/pages/albums/{far.id}", "/pages/albums/999999"]
+        must = urls[:5]
+    finally:
+        db.close()
+    served = {u: 0 for u in urls}
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in urls:
+            served[url] += _same_page(d, via, url, email)
+    assert all(served[u] >= 2 for u in must), served

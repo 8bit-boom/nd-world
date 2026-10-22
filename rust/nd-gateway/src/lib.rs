@@ -9,6 +9,7 @@ pub mod idpages;
 pub mod files;
 pub mod layout;
 pub mod live;
+pub mod media;
 pub mod pages;
 pub mod proxy;
 pub mod session;
@@ -93,6 +94,14 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages") && idpages::route(req.uri().path()).is_some() {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || idpages::serve(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages")
+        && (req.uri().path() == "/pages" || req.uri().path().starts_with("/pages/albums/"))
+    {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || media::pages_library(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
