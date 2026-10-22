@@ -71,6 +71,7 @@ player of another world, and compares the answers and every column afterwards (t
 | `POST /api/characters/<id>/xp`, `/conditions` (ASCII labels: `isprintable()` beyond is Python's), `/currency` (a purse stored as `json.dumps` writes it) | 14 |
 | `POST /characters/new`, `/characters/<id>/edit` (`_apply_form`; urlencoded or multipart without a portrait), `/characters/<id>/owner`, `/characters/<id>/delete` (journal, prefs, log, shares, party members / loot claims, calendar links) | 15 |
 | `POST /api/characters/<id>/level-up`, `/feats`, `/equipment` (int vs float weights as Python keeps them; `carry_info`), `/carry-limit` (character prefs) | 16 |
+| `PUT /api/characters/<id>/sync`, `POST /api/worlds/<id>/characters/sync` (`_apply_sync_json`, the answer as `_pc_to_sync_dict`), `/characters/<id>/retire-to-npc`, `/api/characters/<id>/portrait-from-url`; PUT routes (`edits::PUT_ROUTES`) | 17 |
 | `POST /boards/new` (unique slug), `/boards/<slug>/save` (nodes and edges as `json.dumps` writes them), `/boards/<slug>/delete` | 5 |
 | `POST /api/calendar/events`, `/api/calendar/events/<id>/delete`, `/api/calendar/advance`, `/api/calendar/set-date` (the stored config rewritten as `json.dumps` writes it) | 4 |
 | `POST /tables/new` (Python's unique slug), `/tables/<id>/edit`, `/tables/<id>/delete`, `/api/tables/<id>/roll` (weighted pick; whole-number weights only) | 3 |

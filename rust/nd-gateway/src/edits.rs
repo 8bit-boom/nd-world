@@ -171,6 +171,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/characters/{}/edit", pc_edit),
     ("/characters/{}/owner", pc_owner),
     ("/characters/{}/delete", pc_delete),
+    ("/characters/{}/retire-to-npc", pc_retire),
+    ("/api/characters/{}/portrait-from-url", pc_portrait_from_url),
+    ("/api/worlds/{}/characters/sync", pc_sync_create),
     ("/api/characters/{}/xp", pc_xp),
     ("/api/characters/{}/conditions", pc_conditions),
     ("/api/characters/{}/currency", pc_currency),
@@ -195,8 +198,15 @@ const ROUTES: &[(&str, Handler)] = &[
 ];
 
 /// The handler for a POST path and the ids in it (digits only, as FastAPI's int converter reads them here)
+/// PUT routes, same patterns as ROUTES
+const PUT_ROUTES: &[(&str, Handler)] = &[("/api/characters/{}/sync", pc_sync_put)];
+
 fn route(path: &str) -> Option<(Handler, Vec<i64>)> {
-    'outer: for (pat, h) in ROUTES {
+    route_in(ROUTES, path)
+}
+
+fn route_in(table: &[(&str, Handler)], path: &str) -> Option<(Handler, Vec<i64>)> {
+    'outer: for (pat, h) in table {
         let (mut rest, mut ids) = (path, vec![]);
         let parts: Vec<&str> = pat.split("{}").collect();
         for (i, part) in parts.iter().enumerate() {
@@ -237,18 +247,18 @@ fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
 }
 
 pub fn handles(method: &Method, path: &str) -> bool {
-    method == Method::POST && (route(path).is_some() || slug_route(path).is_some())
+    (method == Method::POST && (route(path).is_some() || slug_route(path).is_some())) || (method == Method::PUT && route_in(PUT_ROUTES, path).is_some())
 }
 
-fn run(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
-    let by_id = route(uri.path());
+fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let by_id = if method == Method::PUT { route_in(PUT_ROUTES, uri.path()) } else { route(uri.path()) };
     let by_slug = if by_id.is_none() { slug_route(uri.path()) } else { None };
     if by_id.is_none() && by_slug.is_none() {
         return None;
     }
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
     // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
     // Python) must leave nothing behind, or Python would apply the same write a second time
     db.execute_batch("BEGIN IMMEDIATE").ok()?;
@@ -275,9 +285,9 @@ pub async fn serve(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Op
     let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY).await else {
         return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap();
     };
-    let (uri, headers) = (parts.uri.clone(), parts.headers.clone());
+    let (method, uri, headers) = (parts.method.clone(), parts.uri.clone(), parts.headers.clone());
     let b = bytes.clone();
-    let answer = tokio::task::spawn_blocking(move || run(&cfg, &uri, &headers, &b)).await.ok().flatten();
+    let answer = tokio::task::spawn_blocking(move || run(&cfg, &method, &uri, &headers, &b)).await.ok().flatten();
     match answer {
         Some(r) => r,
         None => proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await,
@@ -2293,7 +2303,15 @@ fn pc_owner(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn pc_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let pc = managed_pc(c, ids[0])?;
-    let (id, world) = (ids[0], pc.get("world_id")?.as_i64()?);
+    let world = pc.get("world_id")?.as_i64()?;
+    drop_pc(c, ids[0], world)?;
+    orm::touch(&c.db, world)?;
+    redirect("/characters")
+}
+
+/// What character_delete and retire-to-NPC both do to the character: sheets unlinked, journal / prefs / log / shares / companions /
+/// keepsakes dropped, `detach_pc` (party members, loot claims, calendar events), the row deleted
+fn drop_pc(c: &Ctx, id: i64, world: i64) -> Option<()> {
     // detach_pc first, read-only, so anything it would rewrite that serde cannot (non-canonical JSON) sends the whole request to Python
     let mut party_writes: Vec<(i64, Vec<(&str, Sql)>)> = vec![];
     let mut stmt = c.db.prepare("SELECT id, member_pc_ids_json, loot_json FROM parties WHERE world_id = ?1").ok()?;
@@ -2353,8 +2371,7 @@ fn pc_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::bulk_update(&c.db, "calendar_events", &[("character_id", Sql::Null)], "character_id = ?", &[Sql::Integer(id)])?;
     c.db.execute("DELETE FROM player_characters WHERE id = ?1", [id]).ok()?;
-    orm::touch(&c.db, world)?;
-    redirect("/characters")
+    Some(())
 }
 
 fn pc_level_up(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
@@ -2666,4 +2683,210 @@ fn py_truthy(v: Option<&Value>) -> bool {
         Some(Value::Array(a)) => !a.is_empty(),
         Some(Value::Object(o)) => !o.is_empty(),
     }
+}
+
+/// `_pc_to_npc_markdown(pc)`
+fn pc_npc_markdown(db: &Connection, pc: &Map<String, Value>) -> Option<String> {
+    let txt = |k: &str| pc.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut parts: Vec<String> = vec![];
+    let level = pc.get("level").and_then(|v| v.as_i64()).unwrap_or(0);
+    let lvl = if level != 0 && pc_maxima(db, pc)?.4 { format!("Level {level}") } else { String::new() };
+    let class_line = [txt("char_class"), txt("race"), lvl].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ");
+    if !class_line.is_empty() {
+        parts.push(format!("*{class_line}*"));
+    }
+    let tagline = [txt("background"), txt("alignment")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ");
+    if !tagline.is_empty() {
+        parts.push(tagline);
+    }
+    let appearance = [("Age", "age"), ("Height", "height"), ("Weight", "weight_app"), ("Eyes", "eyes"), ("Skin", "skin"), ("Hair", "hair")]
+        .iter()
+        .filter_map(|(label, k)| {
+            let v = match pc.get(*k) {
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                Some(Value::Number(n)) if n.as_f64() != Some(0.0) => n.to_string(),
+                _ => return None,
+            };
+            Some(format!("{label}: {v}"))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    for (heading, text) in [("Appearance", appearance), ("Personality", txt("personality_traits")), ("Ideals", txt("ideals")), ("Bonds", txt("bonds")),
+                            ("Flaws", txt("flaws")), ("Backstory", txt("backstory")), ("Notes", txt("notes"))] {
+        if !text.is_empty() {
+            parts.extend([String::new(), format!("## {heading}"), String::new(), text]);
+        }
+    }
+    Some(strip(&parts.join("\n")))
+}
+
+fn pc_retire(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
+    let world = pc.get("world_id")?.as_i64()?;
+    if Some(world) != c.world_id() {
+        return None;
+    }
+    let player = pc.get("player_name").and_then(|v| v.as_str()).unwrap_or("");
+    let portrait = pc.get("portrait_url").and_then(|v| v.as_str()).unwrap_or("");
+    let eid = orm::insert(
+        &c.db,
+        "entities",
+        &[
+            ("world_id", Sql::Integer(world)),
+            ("kind", s("character")),
+            ("name", pc.get("name").and_then(|v| v.as_str()).map_or(Sql::Null, s)),
+            ("summary", if player.is_empty() { Sql::Null } else { s(&format!("Formerly played by {player}.")) }),
+            ("body", s(&pc_npc_markdown(&c.db, &pc)?)),
+            ("image_url", if portrait.is_empty() { Sql::Null } else { s(portrait) }),
+            ("visible_to_players", Sql::Integer(1)),
+        ],
+    )?;
+    drop_pc(c, ids[0], world)?;
+    orm::touch(&c.db, world)?;
+    redirect(&format!("/entity/{eid}"))
+}
+
+fn pc_portrait_from_url(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let job_id = b.get("job_id")?.as_i64()?;
+    let url = strip(b.get("url")?.as_str()?);
+    let pc = managed_pc(c, ids[0])?;
+    let job = row(&c.db, "SELECT * FROM image_jobs WHERE id = ?1", job_id)?;
+    if job.get("world_id") != pc.get("world_id") || !(c.p.is_gm || job.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)) {
+        return None;
+    }
+    let raw = job.get("result_urls_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let Ok(Value::Array(urls)) = serde_json::from_str::<Value>(raw) else { return None };
+    if !urls.iter().any(|u| u.as_str() == Some(url.as_str())) {
+        return None;
+    }
+    orm::update(&c.db, "player_characters", ids[0], &[("portrait_url", s(&url))])?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `_apply_sync_json(pc, data)`: the columns to write (`cur` = the stored row, empty for a new character)
+fn apply_pc_sync(b: &Map<String, Value>, cur: &Map<String, Value>) -> Option<Vec<(&'static str, Sql)>> {
+    // gi: int(data.get(k, d)) for a JSON int (floats, text and bools are int()'s: Python's); None / missing = the default
+    let gi = |k: &str, d: i64| -> Option<i64> {
+        match b.get(k) {
+            None | Some(Value::Null) => Some(d),
+            Some(Value::Number(n)) => n.as_i64(),
+            _ => None,
+        }
+    };
+    let gs = |k: &str, d: &str| -> Option<String> {
+        match b.get(k) {
+            None | Some(Value::Null) => Some(strip(d)),
+            Some(Value::String(v)) => Some(strip(v)),
+            _ => None,
+        }
+    };
+    let text_col = |k: &str| cur.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let int_col = |k: &str| cur.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0);
+    let mut cols: Vec<(&'static str, Sql)> = vec![];
+    for k in ["name", "player_name", "race", "char_class", "backstory", "notes"] {
+        let v = gs(k, "")?;
+        cols.push((k, s(if k == "name" && v.is_empty() { "Unnamed" } else { &v })));
+    }
+    cols.push(("race_id", s(&gs("race_id", &text_col("race_id"))?)));
+    cols.push(("profession_id", s(&gs("profession_id", &text_col("profession_id"))?)));
+    // the scalar loop has just set pc.level / pc.xp to str() text ("" when absent), so `pc.level or 1` / `pc.xp or 0` are 1 / 0 here
+    cols.push(("level", Sql::Integer(gi("level", 1)?.clamp(1, 20))));
+    cols.push(("xp", Sql::Integer(gi("xp", 0)?.max(0))));
+    let max_hp = gi("max_hp", 0)?.max(0);
+    cols.push(("max_hp", Sql::Integer(max_hp)));
+    cols.push(("current_hp", Sql::Integer(gi("current_hp", max_hp)?)));
+    for k in ["shock_max", "shock_current", "pp_current", "mp_current"] {
+        cols.push((k, Sql::Integer(gi(k, 0)?.max(0))));
+    }
+    cols.push(("minor_edge", s(&gs("minor_edge", "")?)));
+    cols.push(("major_edge", s(&gs("major_edge", "")?)));
+    cols.push(("minor_edge_count", Sql::Integer(gi("minor_edge_count", int_col("minor_edge_count").unwrap_or(0))?.max(0))));
+    cols.push(("major_edge_count", Sql::Integer(gi("major_edge_count", int_col("major_edge_count").unwrap_or(0))?.max(0))));
+    cols.push((
+        "sheet_template_id",
+        match b.get("sheet_template_id") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => Sql::Null,
+            Some(Value::Number(n)) if n.as_i64() == Some(0) => Sql::Null,
+            Some(Value::Number(n)) => Sql::Integer(n.as_i64()?),
+            Some(Value::String(v)) if v.is_empty() => Sql::Null,
+            _ => return None,
+        },
+    ));
+    for k in ["custom_fields_json", "app_extra_json"] {
+        let v = b.get(k).filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+        cols.push((k, s(&nd_render::py_dumps(&v))));
+    }
+    for k in ["stats_json", "skills_json", "currency_json", "equipment_json", "feats_json", "attacks_json", "cyberware_json", "conditions_json"] {
+        let v = b.get(k).filter(|v| v.is_array()).cloned().unwrap_or(json!([]));
+        cols.push((k, s(&nd_render::py_dumps(&v))));
+    }
+    cols.push(("updated_at", s(&orm::now_stamp())));
+    Some(cols)
+}
+
+/// `_pc_to_sync_dict(pc)` of the stored row
+fn pc_sync_dict(pc: &Map<String, Value>) -> Option<Value> {
+    let txt = |k: &str| json!(pc.get(k).and_then(|v| v.as_str()).unwrap_or(""));
+    let num = |k: &str| json!(pc.get(k).and_then(|v| v.as_i64()).unwrap_or(0));
+    // datetime.isoformat(): "T" between date and time, no fraction when the microseconds are 0
+    let updated = pc.get("updated_at").and_then(|v| v.as_str()).map(|u| {
+        let iso = u.replacen(' ', "T", 1);
+        iso.strip_suffix(".000000").map(str::to_string).unwrap_or(iso)
+    });
+    let mut d = Map::new();
+    d.insert("id".into(), pc.get("id")?.clone());
+    d.insert("world_id".into(), pc.get("world_id")?.clone());
+    d.insert("updated_at".into(), updated.map_or(Value::Null, Value::String));
+    d.insert("portrait_url".into(), txt("portrait_url"));
+    d.insert("sheet_template_id".into(), pc.get("sheet_template_id").cloned().unwrap_or(Value::Null));
+    for k in ["name", "player_name", "race", "char_class", "backstory", "notes"] {
+        d.insert(k.into(), txt(k));
+    }
+    d.insert("level".into(), json!(pc.get("level").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(1)));
+    d.insert("xp".into(), num("xp"));
+    d.insert("race_id".into(), txt("race_id"));
+    d.insert("profession_id".into(), txt("profession_id"));
+    for k in ["max_hp", "current_hp", "shock_max", "shock_current", "pp_current", "mp_current", "minor_edge_count", "major_edge_count"] {
+        d.insert(k.into(), num(k));
+    }
+    d.insert("minor_edge".into(), txt("minor_edge"));
+    d.insert("major_edge".into(), txt("major_edge"));
+    for (k, empty) in [("custom_fields_json", "{}"), ("app_extra_json", "{}"), ("stats_json", "[]"), ("skills_json", "[]"), ("currency_json", "[]"),
+                       ("equipment_json", "[]"), ("feats_json", "[]"), ("attacks_json", "[]"), ("cyberware_json", "[]"), ("conditions_json", "[]")] {
+        let raw = pc.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(empty);
+        d.insert(k.into(), serde_json::from_str(raw).ok()?);
+    }
+    Some(Value::Object(d))
+}
+
+/// `PUT /api/characters/<id>/sync`
+fn pc_sync_put(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let cols = apply_pc_sync(&b, &pc)?;
+    orm::update(&c.db, "player_characters", ids[0], &cols)?;
+    json_response(&pc_sync_dict(&row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?)?)
+}
+
+fn pc_sync_create(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    if Some(ids[0]) != c.world_id() {
+        return None; // another world's access check: Python's
+    }
+    if !c.p.is_gm {
+        let owned: i64 = c.db.query_row("SELECT COUNT(*) FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2", [ids[0], c.p.user_id], |r| r.get(0)).ok()?;
+        let limit = c.p.world.as_ref()?.get("max_characters_per_player").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(1).max(1);
+        if owned >= limit {
+            return None;
+        }
+    }
+    let mut cols = apply_pc_sync(&b, &Map::new())?;
+    cols.push(("world_id", Sql::Integer(ids[0])));
+    cols.push(("owner_user_id", Sql::Integer(c.p.user_id)));
+    let id = orm::insert(&c.db, "player_characters", &cols)?;
+    json_response(&pc_sync_dict(&row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id)?)?)
 }

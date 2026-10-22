@@ -1247,3 +1247,76 @@ def _prefs(pc_id):
         return r[0] if r else None
     finally:
         db.close()
+
+
+def test_character_sync_retire_and_portrait_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import ImageJob, World
+    base = str(client.base_url)
+    w, o = seed.world_a.id, seed.player_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.max_characters_per_player = 1000
+        job = ImageJob(world_id=w, created_by_user_id=o, result_urls_json=json.dumps(["/uploads/a.png", "/uploads/b.png"]))
+        other_job = ImageJob(world_id=w, created_by_user_id=seed.player_b.id, result_urls_json=json.dumps(["/uploads/c.png"]))
+        db.add_all([job, other_job]); db.commit()
+        jid, ojid = job.id, other_job.id
+    finally:
+        db.close()
+    sync_bodies = [{"name": " Kira ", "level": 30, "xp": -1, "max_hp": 12, "stats_json": [{"id": "str", "value": 1.5}], "custom_fields_json": {"b": [1, 2.0, None]},
+                    "currency_json": "nope", "sheet_template_id": 0, "minor_edge": None, "notes": "Ünï"},
+                   {}, {"name": 5}, {"level": "3"}, {"level": 2.5}, {"sheet_template_id": "4"}, {"sheet_template_id": 4, "current_hp": None},
+                   {"equipment_json": [{"w": 1e-7}], "app_extra_json": [1]}]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for body in sync_bodies:
+            ids = [_pc(world_id=w, owner_user_id=o, name="S", level=4, xp=10, race_id="elf", minor_edge_count=2) for _ in range(2)]
+            before = [_row("player_characters", i) for i in ids]
+            ra = d.put(f"/api/characters/{ids[0]}/sync", json=body)
+            rb = via.put(f"/api/characters/{ids[1]}/sync", json=body)
+            assert ra.status_code == rb.status_code, (body, ra.text, rb.text)
+            if ra.status_code == 200:
+                ja, jb = ra.json(), rb.json()
+                for k in ("id", "updated_at"):
+                    ja.pop(k), jb.pop(k)
+                assert ja == jb, (ja, jb)
+            _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+            ra = d.post(f"/api/worlds/{w}/characters/sync", json=body)
+            na = _newest("player_characters")
+            rb = via.post(f"/api/worlds/{w}/characters/sync", json=body)
+            nb = _newest("player_characters")
+            assert ra.status_code == rb.status_code, (body, ra.text, rb.text)
+            if ra.status_code == 200:
+                _same_rows(na, nb)
+                ja, jb = ra.json(), rb.json()
+                for k in ("id", "updated_at"):
+                    ja.pop(k), jb.pop(k)
+                assert ja == jb
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for body in ({"job_id": jid, "url": " /uploads/b.png "}, {"job_id": jid, "url": "/uploads/x.png"}, {"job_id": ojid, "url": "/uploads/c.png"}, {"job_id": "1", "url": "x"}, {}):
+            ids = [_pc(world_id=w, owner_user_id=o, name="P") for _ in range(2)]
+            before = [_row("player_characters", i) for i in ids]
+            ra = d.post(f"/api/characters/{ids[0]}/portrait-from-url", json=body)
+            rb = via.post(f"/api/characters/{ids[1]}/portrait-from-url", json=body)
+            _same_answer(ra, rb)
+            _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+        for extra in (dict(char_class="Rogue", race="Elf", level=3, background="Urchin", alignment="CN", personality_traits="Sly", backstory="Born...",
+                           player_name="Pat", portrait_url="/uploads/p.png", stats_json=json.dumps([{"id": "str", "value": 2}])),
+                      dict(level=0, notes="n")):
+            ids = [_pc(world_id=w, owner_user_id=o, name="Ret", **extra) for _ in range(2)]
+            ra = d.post(f"/characters/{ids[0]}/retire-to-npc", follow_redirects=False)
+            na = _newest("entities")
+            rb = via.post(f"/characters/{ids[1]}/retire-to-npc", follow_redirects=False)
+            nb = _newest("entities")
+            created = ra.status_code == 303 and "/entity/" in ra.headers.get("location", "")
+            _same_answer(ra, rb, na["id"] if created else None, nb["id"] if created else None)
+            if created:
+                _same_rows(na, nb)
+            _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 15, served
