@@ -55,3 +55,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/characters/<id>/hub/entries`, `PATCH` / `DELETE /hub/entries/<id>` (the player's journal, goals and notes; timestamps as Python's `isoformat()`) | P4-7 |
 | `POST /api/characters/<id>/hub/pins` (pin / unpin a page; the players' page list, `_place_rows`, ported) | P4-8 |
 | `POST /api/characters/<id>/hub/rest`, `/hub/rest/undo` (an N&D character without a sheet template; a system's own Rest rules stay Python's) | P4-9 |
+| `POST /api/characters/<id>/hub/log/<entry>/undo` (numbers, coins, conditions, resource columns; the equipment / advance / custom-field undos and every refusal stay Python's) | P4-10 |

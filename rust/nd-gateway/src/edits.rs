@@ -215,6 +215,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/pins", hub_pin_toggle),
     ("/api/characters/{}/hub/rest", hub_rest),
     ("/api/characters/{}/hub/rest/undo", hub_rest_undo),
+    ("/api/characters/{}/hub/log/{}/undo", hub_log_undo),
     ("/api/characters/{}/hub/entries", hub_entry_create),
     ("/api/characters/{}/hub/entries/{}", hub_entry_update),
     ("/api/characters/{}/hub/entries/{}/delete", hub_entry_delete),
@@ -9139,6 +9140,153 @@ fn hub_rest_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         set.push((col, Sql::Integer(v.max(0))));
     }
     orm::update(&c.db, "player_characters", ids[0], &set)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `char_extras.undo_spec`: the entry's undo as an object with an op, else empty
+fn log_undo_spec(e: &Map<String, Value>) -> Map<String, Value> {
+    let raw = e.get("undo_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(o)) if py_truthy(o.get("op")) => o,
+        _ => Map::new(),
+    }
+}
+
+/// `_undo_key`; None = a spec Python reads its own way (a non-string op, values that are not an object)
+fn log_undo_key(spec: &Map<String, Value>) -> Option<String> {
+    let op = match spec.get("op") {
+        Some(Value::String(t)) => t.clone(),
+        _ => return None,
+    };
+    Some(match op.as_str() {
+        "currency" => match spec.get("abbr") {
+            None | Some(Value::Null) => "currency:".into(),
+            Some(Value::String(a)) => format!("currency:{}", a.to_lowercase()),
+            Some(_) => return None,
+        },
+        "cf" | "cols" => {
+            let mut keys: Vec<String> = match spec.get("values") {
+                Some(Value::Object(o)) => o.keys().cloned().collect(),
+                v if !py_truthy(v) => vec![],
+                _ => return None,
+            };
+            keys.sort();
+            format!("{op}:{}", keys.join(","))
+        }
+        _ => op,
+    })
+}
+
+/// A JSON whole number Python's `isinstance(v, int)` takes (a bool is Python's: forwarded)
+fn log_int(v: Option<&Value>) -> Option<Option<i64>> {
+    match v {
+        Some(Value::Bool(_)) => None,
+        Some(Value::Number(n)) if n.is_i64() => Some(n.as_i64()),
+        Some(Value::Number(n)) if n.is_u64() => None,
+        _ => Some(None),
+    }
+}
+
+/// `hub_log_undo` (`char_extras.undo`) for the numbers, coins, conditions and resource columns; the refusals, and the equipment /
+/// advance / custom-field undos, stay Python's
+fn hub_log_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let e = row(&c.db, "SELECT * FROM character_log WHERE id = ?1", ids[1])?;
+    if e.get("character_id")?.as_i64()? != ids[0] || py_truthy(e.get("undone")) {
+        return None;
+    }
+    let spec = log_undo_spec(&e);
+    let key = log_undo_key(&spec)?;
+    // can_undo: nothing later (and not undone) changed the same thing
+    let mut st = c.db.prepare("SELECT undo_json FROM character_log WHERE character_id = ?1 AND id > ?2 AND undone = 0").ok()?;
+    let later: Vec<Option<String>> = st.query_map([ids[0], ids[1]], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+    for raw in later {
+        let mut m = Map::new();
+        m.insert("undo_json".into(), raw.map_or(Value::Null, Value::String));
+        let sp = log_undo_spec(&m);
+        if !sp.is_empty() && log_undo_key(&sp)? == key {
+            return None;
+        }
+    }
+    let value = spec.get("value");
+    let mut set: Vec<(&str, Sql)> = vec![];
+    let mut unuse: Option<String> = None;
+    match key.split(':').next()? {
+        op @ ("hp" | "shock" | "pp" | "mp" | "xp" | "level") => {
+            let v = log_int(value)?.filter(|v| *v >= 0)?;
+            let col = match op {
+                "hp" => "current_hp",
+                "shock" => "shock_current",
+                "pp" => "pp_current",
+                "mp" => "mp_current",
+                o => o,
+            };
+            set.push((col, Sql::Integer(v)));
+        }
+        "currency" => {
+            let v = log_int(value)??;
+            let mut coins = match pc.get("currency_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).map(serde_json::from_str::<Value>) {
+                None => vec![],
+                Some(Ok(Value::Array(a))) => a,
+                _ => return None,
+            };
+            let want = key.strip_prefix("currency:")?.to_string();
+            let low = |c: &Map<String, Value>, k: &str| -> Option<String> {
+                match c.get(k) {
+                    None | Some(Value::Null) => Some(String::new()),
+                    Some(Value::String(t)) => Some(t.to_lowercase()),
+                    Some(x) if !py_truthy(Some(x)) => Some(String::new()),
+                    _ => None,
+                }
+            };
+            let mut hit = None;
+            for (i, coin) in coins.iter().enumerate() {
+                let Some(o) = coin.as_object() else { continue };
+                if low(o, "abbr")? == want || low(o, "label")? == want {
+                    hit = Some(i);
+                    break;
+                }
+            }
+            coins[hit?].as_object_mut()?.insert("value".into(), json!(v));
+            set.push(("currency_json", s(&nd_render::py_dumps(&Value::Array(coins)))));
+        }
+        "conditions" => {
+            let list = value?.as_array()?;
+            let mut out = vec![];
+            for v in list.iter().take(12) {
+                out.push(json!(v.as_str()?.chars().take(40).collect::<String>()));
+            }
+            if list.iter().skip(12).any(|v| !v.is_string()) {
+                return None;
+            }
+            set.push(("conditions_json", s(&nd_render::py_dumps(&Value::Array(out)))));
+        }
+        "cols" => {
+            let values = spec.get("values")?.as_object()?;
+            for (col, v) in values {
+                let col = ["pp_current", "mp_current", "shock_current", "current_hp"].into_iter().find(|x| x == col)?;
+                if let Some(n) = log_int(Some(v))?.filter(|n| *n >= 0) {
+                    set.push((col, Sql::Integer(n)));
+                }
+            }
+            match spec.get("unuse") {
+                v if !py_truthy(v) => {}
+                Some(Value::String(t)) => unuse = Some(t.clone()),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    }
+    // the dict of values keeps its last write per column, as setattr does
+    orm::update(&c.db, "player_characters", ids[0], &set)?;
+    if let Some(k) = unuse {
+        let used = pc_prefs(&c.db, ids[0])?.get("feat_used").filter(|v| py_truthy(Some(v))).cloned().unwrap_or(json!({}));
+        let mut used = used.as_object()?.clone();
+        used.shift_remove(&k);
+        set_pc_pref(c, &pc, "feat_used", (!used.is_empty()).then(|| Value::Object(used)))?;
+    }
+    orm::update(&c.db, "character_log", ids[1], &[("undone", Sql::Integer(1))])?;
     orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
     json_response(&json!({"ok": true}))
 }

@@ -4026,3 +4026,35 @@ def test_hub_rest_and_undo_are_pythons(client, seed):
     pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Rester", stats_json=stats)
     assert _via(pl, base).post(f"/api/characters/{pid}/hub/rest/undo", json={"snapshot": {"id": pid + 1}}).status_code == 400
     assert served >= 5, served
+
+
+def test_hub_log_undo_is_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    coins = json.dumps([{"label": "Gold", "abbr": "GP", "value": 5}, {"label": "Silver", "abbr": "sp", "value": 1}])
+
+    def state(pid, lid):
+        r = _row_by("player_characters", "id", pid)
+        return ({k: r[k] for k in ("current_hp", "pp_current", "xp", "currency_json", "conditions_json")}, _prefs(pid),
+                bool(_row_by("character_log", "id", lid)["undone"]))
+
+    served = 0
+    # (the entry's undo, a later entry's undo or None)
+    cases = [({"op": "hp", "value": 7}, None), ({"op": "xp", "value": 0}, {"op": "hp", "value": 1}), ({"op": "hp", "value": 7}, {"op": "hp", "value": 2}),
+             ({"op": "currency", "abbr": "gp", "value": 40}, {"op": "currency", "abbr": "sp", "value": 3}), ({"op": "currency", "abbr": "cp", "value": 1}, None),
+             ({"op": "conditions", "value": ["Prone", "x" * 60]}, None), ({"op": "cols", "values": {"pp_current": 3, "current_hp": -1}, "unuse": "f1"}, None),
+             ({"op": "cols", "values": {"xp": 3}}, None), ({"op": "hp", "value": -2}, None), ({}, None), ({"op": "equipment", "value": "[]"}, None)]
+    for undo, later in cases:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Logger", current_hp=3, xp=9, currency_json=coins, conditions_json='["Dazed"]')
+            _add("CharacterPref", world_id=w, character_id=pid, prefs_json=json.dumps({"feat_used": {"f1": "rest", "f2": "rest"}}))
+            lid = _add("CharacterLog", world_id=w, character_id=pid, actor="a", kind="k", text="t", undo_json=json.dumps(undo))
+            if later:
+                _add("CharacterLog", world_id=w, character_id=pid, actor="a", kind="k", text="t", undo_json=json.dumps(later))
+            r = side.post(f"/api/characters/{pid}/hub/log/{lid}/undo")
+            out.append((r.status_code, r.json(), state(pid, lid), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (undo, later, out)
+        served += out[1][3] == "gateway"
+    assert served >= 5, served
