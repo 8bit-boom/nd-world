@@ -1,4 +1,22 @@
 {
+ "calendar_preset_labels": [
+  [
+   "hunt_in_the_moonlight",
+   "Hunt in the Moonlight — Moonfall Calendar (13 × 25, 5-day weeks)"
+  ],
+  [
+   "earth_like",
+   "Earth-like — 12 months, 365 days, Monday–Sunday"
+  ],
+  [
+   "fantasy_classic",
+   "Fantasy classic — 12 months × 30 days, 7-day weeks"
+  ],
+  [
+   "lunar_13x28",
+   "Thirteen moons — 13 months × 28 days, 7-day weeks"
+  ]
+ ],
  "combat_rule_labels": [
   [
    "generic",

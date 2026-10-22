@@ -692,7 +692,7 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
 
 SIMPLE_FORM_URLS = ("/professions/new", "/races/new", "/boards/new", "/characters/templates/new", "/maps/schematic/new",
                     "/entity-templates/new", "/tables/new", "/display", "/handouts", "/dreamlands", "/king-in-yellow", "/sessions/new",
-                    "/quests/new", "/editor", "/entity-templates")
+                    "/quests/new", "/editor", "/entity-templates", "/characters/templates", "/worlds")
 
 
 def _same_page(d, via, url, who):
@@ -711,7 +711,7 @@ def _same_page(d, via, url, who):
 def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
     from .conftest import PLAYER_PASSWORD
     from app.database import SessionLocal, get_app_settings
-    from app.models import Entity, EntityTemplate, GameSession, Party, Quest
+    from app.models import Entity, EntityTemplate, GameSession, Party, Quest, World
     base = str(client.base_url)
     db = SessionLocal()
     try:
@@ -723,6 +723,8 @@ def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
                     Party(world_id=w, name="Crew"), GameSession(world_id=w, session_num=7, title="Seven"), Quest(world_id=w, title="Find it"),
                     EntityTemplate(world_id=w, name="Shop", slug="gw-shop", kind="location", fields_json=json.dumps([{"key": "owner", "label": "Owner"}])),
                     EntityTemplate(world_id=None, name="Blank", slug="gw-blank", fields_json="")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.custom_kinds_json = json.dumps([{"id": "custom_ship", "label": "Ship", "icon": "⛵", "subtypes": ["sloop"]}])
         db.commit()
     finally:
         db.close()
@@ -758,8 +760,12 @@ def test_id_pages_the_gateway_builds_are_pythons(client, seed):
         db.add_all([mine, gm_t, glob, ent, bare, other, tpl, cs, ctpl])
         wa = db.query(World).filter(World.id == w).first()
         wa.section_access_json = json.dumps({"tables": {"player": "edit"}})
+        wa.custom_kinds_json = json.dumps([{"id": "custom_ship", "label": "Ship", "icon": "", "subtypes": ["sloop", 3]}, {"id": "bad", "label": "x"},
+                                           {"id": "custom_blank", "label": "  "}, "junk", {"id": "custom_gang", "label": "Gang <g>", "created_at": "2026"}])
+        wb = db.query(World).filter(World.id == seed.world_b.id).first()
+        wb.rules_json = '{"sections": {}}'
         db.commit()
-        urls = [f"/tables/{mine.id}/edit", f"/tables/{gm_t.id}/edit", f"/tables/{glob.id}/edit", "/tables/999999/edit",
+        urls = [f"/worlds/{w}/kinds/edit", f"/worlds/{w}/rules/edit", f"/worlds/{seed.world_b.id}/rules/edit", "/worlds/999999/kinds/edit",f"/tables/{mine.id}/edit", f"/tables/{gm_t.id}/edit", f"/tables/{glob.id}/edit", "/tables/999999/edit",
                 f"/handout/{ent.id}", f"/handout/{bare.id}", f"/handout/{other.id}", "/handout/999999",
                 f"/entity-templates/{tpl.id}/edit", "/entity-templates/999999/edit",
                 f"/display/combat/{cs.id}", f"/display/combat/{ctpl.id}", "/display/combat/999999"]
@@ -772,5 +778,5 @@ def test_id_pages_the_gateway_builds_are_pythons(client, seed):
         via = _via(d, base)
         for url in urls:
             served[url] += _same_page(d, via, url, email)
-    must = [u for u in urls if "999999" not in u and u not in (f"/handout/{other.id}", f"/display/combat/{ctpl.id}")]
+    must = [u for u in urls if "999999" not in u and u not in (f"/handout/{other.id}", f"/display/combat/{ctpl.id}", f"/worlds/{seed.world_b.id}/rules/edit")]
     assert all(served[u] for u in must), served

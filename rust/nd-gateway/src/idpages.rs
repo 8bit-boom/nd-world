@@ -22,6 +22,8 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/handout/", "", handout),
     ("/entity-templates/", "/edit", entity_template_edit),
     ("/display/combat/", "", display_combat),
+    ("/worlds/", "/kinds/edit", kinds_edit),
+    ("/worlds/", "/rules/edit", rules_edit),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -91,7 +93,6 @@ fn handout(pages: &Pages, db: &Connection, p: PageCtx, id: i64, headers: &Header
 fn entity_template_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
     let t = row(db, "SELECT * FROM entity_templates WHERE id = ?1", id)?;
     let fields = json_or_empty_list(t.get("fields_json"))?;
-    p.ctx.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone());
     p.ctx.insert("tpl".into(), Value::Object(t));
     p.ctx.insert("fields".into(), fields);
     render_with(pages, "entity_template_form.html", p.ctx, headers)
@@ -120,4 +121,50 @@ fn display_combat(pages: &Pages, db: &Connection, p: PageCtx, id: i64, headers: 
     ctx.insert("combat_id".into(), json!(id));
     ctx.insert("title".into(), json!(title));
     render_with(pages, "display_combat.html", ctx, headers)
+}
+
+/// `deps.load_custom_kinds`: the world's valid custom kinds, malformed entries dropped
+fn load_custom_kinds(world: &Map<String, Value>) -> Vec<Value> {
+    let raw = world.get("custom_kinds_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let Ok(Value::Array(list)) = serde_json::from_str::<Value>(raw) else { return vec![] };
+    let mut out = vec![];
+    for e in list {
+        let Some(e) = e.as_object() else { continue };
+        let (Some(id), Some(label)) = (e.get("id").and_then(|v| v.as_str()), e.get("label").and_then(|v| v.as_str())) else { continue };
+        if !id.starts_with("custom_") || nd_render::text::py_strip(label).is_empty() {
+            continue;
+        }
+        let truthy = |v: Option<&Value>| v.filter(|v| !matches!(v, Value::Null | Value::Bool(false)) && v.as_str() != Some("") && v.as_f64() != Some(0.0)
+            && v.as_array().map_or(true, |a| !a.is_empty()) && v.as_object().map_or(true, |o| !o.is_empty())).cloned();
+        let subtypes: Vec<Value> = match e.get("subtypes") {
+            Some(Value::Array(a)) => a.iter().filter(|x| x.is_string()).cloned().collect(),
+            _ => vec![],
+        };
+        out.push(json!({"id": id, "label": label, "icon": truthy(e.get("icon")).unwrap_or(json!("🏷")), "subtypes": subtypes,
+                        "created_at": truthy(e.get("created_at")).unwrap_or(json!(""))}));
+    }
+    out
+}
+
+/// `GET /worlds/<id>/kinds/edit` (app/routers/kinds_admin.py `kinds_edit_form`)
+fn kinds_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let w = row(db, "SELECT * FROM worlds WHERE id = ?1", id)?;
+    p.ctx.insert("initial_kinds".into(), Value::Array(load_custom_kinds(&w)));
+    p.ctx.insert("edit_world".into(), Value::Object(w));
+    p.ctx.insert("max_custom_kinds".into(), json!(25));
+    render_with(pages, "kinds_edit.html", p.ctx, headers)
+}
+
+/// `GET /worlds/<id>/rules/edit` (app/main.py `world_rules_edit_form`) - for a world with no rules overlay stored; one with an overlay
+/// (whose validation message the page shows) is Python's
+fn rules_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let w = row(db, "SELECT * FROM worlds WHERE id = ?1", id)?;
+    match w.get("rules_json") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) if nd_render::text::py_strip(s).is_empty() => {}
+        _ => return None,
+    }
+    p.ctx.insert("edit_world".into(), Value::Object(w));
+    p.ctx.insert("rules_json_error".into(), Value::Null);
+    render_with(pages, "rules_edit.html", p.ctx, headers)
 }

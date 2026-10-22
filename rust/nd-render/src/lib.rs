@@ -99,6 +99,16 @@ fn mtime_ns(p: &Path) -> Option<u128> {
     std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_nanos())
 }
 
+/// `fromjson`: json.loads(s) if s else [] (bad JSON is an error, as in Python: the page goes to Python)
+fn fromjson(s: Value) -> Result<Value, Error> {
+    if !s.is_true() {
+        return Ok(Value::from(Vec::<Value>::new()));
+    }
+    let Some(t) = s.as_str() else { return Err(Error::new(ErrorKind::InvalidOperation, "fromjson: not text")) };
+    let v: serde_json::Value = serde_json::from_str(t).map_err(|_| Error::new(ErrorKind::InvalidOperation, "fromjson: bad JSON"))?;
+    Ok(pyvalue::to_value(&v))
+}
+
 /// `templating.display_url`: an uploaded picture's 2,560 px display copy (`?display=1`); map pictures and small copies keep their URL
 /// (a URL with a line break, where Python's `$` behaves differently, is left to Python: an error here)
 pub fn display_url(url: Value) -> Result<Value, Error> {
@@ -300,6 +310,7 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     });
     env.add_filter("thumb", thumb);
     env.add_filter("display", display_url);
+    env.add_filter("fromjson", fromjson);
     env.add_function("thumb_url", thumb);
     // the random-table list's per-row edit check, worked out by the page builder (rust/nd-gateway/src/pages.rs tables_list)
     env.add_function("can_edit_table", |t: Value| -> bool { t.get_attr("__nd_can_edit").map_or(false, |v| v.is_true()) });

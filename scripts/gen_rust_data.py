@@ -12,7 +12,7 @@ OUT = ROOT / "rust" / "nd-render" / "data" / "app_data.json"
 
 
 def make() -> dict:
-    from app import combat_rules, constants, nav_menus, view_prefs
+    from app import calendar_config, combat_rules, constants, nav_menus, view_prefs
     from app.routers import quests
     return {
         "view_sections": view_prefs.SECTIONS, "view_sizes": list(view_prefs.SIZES), "view_default_size": view_prefs.DEFAULT_SIZE,
@@ -21,6 +21,7 @@ def make() -> dict:
         "view_specs": {s: view_prefs.spec(s) for s in view_prefs.SECTIONS},
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,
+        "calendar_preset_labels": [[k, v["label"]] for k, v in calendar_config.CALENDAR_PRESETS.items()],
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
     }
 

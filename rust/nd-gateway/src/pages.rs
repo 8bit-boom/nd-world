@@ -200,7 +200,7 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/maps/schematic/new", template: "schematic_form.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[],
              extra: Some(|_, c| { c.insert("schematic".into(), serde_json::Value::Null); Some(()) }) },
     Simple { path: "/entity-templates/new", template: "entity_template_form.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[],
-             extra: Some(|_, c| { c.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone()); c.insert("tpl".into(), serde_json::Value::Null); c.insert("fields".into(), serde_json::json!([])); Some(()) }) },
+             extra: Some(|_, c| { c.insert("tpl".into(), serde_json::Value::Null); c.insert("fields".into(), serde_json::json!([])); Some(()) }) },
     Simple { path: "/tables/new", template: "tables/form.html", section: Some("tables"), needs_world: false, gm_only: false, edit: true, lists: &[],
              extra: Some(|_, c| { c.insert("tbl".into(), serde_json::Value::Null); c.insert("entries".into(), serde_json::json!([])); Some(()) }) },
     Simple { path: "/display", template: "display.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[], extra: None },
@@ -226,7 +226,29 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/editor", template: "editor_embed.html", section: Some("editor"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(editor) },
     Simple { path: "/entity-templates", template: "entity_templates_list.html", section: None, needs_world: false, gm_only: false, edit: false,
              lists: &[("tpls", "SELECT * FROM entity_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id")], extra: Some(entity_templates) },
+    Simple { path: "/characters/templates", template: "characters/templates_list.html", section: None, needs_world: false, gm_only: false, edit: false,
+             lists: &[("sheet_templates", "SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id")], extra: None },
+    Simple { path: "/worlds", template: "worlds.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(worlds_page) },
 ];
+
+fn worlds_page(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    let current = c.remove("world")?;
+    // each card shows `w.entities|length`: the world's entity rows (their ids stand in for them)
+    for w in c.get_mut("worlds")?.as_array_mut()? {
+        let w = w.as_object_mut()?;
+        let id = w.get("id")?.as_i64()?;
+        let mut st = db.prepare("SELECT id FROM entities WHERE world_id = ?1").ok()?;
+        let ids = st.query_map([id], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        w.insert("entities".into(), serde_json::json!(ids));
+    }
+    c.insert("current".into(), current);
+    let mut presets = serde_json::Map::new();
+    for pair in nd_render::app::data().get("calendar_preset_labels")?.as_array()? {
+        presets.insert(pair.get(0)?.as_str()?.to_string(), pair.get(1)?.clone());
+    }
+    c.insert("calendar_presets".into(), serde_json::Value::Object(presets));
+    Some(())
+}
 
 /// a feature switch in app_settings: off = Python's "feature disabled" page
 fn app_flag(db: &rusqlite::Connection, col: &str) -> Option<()> {
@@ -272,13 +294,12 @@ fn entity_templates(_: &rusqlite::Connection, c: &mut serde_json::Map<String, se
         m.insert(t.get("id")?.as_i64()?.to_string(), serde_json::from_str(raw).ok()?);
     }
     c.insert("tpl_fields_map".into(), serde_json::json!({"__intkeys__": serde_json::Value::Object(m)}));
-    c.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone());
     Some(())
 }
 
-fn kinds_and_icons(_: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
-    c.insert("kinds".into(), nd_render::app::data().get("kinds")?.clone());
-    c.insert("kind_icons".into(), nd_render::app::data().get("kind_icons")?.clone());
+/// The handler's KINDS / KIND_ICONS: the context processor's world-aware `kinds` / `kind_icons` (already in the layout context) replace
+/// them - Starlette applies context processors after the handler's own context
+fn kinds_and_icons(_: &rusqlite::Connection, _: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
     Some(())
 }
 
