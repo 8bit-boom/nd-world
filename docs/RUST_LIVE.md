@@ -60,3 +60,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `POST /api/characters/<id>/hub/loot` (claim / unclaim a party-stash item; a stash `load_loot` would repair stays Python's) | P4-12 |
 | `POST /api/characters/<id>/hub/initiative` (Speed + d10 into the dice log and the encounter, the active combatant kept after the re-sort; fluid fights and other systems stay Python's) | P4-13 |
 | `POST /maps/schematic/<slug>/door`, `/fog` (the GM opens a door, changes fog and lighting; `clean_fog` ported, a rounding Python might do differently stays Python's) | P4-14 |
+| `POST /maps/schematic/<slug>/lights`, `/light` (save the lights, switch one on / off; `clean_lights` ported) | P4-15 |

@@ -4193,3 +4193,35 @@ def test_schematic_door_and_fog_are_pythons(client, seed):
     served += run(pl, "fog", {"enabled": False})
     served += run(gm, "fog", {"enabled": False}, world=seed.world_b.id)
     assert served >= 11, served
+
+
+def test_schematic_lights_are_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    stored = [{"id": "a", "x": 10, "y": 20, "range": 4, "on": True}, {"id": "b", "x": 1.5, "y": 2.25, "range": 2, "color": "#00ff00", "on": False, "label": " Lamp  post "}]
+    n = [0]
+    served = 0
+
+    def run(path, body, lights=json.dumps(stored), **kw):
+        out = []
+        for side in (gm, _via(gm, base)):
+            n[0] += 1
+            slug = f"lights-{n[0]}"
+            sid = _add("Schematic", world_id=w, name="Map", slug=slug, lights_json=lights, canvas_width=kw.get("cw", 800), canvas_height=600)
+            r = side.post(f"/maps/schematic/{slug}/{path}", json=body)
+            out.append((r.status_code, r.json() if r.status_code == 200 else None, _row("schematics", sid)["lights_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (path, body, out)
+        return out[1][3] == "gateway"
+
+    for body in ({"id": "a"}, {"id": "b"}, {"id": "a", "on": True}, {"id": "zz"}, {"id": 3}):
+        served += run("light", body)
+    served += run("light", {"id": "l1"}, lights=json.dumps([{"x": 1, "y": 1, "range": 1}]))
+    sets = [[{"id": "a b!", "x": 9000, "y": -4, "range": 100, "color": "#ABCDEF", "intensity": 0.05, "label": 7}, {"id": "a b!", "x": 1, "y": 1, "range": 0},
+             {"x": 3.333, "y": 4.1, "range": 0.2, "color": "red", "on": None}, "junk", {"id": 12, "x": 1, "y": 2, "range": 3, "intensity": 0.555}],
+            [{"x": 1, "y": 1, "range": 1}] * 61, [], [{"id": "a", "x": 1, "y": 1, "range": 1, "label": "  hi\tthere "}]]
+    for lights in sets:
+        served += run("lights", {"lights": lights})
+    served += run("lights", {"lights": "no"})
+    served += run("lights", {"lights": [{"id": "a", "x": "1", "y": 1, "range": 1}]})
+    assert served >= 8, served  # the first set (a number label, a half to round) is Python's

@@ -455,7 +455,8 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 /// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/move-token", sc_move_token), ("/api/maps/schematic/", "/pickup-item", sc_pickup),
     ("/api/maps/schematic/", "/buy-item", sc_buy),
-    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/door", sc_door), ("/maps/schematic/", "/fog", sc_fog),
+    ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8534,6 +8535,93 @@ fn sc_load(sc: &Map<String, Value>, col: &str, want_list: bool) -> Option<Value>
         _ if want_list => json!([]),
         _ => json!({}),
     })
+}
+
+/// `map_walls.clean_lights` -> (lights, warnings); None for what Python spells or rounds its own way
+fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
+    let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64).max(1.0);
+    let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
+    let (mut out, mut warnings, mut seen, mut dropped) = (vec![], vec![], Vec::<String>::new(), 0);
+    for (i, l) in data.iter().enumerate() {
+        if out.len() >= 60 {
+            warnings.push("Only the first 60 lights were kept.".to_string());
+            break;
+        }
+        let Some(l) = l.as_object() else {
+            dropped += 1;
+            continue;
+        };
+        let (x, y, r) = (wall_num(l.get("x")), wall_num(l.get("y")), wall_num(l.get("range")));
+        let (Some(x), Some(y), Some(r)) = (x, y, r) else {
+            dropped += 1;
+            continue;
+        };
+        if r <= 0.0 {
+            dropped += 1;
+            continue;
+        }
+        let raw_id = match l.get("id") {
+            Some(Value::String(t)) => t.clone(),
+            Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+            v if !py_truthy(v) => String::new(),
+            _ => return None,
+        };
+        let mut lid: String = raw_id.chars().filter(|ch| ch.is_ascii_alphanumeric() || "_.:-".contains(*ch)).take(40).collect();
+        if lid.is_empty() {
+            lid = format!("l{}", i + 1);
+        }
+        while seen.contains(&lid) {
+            lid.push('x');
+        }
+        seen.push(lid.clone());
+        let color = match l.get("color") {
+            Some(Value::String(t)) if t.len() == 7 && t.starts_with('#') && t[1..].bytes().all(|b| b.is_ascii_hexdigit()) => t.clone(),
+            Some(Value::String(t)) if t.len() == 8 && t.ends_with('\n') => return None, // `$` before a final newline: Python's
+            _ => "#ffd9a0".to_string(),
+        };
+        let k = wall_num(l.get("intensity"));
+        let mut m = Map::new();
+        m.insert("id".into(), json!(lid));
+        m.insert("x".into(), json!(py_round(x.max(0.0).min(cw), 2)?));
+        m.insert("y".into(), json!(py_round(y.max(0.0).min(ch), 2)?));
+        m.insert("range".into(), json!(py_round(r.max(0.5).min(60.0), 2)?));
+        m.insert("color".into(), json!(color));
+        m.insert("intensity".into(), json!(match k { None => 1.0, Some(k) => py_round(k.max(0.1).min(1.0), 2)? }));
+        m.insert("on".into(), json!(l.get("on") != Some(&Value::Bool(false))));
+        m.insert("label".into(), json!(keepsake_text(l.get("label"), 60)?));
+        out.push(Value::Object(m));
+    }
+    if dropped > 0 {
+        warnings.push(format!("{dropped} light(s) were skipped because they were not usable."));
+    }
+    Some((out, warnings))
+}
+
+fn sc_lights(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let body = c.json()?;
+    let (lights, warnings) = clean_lights(body.get("lights")?.as_array()?, &sc)?;
+    let v = Value::Array(lights);
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("lights_json", s(&nd_render::py_dumps(&v)))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"lights": v, "warnings": warnings}))
+}
+
+fn sc_light(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let sc = sc_for_edit(c, slug)?;
+    let body = c.json()?;
+    let id = body.get("id")?.as_str()?.to_string();
+    let Value::Array(stored) = sc_load(&sc, "lights_json", true)? else { return None };
+    let (mut lights, _) = clean_lights(&stored, &sc)?;
+    let l = lights.iter_mut().find(|l| l["id"] == json!(id))?.as_object_mut()?;
+    let on = match body.get("on") {
+        Some(Value::Bool(b)) => *b,
+        _ => !l["on"].as_bool()?,
+    };
+    l.insert("on".into(), json!(on));
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("lights_json", s(&nd_render::py_dumps(&Value::Array(lights))))])?;
+    orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"id": id, "on": on}))
 }
 
 fn sc_fog(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
