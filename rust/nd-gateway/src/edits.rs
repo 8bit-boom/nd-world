@@ -396,7 +396,7 @@ fn route_in(table: &[(&str, Handler)], path: &str) -> Option<(Handler, Vec<i64>)
 type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 
 /// (prefix, suffix, handler) for paths addressed by a slug: `<prefix><slug><suffix>`, the slug plain letters, digits, `-` and `_`
-const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete)];
+const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -6614,4 +6614,48 @@ fn entity_send_to_player(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::insert(&c.db, "private_notes", &[("world_id", Sql::Integer(wid)), ("player_user_id", Sql::Integer(pid)), ("author_id", Sql::Integer(c.p.user_id)),
         ("title", s(&title)), ("content", s(&body))])?;
     json_response(&json!({"ok": true, "player": pname}))
+}
+
+// ── image maps (app/main.py map_rename / map_delete): JSON files next to the database ──
+
+/// The map file and its data, when it belongs to the active world and the viewer may edit maps
+fn own_map(c: &Ctx, slug: &str) -> Option<(std::path::PathBuf, Map<String, Value>)> {
+    let jf = crate::maps::maps_dir(c.cfg)?.join(format!("{slug}.json"));
+    let text = std::fs::read_to_string(&jf).ok()?;
+    let Value::Object(data) = serde_json::from_str::<Value>(&text).ok()? else { return None };
+    let owner = match data.get("world_id") {
+        None => 1,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    if Some(owner) != c.world_id() || !c.can_edit_section("maps")? {
+        return None;
+    }
+    Some((jf, data))
+}
+
+fn map_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let name = strip(f.get("name")?);
+    let (jf, mut data) = own_map(c, slug)?;
+    if name.is_empty() {
+        return None;
+    }
+    data.insert("name".into(), Value::String(name));
+    std::fs::write(&jf, nd_render::py_dumps(&Value::Object(data))).ok()?;
+    redirect("/maps")
+}
+
+fn map_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let (jf, _) = own_map(c, slug)?;
+    c.db.execute("DELETE FROM map_overlays WHERE id = (SELECT id FROM map_overlays WHERE slug = ?1 ORDER BY id LIMIT 1)", [slug]).ok()?;
+    c.removals.push(jf);
+    let dir = c.cfg.db_path.parent()?.join("uploads").join("maps");
+    for ext in [".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"] {
+        let img = dir.join(format!("{slug}{ext}"));
+        if img.exists() {
+            c.removals.push(img);
+        }
+    }
+    redirect("/maps")
 }

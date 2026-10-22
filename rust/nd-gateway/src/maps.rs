@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::config::Config;
 use crate::pages::{render_with, section_ok, Pages};
 
-fn maps_dir(cfg: &Config) -> Option<PathBuf> {
+pub fn maps_dir(cfg: &Config) -> Option<PathBuf> {
     Some(cfg.db_path.parent()?.join("maps"))
 }
 

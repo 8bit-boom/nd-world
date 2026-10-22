@@ -3147,3 +3147,44 @@ def test_entity_markup_random_selections_are_pythons(client, seed):
     finally:
         db.close()
     assert served >= 20, served
+
+
+def test_map_rename_and_delete_are_pythons(client, seed):
+    import json as _json
+    from pathlib import Path
+    from app.main import _MAPS_DIR
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    _MAPS_DIR.mkdir(parents=True, exist_ok=True)
+    up = Path(_MAPS_DIR).parent / "uploads" / "maps"
+    up.mkdir(parents=True, exist_ok=True)
+    served = 0
+    data = {"name": "Old", "world_id": seed.world_a.id, "width": 3072, "height": 3072, "markers": [{"lat": 0.1, "lng": -1e-05, "label": "é"}]}
+
+    def make(tag, d2=data):
+        slug = f"gwmap-{tag}-{os_random_hex()}"
+        (_MAPS_DIR / f"{slug}.json").write_text(_json.dumps(d2), encoding="utf-8")
+        (up / f"{slug}.png").write_bytes(b"x")
+        return slug
+
+    for form in ({"name": "  New name ü "}, {"name": " "}, {}):
+        out = []
+        for side in (d, via):
+            slug = make("r")
+            r = side.post(f"/maps/{slug}/rename", data=form, follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), (_MAPS_DIR / f"{slug}.json").read_text(encoding="utf-8"), r.headers.get("x-nd-served-by")))
+            (_MAPS_DIR / f"{slug}.json").unlink()
+        assert out[0][:3] == out[1][:3], (form, out)
+        served += out[1][3] == "gateway"
+    for d2 in (data, {**data, "world_id": seed.world_b.id}):
+        out = []
+        for side in (d, via):
+            slug = make("d", d2)
+            r = side.post(f"/maps/{slug}/delete", follow_redirects=False)
+            out.append((r.status_code, r.headers.get("location"), (_MAPS_DIR / f"{slug}.json").exists(), (up / f"{slug}.png").exists(), r.headers.get("x-nd-served-by")))
+            for p in (_MAPS_DIR / f"{slug}.json", up / f"{slug}.png"):
+                p.unlink(missing_ok=True)
+        assert out[0][:4] == out[1][:4], (d2, out)
+        served += out[1][4] == "gateway"
+    assert served >= 2, served
