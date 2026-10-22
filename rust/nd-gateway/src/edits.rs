@@ -211,6 +211,16 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/images/albums/{}/delete", image_album_delete),
     ("/images/albums/{}/add", image_album_add),
     ("/images/albums/{}/remove", image_album_remove),
+    ("/api/sessions/{}/recap-audio", sm_audio_attach),
+    ("/api/sessions/{}/recap-audio/{}/visibility", sm_audio_visibility),
+    ("/api/sessions/{}/recap-audio/{}/remove", sm_audio_remove),
+    ("/api/sessions/{}/media/attach", sm_attach),
+    ("/api/sessions/{}/media/audio/{}/visibility", sm_audio_item_visibility),
+    ("/api/sessions/{}/media/video/{}/visibility", sm_video_item_visibility),
+    ("/api/sessions/{}/media/audio/{}/rename", sm_audio_item_rename),
+    ("/api/sessions/{}/media/video/{}/rename", sm_video_item_rename),
+    ("/api/sessions/{}/media/audio/{}/remove", sm_audio_remove),
+    ("/api/sessions/{}/media/video/{}/remove", sm_video_item_remove),
     ("/parties/new", party_new),
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
@@ -268,6 +278,21 @@ type SlugHandler = fn(&mut Ctx, &str) -> Option<Response<Body>>;
 const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
+    // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
+    if let Some(rest) = path.strip_prefix("/api/sessions/") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() == 5 && parts[1] == "media" && parts[2] == "image" && !parts[0].is_empty() && parts[0].len() <= 15
+            && parts[0].bytes().all(|b| b.is_ascii_digit()) && !parts[3].is_empty() && parts[3].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            let h: SlugHandler = match parts[4] {
+                "visibility" => sm_image_visibility,
+                "rename" => sm_image_rename,
+                "remove" => sm_image_remove,
+                _ => return None,
+            };
+            return Some((h, format!("{}/{}", parts[0], parts[3])));
+        }
+    }
     for (pre, post, h) in SLUG_ROUTES {
         if let Some(slug) = path.strip_prefix(pre).and_then(|r| r.strip_suffix(post)) {
             if !slug.is_empty() && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
@@ -4041,4 +4066,389 @@ fn image_album_remove(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let n = current.len();
     orm::update(&c.db, "image_albums", ids[0], &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(current))))])?;
     json_response(&json!({"ok": true, "count": n}))
+}
+
+// ── session media (app/session_media.py, app/routers/session_media.py, session_audio.py) ──
+
+/// `media_items(gs)`, when every kept item already has its uid (one that would get a fresh random uid, or a value read through
+/// str(): Python's)
+fn sm_items(gs: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
+    let raw = gs.get("recap_media_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let list = match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Array(a) => a,
+        _ => vec![],
+    };
+    let (mut out, mut seen_img, mut seen_vid): (Vec<Map<String, Value>>, Vec<String>, Vec<i64>) = (vec![], vec![], vec![]);
+    for it in list {
+        let Value::Object(it) = it else { continue };
+        let uid = || -> Option<String> {
+            match it.get("uid") {
+                Some(Value::String(u)) if !u.is_empty() => Some(take_chars(u, 32)),
+                _ => None,
+            }
+        };
+        match it.get("kind").and_then(|k| k.as_str()) {
+            Some("image") => {
+                let Some(url) = it.get("url").and_then(|u| u.as_str()).filter(|u| u.starts_with("/uploads/")) else { continue };
+                if seen_img.iter().any(|s| s == url) {
+                    continue;
+                }
+                seen_img.push(url.to_string());
+                let caption = match it.get("caption") {
+                    Some(Value::String(c)) => take_chars(c, 120),
+                    Some(v) if py_truthy(Some(v)) => return None,
+                    _ => String::new(),
+                };
+                let mut m = Map::new();
+                m.insert("uid".into(), json!(uid()?));
+                m.insert("kind".into(), json!("image"));
+                m.insert("url".into(), json!(url));
+                m.insert("caption".into(), json!(caption));
+                m.insert("visible".into(), json!(py_truthy(it.get("visible"))));
+                m.insert("own".into(), json!(py_truthy(it.get("own"))));
+                out.push(m);
+            }
+            Some("video") => {
+                let Some(cid) = it.get("clip_id").filter(|v| !v.is_boolean()).and_then(|v| v.as_i64()) else { continue };
+                if seen_vid.contains(&cid) {
+                    continue;
+                }
+                seen_vid.push(cid);
+                let mut m = Map::new();
+                m.insert("uid".into(), json!(uid()?));
+                m.insert("kind".into(), json!("video"));
+                m.insert("clip_id".into(), json!(cid));
+                out.push(m);
+            }
+            _ => {}
+        }
+    }
+    out.truncate(50);
+    Some(out)
+}
+
+/// `recap_clip_ids(gs)`
+fn sm_clip_ids(gs: &Map<String, Value>) -> Option<Vec<i64>> {
+    let raw = gs.get("recap_audio_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let list = match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Array(a) => a,
+        _ => vec![],
+    };
+    let mut out = vec![];
+    for v in list {
+        if let Some(i) = v.as_i64().filter(|_| !v.is_boolean() && !v.is_f64()) {
+            if !out.contains(&i) {
+                out.push(i);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// `limit(db)`: Settings -> System's session media maximum (10 by default)
+fn sm_limit(c: &Ctx) -> Option<i64> {
+    let raw: Option<i64> = c.db.query_row("SELECT session_media_max FROM app_settings LIMIT 1", [], |r| r.get(0)).ok()?;
+    Some(raw.filter(|n| *n >= 1).map_or(10, |n| n.min(50)))
+}
+
+fn sm_store_media(c: &Ctx, gs_id: i64, items: &[Map<String, Value>]) -> Option<()> {
+    let list: Vec<Value> = items.iter().take(50).cloned().map(Value::Object).collect();
+    orm::update(&c.db, "game_sessions", gs_id, &[("recap_media_json", s(&nd_render::py_dumps(&Value::Array(list))))])?;
+    Some(())
+}
+
+fn sm_store_clips(c: &Ctx, gs_id: i64, ids: &[i64]) -> Option<()> {
+    let ids: Vec<i64> = ids.iter().take(50).copied().collect();
+    orm::update(&c.db, "game_sessions", gs_id, &[("recap_audio_json", s(&ints_json(&ids)))])?;
+    Some(())
+}
+
+fn sm_audio_dict(c: &Map<String, Value>) -> Value {
+    let txt = |k: &str| json!(c.get(k).and_then(|v| v.as_str()).unwrap_or(""));
+    json!({"id": c.get("id"), "name": c.get("name"), "description": txt("description"), "file_url": c.get("file_url"),
+           "visible_to_players": py_truthy(c.get("visible_to_players")), "transcript": txt("transcript")})
+}
+
+fn sm_video_dict(c: &Map<String, Value>, uid: &str) -> Value {
+    let txt = |k: &str| json!(c.get(k).and_then(|v| v.as_str()).unwrap_or(""));
+    json!({"id": c.get("id"), "uid": uid, "name": c.get("name"), "description": txt("description"), "file_url": c.get("file_url"),
+           "poster_url": txt("poster_url"), "visible_to_players": py_truthy(c.get("visible_to_players"))})
+}
+
+/// `panel(db, gs)`: the GM's session media panel
+fn sm_panel(c: &Ctx, gs_id: i64) -> Option<Response<Body>> {
+    let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", gs_id)?;
+    let wid = gs.get("world_id")?.as_i64()?;
+    let (ids, items) = (sm_clip_ids(&gs)?, sm_items(&gs)?);
+    let clip = |table: &str, id: i64| -> Option<Map<String, Value>> {
+        row(&c.db, &format!("SELECT * FROM {table} WHERE id = ?1", table = table), id).filter(|r| r.get("world_id").and_then(|v| v.as_i64()) == Some(wid))
+    };
+    let clips: Vec<Value> = ids.iter().filter_map(|i| clip("audio_clips", *i)).map(|c| sm_audio_dict(&c)).collect();
+    let videos: Vec<Value> = items
+        .iter()
+        .filter(|i| i.get("kind").and_then(|k| k.as_str()) == Some("video"))
+        .filter_map(|i| Some(sm_video_dict(&clip("video_clips", i.get("clip_id")?.as_i64()?)?, i.get("uid")?.as_str()?)))
+        .collect();
+    let video_ids: Vec<i64> = items.iter().filter_map(|i| (i.get("kind").and_then(|k| k.as_str()) == Some("video")).then(|| i.get("clip_id")?.as_i64()).flatten()).collect();
+    let lib = |table: &str| -> Option<Vec<Map<String, Value>>> {
+        let mut st = c.db.prepare(&format!("SELECT * FROM {table} WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 200")).ok()?;
+        let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        Some(rows)
+    };
+    let library: Vec<Value> = lib("audio_clips")?
+        .iter()
+        .filter(|r| !r.get("id").and_then(|v| v.as_i64()).is_some_and(|i| ids.contains(&i)))
+        .map(|r| json!({"id": r.get("id"), "name": r.get("name"), "visible_to_players": py_truthy(r.get("visible_to_players")), "file_url": r.get("file_url")}))
+        .collect();
+    let video_library: Vec<Value> = lib("video_clips")?
+        .iter()
+        .filter(|r| !r.get("id").and_then(|v| v.as_i64()).is_some_and(|i| video_ids.contains(&i)))
+        .map(|r| {
+            json!({"id": r.get("id"), "name": r.get("name"), "visible_to_players": py_truthy(r.get("visible_to_players")), "file_url": r.get("file_url"),
+                   "poster_url": r.get("poster_url").and_then(|v| v.as_str()).unwrap_or("")})
+        })
+        .collect();
+    let images: Vec<Value> = items
+        .iter()
+        .filter(|i| i.get("kind").and_then(|k| k.as_str()) == Some("image"))
+        .map(|i| json!({"uid": i.get("uid"), "url": i.get("url"), "caption": i.get("caption"), "visible_to_players": i.get("visible"), "own": i.get("own")}))
+        .collect();
+    json_response(&json!({"clips": clips, "library": library, "videos": videos, "video_library": video_library, "images": images,
+                          "max": sm_limit(c)?, "used": ids.len() + items.len()}))
+}
+
+/// `_require_gm_edit`: the session of the active world, with sessions:edit
+fn sm_session(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
+    let wid = c.world_id()?;
+    if !c.can_edit_section("sessions")? {
+        return None;
+    }
+    let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", id)?;
+    (gs.get("world_id")?.as_i64() == Some(wid)).then_some(gs)
+}
+
+/// The JSON body as the media routes read it: bad JSON or a non-object is {} (`parse_json` ValueError -> {}); a body serde refuses
+/// that json.loads might take is Python's
+fn sm_body(c: &Ctx) -> Option<Map<String, Value>> {
+    if !plain_numbers(c.body) {
+        return None;
+    }
+    Some(match serde_json::from_slice::<Value>(c.body) {
+        Ok(Value::Object(o)) => o,
+        Ok(_) => Map::new(),
+        Err(_) if c.body.is_empty() => Map::new(),
+        Err(_) => return None,
+    })
+}
+
+/// `_attach(db, gs, clip, visible)` for an audio clip of the world
+fn sm_attach_audio(c: &Ctx, gs: &Map<String, Value>, clip: &Map<String, Value>, vis: Option<bool>) -> Option<()> {
+    let gid = gs.get("id")?.as_i64()?;
+    let mut ids = sm_clip_ids(gs)?;
+    let cid = clip.get("id")?.as_i64()?;
+    if !ids.contains(&cid) {
+        if (ids.len() + sm_items(gs)?.len()) as i64 >= sm_limit(c)? {
+            return None; // require_room's 400: Python's
+        }
+        ids.push(cid);
+        sm_store_clips(c, gid, &ids)?;
+    }
+    if let Some(v) = vis {
+        orm::update(&c.db, "audio_clips", cid, &[("visible_to_players", Sql::Integer(v as i64))])?;
+    }
+    Some(())
+}
+
+/// The world's clip by id
+fn world_clip(c: &Ctx, table: &str, wid: i64, id: i64) -> Option<Map<String, Value>> {
+    row(&c.db, &format!("SELECT * FROM {table} WHERE id = ?1"), id).filter(|r| r.get("world_id").and_then(|v| v.as_i64()) == Some(wid))
+}
+
+fn sm_audio_attach(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let b = sm_body(c)?;
+    let cid = b.get("clip_id").filter(|v| !v.is_boolean()).and_then(|v| v.as_i64())?;
+    let clip = world_clip(c, "audio_clips", gs.get("world_id")?.as_i64()?, cid)?;
+    sm_attach_audio(c, &gs, &clip, b.get("visible_to_players").and_then(|v| v.as_bool()))?;
+    sm_panel(c, ids[0])
+}
+
+fn sm_set_clip_visibility(c: &mut Ctx, ids: &[i64], table: &str) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let attached = if table == "audio_clips" {
+        sm_clip_ids(&gs)?.contains(&ids[1])
+    } else {
+        sm_items(&gs)?.iter().any(|i| i.get("kind").and_then(|k| k.as_str()) == Some("video") && i.get("clip_id").and_then(|v| v.as_i64()) == Some(ids[1]))
+    };
+    if !attached {
+        return None;
+    }
+    world_clip(c, table, gs.get("world_id")?.as_i64()?, ids[1])?;
+    let vis = sm_body(c)?.get("visible_to_players").and_then(|v| v.as_bool())?;
+    orm::update(&c.db, table, ids[1], &[("visible_to_players", Sql::Integer(vis as i64))])?;
+    sm_panel(c, ids[0])
+}
+
+fn sm_audio_visibility(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    sm_set_clip_visibility(c, ids, "audio_clips")
+}
+
+fn sm_audio_item_visibility(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    sm_set_clip_visibility(c, ids, "audio_clips")
+}
+
+fn sm_video_item_visibility(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    sm_set_clip_visibility(c, ids, "video_clips")
+}
+
+fn sm_audio_remove(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let kept: Vec<i64> = sm_clip_ids(&gs)?.into_iter().filter(|i| *i != ids[1]).collect();
+    sm_store_clips(c, ids[0], &kept)?;
+    sm_panel(c, ids[0])
+}
+
+fn sm_video_item_remove(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let kept: Vec<Map<String, Value>> = sm_items(&gs)?
+        .into_iter()
+        .filter(|i| !(i.get("kind").and_then(|k| k.as_str()) == Some("video") && i.get("clip_id").and_then(|v| v.as_i64()) == Some(ids[1])))
+        .collect();
+    sm_store_media(c, ids[0], &kept)?;
+    sm_panel(c, ids[0])
+}
+
+/// The rename body's name, whitespace collapsed (`" ".join(name.split())`)
+fn sm_name(c: &Ctx) -> Option<String> {
+    Some(nd_render::text::py_split_join(sm_body(c)?.get("name")?.as_str()?))
+}
+
+fn sm_rename_clip(c: &mut Ctx, ids: &[i64], table: &str) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let name = sm_name(c)?;
+    if name.is_empty() {
+        return None;
+    }
+    let attached = if table == "audio_clips" {
+        sm_clip_ids(&gs)?.contains(&ids[1])
+    } else {
+        sm_items(&gs)?.iter().any(|i| i.get("kind").and_then(|k| k.as_str()) == Some("video") && i.get("clip_id").and_then(|v| v.as_i64()) == Some(ids[1]))
+    };
+    if !attached {
+        return None;
+    }
+    world_clip(c, table, gs.get("world_id")?.as_i64()?, ids[1])?;
+    orm::update(&c.db, table, ids[1], &[("name", s(&take_chars(&name, 200)))])?;
+    sm_panel(c, ids[0])
+}
+
+fn sm_audio_item_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    sm_rename_clip(c, ids, "audio_clips")
+}
+
+fn sm_video_item_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    sm_rename_clip(c, ids, "video_clips")
+}
+
+/// "<session id>/<uid>" from the image routes
+fn sm_image_target(c: &Ctx, key: &str) -> Option<(i64, Vec<Map<String, Value>>, usize)> {
+    let (sid, uid) = key.split_once('/')?;
+    let sid: i64 = sid.parse().ok()?;
+    let gs = sm_session(c, sid)?;
+    let items = sm_items(&gs)?;
+    let at = items.iter().position(|i| i.get("kind").and_then(|k| k.as_str()) == Some("image") && i.get("uid").and_then(|u| u.as_str()) == Some(uid))?;
+    Some((sid, items, at))
+}
+
+fn sm_image_visibility(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let vis = sm_body(c)?.get("visible_to_players").and_then(|v| v.as_bool())?;
+    let (sid, mut items, at) = sm_image_target(c, key)?;
+    items[at].insert("visible".into(), json!(vis));
+    sm_store_media(c, sid, &items)?;
+    sm_panel(c, sid)
+}
+
+fn sm_image_rename(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let name = sm_name(c)?;
+    let (sid, mut items, at) = sm_image_target(c, key)?;
+    items[at].insert("caption".into(), json!(take_chars(&name, 120)));
+    sm_store_media(c, sid, &items)?;
+    sm_panel(c, sid)
+}
+
+fn sm_image_remove(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
+    let (sid, mut items, at) = sm_image_target(c, key)?;
+    if py_truthy(items[at].get("own")) {
+        return None; // a picture uploaded for the session is deleted with its previews (imaging.derived_paths_for): Python's
+    }
+    items.remove(at);
+    sm_store_media(c, sid, &items)?;
+    sm_panel(c, sid)
+}
+
+fn sm_attach(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let wid = gs.get("world_id")?.as_i64()?;
+    let b = sm_body(c)?;
+    let vis = b.get("visible_to_players").and_then(|v| v.as_bool());
+    match b.get("kind").and_then(|k| k.as_str()) {
+        Some(kind @ ("audio" | "video")) => {
+            let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+            let cid = match b.get("id") {
+                None | Some(Value::Null) => {
+                    let url = b.get("url")?.as_str()?;
+                    let url = take_chars(&strip(url), 512);
+                    c.db.query_row(&format!("SELECT id FROM {table} WHERE world_id = ?1 AND file_url = ?2 LIMIT 1"), rusqlite::params![wid, url], |r| r.get(0)).ok()?
+                }
+                Some(v) if !v.is_boolean() => v.as_i64()?,
+                _ => return None,
+            };
+            let clip = world_clip(c, table, wid, cid)?;
+            if kind == "audio" {
+                sm_attach_audio(c, &gs, &clip, vis)?;
+            } else {
+                let mut items = sm_items(&gs)?;
+                if !items.iter().any(|i| i.get("kind").and_then(|k| k.as_str()) == Some("video") && i.get("clip_id").and_then(|v| v.as_i64()) == Some(cid)) {
+                    if (sm_clip_ids(&gs)?.len() + items.len()) as i64 >= sm_limit(c)? {
+                        return None;
+                    }
+                    let mut m = Map::new();
+                    m.insert("uid".into(), json!(format!("{:010x}", rand::random::<u64>() & 0xff_ffff_ffff)));
+                    m.insert("kind".into(), json!("video"));
+                    m.insert("clip_id".into(), json!(cid));
+                    items.push(m);
+                    sm_store_media(c, ids[0], &items)?;
+                }
+                if let Some(v) = vis {
+                    orm::update(&c.db, "video_clips", cid, &[("visible_to_players", Sql::Integer(v as i64))])?;
+                }
+            }
+        }
+        Some("image") => {
+            let url = b.get("url")?.as_str()?.to_string();
+            let names = crate::gallery::all_world_image_urls(&c.db, wid)?;
+            let name = names.iter().find(|e| e.get("url").and_then(|u| u.as_str()) == Some(url.as_str()))?.get("name")?.clone();
+            let caption = match name {
+                Value::String(n) => take_chars(&n, 120),
+                _ => return None,
+            };
+            let mut items = sm_items(&gs)?;
+            if !items.iter().any(|i| i.get("kind").and_then(|k| k.as_str()) == Some("image") && i.get("url").and_then(|u| u.as_str()) == Some(url.as_str())) {
+                if (sm_clip_ids(&gs)?.len() + items.len()) as i64 >= sm_limit(c)? {
+                    return None;
+                }
+                let mut m = Map::new();
+                m.insert("uid".into(), json!(format!("{:010x}", rand::random::<u64>() & 0xff_ffff_ffff)));
+                m.insert("kind".into(), json!("image"));
+                m.insert("url".into(), json!(url));
+                m.insert("caption".into(), json!(caption));
+                m.insert("visible".into(), json!(vis.unwrap_or(false)));
+                m.insert("own".into(), json!(false));
+                items.push(m);
+                sm_store_media(c, ids[0], &items)?;
+            }
+        }
+        _ => return None,
+    }
+    sm_panel(c, ids[0])
 }

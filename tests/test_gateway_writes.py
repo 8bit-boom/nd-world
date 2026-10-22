@@ -1857,3 +1857,107 @@ def test_image_album_writes_are_pythons(client, seed):
             _same_rows(_row("image_albums", ids[0]), _row("image_albums", ids[1]), before[0], before[1])
             served += rb.headers.get("x-nd-served-by") == "gateway"
     assert served >= 10, served   # the GM's
+
+
+def test_session_media_writes_are_pythons(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"sessions": {"player": "edit", "assistant": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+    alb = _add("ImageAlbum", world_id=w, name="Pics", image_urls_json=json.dumps(["/uploads/gallery/pic-a.png"] + [f"/uploads/gallery/pic-{i}.png" for i in range(200)]))
+
+    def setup():
+        a1 = _add("AudioClip", world_id=w, name="A1", file_url="/uploads/audio/a1.mp3", visible_to_players=False)
+        a2 = _add("AudioClip", world_id=w, name="A2", file_url="/uploads/audio/a2.mp3")
+        v1 = _add("VideoClip", world_id=w, name="V1", file_url="/uploads/video/v1.mp4")
+        v2 = _add("VideoClip", world_id=w, name="V2", file_url="/uploads/video/v2.mp4", poster_url="/uploads/video/v2.jpg")
+        media = [{"uid": "img1", "kind": "image", "url": "/uploads/gallery/pic-a.png", "caption": "A", "visible": 1, "own": False},
+                 {"uid": "own1", "kind": "image", "url": "/uploads/session_media/x.png", "own": True},
+                 {"uid": "vid1", "kind": "video", "clip_id": v1}, {"kind": "image", "url": "/nope"}, "junk"]
+        g = _gsession(world_id=w, title="M", recap_audio_json=json.dumps([a1, a1, True, "x"]), recap_media_json=json.dumps(media))
+        return g, {"A1": a1, "A2": a2, "V1": v1, "V2": v2}
+
+    def norm(resp, ids):
+        if not resp.headers.get("content-type", "").startswith("application/json"):
+            return resp.status_code
+        d = resp.json()
+        if isinstance(d, dict) and "library" in d:
+            amap = {ids["A1"]: "A1", ids["A2"]: "A2"}
+            vmap = {ids["V1"]: "V1", ids["V2"]: "V2"}
+            for x in d["clips"]:
+                x["id"] = amap.get(x["id"], x["id"])
+            for x in d["videos"]:
+                x["id"] = vmap.get(x["id"], x["id"])
+                if x["uid"] not in ("vid1",):
+                    x["uid"] = "<new>"
+            for x in d["images"]:
+                if x["uid"] not in ("img1", "own1"):
+                    x["uid"] = "<new>"
+                if x["url"] == ids.get("PIC"):
+                    x["url"], x["caption"] = "PIC", x["caption"].replace(ids["PIC"].rsplit("/", 1)[1], "PICNAME")
+            d["library"] = sorted(amap[x["id"]] for x in d["library"] if x["id"] in amap)
+            d["video_library"] = sorted(vmap[x["id"]] for x in d["video_library"] if x["id"] in vmap)
+        return resp.status_code, d
+
+    calls = [("recap-audio", {"clip_id": "A2", "visible_to_players": True}), ("recap-audio", {"clip_id": "A1"}), ("recap-audio", {"clip_id": True}), ("recap-audio", "bad"),
+             ("recap-audio/A1/visibility", {"visible_to_players": True}), ("recap-audio/A2/visibility", {"visible_to_players": True}),
+             ("recap-audio/A1/visibility", {"visible_to_players": 1}), ("recap-audio/A1/remove", None), ("recap-audio/A2/remove", None),
+             ("media/attach", {"kind": "video", "id": "V2", "visible_to_players": False}), ("media/attach", {"kind": "video", "url": " /uploads/video/v1.mp4 "}),
+             ("media/attach", {"kind": "audio", "url": "/uploads/audio/a2.mp3"}), ("media/attach", {"kind": "image", "url": "PIC", "visible_to_players": True}),
+             ("media/attach", {"kind": "image", "url": "/uploads/gallery/pic-a.png"}), ("media/attach", {"kind": "image", "url": "/uploads/x"}), ("media/attach", {"kind": "z"}),
+             ("media/audio/A1/visibility", {"visible_to_players": True}), ("media/video/V1/visibility", {"visible_to_players": False}),
+             ("media/video/V2/visibility", {"visible_to_players": False}), ("media/image/img1/visibility", {"visible_to_players": False}),
+             ("media/image/nope/visibility", {"visible_to_players": False}), ("media/audio/A1/rename", {"name": "  New\\tname "}), ("media/video/V1/rename", {"name": " "}),
+             ("media/image/img1/rename", {"name": " Cap "}), ("media/image/img1/rename", {"name": 5}), ("media/audio/A1/remove", None), ("media/video/V1/remove", None),
+             ("media/image/img1/remove", None), ("media/image/own1/remove", None), ("media/audio/A2/remove", None)]
+    served = 0
+    pic_n = [0]
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path, body in calls:
+            out = []
+            for side in (d, via):
+                g, ids = setup()
+                pic_n[0] += 1
+                ids_pic = f"/uploads/gallery/pic-{pic_n[0]}.png"
+                ids["PIC"] = ids_pic
+                p = path
+                for k, v in ids.items():
+                    p = p.replace(f"/{k}/", f"/{v}/")
+                if isinstance(body, dict):
+                    bb = json.loads(json.dumps(body).replace('"A1"', str(ids["A1"])).replace('"A2"', str(ids["A2"])).replace('"V1"', str(ids["V1"])).replace('"V2"', str(ids["V2"])).replace('"PIC"', json.dumps(ids_pic)))
+                    r = side.post(f"/api/sessions/{g}/{p}", json=bb)
+                elif body == "bad":
+                    r = side.post(f"/api/sessions/{g}/{p}", content=b"{bad", headers={"content-type": "application/json"})
+                else:
+                    r = side.post(f"/api/sessions/{g}/{p}")
+                nr = norm(r, ids)
+                row = _row("game_sessions", g)
+                media = json.loads(row["recap_media_json"] or "[]")
+                vmap = {ids["V1"]: "V1", ids["V2"]: "V2"}
+                amap = {ids["A1"]: "A1", ids["A2"]: "A2"}
+                ids = {k: v for k, v in ids.items() if k != "PIC"}
+                for m in media:
+                    if isinstance(m, dict):
+                        if m.get("uid") not in ("img1", "own1", "vid1"):
+                            m["uid"] = "<new>"
+                        if "clip_id" in m:
+                            m["clip_id"] = vmap.get(m["clip_id"], m["clip_id"])
+                        if m.get("url") == ids_pic:
+                            m["url"], m["caption"] = "PIC", m.get("caption", "").replace(ids_pic.rsplit("/", 1)[1], "PICNAME")
+                audio = [amap.get(x, x) for x in json.loads(row["recap_audio_json"] or "[]")]
+                text = (media, audio)
+                clips = [(_row("audio_clips", ids[k]) or {}).get("visible_to_players") for k in ("A1", "A2")] + \
+                        [(_row("video_clips", ids[k]) or {}).get("visible_to_players") for k in ("V1", "V2")] + [(_row("audio_clips", ids["A1"]) or {}).get("name")]
+                out.append((nr, text, clips, r.headers.get("x-nd-served-by")))
+            assert out[0][:3] == out[1][:3], (path, body, out[0], out[1])
+            served += out[1][3] == "gateway"
+    assert served >= 15, served
