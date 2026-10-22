@@ -639,3 +639,52 @@ def test_combat_list_the_gateway_builds_is_pythons(client, seed):
                 raise AssertionError(f"{email} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:50]))
             served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 4, served
+
+
+def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CalendarDayIcon, CalendarEvent, Entity, GameSession, World, WorldCalendar
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        config = {"era_name": "Y.S.F.", "year_format": "{year}  {era}", "current_day": 47, "days_per_week": 5,
+                  "weekday_names": ["Moonday", " ", "Ashday"],
+                  "months": [{"name": "Frost", "days": 30, "season": "Winter", "color": "#7aa7d9"}, {"name": "Thaw", "days": 25},
+                             {"name": "Bloom <b>", "days": 16, "season": "Spring"}],
+                  "moons": [{"name": "Pale", "cycle_days": 16, "offset": 3, "color": "#fff"}, {"name": "", "cycle_days": 0}],
+                  "holidays": [{"name": "Thaw feast", "month": "thaw", "day": 99, "notes": "cake"}, {"name": "First", "month": 0, "color": "#abc"},
+                               {"name": "Ghost", "month": 9}, {"name": "", "month": 1}, {"name": "Two", "month": "2", "day": 3}, "junk"]}
+        db.add(WorldCalendar(world_id=w, config_json=json.dumps(config)))
+        e = Entity(world_id=w, kind="npc", name="Mara")
+        gs = GameSession(world_id=w, session_num=4, title="Into <the> dark")
+        db.add_all([e, gs])
+        db.flush()
+        db.add_all([CalendarEvent(world_id=w, day=47, title="Duel", notes="at dawn", color="#f00", entity_id=e.id, session_id=gs.id),
+                    CalendarEvent(world_id=w, day=31, title="Gone link", session_id=999999, created_by_user_id=seed.player_a.id),
+                    CalendarEvent(world_id=w, day=47, title="Second"),
+                    CalendarDayIcon(world_id=w, day=48, image_url="/uploads/calendar_icons/x.png", label="star")])
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"calendar": {"player": "edit"}})
+        db.commit()
+    finally:
+        db.close()
+    urls = ("/calendar", "/calendar?year=1&month=0", "/calendar?month=-1", "/calendar?month=7&year=3", "/calendar?year=x",
+            "/calendar?year=0&none=next", "/calendar?year=99999&month=2", "/calendar?year=500000", "/calendar?none=prev&month=1")
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in urls:
+            a, b = d.get(url, follow_redirects=False), via.get(url, follow_redirects=False)
+            assert a.status_code == b.status_code, (email, url, a.status_code, b.status_code)
+            if a.status_code != 200:
+                continue
+            na, nb = golden.normalise(a.headers["content-type"], a.content), golden.normalise(b.headers["content-type"], b.content)
+            if na != nb:
+                import difflib
+                raise AssertionError(f"{email} {url}\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:60]))
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 2 * len(urls), served

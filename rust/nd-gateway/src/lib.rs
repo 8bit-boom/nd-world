@@ -3,6 +3,7 @@
 //! In front of the Python app it answers what needs no Python: `/static/` (with the build's pre-compressed `.br` / `.gz` twins) and the file
 //! itself of an `/uploads/` request - after Python has decided that the request may have it. Everything else is passed on, streamed in both
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
+pub mod calendar;
 pub mod config;
 pub mod files;
 pub mod layout;
@@ -73,7 +74,7 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/facts" | "/tables" | "/combat") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/facts" | "/tables" | "/combat" | "/calendar") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/sessions" => pages::sessions_list,
@@ -81,6 +82,7 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             "/parties" => pages::parties_list,
             "/tables" => pages::tables_list,
             "/combat" => pages::combat_list,
+            "/calendar" => crate::calendar::calendar_view,
             _ => pages::facts_list,
         };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {

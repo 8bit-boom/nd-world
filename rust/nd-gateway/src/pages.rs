@@ -683,7 +683,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     render_with(pages, "entities/detail.html", p.ctx, headers)
 }
 
-fn section_ok(p: &crate::layout::PageCtx, world: Option<&serde_json::Map<String, serde_json::Value>>, section: &str) -> Option<bool> {
+pub(crate) fn section_ok(p: &crate::layout::PageCtx, world: Option<&serde_json::Map<String, serde_json::Value>>, section: &str) -> Option<bool> {
     if p.is_gm {
         return Some(true);
     }
@@ -811,7 +811,7 @@ pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     render_with(pages, "quests/list.html", p.ctx, headers)
 }
 
-fn edit_level(p: &crate::layout::PageCtx, world: &serde_json::Map<String, serde_json::Value>, section: &str) -> Option<bool> {
+pub(crate) fn edit_level(p: &crate::layout::PageCtx, world: &serde_json::Map<String, serde_json::Value>, section: &str) -> Option<bool> {
     if p.is_gm {
         return Some(true);
     }
