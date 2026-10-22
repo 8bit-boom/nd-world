@@ -213,6 +213,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/hub/handouts/seen", hub_handouts_seen),
     ("/api/characters/{}/hub/companions", hub_companion_add),
     ("/api/characters/{}/hub/pins", hub_pin_toggle),
+    ("/api/characters/{}/hub/rest", hub_rest),
+    ("/api/characters/{}/hub/rest/undo", hub_rest_undo),
     ("/api/characters/{}/hub/entries", hub_entry_create),
     ("/api/characters/{}/hub/entries/{}", hub_entry_update),
     ("/api/characters/{}/hub/entries/{}/delete", hub_entry_delete),
@@ -9075,6 +9077,70 @@ fn hub_pin_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     set_pc_pref(c, &pc, "pins", (!pins.is_empty()).then(|| json!(pins)))?;
     json_response(&json!({"pins": pins}))
+}
+
+/// `hub_rest` for an N&D character without a sheet template (`apply_pc_rest`'s native branch): +half PP and MP, all Shock, the
+/// once-per-Rest feats back. A character on a template (its system's own Rest rules) stays Python's.
+fn hub_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    if body.get("kind").map_or(false, |k| k != "long") || pc.get("sheet_template_id").map_or(false, |v| !v.is_null()) {
+        return None;
+    }
+    let (_, shock, pp, mp, native) = pc_maxima(&c.db, &pc)?;
+    if !native {
+        return None;
+    }
+    // _refresh_feats_after_rest
+    if let Some(used) = pc_prefs(&c.db, ids[0])?.get("feat_used").filter(|v| py_truthy(Some(v))) {
+        let used = used.as_object()?;
+        if used.values().any(|v| v == "rest") {
+            let keep: Map<String, Value> = used.iter().filter(|(_, v)| *v != "rest").map(|(k, v)| (k.clone(), v.clone())).collect();
+            set_pc_pref(c, &pc, "feat_used", (!keep.is_empty()).then(|| Value::Object(keep)))?;
+        }
+    }
+    let (cur_pp, cur_mp, cur_shock) = (col_int(&pc, "pp_current"), col_int(&pc, "mp_current"), col_int(&pc, "shock_current"));
+    let (new_pp, new_mp) = (pp.min(cur_pp + pp.div_euclid(2)), mp.min(cur_mp + mp.div_euclid(2)));
+    orm::update(&c.db, "player_characters", ids[0], &[("pp_current", Sql::Integer(new_pp)), ("mp_current", Sql::Integer(new_mp)), ("shock_current", Sql::Integer(shock))])?;
+    char_log(c, &pc, "rest", "Took a rest", &json!({}))?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    let (id, name) = (pc.get("id").cloned(), pc.get("name").cloned());
+    json_response(&json!({"kind": "long",
+        "result": {"id": id, "name": name, "pp_current": new_pp, "pp_max": pp, "mp_current": new_mp, "mp_max": mp, "shock_current": shock},
+        "snapshot": {"id": id, "name": name, "pp_current": cur_pp, "mp_current": cur_mp, "shock_current": cur_shock}}))
+}
+
+/// `hub_rest_undo` (`restore_pc_snapshot`) for a character without a sheet template: PP, MP and Shock put back
+fn hub_rest_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let pc = hub_owned_pc(c, ids[0])?;
+    let body = hub_body(c)?;
+    let snap = body.get("snapshot")?.as_object()?;
+    if pc.get("sheet_template_id").map_or(false, |v| !v.is_null()) || snap.get("id")?.as_i64()? != ids[0] || matches!(snap.get("id"), Some(Value::Bool(_))) {
+        return None;
+    }
+    let mut set = vec![];
+    for col in ["pp_current", "mp_current", "shock_current"] {
+        let v = match snap.get(col) {
+            None => continue,
+            Some(Value::Null) | Some(Value::Bool(false)) => 0,
+            Some(Value::Bool(true)) => 1,
+            Some(Value::Number(n)) => match n.as_i64() {
+                Some(i) => i,
+                None => {
+                    let f = n.as_f64()?.trunc();
+                    if !f.is_finite() || f.abs() > 9e15 {
+                        return None;
+                    }
+                    f as i64
+                }
+            },
+            Some(_) => return None,
+        };
+        set.push((col, Sql::Integer(v.max(0))));
+    }
+    orm::update(&c.db, "player_characters", ids[0], &set)?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true}))
 }
 
 fn hub_companions_json(c: &Ctx, pc_id: i64) -> Option<Value> {

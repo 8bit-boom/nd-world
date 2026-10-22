@@ -3984,3 +3984,45 @@ def test_hub_pins_are_pythons(client, seed):
     other = _pc(world_id=w, owner_user_id=seed.player_b.id, name="Theirs")
     assert _via(pl, base).post(f"/api/characters/{other}/hub/pins", json={"id": places[0]}).status_code in (403, 404)
     assert served >= 4, served
+
+
+def test_hub_rest_and_undo_are_pythons(client, seed):
+    base = str(client.base_url)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    stats = json.dumps([{"id": k, "value": v} for k, v in {"str": 3, "dex": 2, "bod": 4, "per": 1, "wil": 2, "int": 3, "cha": 1, "itu": 2}.items()])
+
+    def state(pid):
+        r = _row_by("player_characters", "id", pid)
+        log = _row_by("character_log", "character_id", pid)
+        return ({k: r[k] for k in ("pp_current", "mp_current", "shock_current")}, _prefs(pid),
+                log and {k: log[k] for k in ("actor", "kind", "text", "undo_json")})
+
+    served = 0
+    cases = [({}, {"kind": "long"}), ({"pp_current": 9, "mp_current": None}, {}), ({}, {"kind": "short"}), ({}, {"kind": "nap"})]
+    for cols, body in cases:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Rester", stats_json=stats, **cols)
+            _add("CharacterPref", world_id=w, character_id=pid, prefs_json=json.dumps({"feat_used": {"a": "rest", "b": "session"}}))
+            r = side.post(f"/api/characters/{pid}/hub/rest", json=body)
+            j = r.json()
+            if r.status_code == 200:
+                j["result"].pop("id"); j["snapshot"].pop("id")
+            out.append((r.status_code, j, state(pid), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (cols, body, out)
+        if r.status_code == 200:
+            assert j["result"]["pp_max"] == 10 and j["result"]["shock_current"] == 8, j
+        served += out[1][3] == "gateway"
+    undos = [{"pp_current": 1, "mp_current": 2.7, "shock_current": -4}, {"pp_current": None}, {"mp_current": "x"}, {}]
+    for snap in undos:
+        out = []
+        for side in (pl, _via(pl, base)):
+            pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Rester", stats_json=stats, pp_current=5, mp_current=5, shock_current=5)
+            r = side.post(f"/api/characters/{pid}/hub/rest/undo", json={"snapshot": {"id": pid, **snap}})
+            out.append((r.status_code, r.json(), state(pid), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (snap, out)
+        served += out[1][3] == "gateway"
+    pid = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Rester", stats_json=stats)
+    assert _via(pl, base).post(f"/api/characters/{pid}/hub/rest/undo", json={"snapshot": {"id": pid + 1}}).status_code == 400
+    assert served >= 5, served
