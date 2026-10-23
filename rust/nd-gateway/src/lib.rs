@@ -21,6 +21,7 @@ pub mod map_layout;
 pub mod mcp;
 pub mod tuning;
 pub mod fans;
+pub mod auth;
 pub mod ai_runners;
 pub mod template_draft;
 pub mod media_meta;
@@ -279,6 +280,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
         }
+    }
+    if matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa"))
+        && app.cfg.rust_routes.iter().any(|r| r == "auth") {
+        // signing in and out (app/routers/auth.py)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = auth::route(app.pages.clone(), app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone(), peer).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if matches!(req.uri().path(), "/api/system/fans" | "/api/system/fans/check") && app.cfg.rust_routes.iter().any(|r| r == "fans")
         && (req.method() == axum::http::Method::POST || (req.method() == axum::http::Method::GET && req.uri().path() == "/api/system/fans")) {

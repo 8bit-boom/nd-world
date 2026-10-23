@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct Pages {
     pub env: Environment<'static>,
     routes: Vec<String>,
-    secret: Option<String>,
+    pub(crate) secret: Option<String>,
 }
 
 /// What Starlette keeps unescaped in a redirect's Location (`quote(url, safe=":/%#?=@[]!$&'()*+,;")`).
@@ -41,7 +41,7 @@ pub fn safe_next_url(candidate: Option<&str>) -> String {
 }
 
 /// A page as Python's GZip middleware sends it: gzipped from 1 KB up when the browser accepts it.
-fn html(status: StatusCode, body: String, request_headers: &HeaderMap) -> Response<Body> {
+pub(crate) fn html(status: StatusCode, body: String, request_headers: &HeaderMap) -> Response<Body> {
     let wants_gzip = request_headers
         .get(header::ACCEPT_ENCODING)
         .and_then(|v| v.to_str().ok())
