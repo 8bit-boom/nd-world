@@ -223,6 +223,8 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && req.uri().path().ends_with("/cancel") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let resp = if req.uri().path().starts_with("/api/audio-jobs/") {
             ai::audio_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
+        } else if req.uri().path().starts_with("/api/ai/imagegen/jobs/") {
+            ai::image_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
         } else if req.uri().path().starts_with("/api/ai/chat/jobs/") {
             ai::chat_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
         } else {
@@ -232,7 +234,7 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/chat/jobs" | "/api/ai/world-summary" | "/api/sessions/ai/condense-job" | "/api/facts/parse-job" | "/api/sessions/ai/audio-jobs/from-clip" | "/api/sessions/ai/audio-jobs/complete" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream")) || (req.uri().path().starts_with("/api/session-log/") && req.uri().path().ends_with("/recap")) || (req.uri().path().starts_with("/api/sessions/") && req.uri().path().ends_with("/ai/summarize-live-transcript-job"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/chat/jobs" | "/api/ai/world-summary" | "/api/sessions/ai/condense-job" | "/api/facts/parse-job" | "/api/sessions/ai/audio-jobs/from-clip" | "/api/sessions/ai/audio-jobs/complete" | "/api/ai/imagegen/jobs" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream")) || (req.uri().path().starts_with("/api/session-log/") && req.uri().path().ends_with("/recap")) || (req.uri().path().starts_with("/api/sessions/") && req.uri().path().ends_with("/ai/summarize-live-transcript-job"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
@@ -243,6 +245,8 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             ai::session_log_recap(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path().starts_with("/api/npc-talk/") {
             ai::npc_talk_stream(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else if parts.uri.path() == "/api/ai/imagegen/jobs" {
+            ai::imagegen_job_create(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path().starts_with("/api/sessions/ai/audio-jobs/") {
             ai::audio_job_create(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path() == "/api/facts/parse-job" {

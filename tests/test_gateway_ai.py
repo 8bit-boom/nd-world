@@ -21,6 +21,10 @@ class _Fake:
         self.status = 200
         self.reply = {}                 # the answer to a request that is not streamed
         self.stt_texts = []             # speech-to-text answers in turn (None: a failure)
+        self.image_refusals = 0         # "no model loaded" answers to give the image endpoint first
+        self.image_reply = (200, {"images": [{"url": "/gallery/one.png"}, {"url": "http://studio/gallery/two.png"}]})
+        import base64 as _b64
+        self.png = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEJMDEwMDAwAAA5vAIBl3P8SQAAAABJRU5ErkJggg==")
         self.delay = 0                  # seconds before that answer
         self.reply_seq = None           # answers to give in turn first (then `reply`)
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
@@ -31,6 +35,25 @@ class _Fake:
                 pass
 
             def do_GET(self):
+                if self.path.startswith("/gallery/"):
+                    body = fake.png
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path.startswith("/api/"):
+                    fake.requests.append({"auth": self.headers.get("Authorization"), "body": {"get": self.path}})
+                    reply = {"loaded": True} if "images/status" in self.path else {"default_variant": "Q4_K_M", "variants": [
+                        {"filename": "image-Q8_0.gguf", "quant": "Q8_0"}, {"filename": "image-Q4_K_M.gguf", "quant": "Q4_K_M"}]}
+                    body = json.dumps(reply).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 body = json.dumps({"data": [{"id": "studio-model", "loaded": True}, {"id": "other"}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -57,6 +80,21 @@ class _Fake:
                     return
                 req = json.loads(self.rfile.read(n))
                 fake.requests.append({"auth": self.headers.get("Authorization"), "body": req})
+                if self.path.startswith("/api/inference/images/"):
+                    if self.path.endswith("/generate") and fake.image_refusals:
+                        fake.image_refusals -= 1
+                        status, reply = 409, {"detail": "No diffusion model is loaded"}
+                    elif self.path.endswith("/generate"):
+                        status, reply = fake.image_reply
+                    else:
+                        status, reply = 200, {"ok": True}
+                    body = json.dumps(reply).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 rejected = fake.reject_thinking and (req.get("chat_template_kwargs") or {}).get("enable_thinking")
                 if fake.status != 200 or rejected:
                     body = json.dumps({"error": {"message": fake.reject_thinking if rejected else "model exploded"}}).encode()
@@ -910,3 +948,46 @@ def test_session_recording_jobs_are_pythons(client, seed, studio, tmp_path):
     assert out[0][:2] == out[1][:2], (out[0][0], out[1][0])
     assert out[1][2] == "gateway" and not out[0][3] and not out[1][3]
     studio.stt_texts, studio.reply_seq = [], None
+
+
+
+def test_image_jobs_on_studio_are_pythons(client, seed, studio):
+    """POST /api/ai/imagegen/jobs with an Unsloth Studio image model (UNSLOTH_IMAGE_MODEL): the same image_jobs row (every parameter, the
+    `image` default model), the same native request to Studio, the pictures saved under uploads/ai-images, the model loaded once when
+    Studio has none (the .gguf picked from Studio's variant list), Studio's error as the job's."""
+    import os
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import ImageJob
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [({"prompt": "A dragon", "negative": "blurry", "width": 768, "height": 512, "steps": 0, "cfg": 4, "seed": 7, "batch_size": 12}, 0, None),
+             ({"prompt": "A castle", "model": "some/model-GGUF"}, 1, None),
+             ({"prompt": "Broken"}, 0, (500, {"detail": "Studio fell over"}))]
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    for i, (body, refusals, reply) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.image_refusals = refusals
+            studio.image_reply = reply or (200, {"images": [{"url": "/gallery/one.png"}, {"url": "http://studio/gallery/two.png"}]})
+            r = side.post("/api/ai/imagegen/jobs", json=body)
+            assert r.status_code == 200, (i, r.text)
+            job_id = r.json()["job_id"]
+            end = time.time() + 20
+            s = SessionLocal()
+            try:
+                while time.time() < end and s.get(ImageJob, job_id).status in ("pending", "generating"):
+                    s.expire_all()
+                    time.sleep(0.1)
+                j = s.get(ImageJob, job_id)
+                urls = json.loads(j.result_urls_json or "[]")
+                row = {"status": j.status, "error": j.error, "params": json.loads(j.params_json), "prompt": j.prompt, "n": len(urls)}
+                files = [(uploads / u[len("/uploads/"):]).is_file() for u in urls]
+            finally:
+                s.close()
+            out.append((row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), files))
+        assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1]), json.dumps(out[1][1]))
+        assert out[1][2] == "gateway" and all(out[0][3]) and all(out[1][3]), (i, out[1][2:], out[0][3])
+    studio.image_refusals = 0

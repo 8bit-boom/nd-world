@@ -2996,3 +2996,375 @@ async fn run_audio_job(id: i64) {
     text_recap_body(id).await;
     remove_audio();
 }
+
+// ── image generation jobs on Unsloth Studio (POST /api/ai/imagegen/jobs, app/image_jobs.py; SwarmUI / ComfyUI stay Python's) ──
+
+/// ImagegenBody's fields in `_imagegen_params`' order: (name, kind, default) - kind s(tring) i(nt) f(loat) b(ool)
+const IMAGEGEN_FIELDS: &[(&str, char, &str)] = &[
+    ("prompt", 's', ""), ("negative", 's', ""), ("model", 's', ""), ("width", 'i', "512"), ("height", 'i', "512"), ("steps", 'i', "20"), ("cfg", 'f', "7.0"),
+    ("seed", 'i', "-1"), ("uploads_dir", 'u', ""), ("sampler", 's', "euler"), ("scheduler", 's', "normal"), ("batch_size", 'i', "1"), ("loras", 's', ""),
+    ("lora_weights", 's', ""), ("vae", 's', ""), ("clip_skip", 'i', "-1"), ("init_image", 's', ""), ("init_strength", 'f', "0.6"), ("upscale_model", 's', ""),
+    ("upscale_factor", 'f', "1.0"), ("controlnet_image", 's', ""), ("controlnet_strength", 'f', "0.8"), ("controlnet_preprocessor", 's', ""),
+    ("controlnet_model", 's', ""), ("hiresfix", 'b', "false"), ("hireswidth", 'i', "0"), ("hiresheight", 'i', "0"), ("hiresdenoisestrength", 'f', "0.5"),
+    ("hiressteps", 'i', "0"), ("refiner_model", 's', ""), ("refiner_control", 'f', "0.8"), ("seamless_x", 'b', "false"), ("seamless_y", 'b', "false"),
+    ("variation_seed", 'i', "-1"), ("variation_strength", 'f', "0.0"), ("freeu_enabled", 'b', "false"), ("freeu_b1", 'f', "1.3"), ("freeu_b2", 'f', "1.4"),
+    ("freeu_s1", 'f', "0.9"), ("freeu_s2", 'f', "0.2"), ("dynthresh_enabled", 'b', "false"), ("dynthresh_mimic_scale", 'f', "7.0"),
+    ("dynthresh_percentile", 'f', "0.999"), ("cfg_rescale", 'f', "0.0"), ("ipadapter_image", 's', ""), ("ipadapter_strength", 'f', "0.6"), ("ipadapter_model", 's', ""),
+];
+
+/// `UNSLOTH_IMAGE_MODEL`: set (with a Studio key) = image generation runs on Studio (`_get_type() == "unsloth"`)
+fn unsloth_image_model() -> String {
+    env("UNSLOTH_IMAGE_MODEL")
+}
+
+/// `_imagegen_params(body, uploads)`: every imagegen_generate argument in order (None: a body Pydantic would reject or coerce)
+fn imagegen_params(cfg: &Config, body: &[u8]) -> Option<Map<String, Value>> {
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let mut out = Map::new();
+    for (k, kind, d) in IMAGEGEN_FIELDS {
+        let v = b.get(*k);
+        let val = match (kind, v) {
+            ('u', _) => json!(cfg.db_path.parent()?.join("uploads").to_string_lossy()),
+            ('s', None) => json!(d),
+            ('s', Some(Value::String(s))) => json!(s),
+            ('i', None) => json!(d.parse::<i64>().ok()?),
+            ('i', Some(Value::Number(n))) if n.is_i64() => json!(n.as_i64()?),
+            ('f', None) => json!(d.parse::<f64>().ok()?),
+            ('f', Some(Value::Number(n))) => json!(n.as_f64()?),
+            ('b', None) => json!(*d == "true"),
+            ('b', Some(Value::Bool(t))) => json!(t),
+            _ => return None,
+        };
+        out.insert(k.to_string(), val);
+    }
+    if out["model"].as_str() == Some("") {
+        out.insert("model".into(), json!(surface_default(cfg, "image")?));
+    }
+    Some(out)
+}
+
+fn imagegen_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm || unsloth_image_model().is_empty() {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    backend(&db)?;
+    let params = imagegen_params(cfg, body)?;
+    use rusqlite::types::Value as Sql;
+    crate::orm::insert(&db, "image_jobs", &[("world_id", Sql::Integer(wid)), ("prompt", Sql::Text(params["prompt"].as_str()?.to_string())),
+        ("params_json", Sql::Text(nd_render::py_dumps(&Value::Object(params)))), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("status", Sql::Text("pending".into()))])
+}
+
+/// `POST /api/ai/imagegen/jobs` on Studio: {job_id}, the job run here
+pub async fn imagegen_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || imagegen_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_image_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_image_job(id: i64) {
+    crate::jobs::spawn("image_jobs", id, async move {
+        run_image_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// A Studio API call (`unsloth_extras._request`): Ok(json), Err(Some((status, message))) for an error, Err(None) for a missing route
+async fn studio(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Result<Value, Option<(u16, String)>> {
+    let req = backend_request(b, method, path, body).ok_or(Some((503, "Unsloth Studio unreachable: request".into())))?;
+    let resp = client().request(req).await.map_err(|e| Some((503, format!("Unsloth Studio unreachable: ConnectError: {e}"))))?;
+    let status = resp.status().as_u16();
+    let bytes = resp.into_body().collect().await.map_err(|e| Some((503, format!("Unsloth Studio unreachable: ReadError: {e}"))))?.to_bytes();
+    if status == 404 {
+        let missing = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(o)) if !o.is_empty() => {
+                let m = crate::stt::studio_message_pub(&bytes, status).trim().to_lowercase();
+                let m = m.trim_end_matches('.');
+                m == "not found" || m.contains("endpoint not found")
+            }
+            _ => true,
+        };
+        if missing {
+            return Err(None);
+        }
+    }
+    if status >= 400 {
+        return Err(Some((status, crate::stt::studio_message_pub(&bytes, status))));
+    }
+    Ok(serde_json::from_slice::<Value>(&bytes).unwrap_or(json!({})))
+}
+
+/// `resolve_gguf_filename(repo)` from Studio's own variant list (the Hugging Face listing fallback is left out: "" then)
+async fn gguf_filename(b: &Backend, repo: &str) -> String {
+    // the query as httpx writes it: unreserved characters kept, a space as "+"
+    const QUERY: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
+    let q = repo.split(' ').map(|p| percent_encoding::utf8_percent_encode(p, QUERY).to_string()).collect::<Vec<_>>().join("+");
+    let info = studio(b, "GET", &format!("/api/hub/gguf-variants?repo_id={q}"), None).await.unwrap_or(json!({}));
+    let file = |e: &Value| -> String {
+        match e {
+            Value::String(s) if s.to_lowercase().ends_with(".gguf") => s.clone(),
+            Value::Object(o) => ["filename", "file", "gguf_filename", "path", "name"].iter().find_map(|k| o.get(*k).and_then(|v| v.as_str()).filter(|v| v.to_lowercase().ends_with(".gguf")).map(str::to_string)).unwrap_or_default(),
+            _ => String::new(),
+        }
+    };
+    let quant = |e: &Value| -> String {
+        match e {
+            Value::String(s) if !s.to_lowercase().ends_with(".gguf") => s.clone(),
+            Value::Object(o) => ["quant", "variant", "label", "id", "name"].iter().find_map(|k| o.get(*k).and_then(|v| v.as_str()).filter(|v| !v.is_empty() && !v.to_lowercase().ends_with(".gguf")).map(str::to_string)).unwrap_or_default(),
+            _ => String::new(),
+        }
+    };
+    let default = info.get("default_variant").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let entries = info.get("variants").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let cands: Vec<(String, String, bool)> = entries.iter().map(|e| (file(e), quant(e), e.get("downloaded").is_some_and(|d| crate::edits::py_truthy_pub(Some(d))))).collect();
+    let on_disk: Vec<String> = cands.iter().filter(|c| c.2).map(|c| if c.1.is_empty() { c.0.clone() } else { c.1.clone() }).collect();
+    let mut prefer = vec![];
+    if !default.is_empty() && on_disk.contains(&default) { prefer.push(default.clone()); }
+    prefer.extend(on_disk);
+    if !default.is_empty() { prefer.push(default); }
+    let named: Vec<&(String, String, bool)> = cands.iter().filter(|c| !c.0.is_empty()).collect();
+    if named.is_empty() {
+        return String::new();
+    }
+    for label in &prefer {
+        for c in &named {
+            if label.to_lowercase() == c.1.to_lowercase() || label.to_lowercase() == c.0.to_lowercase() {
+                return c.0.clone();
+            }
+        }
+    }
+    const PREF: &[&str] = &["Q4_K_M", "Q4_K_S", "Q4_0", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "BF16", "F16"];
+    let rank = |t: &str| { let up = t.to_uppercase(); PREF.iter().position(|q| up.contains(q)).unwrap_or(PREF.len()) };
+    named.iter().min_by_key(|c| rank(if c.1.is_empty() { &c.0 } else { &c.1 })).map(|c| c.0.clone()).unwrap_or_default()
+}
+
+/// `ensure_image_model(repo)`: load it and wait until Studio says it is loaded; Ok(false) when this Studio has no load endpoint
+async fn ensure_image_model(b: &Backend, repo: &str) -> Result<bool, String> {
+    let file = gguf_filename(b, repo).await;
+    let mut body = json!({"model_path": repo, "model_kind": "gguf"});
+    if !file.is_empty() {
+        body["gguf_filename"] = json!(file);
+    }
+    match studio(b, "POST", "/api/inference/images/load", Some(&body)).await {
+        Err(None) => return Ok(false),
+        Err(Some((_, m))) => {
+            let hint = if file.is_empty() && m.to_lowercase().contains("gguf") { " — nd-world could not work out which .gguf file of this repo to load (Studio named none and the repo's file list was unavailable); load it once from the Models tab, which asks for the file" } else { "" };
+            return Err(format!("Could not load {repo}: {m}{hint}"));
+        }
+        Ok(_) => {}
+    }
+    let limit = env("UNSLOTH_IMAGE_LOAD_TIMEOUT_SECONDS").parse::<f64>().unwrap_or(900.0);
+    let deadline = Instant::now() + Duration::from_secs_f64(limit);
+    loop {
+        match studio(b, "GET", "/api/inference/images/status", None).await {
+            Err(e) => return Err(format!("Could not check whether {repo} finished loading: {}", e.map(|e| e.1).unwrap_or_else(|| "/api/inference/images/status".into()))),
+            Ok(s) => {
+                if crate::edits::py_truthy_pub(s.get("loaded")) {
+                    return Ok(true);
+                }
+                if let Some(e) = s.get("error").filter(|e| crate::edits::py_truthy_pub(Some(e))) {
+                    return Err(format!("Could not load {repo}: {}", e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string())));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("{repo} is still loading after {} s — Studio may still be downloading it; try again in a few minutes", limit as i64));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Save a generated picture under uploads/ai-images with its thumbnail; its url
+fn save_ai_image(cfg: &Config, bytes: &[u8]) -> Option<String> {
+    let dir = cfg.db_path.parent()?.join("uploads").join("ai-images");
+    std::fs::create_dir_all(&dir).ok()?;
+    let name = format!("{}.png", uuid_v4());
+    let path = dir.join(&name);
+    std::fs::write(&path, bytes).ok()?;
+    if let Some(db) = crate::writes::open(cfg) {
+        let preview: Option<String> = db.query_row("SELECT preview_format FROM app_settings LIMIT 1", [], |r| r.get(0)).ok().flatten();
+        let preview = preview.filter(|p| matches!(p.as_str(), "avif" | "webp" | "original")).unwrap_or_else(|| "avif".into());
+        let _ = crate::imaging::finish_upload(&path, "none", &preview); // best effort, like make_thumbnail
+    }
+    Some(format!("/uploads/ai-images/{name}"))
+}
+
+fn uuid_v4() -> String {
+    let b: [u8; 16] = rand::random();
+    let h = |r: std::ops::Range<usize>| b[r].iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let (v, var) = (format!("4{}", &h(6..8)[1..]), format!("{:x}{}", 8 | (b[8] >> 6), &h(8..10)[1..]));
+    format!("{}-{}-{}-{}-{}", h(0..4), h(4..6), v, var, h(10..16))
+}
+
+/// `imagegen_generate` on Studio: the native endpoint (the /v1 one on an older Studio), the chosen model loaded once when none is
+async fn imagegen_studio(cfg: &Config, b: &Backend, p: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let s = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let i = |k: &str| p.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let f = |k: &str| p.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let native_model = { let m = s("model"); if m.is_empty() { unsloth_image_model() } else { m } };
+    let mut body = json!({"model": native_model, "prompt": s("prompt"), "width": i("width"), "height": i("height"),
+        "steps": if i("steps") > 0 { i("steps") } else { 9 }, "batch_size": i("batch_size").clamp(1, 8)});
+    if !s("negative").is_empty() { body["negative_prompt"] = json!(s("negative")); }
+    if f("cfg") > 0.0 { body["guidance"] = json!(f("cfg")); }
+    if i("seed") >= 0 { body["seed"] = json!(i("seed")); }
+    let uploads = cfg.db_path.parent().map(|d| d.join("uploads")).unwrap_or_default();
+    if !s("init_image").is_empty() {
+        let init = s("init_image");
+        let rel = init.split_once("/uploads/").map(|x| x.1.to_string()).unwrap_or(init.clone());
+        let cand = uploads.join(rel);
+        if let (Ok(c), Ok(root)) = (cand.canonicalize(), uploads.canonicalize()) {
+            if c.starts_with(&root) && c.is_file() {
+                use base64::Engine;
+                body["init_image"] = json!(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(std::fs::read(&c).unwrap_or_default())));
+                body["strength"] = json!(f("init_strength"));
+            }
+        }
+    }
+    let mut autoloaded = false;
+    let records = loop {
+        match studio(b, "POST", "/api/inference/images/generate", Some(&body)).await {
+            Ok(v) => break Some(v.get("images").and_then(|i| i.as_array()).cloned().unwrap_or_default()),
+            Err(None) => break None,
+            Err(Some((status, m))) => {
+                let refused = m.contains("No diffusion model is loaded") || status == 409;
+                if refused && !native_model.is_empty() && !autoloaded {
+                    autoloaded = true;
+                    if ensure_image_model(b, &native_model).await.map_err(|e| format!("Unsloth Studio: {e}"))? {
+                        continue;
+                    }
+                    autoloaded = false;
+                }
+                let hint = if refused && autoloaded { format!(" — Studio still has no image model after loading {native_model}; check the Models tab") }
+                    else if refused { " — enable Studio's media auto-switch (Settings → API, or Settings → System → Studio server here) or load the image model once from the Models tab".into() }
+                    else { String::new() };
+                return Err(format!("Unsloth Studio: {m}{hint}"));
+            }
+        }
+    };
+    let mut urls = vec![];
+    match records {
+        Some(records) => {
+            for rec in records {
+                let url = match &rec { Value::String(s) => s.clone(), Value::Object(o) => o.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(), _ => String::new() };
+                if url.is_empty() {
+                    return Err("Gallery record has no file url".into());
+                }
+                let path = if url.starts_with("http") { url.splitn(4, '/').nth(3).map(|p| format!("/{p}")).unwrap_or_default() } else { url };
+                let req = backend_request(b, "GET", &path, None).ok_or("request")?;
+                let resp = client().request(req).await.map_err(|e| format!("Unsloth Studio unreachable: ConnectError: {e}"))?;
+                let status = resp.status().as_u16();
+                if status >= 400 {
+                    return Err(format!("Fetching generated image failed: HTTP {status}"));
+                }
+                let bytes = resp.into_body().collect().await.map_err(|e| format!("Unsloth Studio unreachable: ReadError: {e}"))?.to_bytes();
+                urls.push(save_ai_image(cfg, &bytes).ok_or("could not save the picture")?);
+            }
+        }
+        None => {
+            // an older Studio: /v1/images/generations (fewer settings; no negative prompt)
+            let model = { let m = s("model"); if m.is_empty() { unsloth_image_model() } else { m } };
+            let mut v1 = json!({"model": model, "prompt": s("prompt"), "size": format!("{}x{}", i("width"), i("height")), "n": i("batch_size").clamp(1, 8), "response_format": "b64_json"});
+            if i("seed") >= 0 { v1["seed"] = json!(i("seed")); }
+            let mut loaded = false;
+            let data = loop {
+                let req = backend_request(b, "POST", "/v1/images/generations", Some(&v1)).ok_or("request")?;
+                let resp = client().request(req).await.map_err(|e| format!("ConnectError: {e}"))?;
+                let status = resp.status().as_u16();
+                let bytes = resp.into_body().collect().await.map_err(|e| format!("ReadError: {e}"))?.to_bytes();
+                if status >= 400 {
+                    let detail = crate::stt::studio_message_pub(&bytes, status);
+                    let refused = status == 503 && detail.contains("No image model loaded");
+                    if refused && !model.is_empty() && !loaded {
+                        loaded = true;
+                        if ensure_image_model(b, &model).await.map_err(|e| format!("Unsloth Studio: {e}"))? {
+                            continue;
+                        }
+                        loaded = false;
+                    }
+                    let hint = if refused && loaded { format!(" — Studio still has no image model after loading {model}; check the Models tab") }
+                        else if refused { " — enable Studio's media auto-switch (Settings → API) or load the image model once".into() } else { String::new() };
+                    return Err(format!("Unsloth returned HTTP {status}: {detail}{hint}"));
+                }
+                break serde_json::from_slice::<Value>(&bytes).map_err(|_| format!("Unsloth returned an unreadable response: {}", String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>()))?;
+            };
+            let images = data.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+            if images.is_empty() {
+                return Err(format!("Unsloth returned no image: {}", data.to_string().chars().take(300).collect::<String>()));
+            }
+            use base64::Engine;
+            for e in images {
+                let b64 = e.get("b64_json").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).ok_or("Unsloth returned an image entry without b64_json data")?;
+                let raw = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("Error: {e}"))?;
+                urls.push(save_ai_image(cfg, &raw).ok_or("could not save the picture")?);
+            }
+        }
+    }
+    Ok(urls)
+}
+
+/// image_jobs' `_run_job`: the AI slot, `generating`, the pictures; `done` with result_urls_json, or `error`
+async fn run_image_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("image job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<(Option<Backend>, Map<String, Value>)> {
+        let db = crate::writes::open(&c)?;
+        let params: Option<String> = db.query_row("SELECT params_json FROM image_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+        crate::orm::update(&db, "image_jobs", id, &[("status", Sql::Text("generating".into()))]);
+        Some((backend(&db), serde_json::from_str::<Value>(params.as_deref().unwrap_or("{}")).ok()?.as_object()?.clone()))
+    }).await.ok().flatten();
+    let Some((b, params)) = prep else { return };
+    let result = match b {
+        Some(b) if !unsloth_image_model().is_empty() => imagegen_studio(&cfg, &b, &params).await,
+        _ => Err("Image generation is not configured — set IMAGEGEN_TYPE/IMAGEGEN_URL (see docker-compose.yml).".into()),
+    };
+    let fields = match result {
+        Ok(urls) => vec![("status", Sql::Text("done".into())), ("result_urls_json", Sql::Text(nd_render::py_dumps(&json!(urls))))],
+        Err(e) => vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e))],
+    };
+    let _ = tokio::task::spawn_blocking(move || { if let Some(db) = crate::writes::open(&cfg) { crate::orm::update(&db, "image_jobs", id, &fields); } }).await;
+}
+
+/// image_jobs' `resume_interrupted_jobs` for one row: restarted from its stored parameters (corrupt JSON: an error row instead)
+pub fn restart_image_job(db: &rusqlite::Connection, id: i64) -> Option<()> {
+    use rusqlite::types::Value as Sql;
+    let (params, resumed): (Option<String>, i64) = db.query_row("SELECT params_json, COALESCE(resumed_count, 0) FROM image_jobs WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    if serde_json::from_str::<Value>(params.as_deref().filter(|p| !p.is_empty()).unwrap_or("{}")).is_err() {
+        crate::orm::update(db, "image_jobs", id, &[("status", Sql::Text("error".into())),
+            ("error", Sql::Text("Stored job data was corrupt (unreadable JSON) and could not be resumed.".into()))]);
+        return None;
+    }
+    crate::orm::update(db, "image_jobs", id, &[("status", Sql::Text("pending".into())), ("error", Sql::Text(String::new())), ("resumed_count", Sql::Integer(resumed + 1))])?;
+    start_image_job(id);
+    Some(())
+}
+
+/// `POST /api/ai/imagegen/jobs/<id>/cancel` for an image job running here
+pub async fn image_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let id: i64 = uri.path().strip_prefix("/api/ai/imagegen/jobs/")?.strip_suffix("/cancel")?.parse().ok()?;
+    if !crate::jobs::is_running("image_jobs", id) {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+        let db = crate::writes::open(&cfg)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &cfg, "POST", &uri, &headers, now)?;
+        if !p.is_gm {
+            return None;
+        }
+        let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+        let status: String = db.query_row("SELECT status FROM image_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+            |r| Ok(r.get::<_, Option<String>>(0)?.unwrap_or_default())).ok()?;
+        if !matches!(status.as_str(), "pending" | "generating") || !crate::jobs::abort("image_jobs", id) {
+            return None;
+        }
+        use rusqlite::types::Value as Sql;
+        crate::orm::update(&db, "image_jobs", id, &[("status", Sql::Text("cancelled".into())), ("error", Sql::Text("Cancelled by GM.".into()))])?;
+        crate::edits::json_response(&json!({"ok": true}))
+    }).await.ok()?
+}

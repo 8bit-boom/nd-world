@@ -25,6 +25,8 @@ run_shard() {
     local data=$ROOT/tests/_data/shard$n
     local py_port=$((8960 + n)) gw_port=$((8980 + n))
     mkdir -p "$data"
+    # an image model name for both servers: with a Studio key set (tests/test_gateway_ai.py), image jobs run on Unsloth Studio
+    export UNSLOTH_IMAGE_MODEL=${UNSLOTH_IMAGE_MODEL-nd-test/image-GGUF}
     ND_TEST_DATA_DIR=$data ND_ACCEL_TOKEN=ci-token $PY -m tests.serve --port $py_port > "$data/serve.log" 2>&1 &
     local py_pid=$!
     SECRET_KEY=test-secret-key-not-for-production MAX_UPLOAD_BYTES=1048576 MAX_NOTE_IMPORT_BYTES=1048576 ND_ACCEL_TOKEN=ci-token \

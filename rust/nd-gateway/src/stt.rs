@@ -115,6 +115,10 @@ async fn transcode(path: &Path, dir: &Path, fmt: &str) -> Result<PathBuf, Failur
 }
 
 /// `unsloth_extras._error_message`
+pub fn studio_message_pub(bytes: &[u8], status: u16) -> String {
+    studio_message(bytes, status)
+}
+
 fn studio_message(bytes: &[u8], status: u16) -> String {
     let py = |v: &Value| match v { Value::String(s) => s.clone(), other => other.to_string() };
     let msg = match serde_json::from_slice::<Value>(bytes) {
