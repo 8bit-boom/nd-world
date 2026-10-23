@@ -1711,6 +1711,7 @@ def _media_files(up):
     return made
 
 
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="needs ffmpeg")
 def test_media_renamer_suggest_is_pythons(client, seed, studio):
     """/api/media-rename/suggest: the clues read from the files (ID3, FLAC / Opus / Vorbis comments, WAV, MP4 atoms, PNG text, JPEG EXIF
     and comment, ffprobe for the rest), where images are used, the prompt and the batches, the names cleaned - and the refusals."""
@@ -1771,6 +1772,7 @@ def test_media_renamer_suggest_is_pythons(client, seed, studio):
     studio.reply_seq = None
 
 
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="needs ffmpeg")
 def test_media_renamer_runs_are_pythons(client, seed, studio):
     """A bulk run started through the gateway is worked through by the gateway - chunk by chunk, saved after each - and ends with the same
     proposals a Python run makes; a running gateway run cancels through the gateway."""
