@@ -1657,3 +1657,25 @@ def test_session_prep_is_pythons(client, seed, studio):
         assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
         assert out[1][3] == "gateway", i
     studio.reply_seq = None
+
+
+def test_kiy_build_model_is_pythons(client, seed, studio):
+    """/api/kiy/build-model needs a local Ollama daemon: on Unsloth Studio both servers look the model up and stream the same error event;
+    with no plays saved both refuse."""
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    plays = Path(os.environ["DB_PATH"]).parent / "kiy_plays.json"
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    try:
+        for content in (json.dumps([{"text": "ACT I"}, {"text": "ACT II"}]), "[]"):
+            plays.write_text(content)
+            out = []
+            for side in (gm, _via(gm, base)):
+                studio.requests.clear()
+                r = side.post("/api/kiy/build-model")
+                out.append((r.status_code, r.text, r.headers.get("content-type"), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+            assert out[0][:4] == out[1][:4], (out[0][:3], out[1][:3])
+            assert out[1][4] == "gateway"
+    finally:
+        plays.unlink(missing_ok=True)

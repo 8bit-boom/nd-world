@@ -22,6 +22,7 @@ pub fn serves(path: &str) -> bool {
         || (path.starts_with("/parties/") && path.ends_with("/ai-insights"))
         || path == "/tables/generate-ai"
         || (path.starts_with("/api/sessions/") && path.ends_with("/prep/generate"))
+        || path == "/api/kiy/build-model"
 }
 
 /// None: not one of these paths; Some(None): the request is Python's; Some(Some(f)): the gateway's answer
@@ -36,6 +37,7 @@ pub fn plan(cfg: &Config, db: &rusqlite::Connection, p: &PageCtx, path: &str, he
         _ if path.starts_with("/parties/") => insights_plan(db, p, path),
         "/tables/generate-ai" => table_plan(cfg, db, p, headers, body),
         _ if path.ends_with("/prep/generate") => prep_plan(db, p, path),
+        "/api/kiy/build-model" => kiy_plan(&cfg, db, p),
         "/calendar/ai-day" | "/calendar/ai-design" => calendar_plan(db, p, path.ends_with("/ai-design"), headers, body),
         _ => None,
     })
@@ -618,5 +620,31 @@ fn prep_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<Fut> 
         let Some(tasks) = tasks else { return detail(StatusCode::BAD_GATEWAY, "Could not generate a prep checklist — try again.") };
         let tasks: Vec<String> = tasks.iter().map(|t| crate::edits::py_strip_pub(&py_str(t))).filter(|t| !t.is_empty()).collect();
         crate::edits::json_response(&json!({"tasks": tasks})).unwrap_or_else(crash)
+    }))
+}
+
+// ── the King in Yellow model build (app/routers/lore_extras.py `kiy_build_model`) ──
+
+/// Building a model needs a local Ollama daemon (`Client.create`); Studio's client has no such call, so on Unsloth Studio the route always
+/// streams Python's error event - after the same model lookup
+fn kiy_plan(cfg: &Config, db: &rusqlite::Connection, p: &PageCtx) -> Option<Fut> {
+    if !p.is_gm {
+        return None;
+    }
+    let file = cfg.db_path.parent()?.join("kiy_plays.json");
+    let plays = std::fs::read_to_string(file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!([]));
+    if !crate::edits::py_truthy_pub(Some(&plays)) {
+        return refuse(StatusCode::BAD_REQUEST, "No training plays saved yet");
+    }
+    let Value::Array(list) = &plays else { return None };
+    if !list.iter().rev().take(6).all(|p| p.get("text").is_some_and(|t| t.is_string())) {
+        return None;
+    }
+    let b = backend(db)?;
+    Some(Box::pin(async move {
+        let _ = crate::ai::resolve_model(&b, "").await;
+        let body = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": "'UnslothClient' object has no attribute 'create'"})));
+        Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8").header("x-accel-buffering", "no")
+            .header(header::CACHE_CONTROL, "no-cache").header("x-nd-served-by", "gateway").body(Body::from(body)).unwrap()
     }))
 }

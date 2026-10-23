@@ -302,7 +302,7 @@ pub(crate) fn backend_request(b: &Backend, method: &str, path: &str, body: Optio
 }
 
 /// `resolve_model`: the configured model, or the closest available one with a note (`/v1/models`, 10 s)
-async fn resolve_model(b: &Backend, requested: &str) -> (String, Option<String>) {
+pub(crate) async fn resolve_model(b: &Backend, requested: &str) -> (String, Option<String>) {
     let target = if requested.is_empty() { b.model.clone() } else { requested.to_string() };
     let Some(req) = backend_request(b, "GET", "/v1/models", None) else { return (target, None) };
     let fetch = async {
