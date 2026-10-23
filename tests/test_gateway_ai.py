@@ -711,3 +711,47 @@ def test_condense_job_is_pythons(client, seed, studio):
         assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:2500], json.dumps(out[1][1])[:2500])
         assert out[1][2] == "gateway", i
     studio.reply_seq = None
+
+
+def test_facts_parse_job_is_pythons(client, seed, studio):
+    """POST /api/facts/parse-job: the same row and run - the recap cut into chunks, one schema-constrained call each, the facts merged
+    with repeats dropped and tags joined, an unusable chunk skipped, every chunk failing as the job's error."""
+    import time
+    from app.database import SessionLocal
+    from app.models import AudioJob
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+
+    def facts(*items):
+        return _reply(json.dumps({"facts": [{"content": c, "visible_to_players": v, "tags": t} for c, v, t in items]}))
+    para = "The party walked to the old mill and argued about the map for a while. " * 60
+    long_text = "\n\n".join([para] * 5)
+    cases = [
+        ({"text": "  went to the tavern, met Elyra  ", "extra_instructions": "Short facts."}, [facts(("They met Elyra.", True, [" elyra ", "", 3]))]),
+        ({"text": long_text, "think": True}, [facts(("They argued.", True, ["map"]), ("A secret.", False, [])),
+                                              facts(("They argued!", True, []), ("New fact.", 1, ["mill"]))]),
+        ({"text": long_text}, [_reply("not json"), facts(("Only the second.", True, []))]),
+        ({"text": "x happened"}, [_reply("{\"nope\": 1}")]),
+    ]
+    for i, (body, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/api/facts/parse-job", json=body)
+            assert r.status_code == 200, (i, r.text)
+            job_id = r.json()["job_id"]
+            end = time.time() + 20
+            s = SessionLocal()
+            try:
+                while time.time() < end and s.get(AudioJob, job_id).status in ("pending", "summarizing"):
+                    s.expire_all()
+                    time.sleep(0.1)
+                j = s.get(AudioJob, job_id)
+                row = {k: getattr(j, k) for k in ("filename", "status", "error", "result_json", "model", "think", "chunk_current", "chunk_total", "extra_instructions", "transcript")}
+            finally:
+                s.close()
+            out.append((row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:2500], json.dumps(out[1][1])[:2500])
+        assert out[1][2] == "gateway", i
+    studio.reply_seq = None

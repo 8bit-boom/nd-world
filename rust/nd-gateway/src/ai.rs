@@ -1288,6 +1288,7 @@ pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: boo
         Some("session_log_recap") => start_log_recap_job(id),
         Some("world_summary") => start_world_summary_job(id),
         Some("condense") => start_condense_job(id),
+        Some("facts_parse") => start_facts_parse_job(id),
         _ => start_assist_job(id),
     }
     Some(())
@@ -2297,4 +2298,288 @@ async fn run_condense_job(id: i64) {
         f
     };
     let _ = set(fields).await;
+}
+
+// ── parsing facts out of a recap (POST /api/facts/parse-job; the job: audio_jobs purpose="facts_parse") ──
+
+fn env_i64(k: &str, d: i64) -> i64 {
+    std::env::var(k).ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(d)
+}
+
+fn max_auto_ctx() -> i64 {
+    env_i64("MAX_AUTO_NUM_CTX", 32768).max(8192)
+}
+
+/// `_facts_parse_chunk_plan`: (chunk characters, reserved tokens)
+fn facts_chunk_plan(raw: &str, think: bool, lore_tokens: i64, system: &str) -> (usize, i64) {
+    let headroom = env_i64("THINKING_HEADROOM_TOKENS", 4096).max(0);
+    let reserve_for = |extra: i64| 1200 + (system.chars().count() as i64) / chars_per_token(system) + if think { headroom } else { 0 } + extra.max(0);
+    let mut reserve = reserve_for(lore_tokens + 512);
+    if reserve >= max_auto_ctx() {
+        reserve = reserve_for(512);
+    }
+    let target = env_i64("FACTS_PARSE_TARGET_INPUT_TOKENS", if think { 3072 } else { 4096 }).max(1024);
+    let input = target.min(max_auto_ctx() - reserve).max(1024);
+    ((input * chars_per_token(raw)) as usize, reserve)
+}
+
+/// `_split_transcript_into_chunks`: pieces of at most `size` characters, broken at a paragraph, a line or a sentence end past halfway
+fn split_chunks(text: &str, size: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= size {
+        return vec![text.to_string()];
+    }
+    let rfind = |w: &[char], pat: &str| -> Option<usize> {
+        let p: Vec<char> = pat.chars().collect();
+        (0..=w.len().saturating_sub(p.len())).rev().find(|i| w.len() >= p.len() && w[*i..*i + p.len()] == p[..])
+    };
+    let (mut out, mut pos, n, min_break) = (vec![], 0usize, chars.len(), (size / 2) as i64);
+    while pos < n {
+        let mut end = (pos + size).min(n);
+        if end < n {
+            let w = &chars[pos..end];
+            let mut brk: i64 = rfind(w, "\n\n").map_or(-1, |i| i as i64);
+            if brk < min_break {
+                if let Some(i) = rfind(w, "\n").map(|i| i as i64) {
+                    if i > brk { brk = i; }
+                }
+            }
+            if brk < min_break {
+                for sep in [". ", "! ", "? "] {
+                    if let Some(i) = rfind(w, sep).map(|i| i as i64) {
+                        if i > brk { brk = i + sep.chars().count() as i64 - 1; }
+                    }
+                }
+            }
+            if brk >= min_break {
+                end = pos + brk as usize + 1;
+            }
+        }
+        let chunk = crate::edits::py_strip_pub(&chars[pos..end].iter().collect::<String>());
+        if !chunk.is_empty() {
+            out.push(chunk);
+        }
+        pos = end;
+    }
+    out
+}
+
+/// One `client.chat(..., format=schema)` call (not streamed): the reply's content, or `_parse_facts_chat_call`'s ValueError text
+async fn chat_with_schema(b: &Backend, model: &str, messages: &[Value], think: bool, schema: &Value) -> Result<String, String> {
+    let send = |messages: Vec<Value>, think: bool| {
+        let mut opts = b.options_for(model);
+        let mut body = Map::new();
+        body.insert("model".into(), json!(model));
+        body.insert("messages".into(), Value::Array(messages));
+        body.insert("stream".into(), json!(false));
+        opts.remove("num_ctx");
+        body.extend(translate_options(&opts));
+        body.insert("chat_template_kwargs".into(), json!({"enable_thinking": think}));
+        body.insert("response_format".into(), json!({"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}));
+        backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body)))
+    };
+    async fn call(req: Option<hyper::Request<http_body_util::Full<bytes::Bytes>>>) -> Result<(u16, bytes::Bytes), String> {
+        let req = req.ok_or_else(|| "AI unavailable: request".to_string())?;
+        let resp = client().request(req).await.map_err(|e| format!("AI unavailable: ConnectError: {e}"))?;
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.map_err(|e| format!("AI unavailable: ReadError: {e}"))?.to_bytes();
+        Ok((status, bytes))
+    }
+    let error_text = |bytes: &[u8], status: u16| -> String {
+        let m = match serde_json::from_slice::<Value>(bytes) {
+            Ok(Value::Object(o)) => match o.get("error") {
+                Some(Value::Object(e)) => e.get("message").map(|m| match m { Value::String(s) => s.clone(), other => other.to_string() }).unwrap_or_default(),
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::from_utf8_lossy(bytes).chars().take(500).collect(),
+        };
+        if m.is_empty() { format!("HTTP {status}") } else { m }
+    };
+    let content = |bytes: &[u8]| -> Result<String, String> {
+        let v: Value = serde_json::from_slice(bytes).map_err(|_| "AI unavailable: JSONDecodeError: the backend's answer is not JSON".to_string())?;
+        Ok(v.pointer("/choices/0/message/content").and_then(|c| c.as_str()).unwrap_or("").to_string())
+    };
+    let (status, bytes) = call(send(messages.to_vec(), think)).await?;
+    if status < 400 {
+        record_thinking(model, think, false, false);
+        return content(&bytes);
+    }
+    let message = error_text(&bytes, status);
+    if !(think && thinking_rejection(status as i64, &message)) {
+        return Err(format!("Ollama error {status}: {message}"));
+    }
+    let thinks = model == "unsloth/gemma-4-26B-A4B-it-GGUF" || crate::edits::py_truthy_pub(b.per_model.get(model).and_then(|m| m.get("thinking")));
+    record_thinking(model, true, true, thinks);
+    let mut retry = messages.to_vec();
+    if thinks {
+        match retry.first_mut() {
+            Some(Value::Object(first)) if first.get("role") == Some(&json!("system")) => {
+                let c = match first.get("content") { Some(Value::String(c)) => c.clone(), _ => String::new() };
+                first.insert("content".into(), json!(format!("<|think|>{c}")));
+            }
+            _ => retry.insert(0, json!({"role": "system", "content": "<|think|>"})),
+        }
+    }
+    let (status, bytes) = call(send(retry, false)).await?;
+    if status >= 400 {
+        return Err(format!("Ollama error {status}: {}", error_text(&bytes, status)));
+    }
+    content(&bytes)
+}
+
+/// `_normalized_fact_key`
+fn fact_key(content: &str) -> String {
+    crate::edits::py_strip_pub(content).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+        .trim_end_matches(['.', '!', '?', '…']).to_string()
+}
+
+/// `parse_facts_from_recap`: the facts of each chunk merged (a repeat dropped); Err when every chunk failed (the first failure)
+async fn parse_facts(b: &Backend, raw: &str, model: &str, think: bool, lore: &str, extra: &str, progress: impl Fn(usize, usize)) -> Result<Vec<Value>, String> {
+    let mut system = recap_text("_RECAP_SYSTEM");
+    if !extra.is_empty() {
+        system = format!("{system}\n\nAdditional instructions from the GM (follow these too): {extra}");
+    }
+    let lore_tokens = if lore.is_empty() { 0 } else { lore.chars().count() as i64 / chars_per_token(lore) };
+    let (size, _) = facts_chunk_plan(raw, think, lore_tokens, &system);
+    let chunks = split_chunks(raw, size);
+    let schema = nd_render::app::data()["recap_texts"]["_RECAP_FACTS_SCHEMA"].clone();
+    let (mut merged, mut seen, mut errors) = (vec![], std::collections::HashSet::new(), vec![]);
+    for (i, chunk) in chunks.iter().enumerate() {
+        progress(i + 1, chunks.len());
+        let messages = [json!({"role": "system", "content": system}), json!({"role": "user", "content": with_world_context(chunk, lore)})];
+        let reply = match chat_with_schema(b, model, &messages, think, &schema).await {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let parsed = (|| -> Option<Vec<Value>> {
+            let v: Value = serde_json::from_str(&reply).ok()?;
+            let facts = v.get("facts")?.as_array()?.clone();
+            let mut items = vec![];
+            for f in facts {
+                let tags = match f.get("tags") {
+                    Some(Value::Array(t)) => t.iter().filter_map(|x| x.as_str()).map(crate::edits::py_strip_pub).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", "),
+                    _ => String::new(),
+                };
+                let content = match f.get("content")? { Value::String(s) => s.clone(), Value::Number(n) => n.to_string(), Value::Bool(t) => if *t { "True".into() } else { "False".into() }, _ => return None };
+                let visible = crate::edits::py_truthy_pub(Some(f.get("visible_to_players")?));
+                items.push(json!({"content": content, "visible_to_players": visible, "tags": tags}));
+            }
+            Some(items)
+        })();
+        let Some(items) = parsed else {
+            errors.push("Could not parse facts from that recap — try rephrasing it.".into());
+            continue;
+        };
+        for item in items {
+            if seen.insert(fact_key(item["content"].as_str().unwrap_or(""))) {
+                merged.push(item);
+            }
+        }
+    }
+    if !errors.is_empty() && errors.len() == chunks.len() {
+        return Err(errors.swap_remove(0));
+    }
+    Ok(merged)
+}
+
+fn facts_parse_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    if p.user_id <= 0 || crate::pages::edit_level(&p, w, "facts") != Some(true) {
+        return None;
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)), Some(_) => None }
+    };
+    let raw = text("text")?;
+    if raw.is_empty() {
+        return None;
+    }
+    let gs_id = match b.get("game_session_id") {
+        v if !crate::edits::py_truthy_pub(v) => None,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+        Some(Value::String(s)) if s.bytes().all(|c| c.is_ascii_digit()) => s.parse().ok(),
+        _ => return None,
+    };
+    let use_rag = crate::edits::py_truthy_pub(b.get("use_rag")) && p.is_gm;
+    let (rag_e, rag_n) = (body_int(b.get("rag_entity_limit")).ok()?, body_int(b.get("rag_notes_limit")).ok()?);
+    if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) {
+        return None;
+    }
+    if use_rag && gs_id.is_some_and(|g| !crate::retrieval::session_picks(&db, g).1.is_empty()) {
+        return None;
+    }
+    let (model, extra) = (text("model")?, text("extra_instructions")?);
+    backend(&db)?;
+    use rusqlite::types::Value as Sql;
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("facts_parse".into())), ("filename", Sql::Text("Facts".into())),
+        ("status", Sql::Text("pending".into())), ("game_session_id", opt_int(gs_id)), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("model", if model.is_empty() { Sql::Null } else { Sql::Text(model) }), ("think", Sql::Integer(crate::edits::py_truthy_pub(b.get("think")) as i64)),
+        ("use_rag", Sql::Integer(use_rag as i64)), ("rag_entity_limit", opt_int(rag_e)), ("rag_notes_limit", opt_int(rag_n)),
+        ("extra_instructions", if extra.is_empty() { Sql::Null } else { Sql::Text(extra) }), ("transcript", Sql::Text(raw)),
+        ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])
+}
+
+/// `POST /api/facts/parse-job`: {job_id}, the job run here
+pub async fn facts_parse_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || facts_parse_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_facts_parse_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_facts_parse_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_facts_parse_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `_run_job` for purpose="facts_parse"
+async fn run_facts_parse_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<(Backend, String, bool, String, String, String), String>> {
+        let db = crate::writes::open(&c)?;
+        let row: (i64, Option<String>, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>) =
+            db.query_row("SELECT world_id, model, think, transcript, extra_instructions, use_rag, rag_entity_limit, rag_notes_limit, game_session_id FROM audio_jobs WHERE id = ?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))).ok()?;
+        let (wid, model, think, text, extra, use_rag, rag_e, rag_n, gsid) = row;
+        let text = text.unwrap_or_default();
+        let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
+            let pins = gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default();
+            crate::retrieval::build_rag_context(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins).unwrap_or_default()
+        } else { String::new() };
+        crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
+        let Some(b) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let model = model.filter(|m| !m.is_empty()).or_else(|| surface_default(&c, "recap")).unwrap_or_default();
+        let model = if model.is_empty() { b.model.clone() } else { model };
+        Some(Ok((b, model, think.map_or(true, |t| t != 0), text, extra.unwrap_or_default(), lore)))
+    }).await.ok().flatten();
+    let write = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        std::thread::spawn(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "audio_jobs", id, &fields); } }).join().ok()
+    };
+    let end = |status: &str, field: (&'static str, String)| vec![("status", Sql::Text(status.into())), (field.0, Sql::Text(field.1)), ("chunk_current", Sql::Null),
+        ("chunk_total", Sql::Null), ("finished_at", Sql::Text(crate::orm::now_stamp())), ("checkpoint_json", Sql::Text(String::new()))];
+    let (b, model, think, text, extra, lore) = match prep {
+        None => return,
+        Some(Err(e)) => { write(end("error", ("error", e))); return; }
+        Some(Ok(p)) => p,
+    };
+    let progress = |cur: usize, total: usize| { write(vec![("chunk_current", Sql::Integer(cur as i64)), ("chunk_total", Sql::Integer(total as i64))]); };
+    match parse_facts(&b, &text, &model, think, &lore, &extra, progress).await {
+        Ok(facts) => { write(end("done", ("result_json", nd_render::py_dumps(&Value::Array(facts))))); }
+        Err(e) => { write(end("error", ("error", e))); }
+    }
 }

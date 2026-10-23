@@ -46615,6 +46615,40 @@
  ],
  "recap_texts": {
   "_CONDENSE_RECAP_SYSTEM": "You are a scribe for a tabletop RPG campaign. Condense the following session recap into a short, tight summary — a few sentences at most, hitting only the key beats a player would need to remember before the next session. Keep it in flowing prose. Don't invent details that aren't in the original. Respond with the condensed recap only, no preamble or commentary.",
+  "_RECAP_FACTS_SCHEMA": {
+   "properties": {
+    "facts": {
+     "items": {
+      "properties": {
+       "content": {
+        "type": "string"
+       },
+       "tags": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "visible_to_players": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "content",
+       "visible_to_players",
+       "tags"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "facts"
+   ],
+   "type": "object"
+  },
+  "_RECAP_SYSTEM": "You are a scribe for a tabletop RPG campaign. The GM will give you an informal, terse recap of what happened in a session (e.g. \"went to the tavern, met Elyra, she's actually working for the cult, found a strange clock\"). Turn it into a list of discrete, well-written facts about what happened.\n\nFor each fact, set \"visible_to_players\" to indicate whether the player characters (not just the GM) know it:\n- true: the party witnessed it, was told it in-fiction, or it's public knowledge\n- false: it's a GM-only secret (a villain's true identity or plan, hidden dice rolls, monster stats, anything the players have not yet discovered)\n\nDefault to visible_to_players: true unless the recap clearly marks something as secret or the players wouldn't plausibly know it yet. Split compound sentences into separate facts where it makes sense. Write each fact as a complete sentence in past tense. Do not invent details that aren't implied by the recap.\n\nFor each fact, also set \"tags\": a short list (0-4) of lowercase, single-or-two-word keywords to help the GM find this fact later — named characters or creatures it involves, the location, and/or a category like combat, loot, investigation, npc, plot, or romance. Reuse the same tag spelling for the same person/place/category across facts (e.g. always \"elyra\", never \"Elyra\" and \"elyra the enchanter\" in different facts) so facts about the same thing can be found together. Leave tags empty for a fact with nothing worth tagging rather than inventing one.\n\nThe text may also contain out-of-character discussion — rules questions, setup, table talk. Ignore out-of-character discussion entirely and extract only facts about what happened in the story; if a passage contains no in-story events, return an empty facts list. Never describe the text itself or your extraction process — respond with the facts JSON only. Write every fact in English, regardless of the language the recap or transcript is written in.",
   "_STRICT_COMPLIANCE_NOTE": "\n\nTreat the extra instructions below as binding requirements, not suggestions.",
   "_SUMMARIZE_FACTS_SYSTEM": "You are a scribe for a tabletop RPG campaign. Below is a list of discrete facts logged for one session. Weave them into a short, readable narrative recap in flowing prose — a few short paragraphs, past tense, third person. Use only the facts given; don't invent new details, and don't drop any of them. Markdown is fine for light formatting but keep it simple. Respond with the recap text only, no preamble or commentary. Write the recap in English, regardless of the language the facts are written in."
  },
