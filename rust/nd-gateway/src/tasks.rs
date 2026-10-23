@@ -230,3 +230,52 @@ pub async fn list(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, python: Respon
         None => Response::from_parts(parts, Body::from(bytes)),
     }
 }
+
+/// The gateway's tasks as `GET /api/live-jobs` rows ("t:" keys), every user's, with who started them
+pub fn page_rows(db: &rusqlite::Connection) -> Vec<Value> {
+    let mut tasks = store().lock().unwrap_or_else(|e| e.into_inner());
+    sweep(&mut tasks);
+    tasks.iter().map(|(id, t)| {
+        let name: Option<String> = db.query_row("SELECT COALESCE(NULLIF(display_name, ''), email) FROM users WHERE id = ?1", [t.user_id], |r| r.get(0)).ok().flatten();
+        let live = matches!(t.status, "queued" | "running");
+        let end = t.finished.unwrap_or_else(now);
+        let error = if t.status == "done" && t.http_status >= 400 { format!("Failed (HTTP {}).", t.http_status) } else { String::new() };
+        json!({"key": format!("t:{id}"), "source": "task", "label": t.label, "detail": format!("by {}", name.unwrap_or_else(|| "someone".into())),
+            "status": t.status, "error": error, "started": t.started, "elapsed": ((end - t.started) as i64).max(0), "position": if t.status == "queued" { 1 } else { 0 },
+            "progress": "", "can_cancel": live, "can_restart": false, "can_remove": !live})
+    }).collect()
+}
+
+/// `POST /api/live-jobs/t:<gw id>/cancel|restart`, `DELETE /api/live-jobs/t:<gw id>` for the gateway's tasks
+pub fn page_action(id: &str, action: &str) -> Option<Response<Body>> {
+    let mut tasks = store().lock().ok()?;
+    let refuse = |m: &str| json_answer(StatusCode::BAD_REQUEST, &json!({"detail": m}), None);
+    let ok = || json_answer(StatusCode::OK, &json!({"ok": true}), None);
+    let Some(t) = tasks.get(id) else {
+        return Some(refuse(match action {
+            "cancel" => "That job is not running any more.",
+            "restart" => "That job cannot be restarted (it is still running, or the server no longer has it).",
+            _ => "Cancel it first, or it is already gone.",
+        }));
+    };
+    let live = matches!(t.status, "queued" | "running");
+    Some(match action {
+        "cancel" if live => {
+            if let Some(a) = &t.abort {
+                a.abort();
+            }
+            if let Some(k) = tasks.get_mut(id) {
+                k.status = "cancelled";
+                k.finished = Some(now());
+            }
+            ok()
+        }
+        "cancel" => refuse("That job is not running any more."),
+        "restart" => refuse("That job cannot be restarted (it is still running, or the server no longer has it)."),
+        _ if live => refuse("Cancel it first, or it is already gone."),
+        _ => {
+            tasks.remove(id);
+            ok()
+        }
+    })
+}

@@ -1835,3 +1835,72 @@ def test_media_renamer_runs_are_pythons(client, seed, studio):
     finally:
         studio.delay = 0
         studio.reply = {}
+
+
+def _poll(side, url, done=lambda v: v.get("status") != "running"):
+    import time
+    for _ in range(300):
+        r = side.get(url)
+        if r.status_code != 200 or done(r.json()):
+            return r
+        time.sleep(0.05)
+    raise AssertionError(r.text)
+
+
+def test_map_marker_drafts_are_pythons(client, seed, studio):
+    """/api/maps/<slug>/ai-markers/start and its poll: the map read, the existing labels, the world lore (smart_world_context: the matched
+    entities and their excerpts, a top-up, the latest notes, the rules sections, the high-priority entities, the party), the reply cleaned
+    into markers - a job the gateway runs, polled from the gateway, listed on the Background Jobs page."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote, MapOverlay, PlayerCharacter, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    maps = Path(os.environ["DB_PATH"]).parent / "maps"
+    maps.mkdir(parents=True, exist_ok=True)
+    slug = f"harbor-{w}"
+    (maps / f"{slug}.json").write_text(json.dumps({"world_id": w, "name": "Harbor District", "width": 1600, "height": 900,
+                                                   "markers": [{"name": "Old Lighthouse"}, {"name": ""}, "x"]}))
+    db = SessionLocal()
+    try:
+        db.add(MapOverlay(slug=slug, custom_markers_json=json.dumps([{"label": "Smuggler Dock"}, {"label": ""}])))
+        body = "# Harbor\n\nIntro.\n\n## Smuggler tunnels\n\n" + ("The smugglers move crates at night. " * 60) + "\n\n## Taxes\n\nHigh."
+        ship = Entity(world_id=w, kind="location", name="Harbor Smuggler Tunnels", summary="Tunnels under the harbor", body=body)
+        guide = Entity(world_id=w, kind="note", name="Harbor guide", summary="", body="## Harbor lights\n\nLanterns line the harbor." * 3, rag_priority=True)
+        other = Entity(world_id=w, kind="character", name="Mira", summary="A fence")
+        db.add_all([ship, guide, other])
+        db.flush()
+        db.add(EntityNote(entity_id=ship.id, content="The tunnel key is with Mira.", visible_to_players=False))
+        db.add(PlayerCharacter(world_id=w, name="Ana", race="Elf", char_class="Rogue", level=2))
+        db.get(World, w).rules_md = "# Rules\n\n## Smuggling\n\nA smuggler at the harbor rolls Stealth.\n\n## Combat\n\nRoll d20."
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    reply = _reply("Here you go: " + json.dumps({"markers": [
+        {"label": "Old Lighthouse", "lat": 1, "lng": 1}, {"label": " Rope Walk ", "note": "Ropes " * 80, "lat": 2000, "lng": -5, "color": "#00ff00"},
+        {"label": "smuggler dock", "lat": 3, "lng": 3}, {"label": "Fish Market", "lat": "450.555", "lng": 12.345, "color": "red"},
+        {"label": "Bad", "lat": "north", "lng": 1}, {"label": "Ana's party crossing", "lat": None, "lng": 0}, "junk"]}) + " Enjoy!")
+    cases = [
+        ({"prompt": "Where do the smugglers hide in the harbor? Ask the party", "count": 3, "think": False}, [reply]),
+        ({"prompt": "harbor lights", "use_rag": False, "count": "x"}, [_reply("no markers")]),
+    ]
+    for i, (body, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/api/maps/{slug}/ai-markers/start", json=body)
+            assert r.status_code == 200, r.text
+            job = r.json()["job_id"]
+            p = _poll(side, f"/api/maps/{slug}/ai-markers/{job}")
+            out.append((p.status_code, p.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:6000], json.dumps(out[1][2])[:6000])
+        assert out[1][3:] == ("gateway", "gateway"), i
+    jobs = _via(gm, base).get("/api/live-jobs").json()["jobs"]
+    assert any(j["key"].startswith("m:gw") and j["label"] == "map markers" and j["status"] in ("done", "error") for j in jobs), jobs
+    for side in (gm, _via(gm, base)):
+        r = side.post(f"/api/maps/{slug}/ai-markers/start", json={"prompt": "  "})
+        assert (r.status_code, r.json()) == (400, {"detail": "Describe what to place first"})
+    studio.reply_seq = None

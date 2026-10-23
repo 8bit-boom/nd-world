@@ -173,6 +173,11 @@ fn clip_section(t: &str, cap: usize) -> String {
 
 /// `_select_relevant_sections` (no per-section cap: best_matching_excerpt's use)
 fn select_sections(full: &[Section], words: &[String], budget: usize, max_sections: usize) -> Option<Vec<(String, String)>> {
+    select_sections_capped(full, words, budget, max_sections, None)
+}
+
+/// `_select_relevant_sections(..., per_section_cap)`
+fn select_sections_capped(full: &[Section], words: &[String], budget: usize, max_sections: usize, per_section_cap: Option<usize>) -> Option<Vec<(String, String)>> {
     let mut scored: Vec<(i64, &Section)> = vec![];
     for s in full {
         let score = keyword_score(&s.heading, chead(&s.body, MAX_SCORED_CHARS), words)?;
@@ -186,7 +191,7 @@ fn select_sections(full: &[Section], words: &[String], budget: usize, max_sectio
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     let top = scored[0];
     let top_collapsed = top.1.full_end - top.1.start > MAX_SCORED_CHARS;
-    let top_truncated = clen(&top.1.body) > budget;
+    let top_truncated = clen(&top.1.body) > per_section_cap.map_or(budget, |c| c.min(budget));
     let (mut picks, mut shown): (Vec<(String, String)>, Vec<String>) = (vec![], vec![]);
     let mut remaining = budget as i64;
     for (score, s) in &scored {
@@ -199,7 +204,8 @@ fn select_sections(full: &[Section], words: &[String], budget: usize, max_sectio
         if shown.iter().any(|x| x.contains(s.body.as_str()) || s.body.contains(x.as_str())) {
             continue;
         }
-        let piece = clip_section(&s.body, remaining as usize);
+        let cap = per_section_cap.map_or(remaining as usize, |c| c.min(remaining as usize));
+        let piece = clip_section(&s.body, cap);
         remaining -= clen(&piece) as i64;
         picks.push((s.heading.clone(), piece.clone()));
         shown.push(piece);
@@ -316,6 +322,12 @@ pub fn find_relevant_entities(db: &Connection, wid: i64, query: &str, limit: usi
 
 /// `format_context_from_entities(entities, strip_gm_only=.., query=.., db=..)`: a line per entity, body excerpts for the first five, notes
 pub fn format_context(db: &Connection, entities: &[Map<String, Value>], strip_secret: bool, query: &str) -> Option<String> {
+    format_context_eligible(db, entities, strip_secret, query, None)
+}
+
+/// `format_context_from_entities(..., excerpt_ids=...)`: only the entities in `excerpt_ids` get an excerpt and their notes
+pub fn format_context_eligible(db: &Connection, entities: &[Map<String, Value>], strip_secret: bool, query: &str,
+                               excerpt_ids: Option<&std::collections::HashSet<i64>>) -> Option<String> {
     let mut lines: Vec<String> = vec![];
     let (mut excerpt_total, mut excerpted, mut notes_total) = (0usize, 0usize, 0usize);
     let ids: Vec<String> = entities.iter().filter_map(|e| e.get("id").and_then(|v| v.as_i64())).map(|i| i.to_string()).collect();
@@ -338,7 +350,9 @@ pub fn format_context(db: &Connection, entities: &[Map<String, Value>], strip_se
         }
         lines.push(line);
         let body = text(e, "body").unwrap_or_default();
-        if excerpted < EXCERPT_COUNT && !body.is_empty() && excerpt_total < EXCERPT_TOTAL_BUDGET {
+        let eid = e.get("id").and_then(|v| v.as_i64());
+        let eligible = excerpt_ids.map_or(true, |ids| eid.is_some_and(|i| ids.contains(&i)));
+        if eligible && excerpted < EXCERPT_COUNT && !body.is_empty() && excerpt_total < EXCERPT_TOTAL_BUDGET {
             let body = if strip_secret { strip(&body, None)? } else { body };
             let budget = EXCERPT_CHARS.min(EXCERPT_TOTAL_BUDGET - excerpt_total);
             let excerpt = if query.is_empty() { chead(py_strip(&body), budget).to_string() } else { best_matching_excerpt(&body, query, budget)? };
@@ -348,8 +362,7 @@ pub fn format_context(db: &Connection, entities: &[Map<String, Value>], strip_se
             }
             excerpted += 1;
         }
-        let eid = e.get("id").and_then(|v| v.as_i64());
-        for n in notes.iter().filter(|n| n.get("entity_id").and_then(|v| v.as_i64()) == eid) {
+        for n in notes.iter().filter(|n| eligible && n.get("entity_id").and_then(|v| v.as_i64()) == eid) {
             if strip_secret && n.get("visible_to_players").and_then(|v| v.as_i64()) != Some(1) {
                 continue;
             }
@@ -453,4 +466,204 @@ pub fn session_picks(db: &Connection, sid: i64) -> (Vec<i64>, Vec<i64>) {
         if n.get("kind").and_then(|k| k.as_str()) == Some("player_character") { pcs.push(eid) } else { ents.push(eid) }
     }
     (ents, pcs)
+}
+
+const RULES_EXCERPT_CHARS: usize = 4000;
+const RULES_EXCERPT_TOTAL_BUDGET: usize = 8000;
+pub const RULES_SECTION_LIMIT: usize = 2;
+const PRIORITY_ENTITY_LIMIT: usize = 3;
+const PRIORITY_EXCERPT_CHARS: usize = 1200;
+const PRIORITY_EXCERPT_TOTAL_BUDGET: i64 = 2400;
+const CHARACTERS_CONTEXT_LIMIT: usize = 10;
+
+/// `world_rules_markdown(world)`: the world's own rules, else the bundled core rules
+pub fn world_rules_markdown(world: &Map<String, Value>) -> String {
+    match world.get("rules_md").and_then(|v| v.as_str()) {
+        Some(r) if !py_strip(r).is_empty() => r.to_string(),
+        _ => nd_render::app::data()["core_rules_md"].as_str().unwrap_or("").to_string(),
+    }
+}
+
+/// `rules_context(world, query, limit, is_gm=True)`: the rules sections the query matches (a GM's view: nothing stripped)
+fn rules_context(world: &Map<String, Value>, query: &str, limit: usize) -> Option<String> {
+    if limit == 0 {
+        return Some(String::new());
+    }
+    let words = query_words(query)?;
+    if words.is_empty() {
+        return Some(String::new());
+    }
+    let md = world_rules_markdown(world);
+    if md.is_empty() {
+        return Some(String::new());
+    }
+    let picks = select_sections_capped(&sections_full(&md), &words, RULES_EXCERPT_TOTAL_BUDGET, limit, Some(RULES_EXCERPT_CHARS))?;
+    Some(picks.into_iter().map(|(h, e)| format!("- [Rules] {h}:{}{e}", if e.contains('\n') { "\n" } else { " " })).collect::<Vec<_>>().join("\n\n"))
+}
+
+/// `priority_entities_context(db, world, query, exclude_ids=...)` for a GM: the "High priority for AI" entities the query matches
+fn priority_entities_context(db: &Connection, wid: i64, query: &str, exclude: &std::collections::HashSet<i64>) -> Option<String> {
+    let words = query_words(query)?;
+    if words.is_empty() {
+        return Some(String::new());
+    }
+    let mut st = db.prepare("SELECT * FROM entities WHERE world_id = ?1 AND rag_priority = 1").ok()?;
+    let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    let mut scored: Vec<(i64, Map<String, Value>, String, String)> = vec![];
+    for e in rows {
+        if e.get("id").and_then(|v| v.as_i64()).is_some_and(|i| exclude.contains(&i)) {
+            continue;
+        }
+        let (summary, body) = (text(&e, "summary").unwrap_or_default(), text(&e, "body").unwrap_or_default());
+        let score = keyword_score(&text(&e, "name").unwrap_or_else(|| "None".into()), &format!("{summary}\n{body}"), &words)?;
+        if score > 0 {
+            scored.push((score, e, summary, body));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut lines = vec![];
+    let mut budget = PRIORITY_EXCERPT_TOTAL_BUDGET;
+    for (_, e, summary, body) in scored.into_iter().take(PRIORITY_ENTITY_LIMIT) {
+        if budget <= 0 {
+            break;
+        }
+        let mut header = format!("- [{}] {}", text(&e, "kind").unwrap_or_else(|| "None".into()), text(&e, "name").unwrap_or_else(|| "None".into()));
+        if !summary.is_empty() {
+            header.push_str(&format!(": {summary}"));
+        }
+        lines.push(header);
+        if !body.is_empty() {
+            let excerpt = best_matching_excerpt(&body, query, PRIORITY_EXCERPT_CHARS.min(budget as usize))?;
+            if !excerpt.is_empty() {
+                lines.push(format!("  {}", excerpt.replace('\n', "\n  ")));
+                budget -= clen(&excerpt) as i64;
+            }
+        }
+    }
+    Some(lines.join("\n"))
+}
+
+/// `characters_context(db, world, query, user=None)`: the player characters the question names (in detail), or all of them when it asks
+/// about the party
+fn characters_context(db: &Connection, wid: i64, query: &str) -> Option<String> {
+    let q = lower(query)?;
+    if py_strip(&q).is_empty() {
+        return Some(String::new());
+    }
+    static TOK: OnceLock<Regex> = OnceLock::new();
+    let tok = TOK.get_or_init(|| Regex::new(r"[\w'’-]+").unwrap());
+    let tokens: Vec<String> = tok.find_iter(&q).map(|m| m.as_str().to_string()).filter(|t| !stopwords().contains(t)).collect();
+    let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
+    let pcs: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    if pcs.is_empty() {
+        return Some(String::new());
+    }
+    let named = |pc: &Map<String, Value>| -> Option<bool> {
+        for label in [text(pc, "name").unwrap_or_default(), text(pc, "player_name").unwrap_or_default()] {
+            let label = lower(py_strip(&label))?;
+            if label.chars().count() >= 3 && q.contains(&label) {
+                return Some(true);
+            }
+            if tok.find_iter(&label).any(|p| p.as_str().chars().count() >= 3 && tokens.iter().any(|t| t == p.as_str())) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
+    const PARTY: [&str; 14] = ["party", "characters", "character", "pcs", "pc", "players", "heroes", "hunters", "adventurers", "everyone", "crew", "group", "team", "companions"];
+    let asked_party = tokens.iter().any(|t| PARTY.contains(&t.as_str()));
+    let mut chosen = vec![];
+    for pc in &pcs {
+        if asked_party || named(pc)? {
+            chosen.push(pc);
+        }
+    }
+    if chosen.is_empty() {
+        return Some(String::new());
+    }
+    let mut lines = vec![];
+    for pc in chosen.into_iter().take(CHARACTERS_CONTEXT_LIMIT) {
+        lines.push(format!("- {}", crate::edits::pc_digest_line(db, pc, named(pc)?, true)?));
+    }
+    Some(format!("Player characters (live state):\n{}", lines.join("\n")))
+}
+
+/// `\b<stem>s?\b` found in `text`
+fn names_word(text: &str, w: &str) -> bool {
+    Regex::new(&format!(r"\b{}s?\b", regex::escape(&stem(w)))).map(|r| r.is_match(text)).unwrap_or(false)
+}
+
+/// `_has_matching_heading`
+fn has_matching_heading(body: &str, words: &[String]) -> Option<bool> {
+    if words.is_empty() || body.is_empty() || clen(body) <= EXCERPT_CHARS {
+        return Some(false);
+    }
+    static HEAD: OnceLock<Regex> = OnceLock::new();
+    let re = HEAD.get_or_init(|| Regex::new(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*$").unwrap());
+    for m in re.captures_iter(body) {
+        let heading = lower(&m[2])?;
+        if words.iter().all(|w| names_word(&heading, w)) {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// `smart_world_context(db, world, query, entity_limit, notes_limit)` for a GM caller (user=None): the matched entities, a top-up, the
+/// latest notes, and leading them the matching rules sections, priority entities and player characters. None for a world with an
+/// Obsidian vault (its vector / graph layer is Python's) or anything read differently.
+pub fn smart_world_context(db: &Connection, wid: i64, query: &str, entity_limit: usize, notes_limit: usize) -> Option<String> {
+    let world: Map<String, Value> = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
+    if world.get("obsidian_vault_path").and_then(|v| v.as_str()).is_some_and(|p| !py_strip(p).is_empty()) {
+        return None;
+    }
+    let id_of = |e: &Map<String, Value>| e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let is_note = |e: &Map<String, Value>| e.get("kind").and_then(|v| v.as_str()) == Some("note");
+    let entities = find_relevant_entities(db, wid, query, entity_limit, (0, true))?;
+    let mut notes: Vec<Map<String, Value>> = entities.iter().filter(|e| is_note(e)).cloned().collect();
+    let mut non_notes: Vec<Map<String, Value>> = entities.iter().filter(|e| !is_note(e)).cloned().collect();
+    let matched: std::collections::HashSet<i64> = entities.iter().map(id_of).collect();
+    let rows = |sql: String| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(&sql).ok()?;
+        let r: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        Some(r)
+    };
+    if entity_limit > 0 && non_notes.len() < entity_limit {
+        let not_in = if matched.is_empty() { String::new() } else {
+            format!(" AND id NOT IN ({})", matched.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
+        };
+        non_notes.extend(rows(format!("SELECT * FROM entities WHERE world_id = ?1 AND kind != 'note'{not_in} ORDER BY kind, name LIMIT {}", entity_limit - non_notes.len()))?);
+    }
+    if notes_limit > 0 {
+        let latest = rows(format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = 'note' ORDER BY updated_at DESC LIMIT {notes_limit}"))?;
+        notes.extend(latest.into_iter().filter(|e| !matched.contains(&id_of(e))));
+    }
+    let mut display: Vec<Map<String, Value>> = vec![];
+    display.extend(non_notes.iter().filter(|e| matched.contains(&id_of(e))).cloned());
+    display.extend(notes.iter().filter(|e| matched.contains(&id_of(e))).cloned());
+    display.extend(non_notes.iter().filter(|e| !matched.contains(&id_of(e))).cloned());
+    display.extend(notes.iter().filter(|e| !matched.contains(&id_of(e))).cloned());
+    let q_words = query_words(query)?;
+    let named = |e: &Map<String, Value>| -> Option<bool> {
+        let name = lower(&text(e, "name").unwrap_or_default())?;
+        let hit = q_words.iter().filter(|w| names_word(&name, w)).count();
+        Some(hit >= 2 && hit as f64 >= 0.75 * q_words.len() as f64)
+    };
+    let mut exact = vec![];
+    for e in &display {
+        if matched.contains(&id_of(e)) && (named(e)? || has_matching_heading(&text(e, "body").unwrap_or_default(), &q_words)?) {
+            exact.push(id_of(e));
+        }
+    }
+    if !exact.is_empty() {
+        let mut front: Vec<Map<String, Value>> = display.iter().filter(|e| exact.contains(&id_of(e))).cloned().collect();
+        front.extend(display.into_iter().filter(|e| !exact.contains(&id_of(e))));
+        display = front;
+    }
+    let context = format_context_eligible(db, &display, false, query, Some(&matched))?;
+    let rules = rules_context(&world, query, RULES_SECTION_LIMIT)?;
+    let priority = priority_entities_context(db, wid, query, &matched)?;
+    let chars = characters_context(db, wid, query)?;
+    let extra = [rules, priority, chars].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+    Some(if extra.is_empty() { context } else if context.is_empty() { extra } else { format!("{extra}\n\n{context}") })
 }

@@ -4411,6 +4411,70 @@ fn lyrics_for_speech(text: &str) -> String {
     crate::edits::py_strip_pub(&t)
 }
 
+/// `GET /api/live-jobs`: Python's answer with the gateway's tasks ("t:") and in-memory jobs ("m:") added, running first, then newest
+pub async fn live_jobs_list(cfg: std::sync::Arc<Config>, python: Response<Body>) -> Response<Body> {
+    let (parts, body) = python.into_parts();
+    let bytes = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+    let merged = match (parts.status.is_success(), serde_json::from_slice::<Value>(&bytes)) {
+        (true, Ok(Value::Object(mut o))) => {
+            let extra = tokio::task::spawn_blocking(move || {
+                let mut rows = crate::runners::rows();
+                if let Some(db) = crate::writes::open(&cfg) {
+                    rows.extend(crate::tasks::page_rows(&db));
+                }
+                rows
+            }).await.unwrap_or_default();
+            let mut all: Vec<Value> = o.get("jobs").and_then(|j| j.as_array()).cloned().unwrap_or_default();
+            all.extend(extra);
+            let rank = |r: &Value| match r["status"].as_str() { Some("running") => 0, Some("queued") => 1, _ => 2 };
+            all.sort_by(|a, b| rank(a).cmp(&rank(b)).then(b["started"].as_f64().unwrap_or(0.0).total_cmp(&a["started"].as_f64().unwrap_or(0.0))));
+            o.insert("jobs".into(), Value::Array(all));
+            Some(nd_render::py_dumps_compact(&Value::Object(o)))
+        }
+        _ => None,
+    };
+    match merged {
+        Some(b) => {
+            let mut r = Response::from_parts(parts, Body::from(b));
+            r.headers_mut().remove("content-length");
+            r
+        }
+        None => Response::from_parts(parts, Body::from(bytes)),
+    }
+}
+
+/// `POST /api/live-jobs/<key>/cancel|restart`, `DELETE /api/live-jobs/<key>` for what the gateway runs (None: Python's)
+pub async fn live_job_action(cfg: std::sync::Arc<Config>, method: axum::http::Method, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let rest = uri.path().strip_prefix("/api/live-jobs/")?.to_string();
+    let (key, action) = match (&method, rest.rsplit_once('/')) {
+        (&axum::http::Method::POST, Some((k, a @ ("cancel" | "restart")))) => (k.to_string(), a.to_string()),
+        (&axum::http::Method::DELETE, None) => (rest.clone(), "remove".to_string()),
+        _ => return None,
+    };
+    let key = percent_encoding::percent_decode_str(&key).decode_utf8().ok()?.into_owned();
+    let (kind, ident) = key.split_once(':')?;
+    let (kind, ident) = (kind.to_string(), ident.to_string());
+    if !(ident.starts_with("gw") || kind == "r") {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || {
+        let db = crate::writes::open(&cfg)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &cfg, method.as_str(), &uri, &headers, now)?;
+        let w = p.world.as_ref()?;
+        if crate::pages::edit_level(&p, w, "background_jobs") != Some(true) {
+            return None;
+        }
+        match kind.as_str() {
+            "m" => crate::runners::action(&ident, &action),
+            "t" => crate::tasks::page_action(&ident, &action),
+            // a bulk rename this process works on: its cancel (restart and remove are Python's: it reads the row)
+            "r" if action == "cancel" => crate::media_rename::cancel(&cfg, &p, ident.parse().ok()?),
+            _ => None,
+        }
+    }).await.ok().flatten()
+}
+
 /// `POST /api/media-rename/runs/<id>/cancel` for a run the gateway works on
 pub async fn media_run_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
     let id: i64 = uri.path().strip_prefix("/api/media-rename/runs/")?.strip_suffix("/cancel")?.parse().ok()?;

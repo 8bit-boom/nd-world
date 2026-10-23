@@ -16,6 +16,8 @@ pub mod stt;
 pub mod tasks;
 pub mod tts;
 pub mod ai_more;
+pub mod runners;
+pub mod ai_runners;
 pub mod media_meta;
 pub mod media_rename;
 pub mod idpages;
@@ -238,6 +240,30 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             if let Some(resp) = tasks::task_route(app.cfg.clone(), &req.method().clone(), req.uri().clone(), req.headers().clone()).await {
                 return resp;
             }
+        }
+    }
+    if app.cfg.rust_routes.iter().any(|r| r == "ai") && ai_runners::serves(req.method(), req.uri().path()) {
+        // the in-memory AI jobs: a start the gateway runs, a poll of a job it holds
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 64 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = ai_runners::route(app.cfg.clone(), &parts.method, &parts.uri, &parts.headers, bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if app.cfg.rust_routes.iter().any(|r| r == "ai") && req.uri().path().starts_with("/api/live-jobs") {
+        // the Background Jobs page's list: Python's rows with the gateway's own tasks and in-memory jobs merged in
+        if req.uri().path() == "/api/live-jobs" && req.method() == axum::http::Method::GET {
+            let cfg = app.cfg.clone();
+            let mut req = req;
+            req.headers_mut().remove(axum::http::header::ACCEPT_ENCODING);
+            let python = app.proxy.forward(req, peer).await;
+            return ai::live_jobs_list(cfg, python).await;
+        }
+        if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
         }
     }
     if req.method() == axum::http::Method::POST && ai::is_sync_ai(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
