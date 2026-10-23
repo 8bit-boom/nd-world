@@ -1127,6 +1127,13 @@ fn assist_plan_for(cfg: &Config, db: &rusqlite::Connection, body: &[u8]) -> Opti
 /// `generate_chat` on the Unsloth backend (one non-streamed answer, Python's sentinel texts on a failure), with the retry of a refused
 /// Thinking request
 pub(crate) async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>) -> String {
+    generate_chat_format(b, model, system, messages, think, extra, None).await
+}
+
+/// `generate_chat(..., format=schema)`: structured output as `response_format`, retried in plain mode when the backend has no grammar
+/// engine for it
+pub(crate) async fn generate_chat_format(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>,
+                                         format: Option<&Value>) -> String {
     let mut full: Vec<Value> = if system.is_empty() { vec![] } else { vec![json!({"role": "system", "content": system})] };
     full.extend(messages.iter().cloned());
     let mut opts = b.options_for(model);
@@ -1139,6 +1146,9 @@ pub(crate) async fn generate_chat(b: &Backend, model: &str, system: &str, messag
     body.insert("stream".into(), json!(false));
     body.extend(translate_options(&opts));
     body.insert("chat_template_kwargs".into(), json!({"enable_thinking": think}));
+    if let Some(f) = format {
+        body.insert("response_format".into(), json!({"type": "json_schema", "json_schema": {"name": "response", "schema": f}}));
+    }
     let Some(req) = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))) else { return "[AI unavailable: request]".into() };
     let resp = match client().request(req).await {
         Ok(r) => r,
@@ -1159,6 +1169,9 @@ pub(crate) async fn generate_chat(b: &Backend, model: &str, system: &str, messag
             _ => String::from_utf8_lossy(&bytes).chars().take(500).collect(),
         };
         let message = if message.is_empty() { format!("HTTP {status}") } else { message };
+        if format.is_some() && message.contains("response_format") {
+            return Box::pin(generate_chat_format(b, model, system, messages, think, extra, None)).await;
+        }
         if think && thinking_rejection(status as i64, &message) {
             let thinks = model == "unsloth/gemma-4-26B-A4B-it-GGUF" || crate::edits::py_truthy_pub(b.per_model.get(model).and_then(|m| m.get("thinking")));
             record_thinking(model, true, true, thinks);
@@ -4396,6 +4409,21 @@ fn lyrics_for_speech(text: &str) -> String {
     let t = re[3].replace_all(&t, "\n");
     let t = re[4].replace_all(&t, "\n\n");
     crate::edits::py_strip_pub(&t)
+}
+
+/// `POST /api/media-rename/runs/<id>/cancel` for a run the gateway works on
+pub async fn media_run_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let id: i64 = uri.path().strip_prefix("/api/media-rename/runs/")?.strip_suffix("/cancel")?.parse().ok()?;
+    tokio::task::spawn_blocking(move || {
+        let db = crate::writes::open(&cfg)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &cfg, "POST", &uri, &headers, now)?;
+        let w = p.world.as_ref()?;
+        if !["audio", "video", "images"].iter().any(|s| crate::pages::edit_level(&p, w, s) == Some(true)) {
+            return None;
+        }
+        crate::media_rename::cancel(&cfg, &p, id)
+    }).await.ok().flatten()
 }
 
 /// The paths `sync_ai` serves

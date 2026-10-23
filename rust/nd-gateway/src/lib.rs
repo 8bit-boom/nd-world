@@ -16,6 +16,8 @@ pub mod stt;
 pub mod tasks;
 pub mod tts;
 pub mod ai_more;
+pub mod media_meta;
+pub mod media_rename;
 pub mod idpages;
 pub mod edits;
 pub mod files;
@@ -258,6 +260,8 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             ai::image_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
         } else if req.uri().path().starts_with("/api/ai/chat/jobs/") {
             ai::chat_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
+        } else if req.uri().path().starts_with("/api/media-rename/runs/") {
+            ai::media_run_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
         } else {
             None
         };

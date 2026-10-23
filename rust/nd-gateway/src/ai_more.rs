@@ -23,6 +23,7 @@ pub fn serves(path: &str) -> bool {
         || path == "/tables/generate-ai"
         || (path.starts_with("/api/sessions/") && path.ends_with("/prep/generate"))
         || path == "/api/kiy/build-model"
+        || crate::media_rename::serves(path)
 }
 
 /// None: not one of these paths; Some(None): the request is Python's; Some(Some(f)): the gateway's answer
@@ -38,6 +39,7 @@ pub fn plan(cfg: &Config, db: &rusqlite::Connection, p: &PageCtx, path: &str, he
         "/tables/generate-ai" => table_plan(cfg, db, p, headers, body),
         _ if path.ends_with("/prep/generate") => prep_plan(db, p, path),
         "/api/kiy/build-model" => kiy_plan(&cfg, db, p),
+        _ if crate::media_rename::serves(path) => crate::media_rename::plan(cfg, db, p, path, body),
         "/calendar/ai-day" | "/calendar/ai-design" => calendar_plan(db, p, path.ends_with("/ai-design"), headers, body),
         _ => None,
     })

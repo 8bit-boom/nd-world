@@ -1679,3 +1679,159 @@ def test_kiy_build_model_is_pythons(client, seed, studio):
             assert out[1][4] == "gateway"
     finally:
         plays.unlink(missing_ok=True)
+
+
+def _media_files(up):
+    """Real files with tags inside them, made by ffmpeg and Pillow: what the renamer reads its clues from."""
+    import subprocess
+    from PIL import Image, PngImagePlugin
+    (up / "audio").mkdir(parents=True, exist_ok=True)
+    (up / "video").mkdir(parents=True, exist_ok=True)
+    (up / "images").mkdir(parents=True, exist_ok=True)
+    tags = ["-metadata", "title=Ember Waltz", "-metadata", "artist=The Lanterns", "-metadata", "album=Night Songs", "-metadata", "genre=Folk",
+            "-metadata", "date=2021-05-01", "-metadata", "comment=Played at the inn"]
+    made = {}
+    for name, extra in (("aaaaaaaaaaaa-ember_waltz.mp3", ["-id3v2_version", "3"]), ("bbbbbbbbbbbb-rain.flac", []), ("cccccccccccc-chant.ogg", ["-c:a", "libopus"]),
+                        ("dddddddddddd-door-creak.wav", []), ("eeeeeeeeeeee-IMG_2041.m4a", [])):
+        path = up / "audio" / name
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", *tags, *extra, str(path)], check=True)
+        made[name] = f"/uploads/audio/{name}"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=2", "-metadata", "title=Market Day",
+                    "-pix_fmt", "yuv420p", str(up / "video" / "ffffffffffff-market.mp4")], check=True)
+    info = PngImagePlugin.PngInfo()
+    info.add_text("parameters", "a red dragon over a ruined keep, night\nNegative prompt: blurry\nSteps: 20")
+    info.add_text("Title", "Dragon Keep")
+    Image.new("RGB", (900, 600), (200, 30, 30)).save(up / "images" / "gggggggggggg-dragon.png", pnginfo=info)
+    exif = Image.Exif()
+    exif[0x010E] = "A map of the north"
+    exif[0x013B] = "Mira"
+    exif[0x9C9B] = "Northern Map".encode("utf-16-le") + b"\x00\x00"
+    Image.new("RGB", (64, 48), (10, 120, 40)).save(up / "images" / "hhhhhhhhhhhh-DSC_0042.jpg", exif=exif, comment=b"Scanned handout")
+    Image.new("RGB", (30, 20), (0, 0, 200)).save(up / "images" / "iiiiiiiiiiii-portrait.webp")
+    return made
+
+
+def test_media_renamer_suggest_is_pythons(client, seed, studio):
+    """/api/media-rename/suggest: the clues read from the files (ID3, FLAC / Opus / Vorbis comments, WAV, MP4 atoms, PNG text, JPEG EXIF
+    and comment, ffprobe for the rest), where images are used, the prompt and the batches, the names cleaned - and the refusals."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AudioAlbum, AudioClip, Entity, ImageAlbum, MediaTitle, VideoClip
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    files = _media_files(up)
+    db = SessionLocal()
+    try:
+        album = AudioAlbum(world_id=w, name="Tavern")
+        db.add(album)
+        db.flush()
+        hero = Entity(world_id=w, kind="character", name="Borin", image_url="/uploads/images/gggggggggggg-dragon.png")
+        db.add(hero)
+        db.flush()
+        clips = [AudioClip(world_id=w, name=n, file_url=u, album_id=album.id if i == 0 else None, entity_id=hero.id if i == 1 else None,
+                           transcript="Hello   there" if i == 2 else "", description="An old tune" if i == 0 else "")
+                 for i, (n, u) in enumerate(zip(["Track 07", "rain", "", "Door Creak", "IMG_2041"], files.values()))]
+        db.add_all(clips)
+        vid = VideoClip(world_id=w, name="VID_0001", file_url="/uploads/video/ffffffffffff-market.mp4")
+        db.add(vid)
+        db.add(ImageAlbum(world_id=w, name="Handouts", image_urls_json=json.dumps(["/uploads/images/hhhhhhhhhhhh-DSC_0042.jpg", "/uploads/images/iiiiiiiiiiii-portrait.webp"])))
+        db.add(MediaTitle(world_id=w, url="/uploads/images/iiiiiiiiiiii-portrait.webp", title="Old portrait"))
+        db.commit()
+        ids = [c.id for c in clips] + [vid.id]
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    audio = [{"kind": "audio", "id": i} for i in ids[:5]]
+    images = [{"kind": "image", "url": "/uploads/images/gggggggggggg-dragon.png"}, {"kind": "image", "url": "/uploads/images/hhhhhhhhhhhh-DSC_0042.jpg"},
+              {"kind": "image", "url": "/uploads/images/iiiiiiiiiiii-portrait.webp"}]
+    reply = _reply(json.dumps({"names": [{"id": "1", "name": " \"Ember Waltz.mp3\" "}, {"id": "2", "name": "rain"}, {"id": 3, "name": "Title: 1. Low Chant"},
+                                         {"id": "4", "name": "Door/Creak?"}, {"id": "9", "name": "x"}, {"id": "5", "name": ""}, {"id": "6", "name": "Market Day " * 12}]}))
+    cases = [
+        ({"items": audio + [{"kind": "video", "id": ids[5]}], "preset": "music", "style": "  keep   it short "}, [reply]),
+        ({"items": images + [{"kind": "audio", "id": 999999}, {"kind": "audio", "id": "x"}, {"kind": "image", "url": "/uploads/images/nope.png"}]},
+         [_reply("```json\n" + json.dumps({"1": "Red Dragon Keep", "2": "Map of the North", "3": "Old portrait"}) + "\n```")]),
+        ({"items": audio[:1]}, [_reply("no json at all")]),
+        ({"items": []}, []),
+        ({"items": audio * 3}, []),
+    ]
+    for i, (body, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/api/media-rename/suggest", json=body)
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:4000], json.dumps(out[1][2])[:4000])
+        assert out[1][3] == "gateway", i
+    r = gm.post("/api/media-rename/suggest", data="not json", headers={"content-type": "application/json"})
+    r2 = _via(gm, base).post("/api/media-rename/suggest", data="not json", headers={"content-type": "application/json"})
+    assert (r.status_code, r.json()) == (r2.status_code, r2.json())
+    studio.reply_seq = None
+
+
+def test_media_renamer_runs_are_pythons(client, seed, studio):
+    """A bulk run started through the gateway is worked through by the gateway - chunk by chunk, saved after each - and ends with the same
+    proposals a Python run makes; a running gateway run cancels through the gateway."""
+    import os
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AudioClip, MediaRenameRun
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    files = _media_files(up)
+    db = SessionLocal()
+    try:
+        clips = [AudioClip(world_id=w, name=f"Track {i:02d}", file_url=u) for i, u in enumerate(list(files.values()) * 2)]
+        db.add_all(clips)
+        db.commit()
+        items = [{"kind": "audio", "id": c.id, "extra": 1} for c in clips] + [{"kind": "audio", "id": 999999}]
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+
+    def wait(side, rid):
+        for _ in range(200):
+            v = side.get(f"/api/media-rename/runs/{rid}").json()
+            if v["status"] not in ("pending", "running"):
+                return v
+            time.sleep(0.05)
+        raise AssertionError(v)
+
+    names = [_reply(json.dumps({"names": [{"id": str(n), "name": f"Song {n}"} for n in range(1, 7)]})) for _ in range(3)]
+    out = []
+    for side in (gm, _via(gm, base)):
+        studio.requests.clear()
+        studio.reply_seq = list(names)
+        r = side.post("/api/media-rename/runs", json={"items": items, "preset": "music", "style": 5, "pictures": 0, "listen": "yes"})
+        assert r.status_code == 200, r.text
+        v = wait(side, r.json()["id"])
+        d = SessionLocal()
+        try:
+            row = d.get(MediaRenameRun, r.json()["id"])
+            stored = (row.options_json, row.items_json, row.total, row.done)
+        finally:
+            d.close()
+        out.append(({k: v[k] for k in ("status", "done", "total", "error", "proposals", "errors_count", "results", "errors")}, stored,
+                    [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+    assert out[0][:3] == out[1][:3], (out[0][:2], out[1][:2])
+    assert out[1][3] == "gateway"
+    # a cancel of the gateway's own run
+    studio.reply_seq = None
+    studio.reply = names[0]
+    studio.delay = 1.5
+    try:
+        via = _via(gm, base)
+        rid = via.post("/api/media-rename/runs", json={"items": items}).json()["id"]
+        time.sleep(0.4)
+        r = via.post(f"/api/media-rename/runs/{rid}/cancel")
+        assert (r.status_code, r.json(), r.headers.get("x-nd-served-by")) == (200, {"ok": True}, "gateway")
+        v = wait(via, rid)
+        assert (v["status"], v["error"]) == ("cancelled", "Cancelled.")
+        assert via.post(f"/api/media-rename/runs/{rid}/cancel").status_code == 400     # no longer running anywhere: Python's answer
+    finally:
+        studio.delay = 0
+        studio.reply = {}
