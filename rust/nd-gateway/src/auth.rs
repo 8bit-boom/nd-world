@@ -545,3 +545,13 @@ pub fn gate(pages: &Pages, cfg: &Config, method: &str, uri: &Uri, headers: &Head
 <p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>")).unwrap()
     }, None))
 }
+
+/// The test servers' `POST /__test__/reset` clears this process's lockouts too, as it clears Python's - only with ND_TEST_HOOKS=1 (a
+/// real server must never let a request reset them)
+pub fn test_reset() {
+    if std::env::var("ND_TEST_HOOKS").ok().as_deref() == Some("1") {
+        for which in ["login", "2fa"] {
+            counts(which).lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+    }
+}

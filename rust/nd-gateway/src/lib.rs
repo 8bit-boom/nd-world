@@ -70,6 +70,9 @@ pub struct App {
 
 async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
     let (m, p) = (req.method().to_string(), req.uri().path().to_string());
+    if p == "/__test__/reset" {
+        auth::test_reset();
+    }
     // the session refreshed up front (auth): every page and API below reads the fresh one, the browser gets it with the answer
     let mut fresh_cookie = None;
     if app.cfg.rust_routes.iter().any(|r| r == "auth") && !p.starts_with("/static/") && !p.starts_with("/uploads/") {
