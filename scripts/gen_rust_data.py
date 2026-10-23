@@ -130,7 +130,10 @@ def make() -> dict:
         "assist_systems": assist_systems(),
         # app/ai.py's recap-family prompt texts the gateway's jobs build their system prompts from
         "recap_texts": {k: getattr(__import__("app.ai", fromlist=[k]), k) for k in ("_SUMMARIZE_FACTS_SYSTEM", "_STRICT_COMPLIANCE_NOTE", "_CONDENSE_RECAP_SYSTEM", "_RECAP_SYSTEM", "_RECAP_FACTS_SCHEMA",
-                                                                                      "_SUMMARIZE_TRANSCRIPT_SYSTEM", "_SUMMARIZE_TRANSCRIPT_PART_SYSTEM", "_EXPAND_NOTES_SYSTEM", "_COMPACT_CHAT_SYSTEM", "_SYSTEM")},
+                                                                                      "_SUMMARIZE_TRANSCRIPT_SYSTEM", "_SUMMARIZE_TRANSCRIPT_PART_SYSTEM", "_EXPAND_NOTES_SYSTEM", "_COMPACT_CHAT_SYSTEM", "_SYSTEM",
+                                                                                      "_ENTITY_FROM_TEXT_SYSTEM", "_ENTITIES_BATCH_SYSTEM")},
+        # the entity kinds the AI drafts choose from (app/constants.py KINDS)
+        "entity_kinds": __import__("app.constants", fromlist=["KINDS"]).KINDS,
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)
         "catalog_equipment": game_catalog.catalog_payload()["equipment"], "catalog_feats": game_catalog.catalog_payload()["feats"],
         # the tracker pages' rules_json, exactly as json.dumps spells it (the GM's whole table; a player's three keys of it)

@@ -3649,6 +3649,8 @@ enum SyncAi {
     Compact { b: Backend, model: String, history: String, think: bool },
     /// `generate(prompt)`: the default system prompt, one user message
     Generate { b: Backend, prompt: String },
+    /// `parse_entity_from_text` (one draft) or `parse_entities_batch_from_text` (many)
+    EntityText { b: Backend, text: String, hint: String, batch: bool },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
     Refuse(StatusCode, String),
 }
@@ -3747,6 +3749,22 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 _ => format!("Create a quest hook for '{}'. World context: {}", req("title")?, opt("context")?),
             };
             SyncAi::Generate { b: backend(&db)?, prompt }
+        }
+        "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" => {
+            if !(p.is_gm || p.role.as_deref() == Some("assistant")) || p.world.is_none() {
+                return None;
+            }
+            let Some(Value::String(t)) = b.get("text") else { return None };
+            let text = crate::edits::py_strip_pub(t);
+            if text.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "No text provided");
+            }
+            let batch = path.ends_with("-batch");
+            let hint = if batch { String::new() } else {
+                let k = crate::edits::py_strip_pub(&text_raw(&b, "kind")?);
+                if entity_kinds().contains(&k) { k } else { String::new() }
+            };
+            SyncAi::EntityText { b: backend(&db)?, text, hint, batch }
         }
         "/api/ai/generate/entity-smart" => {
             if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
@@ -3907,6 +3925,10 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             };
             if failed(&summary) { err(StatusCode::BAD_GATEWAY, format!("Compaction failed: {summary}")) } else { ok(json!({"summary": summary})) }
         }
+        SyncAi::EntityText { b, text, hint, batch } => match entity_from_text(&b, &text, &hint, batch).await {
+            Ok(v) => ok(v),
+            Err(e) => err(StatusCode::BAD_GATEWAY, e),
+        },
         SyncAi::Generate { b, prompt } => {
             let result = generate_chat(&b, &b.model, &recap_text("_SYSTEM"), &[json!({"role": "user", "content": prompt})], false, &Map::new()).await;
             ok(json!({"result": result}))
@@ -3937,7 +3959,7 @@ pub async fn sync_ai(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, 
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
-        | "/api/ai/generate/entity-smart")
+        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch")
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }
@@ -3945,4 +3967,123 @@ pub fn is_sync_ai(path: &str) -> bool {
 /// A `str` field of a Pydantic body read as given ("" when absent; None when not a string)
 fn text_raw(b: &Map<String, Value>, k: &str) -> Option<String> {
     match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), Some(_) => None }
+}
+
+
+/// app/constants.py KINDS
+fn entity_kinds() -> Vec<String> {
+    nd_render::app::data()["entity_kinds"].as_array().map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// `str(x or "").strip()` for a field of a model's JSON reply
+fn reply_str(v: Option<&Value>) -> String {
+    match v {
+        v if !crate::edits::py_truthy_pub(v) => String::new(),
+        Some(Value::String(s)) => crate::edits::py_strip_pub(s),
+        Some(Value::Bool(t)) => if *t { "True".into() } else { "False".into() },
+        Some(other) => py_repr(other),
+        None => String::new(),
+    }
+}
+
+/// `str(x)` of a parsed JSON value as Python prints it (lists and dicts as their repr)
+fn py_repr(v: &Value) -> String {
+    match v {
+        Value::Null => "None".into(),
+        Value::Bool(t) => if *t { "True".into() } else { "False".into() },
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => {
+            let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+            let mut out = String::from(q);
+            for c in s.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c if c == q => { out.push('\\'); out.push(c); }
+                    c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out.push(q);
+            out
+        }
+        Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
+        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, v)| format!("{}: {}", py_repr(&Value::String(k.clone())), py_repr(v))).collect::<Vec<_>>().join(", ")),
+    }
+}
+
+/// `int(x)` for a field of a model's JSON reply (Err: Python's ValueError)
+fn reply_int(v: &Value) -> Result<i64, ()> {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f.trunc() as i64)).ok_or(()),
+        Value::Bool(t) => Ok(*t as i64),
+        Value::String(s) => s.trim().parse::<i64>().map_err(|_| ()),
+        _ => Err(()),
+    }
+}
+
+/// One entity draft from a model's JSON (None: not a usable one)
+fn entity_draft(item: &Value, kinds: &[String]) -> Option<Value> {
+    let o = item.as_object()?;
+    let kind = o.get("kind").and_then(|k| k.as_str()).filter(|k| kinds.iter().any(|x| x == k))?;
+    let name = reply_str(o.get("name"));
+    if name.is_empty() {
+        return None;
+    }
+    Some(json!({"kind": kind, "subtype": reply_str(o.get("subtype")), "name": name, "summary": reply_str(o.get("summary")),
+        "body": reply_str(o.get("body")), "tags": reply_str(o.get("tags")), "folder": reply_str(o.get("folder")),
+        "visible_to_players": o.get("visible_to_players").map_or(true, |v| crate::edits::py_truthy_pub(Some(v)))}))
+}
+
+/// `parse_entity_from_text` / `parse_entities_batch_from_text`
+async fn entity_from_text(b: &Backend, text: &str, hint: &str, batch: bool) -> Result<Value, String> {
+    let kinds = entity_kinds();
+    let entity_props = json!({"kind": {"type": "string", "enum": kinds}, "subtype": {"type": "string"}, "name": {"type": "string"},
+        "summary": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "string"}, "folder": {"type": "string"},
+        "visible_to_players": {"type": "boolean"}});
+    let entity = json!({"type": "object", "properties": entity_props, "required": ["kind", "name"]});
+    let model = b.model.clone();
+    if !batch {
+        let mut system = recap_text("_ENTITY_FROM_TEXT_SYSTEM");
+        if !hint.is_empty() {
+            system.push_str(&format!("\n\nThe GM has selected the kind \"{hint}\" — frame the entity as a {hint} (the kind field MUST be \"{hint}\"). The text is a short creative BRIEF, not source material: invent coherent, evocative, setting-neutral details consistent with it (names, history, hooks) instead of only extracting what is stated."));
+        }
+        let reply = chat_with_schema(b, &model, &[json!({"role": "system", "content": system}), json!({"role": "user", "content": text})], false, &entity).await?;
+        let parsed: Value = serde_json::from_str(&reply).unwrap_or(Value::Null);
+        return entity_draft(&parsed, &kinds).ok_or_else(|| "Could not turn that reply into an entity — try rephrasing or picking a shorter passage.".to_string());
+    }
+    let pc = json!({"type": "object", "properties": {"name": {"type": "string"}, "player_name": {"type": "string"}, "race": {"type": "string"},
+        "char_class": {"type": "string"}, "level": {"type": "integer"}, "xp": {"type": "integer"}, "backstory": {"type": "string"}, "notes": {"type": "string"}},
+        "required": ["name"]});
+    let schema = json!({"type": "object", "properties": {"entities": {"type": "array", "items": entity}, "player_characters": {"type": "array", "items": pc}},
+        "required": ["entities", "player_characters"]});
+    let text: String = text.chars().take(20000).collect();
+    let reply = chat_with_schema(b, &model, &[json!({"role": "system", "content": recap_text("_ENTITIES_BATCH_SYSTEM")}), json!({"role": "user", "content": text})], false, &schema).await?;
+    let unusable = || "Could not extract anything usable from that text — try a shorter passage, or a different model.".to_string();
+    let parsed: Value = serde_json::from_str(&reply).map_err(|_| unusable())?;
+    let o = parsed.as_object().ok_or_else(unusable)?;
+    let list = |k: &str| -> Result<Vec<Value>, String> {
+        match o.get(k) {
+            v if !crate::edits::py_truthy_pub(v) => Ok(vec![]),
+            Some(Value::Array(a)) => Ok(a.iter().take(25).cloned().collect()),
+            _ => Err(unusable()),
+        }
+    };
+    let entities: Vec<Value> = list("entities")?.iter().filter_map(|i| entity_draft(i, &kinds)).collect();
+    let mut pcs = vec![];
+    for item in list("player_characters")? {
+        let Some(i) = item.as_object() else { continue };
+        let name = reply_str(i.get("name"));
+        if name.is_empty() { continue; }
+        let num = |k: &str, d: i64| -> Result<i64, String> {
+            let v = i.get(k).filter(|v| crate::edits::py_truthy_pub(Some(v)));
+            if reply_str(v).is_empty() { return Ok(d); }
+            reply_int(v.unwrap_or(&Value::Null)).map_err(|_| unusable())
+        };
+        pcs.push(json!({"name": name, "player_name": reply_str(i.get("player_name")), "race": reply_str(i.get("race")), "char_class": reply_str(i.get("char_class")),
+            "level": num("level", 1)?.clamp(1, 20), "xp": num("xp", 0)?.max(0), "backstory": reply_str(i.get("backstory")), "notes": reply_str(i.get("notes"))}));
+    }
+    Ok(json!({"entities": entities, "player_characters": pcs}))
 }

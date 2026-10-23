@@ -1127,6 +1127,13 @@ def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
         ("/api/ai/generate/quest", {"title": "The ring"}, [_reply("A hook.")]),
         ("/api/ai/generate/entity-smart", {"name": "Ruins", "kind": "location", "subtype": "ancient", "summary": "old stones"}, [_reply("Lore.")]),
         ("/api/ai/chat/compact", {"messages": [{"role": "user", "content": "x"}]}, [_reply("", finish="length")]),
+        ("/api/ai/entity-from-text", {"text": "Borin, a dwarf smith in Bree", "kind": "character"},
+         [_reply(json.dumps({"kind": "character", "name": " Borin ", "summary": "A smith.", "tags": ["dwarf"]}))]),
+        ("/api/ai/entity-from-text", {"text": "Bree, a rainy town", "kind": "nonsense"},
+         [_reply(json.dumps({"kind": "location", "name": "Bree", "description": "Rainy."}))]),
+        ("/api/ai/entity-from-text", {"text": "something"}, [_reply("not json")]),
+        ("/api/ai/entities-from-text-batch", {"text": "Borin the smith. Bree the town."},
+         [_reply(json.dumps({"entities": [{"kind": "character", "name": "Borin"}, {"kind": "location", "name": "Bree"}]}))]),
     ]
     for i, (path, body, replies) in enumerate(cases):
         out = []

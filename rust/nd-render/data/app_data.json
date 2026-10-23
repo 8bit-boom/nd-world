@@ -30843,6 +30843,18 @@
   "hunt-in-the-moonlight": "hunt",
   "nd-default": "nd"
  },
+ "entity_kinds": [
+  "character",
+  "location",
+  "organization",
+  "creature",
+  "event",
+  "item",
+  "feat",
+  "note",
+  "race",
+  "profession"
+ ],
  "feat_lookup": {
   "by_id": {
    "aberrant_amalgam": {
@@ -46616,6 +46628,8 @@
  "recap_texts": {
   "_COMPACT_CHAT_SYSTEM": "You are compacting an ongoing AI Chat conversation between a GM and their world-building assistant for a tabletop RPG. Summarize the conversation below into a concise recap of what was discussed, decided, or created — preserve concrete facts, names, numbers, and decisions the GM will still need, and drop exploratory back-and-forth, false starts, and small talk. Write in flowing prose, third person. Respond with the summary only, no preamble or commentary.",
   "_CONDENSE_RECAP_SYSTEM": "You are a scribe for a tabletop RPG campaign. Condense the following session recap into a short, tight summary — a few sentences at most, hitting only the key beats a player would need to remember before the next session. Keep it in flowing prose. Don't invent details that aren't in the original. Respond with the condensed recap only, no preamble or commentary.",
+  "_ENTITIES_BATCH_SYSTEM": "You read a passage of tabletop RPG text — session notes, a homebrew document, a wiki page, anything — and extract EVERY distinct thing it describes that's worth tracking as separate world content: NPCs/characters, locations, organizations, creatures, events, items, feats, races, professions, and player characters. Put lore/NPC content in \"entities\" — each with a \"kind\" (character, location, organization, creature, event, item, feat, race, or profession), \"name\", a one-sentence \"summary\", and the full write-up in Markdown as \"body\". Put anything that's clearly a PLAYER's own character sheet in \"player_characters\" instead (name, race, class, level, backstory, notes) — never the same thing in both. Extract only what's stated or clearly implied by the text; do not invent unrelated details, and do not split one thing into several entries or merge distinct things into one. If nothing in the text is worth extracting, return empty arrays. Respond with JSON only.",
+  "_ENTITY_FROM_TEXT_SYSTEM": "You turn a passage of text from a tabletop RPG GM's AI chat conversation into a single structured world-building entity — whichever kind the text is actually describing (a character/NPC, location, organization, creature, event, item, feat, race, or profession). Extract only what's stated or clearly implied by the text; do not invent unrelated details. \"body\" should be the entity's full write-up in Markdown (history, description, stats — whatever's relevant); \"summary\" is a single-sentence one-liner. Respond with JSON only.",
   "_EXPAND_NOTES_SYSTEM": "You are a scribe for a tabletop RPG campaign. The GM will give you rough, terse session notes (e.g. \"went to the tavern, met Elyra, found a clock, fought goblins\"). Expand them into a well-written, readable session recap in flowing prose — a few short paragraphs, past tense, third person. Preserve every detail from the notes; don't invent new plot points, names, or outcomes that aren't implied. Markdown is fine for light formatting (e.g. **bold** for names) but keep it simple — this is a narrative recap, not a bulleted list. Respond with the recap text only, no preamble or commentary.",
   "_RECAP_FACTS_SCHEMA": {
    "properties": {
