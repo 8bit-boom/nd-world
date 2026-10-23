@@ -194,7 +194,7 @@ fn page_viewer(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers:
     render_with(pages, "page_viewer.html", p.ctx, headers)
 }
 
-fn rows(db: &Connection, sql: &str, id: i64) -> Option<Vec<Value>> {
+pub(crate) fn rows(db: &Connection, sql: &str, id: i64) -> Option<Vec<Value>> {
     let mut st = db.prepare(sql).ok()?;
     let r = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r.into_iter().map(Value::Object).collect())

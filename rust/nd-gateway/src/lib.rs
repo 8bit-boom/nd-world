@@ -43,6 +43,7 @@ pub mod media;
 pub mod pages;
 pub mod proxy;
 pub mod search;
+pub mod settings;
 pub mod session;
 pub mod static_files;
 pub mod uploads;
@@ -250,11 +251,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/" | "/new" | "/rules" | "/search") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/" | "/new" | "/rules" | "/search" | "/settings" | "/settings/visibility-rows") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/new" => idpages::new_entity_form,
             "/search" => search::search_page,
+            "/settings" => settings::settings_page,
+            "/settings/visibility-rows" => settings::visibility_rows_page,
             "/" => home::home,
             _ => idpages::rules_page,
         };

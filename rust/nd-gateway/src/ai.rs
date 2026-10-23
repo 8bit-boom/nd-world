@@ -34,6 +34,13 @@ fn thinking_state() -> &'static Mutex<(std::collections::HashSet<String>, std::c
     S.get_or_init(|| Mutex::new(Default::default()))
 }
 
+/// the models in `_model_thinking_failures`, sorted (the Settings page only asks whether one is in it)
+pub fn thinking_failures() -> Vec<String> {
+    let mut v: Vec<String> = thinking_state().lock().map(|s| s.0.iter().cloned().collect()).unwrap_or_default();
+    v.sort();
+    v
+}
+
 fn record_thinking(model: &str, think: bool, failed: bool, via_token: bool) {
     if !think {
         return;

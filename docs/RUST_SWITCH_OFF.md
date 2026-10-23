@@ -25,5 +25,21 @@ them after each batch; the phase is done when both are empty and the steps below
    background loops (the jobs' sweeps, the watchdog, backups), and the 2FA / session secrets.
 5. **The image**: Python removed from the Dockerfile; image size and memory measured against today's.
 
+### Done so far
+
+- **Authentication** (`auth` route switch): sign-in, two-step codes, trusted devices, the lockout, sign-out, the stale-session refresh
+  and `auth_gate`'s refusals.
+- **Settings page** (`pages` switch): `GET /settings` (every tab) and `GET /settings/visibility-rows`. The cells that describe the
+  serving process are the gateway's own: resource sizing is read from the same machine, environment and saved `res_*` row; the live
+  page-build limit is Python's render gate, which the gateway does not have (the page shows the starting value); the Diagnostics
+  tab's watchdog thread, event-loop heartbeat and database pool are Python's and read "not started" / "inactive" / "unavailable".
+
+### What has to wait for the switch itself
+
+Python keeps some saved settings in memory and reloads them only when its own handler saves them: the resource sizing
+(`workers.apply`), the LLM URL / model / key / context overrides (`ai.set_llm_override`) and the Ollama tuning. A save written
+by the gateway would leave Python running on the old values, so `POST /settings`, `/settings/system*` and `/settings/resources` stay
+Python's until Python is switched off, and then move in one step.
+
 Python-only libraries with no exact Rust twin (reportlab for PDF export, the PDF / HTML sheet readers behind the AI drafters) may stay
 in a small sidecar, as the plan allows, if a port is not good enough.

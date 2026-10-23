@@ -183,6 +183,15 @@ pub fn build_catalog(world: Option<&Map<String, Value>>) -> Option<Vec<Value>> {
     Some(out)
 }
 
+/// `load_nav_menus(world)`: the world's stored menus when they are a JSON list, else the defaults. `None` = not sure.
+pub fn load_nav_menus(world: &Map<String, Value>) -> Option<Value> {
+    match wstr(Some(world), "nav_menus_json").filter(|s| !s.is_empty()).map(serde_json::from_str::<Value>) {
+        Some(Ok(v @ Value::Array(_))) => Some(v),
+        Some(Err(_)) if wstr(Some(world), "nav_menus_json").map_or(false, |s| s.contains("NaN") || s.contains("Infinity")) => None,
+        _ => Some(data()["nav_default_menus"].clone()),
+    }
+}
+
 /// `resolve_nav_menus` -> (menus, ungrouped). `None` = not sure.
 pub fn resolve_nav(c: &NavCtx) -> Option<(Vec<Value>, Vec<Value>)> {
     let catalog = build_catalog(c.world)?;

@@ -8,12 +8,12 @@ pub const SECTION_PERMISSION_IDS: &[&str] = &[
     "session_log", "rules", "characters", "audio", "video", "pages", "androidapp",
 ];
 pub const KINDS: &[&str] = &["character", "location", "organization", "creature", "event", "item", "feat", "note", "race", "profession"];
-const NO_PLAYER_EDIT: &[&str] = &[
+pub const NO_PLAYER_EDIT: &[&str] = &[
     "maps", "boards", "races", "professions", "sessions", "facts", "images", "pages", "audio", "video", "background_jobs", "import", "bulk_edit",
     "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
     "characters", "androidapp",
 ];
-const NO_ASSISTANT_EDIT: &[&str] = &[
+pub const NO_ASSISTANT_EDIT: &[&str] = &[
     "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio", "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
     "characters", "androidapp",
 ];
@@ -85,6 +85,36 @@ pub fn floor(section_id: &str, role: &str, val: &'static str) -> &'static str {
         return "read";
     }
     val
+}
+
+/// `world_section_access`: {section_id: {"player": level, "assistant": level}} for every known id (the static ones and one per kind),
+/// each level read from the stored JSON when valid, else the default, then floored. `None` = not sure (unparseable to serde, NaN ...).
+pub fn world_section_access(section_access_json: Option<&str>, custom_kinds_json: Option<&str>) -> Option<Value> {
+    let data = py_json(section_access_json).ok()?;
+    let mut ids: Vec<String> = SECTION_PERMISSION_IDS.iter().map(|s| s.to_string()).collect();
+    for k in effective_kinds(custom_kinds_json)? {
+        let id = format!("kind_{k}");
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for sid in ids {
+        let (dp, da) = default_levels(&sid);
+        let entry = data.get(&sid).filter(|e| e.is_object());
+        let mut levels = serde_json::Map::new();
+        for (role, default) in [("player", dp), ("assistant", da)] {
+            let val = match entry.and_then(|e| e.get(role)) {
+                Some(Value::String(s)) if s == "none" => "none",
+                Some(Value::String(s)) if s == "read" => "read",
+                Some(Value::String(s)) if s == "edit" => "edit",
+                _ => default,
+            };
+            levels.insert(role.into(), Value::String(floor(&sid, role, val).into()));
+        }
+        out.insert(sid, Value::Object(levels));
+    }
+    Some(Value::Object(out))
 }
 
 /// `world_section_level`: "none" / "read" / "edit" for a viewer (`role` = None for a GM) in a world with these two JSON columns.

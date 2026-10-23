@@ -1783,3 +1783,71 @@ def test_cockpit_workspace_read_is_pythons(client, seed):
             a, b = d.get("/api/cockpit/workspace"), _via(d, base).get("/api/cockpit/workspace")
             assert (a.status_code, a.json()) == (b.status_code, b.json()), (stored, a.text, b.text)
             assert b.headers.get("x-nd-served-by") == "gateway"
+
+
+def _process_cells(html):
+    """The cells of Settings that describe the serving process, not the data: Python's watchdog thread, event-loop heartbeat and database
+    pool, and its live page-build limit. The gateway reports its own (none of the three, no Python render gate)."""
+    import re
+    html = re.sub(r"(<tr><td>(?:Watchdog thread|Event-loop heartbeat|DB pool right now)</td><td>)[^<]*(</td></tr>)", r"\1~\2", html)
+    return re.sub(r"keeping whatever builds the most pages a second - now \d+\.", "keeping whatever builds the most pages a second - now ~.", html)
+
+
+def test_settings_page_is_pythons(client, seed):
+    """GET /settings (every tab, an unknown one) and GET /settings/visibility-rows from the gateway: the saved settings, the per-model
+    overrides, the Ollama server-env file status, upload limits, the world's players, nav menus and section matrix, the Visibility rows
+    with who each hidden entity is open to, diagnostics events and dumps - and the player's refusal."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import DB_PATH, SessionLocal, get_app_settings
+    from app.models import Entity, World, entity_player_access
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        st = get_app_settings(db)
+        st.ollama_model_overrides_json = json.dumps({"gemma:2b": {"options": {"temperature": 0.4}, "keep_alive": "5m", "thinking": True}, "qwen": {}})
+        st.ollama_server_env_json = json.dumps({"OLLAMA_NUM_PARALLEL": "2", "OLLAMA_KV_CACHE_TYPE": "q8_0"})
+        st.max_video_mb = 900
+        w = seed.world_a.id
+        hidden = Entity(world_id=w, kind="npc", name="Hidden <h>", visible_to_players=False)
+        db.add_all([hidden, Entity(world_id=w, kind="item", name="Open", visible_to_players=True), Entity(world_id=w, kind="item", name="Closed", visible_to_players=False)])
+        db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=hidden.id, user_id=seed.player_a.id))
+        wa = db.query(World).filter(World.id == w).first()
+        wa.section_access_json = json.dumps({"maps": {"player": "edit", "assistant": "bogus"}, "quests": "x", "kind_npc": {"player": "none"}})
+        wa.nav_menus_json = json.dumps([{"id": "m1", "label": "Mine", "icon": "★", "item_ids": ["kind_npc", "dice"]}])
+        db.commit()
+    finally:
+        db.close()
+    diag = Path(DB_PATH).parent / "diagnostics"
+    diag.mkdir(exist_ok=True)
+    (diag / "events.log").write_text("\n".join(f"line {i} <x>" for i in range(250)) + "\n")
+    (diag / "wedge-20260102-030405.txt").write_text("dump")
+    (diag / "wedge-20260102-030406-2.txt").write_text("dump two")
+    (diag / "not-a-dump.txt").write_text("x")
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    # Python holds the resource settings in memory, refreshed when this form saves them (the gateway reads the saved row)
+    assert gm.post("/settings/resources", data={"res_image_workers": "3", "res_render_slots": "", "res_memory_gb": "20"},
+                   follow_redirects=False).status_code == 303
+    served = 0
+    for url in ("/settings", "/settings?tab=system", "/settings?tab=visibility", "/settings?tab=navigation", "/settings?tab=diagnostics",
+                "/settings?tab=nope", "/settings/visibility-rows"):
+        a, b = gm.get(url), _via(gm, base).get(url)
+        assert a.status_code == b.status_code == 200, url
+        na = golden.normalise(a.headers["content-type"], _process_cells(a.text).encode())
+        nb = golden.normalise(b.headers["content-type"], _process_cells(b.text).encode())
+        if na != nb:
+            import difflib
+            raise AssertionError(url + "\n" + "\n".join(list(difflib.unified_diff(na.splitlines(), nb.splitlines(), "python", "gateway", n=1, lineterm=""))[:60]))
+        served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served == 7, served
+    # a world with nothing in it, and no world at all
+    nw = _signed_in(seed.gm.email, GM_PASSWORD, "no-such-world")
+    for url in ("/settings", "/settings/visibility-rows"):
+        a, b = nw.get(url, follow_redirects=False), _via(nw, base).get(url, follow_redirects=False)
+        assert (a.status_code, a.text if a.status_code != 200 else _process_cells(a.text)) == \
+               (b.status_code, b.text if b.status_code != 200 else _process_cells(b.text)), url
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for url in ("/settings", "/settings/visibility-rows"):
+        a, b = player.get(url, follow_redirects=False), _via(player, base).get(url, follow_redirects=False)
+        assert (a.status_code, a.text) == (b.status_code, b.text) and a.status_code == 403, url
+    gm.post("/settings/resources", data={"res_image_workers": "", "res_render_slots": "", "res_memory_gb": ""}, follow_redirects=False)

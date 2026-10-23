@@ -15,6 +15,11 @@ use crate::config::Config;
 const CONTEXT_LADDER: [i64; 6] = [2048, 4096, 8192, 16384, 32768, 65536];
 const KV_MB_PER_1K_F16: [(f64, i64); 5] = [(4.0, 64), (9.0, 128), (20.0, 208), (40.0, 320), (1e9, 512)];
 
+/// GPU_PRESETS as the Settings page gets it: {key: {"name", "vram_mb"}}
+pub fn gpu_presets() -> serde_json::Value {
+    serde_json::Value::Object(GPU_PRESETS.iter().map(|(k, n, v)| (k.to_string(), serde_json::json!({"name": n, "vram_mb": v}))).collect())
+}
+
 /// GPU_PRESETS: (key, name, vram MB)
 const GPU_PRESETS: [(&str, &str, i64); 3] = [("tesla_t10_16gb", "NVIDIA Tesla T10 16GB", 16384), ("v100_16gb", "NVIDIA Tesla V100 16GB", 16384),
                                              ("v100_32gb", "NVIDIA Tesla V100 32GB", 32768)];
