@@ -1084,3 +1084,47 @@ def test_a_background_assist_runs_as_a_task_like_pythons(client, seed, studio):
     assert seen[0][:4] == seen[1][:4], seen
     assert not seen[0][4] and seen[1][4] and seen[1][5] == "gateway"
     assert seen[1][0]["body"]["text"] == "Better text."
+
+
+def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
+    """The blocking recap / facts routes (expand notes, condense, summarize a transcript or the live one, a recap from facts, parse facts,
+    a folk tale): the same request to the backend and the same answer from the gateway, inline - and a refusal Python makes itself."""
+    from app.database import SessionLocal
+    from app.models import Fact, GameSession, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=w, title="Ruins", live_transcript="GM: You enter. Player: I look around.")
+        db.add(gs)
+        db.flush()
+        db.add_all([Fact(world_id=w, game_session_id=gs.id, content="They entered the ruins."), Fact(world_id=w, content="Another fact.")])
+        db.get(World, w).recap_instructions = "Be terse."
+        db.commit()
+        sid = gs.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    facts = _reply(json.dumps({"facts": [{"content": "A fact.", "visible_to_players": True, "tags": ["x"]}]}))
+    cases = [
+        ("/api/sessions/ai/expand-notes", {"notes": " went in, found a key ", "think": False}, [_reply("They went in.")]),
+        ("/api/sessions/ai/expand-notes", {"notes": "  "}, []),
+        ("/api/sessions/ai/condense-recap", {"recap": "A long recap. " * 20, "think": False, "max_tokens": 60, "extra_instructions": "Short."}, [_reply("Short.")]),
+        ("/api/sessions/ai/summarize-transcript", {"transcript": "GM: Hi. Player: Hello.", "think": False}, [_reply("They greeted.")]),
+        (f"/api/sessions/{sid}/ai/summarize-live-transcript", {"think": False}, [_reply("They entered.")]),
+        (f"/api/sessions/{sid}/ai/summarize-from-facts", {"think": False}, [_reply("The ruins.")]),
+        ("/api/facts/parse", {"text": "went to the ruins", "extra_instructions": "Short."}, [facts]),
+        ("/api/facts/parse", {"text": "went to the ruins"}, [_reply("not json")]),
+        ("/api/facts/folk-tale", {"instruction": "Sing it", "game_session_id": sid}, [_reply("Once upon a time.")]),
+        ("/api/facts/folk-tale", {"game_session_id": 999999}, []),
+    ]
+    for i, (path, body, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(path, json=body)
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, path, out[0][:2], out[1][:2], json.dumps(out[0][2])[:1500], json.dumps(out[1][2])[:1500])
+        assert out[1][3] == "gateway", (i, path)
+    studio.reply_seq = None

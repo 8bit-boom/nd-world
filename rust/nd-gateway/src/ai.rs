@@ -3634,3 +3634,219 @@ pub async fn video_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
         crate::edits::json_response(&json!({"ok": true}))
     }).await.ok()?
 }
+
+// ── the blocking recap / facts routes (app/routers/sessions.py, app/routers/facts.py): answered here, inline or as a background task ──
+
+/// What one of these routes will do once planned (permissions and body read): its answer comes from `answer_sync`
+enum SyncAi {
+    Expand { b: Backend, model: String, notes: String, think: bool, instr: String },
+    Condense { b: Backend, model: String, recap: String, think: bool, extra: String, min_t: Option<i64>, max_t: Option<i64>, strictness: String },
+    /// `echo`: with recap_failed (summarize-transcript), else the live route's {transcript, recap}
+    Transcript { b: Backend, model: String, transcript: String, think: bool, instr: String, echo: bool },
+    FromFacts { b: Backend, model: String, facts: Vec<String>, think: bool, instr: String },
+    Facts { b: Backend, model: String, text: String, think: bool, lore: String, extra: String },
+    FolkTale(Assist),
+    Refuse(StatusCode, String),
+}
+
+fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<(SyncAi, i64)> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if p.user_id <= 0 {
+        return None;
+    }
+    let path = uri.path();
+    let b = if body.is_empty() { Map::new() } else { match serde_json::from_slice::<Value>(body).ok()? { Value::Object(m) => m, _ => return None } };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)), Some(_) => None }
+    };
+    let think_default_true = match b.get("think") { None => true, v => crate::edits::py_truthy_pub(v) };
+    let world_instr = |w: &Map<String, Value>| crate::edits::py_strip_pub(w.get("recap_instructions").and_then(|v| v.as_str()).unwrap_or(""));
+    let combine = |a: &str, z: &str| [crate::edits::py_strip_pub(a), crate::edits::py_strip_pub(z)].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n\n");
+    let section_ok = |w: &Map<String, Value>, s: &str| crate::pages::edit_level(&p, w, s) == Some(true);
+    let recap_model = || surface_default(cfg, "recap");
+    let refuse = |code: StatusCode, m: &str| Some((SyncAi::Refuse(code, m.to_string()), p.user_id));
+    let plan = match path {
+        "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" => {
+            let w = p.world.as_ref()?;
+            if !section_ok(w, "sessions") {
+                return None;
+            }
+            let bk = backend(&db)?;
+            match path {
+                "/api/sessions/ai/expand-notes" => {
+                    let notes = text("notes")?;
+                    if notes.is_empty() { return refuse(StatusCode::BAD_REQUEST, "No notes provided"); }
+                    SyncAi::Expand { b: bk, model: recap_model()?, notes, think: think_default_true, instr: world_instr(w) }
+                }
+                "/api/sessions/ai/condense-recap" => {
+                    let recap = text("recap")?;
+                    if recap.is_empty() { return refuse(StatusCode::BAD_REQUEST, "No recap provided"); }
+                    let (min_t, max_t) = (body_int(b.get("min_tokens")).ok()?, body_int(b.get("max_tokens")).ok()?);
+                    if min_t.is_some_and(|v| v < 1) || max_t.is_some_and(|v| v < 1) || matches!((min_t, max_t), (Some(a), Some(z)) if a > z) {
+                        return None;
+                    }
+                    let strictness = match b.get("strictness") {
+                        None | Some(Value::Null) => "guideline".to_string(),
+                        Some(Value::String(s)) if s.is_empty() => "guideline".to_string(),
+                        Some(Value::String(s)) => crate::edits::py_strip_pub(s),
+                        Some(_) => return None,
+                    };
+                    if !["guideline", "firm", "strict"].contains(&strictness.as_str()) { return None; }
+                    let extra = text("extra_instructions")?;
+                    let all = format!("{recap}{extra}");
+                    let cpt = chars_per_token(&all);
+                    if (all.chars().count() as i64 + cpt - 1) / cpt > max_auto_ctx() - 512 { return None; }
+                    let model = { let m = text("model")?; if m.is_empty() { recap_model()? } else { m } };
+                    SyncAi::Condense { b: bk, model, recap, think: think_default_true, extra, min_t, max_t, strictness }
+                }
+                _ => {
+                    let transcript = text("transcript")?;
+                    if transcript.is_empty() { return refuse(StatusCode::BAD_REQUEST, "No transcript provided"); }
+                    let instr = combine(&world_instr(w), &text("extra_instructions")?);
+                    SyncAi::Transcript { b: bk, model: recap_model()?, transcript, think: think_default_true, instr, echo: true }
+                }
+            }
+        }
+        _ if path.starts_with("/api/sessions/") => {
+            let sid: i64 = path.strip_prefix("/api/sessions/")?.split('/').next()?.parse().ok()?;
+            let (wid, live): (i64, Option<String>) = db.query_row("SELECT world_id, live_transcript FROM game_sessions WHERE id = ?1", [sid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+            let w = p.world.as_ref()?;
+            if w.get("id")?.as_i64()? != wid {
+                return None; // the section check reads the session's own world: Python's
+            }
+            if path.ends_with("/ai/summarize-live-transcript") {
+                let live = live.unwrap_or_default();
+                if crate::edits::py_strip_pub(&live).is_empty() { return None; }
+                if !section_ok(w, "sessions") { return None; }
+                let bk = backend(&db)?;
+                SyncAi::Transcript { b: bk, model: recap_model()?, transcript: live, think: think_default_true, instr: world_instr(w), echo: false }
+            } else {
+                let mut st = db.prepare("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").ok()?;
+                let facts: Vec<String> = st.query_map([sid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_default()).collect();
+                if facts.is_empty() || !section_ok(w, "sessions") { return None; }
+                let bk = backend(&db)?;
+                SyncAi::FromFacts { b: bk, model: recap_model()?, facts, think: think_default_true, instr: world_instr(w) }
+            }
+        }
+        "/api/facts/parse" => {
+            let raw = text("text")?;
+            if raw.is_empty() || raw.chars().count() > 200_000 { return None; }
+            if let Some(w) = p.world.as_ref() {
+                if !section_ok(w, "facts") { return None; }
+            }
+            let use_rag = crate::edits::py_truthy_pub(b.get("use_rag")) && p.is_gm;
+            let (rag_e, rag_n) = (body_int(b.get("rag_entity_limit")).ok()?, body_int(b.get("rag_notes_limit")).ok()?);
+            if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) { return None; }
+            let lore = if use_rag {
+                let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+                crate::retrieval::build_rag_context(&db, wid, &raw, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &[])?
+            } else { String::new() };
+            let model = { let m = text("model")?; if m.is_empty() { recap_model()? } else { m } };
+            let bk = backend(&db)?;
+            SyncAi::Facts { b: bk, model, text: raw, think: crate::edits::py_truthy_pub(b.get("think")), lore, extra: text("extra_instructions")? }
+        }
+        "/api/facts/folk-tale" => {
+            let w = p.world.as_ref()?;
+            if !section_ok(w, "facts") { return None; }
+            let wid = w.get("id")?.as_i64()?;
+            let gs = match b.get("game_session_id") {
+                v if !crate::edits::py_truthy_pub(v) => None,
+                Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+                Some(Value::String(s)) if s.bytes().all(|c| c.is_ascii_digit()) => s.parse().ok(),
+                _ => return None,
+            };
+            let sql = format!("SELECT content FROM facts WHERE world_id = ?1{} ORDER BY created_at", if gs.is_some() { " AND game_session_id = ?2" } else { "" });
+            let mut st = db.prepare(&sql).ok()?;
+            let rows: Vec<Option<String>> = match gs {
+                Some(g) => st.query_map(rusqlite::params![wid, g], |r| r.get(0)).ok()?.filter_map(Result::ok).collect(),
+                None => st.query_map([wid], |r| r.get(0)).ok()?.filter_map(Result::ok).collect(),
+            };
+            if rows.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, &format!("No facts logged yet{}.", if gs.is_some() { " for that session" } else { "" }));
+            }
+            let content = rows.into_iter().map(|f| format!("- {}", f.unwrap_or_else(|| "None".into()))).collect::<Vec<_>>().join("\n");
+            let instruction = text("instruction")?;
+            let model = { let m = text("model")?; if m.is_empty() { surface_default(cfg, "assist")? } else { m } };
+            let think = crate::edits::py_truthy_pub(b.get("think"));
+            let use_rag = crate::edits::py_truthy_pub(b.get("use_rag")) && p.is_gm;
+            let (rag_e, rag_n) = (body_int(b.get("rag_entity_limit")).ok()?, body_int(b.get("rag_notes_limit")).ok()?);
+            if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) { return None; }
+            let lore = if use_rag {
+                crate::retrieval::build_rag_context(&db, wid, &content, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &[])?
+            } else { String::new() };
+            let bk = backend(&db)?;
+            let model = if model.is_empty() { bk.model.clone() } else { model };
+            match assist_prompt("folk_tale", &content, "", &instruction, "") {
+                Ok((system, user)) => {
+                    let extra = assist_options(&bk, think);
+                    SyncAi::FolkTale(Assist { backend: bk, op: "folk_tale".into(), model, system: with_world_context(&system, &lore), user, think, extra })
+                }
+                Err(Some(m)) => SyncAi::Refuse(StatusCode::BAD_REQUEST, m),
+                Err(None) => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some((plan, p.user_id))
+}
+
+async fn answer_sync(plan: SyncAi) -> Response<Body> {
+    let failed = |t: &str| t.starts_with("[AI ") || t.starts_with("[empty response");
+    let ok = |v: Value| crate::edits::json_response(&v).unwrap_or_else(|| Response::new(Body::empty()));
+    let err = |code: StatusCode, m: String| Response::builder().status(code).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway")
+        .body(Body::from(nd_render::py_dumps_compact(&json!({"detail": m})))).unwrap();
+    let model_or = |b: &Backend, m: &str| if m.is_empty() { b.model.clone() } else { m.to_string() };
+    match plan {
+        SyncAi::Refuse(code, m) => err(code, m),
+        SyncAi::Expand { b, model, notes, think, instr } => {
+            let mut system = recap_text("_EXPAND_NOTES_SYSTEM");
+            if !instr.is_empty() { system = format!("{system}\n\nAdditional instructions from the GM (follow these too): {instr}"); }
+            let opts = assist_options(&b, think);
+            let recap = generate_chat(&b, &model_or(&b, &model), &system, &[json!({"role": "user", "content": notes})], think, &opts).await;
+            ok(json!({"recap": recap}))
+        }
+        SyncAi::Condense { b, model, recap, think, extra, min_t, max_t, strictness } => {
+            let out = condense(&b, &recap, &model_or(&b, &model), think, &extra, min_t, max_t, "", false, &strictness).await;
+            ok(json!({"recap": out}))
+        }
+        SyncAi::Transcript { b, model, transcript, think, instr, echo } => {
+            let recap = summarize_transcript(&b, &transcript, &model_or(&b, &model), &instr, think, "", false, None, &|_, _| {}, &|_| {}).await;
+            let f = failed(&recap);
+            // summarize-transcript adds recap_failed; the live-transcript route answers the two fields alone
+            if echo { ok(json!({"transcript": transcript, "recap": recap, "recap_failed": f})) } else { ok(json!({"transcript": transcript, "recap": recap})) }
+        }
+        SyncAi::FromFacts { b, model, facts, think, instr } => {
+            let recap = summarize_facts(&b, &facts, &model_or(&b, &model), &instr, think, None, None, "guideline", "").await;
+            let f = failed(&recap);
+            ok(json!({"recap": recap, "recap_failed": f}))
+        }
+        SyncAi::Facts { b, model, text, think, lore, extra } => match parse_facts(&b, &text, &model_or(&b, &model), think, &lore, &extra, |_, _| {}).await {
+            Ok(facts) => ok(json!({"facts": facts})),
+            Err(e) => err(StatusCode::BAD_GATEWAY, e),
+        },
+        SyncAi::FolkTale(a) => {
+            let text = clean_degenerate(&generate_chat(&a.backend, &a.model, &a.system, &[json!({"role": "user", "content": a.user})], a.think, &a.extra).await);
+            if failed(&text) { err(StatusCode::BAD_GATEWAY, text) } else { ok(json!({"op": a.op, "mode": "text", "text": text, "model": a.model})) }
+        }
+    }
+}
+
+/// The blocking recap / facts routes: the answer (or a background task's 202), None for what stays Python's
+pub async fn sync_ai(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let background = crate::tasks::wants_background(&headers);
+    let (path, h) = (uri.path().to_string(), headers.clone());
+    let (plan, uid) = tokio::task::spawn_blocking(move || sync_ai_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    if background {
+        return Some(crate::tasks::start(uid, &path, &h, answer_sync(plan)));
+    }
+    Some(answer_sync(plan).await)
+}
+
+/// The paths `sync_ai` serves
+pub fn is_sync_ai(path: &str) -> bool {
+    matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale")
+        || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
+            && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
+}

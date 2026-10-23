@@ -67,11 +67,21 @@ Tests: `tests/test_cross_process_jobs.py` (the lease and the sweeps, in Python),
 Python's with a fake Studio; the lease and the owner key while a gateway job runs; cancel). The restart was checked by hand: a gateway
 stopped with SIGTERM mid-job leaves the row `interrupted` with its key; the next start resumes it (`resumed_count` 1) to `done`.
 
+## The blocking AI routes
+
+Answered by the gateway, inline or as a background task (below), with the same functions its jobs use:
+`POST /api/sessions/ai/expand-notes` (`expand_recap_notes`), `/api/sessions/ai/condense-recap` (`condense_recap`, no ladder),
+`/api/sessions/ai/summarize-transcript` (`summarize_transcript`, `{transcript, recap, recap_failed}`), `/api/sessions/<id>/ai/summarize-live-transcript`
+(`{transcript, recap}`), `/api/sessions/<id>/ai/summarize-from-facts` (`summarize_session_from_facts`), `/api/facts/parse`
+(`parse_facts_from_recap`, a 502 with its failure) and `/api/facts/folk-tale` (run_assist `folk_tale` over the facts, a GM's lore). Python's
+own refusals (no notes, no facts) are answered the same way; its section checks, a session of another world, a recap over the
+condense ceiling and every body its parsers would reject stay Python's.
+
 ## Background AI requests (`X-ND-Background: 1`)
 
 Python runs an AI route in the background when the request carries `X-ND-Background: 1` (app/ai_background.py): a 202 with a task id,
 the route run to completion, its answer polled from `GET /api/ai/tasks/<id>`. The gateway does the same for the routes it answers itself
-(`rust/nd-gateway/src/tasks.rs`; today `POST /api/ai/assist`): the route is planned first (a request the gateway would hand to Python
+(`rust/nd-gateway/src/tasks.rs`; `POST /api/ai/assist` and the blocking routes above): the route is planned first (a request the gateway would hand to Python
 keeps the header and is started by Python's middleware), then a 202 (`{task_id, status: "running", label}`, `X-ND-Task`, the label from
 `X-ND-Task-Label` or the route's own) and the answer worked out in the AI slot (`queued`, then `running`), kept with its status, content
 type, location and body for an hour (at most 300; 8 running per user, 48 in all). Its task ids start with `gw`: the gateway answers

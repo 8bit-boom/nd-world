@@ -236,6 +236,16 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             }
         }
     }
+    if req.method() == axum::http::Method::POST && ai::is_sync_ai(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 8 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = ai::sync_ai(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && req.uri().path().ends_with("/cancel") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let resp = if req.uri().path().starts_with("/api/audio-jobs/") {
             ai::audio_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
