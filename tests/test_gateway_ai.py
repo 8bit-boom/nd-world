@@ -1521,3 +1521,95 @@ def test_combat_tactics_is_pythons(client, seed, studio):
         assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
         assert out[1][3] == "gateway", i
     studio.reply_seq = None
+
+
+def test_party_insights_is_pythons(client, seed, studio):
+    """/parties/<id>/ai-insights: each member described by its own system (a native sheet's race, class, level and vitals; a custom
+    sheet's tracks and compared fields; an NPC ally), the reply read into bonds, tensions and hooks - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import Entity, Party, PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fields = [{"id": "hp", "label": "Health (0 = Broken)", "type": "resource", "vital": "hp", "default_value": "5/5"},
+              {"id": "grit", "label": "Grit", "type": "resource", "default_value": "2/3"},
+              {"id": "nerve", "label": "Nerve [roll]", "type": "number", "default_value": "4"},
+              {"id": "calling", "label": "Calling", "type": "select"},
+              {"id": "xp", "label": "XP", "type": "number", "xp": True},
+              {"id": "note", "label": "Note", "type": "text"}]
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(world_id=w, name="Moonlit", slug=f"moonlit-{w}", sheet_mode="custom", fields_json=json.dumps(fields))
+        db.add(tpl)
+        db.flush()
+        native = PlayerCharacter(world_id=w, name="Ana", player_name="Archie", race="Elf", char_class="Rogue", level=3, current_hp=4,
+                                 conditions_json=json.dumps(["Stunned", "stunned", "Prone"]), backstory="Raised   by wolves.\n" * 40)
+        custom = PlayerCharacter(world_id=w, name="Bo", sheet_template_id=tpl.id, custom_fields_json=json.dumps({"hp_current": 3, "calling": "Hunter", "nerve": 6}))
+        ally = Entity(world_id=w, kind="character", name="Mira")
+        db.add_all([native, custom, ally])
+        db.flush()
+        party = Party(world_id=w, name="The Lanterns", member_pc_ids_json=json.dumps([custom.id, native.id]), member_entity_ids_json=json.dumps([ally.id]))
+        lonely = Party(world_id=w, name="Alone", member_pc_ids_json=json.dumps([native.id]))
+        db.add_all([party, lonely])
+        db.commit()
+        pid, lone = party.id, lonely.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [
+        (pid, [_reply(json.dumps({"bonds": ["Old friends", " ", "x" * 300, 5, "a", "b"], "tensions": "ab",
+                                  "hooks": [{"who": "Ana", "hook": "Find the wolves"}, {"who": "", "hook": "x"}, "junk"]}))]),
+        (pid, [_reply(json.dumps({"bonds": []}))]),
+        (lone, []),
+    ]
+    for i, (party_id, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/parties/{party_id}/ai-insights")
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:3000], json.dumps(out[1][2])[:3000])
+        assert out[1][3] == "gateway", i
+    studio.reply_seq = None
+
+
+def test_random_table_generator_is_pythons(client, seed, studio):
+    """/tables/generate-ai: the count clamped into the prompt, the entries kept as Python keeps them, the table saved under the same
+    unique slug with Python's fallbacks, the redirect to its editor - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import RandomTable
+    base = str(client.base_url)
+    w = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    entries = ["A crow", " ", None, 7, "x" * 400] + [f"Thing {i}" for i in range(45)]
+    cases = [
+        ({"description": " Street sights in Bree ", "count": "50", "category": " urban "}, [_reply(json.dumps({"name": "Bree Sights!", "description": " Sights ", "entries": entries}))]),
+        ({"description": "Ünïcode names", "count": "0", "category": ""}, [_reply(json.dumps({"name": "Café Crème", "entries": entries[:6]}))]),
+        ({"description": "No name"}, [_reply("```" + json.dumps({"entries": ["a", "b", "c", "d"]}) + "```")]),
+        ({"description": "Too few"}, [_reply(json.dumps({"entries": ["a", "b"]}))]),
+        ({"description": "  "}, []),
+    ]
+    for i, (form, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            d = SessionLocal()
+            try:
+                d.query(RandomTable).filter(RandomTable.world_id == w, RandomTable.is_builtin == False).delete()  # noqa: E712
+                d.commit()
+            finally:
+                d.close()
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/tables/generate-ai", data=form, follow_redirects=False)
+            d = SessionLocal()
+            try:
+                rows = [(t.name, t.slug, t.category, t.description, t.entries_json, t.created_by_user_id)
+                        for t in d.query(RandomTable).filter(RandomTable.world_id == w, RandomTable.is_builtin == False)]  # noqa: E712
+            finally:
+                d.close()
+            loc = (r.headers.get("location") or "").split("/")[1:2]
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else ""
+            out.append((r.status_code, loc, body, rows, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (i, out[0][:4], out[1][:4])
+        assert out[1][5] == "gateway", i
+    studio.reply_seq = None

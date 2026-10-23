@@ -2147,6 +2147,144 @@ fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
     Some(out)
 }
 
+/// `pc_digest_line(pc, tpl, detail=..., viewer_is_gm=...)`: the character as one system-aware line for an AI prompt (None: a value this
+/// port would print differently - a float, odd JSON - so the request is Python's)
+pub(crate) fn pc_digest_line(db: &Connection, pc: &Map<String, Value>, detail: bool, viewer_is_gm: bool) -> Option<String> {
+    let text = |v: Option<&Value>| -> Option<String> {
+        match v {
+            None | Some(Value::Null) => Some(String::new()),
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()),
+            Some(Value::Bool(b)) => Some(if *b { "True".into() } else { "False".into() }),
+            _ => None,
+        }
+    };
+    let (hp, shock, pp, mp, native) = pc_maxima(db, pc)?;
+    let tpl = crate::sheets::pc_template(db, pc)?;
+    let cf = crate::sheets::custom_fields(pc)?;
+    let (mut vital, mut resources, mut key_fields, mut identity): (Option<(String, String, String)>, Vec<(String, String, String)>, Vec<(String, String)>, String) =
+        (None, vec![], vec![], String::new());
+    let col = |k: &str| -> Option<String> { match pc.get(k) { v if !py_truthy(v) => Some("0".into()), v => text(v) } };
+    if native {
+        if hp != 0 {
+            vital = Some(("HP".into(), col("current_hp")?, hp.to_string()));
+        }
+        if shock != 0 {
+            resources.push(("Shock".into(), col("shock_current")?, shock.to_string()));
+        }
+        if pp != 0 {
+            resources.push(("PP".into(), col("pp_current")?, pp.to_string()));
+            resources.push(("MP".into(), col("mp_current")?, mp.to_string()));
+        }
+        identity = [text(pc.get("race"))?, text(pc.get("char_class"))?].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
+        if py_truthy(pc.get("level")) {
+            identity = format!("{identity}, level {}", text(pc.get("level"))?).trim_matches(|c| c == ',' || c == ' ').to_string();
+        }
+    } else if let Some(t) = tpl.as_ref() {
+        let track = |v: &Value| -> Option<(String, String, String)> { Some((v["label"].as_str()?.to_string(), text(v.get("current"))?, text(v.get("max"))?)) };
+        let v = t.hp_track(&cf)?;
+        if let Some(v) = &v {
+            vital = Some(track(v)?);
+        }
+        for r in t.tracks(&cf, false)? {
+            if v.as_ref().is_none_or(|v| v["id"] != r["id"]) {
+                resources.push(track(&r)?);
+            }
+        }
+        // roster_field_groups
+        let by_id = |id: &Value| t.fields.iter().find(|f| f.get("id").unwrap_or(&Value::Null) == id);
+        let mut groups: Vec<(String, Vec<&Map<String, Value>>)> = vec![];
+        if let Some(Value::Array(roster)) = t.spec.get("roster").filter(|r| py_truthy(Some(r))) {
+            for g in roster {
+                let g = g.as_array()?;
+                let title = g.first()?.as_str()?.to_string();
+                let picked: Vec<&Map<String, Value>> = g.get(1)?.as_array()?.iter().filter_map(|i| by_id(i)).collect();
+                if !picked.is_empty() {
+                    groups.push((title, picked));
+                }
+            }
+        } else if t.spec.get("roster").is_some_and(|r| py_truthy(Some(r))) {
+            return None;
+        } else {
+            let binds = t.binds()?;
+            let picked: Vec<&Map<String, Value>> = t.fields.iter().filter(|f| matches!(f.get("type").and_then(|v| v.as_str()), Some("number" | "select"))
+                && !binds.iter().any(|(k, _)| f.get("id") == Some(&json!(k))) && !py_truthy(f.get("xp"))).take(10).collect();
+            if !picked.is_empty() {
+                groups.push(("Sheet".into(), picked));
+            }
+        }
+        for (title, group) in groups {
+            for f in group {
+                let ty = f.get("type").and_then(|v| v.as_str());
+                if ty == Some("resource") {
+                    continue;
+                }
+                // field_value_text
+                let value = if ty == Some("list") { String::new() } else {
+                    let id_key = match f.get("id") { Some(Value::String(i)) => Some(i.clone()), None | Some(Value::Null) => None, _ => return None };
+                    let dv = match f.get("default_value") { v if !py_truthy(v) => json!(""), Some(v) => v.clone(), None => json!("") };
+                    let v = id_key.as_ref().and_then(|k| cf.get(k)).cloned().unwrap_or(dv);
+                    if v.is_null() { String::new() } else { strip(&text(Some(&v))?) }
+                };
+                if value.is_empty() {
+                    continue;
+                }
+                if title == "Identity" && identity.is_empty() {
+                    identity = value;
+                } else {
+                    let label = match f.get("label") { v if py_truthy(v) => v.cloned(), _ => f.get("id").cloned() };
+                    let short = match label { Some(Value::String(l)) if !l.is_empty() => sheet_short_label(&l)?, _ => String::new() };
+                    key_fields.push((short, value));
+                }
+            }
+        }
+    }
+    let system = if native || tpl.is_none() { "Neon & Dragons".to_string() } else {
+        match tpl.as_ref()?.row.get("name") { v if py_truthy(v) => text(v)?, _ => "a custom system".into() }
+    };
+    let conditions = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(v) => clean_conditions(&v)?,
+        Err(_) => vec![],
+    };
+    let mut who = if native { vec![] } else { vec![system] };
+    if !identity.is_empty() {
+        who.push(identity);
+    }
+    if py_truthy(pc.get("player_name")) {
+        who.push(format!("played by {}", text(pc.get("player_name"))?));
+    }
+    let mut line = text(pc.get("name"))?;
+    if !who.is_empty() {
+        line.push_str(&format!(" ({})", who.join(", ")));
+    }
+    let state: Vec<String> = vital.iter().chain(resources.iter()).map(|(l, c, m)| format!("{l} {c}/{m}")).collect();
+    if !state.is_empty() {
+        line.push_str(&format!(" — {}", state.join(", ")));
+    }
+    if !conditions.is_empty() {
+        line.push_str(&format!("; conditions: {}", conditions.join(", ")));
+    }
+    if detail {
+        if !key_fields.is_empty() {
+            line.push_str(&format!(". {}", key_fields.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join("; ")));
+        }
+        let mut story = text(pc.get("backstory"))?;
+        if !story.is_empty() && !viewer_is_gm {
+            story = nd_perm::gmonly::strip_gm_only(&story, None, nd_render::now_minute())?;
+        }
+        if story.chars().any(|ch| ('\x1c'..='\x1f').contains(&ch)) {
+            return None; // str.split() also splits there
+        }
+        let story = story.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !story.is_empty() {
+            let n = story.chars().count();
+            let head: String = story.chars().take(320).collect();
+            line.push_str(&format!(". Backstory: {}{}", head.trim_end(), if n > 320 { "…" } else { "" }));
+        }
+    }
+    Some(line)
+}
+
 /// `pc_maxima(pc)`: (hp, shock, pp, mp, native)
 fn pc_maxima(db: &Connection, pc: &Map<String, Value>) -> Option<(i64, i64, i64, i64, bool)> {
     let stats = stat_values(pc)?;

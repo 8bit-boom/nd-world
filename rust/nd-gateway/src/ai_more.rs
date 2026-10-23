@@ -19,6 +19,8 @@ pub type Fut = Pin<Box<dyn Future<Output = Response<Body>> + Send>>;
 pub fn serves(path: &str) -> bool {
     matches!(path, "/boards/generate-mystery" | "/calendar/ai-day" | "/calendar/ai-design")
         || (path.starts_with("/combat/") && path.ends_with("/ai-tactics"))
+        || (path.starts_with("/parties/") && path.ends_with("/ai-insights"))
+        || path == "/tables/generate-ai"
 }
 
 /// None: not one of these paths; Some(None): the request is Python's; Some(Some(f)): the gateway's answer
@@ -30,6 +32,8 @@ pub fn plan(cfg: &Config, db: &rusqlite::Connection, p: &PageCtx, path: &str, he
     Some(match path {
         "/boards/generate-mystery" => mystery_plan(cfg, db, p, headers, body),
         _ if path.starts_with("/combat/") => tactics_plan(db, p, path),
+        _ if path.starts_with("/parties/") => insights_plan(db, p, path),
+        "/tables/generate-ai" => table_plan(cfg, db, p, headers, body),
         "/calendar/ai-day" | "/calendar/ai-design" => calendar_plan(db, p, path.ends_with("/ai-design"), headers, body),
         _ => None,
     })
@@ -386,4 +390,157 @@ fn tactics_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<Fu
         let tactics: Vec<Value> = tactics.iter().map(|t| json!({"who": cut(&t["who"], 80), "move": cut(&t["move"], 200)})).collect();
         crate::edits::json_response(&json!({"tactics": tactics, "beat": cut(or_default(data.get("beat"), &empty), 300)})).unwrap_or_else(crash)
     }))
+}
+
+// ── party insights (app/routers/parties.py `party_ai_insights`) ────────────
+
+/// A stored id list (`json.loads(x or "[]")`) of whole numbers; None for anything else
+fn id_list(v: Option<&Value>) -> Option<Vec<i64>> {
+    let raw = v.and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    match serde_json::from_str::<Value>(raw).ok()? {
+        Value::Array(a) => a.iter().map(|x| x.as_i64().filter(|_| !x.is_f64())).collect(),
+        _ => None,
+    }
+}
+
+fn insights_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<Fut> {
+    let id: i64 = path.strip_prefix("/parties/")?.strip_suffix("/ai-insights")?.parse().ok()?;
+    if !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let party = db.query_row("SELECT * FROM parties WHERE id = ?1 AND world_id = ?2 ORDER BY id LIMIT 1", rusqlite::params![id, wid], |r| crate::layout::row_map(r)).ok()?;
+    let b = backend(db)?;
+    let (pc_ids, ent_ids) = (id_list(party.get("member_pc_ids_json"))?, id_list(party.get("member_entity_ids_json"))?);
+    let rows = |table: &str, ids: &[i64]| -> Option<Vec<Map<String, Value>>> {
+        if ids.is_empty() {
+            return Some(vec![]);
+        }
+        let marks = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let mut st = db.prepare(&format!("SELECT * FROM {table} WHERE id IN ({marks}) ORDER BY id")).ok()?;
+        let out: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        Some(out)
+    };
+    let mut roster = vec![];
+    for pc in rows("player_characters", &pc_ids)? {
+        roster.push(format!("- {}", crate::edits::pc_digest_line(db, &pc, true, true)?));
+    }
+    for e in rows("entities", &ent_ids)? {
+        let name = e.get("name").and_then(|v| v.as_str())?;
+        let kind = e.get("kind").and_then(|v| v.as_str())?;
+        roster.push(format!("- {name} (NPC ally, {kind})"));
+    }
+    if roster.len() < 2 {
+        return refuse(StatusCode::BAD_REQUEST, "A party needs at least two members for insights");
+    }
+    let user = format!("Party: {}\n{}", party.get("name").and_then(|v| v.as_str())?, roster.join("\n"));
+    let model = b.model.clone();
+    Some(Box::pin(async move {
+        let system = "You are a TTRPG party-dynamics assistant. From the roster, propose what makes this party tick. Reply ONLY with JSON, no fences:\n{\"bonds\": [str], \"tensions\": [str], \"hooks\": [{\"who\": str, \"hook\": str}]}\nRules: 2-3 bonds and 1-3 tensions (each one sentence, grounded in who these characters are, never contradicting the roster); exactly one hook per member — a personal side-quest seed in one sentence; keep everything setting-neutral.";
+        let mut opts = Map::new();
+        opts.insert("num_predict".into(), json!(900));
+        let raw = generate_chat(&b, &model, system, &[json!({"role": "user", "content": user})], false, &opts).await;
+        if failed(&raw) {
+            return detail(StatusCode::BAD_GATEWAY, raw);
+        }
+        let data = extract_json_object(&raw).unwrap_or_default();
+        // `for x in data.get(k, [])`: a list, a string's characters, a dict's keys; None or a number is Python's TypeError
+        let items = |k: &str| -> Option<Vec<Value>> {
+            match data.get(k) {
+                None => Some(vec![]),
+                Some(Value::Array(a)) => Some(a.clone()),
+                Some(Value::String(s)) => Some(s.chars().map(|c| json!(c.to_string())).collect()),
+                Some(Value::Object(o)) => Some(o.keys().map(|k| json!(k)).collect()),
+                Some(_) => None,
+            }
+        };
+        let texts = |k: &str| -> Option<Vec<String>> {
+            Some(items(k)?.iter().filter(|x| !crate::edits::py_strip_pub(&py_str(x)).is_empty()).map(|x| py_str(x).chars().take(240).collect()).take(4).collect())
+        };
+        let (Some(bonds), Some(tensions), Some(hooks)) = (texts("bonds"), texts("tensions"), items("hooks")) else { return crash() };
+        let hooks: Vec<Value> = hooks.iter().filter_map(|h| h.as_object())
+            .filter(|h| crate::edits::py_truthy_pub(h.get("who")) && crate::edits::py_truthy_pub(h.get("hook")))
+            .map(|h| json!({"who": py_str(&h["who"]).chars().take(80).collect::<String>(), "hook": py_str(&h["hook"]).chars().take(240).collect::<String>()}))
+            .take(8).collect();
+        if bonds.is_empty() && tensions.is_empty() && hooks.is_empty() {
+            return detail(StatusCode::BAD_GATEWAY, "The AI reply wasn't usable — try again.");
+        }
+        crate::edits::json_response(&json!({"bonds": bonds, "tensions": tensions, "hooks": hooks})).unwrap_or_else(crash)
+    }))
+}
+
+// ── random table generator (app/routers/tables.py `table_generate_ai`) ──────
+
+fn table_plan(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, headers: &HeaderMap, body: &[u8]) -> Option<Fut> {
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    if crate::pages::edit_level(p, w, "tables") != Some(true) {
+        return None;
+    }
+    let f = small_form(headers, body)?;
+    let description = crate::edits::py_strip_pub(f.get("description").unwrap_or(""));
+    let count = match f.get("count") { None => 20, Some(c) => crate::form::py_int(c)? };
+    let category = f.get("category").unwrap_or("general").to_string();
+    if description.is_empty() {
+        return refuse(StatusCode::BAD_REQUEST, "Describe the table first");
+    }
+    if description.chars().count() > 2000 {
+        return refuse(StatusCode::BAD_REQUEST, "Description too long (over 2k chars)");
+    }
+    let count = (if count == 0 { 20 } else { count }).clamp(4, 30);
+    let b = backend(db)?;
+    let model = b.model.clone();
+    Some(Box::pin(async move {
+        let system = format!("You generate random tables for a tabletop RPG GM. Reply with ONLY a JSON object, no markdown fences:\n{{\"name\": str (short table name), \"description\": str (one sentence), \"entries\": [str, ...]}}\nRules: exactly {count} entries; each entry one line, evocative but usable at the table (a name, a sight, a complication — per the description); vary them across the full range the description implies; never name real people; no numbering in the text.");
+        let mut opts = Map::new();
+        opts.insert("num_predict".into(), json!(1800));
+        let raw = generate_chat(&b, &model, &system, &[json!({"role": "user", "content": description})], false, &opts).await;
+        if failed(&raw) {
+            return detail(StatusCode::BAD_GATEWAY, raw);
+        }
+        let data = extract_json_object(&raw).unwrap_or_default();
+        let entries: Vec<String> = match data.get("entries") {
+            Some(Value::Array(a)) => a.iter().map(|e| crate::edits::py_strip_pub(&py_str(e))).filter(|e| !e.is_empty())
+                .map(|e| e.chars().take(300).collect()).take(40).collect(),
+            _ => vec![],
+        };
+        if entries.len() < 4 {
+            return detail(StatusCode::BAD_GATEWAY, "The AI reply wasn't a usable table — try rephrasing the description.");
+        }
+        let empty = json!("");
+        let name: String = { let n = crate::edits::py_strip_pub(&py_str(or_default(data.get("name"), &empty)));
+            if n.is_empty() { description.chars().take(60).collect::<String>() } else { n } }.chars().take(200).collect();
+        let category = { let c: String = crate::edits::py_strip_pub(if category.is_empty() { "general" } else { &category }).chars().take(64).collect();
+            if c.is_empty() { "general".to_string() } else { c } };
+        let desc: String = { let d = crate::edits::py_strip_pub(&py_str(or_default(data.get("description"), &empty)));
+            if d.is_empty() { description.clone() } else { d } }.chars().take(500).collect();
+        let entries_json = nd_render::py_dumps(&Value::Array(entries.iter().map(|e| json!({"label": e, "weight": 1})).collect()));
+        let id = tokio::task::spawn_blocking(move || -> Option<i64> {
+            use rusqlite::types::Value as Sql;
+            let db = crate::writes::open(&cfg)?;
+            let slug = slugify(&db, &name)?;
+            crate::orm::insert(&db, "random_tables", &[("world_id", Sql::Integer(wid)), ("name", Sql::Text(name)), ("slug", Sql::Text(slug)),
+                ("category", Sql::Text(category)), ("description", Sql::Text(desc)), ("is_builtin", Sql::Integer(0)), ("entries_json", Sql::Text(entries_json))])
+        }).await.ok().flatten();
+        match id {
+            Some(id) => redirect(&format!("/tables/{id}/edit")),
+            None => crash(),
+        }
+    }))
+}
+
+/// tables.py `_slugify`: lowercased, non-alphanumerics to "-", 50 characters, unique over every table
+fn slugify(db: &rusqlite::Connection, name: &str) -> Option<String> {
+    static NON: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = NON.get_or_init(|| regex::Regex::new(r"[^a-z0-9]+").unwrap());
+    let base: String = re.replace_all(&name.to_lowercase(), "-").trim_matches('-').chars().take(50).collect();
+    let base = if base.is_empty() { "table".to_string() } else { base };
+    let taken = |sl: &str| db.query_row("SELECT count(*) FROM random_tables WHERE slug = ?1", [sl], |r| r.get::<_, i64>(0)).ok().map(|n| n > 0);
+    let mut slug = base.clone();
+    let mut n = 2;
+    while taken(&slug)? {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    Some(slug)
 }
