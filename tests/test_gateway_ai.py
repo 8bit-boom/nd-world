@@ -1054,3 +1054,33 @@ def test_video_jobs_are_pythons(client, seed, studio):
             out.append((answer, row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
         assert out[0][:3] == out[1][:3], (i, out[0][:3], out[1][:3])
         assert out[1][3] == "gateway", i
+
+
+def test_a_background_assist_runs_as_a_task_like_pythons(client, seed, studio):
+    """X-ND-Background: 1 on POST /api/ai/assist (app/ai_background.py): a 202 with a task id at once, the task polled from
+    GET /api/ai/tasks/<id> until done with the route's own answer, listed in GET /api/ai/tasks, and forgotten by DELETE - the same
+    shapes from the gateway's own tasks as from Python's."""
+    import time
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    studio.reply = _reply("Better text.")
+    body = {"op": "improve", "body": "Some text to improve."}
+    seen = []
+    for side in (gm, _via(gm, base)):
+        r = side.post("/api/ai/assist", json=body, headers={"X-ND-Background": "1", "X-ND-Task-Label": "Polish"})
+        assert r.status_code == 202, r.text
+        tid = r.json()["task_id"]
+        assert r.headers.get("x-nd-task") == tid and r.json()["status"] == "running" and r.json()["label"] == "Polish"
+        end = time.time() + 20
+        while time.time() < end:
+            t = side.get(f"/api/ai/tasks/{tid}").json()
+            if t["status"] == "done":
+                break
+            time.sleep(0.1)
+        listed = [x for x in side.get("/api/ai/tasks").json()["tasks"] if x["id"] == tid]
+        gone = side.delete(f"/api/ai/tasks/{tid}").json()
+        seen.append(({k: t[k] for k in ("label", "status", "http_status", "content_type", "body")}, len(listed), gone,
+                     side.get(f"/api/ai/tasks/{tid}").status_code, tid.startswith("gw"), r.headers.get("x-nd-served-by")))
+    assert seen[0][:4] == seen[1][:4], seen
+    assert not seen[0][4] and seen[1][4] and seen[1][5] == "gateway"
+    assert seen[1][0]["body"]["text"] == "Better text."

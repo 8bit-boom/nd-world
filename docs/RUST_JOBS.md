@@ -66,3 +66,17 @@ The record of models that refused Thinking (`_model_thinking_failures`, `_prompt
 Tests: `tests/test_cross_process_jobs.py` (the lease and the sweeps, in Python), `tests/test_gateway_ai.py` (the AI Assist job against
 Python's with a fake Studio; the lease and the owner key while a gateway job runs; cancel). The restart was checked by hand: a gateway
 stopped with SIGTERM mid-job leaves the row `interrupted` with its key; the next start resumes it (`resumed_count` 1) to `done`.
+
+## Background AI requests (`X-ND-Background: 1`)
+
+Python runs an AI route in the background when the request carries `X-ND-Background: 1` (app/ai_background.py): a 202 with a task id,
+the route run to completion, its answer polled from `GET /api/ai/tasks/<id>`. The gateway does the same for the routes it answers itself
+(`rust/nd-gateway/src/tasks.rs`; today `POST /api/ai/assist`): the route is planned first (a request the gateway would hand to Python
+keeps the header and is started by Python's middleware), then a 202 (`{task_id, status: "running", label}`, `X-ND-Task`, the label from
+`X-ND-Task-Label` or the route's own) and the answer worked out in the AI slot (`queued`, then `running`), kept with its status, content
+type, location and body for an hour (at most 300; 8 running per user, 48 in all). Its task ids start with `gw`: the gateway answers
+`GET` / `DELETE /api/ai/tasks/<gw…>` (the owner or a GM; a running task is cancelled, a finished one forgotten), Python every other id,
+and `GET /api/ai/tasks` is Python's list with the gateway's tasks merged in (newest first, 50 at most).
+
+The NPC stream keeps going when its reader leaves, so the turn is saved (Python's `DETACH_PATHS`); the gateway's other streams stop
+with their reader, as Python's do.

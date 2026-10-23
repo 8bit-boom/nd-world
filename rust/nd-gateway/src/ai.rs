@@ -205,6 +205,8 @@ struct Job {
     cache: Option<CacheKey>,
     /// run (blocking) with the answer when it finished cleanly with something in it, before [DONE]
     on_done: Option<Box<dyn FnOnce(String) + Send>>,
+    /// read to the end even when the reader goes away (the NPC stream); other streams stop with their reader, as Python's do
+    detached: bool,
 }
 
 fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Plan> {
@@ -279,7 +281,7 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
         lines.push(crate::retrieval::format_context(&db, &entities, !p.is_gm, &question)?);
     }
     let extra = if think { backend.thinking_predict() } else { Map::new() };
-    Some(Plan::Fresh(Job { backend, requested: model, system: lines.join("\n"), messages: vec![json!({"role": "user", "content": question})], think, extra, cache: Some(key), on_done: None }))
+    Some(Plan::Fresh(Job { backend, requested: model, system: lines.join("\n"), messages: vec![json!({"role": "user", "content": question})], think, extra, cache: Some(key), on_done: None, detached: false }))
 }
 
 type Client = hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Full<bytes::Bytes>>;
@@ -556,19 +558,24 @@ async fn stream_chat_retrying(b: &Backend, model: &str, system: &str, messages: 
 fn run(job: Job) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     tokio::spawn(async move {
-        let Job { backend, requested, system, messages, think, extra, cache: key, on_done } = job;
+        let Job { backend, requested, system, messages, think, extra, cache: key, on_done, detached } = job;
         let (model, note) = resolve_model(&backend, &requested).await;
         if let Some(n) = note {
             let _ = tx.send(sse(&json!({"note": n}))).await;
         }
         let (ptx, mut prx) = tokio::sync::mpsc::channel::<Piece>(64);
         tokio::spawn(async move { stream_chat_retrying(&backend, &model, &system, &messages, think, &extra, &ptx).await });
-        let (mut answer, mut had_error) = (String::new(), false);
+        // a reader that goes away does not stop the answer: it is read to the end (and an NPC turn saved), as Python's detached
+        // streams are (app/ai_background.py DETACH_PATHS)
+        let (mut answer, mut had_error, mut gone) = (String::new(), false, false);
         loop {
             match tokio::time::timeout(HEARTBEAT, prx.recv()).await {
                 Err(_) => {
-                    if tx.send(": keep-alive\n\n".into()).await.is_err() {
-                        return;
+                    if !gone && tx.send(": keep-alive\n\n".into()).await.is_err() {
+                        if !detached {
+                            return;
+                        }
+                        gone = true;
                     }
                 }
                 Ok(None) => break,
@@ -584,8 +591,11 @@ fn run(job: Job) -> Response<Body> {
                             sse(&json!({"token": t}))
                         }
                     };
-                    if tx.send(line).await.is_err() {
-                        return;
+                    if !gone && tx.send(line).await.is_err() {
+                        if !detached {
+                            return;
+                        }
+                        gone = true;
                     }
                 }
             }
@@ -739,7 +749,7 @@ fn stream_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Opt
     if think && !extra.contains_key("num_predict") {
         extra.extend(backend.thinking_predict());
     }
-    Some(Job { backend, requested, system, messages, think, extra, cache: None, on_done: None })
+    Some(Job { backend, requested, system, messages, think, extra, cache: None, on_done: None, detached: false })
 }
 
 /// `POST /api/ai/stream`: the answer, or None (the request goes to Python unchanged)
@@ -948,7 +958,7 @@ fn npc_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option
             }
         }
     });
-    Some(Job { backend, requested, system, messages, think, extra, cache: None, on_done: Some(on_done) })
+    Some(Job { backend, requested, system, messages, think, extra, cache: None, on_done: Some(on_done), detached: true })
 }
 
 /// `POST /api/npc-talk/<id>/stream`: the NPC's answer (the conversation saved on a clean finish), or None (Python's)
@@ -1087,9 +1097,13 @@ enum AssistPlan {
     Refuse(String),
 }
 
-fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<AssistPlan> {
+fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<(AssistPlan, i64)> {
     let db = crate::writes::open(cfg)?;
-    assist_caller(&db, cfg, uri, headers)?;
+    let uid = assist_caller(&db, cfg, uri, headers)?.0.user_id;
+    assist_plan_for(cfg, &db, body).map(|p| (p, uid))
+}
+
+fn assist_plan_for(cfg: &Config, db: &rusqlite::Connection, body: &[u8]) -> Option<AssistPlan> {
     let b = assist_body(body)?;
     if b.use_rag {
         return None; // the lore retrieval (smart_world_context): Python's
@@ -1103,7 +1117,7 @@ fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Opt
         Err(Some(message)) => return Some(AssistPlan::Refuse(message)),
         Err(None) => return None,
     };
-    let backend = backend(&db)?;
+    let backend = backend(db)?;
     let model = if !b.f("model").is_empty() { b.f("model").to_string() } else { surface_default(cfg, "assist")? };
     let model = if model.is_empty() { backend.model.clone() } else { model };
     let extra = assist_options(&backend, b.think);
@@ -1219,7 +1233,19 @@ fn clean_degenerate_t(text: &str) -> (String, bool) {
 
 /// `POST /api/ai/assist` for a free-text operation: {op, mode: "text", text, model}, or a 502 with the failure text; None (Python's) otherwise
 pub async fn ai_assist(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
-    let a = match tokio::task::spawn_blocking(move || assist_plan(&cfg, &uri, &headers, &body)).await.ok()?? {
+    let background = crate::tasks::wants_background(&headers);
+    let path = uri.path().to_string();
+    let h = headers.clone();
+    let (plan, uid) = tokio::task::spawn_blocking(move || assist_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    if background {
+        // X-ND-Background: 202 now, the answer kept for GET /api/ai/tasks/<id> (app/ai_background.py)
+        return Some(crate::tasks::start(uid, &path, &h, async move { assist_answer(plan).await.unwrap_or_else(|| Response::new(Body::empty())) }));
+    }
+    assist_answer(plan).await
+}
+
+async fn assist_answer(plan: AssistPlan) -> Option<Response<Body>> {
+    let a = match plan {
         AssistPlan::Run(a) => a,
         AssistPlan::Refuse(message) => {
             return Response::builder().status(StatusCode::BAD_REQUEST).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway")

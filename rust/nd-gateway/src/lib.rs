@@ -13,6 +13,7 @@ pub mod retrieval;
 pub mod ai;
 pub mod jobs;
 pub mod stt;
+pub mod tasks;
 pub mod idpages;
 pub mod edits;
 pub mod files;
@@ -218,6 +219,21 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::combat_state_json(&pages, &cfg, &uri, &headers)).await {
             return resp;
+        }
+    }
+    if app.cfg.rust_routes.iter().any(|r| r == "ai") && req.uri().path().starts_with("/api/ai/tasks") {
+        // the background AI tasks (app/routers/ai_tasks.py): the gateway's own ids here, the list merged with Python's
+        if req.uri().path() == "/api/ai/tasks" && req.method() == axum::http::Method::GET {
+            let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+            let mut req = req;
+            req.headers_mut().remove(axum::http::header::ACCEPT_ENCODING); // a plain body to merge into
+            let python = app.proxy.forward(req, peer).await;
+            return tasks::list(cfg, uri, headers, python).await;
+        }
+        if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::DELETE) {
+            if let Some(resp) = tasks::task_route(app.cfg.clone(), &req.method().clone(), req.uri().clone(), req.headers().clone()).await {
+                return resp;
+            }
         }
     }
     if req.method() == axum::http::Method::POST && req.uri().path().ends_with("/cancel") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
