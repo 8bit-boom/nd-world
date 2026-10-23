@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 from . import ai as _ai_module
+from . import job_owner as _job_owner
 from . import ai_queue as _ai_queue
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
@@ -219,7 +220,7 @@ def mark_stragglers_interrupted() -> None:
     at the other end of the process's life instead."""
     db = SessionLocal()
     try:
-        stuck = db.query(ImageJob).filter(ImageJob.status.in_(IN_PROGRESS_STATUSES)).all()
+        stuck = _job_owner.not_gateways("image_jobs", db.query(ImageJob).filter(ImageJob.status.in_(IN_PROGRESS_STATUSES)).all())
         for job in stuck:
             job.status = "interrupted"
             job.error = _INTERRUPTED_NOTE
@@ -239,7 +240,7 @@ def sweep_interrupted_jobs() -> None:
     treats both cases identically."""
     db = SessionLocal()
     try:
-        stuck = db.query(ImageJob).filter(ImageJob.status.in_(IN_PROGRESS_STATUSES)).all()
+        stuck = _job_owner.not_gateways("image_jobs", db.query(ImageJob).filter(ImageJob.status.in_(IN_PROGRESS_STATUSES)).all())
         for job in stuck:
             job.status = "interrupted"
             job.error = _INTERRUPTED_NOTE
@@ -260,7 +261,7 @@ def resume_interrupted_jobs() -> int:
     caller to log."""
     db = SessionLocal()
     try:
-        job_ids = [j.id for j in db.query(ImageJob).filter(ImageJob.status == "interrupted").all()]
+        job_ids = [j.id for j in _job_owner.not_gateways("image_jobs", db.query(ImageJob).filter(ImageJob.status == "interrupted").all())]
     finally:
         db.close()
 

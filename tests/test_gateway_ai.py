@@ -20,6 +20,7 @@ class _Fake:
         self.script = []
         self.status = 200
         self.reply = {}                 # the answer to a request that is not streamed
+        self.delay = 0                  # seconds before that answer
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -49,6 +50,8 @@ class _Fake:
                     self.wfile.write(body)
                     return
                 if req.get("stream") is False:
+                    if fake.delay:
+                        __import__("time").sleep(fake.delay)
                     body = json.dumps(fake.reply).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -376,3 +379,83 @@ def test_ai_assist_free_text_ops_are_pythons(client, seed, studio):
         assert _via(gm, base).post("/api/ai/assist", json=body).headers.get("x-nd-served-by") != "gateway", body
     player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     assert _via(player, base).post("/api/ai/assist", json={"op": "expand", **entity}).headers.get("x-nd-served-by") != "gateway"
+
+
+def _job_result(side, job_id, timeout=20):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        r = side.get(f"/api/ai/assist-job/{job_id}")
+        if r.json().get("status") not in ("pending", "summarizing"):
+            return r.json()
+        time.sleep(0.1)
+    raise AssertionError(f"job {job_id} did not finish: {r.json()}")
+
+
+def _job_row(job_id):
+    from app.database import SessionLocal
+    from app.models import AudioJob
+    db = SessionLocal()
+    try:
+        j = db.get(AudioJob, job_id)
+        return {k: getattr(j, k) for k in ("purpose", "filename", "status", "error", "model", "think", "extra_instructions", "use_rag",
+                                            "rag_entity_limit", "rag_notes_limit", "assist_params_json", "transcript", "audio_path",
+                                            "delete_after", "result_json", "checkpoint_json", "resumed_count", "chunk_current", "chunk_total")}
+    finally:
+        db.close()
+
+
+def test_ai_assist_job_is_pythons(client, seed, studio):
+    """POST /api/ai/assist-job: the gateway writes the same audio_jobs row, runs it (the AI slot, one run_assist call) and leaves the
+    row as Python's run leaves it - done with the same result_json, or the same error."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    entity = {"kind": "character", "name": "Borin", "summary": "A smith.", "tags": "npc", "body": "Borin forges blades."}
+    cases = [({"op": "improve", **entity, "surface": "entity", "instruction": "  Tighter  ", "think": True}, _reply("Borin forges fine blades.")),
+             ({"op": "translate", **entity, "lang": " German ", "rag_entity_limit": 4}, _reply("Borin schmiedet Klingen.")),
+             ({"op": "expand", "summary": "only a summary"}, _reply("never asked")),                 # no content: run_assist's ValueError
+             ({"op": "custom", **entity}, _reply("never asked")),                                    # no instruction
+             ({"op": "summarize", **entity, "model": "other"}, _reply("", reasoning="all thought"))]
+    for i, (body, reply) in enumerate(cases):
+        studio.reply = reply
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            r = side.post("/api/ai/assist-job", json=body)
+            assert r.status_code == 200, (i, r.text)
+            job_id = r.json()["job_id"]
+            res = _job_result(side, job_id)
+            res.pop("id")
+            out.append((res, _job_row(job_id), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
+        assert out[1][3] == "gateway", i
+    # what stays Python's: a GM's lore retrieval, the JSON operations, an unknown operation
+    for body in ({"op": "expand", **entity, "use_rag": True}, {"op": "suggest", **entity}, {"op": "nope"}):
+        assert _via(gm, base).post("/api/ai/assist-job", json=body).headers.get("x-nd-served-by") != "gateway", body
+
+
+def test_a_gateway_job_holds_the_ai_slot_and_can_be_cancelled(client, seed, studio):
+    import time
+    from app import shared_state
+    base = str(client.base_url)
+    gm = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base)
+    studio.reply, studio.delay = _reply("slow"), 3
+    try:
+        job_id = gm.post("/api/ai/assist-job", json={"op": "improve", "body": "Slow text."}).json()["job_id"]
+        end = time.time() + 5
+        while time.time() < end and not (shared_state.get_json("ai_slot") or {}).get("owner", "").startswith("gateway:"):
+            time.sleep(0.05)
+        lease = shared_state.get_json("ai_slot") or {}
+        assert lease.get("owner", "").startswith("gateway:"), lease
+        assert (shared_state.get_json(f"jobowner:audio_jobs:{job_id}") or {}).get("owner") == "gateway"
+        r = gm.post(f"/api/audio-jobs/{job_id}/cancel")
+        assert (r.status_code, r.json(), r.headers.get("x-nd-served-by")) == (200, {"ok": True}, "gateway")
+        row = _job_row(job_id)
+        assert (row["status"], row["error"]) == ("cancelled", "Cancelled by GM."), row
+        end = time.time() + 5
+        while time.time() < end and (shared_state.get_json("ai_slot") or {}).get("owner"):
+            time.sleep(0.05)
+        assert not (shared_state.get_json("ai_slot") or {}).get("owner")           # given back
+        assert shared_state.get_json(f"jobowner:audio_jobs:{job_id}") is None      # no longer the gateway's
+    finally:
+        studio.delay = 0

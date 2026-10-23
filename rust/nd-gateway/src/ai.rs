@@ -954,77 +954,50 @@ struct Assist {
     extra: Map<String, Value>,
 }
 
-fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Assist> {
-    let db = crate::writes::open(cfg)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
-    if p.user_id <= 0 || !(p.is_gm || p.role.as_deref() == Some("assistant")) || p.world.is_none() {
-        return None; // the 403 / 400 are Python's
-    }
-    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
-    let text = |k: &str| -> Option<String> {
-        match b.get(k) {
-            None => Some(String::new()),
-            Some(Value::String(s)) => Some(s.clone()),
-            Some(_) => None,
-        }
-    };
-    let Some(Value::String(op)) = b.get("op") else { return None };
-    for k in ["surface", "kind", "name", "summary", "body", "tags", "instruction", "lang", "model"] {
-        text(k)?;
-    }
-    for k in ["rag_entity_limit", "rag_notes_limit"] {
-        if !matches!(b.get(k), None | Some(Value::Null)) && b.get(k).and_then(|v| v.as_i64()).is_none() {
-            return None;
-        }
-    }
-    let flag = |k: &str| match b.get(k) { None => Some(false), Some(Value::Bool(t)) => Some(*t), _ => None };
-    let (think, use_rag) = (flag("think")?, flag("use_rag")?);
-    if use_rag {
-        return None; // the lore retrieval (smart_world_context): Python's
-    }
-    let (summary, body_text, instruction, lang) = (text("summary")?, text("body")?, text("instruction")?, text("lang")?);
-    let content = if !body_text.is_empty() { body_text } else { summary.clone() };
-    if content.chars().count() > ASSIST_MAX_INTERACTIVE_CHARS {
-        return None;
-    }
-    let systems = nd_render::app::data()["assist_systems"].as_object()?;
-    let base = systems.get(op.as_str())?.as_str()?; // a structured or unknown operation: Python's
+/// `run_assist`'s prompt for a free-text operation: (system, user), Err(Some(message)) for its ValueError, Err(None) for an operation
+/// that is not a free-text one (Python's)
+fn assist_prompt(op: &str, content: &str, meta: &str, instruction: &str, lang: &str) -> Result<(String, String), Option<String>> {
+    let systems = nd_render::app::data()["assist_systems"].as_object().ok_or(None)?;
+    let base = systems.get(op).and_then(|v| v.as_str()).ok_or(None)?;
     let strip = crate::edits::py_strip_pub;
-    let meta = [("Kind", text("kind")?), ("Name", text("name")?), ("Current summary", summary), ("Tags", text("tags")?)]
-        .into_iter().filter_map(|(k, v)| { let t = strip(&v); (!t.is_empty()).then(|| format!("{k}: {t}")) }).collect::<Vec<_>>().join("\n");
+    if op == "custom" && strip(instruction).is_empty() {
+        return Err(Some("The custom operation needs an instruction — say what the AI should do.".into()));
+    }
     let compose = |instruction: &str| -> String {
         let mut parts = vec![];
         if !strip(instruction).is_empty() {
             parts.push(format!("GM instruction: {}", strip(instruction)));
         }
-        if !strip(&meta).is_empty() {
-            parts.push(strip(&meta));
+        if !strip(meta).is_empty() {
+            parts.push(strip(meta));
         }
-        if !strip(&content).is_empty() {
-            parts.push(format!("Content:\n{}", strip(&content)));
+        if !strip(content).is_empty() {
+            parts.push(format!("Content:\n{}", strip(content)));
         }
         parts.join("\n\n")
     };
-    let needs_instruction = op == "custom" || op == "code_edit";
-    if needs_instruction && strip(&instruction).is_empty() {
-        return None;
-    }
-    let mut user = compose(&instruction);
+    let mut user = compose(instruction);
     let mut system = base.to_string();
     if op == "translate" {
-        let target = if !lang.is_empty() { lang } else if !instruction.is_empty() { instruction.clone() } else { "English".into() };
-        system = format!("{system}\nTarget language: {}.", strip(&target));
+        let target = if !lang.is_empty() { lang } else if !instruction.is_empty() { instruction } else { "English" };
+        system = format!("{system}\nTarget language: {}.", strip(target));
         user = compose("");
     }
-    let needs_content = ["expand", "improve", "deslop", "summarize", "translate", "rules_rewrite", "world_summary", "folk_tale", "code_edit"].contains(&op.as_str());
-    if (needs_content && strip(&content).is_empty()) || (op == "analyze" && strip(&user).is_empty()) {
-        return None; // Python's 400
+    if op == "code_edit" && strip(instruction).is_empty() {
+        return Err(Some("The code_edit operation needs an instruction — describe the change to make.".into()));
     }
-    let backend = backend(&db)?;
-    let model = Some(text("model")?).filter(|m| !m.is_empty()).map(Some).unwrap_or_else(|| surface_default(cfg, "assist"))?;
-    let model = if model.is_empty() { backend.model.clone() } else { model };
-    // _free_text_call's options: the thinking widening, else the recap family's cap when nothing bounds the answer
+    let needs_content = ["expand", "improve", "deslop", "summarize", "translate", "rules_rewrite", "world_summary", "folk_tale", "code_edit"].contains(&op);
+    if needs_content && strip(content).is_empty() {
+        return Err(Some(format!("Nothing to work on — the '{op}' operation needs some content first.")));
+    }
+    if op == "analyze" && strip(&user).is_empty() {
+        return Err(Some("Nothing to analyze — add a name or some content first.".into()));
+    }
+    Ok((system, if user.is_empty() { "(empty draft)".into() } else { user }))
+}
+
+/// `_free_text_call`'s options: Thinking's widening, else the recap family's cap when nothing bounds the answer
+fn assist_options(backend: &Backend, think: bool) -> Map<String, Value> {
     let mut extra = backend.thinking_predict_if(think);
     if !extra.contains_key("num_predict") {
         let configured = backend.options.get("num_predict").and_then(|v| v.as_f64());
@@ -1032,7 +1005,92 @@ fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Opt
             extra.insert("num_predict".into(), json!(RECAP_NUM_PREDICT_DEFAULT));
         }
     }
-    Some(Assist { backend, op: op.clone(), model, system, user: if user.is_empty() { "(empty draft)".into() } else { user }, think, extra })
+    extra
+}
+
+/// An AssistBody as Pydantic reads it: the text fields, think, use_rag (None when Pydantic would reject or coerce something)
+struct AssistBody {
+    op: String,
+    fields: HashMap<&'static str, String>,
+    think: bool,
+    use_rag: bool,
+    rag: (Option<i64>, Option<i64>),
+}
+
+fn assist_body(body: &[u8]) -> Option<AssistBody> {
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let Some(Value::String(op)) = b.get("op") else { return None };
+    let mut fields = HashMap::new();
+    for k in ["surface", "kind", "name", "summary", "body", "tags", "instruction", "lang", "model"] {
+        let v = match b.get(k) {
+            None => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(_) => return None,
+        };
+        fields.insert(k, v);
+    }
+    let mut rag = [None, None];
+    for (i, k) in ["rag_entity_limit", "rag_notes_limit"].iter().enumerate() {
+        match b.get(*k) {
+            None | Some(Value::Null) => {}
+            Some(Value::Number(n)) if n.is_i64() => rag[i] = n.as_i64(),
+            Some(_) => return None,
+        }
+    }
+    let flag = |k: &str| match b.get(k) { None => Some(false), Some(Value::Bool(t)) => Some(*t), _ => None };
+    Some(AssistBody { op: op.clone(), fields, think: flag("think")?, use_rag: flag("use_rag")?, rag: (rag[0], rag[1]) })
+}
+
+impl AssistBody {
+    fn f(&self, k: &str) -> &str {
+        self.fields.get(k).map(String::as_str).unwrap_or("")
+    }
+
+    /// `_assist_meta`: compose_meta({Kind, Name, Current summary, Tags})
+    fn meta(&self) -> String {
+        [("Kind", "kind"), ("Name", "name"), ("Current summary", "summary"), ("Tags", "tags")].into_iter()
+            .filter_map(|(label, k)| { let t = crate::edits::py_strip_pub(self.f(k)); (!t.is_empty()).then(|| format!("{label}: {t}")) })
+            .collect::<Vec<_>>().join("\n")
+    }
+}
+
+/// The caller as the assist routes check it: (page context, world id) for a GM or a GM-assistant in a world
+fn assist_caller(db: &rusqlite::Connection, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(crate::layout::PageCtx, i64)> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(db, cfg, "POST", uri, headers, now)?;
+    if p.user_id <= 0 || !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return None; // the 403 is Python's
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    Some((p, wid))
+}
+
+enum AssistPlan {
+    Run(Assist),
+    Refuse(String),
+}
+
+fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<AssistPlan> {
+    let db = crate::writes::open(cfg)?;
+    assist_caller(&db, cfg, uri, headers)?;
+    let b = assist_body(body)?;
+    if b.use_rag {
+        return None; // the lore retrieval (smart_world_context): Python's
+    }
+    let content = if !b.f("body").is_empty() { b.f("body") } else { b.f("summary") };
+    if content.chars().count() > ASSIST_MAX_INTERACTIVE_CHARS {
+        return None;
+    }
+    let (system, user) = match assist_prompt(&b.op, content, &b.meta(), b.f("instruction"), b.f("lang")) {
+        Ok(p) => p,
+        Err(Some(message)) => return Some(AssistPlan::Refuse(message)),
+        Err(None) => return None,
+    };
+    let backend = backend(&db)?;
+    let model = if !b.f("model").is_empty() { b.f("model").to_string() } else { surface_default(cfg, "assist")? };
+    let model = if model.is_empty() { backend.model.clone() } else { model };
+    let extra = assist_options(&backend, b.think);
+    Some(AssistPlan::Run(Assist { backend, op: b.op.clone(), model, system, user, think: b.think, extra }))
 }
 
 /// `generate_chat` on the Unsloth backend (one non-streamed answer, Python's sentinel texts on a failure), with the retry of a refused
@@ -1135,7 +1193,13 @@ fn clean_degenerate(text: &str) -> String {
 
 /// `POST /api/ai/assist` for a free-text operation: {op, mode: "text", text, model}, or a 502 with the failure text; None (Python's) otherwise
 pub async fn ai_assist(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
-    let a = tokio::task::spawn_blocking(move || assist_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    let a = match tokio::task::spawn_blocking(move || assist_plan(&cfg, &uri, &headers, &body)).await.ok()?? {
+        AssistPlan::Run(a) => a,
+        AssistPlan::Refuse(message) => {
+            return Response::builder().status(StatusCode::BAD_REQUEST).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway")
+                .body(Body::from(nd_render::py_dumps_compact(&json!({"detail": message})))).ok();
+        }
+    };
     let system = a.system.clone();
     let text = clean_degenerate(&generate_chat(&a.backend, &a.model, &system, &[json!({"role": "user", "content": a.user})], a.think, &a.extra).await);
     if text.starts_with("[AI ") || text.starts_with("[empty response") {
@@ -1143,4 +1207,144 @@ pub async fn ai_assist(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap
             .body(Body::from(nd_render::py_dumps_compact(&json!({"detail": text})))).ok();
     }
     crate::edits::json_response(&json!({"op": a.op, "mode": "text", "text": text, "model": a.model}))
+}
+
+// ── the AI Assist job (POST /api/ai/assist-job, app/audio_jobs.py's purpose="ai_assist") ──
+
+fn assist_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let (p, wid) = assist_caller(&db, cfg, uri, headers)?;
+    let b = assist_body(body)?;
+    if b.use_rag && p.is_gm {
+        return None; // a GM's lore retrieval (_build_rag_context): Python's
+    }
+    // run_assist's ValueErrors surface on the job row at run time; an operation that is not a free-text one is Python's
+    if matches!(assist_prompt(&b.op, "", "", "", ""), Err(None)) {
+        return None;
+    }
+    backend(&db)?;
+    let model = if !b.f("model").is_empty() { b.f("model").to_string() } else { surface_default(cfg, "assist")? };
+    let surface = if b.f("surface").is_empty() { "assist" } else { b.f("surface") };
+    let strip = crate::edits::py_strip_pub;
+    let (instruction, lang) = (strip(b.f("instruction")), strip(b.f("lang")));
+    let mut params = Map::new();
+    for (k, v) in [("op", b.op.clone()), ("surface", surface.to_string()), ("meta", b.meta()), ("instruction", instruction.clone()), ("lang", lang)] {
+        params.insert(k.into(), json!(v));
+    }
+    use rusqlite::types::Value as Sql;
+    let opt_text = |t: String| if t.is_empty() { Sql::Null } else { Sql::Text(t) };
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    let id = crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("ai_assist".into())),
+        ("filename", Sql::Text(format!("AI assist · {surface}"))), ("status", Sql::Text("pending".into())),
+        ("created_by_user_id", Sql::Integer(p.user_id)), ("model", opt_text(model)), ("think", Sql::Integer(b.think as i64)),
+        ("extra_instructions", opt_text(instruction)), ("use_rag", Sql::Integer(0)), ("rag_entity_limit", opt_int(b.rag.0)),
+        ("rag_notes_limit", opt_int(b.rag.1)), ("assist_params_json", Sql::Text(nd_render::py_dumps(&Value::Object(params)))),
+        ("transcript", Sql::Text(b.f("body").to_string())), ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])?;
+    Some(id)
+}
+
+/// `POST /api/ai/assist-job`: {job_id}, the job run here; None (Python's) for what the gateway does not run
+pub async fn ai_assist_job(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || assist_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_assist_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_assist_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_assist_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `start_resume_job` for an ai_assist row (single phase: straight back to "summarizing") and the run started
+pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: bool) -> Option<()> {
+    use rusqlite::types::Value as Sql;
+    let resumed: i64 = db.query_row("SELECT COALESCE(resumed_count, 0) FROM audio_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+    crate::orm::update(db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into())), ("error", Sql::Text(String::new())),
+        ("chunk_current", Sql::Null), ("chunk_total", Sql::Null), ("resumed_count", Sql::Integer(if reset_attempts { 0 } else { resumed + 1 })),
+        ("run_started_at", Sql::Text(crate::orm::now_stamp())), ("finished_at", Sql::Null)])?;
+    start_assist_job(id);
+    Some(())
+}
+
+/// `_run_job` for purpose="ai_assist": the AI slot, then one run_assist call; the row ends done (result_json), or error
+async fn run_assist_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<(Assist, String), String>> {
+        let db = crate::writes::open(&c)?;
+        let row = db.query_row("SELECT model, think, transcript, assist_params_json FROM audio_jobs WHERE id = ?1", [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))).ok()?;
+        let (model, think, transcript, params) = row;
+        let model = match model.filter(|m| !m.is_empty()) { Some(m) => m, None => surface_default(&c, "recap").unwrap_or_default() };
+        let think = think.map_or(true, |t| t != 0);
+        let params = params.as_deref().filter(|p| !p.is_empty()).and_then(|p| serde_json::from_str::<Value>(p).ok()).unwrap_or(json!({}));
+        let pg = |k: &str| params.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let op = pg("op");
+        let set = |fields: &[(&str, rusqlite::types::Value)]| crate::orm::update(&db, "audio_jobs", id, fields);
+        set(&[("status", rusqlite::types::Value::Text("summarizing".into()))]);
+        let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let (system, user) = match assist_prompt(&op, &transcript.unwrap_or_default(), &pg("meta"), &pg("instruction"), &pg("lang")) {
+            Ok(p) => p,
+            Err(m) => return Some(Err(format!("ValueError: {}", m.unwrap_or_else(|| format!("Unknown AI assist operation: '{op}'"))))),
+        };
+        let model = if model.is_empty() { backend.model.clone() } else { model };
+        let extra = assist_options(&backend, think);
+        Some(Ok((Assist { backend, op, model, system, user, think, extra }, String::new())))
+    }).await.ok().flatten();
+    use rusqlite::types::Value as Sql;
+    let finish = move |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(db) = crate::writes::open(&c) {
+                let mut f = fields;
+                f.push(("finished_at", Sql::Text(crate::orm::now_stamp())));
+                crate::orm::update(&db, "audio_jobs", id, &f);
+            }
+        })
+    };
+    let a = match prep {
+        None => return,
+        Some(Err(e)) => {
+            let _ = finish(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e)), ("checkpoint_json", Sql::Text(String::new()))]).await;
+            return;
+        }
+        Some(Ok((a, _))) => a,
+    };
+    let text = clean_degenerate(&generate_chat(&a.backend, &a.model, &a.system, &[json!({"role": "user", "content": a.user})], a.think, &a.extra).await);
+    let failed = text.starts_with("[AI ") || text.starts_with("[empty response");
+    let fields = if failed {
+        vec![("status", Sql::Text("error".into())), ("error", Sql::Text(text)), ("checkpoint_json", Sql::Text(String::new()))]
+    } else {
+        let result = json!({"op": a.op, "mode": "text", "text": text, "model": a.model});
+        vec![("status", Sql::Text("done".into())), ("result_json", Sql::Text(nd_render::py_dumps(&result))), ("checkpoint_json", Sql::Text(String::new()))]
+    };
+    let _ = finish(fields).await;
+}
+
+/// `POST /api/audio-jobs/<id>/cancel` for a job running here (the rest - Python's own jobs, its 400s, resume - is Python's: a job this
+/// process held that Python resumes runs there, app/job_owner.py's `release` taking it over)
+pub async fn audio_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let id: i64 = uri.path().strip_prefix("/api/audio-jobs/")?.strip_suffix("/cancel")?.parse().ok()?;
+    if !crate::jobs::is_running("audio_jobs", id) {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+        let db = crate::writes::open(&cfg)?;
+        let (p, wid) = assist_caller(&db, &cfg, &uri, &headers)?;
+        if !p.is_gm && crate::pages::edit_level(&p, p.world.as_ref()?, "background_jobs") != Some(true) {
+            return None;
+        }
+        let status: String = db.query_row("SELECT status FROM audio_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+            |r| Ok(r.get::<_, Option<String>>(0)?.unwrap_or_default())).ok()?;
+        if !matches!(status.as_str(), "pending" | "transcribing" | "summarizing") || !crate::jobs::abort("audio_jobs", id) {
+            return None;
+        }
+        use rusqlite::types::Value as Sql;
+        crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("cancelled".into())), ("error", Sql::Text("Cancelled by GM.".into())),
+            ("finished_at", Sql::Text(crate::orm::now_stamp()))])?;
+        crate::edits::json_response(&json!({"ok": true}))
+    }).await.ok()?
 }

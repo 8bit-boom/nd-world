@@ -289,3 +289,10 @@ Chronicler (`docs/RUST_AI.md`), and a GM's own model and Thinking choices on the
 Python's for good reasons given there. A Thinking request the backend refuses is retried as Python retries it (batch 4), and the
 editors' interactive AI Assist (free-text operations) is answered by the gateway too (batch 5). Still Python's in phase 5: the background
 AI jobs (recaps, condensing, the AI Assist job variant, image generation).
+
+## 21. Phase 5: the job groundwork and the first gateway job
+
+The background jobs need two processes to share one GPU and one set of job rows: an `ai_slot` lease both queues take, and
+`jobowner:<table>:<id>` marks that keep Python's sweeps off the gateway's jobs until it has been silent for ten minutes
+(`docs/RUST_JOBS.md`). The first job kind on the gateway is the AI Assist job (free-text operations), with cancel, the shutdown
+sweep and the resume at the next start.

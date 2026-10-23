@@ -15,6 +15,7 @@ import json
 import logging
 
 from . import ai_queue as _ai_queue
+from . import job_owner as _job_owner
 from . import job_shutdown as _job_shutdown
 from . import media_rename as _mr
 from .database import SessionLocal
@@ -215,7 +216,7 @@ def live_tasks() -> list:
 def _mark_in_progress_interrupted() -> None:
     db = SessionLocal()
     try:
-        stuck = db.query(MediaRenameRun).filter(MediaRenameRun.status.in_(IN_PROGRESS_STATUSES)).all()
+        stuck = _job_owner.not_gateways("media_rename_runs", db.query(MediaRenameRun).filter(MediaRenameRun.status.in_(IN_PROGRESS_STATUSES)).all())
         for run in stuck:
             run.status, run.error = "interrupted", _INTERRUPTED_NOTE
         if stuck:
@@ -240,7 +241,7 @@ def resume_interrupted_runs() -> int:
     forever). Returns how many were restarted."""
     db = SessionLocal()
     try:
-        ids = [r.id for r in db.query(MediaRenameRun).filter(MediaRenameRun.status == "interrupted").all()]
+        ids = [r.id for r in _job_owner.not_gateways("media_rename_runs", db.query(MediaRenameRun).filter(MediaRenameRun.status == "interrupted").all())]
     finally:
         db.close()
     resumed = 0

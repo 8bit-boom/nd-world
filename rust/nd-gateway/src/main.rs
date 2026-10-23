@@ -19,7 +19,12 @@ async fn main() {
         }
     };
     eprintln!("nd-gateway: {} -> {} (static: {})", cfg.listen, cfg.upstream, cfg.static_dir.display());
+    let ai_jobs = cfg.rust_routes.iter().any(|r| r == "ai");
     let app = router(cfg).into_make_service_with_connect_info::<SocketAddr>();
+    if ai_jobs {
+        // the background jobs a previous gateway held (docs/RUST_JOBS.md)
+        tokio::task::spawn_blocking(nd_gateway::jobs::adopt);
+    }
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
         let _ = rx.await;
@@ -27,6 +32,8 @@ async fn main() {
     tokio::spawn(async move {
         shutdown_signal().await;
         let _ = tx.send(());
+        // running jobs are marked interrupted (their ownership kept) so the next start resumes them
+        let _ = tokio::task::spawn_blocking(nd_gateway::jobs::stop_all).await;
         // long-lived streams (server-sent events) would keep a graceful shutdown waiting for ever; Python has its own drain
         tokio::time::sleep(Duration::from_secs(8)).await;
         std::process::exit(0);

@@ -18,6 +18,11 @@ Safety nets, because one stuck holder would otherwise freeze every AI feature:
 
 Never take the slot from code that is itself running inside a queued task (it would wait for itself): queue at the job
 level only — which is where it is applied.
+
+Across processes (docs/RUST_JOBS.md): while the Rust gateway runs AI jobs of its own, this process's queue is one of two lines for
+the same GPU. The holder of this process's slot therefore also takes the shared lease `ai_slot` (a row in shared_state: the owner
+and the time it runs out) before its task starts, renews it every LEASE_RENEW_SECONDS while it runs and gives it back when it
+leaves. A process that dies holding it loses it when it runs out (LEASE_SECONDS). The gateway takes the same lease the same way.
 """
 import asyncio
 import functools
@@ -35,9 +40,52 @@ _log = logging.getLogger("nd.ai_queue")
 MAX_HOLD_SECONDS = float(os.environ.get("AI_QUEUE_MAX_HOLD_SECONDS", "7200"))
 _WATCH_INTERVAL = 30.0     # how often a waiter checks whether the holder is stuck
 
+# The cross-process lease (see the module docstring): how long it lasts unrenewed, how often the holder renews it, how often a
+# waiter for it looks again.
+LEASE_KEY = "ai_slot"
+LEASE_SECONDS = float(os.environ.get("AI_SLOT_LEASE_SECONDS", "90"))
+LEASE_RENEW_SECONDS = LEASE_SECONDS / 3
+LEASE_POLL_SECONDS = float(os.environ.get("AI_SLOT_POLL_SECONDS", "0.5"))
+LEASE_OWNER = f"python:{os.getpid()}:{int(time.time() * 1000)}"
+
+
+def _lease_try(label: str) -> bool:
+    """Take (or renew) the shared lease when it is free, run out or already ours; True when it is ours now."""
+    from . import shared_state
+    now = time.time()
+
+    def fn(old):
+        if old and old.get("owner") != LEASE_OWNER and float(old.get("until") or 0) > now:
+            return old
+        return {"owner": LEASE_OWNER, "until": now + LEASE_SECONDS, "label": label}
+    try:
+        return shared_state.update_json(LEASE_KEY, fn).get("owner") == LEASE_OWNER
+    except Exception as exc:          # no table (a bare test database) or a locked database: run rather than freeze every AI feature
+        _log.warning("AI queue: the shared lease could not be taken (%s) — running without it", exc)
+        return True
+
+
+def _lease_release() -> None:
+    from . import shared_state
+    try:
+        shared_state.update_json(LEASE_KEY, lambda old: {} if (old or {}).get("owner") == LEASE_OWNER else (old or {}))
+    except Exception:
+        pass
+
+
+async def _lease_acquire(t: "Ticket") -> None:
+    while not await asyncio.to_thread(_lease_try, t.label):
+        await asyncio.sleep(LEASE_POLL_SECONDS)
+
+    async def renew():
+        while True:
+            await asyncio.sleep(LEASE_RENEW_SECONDS)
+            await asyncio.to_thread(_lease_try, t.label)
+    t.renewer = asyncio.get_running_loop().create_task(renew())
+
 
 class Ticket:
-    __slots__ = ("label", "kind", "since", "started", "future", "task")
+    __slots__ = ("label", "kind", "since", "started", "future", "task", "renewer")
 
     def __init__(self, label: str = "", kind: str = ""):
         self.label = label
@@ -46,6 +94,7 @@ class Ticket:
         self.started: Optional[float] = None   # when it got the slot
         self.future: Optional[asyncio.Future] = None
         self.task: Optional[asyncio.Task] = None
+        self.renewer: Optional[asyncio.Task] = None    # renews the cross-process lease while this ticket holds it
 
     def describe(self) -> dict:
         now = time.time()
@@ -111,15 +160,15 @@ class AiQueue:
 
     async def wait_turn(self, t: Ticket) -> None:
         t.task = asyncio.current_task()
-        if t.future is None or self._running is t:
-            return
         try:
-            while True:
-                try:
-                    await asyncio.wait_for(asyncio.shield(t.future), _WATCH_INTERVAL)
-                    return
-                except asyncio.TimeoutError:
-                    self._reap_stuck_holder()
+            if not (t.future is None or self._running is t):
+                while True:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(t.future), _WATCH_INTERVAL)
+                        break
+                    except asyncio.TimeoutError:
+                        self._reap_stuck_holder()
+            await _lease_acquire(t)       # this process's turn: now the GPU's, against the gateway's line
         except BaseException:
             self.leave(t)
             raise
@@ -127,6 +176,10 @@ class AiQueue:
     def leave(self, t: Ticket) -> None:
         if t in self._waiting:
             self._waiting.remove(t)
+        if t.renewer is not None:
+            t.renewer.cancel()
+            t.renewer = None
+            _lease_release()
         self._release(t)
 
     @asynccontextmanager

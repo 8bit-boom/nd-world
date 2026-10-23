@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import ai as _ai_module
+from . import job_owner as _job_owner
 from . import ai_queue as _ai_queue
 from . import ai_assist as _ai_assist
 from . import job_shutdown as _job_shutdown
@@ -1753,6 +1754,7 @@ def start_resummarize_job(
     finally:
         db.close()
 
+    _job_owner.release("audio_jobs", job_id)
     task = asyncio.create_task(_run_job(job_id))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
@@ -1828,6 +1830,7 @@ def start_resume_job(job_id: int, reset_attempts: bool = False) -> AudioJob:
     finally:
         db.close()
 
+    _job_owner.release("audio_jobs", job_id)
     task = asyncio.create_task(_run_job(job_id))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
@@ -1849,7 +1852,7 @@ def mark_stragglers_interrupted() -> None:
     at the other end of the process's life instead."""
     db = SessionLocal()
     try:
-        stuck = db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES)).all()
+        stuck = _job_owner.not_gateways("audio_jobs", db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES)).all())
         for job in stuck:
             job.status = "interrupted"
             job.error = _interrupted_note(job.chunk_current, job.chunk_total)
@@ -1872,7 +1875,7 @@ def sweep_interrupted_jobs() -> None:
     this, same startup hook) treats both cases identically."""
     db = SessionLocal()
     try:
-        stuck = db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES)).all()
+        stuck = _job_owner.not_gateways("audio_jobs", db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES)).all())
         for job in stuck:
             job.status = "interrupted"
             job.error = _interrupted_note(job.chunk_current, job.chunk_total)
@@ -1897,7 +1900,7 @@ def resume_interrupted_jobs() -> int:
     were resumed, for the caller to log."""
     db = SessionLocal()
     try:
-        job_ids = [j.id for j in db.query(AudioJob).filter(AudioJob.status == "interrupted").all()]
+        job_ids = [j.id for j in _job_owner.not_gateways("audio_jobs", db.query(AudioJob).filter(AudioJob.status == "interrupted").all())]
     finally:
         db.close()
 
