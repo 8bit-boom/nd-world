@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from .test_gateway_golden import DIRECT
+from .test_gateway_ai import studio  # noqa: F401  (the fake Unsloth Studio fixture)
 
 pytestmark = pytest.mark.skipif(not DIRECT, reason="needs ND_TEST_BASE_URL (the gateway) and ND_GOLDEN_DIRECT_URL (Python directly)")
 
@@ -426,3 +427,79 @@ def test_mcp_character_writes_are_pythons(client, seed):
     same(gm, "rest_party", lambda sc: {"party_id": sc["gods"], "kind": "nap"})
     same(player, "rest_party", lambda sc: {"party_id": sc["crew"]})
     same(gm, "rest_party", lambda sc: {"party_id": 999999})
+
+
+def test_mcp_templates_and_chronicler_are_pythons(client, seed, mcp_world, studio):
+    """The sheet-template tools (list / get / create / update, cleaned by template_draft) and ask_chronicler (the same prompt reaches the
+    backend, the same answer comes back)."""
+    from .test_gateway_ai import _reply
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    base = str(client.base_url)
+    gm = _token(seed.gm.id, "mcp-parity-gm")
+    player = _token(seed.player_a.id, "mcp-parity-player")
+    w = mcp_world["w"]
+    db = SessionLocal()
+    try:
+        own = [SheetTemplate(world_id=w, name="Moon Ç", slug=f"mcp-moon-{i}-{w}", sheet_mode="custom", description=None, rules_md=" Roll 2d6. ",
+                             fields_json=json.dumps([{"id": "hp", "label": "Health (0 = down)", "type": "resource", "default_value": "5/5", "vital": "hp"},
+                                                     {"id": "xp", "label": "XP", "type": "number", "xp": True}, {"id": "nm", "label": "Name", "type": "text", "binds": "name"}]),
+                             system_json=json.dumps({"conditions": ["Hurt"], "rest": {"long": [["full", "hp"]]}})) for i in range(2)]
+        db.add_all(own)
+        db.commit()
+        tids = [t.id for t in own]
+        builtin = db.query(SheetTemplate).filter(SheetTemplate.slug == "asterion").first().id
+    finally:
+        db.close()
+
+    def body_of(text):
+        r = json.loads(text.split("data: ", 1)[1])["result"]
+        return r
+
+    def same(token, name, args_for, new=False):
+        res = []
+        for i, url in enumerate((DIRECT, base)):
+            st, text, by = _call(url, token, name, args_for(i))
+            r = body_of(text)
+            if not r["isError"]:
+                v = json.loads(r["content"][0]["text"])
+                if isinstance(v, dict) and v.get("id") in tids + [None] or new:
+                    v["id"] = "<id>"
+                if isinstance(v, list):
+                    v = [x for x in v if x["id"] not in tids or x["id"] == tids[i]]
+                    for x in v:
+                        if x["id"] == tids[i]:
+                            x["id"] = "<id>"
+                r = v
+            res.append((st, r, by))
+        a, b = res
+        assert a[:2] == b[:2], (name, a[1], b[1])
+        assert b[2] == "gateway", name
+
+    same(gm, "list_sheet_templates", lambda i: {"world_id": w})
+    same(player, "list_sheet_templates", lambda i: {"world_id": w})
+    same(gm, "get_sheet_template", lambda i: {"template_id": tids[i]})
+    same(gm, "get_sheet_template", lambda i: {"template_id": builtin})
+    same(gm, "get_sheet_template", lambda i: {"template_id": 999999})
+    same(gm, "update_sheet_template", lambda i: {"template_id": builtin, "name": "x"})
+    same(gm, "update_sheet_template", lambda i: {"template_id": tids[i], "name": "  Moon   Two ", "description": " <b>d</b> ",
+                                                 "system": {"conditions": ["A", "A", 3], "rest": {"short": [["full", "nope"]]}}})
+    same(gm, "update_sheet_template", lambda i: {"template_id": tids[i], "name": " "})
+    same(gm, "update_sheet_template", lambda i: {"template_id": tids[i], "fields": [{"id": "Grit!", "label": "Grit", "type": "number", "xp": True}], "rules_md": "New"})
+    same(gm, "update_sheet_template", lambda i: {"template_id": tids[i], "fields": [{"label": ""}]})
+    same(gm, "create_sheet_template", lambda i: {"world_id": w, "name": "Star Cats", "fields": [{"id": "lives", "label": "Lives", "type": "resource", "default_value": "9/9", "vital": "hp"}],
+                                                 "system": {"conditions": ["Wet"]}, "rules_md": "Cats."}, new=True)
+    same(gm, "create_sheet_template", lambda i: {"world_id": w, "name": "Nothing", "fields": []}, new=True)
+    for token in (gm, player):
+        outs = []
+        for url in (DIRECT, base):
+            studio.requests.clear()
+            studio.reply = _reply("The bridge fell, long ago.")
+            st, text, by = _call(url, token, "ask_chronicler", {"world_id": w, "question": " What happened to the bridge? "})
+            outs.append((st, text, [q["body"] for q in studio.requests], by))
+        a, b = outs
+        assert a[:3] == b[:3], (a, b)
+        assert b[3] == "gateway"
+    a = _call(DIRECT, gm, "ask_chronicler", {"world_id": w, "question": "  "})
+    b = _call(base, gm, "ask_chronicler", {"world_id": w, "question": "  "})
+    assert a[:2] == b[:2] and b[2] == "gateway"

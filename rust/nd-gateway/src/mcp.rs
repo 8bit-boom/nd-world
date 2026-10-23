@@ -34,6 +34,10 @@ struct User {
 enum Out {
     List(Vec<Value>),
     Dict(Value),
+    /// ask_chronicler: the backend, the system prompt and the question, answered after the database work
+    Ask(crate::ai::Backend, String, String),
+    /// a string (`structuredContent` {"result": ...})
+    Text(String),
 }
 
 /// A tool's failure: the text of the exception Python raises (shown as "Error executing tool <name>: <text>")
@@ -91,6 +95,8 @@ fn call_result(out: Result<Out, Fail>, name: &str) -> String {
             json!({"content": items.iter().map(|i| text(pretty(i))).collect::<Vec<_>>(), "structuredContent": {"result": items}, "isError": false})
         }
         Ok(Out::Dict(d)) => json!({"content": [text(pretty(&d))], "isError": false}),
+        Ok(Out::Text(t)) => json!({"content": [text(t.clone())], "structuredContent": {"result": t}, "isError": false}),
+        Ok(Out::Ask(..)) => Value::Null,
         Err(e) => json!({"content": [text(format!("Error executing tool {name}: {e}"))], "isError": true}),
     };
     serde_json::to_string(&v).unwrap_or_default()
@@ -123,7 +129,7 @@ pub async fn handle(cfg: Arc<Config>, headers: HeaderMap, body: Bytes) -> Option
         Some(_) => return None,
     };
     let c = cfg.clone();
-    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+    let done = tokio::task::spawn_blocking(move || -> Option<Result<Response<Body>, (Value, Out)>> {
         let db = crate::writes::open(&c)?;
         let user = db.query_row("SELECT u.id, u.is_gm FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?1 ORDER BY t.id LIMIT 1",
             [sha256_hex(&token)], |r| Ok(User { id: r.get(0)?, gm: r.get::<_, Option<bool>>(1)?.unwrap_or(false) })).ok()?;
@@ -131,15 +137,15 @@ pub async fn handle(cfg: Arc<Config>, headers: HeaderMap, body: Bytes) -> Option
         match (method.as_str(), &id) {
             ("notifications/initialized", None) if params.is_empty() => {
                 touch(&db)?;
-                Some(Response::builder().status(StatusCode::ACCEPTED).header("content-type", "application/json").header("x-nd-served-by", "gateway").body(Body::empty()).unwrap())
+                Some(Ok(Response::builder().status(StatusCode::ACCEPTED).header("content-type", "application/json").header("x-nd-served-by", "gateway").body(Body::empty()).unwrap()))
             }
             ("ping", Some(id)) if params.is_empty() => {
                 touch(&db)?;
-                Some(sse(id, "{}"))
+                Some(Ok(sse(id, "{}")))
             }
             ("tools/list", Some(id)) if params.is_empty() => {
                 touch(&db)?;
-                Some(sse(id, data()["tools_list_json"].as_str()?))
+                Some(Ok(sse(id, data()["tools_list_json"].as_str()?)))
             }
             ("initialize", Some(id)) => {
                 let asked = params.get("protocolVersion")?.as_str()?;
@@ -154,7 +160,7 @@ pub async fn handle(cfg: Arc<Config>, headers: HeaderMap, body: Bytes) -> Option
                     "resources": {"subscribe": false, "listChanged": false}, "tools": {"listChanged": false}},
                     "serverInfo": {"name": d["name"], "version": d["version"]}, "instructions": d["instructions"]});
                 touch(&db)?;
-                Some(sse(id, &serde_json::to_string(&result).ok()?))
+                Some(Ok(sse(id, &serde_json::to_string(&result).ok()?)))
             }
             ("tools/call", Some(id)) => {
                 if params.keys().any(|k| !matches!(k.as_str(), "name" | "arguments")) {
@@ -168,11 +174,23 @@ pub async fn handle(cfg: Arc<Config>, headers: HeaderMap, body: Bytes) -> Option
                 };
                 let out = call(&db, user, &name, &args)?;
                 touch(&db)?;
-                Some(sse(id, &call_result(out, &name)))
+                if let Ok(ask @ Out::Ask(..)) = out {
+                    return Some(Err((id.clone(), ask)));
+                }
+                Some(Ok(sse(id, &call_result(out, &name))))
             }
             _ => None,
         }
-    }).await.ok()?
+    }).await.ok()??;
+    match done {
+        Ok(resp) => Some(resp),
+        Err((id, Out::Ask(b, system, question))) => {
+            let model = b.model.clone();
+            let answer = crate::ai::generate_chat(&b, &model, &system, &[json!({"role": "user", "content": question})], false, &Map::new()).await;
+            Some(sse(&id, &call_result(Ok(Out::Text(answer)), "ask_chronicler")))
+        }
+        Err(_) => None,
+    }
 }
 
 // ── arguments, as the tool's pydantic model would take them ───────────────────────────────────────────────
@@ -268,6 +286,21 @@ fn call(db: &Connection, user: User, name: &str, args: &Map<String, Value>) -> O
         }
         "award_character_xp" => { let a = args_of(args, &[("character_id", Int), ("amount", Int)])?; award_character_xp(db, user, &a) }
         "rest_party" => { let a = args_of(args, &[("party_id", Int), ("kind", StrOr("long"))])?; rest_party(db, user, &a) }
+        "ask_chronicler" => { let a = args_of(args, &[("world_id", Int), ("question", Str)])?; ask_chronicler(db, user, &a) }
+        "list_sheet_templates" => { let a = args_of(args, &[("world_id", Int)])?; list_sheet_templates(db, user, &a) }
+        "get_sheet_template" => { let a = args_of(args, &[("template_id", Int)])?; get_sheet_template(db, user, &a) }
+        "create_sheet_template" => {
+            let a = args_of(args, &[("world_id", Int), ("name", Str), ("description", StrOr("")), ("rules_md", StrOr(""))])?;
+            let fields = args.get("fields")?.as_array().filter(|f| f.iter().all(|x| x.is_object()))?.clone();
+            let system = match args.get("system") { None | Some(Value::Null) => None, Some(Value::Object(o)) => Some(Value::Object(o.clone())), _ => return None };
+            create_sheet_template(db, user, &a, fields, system)
+        }
+        "update_sheet_template" => {
+            let a = args_of(args, &[("template_id", Int), ("name", OptStr), ("description", OptStr), ("rules_md", OptStr)])?;
+            let fields = match args.get("fields") { None | Some(Value::Null) => None, Some(Value::Array(f)) if f.iter().all(|x| x.is_object()) => Some(f.clone()), _ => return None };
+            let system = match args.get("system") { None | Some(Value::Null) => None, Some(Value::Object(o)) => Some(Value::Object(o.clone())), _ => return None };
+            update_sheet_template(db, user, &a, fields, system)
+        }
         "create_quest" => {
             let a = args_of(args, &[("world_id", Int), ("title", Str), ("summary", StrOr("")), ("body", StrOr("")), ("status", StrOr("active")),
                                     ("category", StrOr("main")), ("visible_to_players", BoolOr(true))])?;
@@ -1269,4 +1302,220 @@ fn rest_party(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult
     }
     crate::orm::touch(db, wid);
     Ok(Some(Out::Dict(json!({"party": party["name"], "kind": kind, "rested": rested}))))
+}
+
+// ── the Chronicler and the sheet templates ────────────────────────────────────────────────────────────────
+
+fn ask_chronicler(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let wid = int(a, "world_id");
+    try_some!(load_world(db, wid, user));
+    let question = strip(&s(a, "question").unwrap_or_default());
+    if question.is_empty() {
+        return Err("question must not be empty".into());
+    }
+    // build_chronicler_system_prompt for this token's user
+    let vis = if user.gm { "" } else { " AND visible_to_players IS NOT 0" };
+    let Some(facts) = rows(db, &format!("SELECT content FROM facts WHERE world_id = ?1{vis} ORDER BY created_at DESC LIMIT 60"), &[&wid], |r| Ok(sql_json(r.get(0)?))) else { return Ok(None) };
+    let Some(entities) = crate::retrieval::find_relevant_entities(db, wid, &question, 15, (user.id, user.gm)) else { return Ok(None) };
+    let mut system = crate::ai::CHRONICLER_SYSTEM.to_string();
+    let Some(extra) = crate::retrieval::instructions_text(db, wid, !user.gm) else { return Ok(None) };
+    if !extra.is_empty() {
+        system = format!("{system}\n\n{extra}");
+    }
+    let mut lines = vec![system, String::new(), "## Known facts".to_string()];
+    if facts.is_empty() {
+        lines.push("(none recorded yet)".into());
+    } else {
+        lines.extend(facts.iter().map(|f| format!("- {}", f.as_str().unwrap_or("None"))));
+    }
+    if !entities.is_empty() {
+        lines.push(String::new());
+        lines.push("## Relevant entities".into());
+        let Some(ctx) = crate::retrieval::format_context(db, &entities, !user.gm, &question) else { return Ok(None) };
+        lines.push(ctx);
+    }
+    let Some(b) = crate::ai::backend(db) else { return Ok(None) };
+    Ok(Some(Out::Ask(b, lines.join("\n"), question)))
+}
+
+/// `len(x or [])` of a spec value (None: Python's own failure)
+fn spec_len(v: Option<&Value>) -> Option<usize> {
+    match v {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Some(0),
+        Some(Value::Array(a)) => Some(a.len()),
+        Some(Value::Object(o)) => Some(o.len()),
+        Some(Value::String(t)) => Some(t.chars().count()),
+        Some(Value::Number(n)) if n.as_f64() == Some(0.0) => Some(0),
+        _ => None,
+    }
+}
+
+/// `_template_summary`
+fn template_summary(t: &crate::sheets::Tpl) -> Option<Map<String, Value>> {
+    let (hp, xp) = t.meta()?;
+    let binds: Map<String, Value> = t.binds()?.into_iter().map(|(k, v)| (k, json!(v))).collect();
+    let rest: Vec<String> = match t.spec.get("rest") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => vec![],
+        Some(Value::Object(o)) => { let mut k: Vec<String> = o.keys().cloned().collect(); k.sort(); k }
+        _ => return None,
+    };
+    let r = &t.row;
+    let mut out = Map::new();
+    out.insert("id".into(), r["id"].clone());
+    out.insert("name".into(), r["name"].clone());
+    out.insert("description".into(), if r["description"].is_null() { json!("") } else { r["description"].clone() });
+    out.insert("builtin".into(), json!(r["is_builtin"].as_i64().is_some_and(|i| i != 0)));
+    out.insert("sheet_mode".into(), r["sheet_mode"].clone());
+    out.insert("world_id".into(), r["world_id"].clone());
+    out.insert("fields".into(), json!(t.fields.len()));
+    out.insert("integration".into(), json!({"hp": hp, "xp": xp, "binds": binds, "conditions": spec_len(t.spec.get("conditions"))?, "rest": rest,
+        "pages": spec_len(t.spec.get("pages"))?, "roster": spec_len(t.spec.get("roster"))?}));
+    Some(out)
+}
+
+fn load_tpl(db: &Connection, tid: i64) -> Result<Option<Option<crate::sheets::Tpl>>, ()> {
+    match maps(db, "SELECT * FROM sheet_templates WHERE id = ?1", &[&tid]) {
+        None => Err(()),
+        Some(rows) => Ok(rows.into_iter().next().map(crate::sheets::Tpl::load)),
+    }
+}
+
+fn list_sheet_templates(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let wid = int(a, "world_id");
+    try_some!(load_world(db, wid, user));
+    let Some(rows) = maps(db, "SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name", &[&wid]) else { return Ok(None) };
+    let mut out = vec![];
+    for r in rows {
+        let Some(t) = crate::sheets::Tpl::load(r) else { return Ok(None) };
+        let Some(sm) = template_summary(&t) else { return Ok(None) };
+        out.push(Value::Object(sm));
+    }
+    Ok(Some(Out::List(out)))
+}
+
+/// `_template_for`: a template a GM token may read or change
+fn template_for(db: &Connection, user: User, tid: i64) -> Result<Option<crate::sheets::Tpl>, Fail> {
+    gm_only(user)?;
+    let t = match load_tpl(db, tid) {
+        Err(()) | Ok(Some(None)) => return Ok(None),
+        Ok(None) => return Err(format!("Sheet template {tid} not found")),
+        Ok(Some(Some(t))) => t,
+    };
+    if let Some(wid) = t.row["world_id"].as_i64() {
+        if load_world(db, wid, user)?.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(t))
+}
+
+/// `_own_spec` / `system_spec_public`: the template's own stored spec
+fn own_spec(t: &crate::sheets::Tpl) -> Option<Value> {
+    match t.row["system_json"].as_str().filter(|x| !x.is_empty()) {
+        None => Some(json!({})),
+        Some(raw) => match crate::map_layout::py_loads(raw) {
+            Ok(Value::Object(o)) => Some(Value::Object(o)),
+            Ok(_) | Err(_) => Some(json!({})),
+        },
+    }
+}
+
+fn get_sheet_template(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let Some(t) = template_for(db, user, int(a, "template_id"))? else { return Ok(None) };
+    let Some(mut out) = template_summary(&t) else { return Ok(None) };
+    // system_rules_markdown: a built-in system's digest, then the template's own rules
+    let mut parts = vec![];
+    if t.row["is_builtin"].as_i64().is_some_and(|i| i != 0) {
+        if let Some(slug) = t.row["slug"].as_str().filter(|s| !s.contains('/') && !s.contains('\\') && !s.contains("..")) {
+            if let Some(d) = nd_render::app::data()["system_digests"].get(slug).and_then(|v| v.as_str()) {
+                parts.push(d.to_string());
+            }
+        }
+    }
+    let own_rules = strip(t.row["rules_md"].as_str().unwrap_or(""));
+    if !own_rules.is_empty() {
+        parts.push(own_rules);
+    }
+    out.insert("field_list".into(), json!(t.fields));
+    let Some(public) = own_spec(&t) else { return Ok(None) };
+    out.insert("system".into(), public);
+    out.insert("effective_system".into(), Value::Object(t.spec.clone()));
+    out.insert("rules_md".into(), json!(t.row["rules_md"].as_str().unwrap_or("")));
+    out.insert("rules".into(), json!(parts.join("\n\n")));
+    Ok(Some(Out::Dict(Value::Object(out))))
+}
+
+fn summary_after(db: &Connection, tid: i64, warnings: Vec<String>) -> ToolResult {
+    let Ok(Some(Some(t))) = load_tpl(db, tid) else { return Ok(None) };
+    let Some(mut out) = template_summary(&t) else { return Ok(None) };
+    out.insert("warnings".into(), json!(warnings));
+    Ok(Some(Out::Dict(Value::Object(out))))
+}
+
+fn create_sheet_template(db: &Connection, user: User, a: &Map<String, Value>, fields: Vec<Value>, system: Option<Value>) -> ToolResult {
+    gm_only(user)?;
+    let wid = int(a, "world_id");
+    try_some!(load_world(db, wid, user));
+    let raw = json!({"name": a["name"], "description": a["description"], "fields": fields, "system": system.unwrap_or_else(|| json!({})), "rules_md": a["rules_md"]});
+    let (draft, warnings) = crate::template_draft::clean_template_draft(&raw);
+    let Some(draft) = draft else { return Err(format!("No usable fields: {}", warnings.iter().take(5).cloned().collect::<Vec<_>>().join("; "))) };
+    let name = draft["name"].as_str().unwrap_or("").to_string();
+    // _unique_template_slug
+    let lowered: String = name.to_lowercase().replace(' ', "-").chars().take(50).collect();
+    let base = if lowered.is_empty() { "template".to_string() } else { lowered };
+    let (mut slug, mut n) = (base.clone(), 1);
+    while db.query_row("SELECT 1 FROM sheet_templates WHERE slug = ?1", [&slug], |_| Ok(())).is_ok() {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    let Some(id) = insert(db, "sheet_templates", vec![("world_id", Sql::Integer(wid)), ("name", text(name)), ("slug", text(slug)),
+        ("description", text(draft["description"].as_str().unwrap_or("").to_string())), ("is_builtin", Sql::Integer(0)), ("sheet_mode", text("custom".into())),
+        ("fields_json", text(nd_render::py_dumps(&draft["fields"]))), ("system_json", text(nd_render::py_dumps(&draft["system"]))),
+        ("rules_md", text(draft["rules_md"].as_str().unwrap_or("").to_string()))]) else { return Ok(None) };
+    summary_after(db, id, warnings)
+}
+
+fn update_sheet_template(db: &Connection, user: User, a: &Map<String, Value>, fields: Option<Vec<Value>>, system: Option<Value>) -> ToolResult {
+    let tid = int(a, "template_id");
+    let Some(t) = template_for(db, user, tid)? else { return Ok(None) };
+    if t.row["is_builtin"].as_i64().is_some_and(|i| i != 0) {
+        return Err("Built-in templates can't be changed over MCP — copy it with create_sheet_template".into());
+    }
+    let new_name = s(a, "name").unwrap_or_else(|| t.row["name"].as_str().unwrap_or("").to_string()).split_whitespace().collect::<Vec<_>>().join(" ");
+    let new_desc = s(a, "description").unwrap_or_else(|| t.row["description"].as_str().unwrap_or("").to_string());
+    let new_rules = s(a, "rules_md").unwrap_or_else(|| t.row["rules_md"].as_str().unwrap_or("").to_string());
+    let Some(public) = own_spec(&t) else { return Ok(None) };
+    let mut vals: Vec<(&str, Sql)> = vec![];
+    let warnings;
+    match fields {
+        Some(fields) => {
+            let raw = json!({"name": new_name, "description": new_desc, "fields": fields, "system": system.unwrap_or(public), "rules_md": new_rules});
+            let (draft, w) = crate::template_draft::clean_template_draft(&raw);
+            let Some(draft) = draft else { return Err(format!("No usable fields: {}", w.iter().take(5).cloned().collect::<Vec<_>>().join("; "))) };
+            warnings = w;
+            vals.push(("fields_json", text(nd_render::py_dumps(&draft["fields"]))));
+            vals.push(("system_json", text(nd_render::py_dumps(&draft["system"]))));
+            vals.push(("name", text(draft["name"].as_str().unwrap_or("").to_string())));
+            vals.push(("description", text(draft["description"].as_str().unwrap_or("").to_string())));
+            vals.push(("rules_md", text(draft["rules_md"].as_str().unwrap_or("").to_string())));
+        }
+        None => {
+            if new_name.is_empty() {
+                return Err("name can't be empty".into());
+            }
+            let fields: Vec<Value> = t.fields.iter().cloned().map(Value::Object).collect();
+            let (cleaned, w) = crate::template_draft::clean_system_spec(&system.unwrap_or(public), &fields);
+            warnings = w;
+            vals.push(("system_json", text(nd_render::py_dumps(&cleaned))));
+            vals.push(("name", text(new_name.chars().take(80).collect())));
+            vals.push(("description", text(strip(&new_desc.replace(['<', '>'], "")).chars().take(300).collect())));
+            vals.push(("rules_md", text(strip(&new_rules.replace('\x00', "")).chars().take(20000).collect())));
+        }
+    }
+    vals.push(("updated_at", text(crate::orm::now_stamp())));
+    if crate::orm::update(db, "sheet_templates", tid, &vals).is_none() {
+        return Ok(None);
+    }
+    summary_after(db, tid, warnings)
 }

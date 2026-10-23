@@ -386,7 +386,7 @@ fn clean_rest_op(op: &Value, by_id: &[Map<String, Value>], warnings: &mut Vec<St
 }
 
 /// `clean_system_spec(raw, fields)`
-fn clean_system_spec(raw: &Value, fields: &[Value]) -> (Value, Vec<String>) {
+pub(crate) fn clean_system_spec(raw: &Value, fields: &[Value]) -> (Value, Vec<String>) {
     let mut warnings = vec![];
     let Value::Object(raw) = raw else { return (json!({}), warnings) };
     let by_id: Vec<Map<String, Value>> = fields.iter().filter_map(|f| f.as_object()).filter(|f| f.get("id").and_then(|v| v.as_str()).is_some_and(|i| !i.is_empty())).cloned().collect();

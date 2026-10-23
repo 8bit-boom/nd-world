@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 
-const CHRONICLER_SYSTEM: &str = "You are the Chronicler, keeper of this campaign's history. Answer the question using ONLY the facts and entities listed below — never invent events, names, or details that aren't given to you. If the answer isn't in the provided context, say you don't know rather than guessing or making something up. Speak in a warm, slightly formal narrator's voice. Keep answers concise.";
+pub(crate) const CHRONICLER_SYSTEM: &str = "You are the Chronicler, keeper of this campaign's history. Answer the question using ONLY the facts and entities listed below — never invent events, names, or details that aren't given to you. If the answer isn't in the provided context, say you don't know rather than guessing or making something up. Speak in a warm, slightly formal narrator's voice. Keep answers concise.";
 const CACHE_TTL: Duration = Duration::from_secs(30);
 const COOLDOWN: Duration = Duration::from_secs(3);
 const HEARTBEAT: Duration = Duration::from_secs(12);
