@@ -2322,3 +2322,27 @@ def test_map_build_plan_is_pythons(client, seed, studio):
             assert a[k] == b[k], (i, k)
         assert b[4:] == ("gateway", "gateway"), i
     studio.reply_seq = None
+
+
+def test_hardware_panel_is_pythons(client, seed, studio):
+    """GET /api/ai/hardware (Settings > System's "Detected hardware"): the host from /proc, a VRAM override or a planning preset, and per
+    Studio model the recommendation - the same JSON (RAM still free moves between the two reads, so it is left out)."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+
+    def get(side, url):
+        r = side.get(url)
+        v = r.json()
+        if r.status_code == 200:
+            v["hardware"].pop("ram_available_mb")
+        return r.status_code, v, r.headers.get("x-nd-served-by")
+
+    for vram in ("", "0", "12000"):
+        _settings(gm, llm_url=studio.url, llm_model="studio", ollama_vram_override_mb=vram)
+        for url in ("/api/ai/hardware", "/api/ai/hardware?preset=v100_16gb", "/api/ai/hardware?preset=tesla_t10_16gb", "/api/ai/hardware?preset=nope"):
+            a, b = get(gm, url), get(_via(gm, base), url)
+            assert a[:2] == b[:2], (vram, url, a, b)
+            assert b[2] == "gateway"
+    _settings(gm, llm_url=studio.url, llm_model="studio", ollama_vram_override_mb="")
+    assert get(player, "/api/ai/hardware")[0] == get(_via(player, base), "/api/ai/hardware")[0]

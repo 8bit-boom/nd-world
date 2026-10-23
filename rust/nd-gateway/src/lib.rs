@@ -19,6 +19,7 @@ pub mod ai_more;
 pub mod runners;
 pub mod map_layout;
 pub mod mcp;
+pub mod tuning;
 pub mod ai_runners;
 pub mod template_draft;
 pub mod media_meta;
@@ -266,6 +267,12 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return ai::live_jobs_list(cfg, python).await;
         }
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/api/ai/hardware" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        // Settings > System's "Detected hardware" panel (app/ollama_tuning.py)
+        if let Some(resp) = tuning::hardware(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
         }
     }
