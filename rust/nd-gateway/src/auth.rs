@@ -503,6 +503,10 @@ pub fn gate(pages: &Pages, cfg: &Config, method: &str, uri: &Uri, headers: &Head
     if PUBLIC_PATHS.contains(&path.as_str()) || PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p)) {
         return None;
     }
+    // app/ai_background.py sits outside auth_gate: a POST asking to run in the background gets its task first, and the gate runs inside it
+    if method == "POST" && headers.get("x-nd-background").and_then(|v| v.to_str().ok()).is_some_and(|v| v.trim() == "1") {
+        return None;
+    }
     let api = path.starts_with("/api/");
     let to_login = || with_cookie(redirect(&format!("/login?next={}", quote_path(&path))), None);
     let (session, had) = read_session(pages, headers);

@@ -471,7 +471,9 @@ def test_ai_assist_free_text_ops_are_pythons(client, seed, studio):
     for body in ({"op": "expand", **entity, "use_rag": True}, {"op": "suggest", **entity}, {"op": "nope"}, {"op": "expand", "body": "x" * 60001}):
         assert _via(gm, base).post("/api/ai/assist", json=body).headers.get("x-nd-served-by") != "gateway", body
     player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
-    assert _via(player, base).post("/api/ai/assist", json={"op": "expand", **entity}).headers.get("x-nd-served-by") != "gateway"
+    # a player is refused by the gateway's auth gate, as Python would
+    r, d = _via(player, base).post("/api/ai/assist", json={"op": "expand", **entity}), player.post("/api/ai/assist", json={"op": "expand", **entity})
+    assert (r.status_code, r.text) == (d.status_code, d.text)
 
 
 def _job_result(side, job_id, timeout=20):
@@ -594,7 +596,8 @@ def test_background_chat_job_is_pythons(client, seed, studio):
         assert out[1][2] == "gateway", i
     # a player, a picture attachment, a string option: Python's
     player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
-    assert _via(player, base).post("/api/ai/chat/jobs", json={"messages": msgs}).headers.get("x-nd-served-by") != "gateway"
+    r, d = _via(player, base).post("/api/ai/chat/jobs", json={"messages": msgs}), player.post("/api/ai/chat/jobs", json={"messages": msgs})
+    assert (r.status_code, r.text) == (d.status_code, d.text)
     for body in ({"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/u/a.png"}]}]},
                  {"messages": msgs, "options": {"temperature": "0.2"}}):
         assert _via(gm, base).post("/api/ai/chat/jobs", json=body).headers.get("x-nd-served-by") != "gateway", body
