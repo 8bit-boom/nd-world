@@ -1979,7 +1979,7 @@ const LOOT_QTY_MAX: i64 = 9999;
 
 /// `load_loot` for a stash that is already clean (every item an object with its own string `lid`, text name / notes, an int qty and int
 /// claims); None for anything `load_loot` would repair (derived lids, str() of other values): Python's
-fn load_loot(p: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
+pub(crate) fn load_loot(p: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
     let raw = p.get("loot_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let Value::Array(items) = serde_json::from_str::<Value>(raw).ok()? else { return None };
     let mut seen: Vec<String> = vec![];
@@ -2440,7 +2440,7 @@ pub(crate) fn pc_native(db: &Connection, pc: &Map<String, Value>) -> Option<bool
 }
 
 /// `pc_maxima(pc)`: (hp, shock, pp, mp, native)
-fn pc_maxima(db: &Connection, pc: &Map<String, Value>) -> Option<(i64, i64, i64, i64, bool)> {
+pub(crate) fn pc_maxima(db: &Connection, pc: &Map<String, Value>) -> Option<(i64, i64, i64, i64, bool)> {
     let stats = stat_values(pc)?;
     let tpl = pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0);
     let mut native = !stats.is_empty() || tpl.is_none();
@@ -2621,7 +2621,7 @@ fn clean_condition(v: &Value) -> Option<String> {
     Some(strip(&take_chars(&nd_render::text::py_split_join(&text), 40)))
 }
 
-fn clean_conditions(seq: &Value) -> Option<Vec<String>> {
+pub(crate) fn clean_conditions(seq: &Value) -> Option<Vec<String>> {
     let (mut out, mut seen): (Vec<String>, Vec<String>) = (vec![], vec![]);
     for raw in seq.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
         let cnd = clean_condition(raw)?;
@@ -3157,7 +3157,7 @@ fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[Value]) -> 
 }
 
 /// `char_extras.prefs(db, pc_id)` (a stored value serde would read differently from json.loads: Python's)
-fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>> {
+pub(crate) fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>> {
     let raw: Option<Option<String>> = db.query_row("SELECT prefs_json FROM character_prefs WHERE character_id = ?1 LIMIT 1", [pc_id], |r| r.get(0)).ok();
     let raw = raw.flatten().filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
     match serde_json::from_str::<Value>(&raw) {
@@ -7644,9 +7644,14 @@ fn ability_cards(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Value>> {
 
 /// `char_extras.set_prefs(db, pc, key=value)` (None removes the key)
 fn set_pc_pref(c: &Ctx, pc: &Map<String, Value>, key: &str, value: Option<Value>) -> Option<()> {
+    set_pc_pref_db(&c.db, pc, key, value)
+}
+
+/// `char_extras.set_prefs(db, pc, key=value)` (None removes the key)
+pub(crate) fn set_pc_pref_db(db: &Connection, pc: &Map<String, Value>, key: &str, value: Option<Value>) -> Option<()> {
     let pid = pc.get("id")?.as_i64()?;
-    let existing: Option<i64> = c.db.query_row("SELECT id FROM character_prefs WHERE character_id = ?1 LIMIT 1", [pid], |r| r.get(0)).ok();
-    let mut data = if existing.is_some() { pc_prefs(&c.db, pid)? } else { Map::new() };
+    let existing: Option<i64> = db.query_row("SELECT id FROM character_prefs WHERE character_id = ?1 LIMIT 1", [pid], |r| r.get(0)).ok();
+    let mut data = if existing.is_some() { pc_prefs(db, pid)? } else { Map::new() };
     match value {
         Some(v) => {
             data.insert(key.into(), v);
@@ -7658,10 +7663,10 @@ fn set_pc_pref(c: &Ctx, pc: &Map<String, Value>, key: &str, value: Option<Value>
     let text = nd_render::py_dumps(&Value::Object(data));
     match existing {
         Some(id) => {
-            orm::update(&c.db, "character_prefs", id, &[("prefs_json", s(&text))])?;
+            orm::update(db, "character_prefs", id, &[("prefs_json", s(&text))])?;
         }
         None => {
-            orm::insert(&c.db, "character_prefs", &[("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)), ("character_id", Sql::Integer(pid)), ("prefs_json", s(&text))])?;
+            orm::insert(db, "character_prefs", &[("world_id", Sql::Integer(pc.get("world_id")?.as_i64()?)), ("character_id", Sql::Integer(pid)), ("prefs_json", s(&text))])?;
         }
     };
     Some(())
@@ -11380,7 +11385,7 @@ fn member_ids(raw: Option<&Value>) -> Option<Vec<i64>> {
 
 /// `_member_vitals(db, pcs, resource_limit)`, sorted by name: an N&D sheet reads its columns, a custom system its vital track (no AC,
 /// no level) and lists its resource tracks
-fn member_vitals(db: &Connection, pcs: &[Map<String, Value>], limit: Option<usize>) -> Option<Vec<Value>> {
+pub(crate) fn member_vitals(db: &Connection, pcs: &[Map<String, Value>], limit: Option<usize>) -> Option<Vec<Value>> {
     let mut sorted: Vec<&Map<String, Value>> = pcs.iter().collect();
     sorted.sort_by(|a, b| a.get("name").and_then(|v| v.as_str()).unwrap_or("").cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or("")));
     let mut out = vec![];

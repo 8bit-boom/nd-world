@@ -269,3 +269,160 @@ def test_mcp_write_tools_are_pythons(client, seed, mcp_world):
     status, body, by = _call(base, gm, "roll_table", {"table_id": pairs[1]["table"], "times": 25})
     res = json.loads(json.loads(body.split("data: ", 1)[1])["result"]["content"][0]["text"])
     assert by == "gateway" and res["table"] == "Loot" and len(res["results"]) == 10 and set(res["results"]) <= {"Gold", "Gem"}
+
+
+def _party_scene(seed):
+    """Anders (Hunt in the Moonlight, the player's), Vex (native N&D, another player's), Zeus (Asterion, nobody's) in one party, a second
+    party with only Zeus, and a custom template character with a deleted template."""
+    from app.database import SessionLocal
+    from app.models import Party, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+    from app import auth as auth_module
+    from .conftest import PLAYER_PASSWORD
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        p2 = db.query(User).filter(User.email == "mcp-p2@test.local").first()
+        if not p2:
+            p2 = User(email="mcp-p2@test.local", password_hash=auth_module.hash_password(PLAYER_PASSWORD), display_name="P2", is_gm=False)
+            db.add(p2)
+            db.commit()
+            db.add(WorldMembership(world_id=w, user_id=p2.id))
+        tpl = {t.slug: t.id for t in db.query(SheetTemplate).filter(SheetTemplate.is_builtin.is_(True)).all()}
+        anders = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Anders", player_name="Archie", max_hp=0, sheet_template_id=tpl["hunt-in-the-moonlight"],
+                                 conditions_json=json.dumps(["Stunned", "Prone", "Marked", "Shaken", "Bleeding", 3]),
+                                 custom_fields_json=json.dumps({"health_current": 3, "health_max": 5, "stamina_current": 2, "stamina_max": 5, "strain": "2", "xpCurrent": 4, "xpLifetime": 10}))
+        vex = PlayerCharacter(world_id=w, owner_user_id=p2.id, name="Vex", max_hp=20, current_hp=9, shock_current=2, pp_current=1, mp_current=None, xp=5,
+                              stats_json=json.dumps([{"id": k, "value": 3} for k in ("str", "dex", "bod", "per", "wil", "int", "cha", "itu")]),
+                              backstory="Public. [gmonly]Secret.[/gmonly]")
+        zeus = PlayerCharacter(world_id=w, name="Zeus", max_hp=0, sheet_template_id=tpl["asterion"], custom_fields_json=json.dumps({"flesh_current": 0, "flesh_max": 5, "glory": 3}))
+        orphan = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Orphan", max_hp=10, current_hp=10, sheet_template_id=987654)
+        db.add_all([anders, vex, zeus, orphan])
+        db.commit()
+        crew = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([anders.id, vex.id, zeus.id, 999999, "x"]), goals="Win. [gmonly]Betray.[/gmonly]",
+                     loot_json=json.dumps([{"lid": "aaaaaaaa", "name": "Rope", "qty": 2, "notes": "long", "claimed_by": [anders.id, 424242]}]))
+        gods = Party(world_id=w, name="Gods", member_pc_ids_json=json.dumps([zeus.id]))
+        db.add_all([crew, gods])
+        db.commit()
+        return {"w": w, "anders": anders.id, "vex": vex.id, "zeus": zeus.id, "orphan": orphan.id, "crew": crew.id, "gods": gods.id, "p2": p2.id}
+    finally:
+        db.close()
+
+
+@pytest.fixture
+def mcp_party(seed):
+    return _party_scene(seed)
+
+
+def test_mcp_character_and_party_reads_are_pythons(client, seed, mcp_party):
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    gm = _token(seed.gm.id, "mcp-parity-gm")
+    player = _token(seed.player_a.id, "mcp-parity-player")
+    m = mcp_party
+
+    def check(token, name, args):
+        a = _call(DIRECT, token, name, args)
+        b = _call(base, token, name, args)
+        assert a[:2] == b[:2], (name, args, a[1][:800], b[1][:800])
+        assert b[2] == "gateway", (name, args)
+
+    for see in (True, False):
+        db = SessionLocal()
+        try:
+            db.get(World, m["w"]).players_see_party = see
+            db.commit()
+        finally:
+            db.close()
+        for token in (gm, player):
+            check(token, "list_characters", {"world_id": m["w"]})
+            for c in ("anders", "vex", "zeus", "orphan"):
+                check(token, "get_character", {"character_id": m[c]})
+            check(token, "get_character", {"character_id": 999999})
+            check(token, "list_parties", {"world_id": m["w"]})
+            check(token, "get_party", {"party_id": m["crew"]})
+            check(token, "get_party", {"party_id": m["gods"]})
+            check(token, "get_party", {"party_id": 999999})
+
+
+def test_mcp_character_writes_are_pythons(client, seed):
+    """adjust_character_resource, set_character_conditions, award_character_xp and rest_party: each side changes its own copy of the
+    same characters and party, with the same answer and the same rows left behind."""
+    from app.database import SessionLocal
+    from app.models import World
+    from app import char_extras
+    from app.models import PlayerCharacter
+    base = str(client.base_url)
+    gm = _token(seed.gm.id, "mcp-parity-gm")
+    player = _token(seed.player_a.id, "mcp-parity-player")
+    scenes = [_party_scene(seed), _party_scene(seed)]
+    db = SessionLocal()
+    try:
+        db.get(World, seed.world_a.id).players_see_party = True
+        for sc in scenes:
+            char_extras.set_prefs(db, db.get(PlayerCharacter, sc["vex"]), feat_used={"a": "rest", "b": "session"})
+        db.commit()
+    finally:
+        db.close()
+    keys = ("anders", "vex", "zeus", "orphan", "crew", "gods")
+
+    def norm(body, sc):
+        names = {sc[k]: f"<{k}>" for k in ("anders", "vex", "zeus", "orphan")}
+        parties = {sc[k]: f"<{k}>" for k in ("crew", "gods")}
+        result = json.loads(body.split("data: ", 1)[1])["result"]
+        text = result["content"][0]["text"]
+        if result["isError"]:
+            return True, __import__("re").sub(r"(Character|Party) (\d+)", lambda m: f"{m[1]} {(names if m[1] == 'Character' else parties).get(int(m[2]), m[2])}", text)
+
+        def ids(v):
+            if isinstance(v, dict):
+                return {k: (names.get(x, x) if k == "id" else ids(x)) for k, x in v.items()}
+            return [ids(x) for x in v] if isinstance(v, list) else v
+        return False, ids(json.loads(text))
+
+    def pcs(sc):
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            out = {}
+            for k in ("anders", "vex", "zeus", "orphan"):
+                r = dict(db.execute(text("SELECT current_hp, shock_current, pp_current, mp_current, xp, conditions_json, custom_fields_json FROM player_characters WHERE id = :i"),
+                                    {"i": sc[k]}).mappings().first())
+                r["prefs"] = char_extras.prefs(db, sc[k])
+                out[k] = r
+            return out
+        finally:
+            db.close()
+
+    def same(token, name, args_for):
+        res = []
+        for sc, url in zip(scenes, (DIRECT, base)):
+            st, body, by = _call(url, token, name, args_for(sc))
+            res.append((st, norm(body, sc), pcs(sc), by))
+        a, b = res
+        assert a[:3] == b[:3], (name, a[1], b[1], a[2], b[2])
+        assert b[3] == "gateway", name
+
+    same(gm, "adjust_character_resource", lambda sc: {"character_id": sc["vex"], "resource": " HP ", "delta": -4})
+    same(gm, "adjust_character_resource", lambda sc: {"character_id": sc["vex"], "resource": "mp", "value": 99})
+    same(gm, "adjust_character_resource", lambda sc: {"character_id": sc["vex"], "resource": "luck", "value": 1})
+    same(gm, "adjust_character_resource", lambda sc: {"character_id": sc["vex"], "resource": "hp"})
+    same(gm, "adjust_character_resource", lambda sc: {"character_id": sc["vex"], "resource": "hp", "delta": 1, "value": 2})
+    same(player, "adjust_character_resource", lambda sc: {"character_id": sc["anders"], "resource": "stamina", "delta": -5})
+    same(player, "adjust_character_resource", lambda sc: {"character_id": sc["anders"], "resource": "HEALTH", "value": 50})
+    same(player, "adjust_character_resource", lambda sc: {"character_id": sc["anders"], "resource": "nope", "delta": 1})
+    same(player, "adjust_character_resource", lambda sc: {"character_id": sc["vex"], "resource": "hp", "delta": 1})
+    same(gm, "adjust_character_resource", lambda sc: {"character_id": sc["zeus"], "resource": "flesh", "delta": 2})
+    same(gm, "set_character_conditions", lambda sc: {"character_id": sc["anders"], "conditions": ["  stunned ", "Stunned", "Prone", ""]})
+    same(player, "set_character_conditions", lambda sc: {"character_id": sc["anders"], "conditions": []})
+    same(player, "set_character_conditions", lambda sc: {"character_id": sc["zeus"], "conditions": ["x"]})
+    same(gm, "award_character_xp", lambda sc: {"character_id": sc["anders"], "amount": 3})
+    same(gm, "award_character_xp", lambda sc: {"character_id": sc["zeus"], "amount": -10})
+    same(gm, "award_character_xp", lambda sc: {"character_id": sc["vex"], "amount": -100})
+    same(gm, "award_character_xp", lambda sc: {"character_id": sc["vex"], "amount": 100001})
+    same(player, "award_character_xp", lambda sc: {"character_id": sc["anders"], "amount": 1})
+    same(gm, "rest_party", lambda sc: {"party_id": sc["crew"]})
+    same(gm, "rest_party", lambda sc: {"party_id": sc["crew"], "kind": "short"})
+    same(gm, "rest_party", lambda sc: {"party_id": sc["gods"], "kind": "nap"})
+    same(player, "rest_party", lambda sc: {"party_id": sc["crew"]})
+    same(gm, "rest_party", lambda sc: {"party_id": 999999})

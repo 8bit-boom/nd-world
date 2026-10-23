@@ -11,7 +11,16 @@ use rusqlite::{types::Value as Sql, Connection};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
+use crate::ai::py_repr;
 use crate::config::Config;
+
+/// `str(v)`
+fn py_str(v: &Value) -> String {
+    match v {
+        Value::String(t) => t.clone(),
+        other => py_repr(other),
+    }
+}
 
 /// The token's user: (id, is_gm)
 #[derive(Clone, Copy)]
@@ -241,6 +250,24 @@ fn call(db: &Connection, user: User, name: &str, args: &Map<String, Value>) -> O
             update_entity(db, user, &a)
         }
         "delete_entity" => { let a = args_of(args, &[("entity_id", Int)])?; delete_entity(db, user, &a) }
+        "list_characters" => { let a = args_of(args, &[("world_id", Int)])?; list_characters(db, user, &a) }
+        "get_character" => { let a = args_of(args, &[("character_id", Int)])?; get_character(db, user, &a) }
+        "list_parties" => { let a = args_of(args, &[("world_id", Int)])?; list_parties(db, user, &a) }
+        "get_party" => { let a = args_of(args, &[("party_id", Int)])?; get_party(db, user, &a) }
+        "adjust_character_resource" => {
+            let a = args_of(args, &[("character_id", Int), ("resource", Str), ("delta", OptInt), ("value", OptInt)])?;
+            adjust_character_resource(db, user, &a)
+        }
+        "set_character_conditions" => {
+            let a = args_of(args, &[("character_id", Int)])?;
+            let list = args.get("conditions")?.as_array()?;
+            if !list.iter().all(|c| c.is_string()) {
+                return None;
+            }
+            set_character_conditions(db, user, &a, list)
+        }
+        "award_character_xp" => { let a = args_of(args, &[("character_id", Int), ("amount", Int)])?; award_character_xp(db, user, &a) }
+        "rest_party" => { let a = args_of(args, &[("party_id", Int), ("kind", StrOr("long"))])?; rest_party(db, user, &a) }
         "create_quest" => {
             let a = args_of(args, &[("world_id", Int), ("title", Str), ("summary", StrOr("")), ("body", StrOr("")), ("status", StrOr("active")),
                                     ("category", StrOr("main")), ("visible_to_players", BoolOr(true))])?;
@@ -851,4 +878,395 @@ fn update_quest(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResu
         return Ok(None);
     }
     Ok(Some(Out::Dict(json!({"id": qid, "title": title, "status": status, "updated": true}))))
+}
+
+// ── characters and parties ────────────────────────────────────────────────────────────────────────────────
+
+/// Rows of a query as maps (the shape the shared sheet helpers read)
+fn maps(db: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
+    let mut st = db.prepare(sql).ok()?;
+    let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    Some(r)
+}
+
+fn world_row(db: &Connection, wid: i64) -> Option<Map<String, Value>> {
+    maps(db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next()
+}
+
+/// `_pc_state`: {system, native, vital, resources, conditions}, the way the party page and roster read them
+fn pc_state(db: &Connection, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let v = crate::edits::member_vitals(db, std::slice::from_ref(pc), None)?.into_iter().next()?;
+    let native = v["native"].as_bool()?;
+    let num = |k: &str| pc.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+    let resources: Vec<Value> = if native {
+        let (_, shock, pp, mp, _) = crate::edits::pc_maxima(db, pc)?;
+        vec![json!({"label": "Shock", "current": num("shock_current"), "max": shock}), json!({"label": "PP", "current": num("pp_current"), "max": pp}),
+             json!({"label": "MP", "current": num("mp_current"), "max": mp})]
+    } else {
+        v["resources"].as_array()?.iter().filter(|t| t["id"] != v["hp_id"]).map(|t| json!({"label": t["label"], "current": t["current"], "max": t["max"]})).collect()
+    };
+    // system_label(pc.sheet_template if pc.sheet_template_id else None, native)
+    let system = match pc.get("sheet_template_id").and_then(|x| x.as_i64()).filter(|t| *t != 0) {
+        Some(t) if !native => match db.query_row("SELECT name FROM sheet_templates WHERE id = ?1", [t], |r| r.get::<_, Option<String>>(0)) {
+            Ok(n) => n.filter(|n| !n.is_empty()).unwrap_or_else(|| "a custom system".into()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => "Neon & Dragons".into(),
+            Err(_) => return None,
+        },
+        _ => "Neon & Dragons".into(),
+    };
+    let vital = if v["max_hp"].as_i64().is_some_and(|m| m != 0) {
+        json!({"label": v["hp_label"], "current": v["hp"], "max": v["max_hp"], "down": v["down"]})
+    } else {
+        Value::Null
+    };
+    let mut out = Map::new();
+    out.insert("system".into(), json!(system));
+    out.insert("native".into(), json!(native));
+    out.insert("vital".into(), vital);
+    out.insert("resources".into(), json!(resources));
+    out.insert("conditions".into(), v["conditions"].clone());
+    Some(out)
+}
+
+fn with_state(head: Value, state: Map<String, Value>) -> Value {
+    let mut o = head.as_object().cloned().unwrap_or_default();
+    o.extend(state);
+    Value::Object(o)
+}
+
+fn list_characters(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let wid = int(a, "world_id");
+    let w = try_some!(load_world(db, wid, user));
+    try_some!(require_view(user, &w, "characters"));
+    let Some(world) = world_row(db, wid) else { return Ok(None) };
+    let filter = if user.gm { "" } else if truthy_int(&world["players_see_party"]) { " AND owner_user_id IS NOT NULL" } else { " AND owner_user_id = ?2" };
+    let pcs = if filter.ends_with("?2") { maps(db, &format!("SELECT * FROM player_characters WHERE world_id = ?1{filter} ORDER BY name"), &[&wid, &user.id]) }
+        else { maps(db, &format!("SELECT * FROM player_characters WHERE world_id = ?1{filter} ORDER BY name"), &[&wid]) };
+    let Some(pcs) = pcs else { return Ok(None) };
+    let mut out = vec![];
+    for pc in &pcs {
+        let Some(state) = pc_state(db, pc) else { return Ok(None) };
+        let player = if pc["player_name"].is_null() { json!("") } else { pc["player_name"].clone() };
+        out.push(with_state(json!({"id": pc["id"], "name": pc["name"], "player_name": player, "mine": pc["owner_user_id"].as_i64() == Some(user.id)}), state));
+    }
+    Ok(Some(Out::List(out)))
+}
+
+fn get_character(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let cid = int(a, "character_id");
+    let Some((pc, wid)) = try_some!(character_for(db, user, cid, false)) else { return Ok(None) };
+    let Some(state) = pc_state(db, &pc) else { return Ok(None) };
+    let Some(mut sheet) = crate::edits::pc_markdown(db, &pc) else { return Ok(None) };
+    if !user.gm {
+        let Some(t) = crate::retrieval::strip(&sheet, None) else { return Ok(None) };
+        sheet = t;
+    }
+    let mut out = with_state(json!({"id": pc["id"], "name": pc["name"], "world_id": wid}), state);
+    out["sheet"] = json!(sheet);
+    Ok(Some(Out::Dict(out)))
+}
+
+/// `_character_for`: the character this token may read (manage: change) and its world; Ok(Some(None)) is not used
+fn character_for(db: &Connection, user: User, cid: i64, manage: bool) -> Result<Option<Option<(Map<String, Value>, i64)>>, Fail> {
+    let Some(pcs) = maps(db, "SELECT * FROM player_characters WHERE id = ?1", &[&cid]) else { return Ok(None) };
+    let Some(pc) = pcs.into_iter().next() else { return Err(format!("Character {cid} not found")) };
+    let wid = pc["world_id"].as_i64().unwrap_or(0);
+    let w = match load_world(db, wid, user)? { Some(w) => w, None => return Ok(None) };
+    if require_view(user, &w, "characters")?.is_none() {
+        return Ok(None);
+    }
+    let owner = pc["owner_user_id"].as_i64();
+    let can_manage = user.gm || owner == Some(user.id);
+    let allowed = if manage || can_manage { can_manage } else {
+        let Some(world) = world_row(db, wid) else { return Ok(None) };
+        truthy_int(&world["players_see_party"]) && owner.is_some()
+    };
+    if !allowed {
+        return Err(format!("Character {cid} not found or not accessible to this token"));
+    }
+    Ok(Some(Some((pc, wid))))
+}
+
+/// `[i for i in json.loads(party.member_pc_ids_json or "[]") if isinstance(i, int)]` (None: read Python's way)
+fn member_ids(party: &Map<String, Value>) -> Result<Option<Vec<i64>>, Fail> {
+    let raw = party["member_pc_ids_json"].as_str().filter(|t| !t.is_empty()).unwrap_or("[]");
+    Ok(match crate::map_layout::py_loads(raw)? {
+        Value::Array(a) => {
+            if a.iter().any(|v| v.is_boolean() || v.is_u64() && !v.is_i64()) {
+                return Ok(None);
+            }
+            Some(a.iter().filter_map(|v| if v.is_i64() { v.as_i64() } else { None }).collect())
+        }
+        Value::Object(_) | Value::String(_) => Some(vec![]),
+        _ => None,
+    })
+}
+
+fn list_parties(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let wid = int(a, "world_id");
+    let w = try_some!(load_world(db, wid, user));
+    try_some!(require_view(user, &w, "parties"));
+    let Some(world) = world_row(db, wid) else { return Ok(None) };
+    let Some(mine) = rows(db, "SELECT id FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2", &[&wid, &user.id], |r| Ok(json!(r.get::<_, i64>(0)?))) else { return Ok(None) };
+    let Some(parties) = maps(db, "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name", &[&wid]) else { return Ok(None) };
+    let mut out = vec![];
+    for party in &parties {
+        let Some(ids) = member_ids(party)? else { return Ok(None) };
+        if !(user.gm || truthy_int(&world["players_see_party"]) || ids.iter().any(|i| mine.contains(&json!(i)))) {
+            continue;
+        }
+        let names = if ids.is_empty() { vec![] } else {
+            let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            let Some(n) = rows(db, &format!("SELECT name FROM player_characters WHERE id IN ({list}) ORDER BY name"), &[], |r| Ok(sql_json(r.get(0)?))) else { return Ok(None) };
+            n
+        };
+        out.push(json!({"id": party["id"], "name": party["name"], "members": names}));
+    }
+    Ok(Some(Out::List(out)))
+}
+
+/// `_party_for`: (party, world id, members by name) this token may read
+fn party_for(db: &Connection, user: User, pid: i64, gm_only_: bool) -> Result<Option<(Map<String, Value>, i64, Vec<Map<String, Value>>)>, Fail> {
+    if gm_only_ {
+        gm_only(user)?;
+    }
+    let Some(ps) = maps(db, "SELECT * FROM parties WHERE id = ?1", &[&pid]) else { return Ok(None) };
+    let Some(party) = ps.into_iter().next() else { return Err(format!("Party {pid} not found")) };
+    let wid = party["world_id"].as_i64().unwrap_or(0);
+    let Some(w) = load_world(db, wid, user)? else { return Ok(None) };
+    if require_view(user, &w, "parties")?.is_none() {
+        return Ok(None);
+    }
+    let Some(ids) = member_ids(&party)? else { return Ok(None) };
+    let members = if ids.is_empty() { vec![] } else {
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let Some(m) = maps(db, &format!("SELECT * FROM player_characters WHERE id IN ({list}) AND world_id = ?1 ORDER BY name"), &[&wid]) else { return Ok(None) };
+        m
+    };
+    let Some(world) = world_row(db, wid) else { return Ok(None) };
+    if !user.gm && !truthy_int(&world["players_see_party"]) && !members.iter().any(|m| m["owner_user_id"].as_i64() == Some(user.id)) {
+        return Err(format!("Party {pid} not found or not accessible to this token"));
+    }
+    Ok(Some((party, wid, members)))
+}
+
+fn get_party(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let pid = int(a, "party_id");
+    let Some((party, _wid, members)) = party_for(db, user, pid, false)? else { return Ok(None) };
+    let mut goals = party["goals"].as_str().unwrap_or("").to_string();
+    if !user.gm {
+        let Some(t) = crate::retrieval::strip(&goals, None) else { return Ok(None) };
+        goals = t;
+    }
+    let mut ms = vec![];
+    for pc in &members {
+        let Some(state) = pc_state(db, pc) else { return Ok(None) };
+        ms.push(with_state(json!({"id": pc["id"], "name": pc["name"]}), state));
+    }
+    let Some(loot) = crate::edits::load_loot(&party) else { return Ok(None) };
+    let loot: Vec<Value> = loot.iter().map(|i| {
+        let claimed: Vec<Value> = members.iter().filter(|m| i["claimed_by"].as_array().is_some_and(|c| c.contains(&m["id"]))).map(|m| m["name"].clone()).collect();
+        json!({"name": i["name"], "qty": i["qty"], "notes": i["notes"], "claimed_by": claimed})
+    }).collect();
+    Ok(Some(Out::Dict(json!({"id": party["id"], "name": party["name"], "goals": goals, "members": ms, "loot": loot}))))
+}
+
+// ── character changes ────────────────────────────────────────────────────────────────────────────────────
+
+/// Write the columns whose value really changes (an unchanged flush writes nothing, not even `updated_at`)
+fn write_changed(db: &Connection, table: &str, id: i64, row: &Map<String, Value>, vals: Vec<(&str, Sql)>) -> Option<()> {
+    let changed: Vec<(&str, Sql)> = vals.into_iter().filter(|(k, v)| {
+        let cur = row.get(*k).cloned().unwrap_or(Value::Null);
+        match v {
+            Sql::Integer(i) => cur.as_i64() != Some(*i) || !cur.is_i64(),
+            Sql::Text(t) => cur.as_str() != Some(t.as_str()),
+            Sql::Null => !cur.is_null(),
+            _ => true,
+        }
+    }).collect();
+    if changed.is_empty() {
+        return Some(());
+    }
+    crate::orm::update(db, table, id, &changed).map(|_| ())
+}
+
+fn reread_pc(db: &Connection, cid: i64) -> Option<Map<String, Value>> {
+    maps(db, "SELECT * FROM player_characters WHERE id = ?1", &[&cid])?.into_iter().next()
+}
+
+fn state_answer(db: &Connection, cid: i64) -> ToolResult {
+    let Some(pc) = reread_pc(db, cid) else { return Ok(None) };
+    let Some(state) = pc_state(db, &pc) else { return Ok(None) };
+    Ok(Some(Out::Dict(with_state(json!({"id": pc["id"], "name": pc["name"]}), state))))
+}
+
+fn adjust_character_resource(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let (delta, value) = (a.get("delta").and_then(|v| v.as_i64()), a.get("value").and_then(|v| v.as_i64()));
+    if delta.is_none() == value.is_none() {
+        return Err("Pass exactly one of delta or value".into());
+    }
+    let cid = int(a, "character_id");
+    let Some((pc, wid)) = try_some!(character_for(db, user, cid, true)) else { return Ok(None) };
+    let Some((hp, shock, pp, mp, native)) = crate::edits::pc_maxima(db, &pc) else { return Ok(None) };
+    let resource = s(a, "resource").unwrap_or_default();
+    if native {
+        let key = strip(&resource).to_lowercase();
+        let (col, top) = match key.as_str() {
+            "hp" => ("current_hp", hp),
+            "shock" => ("shock_current", shock),
+            "pp" => ("pp_current", pp),
+            "mp" => ("mp_current", mp),
+            _ => return Err("A native sheet's resources are: hp, shock, pp, mp".into()),
+        };
+        let cur = pc[col].as_i64().unwrap_or(0);
+        let new = value.unwrap_or_else(|| cur + delta.unwrap_or(0));
+        let new = if top > 0 { new.min(top).max(0) } else { new.max(0) };
+        if write_changed(db, "player_characters", cid, &pc, vec![(col, Sql::Integer(new))]).is_none() {
+            return Ok(None);
+        }
+    } else {
+        let Some(tpl) = crate::sheets::pc_template(db, &pc) else { return Ok(None) };
+        let Some(tpl) = tpl else { return Err("This character has no sheet template to take resources from".into()) };
+        let Some(mut cf) = crate::sheets::custom_fields(&pc) else { return Ok(None) };
+        let Some(tracks) = tpl.tracks(&cf, true) else { return Ok(None) };
+        // find_track: by id or (short) label, case-insensitive
+        let key = strip(&resource).to_lowercase();
+        let found = if key.is_empty() { None } else {
+            tracks.iter().find(|t| [py_str(&t["id"]), py_str(&t["label"])].iter().any(|x| x.to_lowercase() == key))
+        };
+        let Some(track) = found else {
+            let names: Vec<String> = tracks.iter().map(|t| format!("{} (id {})", py_str(&t["label"]), py_str(&t["id"]))).collect();
+            return Err(format!("no such resource {}; this sheet has: {}", py_repr(&json!(resource)), names.join(", ")));
+        };
+        let (Some(cur), Some(mx)) = (track["current"].as_i64(), track["max"].as_i64()) else { return Ok(None) };
+        let new = value.unwrap_or_else(|| cur + delta.unwrap_or(0));
+        let new = if mx > 0 { new.min(mx).max(0) } else { new.max(0) };
+        cf.insert(format!("{}_current", py_str(&track["id"])), json!(new));
+        if write_changed(db, "player_characters", cid, &pc, vec![("custom_fields_json", Sql::Text(nd_render::py_dumps(&Value::Object(cf))))]).is_none() {
+            return Ok(None);
+        }
+    }
+    crate::orm::touch(db, wid);
+    state_answer(db, cid)
+}
+
+fn set_character_conditions(db: &Connection, user: User, a: &Map<String, Value>, list: &[Value]) -> ToolResult {
+    let cid = int(a, "character_id");
+    let Some((pc, wid)) = try_some!(character_for(db, user, cid, true)) else { return Ok(None) };
+    let Some(clean) = crate::edits::clean_conditions(&json!(list)) else { return Ok(None) };
+    if write_changed(db, "player_characters", cid, &pc, vec![("conditions_json", Sql::Text(nd_render::py_dumps(&json!(clean))))]).is_none() {
+        return Ok(None);
+    }
+    crate::orm::touch(db, wid);
+    state_answer(db, cid)
+}
+
+fn award_character_xp(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let cid = int(a, "character_id");
+    let Some((pc, wid)) = try_some!(character_for(db, user, cid, true)) else { return Ok(None) };
+    gm_only(user)?;
+    let amount = int(a, "amount");
+    if amount.abs() > 100000 {
+        return Err("amount out of range".into());
+    }
+    let Some(tpl) = crate::sheets::pc_template(db, &pc) else { return Ok(None) };
+    match tpl.filter(|t| t.custom()) {
+        Some(t) => {
+            let Some((_, xp_ids)) = t.meta() else { return Ok(None) };
+            if xp_ids.is_empty() {
+                return Err(format!("{} has no XP field to award", py_str(t.row.get("name").unwrap_or(&Value::Null))));
+            }
+            // apply_xp_award: each XP field grows from its saved value, else its default, never below 0
+            let Some(mut cf) = crate::sheets::custom_fields(&pc) else { return Ok(None) };
+            for fid in xp_ids {
+                let Ok(saved) = crate::edits::sheet_num_pub(cf.get(&fid)) else { return Ok(None) };
+                let base = match saved {
+                    Some(b) => b,
+                    None => {
+                        let dv = t.fields.iter().find(|f| f.get("id").and_then(|v| v.as_str()) == Some(fid.as_str())).and_then(|f| f.get("default_value").cloned());
+                        let Ok(d) = crate::edits::sheet_num_pub(dv.as_ref()) else { return Ok(None) };
+                        d.unwrap_or(0)
+                    }
+                };
+                cf.insert(fid, json!((base + amount).max(0)));
+            }
+            if write_changed(db, "player_characters", cid, &pc, vec![("custom_fields_json", Sql::Text(nd_render::py_dumps(&Value::Object(cf))))]).is_none() {
+                return Ok(None);
+            }
+        }
+        None => {
+            let xp = (pc["xp"].as_i64().unwrap_or(0) + amount).max(0);
+            if write_changed(db, "player_characters", cid, &pc, vec![("xp", Sql::Integer(xp))]).is_none() {
+                return Ok(None);
+            }
+        }
+    }
+    crate::orm::touch(db, wid);
+    Ok(Some(Out::Dict(json!({"id": pc["id"], "name": pc["name"], "awarded": amount}))))
+}
+
+fn rest_party(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let kind = s(a, "kind").unwrap_or_default();
+    if kind != "short" && kind != "long" {
+        return Err("kind must be \"short\" or \"long\"".into());
+    }
+    let pid = int(a, "party_id");
+    let Some((party, wid, _members)) = party_for(db, user, pid, true)? else { return Ok(None) };
+    // apply_party_rest: every listed character (any world), in the database's own order
+    let raw = party["member_pc_ids_json"].as_str().filter(|t| !t.is_empty()).unwrap_or("[]");
+    let Ok(Value::Array(all)) = crate::map_layout::py_loads(raw) else { return Ok(None) };
+    // `PlayerCharacter.id.in_(ids)`: text that is no number never matches an integer id; numeric text, a bool or a float would
+    let mut ids = vec![];
+    for v in all {
+        match v {
+            Value::Number(n) if n.is_i64() => ids.push(n.as_i64().unwrap_or(0)),
+            Value::Null => {}
+            Value::String(t) if t.trim().parse::<f64>().is_err() && !t.trim().starts_with(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '+') => {}
+            _ => return Ok(None),
+        }
+    }
+    let pcs = if ids.is_empty() { vec![] } else {
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let Some(p) = maps(db, &format!("SELECT * FROM player_characters WHERE id IN ({list})"), &[]) else { return Ok(None) };
+        p
+    };
+    let mut rested = vec![];
+    for pc in &pcs {
+        let Some((_, shock, pp, mp, native)) = crate::edits::pc_maxima(db, pc) else { return Ok(None) };
+        let Some(tpl) = crate::sheets::pc_template(db, pc) else { return Ok(None) };
+        let ops = tpl.as_ref().map(|t| t.rest_ops(&kind)).unwrap_or_default();
+        if !native && ops.is_empty() {
+            continue;
+        }
+        let cid = pc["id"].as_i64().unwrap_or(0);
+        // _refresh_feats_after_rest: the once-per-Rest feats come back
+        let Some(prefs) = crate::edits::pc_prefs(db, cid) else { return Ok(None) };
+        if let Some(used) = prefs.get("feat_used").filter(|v| crate::edits::py_truthy_pub(Some(v))) {
+            let Some(used) = used.as_object() else { return Ok(None) };
+            if used.values().any(|v| v == "rest") {
+                let keep: Map<String, Value> = used.iter().filter(|(_, v)| *v != "rest").map(|(k, v)| (k.clone(), v.clone())).collect();
+                if crate::edits::set_pc_pref_db(db, pc, "feat_used", (!keep.is_empty()).then(|| Value::Object(keep))).is_none() {
+                    return Ok(None);
+                }
+            }
+        }
+        let mut set: Vec<(&str, Sql)> = vec![];
+        if native {
+            let num = |k: &str| pc[k].as_i64().unwrap_or(0);
+            set.push(("pp_current", Sql::Integer(pp.min(num("pp_current") + pp.div_euclid(2)))));
+            set.push(("mp_current", Sql::Integer(mp.min(num("mp_current") + mp.div_euclid(2)))));
+            set.push(("shock_current", Sql::Integer(shock)));
+        }
+        if !ops.is_empty() {
+            let Some(t) = tpl.as_ref() else { return Ok(None) };
+            let Some(cf) = crate::sheets::custom_fields(pc).and_then(|cf| t.apply_rest(&cf, &kind)) else { return Ok(None) };
+            set.push(("custom_fields_json", Sql::Text(nd_render::py_dumps(&Value::Object(cf)))));
+        }
+        if write_changed(db, "player_characters", cid, pc, set).is_none() {
+            return Ok(None);
+        }
+        rested.push(pc["name"].clone());
+    }
+    crate::orm::touch(db, wid);
+    Ok(Some(Out::Dict(json!({"party": party["name"], "kind": kind, "rested": rested}))))
 }
