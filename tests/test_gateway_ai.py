@@ -2028,3 +2028,47 @@ def test_auto_tag_is_pythons(client, seed, studio):
             r = side.post("/api/ai/auto-tag/start", json=body)
             assert (r.status_code, r.json()["detail"]) == (400, msg)
     studio.reply_seq = None
+
+
+def test_system_draft_is_pythons(client, seed, studio):
+    """/api/sheet-templates/ai/start and its poll: the rulebook read whole or in parts (split at headings, the sheet-relevant parts
+    picked), the draft cleaned into a working template with Python's warnings - and the refusals."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    draft = {"name": "Moon <Hunt>", "description": "A  game", "rules_md": "", "fields": [
+        {"id": "Name", "label": "Name", "type": "text", "binds": "name"}, {"id": "name", "label": "Again", "type": "text", "binds": "name"},
+        {"id": "9lives", "label": "Lives", "type": "number", "default_value": "3.0", "xp": True},
+        {"id": "hp", "label": "Health", "type": "resource", "default_value": "12", "vital": "hp", "section": "Vitals"},
+        {"id": "hp2", "label": "Grit", "type": "resource", "default_value": "5/3", "vital": "hp", "section": "Vitals"},
+        {"label": "Calling", "type": "select", "options": ["Hunter", "Hunter", "Sage", 5], "default_value": "Sage"},
+        {"label": "Mood", "type": "select", "options": []}, {"id": "gear", "label": "Gear", "type": "table", "columns": [{"id": "qty", "type": "number"}, {"label": "Item"}]},
+        {"id": "x"}, {"id": "odd", "label": "Odd", "type": "weird", "default_value": "<b>bold</b>"}, {"id": "n2", "label": "N2", "type": "number", "default_value": "abc"}],
+        "system": {"conditions": ["Poisoned", "poisoned", " Stunned  now "], "rest": {"short": [["full", "hp"], ["add", "hp", "2"], ["add", "hp", 0], ["set", "Calling", "Sage"],
+                   ["set", "Calling", "Nope"], ["full", "9lives"], ["bogus"]], "long": "x"},
+                   "pages": [{"label": "Main", "sections": ["General", "Nope"]}, {"label": "", "sections": ["Vitals", "General"]}],
+                   "roster": [["Core", ["9lives", "hp", "zzz"]]], "hp": "hp", "xp": ["9lives", "hp"], "binds": {"Name": "player_name"},
+                   "dice": {"pools": [{"label": "Hunt", "dice": "4"}, {"label": "", "dice": 2}], "threshold": 5, "explode": False, "spend": {"field": "Calling"}}}}
+    long_book = "\n\n".join(f"# Chapter {i}\n\n" + ("Lore about the moon and its stars. " * 120 if i % 3 else "Character creation: pick a class, roll hit points, rest to heal. " * 80)
+                            for i in range(12))
+    cases = [
+        ({"rules_text": "Health 12. Rest heals.", "system_name": "  Moon   Hunt  ", "wishes": " tabs ", "think": "false"}, [_reply("```json\n" + json.dumps(draft) + "\n```")]),
+        ({"rules_text": long_book}, [_reply("Notes " + str(i)) for i in range(5)] + [_reply("NOTHING."), _reply("nothing")] * 4 + [_reply(json.dumps({"fields": []}))]),
+        ({"rules_text": "x"}, [_reply("no json here")]),
+    ]
+    for i, (form, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/api/sheet-templates/ai/start", data=form)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/api/sheet-templates/ai/{r.json()['job_id']}")
+            out.append((r.json()["characters"], p.status_code, p.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (i, out[0][:3], out[1][:3])
+        assert out[1][4:] == ("gateway", "gateway"), i
+    for side in (gm, _via(gm, base)):
+        r = side.post("/api/sheet-templates/ai/start", data={"rules_text": " "})
+        assert r.status_code == 400
+        r = side.post("/api/sheet-templates/ai/start", files={"file": ("rules.docx", b"x")})
+        assert (r.status_code, r.json()["detail"]) == (400, "Word documents aren't readable here — export the rules to PDF or plain text, or paste them.")
+    studio.reply_seq = None

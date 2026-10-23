@@ -18,6 +18,7 @@ pub mod tts;
 pub mod ai_more;
 pub mod runners;
 pub mod ai_runners;
+pub mod template_draft;
 pub mod media_meta;
 pub mod media_rename;
 pub mod idpages;

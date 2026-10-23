@@ -2872,7 +2872,7 @@ pub(crate) fn small_form(headers: &HeaderMap, body: &[u8]) -> Option<crate::form
 }
 
 /// A `bool = Form(default)` field as Pydantic reads it (None: a 422, Python's)
-fn form_bool(f: &crate::form::Form, k: &str, default: bool) -> Option<bool> {
+pub(crate) fn form_bool(f: &crate::form::Form, k: &str, default: bool) -> Option<bool> {
     match f.get(k) {
         None => Some(default),
         Some(v) => match v.trim().to_lowercase().as_str() {

@@ -135,6 +135,8 @@ def make() -> dict:
                                                                                       "_CHARACTER_FROM_IMAGES_SYSTEM", "_ENTITY_FROM_IMAGES_SYSTEM", "_FIND_REPLACE_SYSTEM", "_SESSION_PREP_SYSTEM")},
         # the entity kinds the AI drafts choose from (app/constants.py KINDS)
         "entity_kinds": __import__("app.constants", fromlist=["KINDS"]).KINDS,
+        # the sheet-template drafter's prompt (app/template_draft.py)
+        "template_draft_system": __import__("app.template_draft", fromlist=["DRAFT_SYSTEM"]).DRAFT_SYSTEM,
         # the bundled core rules (retrieval.world_rules_markdown for a world with no rules of its own)
         "core_rules_md": (ROOT / "app" / "core_rules.md").read_text(encoding="utf-8", errors="ignore") if (ROOT / "app" / "core_rules.md").exists() else "",
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)

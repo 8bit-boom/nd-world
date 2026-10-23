@@ -65,6 +65,8 @@ fn kind_of(path: &str) -> Option<&'static str> {
         Some("quest sync")
     } else if path.starts_with("/api/ai/auto-tag/") {
         Some("auto-tag")
+    } else if path.starts_with("/api/sheet-templates/ai/") {
+        Some("system draft")
     } else {
         None
     }
@@ -93,6 +95,7 @@ pub async fn route(cfg: Arc<Config>, method: &Method, uri: &Uri, headers: &Heade
             "cockpit find" => cockpit_find_start(cfg.clone(), &db, &p, &body),
             "quest sync" => quest_sync_start(cfg.clone(), &db, &p, &body),
             "auto-tag" => auto_tag_start(cfg.clone(), &db, &p, &body),
+            "system draft" => system_draft_start(cfg.clone(), &db, &p, &headers2, &body),
             _ => None,
         }
     }).await.ok().flatten()
@@ -124,6 +127,17 @@ fn poll_answer(kind: &str, p: &PageCtx, job: &Map<String, Value>) -> Option<Resp
         "auto-tag" => Some(ok(if status == "error" { json!({"status": "error", "error": job.get("error")}) } else {
             json!({"status": status, "processed": job.get("processed"), "total": job.get("total"), "tagged": job.get("tagged")})
         })),
+        "system draft" => {
+            if !p.is_gm {
+                return None;
+            }
+            Some(ok(match status {
+                "running" => json!({"status": "running", "elapsed": elapsed(), "progress": job.get("progress")}),
+                "error" => json!({"status": "error", "error": job.get("error")}),
+                _ => json!({"status": "done", "draft": job.get("draft"), "warnings": job.get("warnings"), "parts_read": job.get("parts_read"),
+                    "parts_total": job.get("parts_total")}),
+            }))
+        }
         "quest sync" => Some(ok(match status {
             "running" => json!({"status": "running", "elapsed": elapsed()}),
             "error" => json!({"status": "error", "error": job.get("error")}),
@@ -639,5 +653,141 @@ async fn auto_tag_task(cfg: Arc<Config>, b: Backend, job: i64, ids: &[i64], over
         });
     }
     crate::runners::update("auto-tag", job, |e| { e.insert("status".into(), json!("done")); });
+    Ok(())
+}
+
+// ── system draft (app/routers/template_ai.py) ──────────────────────────────
+
+fn system_draft_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    if !p.is_gm {
+        return None;
+    }
+    let (form, files) = match crate::form::content_type(headers).as_str() {
+        "multipart/form-data" => crate::form::parse_multipart(headers, body)?,
+        _ => (small_form_pub(headers, body)?, vec![]),
+    };
+    let think = crate::ai::form_bool(&form, "think", true)?;
+    let use_world = crate::ai::form_bool(&form, "use_world_rules", false)?;
+    let mut parts = vec![];
+    let rules_text = crate::edits::py_strip_pub(form.get("rules_text").unwrap_or(""));
+    if !rules_text.is_empty() {
+        parts.push(rules_text);
+    }
+    if let Some(f) = files.iter().rev().find(|f| f.name == "file").filter(|f| !f.filename.is_empty()) {
+        if f.data.len() > 25 * 1024 * 1024 {
+            return Some(detail(StatusCode::BAD_REQUEST, "File too large (over 25 MB)"));
+        }
+        if !f.data.is_empty() {
+            let base = f.filename.rsplit('/').next().unwrap_or("");
+            let ext = base.rfind('.').filter(|&i| i > 0 && i < base.len() - 1).map(|i| base[i..].to_lowercase()).unwrap_or_default();
+            match ext.as_str() {
+                ".md" | ".markdown" | ".txt" => parts.push(String::from_utf8_lossy(&f.data).into_owned()),
+                ".json" | ".pdf" => return None, // pretty-printed JSON and PDF text extraction: Python's
+                ".doc" | ".docx" | ".odt" => return Some(detail(StatusCode::BAD_REQUEST, "Word documents aren't readable here — export the rules to PDF or plain text, or paste them.")),
+                other => return Some(detail(StatusCode::BAD_REQUEST, format!("Unsupported file type {} — use PDF, MD, TXT or JSON, or paste the text.", py_repr(&json!(other))))),
+            }
+        }
+    }
+    if use_world {
+        if let Some(w) = p.world.as_ref() {
+            let own = crate::edits::py_strip_pub(&crate::retrieval::world_rules_markdown(w));
+            if !own.is_empty() {
+                parts.push(own);
+            }
+        }
+    }
+    let source = crate::edits::py_strip_pub(&parts.iter().filter(|x| !x.is_empty()).cloned().collect::<Vec<_>>().join("\n\n"));
+    if source.is_empty() {
+        return Some(detail(StatusCode::BAD_REQUEST, "Paste the rules, upload a rulebook (PDF / MD / TXT / JSON), or tick 'use this world's rules'."));
+    }
+    let truncated = source.chars().count() > 900_000;
+    let source = take(&source, 900_000);
+    let bk = backend(db)?;
+    let name = take(&form.get("system_name").unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" "), 80);
+    let wishes = crate::edits::py_strip_pub(form.get("wishes").unwrap_or(""));
+    let chars = source.chars().count();
+    let id = crate::runners::new_job("system draft", json!({"status": "running", "started": now(), "user_id": p.user_id, "draft": null, "warnings": [], "error": "",
+        "progress": "Starting…", "truncated": truncated, "parts_total": 0, "parts_read": 0}), 8);
+    let rerun: Rerun = Arc::new(move |id| {
+        let (bk, source, name, wishes) = (bk.clone(), source.clone(), name.clone(), wishes.clone());
+        Box::pin(async move {
+            if let Err(m) = system_draft_task(bk, id, &source, &name, &wishes, think, truncated).await {
+                crate::runners::update("system draft", id, |e| {
+                    e.insert("status".into(), json!("error"));
+                    e.insert("error".into(), json!(m));
+                });
+            }
+        })
+    });
+    let _ = cfg;
+    crate::runners::run("system draft", "system draft", id, rerun);
+    Some(ok(json!({"job_id": id, "status": "running", "characters": chars})))
+}
+
+fn small_form_pub(headers: &HeaderMap, body: &[u8]) -> Option<crate::form::Form> {
+    crate::ai::small_form(headers, body)
+}
+
+async fn system_draft_task(b: Backend, id: i64, source: &str, name: &str, wishes: &str, think: bool, truncated: bool) -> Result<(), String> {
+    let set = |f: Box<dyn FnOnce(&mut Map<String, Value>)>| crate::runners::update("system draft", id, f);
+    let chunks = crate::template_draft::split_rules_text(source, 6000);
+    let picked = crate::template_draft::pick_chunks(&chunks, 14);
+    let (total, nread) = (chunks.len(), picked.len());
+    set(Box::new(move |e| { e.insert("parts_total".into(), json!(total)); e.insert("parts_read".into(), json!(nread)); }));
+    let model = b.model.clone();
+    let notes: Vec<String> = if source.chars().count() <= 14000 {
+        vec![crate::edits::py_strip_pub(source)]
+    } else {
+        let mut notes = vec![];
+        for (i, chunk) in picked.iter().enumerate() {
+            let progress = format!("Reading the rules, part {} of {}…", i + 1, picked.len());
+            set(Box::new(move |e| { e.insert("progress".into(), json!(progress)); }));
+            let raw = crate::ai::generate_chat(&b, &model, crate::template_draft::NOTES_SYSTEM,
+                &[json!({"role": "user", "content": format!("Rulebook part {} of {}:\n\n{chunk}", i + 1, picked.len())})], false, &Map::new()).await;
+            let raw = crate::edits::py_strip_pub(&raw);
+            if !raw.is_empty() && raw.to_uppercase().trim_end_matches(['.', ' ']) != "NOTHING" {
+                notes.push(raw);
+            }
+        }
+        if notes.is_empty() {
+            return Err("Nothing in this text describes what a character sheet tracks — paste the character-creation and resource/rest chapters.".into());
+        }
+        notes
+    };
+    let joined = take(&notes.join("\n\n"), 26000);
+    set(Box::new(|e| { e.insert("progress".into(), json!("Designing the sheet…")); }));
+    let mut head = if name.is_empty() { String::new() } else { format!("System name: {name}\n") };
+    if !wishes.is_empty() {
+        head.push_str(&format!("What the GM asked for: {}\n", take(wishes, 1000)));
+    }
+    let body = if joined.is_empty() { String::new() } else { joined.clone() };
+    let prompt = format!("{head}\nRulebook notes:\n{body}\n\nNow output the template JSON.");
+    let schema = json!({"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "fields": {"type": "array"},
+        "system": {"type": "object"}, "rules_md": {"type": "string"}}, "required": ["name", "fields"]});
+    let system = nd_render::app::data()["template_draft_system"].as_str().unwrap_or("").to_string();
+    let raw = crate::ai::generate_chat_format(&b, &model, &system, &[json!({"role": "user", "content": prompt})], think, &Map::new(), Some(&schema)).await;
+    let mut data = extract_object(&raw).map_err(|_| "The model's reply wasn't a template — try again, or paste a shorter excerpt.".to_string())?;
+    if !name.is_empty() {
+        if let Value::Object(o) = &mut data {
+            o.insert("name".into(), json!(name));
+        }
+    }
+    let (draft, mut warnings) = crate::template_draft::clean_template_draft(&data);
+    let Some(mut draft) = draft else {
+        let tail = if warnings.is_empty() { ".".to_string() } else { format!(": {}", warnings.iter().take(3).cloned().collect::<Vec<_>>().join("; ")) };
+        return Err(format!("The model couldn't produce a usable sheet{tail}"));
+    };
+    if draft["rules_md"].as_str().unwrap_or("").is_empty() {
+        draft["rules_md"] = json!(take(&format!("# {} — rules notes\n\n{joined}", draft["name"].as_str().unwrap_or("")), 20000));
+        warnings.push("the model wrote no rules digest; kept its reading notes instead".into());
+    }
+    if truncated {
+        warnings.push("the text was longer than 900k characters; only the start was read".into());
+    }
+    set(Box::new(move |e| {
+        e.insert("status".into(), json!("done"));
+        e.insert("draft".into(), draft);
+        e.insert("warnings".into(), json!(warnings));
+    }));
     Ok(())
 }
