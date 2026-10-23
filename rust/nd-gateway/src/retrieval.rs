@@ -391,3 +391,66 @@ pub fn instructions_text(db: &Connection, wid: i64, for_players: bool) -> Option
     }
     Some(format!("Additional GM-authored instructions for how you should behave — follow these in addition to everything above, not instead of it:\n\n{}", parts.join("\n\n")))
 }
+
+/// `audio_jobs._build_rag_context(world, query, entity_limit, notes_limit, pinned_entity_ids)`: the lore a background job's system
+/// prompt carries (GM view, nothing stripped): pinned entities, the entities the query finds topped up to the limit, the latest notes,
+/// and the last 20 facts oldest first. Pinned player characters (`_format_pc_line`, app/pc_digest.py) are not here: a caller with
+/// any leaves the job to Python.
+pub fn build_rag_context(db: &Connection, wid: i64, query: &str, entity_limit: i64, notes_limit: i64, pinned: &[i64]) -> Option<String> {
+    let rows = |sql: &str, params: Vec<rusqlite::types::Value>| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(rusqlite::params_from_iter(params), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
+        r
+    };
+    use rusqlite::types::Value as V;
+    let id_of = |e: &Map<String, Value>| e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let is_note = |e: &Map<String, Value>| e.get("kind").and_then(|v| v.as_str()) == Some("note");
+    let pinned_rows = if pinned.is_empty() { vec![] } else {
+        let marks = pinned.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        rows(&format!("SELECT * FROM entities WHERE world_id = ?1 AND id IN ({marks}) ORDER BY kind, name"), vec![V::Integer(wid)])?
+    };
+    let mut seen: std::collections::HashSet<i64> = pinned_rows.iter().map(id_of).collect();
+    let q: String = query.chars().take(4000).collect();
+    let found = if entity_limit > 0 { find_relevant_entities(db, wid, &q, entity_limit as usize, (0, true))? } else { vec![] };
+    let mut notes: Vec<Map<String, Value>> = found.iter().filter(|e| is_note(e) && !seen.contains(&id_of(e))).cloned().collect();
+    let mut non_notes: Vec<Map<String, Value>> = found.iter().filter(|e| !is_note(e) && !seen.contains(&id_of(e))).cloned().collect();
+    seen.extend(non_notes.iter().map(id_of));
+    seen.extend(notes.iter().map(id_of));
+    if entity_limit > 0 && (non_notes.len() as i64) < entity_limit {
+        let not_in = if seen.is_empty() { String::new() } else {
+            format!(" AND id NOT IN ({})", seen.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
+        };
+        let topup = rows(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind != 'note'{not_in} ORDER BY kind, name LIMIT {}", entity_limit - non_notes.len() as i64),
+            vec![V::Integer(wid)])?;
+        seen.extend(topup.iter().map(id_of));
+        non_notes.extend(topup);
+    }
+    if notes_limit > 0 {
+        let latest = rows(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = 'note' ORDER BY updated_at DESC LIMIT {notes_limit}"), vec![V::Integer(wid)])?;
+        notes.extend(latest.into_iter().filter(|e| !seen.contains(&id_of(e))));
+    }
+    let mut all: Vec<Map<String, Value>> = pinned_rows.iter().filter(|e| !is_note(e)).cloned().collect();
+    all.extend(non_notes);
+    all.extend(pinned_rows.iter().filter(|e| is_note(e)).cloned());
+    all.extend(notes);
+    let entity_context = format_context(db, &all, false, &q)?;
+    let mut st = db.prepare("SELECT content FROM facts WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 20").ok()?;
+    let mut facts: Vec<String> = st.query_map([wid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_else(|| "None".into())).collect();
+    facts.reverse();
+    let fact_context = if facts.is_empty() { String::new() } else {
+        format!("Established facts from past sessions:\n{}", facts.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n"))
+    };
+    Some([entity_context, fact_context].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n"))
+}
+
+/// `_session_featured_picks(session)`: (entity ids, player character ids) the session's NPC picks pin
+pub fn session_picks(db: &Connection, sid: i64) -> (Vec<i64>, Vec<i64>) {
+    let raw: Option<String> = db.query_row("SELECT npcs_json FROM game_sessions WHERE id = ?1", [sid], |r| r.get(0)).ok().flatten();
+    let Some(Value::Array(picks)) = raw.filter(|r| !r.is_empty()).and_then(|r| serde_json::from_str::<Value>(&r).ok()) else { return (vec![], vec![]) };
+    let (mut ents, mut pcs) = (vec![], vec![]);
+    for n in picks {
+        let Some(eid) = n.get("entity_id").and_then(|v| v.as_i64()) else { continue };
+        if n.get("kind").and_then(|k| k.as_str()) == Some("player_character") { pcs.push(eid) } else { ents.push(eid) }
+    }
+    (ents, pcs)
+}

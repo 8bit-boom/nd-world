@@ -46614,6 +46614,7 @@
   "secret"
  ],
  "recap_texts": {
+  "_CONDENSE_RECAP_SYSTEM": "You are a scribe for a tabletop RPG campaign. Condense the following session recap into a short, tight summary — a few sentences at most, hitting only the key beats a player would need to remember before the next session. Keep it in flowing prose. Don't invent details that aren't in the original. Respond with the condensed recap only, no preamble or commentary.",
   "_STRICT_COMPLIANCE_NOTE": "\n\nTreat the extra instructions below as binding requirements, not suggestions.",
   "_SUMMARIZE_FACTS_SYSTEM": "You are a scribe for a tabletop RPG campaign. Below is a list of discrete facts logged for one session. Weave them into a short, readable narrative recap in flowing prose — a few short paragraphs, past tense, third person. Use only the facts given; don't invent new details, and don't drop any of them. Markdown is fine for light formatting but keep it simple. Respond with the recap text only, no preamble or commentary. Write the recap in English, regardless of the language the facts are written in."
  },

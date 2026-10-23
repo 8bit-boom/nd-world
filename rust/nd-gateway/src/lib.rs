@@ -231,7 +231,7 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/chat/jobs" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream")) || (req.uri().path().starts_with("/api/session-log/") && req.uri().path().ends_with("/recap"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/chat/jobs" | "/api/ai/world-summary" | "/api/sessions/ai/condense-job" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream")) || (req.uri().path().starts_with("/api/session-log/") && req.uri().path().ends_with("/recap"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
@@ -240,6 +240,10 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             ai::session_log_recap(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path().starts_with("/api/npc-talk/") {
             ai::npc_talk_stream(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else if parts.uri.path() == "/api/sessions/ai/condense-job" {
+            ai::condense_job_create(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else if parts.uri.path() == "/api/ai/world-summary" {
+            ai::world_summary_create(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path() == "/api/ai/chat/jobs" {
             ai::chat_job_create(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path() == "/api/ai/assist-job" {

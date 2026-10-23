@@ -420,7 +420,9 @@ def test_ai_assist_job_is_pythons(client, seed, studio):
              ({"op": "translate", **entity, "lang": " German ", "rag_entity_limit": 4}, _reply("Borin schmiedet Klingen.")),
              ({"op": "expand", "summary": "only a summary"}, _reply("never asked")),                 # no content: run_assist's ValueError
              ({"op": "custom", **entity}, _reply("never asked")),                                    # no instruction
-             ({"op": "summarize", **entity, "model": "other"}, _reply("", reasoning="all thought"))]
+             ({"op": "summarize", **entity, "model": "other"}, _reply("", reasoning="all thought")),
+             ({"op": "improve", **entity, "use_rag": True, "rag_entity_limit": 3, "rag_notes_limit": 0}, _reply("With lore.")),
+             ({"op": "code_edit", **entity, "instruction": "rename x", "use_rag": True}, _reply("diff"))]
     for i, (body, reply) in enumerate(cases):
         studio.reply = reply
         out = []
@@ -434,8 +436,8 @@ def test_ai_assist_job_is_pythons(client, seed, studio):
             out.append((res, _job_row(job_id), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
         assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
         assert out[1][3] == "gateway", i
-    # what stays Python's: a GM's lore retrieval, the JSON operations, an unknown operation
-    for body in ({"op": "expand", **entity, "use_rag": True}, {"op": "suggest", **entity}, {"op": "nope"}):
+    # what stays Python's: the JSON operations, an unknown operation
+    for body in ({"op": "suggest", **entity}, {"op": "nope"}):
         assert _via(gm, base).post("/api/ai/assist-job", json=body).headers.get("x-nd-served-by") != "gateway", body
 
 
@@ -546,6 +548,13 @@ def test_session_log_recap_is_pythons(client, seed, studio):
                     Fact(world_id=w, game_session_id=gs.id, content="The harbourmaster is a cultist.", visible_to_players=False),
                     Fact(world_id=w, game_session_id=gs.id, content="They stole a boat.", visible_to_players=True)])
         db.get(World, w).recap_instructions = "  Write in present tense. "
+        from app.models import Entity
+        harbour = Entity(world_id=w, kind="location", name="Harbour", summary="Where the boats are.", body="# Docks\nThe docks smell of tar.")
+        cult = Entity(world_id=w, kind="faction", name="Tide Cult", summary="Worshippers of the deep.", visible_to_players=False)
+        note = Entity(world_id=w, kind="note", name="GM note on boats", body="Boats leak.")
+        db.add_all([harbour, cult, note])
+        db.flush()
+        gs.npcs_json = json.dumps([{"entity_id": cult.id, "kind": "faction"}])
         db.commit()
         sid, eid = gs.id, empty.id
     finally:
@@ -584,6 +593,7 @@ def test_session_log_recap_is_pythons(client, seed, studio):
         (gm, sid, {"think": False, "strictness": "strict", "max_tokens": 5}, [_reply(long_text), _reply("Short.")]),
         (gm, sid, {"think": False, "model": "other"}, [_reply("", reasoning="all thought")]),
         (gm, eid, {}, [_reply("never")]),
+        (gm, sid, {"think": False, "use_rag": True, "rag_entity_limit": "2", "rag_notes_limit": 1}, [_reply("With lore.")]),
     ]
     for i, (d, session_id, body, replies) in enumerate(cases):
         out = []
@@ -600,4 +610,104 @@ def test_session_log_recap_is_pythons(client, seed, studio):
         # asked again: the done row answers, from either server
         again = [side.post(f"/api/session-log/{session_id}/recap", json=body).json() for side in (d, _via(d, base))]
         assert again[0] == again[1], (i, again)
+    studio.reply_seq = None
+
+
+def test_world_summary_job_is_pythons(client, seed, studio):
+    """POST /api/ai/world-summary: the same audio_jobs row and run - the campaign digest (entities, quests, facts, sessions), lore for a
+    GM who asks for it, one world_summary call - ending with the same `recap` (or error)."""
+    import time
+    from app.database import SessionLocal
+    from app.models import AudioJob, Entity, Fact, GameSession, Quest
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="character", subtype="smith", name="Borin", summary="Forges blades."),
+                    Entity(world_id=w, kind="location", name="Hidden Vault", visible_to_players=False),
+                    Quest(world_id=w, title="Find the ring", summary="It was lost.", status=None),
+                    Fact(world_id=w, content="The king died.", visible_to_players=True),
+                    GameSession(world_id=w, title="Session one", session_num=1, summary="Long " * 100)])
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [({}, _reply("The campaign so far.")), ({"think": False, "model": "other"}, _reply("Short.")),
+             ({"use_rag": True, "rag_entity_limit": 2, "think": False}, _reply("With lore.")), ({"think": False}, _reply("", finish="length"))]
+    for i, (body, reply) in enumerate(cases):
+        studio.reply = reply
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            r = side.post("/api/ai/world-summary", json=body)
+            assert r.status_code == 200, r.text
+            job_id = r.json()["job_id"]
+            end = time.time() + 20
+            s = SessionLocal()
+            try:
+                while time.time() < end and s.get(AudioJob, job_id).status in ("pending", "summarizing"):
+                    s.expire_all()
+                    time.sleep(0.1)
+                j = s.get(AudioJob, job_id)
+                row = {k: getattr(j, k) for k in ("filename", "status", "error", "recap", "model", "think", "use_rag", "rag_entity_limit", "audience")}
+            finally:
+                s.close()
+            out.append((row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:2500], json.dumps(out[1][1])[:2500])
+        assert out[1][2] == "gateway", i
+
+
+def test_condense_job_is_pythons(client, seed, studio):
+    """POST /api/sessions/ai/condense-job: the same row and run - instructions, length targets, lore with the session's pinned entities,
+    the Thinking ladder for a starved answer, the strict-length retry, a model that refuses Thinking - ending in the same row."""
+    import time
+    from app.database import SessionLocal
+    from app.models import AudioJob, Entity, GameSession
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        inn = Entity(world_id=w, kind="location", name="Prancing Pony", summary="An inn.")
+        db.add(inn)
+        db.flush()
+        gs = GameSession(world_id=w, title="Bree", npcs_json=json.dumps([{"entity_id": inn.id, "kind": "location"}]))
+        db.add(gs)
+        db.commit()
+        sid = gs.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    starved = _reply("", reasoning="thinking only")
+    text = "The party met at the inn. They drank. A stranger watched them. " * 5
+    cases = [
+        ({"recap": text, "think": False, "extra_instructions": " Keep names. ", "max_tokens": 80}, [_reply("Condensed.")], None),
+        ({"recap": text, "think": True}, [starved, starved, _reply("Finally.")], None),
+        ({"recap": text, "think": False, "strictness": "strict", "min_tokens": 400}, [_reply("Too short."), _reply("Longer now.")], None),
+        ({"recap": text, "think": False, "use_rag": True, "game_session_id": str(sid), "rag_entity_limit": 1, "rag_notes_limit": 0}, [_reply("With lore.")], None),
+        ({"recap": text, "think": True, "model": "refuser"}, [_reply("Without thinking.")], "nope"),
+    ]
+    for i, (body, replies, reject) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq, studio.reject_thinking = list(replies), reject
+            r = side.post("/api/sessions/ai/condense-job", json=body)
+            assert r.status_code == 200, (i, r.text)
+            job_id = r.json()["job_id"]
+            end = time.time() + 20
+            s = SessionLocal()
+            try:
+                while time.time() < end and s.get(AudioJob, job_id).status in ("pending", "summarizing"):
+                    s.expire_all()
+                    time.sleep(0.1)
+                j = s.get(AudioJob, job_id)
+                row = {k: getattr(j, k) for k in ("filename", "status", "error", "recap", "model", "think", "think_fallback", "expanded_thinking",
+                                                    "think_rejected", "think_token_fallback", "use_rag", "game_session_id", "fit_context", "min_tokens",
+                                                    "max_tokens", "condense_strictness", "extra_instructions", "transcript")}
+            finally:
+                s.close()
+            out.append((row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        studio.reject_thinking = None
+        assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:2500], json.dumps(out[1][1])[:2500])
+        assert out[1][2] == "gateway", i
     studio.reply_seq = None

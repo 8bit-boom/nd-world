@@ -27,6 +27,35 @@ fn cache() -> &'static Mutex<HashMap<CacheKey, (Instant, String)>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// `_model_thinking_failures` / `_prompt_token_thinking_models`: models that refused a Thinking request in this process (and of those, the
+/// ones retried with the `<|think|>` token), cleared by their next accepted Thinking request
+fn thinking_state() -> &'static Mutex<(std::collections::HashSet<String>, std::collections::HashSet<String>)> {
+    static S: OnceLock<Mutex<(std::collections::HashSet<String>, std::collections::HashSet<String>)>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(Default::default()))
+}
+
+fn record_thinking(model: &str, think: bool, failed: bool, via_token: bool) {
+    if !think {
+        return;
+    }
+    if let Ok(mut s) = thinking_state().lock() {
+        if failed {
+            s.0.insert(model.to_string());
+            if via_token {
+                s.1.insert(model.to_string());
+            }
+        } else {
+            s.0.remove(model);
+            s.1.remove(model);
+        }
+    }
+}
+
+/// (`model_rejected_thinking`, `model_thinks_via_prompt_token`)
+fn thinking_rejected(model: &str) -> (bool, bool) {
+    thinking_state().lock().map(|s| (s.0.contains(model), s.1.contains(model))).unwrap_or((false, false))
+}
+
 fn cooldowns() -> &'static Mutex<HashMap<i64, Instant>> {
     static C: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
@@ -398,6 +427,7 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
         return false;
     }
     let mut splitter = Splitter { buf: String::new(), in_think: false };
+    record_thinking(model, think, false, false);
     let (mut yielded, mut thinking_chars, mut done_reason): (bool, usize, Option<String>) = (false, 0, None);
     let mut pending = Vec::<u8>::new();
     loop {
@@ -504,6 +534,7 @@ async fn stream_chat_retrying(b: &Backend, model: &str, system: &str, messages: 
     full.extend(messages.iter().cloned());
     let thinks = model == "unsloth/gemma-4-26B-A4B-it-GGUF"
         || crate::edits::py_truthy_pub(b.per_model.get(model).and_then(|m| m.get("thinking")));
+    record_thinking(model, true, true, thinks);
     if thinks {
         match full.first_mut() {
             Some(Value::Object(first)) if first.get("role") == Some(&json!("system")) => {
@@ -1111,6 +1142,7 @@ async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value
         let message = if message.is_empty() { format!("HTTP {status}") } else { message };
         if think && thinking_rejection(status as i64, &message) {
             let thinks = model == "unsloth/gemma-4-26B-A4B-it-GGUF" || crate::edits::py_truthy_pub(b.per_model.get(model).and_then(|m| m.get("thinking")));
+            record_thinking(model, true, true, thinks);
             let mut retry = full;
             if thinks {
                 match retry.first_mut() {
@@ -1126,6 +1158,7 @@ async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value
         return format!("[AI error: Unsloth {status}: {message}]");
     }
     let Ok(data) = serde_json::from_slice::<Value>(&bytes) else { return "[AI unavailable: JSONDecodeError: the backend's answer is not JSON]".into() };
+    record_thinking(model, think, false, false);
     let choice = data.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).cloned().unwrap_or(json!({}));
     let msg = choice.get("message").cloned().unwrap_or(json!({}));
     let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
@@ -1203,9 +1236,6 @@ fn assist_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) ->
     let db = crate::writes::open(cfg)?;
     let (p, wid) = assist_caller(&db, cfg, uri, headers)?;
     let b = assist_body(body)?;
-    if b.use_rag && p.is_gm {
-        return None; // a GM's lore retrieval (_build_rag_context): Python's
-    }
     // run_assist's ValueErrors surface on the job row at run time; an operation that is not a free-text one is Python's
     if matches!(assist_prompt(&b.op, "", "", "", ""), Err(None)) {
         return None;
@@ -1225,7 +1255,7 @@ fn assist_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) ->
     let id = crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("ai_assist".into())),
         ("filename", Sql::Text(format!("AI assist · {surface}"))), ("status", Sql::Text("pending".into())),
         ("created_by_user_id", Sql::Integer(p.user_id)), ("model", opt_text(model)), ("think", Sql::Integer(b.think as i64)),
-        ("extra_instructions", opt_text(instruction)), ("use_rag", Sql::Integer(0)), ("rag_entity_limit", opt_int(b.rag.0)),
+        ("extra_instructions", opt_text(instruction)), ("use_rag", Sql::Integer((b.use_rag && p.is_gm) as i64)), ("rag_entity_limit", opt_int(b.rag.0)),
         ("rag_notes_limit", opt_int(b.rag.1)), ("assist_params_json", Sql::Text(nd_render::py_dumps(&Value::Object(params)))),
         ("transcript", Sql::Text(b.f("body").to_string())), ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])?;
     Some(id)
@@ -1256,6 +1286,8 @@ pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: boo
     let purpose: Option<String> = db.query_row("SELECT purpose FROM audio_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
     match purpose.as_deref() {
         Some("session_log_recap") => start_log_recap_job(id),
+        Some("world_summary") => start_world_summary_job(id),
+        Some("condense") => start_condense_job(id),
         _ => start_assist_job(id),
     }
     Some(())
@@ -1268,9 +1300,10 @@ async fn run_assist_job(id: i64) {
     let c = cfg.clone();
     let prep = tokio::task::spawn_blocking(move || -> Option<Result<(Assist, String), String>> {
         let db = crate::writes::open(&c)?;
-        let row = db.query_row("SELECT model, think, transcript, assist_params_json FROM audio_jobs WHERE id = ?1", [id],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))).ok()?;
-        let (model, think, transcript, params) = row;
+        let row = db.query_row("SELECT model, think, transcript, assist_params_json, use_rag, rag_entity_limit, rag_notes_limit, world_id FROM audio_jobs WHERE id = ?1", [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?,
+                (r.get::<_, Option<i64>>(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, Option<i64>>(6)?, r.get::<_, Option<i64>>(7)?)))).ok()?;
+        let (model, think, transcript, params, (use_rag, rag_e, rag_n, job_world)) = row;
         let model = match model.filter(|m| !m.is_empty()) { Some(m) => m, None => surface_default(&c, "recap").unwrap_or_default() };
         let think = think.map_or(true, |t| t != 0);
         let params = params.as_deref().filter(|p| !p.is_empty()).and_then(|p| serde_json::from_str::<Value>(p).ok()).unwrap_or(json!({}));
@@ -1279,8 +1312,18 @@ async fn run_assist_job(id: i64) {
         let set = |fields: &[(&str, rusqlite::types::Value)]| crate::orm::update(&db, "audio_jobs", id, fields);
         set(&[("status", rusqlite::types::Value::Text("summarizing".into()))]);
         let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
-        let (system, user) = match assist_prompt(&op, &transcript.unwrap_or_default(), &pg("meta"), &pg("instruction"), &pg("lang")) {
-            Ok(p) => p,
+        let transcript = transcript.unwrap_or_default();
+        let (system, user) = match assist_prompt(&op, &transcript, &pg("meta"), &pg("instruction"), &pg("lang")) {
+            Ok((system, user)) => {
+                // the job's lore (_build_rag_context on the input itself), never for code_edit
+                let query = [transcript.clone(), pg("meta"), pg("instruction")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n");
+                let lore = match (use_rag.unwrap_or(0) != 0, job_world.filter(|w| *w != 0)) {
+                    (true, Some(w)) if !crate::edits::py_strip_pub(&query).is_empty() =>
+                        crate::retrieval::build_rag_context(&db, w, &query, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &[]).unwrap_or_default(),
+                    _ => String::new(),
+                };
+                (if op == "code_edit" { system } else { with_world_context(&system, &lore) }, user)
+            }
             Err(m) => return Some(Err(format!("ValueError: {}", m.unwrap_or_else(|| format!("Unknown AI assist operation: '{op}'"))))),
         };
         let model = if model.is_empty() { backend.model.clone() } else { model };
@@ -1606,8 +1649,8 @@ fn session_log_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -
     if !gm && use_rag {
         (use_rag, rag_e, rag_n) = (false, None, None);
     }
-    if use_rag {
-        return None; // the GM's lore retrieval (_build_rag_context): Python's
+    if use_rag && !crate::retrieval::session_picks(&db, sid).1.is_empty() {
+        return None; // lore with the session's player characters pinned (pc_digest): Python's
     }
     let requested = if model.is_empty() { surface_default(cfg, "recap")? } else { model.clone() };
     let force = crate::edits::py_truthy_pub(b.get("force")) && gm;
@@ -1615,10 +1658,10 @@ fn session_log_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -
     let min_stamp = "0001-01-01 00:00:00.000000".to_string();
     let cutoff = [newest.map(|t| sql_stamp(&t)), recap_touch.map(|t| sql_stamp(&t))].into_iter().flatten().fold(min_stamp, |a, t| if t > a { t } else { a });
     let filter = "purpose = 'session_log_recap' AND game_session_id = ?1 AND audience = ?2 AND created_at >= ?3 AND coalesce(model, '') = ?4 \
-        AND coalesce(think, 1) = ?5 AND coalesce(use_rag, 0) = 0 AND coalesce(rag_entity_limit, 15) = ?6 AND coalesce(rag_notes_limit, 5) = ?7 \
+        AND coalesce(think, 1) = ?5 AND coalesce(use_rag, 0) = ?12 AND coalesce(rag_entity_limit, 15) = ?6 AND coalesce(rag_notes_limit, 5) = ?7 \
         AND coalesce(extra_instructions, '') = ?8 AND coalesce(min_tokens, 0) = ?9 AND coalesce(max_tokens, 0) = ?10 AND coalesce(condense_strictness, 'guideline') = ?11";
     let params = rusqlite::params![sid, audience, cutoff, requested, think as i64, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT),
-        extra, min_t.unwrap_or(0), max_t.unwrap_or(0), strictness];
+        extra, min_t.unwrap_or(0), max_t.unwrap_or(0), strictness, use_rag as i64];
     let one = |status_sql: &str| -> Option<(i64, Option<String>, Option<String>)> {
         db.query_row(&format!("SELECT id, result_json, error FROM audio_jobs WHERE {status_sql} AND {filter} ORDER BY created_at DESC, id DESC LIMIT 1"), params,
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
@@ -1636,9 +1679,9 @@ fn session_log_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -
     backend(&db)?;
     if !force {
         let since = crate::orm::stamp_after(-RECAP_ERROR_BACKOFF_SECS);
-        let recent = db.query_row(&format!("SELECT error FROM audio_jobs WHERE status = 'error' AND {filter} AND created_at >= ?12 ORDER BY created_at DESC, id DESC LIMIT 1"),
+        let recent = db.query_row(&format!("SELECT error FROM audio_jobs WHERE status = 'error' AND {filter} AND created_at >= ?13 ORDER BY created_at DESC, id DESC LIMIT 1"),
             rusqlite::params![sid, audience, cutoff, requested, think as i64, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT),
-                extra, min_t.unwrap_or(0), max_t.unwrap_or(0), strictness, since], |r| r.get::<_, Option<String>>(0)).ok();
+                extra, min_t.unwrap_or(0), max_t.unwrap_or(0), strictness, use_rag as i64, since], |r| r.get::<_, Option<String>>(0)).ok();
         if let Some(error) = recent {
             let error = error.filter(|e| !e.is_empty()).unwrap_or_else(|| "Recap generation failed.".into());
             return Some(LogRecap::Answer(json!({"failed": true, "error": error})));
@@ -1656,7 +1699,7 @@ fn session_log_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -
     let id = crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("session_log_recap".into())),
         ("filename", Sql::Text("Session Log recap".into())), ("status", Sql::Text("pending".into())), ("game_session_id", Sql::Integer(sid)),
         ("created_by_user_id", Sql::Integer(p.user_id)), ("audience", Sql::Text(audience.into())), ("model", Sql::Text(requested)),
-        ("think", Sql::Integer(think as i64)), ("use_rag", Sql::Integer(0)), ("rag_entity_limit", opt_int(rag_e)), ("rag_notes_limit", opt_int(rag_n)),
+        ("think", Sql::Integer(think as i64)), ("use_rag", Sql::Integer(use_rag as i64)), ("rag_entity_limit", opt_int(rag_e)), ("rag_notes_limit", opt_int(rag_n)),
         ("extra_instructions", if extra.is_empty() { Sql::Null } else { Sql::Text(extra) }), ("min_tokens", opt_int(min_t)), ("max_tokens", opt_int(max_t)),
         ("condense_strictness", Sql::Text(strictness)), ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])?;
     Some(LogRecap::Create(id))
@@ -1730,7 +1773,7 @@ fn length_addendum(min_t: Option<i64>, max_t: Option<i64>, strictness: &str, cpt
 }
 
 /// `summarize_session_from_facts`
-async fn summarize_facts(b: &Backend, facts: &[String], model: &str, extra: &str, think: bool, min_t: Option<i64>, max_t: Option<i64>, strictness: &str) -> String {
+async fn summarize_facts(b: &Backend, facts: &[String], model: &str, extra: &str, think: bool, min_t: Option<i64>, max_t: Option<i64>, strictness: &str, lore: &str) -> String {
     if facts.is_empty() {
         return String::new();
     }
@@ -1742,6 +1785,7 @@ async fn summarize_facts(b: &Backend, facts: &[String], model: &str, extra: &str
     if !extra.is_empty() {
         system = format!("{system}\n\nAdditional instructions from the GM (follow these too): {extra}");
     }
+    system = with_world_context(&system, lore);
     system.push_str(&length_addendum(min_t, max_t, strictness, chars_per_token(&bullets), "session recap", "facts"));
     let mut opts = Map::new();
     if let Some(m) = max_t.filter(|m| *m != 0 && !think) {
@@ -1794,13 +1838,15 @@ async fn run_log_recap_job(id: i64) {
     let Some(_slot) = crate::jobs::slot("audio job").await else { return };
     let Some(cfg) = crate::jobs::cfg() else { return };
     use rusqlite::types::Value as Sql;
-    type Prep = (Backend, String, bool, Vec<String>, String, Option<i64>, Option<i64>, String, i64, Vec<Value>);
+    type Prep = (Backend, String, bool, Vec<String>, String, Option<i64>, Option<i64>, String, i64, Vec<Value>, String);
     let c = cfg.clone();
     let prep = tokio::task::spawn_blocking(move || -> Option<Result<Prep, String>> {
         let db = crate::writes::open(&c)?;
         let (model, think, gsid, audience, extra, min_t, max_t, strictness): (Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>) =
             db.query_row("SELECT model, think, game_session_id, audience, extra_instructions, min_tokens, max_tokens, condense_strictness FROM audio_jobs WHERE id = ?1", [id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).ok()?;
+        let (use_rag, rag_e, rag_n, job_world): (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = db.query_row("SELECT use_rag, rag_entity_limit, rag_notes_limit, world_id FROM audio_jobs WHERE id = ?1", [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()?;
         crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
         let gs: Option<(i64, Option<i64>, Option<String>)> = gsid.and_then(|g| db.query_row("SELECT world_id, xp_awarded, loot_json FROM game_sessions WHERE id = ?1", [g],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok());
@@ -1816,7 +1862,12 @@ async fn run_log_recap_job(id: i64) {
         let model = model.filter(|m| !m.is_empty()).or_else(|| surface_default(&c, "recap")).unwrap_or_default();
         let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
         let model = if model.is_empty() { backend.model.clone() } else { model };
-        Some(Ok((backend, model, think.map_or(true, |t| t != 0), facts, instructions, min_t, max_t, strictness.unwrap_or_else(|| "guideline".into()), xp.unwrap_or(0), loot)))
+        let lore = match (use_rag.unwrap_or(0) != 0, job_world.filter(|w| *w != 0), facts.is_empty()) {
+            (true, Some(w), false) => crate::retrieval::build_rag_context(&db, w, &facts.join("\n"), rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT),
+                &gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        Some(Ok((backend, model, think.map_or(true, |t| t != 0), facts, instructions, min_t, max_t, strictness.unwrap_or_else(|| "guideline".into()), xp.unwrap_or(0), loot, lore)))
     }).await.ok().flatten();
     let finish = |fields: Vec<(&'static str, Sql)>| {
         let c = cfg.clone();
@@ -1829,7 +1880,7 @@ async fn run_log_recap_job(id: i64) {
             }
         })
     };
-    let (backend, model, think, facts, instructions, min_t, max_t, strictness, xp, loot) = match prep {
+    let (backend, model, think, facts, instructions, min_t, max_t, strictness, xp, loot, lore) = match prep {
         None => return,
         Some(Err(e)) => {
             let _ = finish(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e))]).await;
@@ -1843,7 +1894,7 @@ async fn run_log_recap_job(id: i64) {
     }
     let failed = |t: &str| t.starts_with("[AI ") || t.starts_with("[empty response");
     let starved = |t: &str| t.starts_with("[empty response") && t.contains("hidden \"thinking\"");
-    let mut recap = summarize_facts(&backend, &facts, &model, &instructions, think, min_t, max_t, &strictness).await;
+    let mut recap = summarize_facts(&backend, &facts, &model, &instructions, think, min_t, max_t, &strictness, &lore).await;
     if failed(&recap) || starved(&recap) {
         let _ = finish(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(recap))]).await;
         return;
@@ -1860,7 +1911,7 @@ async fn run_log_recap_job(id: i64) {
                 format!("Your previous draft was ~{est} tokens; the requirement is at most ~{} tokens. Trim it to fit.", max_t.unwrap_or(0))
             };
             let combined = [crate::edits::py_strip_pub(&instructions), crate::edits::py_strip_pub(&note)].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
-            let retry = summarize_facts(&backend, &facts, &model, &combined, think, min_t, max_t, &strictness).await;
+            let retry = summarize_facts(&backend, &facts, &model, &combined, think, min_t, max_t, &strictness, &lore).await;
             if !failed(&retry) && !starved(&retry) {
                 recap = retry;
             }
@@ -1871,4 +1922,379 @@ async fn run_log_recap_job(id: i64) {
         recap = format!("{recap}\n\n{rewards}");
     }
     let _ = finish(vec![("status", Sql::Text("done".into())), ("result_json", Sql::Text(nd_render::py_dumps(&json!({"recap": recap}))))]).await;
+}
+
+
+/// `_with_world_context(system, lore)`: retrieved lore ahead of the system prompt, for accuracy only
+fn with_world_context(system: &str, lore: &str) -> String {
+    if lore.is_empty() {
+        return system.to_string();
+    }
+    format!("Relevant world lore and notes (for accuracy only — don't invent beyond what's here). If the input text refers to a character or place differently than this list — a different spelling, transliteration, or translation, e.g. because the input is in another language — use the exact name from this list instead; don't invent your own translation or transliteration of it:\n{lore}\n\n{system}")
+}
+
+// ── the dashboard's world summary (POST /api/ai/world-summary; the job: audio_jobs purpose="world_summary") ──
+
+fn world_summary_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let (p, wid) = assist_caller(&db, cfg, uri, headers)?;
+    let b = if body.is_empty() { Map::new() } else {
+        match serde_json::from_slice::<Value>(body).ok()? { Value::Object(m) => m, _ => return None }
+    };
+    let model = match b.get("model") { None => String::new(), Some(Value::String(m)) => m.clone(), _ => return None };
+    let flag = |k: &str, d: bool| match b.get(k) { None => Some(d), Some(Value::Bool(t)) => Some(*t), _ => None };
+    let (think, use_rag) = (flag("think", true)?, flag("use_rag", false)?);
+    let mut rag = [None, None];
+    for (i, k) in ["rag_entity_limit", "rag_notes_limit"].iter().enumerate() {
+        match b.get(*k) {
+            None | Some(Value::Null) => {}
+            Some(Value::Number(n)) if n.is_i64() => rag[i] = n.as_i64(),
+            Some(_) => return None,
+        }
+    }
+    backend(&db)?;
+    let model = if model.is_empty() { surface_default(cfg, "assist")? } else { model };
+    use rusqlite::types::Value as Sql;
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("world_summary".into())),
+        ("filename", Sql::Text("World summary".into())), ("status", Sql::Text("pending".into())), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("model", if model.is_empty() { Sql::Null } else { Sql::Text(model) }), ("think", Sql::Integer(think as i64)),
+        ("use_rag", Sql::Integer((use_rag && p.is_gm) as i64)), ("rag_entity_limit", opt_int(rag[0])), ("rag_notes_limit", opt_int(rag[1])),
+        ("audience", Sql::Text(if p.is_gm { "gm" } else { "players" }.into())), ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])
+}
+
+/// `POST /api/ai/world-summary`: {job_id, pending}, the job run here
+pub async fn world_summary_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || world_summary_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_world_summary_job(id);
+    crate::edits::json_response(&json!({"job_id": id, "pending": true}))
+}
+
+fn start_world_summary_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_world_summary_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `_world_summary_state_text(world, audience)`: the campaign digest the summary is written from ("" when there is nothing)
+fn world_state_text(db: &rusqlite::Connection, wid: i64, audience: &str) -> Option<String> {
+    let (name, description): (Option<String>, Option<String>) = match db.query_row("SELECT name, description FROM worlds WHERE id = ?1", [wid], |r| Ok((r.get(0)?, r.get(1)?))) {
+        Ok(v) => v,
+        Err(_) => return Some(String::new()),
+    };
+    let vis = if audience == "gm" { "" } else { " AND visible_to_players IS NOT 0" };
+    let rows = |sql: String| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(&sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
+        r
+    };
+    let entities = rows(format!("SELECT kind, name, subtype, summary FROM entities WHERE world_id = ?1{vis} ORDER BY updated_at DESC LIMIT 120"))?;
+    let quests = rows(format!("SELECT status, title, summary FROM quests WHERE world_id = ?1{vis} ORDER BY updated_at DESC LIMIT 30"))?;
+    let facts = rows(format!("SELECT content FROM facts WHERE world_id = ?1{vis} ORDER BY created_at DESC LIMIT 40"))?;
+    let sessions = rows("SELECT session_num, title, session_date, summary FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 10".into())?;
+    if entities.is_empty() && quests.is_empty() && facts.is_empty() && sessions.is_empty() {
+        return Some(String::new());
+    }
+    let t = |m: &Map<String, Value>, k: &str| -> String {
+        match m.get(k) { Some(Value::String(s)) => s.clone(), Some(Value::Null) | None => String::new(), Some(v) => v.to_string() }
+    };
+    let some = |m: &Map<String, Value>, k: &str| crate::edits::py_truthy_pub(m.get(k));
+    let mut lines = vec![format!("# {}", name.unwrap_or_else(|| "None".into())), description.unwrap_or_default(), String::new()];
+    if !entities.is_empty() {
+        lines.push(format!("## Recent entities ({})", entities.len()));
+        for e in &entities {
+            let mut line = format!("- [{}] {}", t(e, "kind"), t(e, "name"));
+            if some(e, "subtype") { line.push_str(&format!(" ({})", t(e, "subtype"))); }
+            if some(e, "summary") { line.push_str(&format!(": {}", t(e, "summary"))); }
+            lines.push(line);
+        }
+        lines.push(String::new());
+    }
+    if !quests.is_empty() {
+        lines.push(format!("## Quests ({})", quests.len()));
+        for q in &quests {
+            let status = if some(q, "status") { t(q, "status") } else { "active".into() };
+            let mut line = format!("- [{status}] {}", t(q, "title"));
+            if some(q, "summary") { line.push_str(&format!(": {}", t(q, "summary"))); }
+            lines.push(line);
+        }
+        lines.push(String::new());
+    }
+    if !facts.is_empty() {
+        lines.push(format!("## Recent facts ({}, newest first)", facts.len()));
+        for f in &facts {
+            lines.push(format!("- {}", match f.get("content") { Some(Value::String(s)) => s.clone(), _ => "None".into() }));
+        }
+        lines.push(String::new());
+    }
+    if !sessions.is_empty() {
+        lines.push(format!("## Recent sessions ({})", sessions.len()));
+        for s in &sessions {
+            let num = if some(s, "session_num") { t(s, "session_num") } else { "?".into() };
+            let mut line = format!("- #{num} {}", t(s, "title"));
+            if some(s, "session_date") { line.push_str(&format!(" ({})", t(s, "session_date"))); }
+            if some(s, "summary") { line.push_str(&format!(": {}", t(s, "summary").chars().take(300).collect::<String>())); }
+            lines.push(line);
+        }
+        lines.push(String::new());
+    }
+    Some(lines.join("\n"))
+}
+
+/// `_run_job` for purpose="world_summary": the digest built now, one world_summary run_assist call, the text to `recap`
+async fn run_world_summary_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<(Backend, String, bool, (String, String), Map<String, Value>), String>> {
+        let db = crate::writes::open(&c)?;
+        let (wid, model, think, use_rag, rag_e, rag_n, audience): (i64, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>) =
+            db.query_row("SELECT world_id, model, think, use_rag, rag_entity_limit, rag_notes_limit, audience FROM audio_jobs WHERE id = ?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).ok()?;
+        crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
+        let audience = audience.filter(|a| !a.is_empty()).unwrap_or_else(|| "players".into());
+        let state = world_state_text(&db, wid, &audience)?;
+        if crate::edits::py_strip_pub(&state).is_empty() {
+            return Some(Err("This world has no content to summarize yet.".into()));
+        }
+        let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
+            crate::retrieval::build_rag_context(&db, wid, &state, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &[]).unwrap_or_default()
+        } else { String::new() };
+        let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let model = model.filter(|m| !m.is_empty()).or_else(|| surface_default(&c, "recap")).unwrap_or_default();
+        let model = if model.is_empty() { backend.model.clone() } else { model };
+        let think = think.map_or(true, |t| t != 0);
+        let (system, user) = assist_prompt("world_summary", &state, "", "", "").ok()?;
+        let extra = assist_options(&backend, think);
+        Some(Ok((backend, model, think, (with_world_context(&system, &lore), user), extra)))
+    }).await.ok().flatten();
+    let fields = match prep {
+        None => return,
+        Some(Err(e)) => vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e))],
+        Some(Ok((backend, model, think, (system, user), extra))) => {
+            let text = clean_degenerate(&generate_chat(&backend, &model, &system, &[json!({"role": "user", "content": user})], think, &extra).await);
+            if text.starts_with("[AI ") || text.starts_with("[empty response") {
+                vec![("status", Sql::Text("error".into())), ("error", Sql::Text(text))]
+            } else {
+                vec![("status", Sql::Text("done".into())), ("recap", Sql::Text(text))]
+            }
+        }
+    };
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Some(db) = crate::writes::open(&cfg) {
+            let mut f = fields;
+            f.push(("finished_at", Sql::Text(crate::orm::now_stamp())));
+            f.push(("checkpoint_json", Sql::Text(String::new())));
+            crate::orm::update(&db, "audio_jobs", id, &f);
+        }
+    }).await;
+}
+
+
+// ── Condense (POST /api/sessions/ai/condense-job; the job: audio_jobs purpose="condense") ──
+
+fn condense_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if p.user_id <= 0 {
+        return None;
+    }
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    if crate::pages::edit_level(&p, w, "sessions") != Some(true) {
+        return None;
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)), Some(_) => None }
+    };
+    let recap = text("recap")?;
+    if recap.is_empty() {
+        return None;
+    }
+    let (min_t, max_t) = (body_int(b.get("min_tokens")).ok()?, body_int(b.get("max_tokens")).ok()?);
+    if min_t.is_some_and(|v| v < 1) || max_t.is_some_and(|v| v < 1) || matches!((min_t, max_t), (Some(a), Some(z)) if a > z) {
+        return None;
+    }
+    let strictness = match b.get("strictness") {
+        None | Some(Value::Null) => "guideline".to_string(),
+        Some(Value::String(s)) if s.is_empty() => "guideline".to_string(),
+        Some(Value::String(s)) => crate::edits::py_strip_pub(s),
+        Some(_) => return None,
+    };
+    if !["guideline", "firm", "strict"].contains(&strictness.as_str()) {
+        return None;
+    }
+    let extra = text("extra_instructions")?;
+    // _reject_if_too_long_to_condense: Python's 400
+    let all = format!("{recap}{extra}");
+    let cpt = chars_per_token(&all);
+    let max_auto = std::env::var("MAX_AUTO_NUM_CTX").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(32768).max(8192);
+    if (all.chars().count() as i64 + cpt - 1) / cpt > max_auto - 512 {
+        return None;
+    }
+    let use_rag = crate::edits::py_truthy_pub(b.get("use_rag")) && p.is_gm;
+    let (rag_e, rag_n) = (body_int(b.get("rag_entity_limit")).ok()?, body_int(b.get("rag_notes_limit")).ok()?);
+    if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) {
+        return None;
+    }
+    let gs_id = match b.get("game_session_id") {
+        v if !crate::edits::py_truthy_pub(v) => None,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+        Some(Value::String(s)) if !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) => s.parse().ok(),
+        _ => return None,
+    };
+    if use_rag && gs_id.is_some_and(|g| !crate::retrieval::session_picks(&db, g).1.is_empty()) {
+        return None; // lore with the session's player characters pinned (pc_digest): Python's
+    }
+    let model = text("model")?;
+    let think = match b.get("think") { None => true, v => crate::edits::py_truthy_pub(v) };
+    backend(&db)?;
+    use rusqlite::types::Value as Sql;
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("condense".into())), ("filename", Sql::Text("Condense".into())),
+        ("status", Sql::Text("pending".into())), ("game_session_id", opt_int(gs_id)), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("model", if model.is_empty() { Sql::Null } else { Sql::Text(model) }), ("think", Sql::Integer(think as i64)),
+        ("fit_context", Sql::Integer(crate::edits::py_truthy_pub(b.get("fit_context")) as i64)),
+        ("extra_instructions", if extra.is_empty() { Sql::Null } else { Sql::Text(extra) }), ("min_tokens", opt_int(min_t)), ("max_tokens", opt_int(max_t)),
+        ("condense_strictness", Sql::Text(strictness)), ("use_rag", Sql::Integer(use_rag as i64)), ("rag_entity_limit", opt_int(rag_e)),
+        ("rag_notes_limit", opt_int(rag_n)), ("transcript", Sql::Text(recap)), ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])
+}
+
+/// `POST /api/sessions/ai/condense-job`: {job_id}, the job run here
+pub async fn condense_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || condense_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_condense_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_condense_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_condense_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `condense_recap` (with `condense_call_options`' num_ctx left out: Unsloth fixes the context at load)
+async fn condense(b: &Backend, recap: &str, model: &str, think: bool, extra: &str, min_t: Option<i64>, max_t: Option<i64>, lore: &str, expanded: bool, strictness: &str) -> String {
+    let mut system = recap_text("_CONDENSE_RECAP_SYSTEM");
+    if (strictness == "firm" || strictness == "strict") && !crate::edits::py_strip_pub(extra).is_empty() {
+        system.push_str(&recap_text("_STRICT_COMPLIANCE_NOTE"));
+    }
+    if !extra.is_empty() {
+        system = format!("{system}\n\nAdditional instructions from the GM (follow these too): {extra}");
+    }
+    system = with_world_context(&system, lore);
+    system.push_str(&length_addendum(min_t, max_t, strictness, chars_per_token(recap), "condensed recap", "recap"));
+    let mut opts = Map::new();
+    if let Some(m) = max_t.filter(|m| *m != 0 && !think) {
+        opts.insert("num_predict".into(), json!(m));
+    }
+    if expanded {
+        let configured = b.options.get("num_predict").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+        let headroom = std::env::var("THINKING_HEADROOM_TOKENS").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(4096).max(0);
+        let expanded_headroom = std::env::var("THINKING_EXPANDED_HEADROOM_TOKENS").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(12288).max(headroom);
+        opts.insert("num_predict".into(), json!(configured + expanded_headroom));
+    } else {
+        opts.extend(b.thinking_predict_if(think));
+    }
+    if !opts.contains_key("num_predict") {
+        let configured = b.options.get("num_predict").and_then(|v| v.as_f64());
+        if !configured.is_some_and(|c| c != 0.0 && c >= 0.0) {
+            opts.insert("num_predict".into(), json!(RECAP_NUM_PREDICT_DEFAULT));
+        }
+    }
+    generate_chat(b, model, &system, &[json!({"role": "user", "content": recap})], think, &opts).await
+}
+
+/// `_run_job` for purpose="condense": lore, the Thinking ladder for a starved answer, the strict-length retry, the done / error row
+async fn run_condense_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    struct Job { b: Backend, model: String, think: bool, text: String, instructions: String, min_t: Option<i64>, max_t: Option<i64>, strictness: String, lore: String }
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<Job, String>> {
+        let db = crate::writes::open(&c)?;
+        let row: (i64, Option<String>, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>) =
+            db.query_row("SELECT world_id, model, think, transcript, extra_instructions, min_tokens, max_tokens, condense_strictness, use_rag, rag_entity_limit, rag_notes_limit, game_session_id FROM audio_jobs WHERE id = ?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?))).ok()?;
+        let (wid, model, think, text, extra, min_t, max_t, strictness, use_rag, rag_e, rag_n, gsid) = row;
+        let text = text.unwrap_or_default();
+        let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
+            let pins = gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default();
+            crate::retrieval::build_rag_context(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins).unwrap_or_default()
+        } else { String::new() };
+        crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
+        let world_instr: Option<String> = db.query_row("SELECT recap_instructions FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok().flatten();
+        let instructions = [crate::edits::py_strip_pub(&world_instr.unwrap_or_default()), crate::edits::py_strip_pub(&extra.unwrap_or_default())]
+            .into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let Some(b) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let model = model.filter(|m| !m.is_empty()).or_else(|| surface_default(&c, "recap")).unwrap_or_default();
+        let model = if model.is_empty() { b.model.clone() } else { model };
+        Some(Ok(Job { b, model, think: think.map_or(true, |t| t != 0), text, instructions, min_t, max_t, strictness: strictness.unwrap_or_else(|| "guideline".into()), lore }))
+    }).await.ok().flatten();
+    let set = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        tokio::task::spawn_blocking(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "audio_jobs", id, &fields); } })
+    };
+    let j = match prep {
+        None => return,
+        Some(Err(e)) => {
+            let _ = set(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e)), ("finished_at", Sql::Text(crate::orm::now_stamp())), ("checkpoint_json", Sql::Text(String::new()))]).await;
+            return;
+        }
+        Some(Ok(j)) => j,
+    };
+    let failed = |t: &str| t.starts_with("[AI ") || t.starts_with("[empty response");
+    let starved = |t: &str| t.starts_with("[empty response") && t.contains("hidden \"thinking\"");
+    let plans: Vec<(bool, bool)> = if j.think { vec![(true, false), (true, true), (false, true)] } else { vec![(false, false), (false, true)] };
+    let (mut recap, mut last) = (String::new(), (j.think, false));
+    for (i, (t, x)) in plans.iter().enumerate() {
+        last = (*t, *x);
+        recap = condense(&j.b, &j.text, &j.model, *t, &j.instructions, j.min_t, j.max_t, &j.lore, *x, &j.strictness).await;
+        if !starved(&recap) || i == plans.len() - 1 {
+            break;
+        }
+        let (nt, nx) = plans[i + 1];
+        let _ = if nt != *t {
+            set(vec![("think", Sql::Integer(0)), ("think_fallback", Sql::Integer(1)), ("expanded_thinking", Sql::Integer(nx as i64))]).await
+        } else {
+            set(vec![("expanded_thinking", Sql::Integer(nx as i64))]).await
+        };
+    }
+    if j.strictness == "strict" && (j.min_t.is_some_and(|v| v != 0) || j.max_t.is_some_and(|v| v != 0)) && !failed(&recap) && !starved(&recap) {
+        let cpt = chars_per_token(&recap);
+        let est = (recap.chars().count() as i64 + cpt - 1) / cpt;
+        let below = j.min_t.is_some_and(|m| m != 0 && (est as f64) < m as f64 * 0.85);
+        let above = j.max_t.is_some_and(|m| m != 0 && (est as f64) > m as f64 * 1.15);
+        if below || above {
+            let note = if below {
+                format!("Your previous draft was ~{est} tokens; the requirement is at least ~{} tokens. Expand it with more specific detail from the recap.", j.min_t.unwrap_or(0))
+            } else {
+                format!("Your previous draft was ~{est} tokens; the requirement is at most ~{} tokens. Trim it to fit.", j.max_t.unwrap_or(0))
+            };
+            let combined = [crate::edits::py_strip_pub(&j.instructions), crate::edits::py_strip_pub(&note)].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+            let retry = condense(&j.b, &j.text, &j.model, last.0, &combined, j.min_t, j.max_t, &j.lore, last.1, &j.strictness).await;
+            if !failed(&retry) && !starved(&retry) {
+                recap = retry;
+            }
+        }
+    }
+    let now = Sql::Text(crate::orm::now_stamp());
+    let fields = if failed(&recap) {
+        vec![("status", Sql::Text("error".into())), ("error", Sql::Text(recap)), ("finished_at", now)]
+    } else {
+        let (rejected, via_token) = thinking_rejected(&j.model);
+        let mut f = vec![("status", Sql::Text("done".into())), ("recap", Sql::Text(recap)), ("finished_at", now)];
+        if j.think && rejected {
+            f.push(("think_rejected", Sql::Integer(1)));
+            if via_token { f.push(("think_token_fallback", Sql::Integer(1))) } else { f.push(("think", Sql::Integer(0))) }
+        }
+        f
+    };
+    let _ = set(fields).await;
 }
