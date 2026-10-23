@@ -219,19 +219,29 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::POST && req.uri().path().starts_with("/api/audio-jobs/") && req.uri().path().ends_with("/cancel")
-        && app.cfg.rust_routes.iter().any(|r| r == "ai") {
-        if let Some(resp) = ai::audio_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+    if req.method() == axum::http::Method::POST && req.uri().path().ends_with("/cancel") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let resp = if req.uri().path().starts_with("/api/audio-jobs/") {
+            ai::audio_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
+        } else if req.uri().path().starts_with("/api/ai/chat/jobs/") {
+            ai::chat_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await
+        } else {
+            None
+        };
+        if let Some(resp) = resp {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/chat/jobs" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream")) || (req.uri().path().starts_with("/api/session-log/") && req.uri().path().ends_with("/recap"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
-        let served = if parts.uri.path().starts_with("/api/npc-talk/") {
+        let served = if parts.uri.path().starts_with("/api/session-log/") {
+            ai::session_log_recap(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else if parts.uri.path().starts_with("/api/npc-talk/") {
             ai::npc_talk_stream(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else if parts.uri.path() == "/api/ai/chat/jobs" {
+            ai::chat_job_create(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path() == "/api/ai/assist-job" {
             ai::ai_assist_job(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
         } else if parts.uri.path() == "/api/ai/assist" {

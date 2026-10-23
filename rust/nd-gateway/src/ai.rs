@@ -692,26 +692,7 @@ fn stream_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Opt
         Some(o @ Value::Object(_)) => clamp_options(o)?,
         Some(_) => return None,
     };
-    // _build_ollama_messages: only messages without attachments or with document ones (pictures and audio are Python's)
-    let mut messages = vec![];
-    for m in b.get("messages")?.as_array()? {
-        let Value::Object(m) = m else { return None };
-        let (Some(Value::String(role)), Some(Value::String(content))) = (m.get("role"), m.get("content")) else { return None };
-        let mut content = content.clone();
-        for a in m.get("attachments").map(|a| a.as_array()).unwrap_or(Some(&vec![]))? {
-            let Value::Object(a) = a else { return None };
-            let s = |k: &str| match a.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None };
-            if a.get("kind") != Some(&json!("document")) || !matches!(a.get("url"), Some(Value::String(_))) {
-                return None;
-            }
-            let (name, t) = (s("name")?, s("text")?);
-            if !t.is_empty() {
-                let snippet: String = t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect();
-                content.push_str(&format!("\n\n---\nAttached file: {}\n\n{snippet}\n---", if name.is_empty() { "document" } else { &name }));
-            }
-        }
-        messages.push(json!({"role": role, "content": content}));
-    }
+    let messages = build_messages(b.get("messages")?)?;
     let surface = if p.is_gm || surface == "chat" || surface == "ask_ai" { surface } else { "chat".into() };
     let requested = if p.is_gm && !model.is_empty() { model } else { surface_default(cfg, &surface)? };
     if !p.is_gm && system.chars().count() > PLAYER_SYSTEM_MAX_CHARS {
@@ -1170,17 +1151,24 @@ async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value
 
 /// `_clean_degenerate_recap`: leaked chat-template tokens removed, a hallucinated new turn cut off, repeated lines collapsed
 fn clean_degenerate(text: &str) -> String {
+    clean_degenerate_t(text).0
+}
+
+/// `_clean_degenerate_recap` with its `truncated` flag
+fn clean_degenerate_t(text: &str) -> (String, bool) {
     if text.is_empty() {
-        return String::new();
+        return (String::new(), false);
     }
     static TOKEN: OnceLock<regex::Regex> = OnceLock::new();
     static ROLE: OnceLock<regex::Regex> = OnceLock::new();
     let t = TOKEN.get_or_init(|| regex::Regex::new(r"<\|[^<>|]{0,40}\|>").unwrap()).replace_all(text, "").replace("<start_of_turn>", "").replace("<end_of_turn>", "");
     let role = ROLE.get_or_init(|| regex::Regex::new(r"(?i)^(system|user|assistant|model)$").unwrap());
     let mut cleaned: Vec<&str> = vec![];
+    let mut truncated = false;
     for line in t.split('\n') {
         let stripped = crate::edits::py_strip_pub(line);
         if role.is_match(&stripped) && cleaned.iter().any(|l| !crate::edits::py_strip_pub(l).is_empty()) {
+            truncated = true;
             break;
         }
         if !stripped.is_empty() && cleaned.last().is_some_and(|l| crate::edits::py_strip_pub(l) == stripped) {
@@ -1188,7 +1176,7 @@ fn clean_degenerate(text: &str) -> String {
         }
         cleaned.push(line);
     }
-    cleaned.join("\n").trim_end_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)).to_string()
+    (cleaned.join("\n").trim_end_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)).to_string(), truncated)
 }
 
 /// `POST /api/ai/assist` for a free-text operation: {op, mode: "text", text, model}, or a 502 with the failure text; None (Python's) otherwise
@@ -1257,14 +1245,19 @@ fn start_assist_job(id: i64) {
     });
 }
 
-/// `start_resume_job` for an ai_assist row (single phase: straight back to "summarizing") and the run started
+/// `start_resume_job` for a single-phase row the gateway runs (ai_assist, session_log_recap: straight back to "summarizing") and
+/// its run started
 pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: bool) -> Option<()> {
     use rusqlite::types::Value as Sql;
     let resumed: i64 = db.query_row("SELECT COALESCE(resumed_count, 0) FROM audio_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
     crate::orm::update(db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into())), ("error", Sql::Text(String::new())),
         ("chunk_current", Sql::Null), ("chunk_total", Sql::Null), ("resumed_count", Sql::Integer(if reset_attempts { 0 } else { resumed + 1 })),
         ("run_started_at", Sql::Text(crate::orm::now_stamp())), ("finished_at", Sql::Null)])?;
-    start_assist_job(id);
+    let purpose: Option<String> = db.query_row("SELECT purpose FROM audio_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+    match purpose.as_deref() {
+        Some("session_log_recap") => start_log_recap_job(id),
+        _ => start_assist_job(id),
+    }
     Some(())
 }
 
@@ -1347,4 +1340,535 @@ pub async fn audio_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
             ("finished_at", Sql::Text(crate::orm::now_stamp()))])?;
         crate::edits::json_response(&json!({"ok": true}))
     }).await.ok()?
+}
+
+
+/// `_build_ollama_messages`: only messages without attachments or with document ones (pictures and audio are Python's)
+fn build_messages(v: &Value) -> Option<Vec<Value>> {
+    let mut messages = vec![];
+    for m in v.as_array()? {
+        let Value::Object(m) = m else { return None };
+        let (Some(Value::String(role)), Some(Value::String(content))) = (m.get("role"), m.get("content")) else { return None };
+        let mut content = content.clone();
+        for a in m.get("attachments").map(|a| a.as_array()).unwrap_or(Some(&vec![]))? {
+            let Value::Object(a) = a else { return None };
+            let s = |k: &str| match a.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None };
+            if a.get("kind") != Some(&json!("document")) || !matches!(a.get("url"), Some(Value::String(_))) {
+                return None;
+            }
+            let (name, t) = (s("name")?, s("text")?);
+            if !t.is_empty() {
+                let snippet: String = t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect();
+                content.push_str(&format!("\n\n---\nAttached file: {}\n\n{snippet}\n---", if name.is_empty() { "document" } else { &name }));
+            }
+        }
+        messages.push(json!({"role": role, "content": content}));
+    }
+    Some(messages)
+}
+
+/// `_ctx_override_if_needed(text, reserve)`: a num_ctx when the text needs more than the configured (or assumed 4,096) window
+fn ctx_override(b: &Backend, text: &str, reserve: i64) -> Option<i64> {
+    let sample: Vec<char> = text.chars().take(4000).collect();
+    let per_token: i64 = if sample.is_empty() || (sample.iter().filter(|c| (**c as u32) > 127).count() as f64) / (sample.len() as f64) <= 0.3 { 4 } else { 2 };
+    let len = text.chars().count() as i64;
+    let input = (len + per_token - 1) / per_token;
+    let needed = (input + reserve).max(1024);
+    let mut bucket = 1024;
+    while bucket < needed {
+        bucket *= 2;
+    }
+    let max_auto = std::env::var("MAX_AUTO_NUM_CTX").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(32768).max(8192);
+    let needed = bucket.min(max_auto);
+    let baseline = b.options.get("num_ctx").and_then(|v| v.as_i64()).filter(|n| *n != 0).unwrap_or(4096);
+    (needed > baseline).then_some(needed)
+}
+
+// ── background chat jobs (POST /api/ai/chat/jobs, app/chat_jobs.py) ──
+
+fn chat_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), Some(_) => None }
+    };
+    let (system, model) = (text("system")?, text("model")?);
+    text("surface")?;
+    if !matches!(b.get("think"), None | Some(Value::Bool(_))) {
+        return None;
+    }
+    let mut options = match b.get("options") {
+        None => Map::new(),
+        Some(o @ Value::Object(_)) => clamp_options(o)?,
+        Some(_) => return None,
+    };
+    let messages = build_messages(b.get("messages")?)?;
+    let backend = backend(&db)?;
+    if !options.contains_key("num_ctx") {
+        let total = format!("{system}{}", messages.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<String>());
+        if let Some(n) = ctx_override(&backend, &total, 512) {
+            options.insert("num_ctx".into(), json!(n));
+        }
+    }
+    let prompt = messages.iter().rev().find(|m| m["role"] == "user" && !m["content"].as_str().unwrap_or("").is_empty())
+        .and_then(|m| m["content"].as_str()).unwrap_or("").chars().take(500).collect::<String>();
+    use rusqlite::types::Value as Sql;
+    let id = crate::orm::insert(&db, "chat_jobs", &[("world_id", Sql::Integer(wid)), ("prompt", Sql::Text(prompt)),
+        ("messages_json", Sql::Text(nd_render::py_dumps(&Value::Array(messages)))), ("system", Sql::Text(system)),
+        ("model", if model.is_empty() { Sql::Null } else { Sql::Text(model) }), ("options_json", Sql::Text(nd_render::py_dumps(&Value::Object(options)))),
+        ("created_by_user_id", Sql::Integer(p.user_id)), ("status", Sql::Text("pending".into()))])?;
+    Some(id)
+}
+
+/// `POST /api/ai/chat/jobs`: {job_id}, the job run here
+pub async fn chat_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || chat_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_chat_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_chat_job(id: i64) {
+    crate::jobs::spawn("chat_jobs", id, async move {
+        run_chat_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// chat_jobs' `resume_interrupted_jobs` for one row: restarted from its stored request (corrupt JSON: an error row instead)
+pub fn restart_chat_job(db: &rusqlite::Connection, id: i64) -> Option<()> {
+    use rusqlite::types::Value as Sql;
+    let (messages, options, resumed): (Option<String>, Option<String>, i64) = db.query_row("SELECT messages_json, options_json, COALESCE(resumed_count, 0) FROM chat_jobs WHERE id = ?1", [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?;
+    let ok = |t: Option<String>, d: &str| serde_json::from_str::<Value>(t.as_deref().filter(|t| !t.is_empty()).unwrap_or(d)).is_ok();
+    if !ok(messages, "[]") || !ok(options, "{}") {
+        crate::orm::update(db, "chat_jobs", id, &[("status", Sql::Text("error".into())),
+            ("error", Sql::Text("Stored job data was corrupt (unreadable JSON) and could not be resumed.".into()))]);
+        return None;
+    }
+    crate::orm::update(db, "chat_jobs", id, &[("status", Sql::Text("pending".into())), ("error", Sql::Text(String::new())), ("resumed_count", Sql::Integer(resumed + 1))])?;
+    start_chat_job(id);
+    Some(())
+}
+
+/// chat_jobs' `_run_job`: the AI slot, then one generate_chat call (no Thinking); the row ends done (result) or error
+async fn run_chat_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("chat job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<(Backend, String, String, Vec<Value>, Map<String, Value>), String>> {
+        let db = crate::writes::open(&c)?;
+        let (messages, system, model, options): (Option<String>, Option<String>, Option<String>, Option<String>) = db.query_row(
+            "SELECT messages_json, system, model, options_json FROM chat_jobs WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()?;
+        crate::orm::update(&db, "chat_jobs", id, &[("status", rusqlite::types::Value::Text("generating".into()))]);
+        let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let messages = serde_json::from_str::<Value>(messages.as_deref().unwrap_or("[]")).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        let options = serde_json::from_str::<Value>(options.as_deref().unwrap_or("{}")).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let model = model.filter(|m| !m.is_empty()).unwrap_or_else(|| backend.model.clone());
+        Some(Ok((backend, model, system.unwrap_or_default(), messages, options)))
+    }).await.ok().flatten();
+    use rusqlite::types::Value as Sql;
+    let fields = match prep {
+        None => return,
+        Some(Err(e)) => vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e))],
+        Some(Ok((backend, model, system, messages, options))) => {
+            let text = generate_chat(&backend, &model, &system, &messages, false, &options).await;
+            if text.starts_with("[AI ") || text.starts_with("[empty response") {
+                vec![("status", Sql::Text("error".into())), ("error", Sql::Text(text))]
+            } else {
+                vec![("status", Sql::Text("done".into())), ("result", Sql::Text(text))]
+            }
+        }
+    };
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Some(db) = crate::writes::open(&cfg) {
+            crate::orm::update(&db, "chat_jobs", id, &fields);
+        }
+    }).await;
+}
+
+/// `POST /api/ai/chat/jobs/<id>/cancel` for a chat job running here
+pub async fn chat_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let id: i64 = uri.path().strip_prefix("/api/ai/chat/jobs/")?.strip_suffix("/cancel")?.parse().ok()?;
+    if !crate::jobs::is_running("chat_jobs", id) {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+        let db = crate::writes::open(&cfg)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &cfg, "POST", &uri, &headers, now)?;
+        if !p.is_gm {
+            return None;
+        }
+        let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+        let status: String = db.query_row("SELECT status FROM chat_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+            |r| Ok(r.get::<_, Option<String>>(0)?.unwrap_or_default())).ok()?;
+        if !matches!(status.as_str(), "pending" | "generating") || !crate::jobs::abort("chat_jobs", id) {
+            return None;
+        }
+        use rusqlite::types::Value as Sql;
+        crate::orm::update(&db, "chat_jobs", id, &[("status", Sql::Text("cancelled".into())), ("error", Sql::Text("Cancelled by GM.".into()))])?;
+        crate::edits::json_response(&json!({"ok": true}))
+    }).await.ok()?
+}
+
+// ── the Session Log recap (POST /api/session-log/<id>/recap, app/routers/sessions.py; the job: audio_jobs purpose="session_log_recap") ──
+
+const RECAP_ERROR_BACKOFF_SECS: i64 = 60;
+const DEFAULT_RAG_ENTITY_LIMIT: i64 = 15;
+const DEFAULT_RAG_NOTES_LIMIT: i64 = 5;
+
+fn recap_text(k: &str) -> String {
+    nd_render::app::data()["recap_texts"][k].as_str().unwrap_or("").to_string()
+}
+
+/// `int(raw)` for a body field the way the route's parsers take it: None for absent / null / "", the number, or Err (Python's 400 or
+/// a conversion it alone knows)
+fn body_int(v: Option<&Value>) -> Result<Option<i64>, ()> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if !t.is_empty() && t.trim_start_matches(['+', '-']).bytes().all(|b| b.is_ascii_digit()) && t.matches(['+', '-']).count() <= 1 {
+                t.parse::<i64>().map(Some).map_err(|_| ())
+            } else {
+                Err(())
+            }
+        }
+        Some(Value::Bool(b)) => Ok(Some(*b as i64)),
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(i) => Ok(Some(i)),
+            None => n.as_f64().filter(|f| f.is_finite() && f.abs() < 9.0e15).map(|f| Some(f.trunc() as i64)).ok_or(()),
+        },
+        _ => Err(()),
+    }
+}
+
+/// A DateTime column's text as SQLAlchemy binds it ("YYYY-MM-DD HH:MM:SS.ffffff")
+fn sql_stamp(t: &str) -> String {
+    if t.len() == 19 { format!("{t}.000000") } else { t.to_string() }
+}
+
+enum LogRecap {
+    Answer(Value),
+    TooSoon,
+    Create(i64),
+}
+
+fn session_log_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<LogRecap> {
+    let sid: i64 = uri.path().strip_prefix("/api/session-log/")?.strip_suffix("/recap")?.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if p.user_id <= 0 {
+        return None;
+    }
+    let wid: i64 = db.query_row("SELECT world_id FROM game_sessions WHERE id = ?1", [sid], |r| r.get(0)).ok()?;
+    let recap_touch: Option<String> = db.query_row("SELECT recap_content_touch FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
+    if !p.is_gm && db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_err() {
+        return None; // the 404 is Python's
+    }
+    let gm = p.is_gm;
+    let audience = if gm { "gm" } else { "players" };
+    let b = if body.is_empty() { Map::new() } else {
+        match serde_json::from_slice::<Value>(body).ok()? { Value::Object(m) => m, _ => return None }
+    };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)), Some(_) => None }
+    };
+    let model = if gm { text("model")? } else { String::new() };
+    let think = match b.get("think") { None => true, v => crate::edits::py_truthy_pub(v) };
+    let mut use_rag = crate::edits::py_truthy_pub(b.get("use_rag"));
+    let (mut rag_e, mut rag_n) = (body_int(b.get("rag_entity_limit")).ok()?, body_int(b.get("rag_notes_limit")).ok()?);
+    if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) {
+        return None;
+    }
+    let (min_t, max_t) = (body_int(b.get("min_tokens")).ok()?, body_int(b.get("max_tokens")).ok()?);
+    if min_t.is_some_and(|v| v < 1) || max_t.is_some_and(|v| v < 1) || matches!((min_t, max_t), (Some(a), Some(z)) if a > z) {
+        return None;
+    }
+    let strictness = match b.get("strictness") {
+        None | Some(Value::Null) => "guideline".to_string(),
+        Some(Value::String(s)) if s.is_empty() => "guideline".to_string(),
+        Some(Value::String(s)) => crate::edits::py_strip_pub(s),
+        Some(_) => return None,
+    };
+    if !["guideline", "firm", "strict"].contains(&strictness.as_str()) {
+        return None;
+    }
+    let extra = text("extra_instructions")?;
+    if !gm && use_rag {
+        (use_rag, rag_e, rag_n) = (false, None, None);
+    }
+    if use_rag {
+        return None; // the GM's lore retrieval (_build_rag_context): Python's
+    }
+    let requested = if model.is_empty() { surface_default(cfg, "recap")? } else { model.clone() };
+    let force = crate::edits::py_truthy_pub(b.get("force")) && gm;
+    let newest: Option<String> = db.query_row("SELECT max(coalesce(updated_at, created_at)) FROM facts WHERE game_session_id = ?1", [sid], |r| r.get(0)).ok().flatten();
+    let min_stamp = "0001-01-01 00:00:00.000000".to_string();
+    let cutoff = [newest.map(|t| sql_stamp(&t)), recap_touch.map(|t| sql_stamp(&t))].into_iter().flatten().fold(min_stamp, |a, t| if t > a { t } else { a });
+    let filter = "purpose = 'session_log_recap' AND game_session_id = ?1 AND audience = ?2 AND created_at >= ?3 AND coalesce(model, '') = ?4 \
+        AND coalesce(think, 1) = ?5 AND coalesce(use_rag, 0) = 0 AND coalesce(rag_entity_limit, 15) = ?6 AND coalesce(rag_notes_limit, 5) = ?7 \
+        AND coalesce(extra_instructions, '') = ?8 AND coalesce(min_tokens, 0) = ?9 AND coalesce(max_tokens, 0) = ?10 AND coalesce(condense_strictness, 'guideline') = ?11";
+    let params = rusqlite::params![sid, audience, cutoff, requested, think as i64, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT),
+        extra, min_t.unwrap_or(0), max_t.unwrap_or(0), strictness];
+    let one = |status_sql: &str| -> Option<(i64, Option<String>, Option<String>)> {
+        db.query_row(&format!("SELECT id, result_json, error FROM audio_jobs WHERE {status_sql} AND {filter} ORDER BY created_at DESC, id DESC LIMIT 1"), params,
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
+    };
+    if !force {
+        if let Some((_, result, _)) = one("status = 'done'") {
+            if let Ok(v) = serde_json::from_str::<Value>(result.as_deref().unwrap_or("")) {
+                return Some(LogRecap::Answer(v));
+            }
+        }
+    }
+    if let Some((id, _, _)) = one("status IN ('pending', 'transcribing', 'summarizing')") {
+        return Some(LogRecap::Answer(json!({"pending": true, "job_id": id})));
+    }
+    backend(&db)?;
+    if !force {
+        let since = crate::orm::stamp_after(-RECAP_ERROR_BACKOFF_SECS);
+        let recent = db.query_row(&format!("SELECT error FROM audio_jobs WHERE status = 'error' AND {filter} AND created_at >= ?12 ORDER BY created_at DESC, id DESC LIMIT 1"),
+            rusqlite::params![sid, audience, cutoff, requested, think as i64, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT),
+                extra, min_t.unwrap_or(0), max_t.unwrap_or(0), strictness, since], |r| r.get::<_, Option<String>>(0)).ok();
+        if let Some(error) = recent {
+            let error = error.filter(|e| !e.is_empty()).unwrap_or_else(|| "Recap generation failed.".into());
+            return Some(LogRecap::Answer(json!({"failed": true, "error": error})));
+        }
+    }
+    if !gm {
+        let mut cd = cooldowns().lock().ok()?;
+        if cd.get(&p.user_id).is_some_and(|t| t.elapsed() < COOLDOWN) {
+            return Some(LogRecap::TooSoon);
+        }
+        cd.insert(p.user_id, Instant::now());
+    }
+    use rusqlite::types::Value as Sql;
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    let id = crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("session_log_recap".into())),
+        ("filename", Sql::Text("Session Log recap".into())), ("status", Sql::Text("pending".into())), ("game_session_id", Sql::Integer(sid)),
+        ("created_by_user_id", Sql::Integer(p.user_id)), ("audience", Sql::Text(audience.into())), ("model", Sql::Text(requested)),
+        ("think", Sql::Integer(think as i64)), ("use_rag", Sql::Integer(0)), ("rag_entity_limit", opt_int(rag_e)), ("rag_notes_limit", opt_int(rag_n)),
+        ("extra_instructions", if extra.is_empty() { Sql::Null } else { Sql::Text(extra) }), ("min_tokens", opt_int(min_t)), ("max_tokens", opt_int(max_t)),
+        ("condense_strictness", Sql::Text(strictness)), ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])?;
+    Some(LogRecap::Create(id))
+}
+
+/// `POST /api/session-log/<id>/recap`: a fresh recap, the running job, a recent failure, or a new job run here
+pub async fn session_log_recap(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let plan = tokio::task::spawn_blocking(move || session_log_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    match plan {
+        LogRecap::Answer(v) => crate::edits::json_response(&v),
+        LogRecap::TooSoon => Response::builder().status(StatusCode::TOO_MANY_REQUESTS).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway")
+            .body(Body::from(nd_render::py_dumps_compact(&json!({"detail": "Please wait a few seconds before asking again."})))).ok(),
+        LogRecap::Create(id) => {
+            start_log_recap_job(id);
+            crate::edits::json_response(&json!({"pending": true, "job_id": id}))
+        }
+    }
+}
+
+fn start_log_recap_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_log_recap_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `_recap_degeneration_ratio`: the share of repeated lines (whitespace-normalised, lowercased) once there are 4 or more
+fn degeneration_ratio(recap: &str) -> f64 {
+    let lines: Vec<String> = recap.split('\n').map(crate::edits::py_strip_pub).filter(|l| !l.is_empty()).collect();
+    if lines.len() < 4 {
+        return 0.0;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut dupes = 0;
+    for l in &lines {
+        let key = l.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+        if !seen.insert(key) {
+            dupes += 1;
+        }
+    }
+    dupes as f64 / lines.len() as f64
+}
+
+fn chars_per_token(text: &str) -> i64 {
+    let sample: Vec<char> = text.chars().take(4000).collect();
+    if sample.is_empty() { return 4 }
+    if (sample.iter().filter(|c| (**c as u32) > 127).count() as f64) / (sample.len() as f64) > 0.3 { 2 } else { 4 }
+}
+
+/// `_length_target_addendum`
+fn length_addendum(min_t: Option<i64>, max_t: Option<i64>, strictness: &str, cpt: i64, noun: &str, source: &str) -> String {
+    let mut notes = vec![];
+    if let Some(m) = min_t.filter(|v| *v != 0) {
+        notes.push(if strictness == "guideline" {
+            format!("at least ~{m} tokens (~{} characters) — don't cut it any shorter than that even if you could say it in fewer words", m * cpt)
+        } else {
+            format!("REQUIRED: the {noun} MUST be at least ~{m} tokens (~{} characters) — a shorter output is a failed request; expand with specific detail (scene beats, names, consequences) from the {source} to reach it", m * cpt)
+        });
+    }
+    if let Some(m) = max_t.filter(|v| *v != 0) {
+        notes.push(if strictness == "guideline" {
+            format!("no more than ~{m} tokens (~{} characters)", m * cpt)
+        } else {
+            format!("REQUIRED: stay at or below ~{m} tokens (~{} characters); trim detail rather than exceeding it", m * cpt)
+        });
+    }
+    if notes.is_empty() {
+        return String::new();
+    }
+    format!("\n\n{} for the {noun}: {}.", if strictness == "guideline" { "Length target" } else { "Length requirements" }, notes.join(" and "))
+}
+
+/// `summarize_session_from_facts`
+async fn summarize_facts(b: &Backend, facts: &[String], model: &str, extra: &str, think: bool, min_t: Option<i64>, max_t: Option<i64>, strictness: &str) -> String {
+    if facts.is_empty() {
+        return String::new();
+    }
+    let bullets = facts.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n");
+    let mut system = recap_text("_SUMMARIZE_FACTS_SYSTEM");
+    if (strictness == "firm" || strictness == "strict") && !crate::edits::py_strip_pub(extra).is_empty() {
+        system.push_str(&recap_text("_STRICT_COMPLIANCE_NOTE"));
+    }
+    if !extra.is_empty() {
+        system = format!("{system}\n\nAdditional instructions from the GM (follow these too): {extra}");
+    }
+    system.push_str(&length_addendum(min_t, max_t, strictness, chars_per_token(&bullets), "session recap", "facts"));
+    let mut opts = Map::new();
+    if let Some(m) = max_t.filter(|m| *m != 0 && !think) {
+        opts.insert("num_predict".into(), json!(m));
+    }
+    opts.extend(b.thinking_predict_if(think));
+    if !opts.contains_key("num_predict") {
+        let configured = b.options.get("num_predict").and_then(|v| v.as_f64());
+        if !configured.is_some_and(|c| c != 0.0 && c >= 0.0) {
+            opts.insert("num_predict".into(), json!(RECAP_NUM_PREDICT_DEFAULT));
+        }
+    }
+    let msgs = [json!({"role": "user", "content": bullets})];
+    let (mut recap, mut truncated) = clean_degenerate_t(&generate_chat(b, model, &system, &msgs, think, &opts).await);
+    if (truncated || degeneration_ratio(&recap) > 0.4) && !opts.contains_key("repeat_penalty") {
+        let mut retry_opts = opts.clone();
+        retry_opts.insert("repeat_penalty".into(), json!(1.2));
+        let (retry, retry_trunc) = clean_degenerate_t(&generate_chat(b, model, &system, &msgs, think, &retry_opts).await);
+        let (rr, or) = (degeneration_ratio(&retry), degeneration_ratio(&recap));
+        if rr < or || (rr == or && !retry_trunc && truncated) {
+            (recap, truncated) = (retry, retry_trunc);
+        }
+    }
+    let _ = truncated;
+    recap
+}
+
+/// `_format_session_rewards`: the deterministic Rewards footer
+fn session_rewards(xp: i64, loot: &[Value]) -> String {
+    let show = |v: Option<&Value>, d: &str| match v {
+        None => d.to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Bool(t)) => if *t { "True".into() } else { "False".into() },
+        Some(Value::Null) => "None".into(),
+        Some(other) => other.to_string(),
+    };
+    let mut lines = vec![];
+    if xp != 0 {
+        lines.push(format!("- **XP awarded:** {xp}"));
+    }
+    if !loot.is_empty() {
+        let items: Vec<String> = loot.iter().map(|it| format!("{} ×{}", show(it.get("name"), "?"), show(it.get("qty"), "1"))).collect();
+        lines.push(format!("- **Loot given:** {}", items.join(", ")));
+    }
+    if lines.is_empty() { String::new() } else { format!("## Rewards\n{}", lines.join("\n")) }
+}
+
+/// `_run_job` for purpose="session_log_recap"
+async fn run_log_recap_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    type Prep = (Backend, String, bool, Vec<String>, String, Option<i64>, Option<i64>, String, i64, Vec<Value>);
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<Prep, String>> {
+        let db = crate::writes::open(&c)?;
+        let (model, think, gsid, audience, extra, min_t, max_t, strictness): (Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>) =
+            db.query_row("SELECT model, think, game_session_id, audience, extra_instructions, min_tokens, max_tokens, condense_strictness FROM audio_jobs WHERE id = ?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).ok()?;
+        crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
+        let gs: Option<(i64, Option<i64>, Option<String>)> = gsid.and_then(|g| db.query_row("SELECT world_id, xp_awarded, loot_json FROM game_sessions WHERE id = ?1", [g],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok());
+        let Some((wid, xp, loot)) = gs else { return Some(Err("This session no longer exists.".into())) };
+        let audience = audience.unwrap_or_else(|| "players".into());
+        let mut st = db.prepare(&format!("SELECT content FROM facts WHERE game_session_id = ?1{} ORDER BY created_at",
+            if audience == "gm" { "" } else { " AND visible_to_players IS NOT 0" })).ok()?;
+        let facts: Vec<String> = st.query_map([gsid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_default()).collect();
+        let world_instr: Option<String> = db.query_row("SELECT recap_instructions FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok().flatten();
+        let instructions = [crate::edits::py_strip_pub(&world_instr.unwrap_or_default()), crate::edits::py_strip_pub(&extra.unwrap_or_default())]
+            .into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let loot: Vec<Value> = serde_json::from_str::<Value>(loot.as_deref().filter(|l| !l.is_empty()).unwrap_or("[]")).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        let model = model.filter(|m| !m.is_empty()).or_else(|| surface_default(&c, "recap")).unwrap_or_default();
+        let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let model = if model.is_empty() { backend.model.clone() } else { model };
+        Some(Ok((backend, model, think.map_or(true, |t| t != 0), facts, instructions, min_t, max_t, strictness.unwrap_or_else(|| "guideline".into()), xp.unwrap_or(0), loot)))
+    }).await.ok().flatten();
+    let finish = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(db) = crate::writes::open(&c) {
+                let mut f = fields;
+                f.push(("finished_at", Sql::Text(crate::orm::now_stamp())));
+                f.push(("checkpoint_json", Sql::Text(String::new())));
+                crate::orm::update(&db, "audio_jobs", id, &f);
+            }
+        })
+    };
+    let (backend, model, think, facts, instructions, min_t, max_t, strictness, xp, loot) = match prep {
+        None => return,
+        Some(Err(e)) => {
+            let _ = finish(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e))]).await;
+            return;
+        }
+        Some(Ok(p)) => p,
+    };
+    if facts.is_empty() {
+        let _ = finish(vec![("status", Sql::Text("done".into())), ("result_json", Sql::Text(nd_render::py_dumps(&json!({"recap": "", "empty": true}))))]).await;
+        return;
+    }
+    let failed = |t: &str| t.starts_with("[AI ") || t.starts_with("[empty response");
+    let starved = |t: &str| t.starts_with("[empty response") && t.contains("hidden \"thinking\"");
+    let mut recap = summarize_facts(&backend, &facts, &model, &instructions, think, min_t, max_t, &strictness).await;
+    if failed(&recap) || starved(&recap) {
+        let _ = finish(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(recap))]).await;
+        return;
+    }
+    if strictness == "strict" && (min_t.is_some_and(|v| v != 0) || max_t.is_some_and(|v| v != 0)) {
+        let cpt = chars_per_token(&recap);
+        let est = (recap.chars().count() as i64 + cpt - 1) / cpt;
+        let below = min_t.is_some_and(|m| m != 0 && (est as f64) < m as f64 * 0.85);
+        let above = max_t.is_some_and(|m| m != 0 && (est as f64) > m as f64 * 1.15);
+        if below || above {
+            let note = if below {
+                format!("Your previous draft was ~{est} tokens; the requirement is at least ~{} tokens. Expand it with more specific detail from the facts.", min_t.unwrap_or(0))
+            } else {
+                format!("Your previous draft was ~{est} tokens; the requirement is at most ~{} tokens. Trim it to fit.", max_t.unwrap_or(0))
+            };
+            let combined = [crate::edits::py_strip_pub(&instructions), crate::edits::py_strip_pub(&note)].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+            let retry = summarize_facts(&backend, &facts, &model, &combined, think, min_t, max_t, &strictness).await;
+            if !failed(&retry) && !starved(&retry) {
+                recap = retry;
+            }
+        }
+    }
+    let rewards = session_rewards(xp, &loot);
+    if !rewards.is_empty() {
+        recap = format!("{recap}\n\n{rewards}");
+    }
+    let _ = finish(vec![("status", Sql::Text("done".into())), ("result_json", Sql::Text(nd_render::py_dumps(&json!({"recap": recap}))))]).await;
 }

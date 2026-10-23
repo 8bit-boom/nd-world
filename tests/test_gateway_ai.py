@@ -21,6 +21,7 @@ class _Fake:
         self.status = 200
         self.reply = {}                 # the answer to a request that is not streamed
         self.delay = 0                  # seconds before that answer
+        self.reply_seq = None           # answers to give in turn first (then `reply`)
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -52,7 +53,8 @@ class _Fake:
                 if req.get("stream") is False:
                     if fake.delay:
                         __import__("time").sleep(fake.delay)
-                    body = json.dumps(fake.reply).encode()
+                    reply = fake.reply_seq.pop(0) if fake.reply_seq else fake.reply
+                    body = json.dumps(reply).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -373,9 +375,12 @@ def test_ai_assist_free_text_ops_are_pythons(client, seed, studio):
         assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2500], json.dumps(out[1][2])[:2500])
         assert out[1][3] == "gateway", i
     studio.status = 200
-    # what stays Python's: lore retrieval, the JSON operations, refusals and Python's 400s
-    for body in ({"op": "expand", **entity, "use_rag": True}, {"op": "suggest", **entity}, {"op": "custom", **entity}, {"op": "nope"},
-                 {"op": "expand", "body": "   "}, {"op": "expand", "body": "x" * 60001}):
+    # run_assist's ValueErrors: the same 400 from the gateway
+    for body in ({"op": "custom", **entity}, {"op": "code_edit", **entity}, {"op": "expand", "body": "   "}, {"op": "analyze"}):
+        got = [(r.status_code, r.json()) for r in (gm.post("/api/ai/assist", json=body), _via(gm, base).post("/api/ai/assist", json=body))]
+        assert got[0] == got[1] and got[0][0] == 400, (body, got)
+    # what stays Python's: lore retrieval, the JSON operations, an unknown operation, content over the interactive cap
+    for body in ({"op": "expand", **entity, "use_rag": True}, {"op": "suggest", **entity}, {"op": "nope"}, {"op": "expand", "body": "x" * 60001}):
         assert _via(gm, base).post("/api/ai/assist", json=body).headers.get("x-nd-served-by") != "gateway", body
     player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     assert _via(player, base).post("/api/ai/assist", json={"op": "expand", **entity}).headers.get("x-nd-served-by") != "gateway"
@@ -459,3 +464,140 @@ def test_a_gateway_job_holds_the_ai_slot_and_can_be_cancelled(client, seed, stud
         assert shared_state.get_json(f"jobowner:audio_jobs:{job_id}") is None      # no longer the gateway's
     finally:
         studio.delay = 0
+
+
+def _chat_row(job_id):
+    from app.database import SessionLocal
+    from app.models import ChatJob
+    db = SessionLocal()
+    try:
+        j = db.get(ChatJob, job_id)
+        return {k: getattr(j, k) for k in ("prompt", "messages_json", "system", "model", "options_json", "status", "error", "result", "resumed_count")}
+    finally:
+        db.close()
+
+
+def test_background_chat_job_is_pythons(client, seed, studio):
+    """POST /api/ai/chat/jobs (AI Chat's "process in background"): the same chat_jobs row (the last user prompt, the messages with
+    documents folded in, the clamped options with the fitted num_ctx), the same request to the backend, the same done / error row."""
+    import time
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    long_doc = {"kind": "document", "url": "/uploads/ai/x.txt", "name": "lore.txt", "text": "Lore line. " * 1500}
+    msgs = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Yes?"}, {"role": "user", "content": "Summarise", "attachments": [long_doc]}]
+    cases = [({"messages": msgs, "system": "Be brief.", "options": {"temperature": 0.3, "top_k": 9.7}}, _reply("Done it.")),
+             ({"messages": [{"role": "user", "content": "Привет " * 3000}], "model": "other"}, _reply("Ответ")),
+             ({"messages": [{"role": "user", "content": "x"}], "options": {"num_ctx": 2048}}, _reply("", finish="length"))]
+    for i, (body, reply) in enumerate(cases):
+        studio.reply = reply
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            r = side.post("/api/ai/chat/jobs", json=body)
+            assert r.status_code == 200, (i, r.text)
+            job_id = r.json()["job_id"]
+            end = time.time() + 20
+            while time.time() < end and _chat_row(job_id)["status"] in ("pending", "generating"):
+                time.sleep(0.1)
+            out.append((_chat_row(job_id), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:1500], json.dumps(out[1][1])[:1500])
+        assert out[1][2] == "gateway", i
+    # a player, a picture attachment, a string option: Python's
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    assert _via(player, base).post("/api/ai/chat/jobs", json={"messages": msgs}).headers.get("x-nd-served-by") != "gateway"
+    for body in ({"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/u/a.png"}]}]},
+                 {"messages": msgs, "options": {"temperature": "0.2"}}):
+        assert _via(gm, base).post("/api/ai/chat/jobs", json=body).headers.get("x-nd-served-by") != "gateway", body
+
+
+def test_a_gateway_chat_job_can_be_cancelled(client, seed, studio):
+    import time
+    base = str(client.base_url)
+    gm = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base)
+    studio.reply, studio.delay = _reply("slow"), 3
+    try:
+        job_id = gm.post("/api/ai/chat/jobs", json={"messages": [{"role": "user", "content": "slow"}]}).json()["job_id"]
+        end = time.time() + 5
+        while time.time() < end and _chat_row(job_id)["status"] != "generating":
+            time.sleep(0.05)
+        r = gm.post(f"/api/ai/chat/jobs/{job_id}/cancel")
+        assert (r.status_code, r.json(), r.headers.get("x-nd-served-by")) == (200, {"ok": True}, "gateway")
+        row = _chat_row(job_id)
+        assert (row["status"], row["error"]) == ("cancelled", "Cancelled by GM."), row
+    finally:
+        studio.delay = 0
+
+
+def test_session_log_recap_is_pythons(client, seed, studio):
+    """POST /api/session-log/<id>/recap: the job row, the request (the facts a GM / a player may see, instructions, length targets),
+    the cleaned recap with its Rewards footer, the cached answer afterwards, the strict-length retry and the empty / failed answers."""
+    import time
+    from app.database import SessionLocal
+    from app.models import AudioJob, Fact, GameSession, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=w, title="Night at the docks", xp_awarded=300, loot_json=json.dumps([{"name": "Rope", "qty": 2}, {"name": "Lantern"}]))
+        empty = GameSession(world_id=w, title="Nothing yet")
+        db.add_all([gs, empty])
+        db.flush()
+        db.add_all([Fact(world_id=w, game_session_id=gs.id, content="The party reached the docks.", visible_to_players=True),
+                    Fact(world_id=w, game_session_id=gs.id, content="The harbourmaster is a cultist.", visible_to_players=False),
+                    Fact(world_id=w, game_session_id=gs.id, content="They stole a boat.", visible_to_players=True)])
+        db.get(World, w).recap_instructions = "  Write in present tense. "
+        db.commit()
+        sid, eid = gs.id, empty.id
+    finally:
+        db.close()
+
+    def clear(session_id):
+        s = SessionLocal()
+        try:
+            s.query(AudioJob).filter(AudioJob.game_session_id == session_id).delete()
+            s.commit()
+        finally:
+            s.close()
+
+    def run(side, session_id, body):
+        r = side.post(f"/api/session-log/{session_id}/recap", json=body)
+        first = (r.status_code, r.json(), r.headers.get("x-nd-served-by"))
+        end = time.time() + 20
+        while r.status_code == 200 and r.json().get("pending") and time.time() < end:
+            time.sleep(0.15)
+            r = side.post(f"/api/session-log/{session_id}/recap", json=body)
+        s = SessionLocal()
+        try:
+            j = s.query(AudioJob).filter(AudioJob.game_session_id == session_id).order_by(AudioJob.id.desc()).first()
+            row = j and {k: getattr(j, k) for k in ("filename", "status", "error", "audience", "model", "think", "extra_instructions", "min_tokens",
+                                                     "max_tokens", "condense_strictness", "result_json", "rag_entity_limit", "use_rag")}
+        finally:
+            s.close()
+        return first[0], {k: v for k, v in first[1].items() if k != "job_id"}, r.status_code, r.json(), row, first[2]
+
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    long_text = "\\n".join(f"The tide turned {i}." for i in range(30))
+    cases = [
+        (gm, sid, {"think": False, "extra_instructions": "  Mention the boat. ", "min_tokens": "50", "strictness": "firm"}, [_reply("<think>x</think>The party stole a boat.\\nThe party stole a boat.")]),
+        (player, sid, {"model": "ignored", "think": True, "rag_entity_limit": 3}, [_reply("They reached the docks.", reasoning="hmm")]),
+        (gm, sid, {"think": False, "strictness": "strict", "max_tokens": 5}, [_reply(long_text), _reply("Short.")]),
+        (gm, sid, {"think": False, "model": "other"}, [_reply("", reasoning="all thought")]),
+        (gm, eid, {}, [_reply("never")]),
+    ]
+    for i, (d, session_id, body, replies) in enumerate(cases):
+        out = []
+        for side in (d, _via(d, base)):
+            clear(session_id)
+            studio.requests.clear()
+            seq = list(replies)
+            studio.reply_seq = seq
+            out.append((run(side, session_id, body), [q["body"] for q in studio.requests]))
+        a, b = out
+        assert a[0][:5] == b[0][:5], (i, a[0][:5], b[0][:5])
+        assert a[1] == b[1], (i, json.dumps(a[1])[:2500], json.dumps(b[1])[:2500])
+        assert b[0][5] == "gateway", i
+        # asked again: the done row answers, from either server
+        again = [side.post(f"/api/session-log/{session_id}/recap", json=body).json() for side in (d, _via(d, base))]
+        assert again[0] == again[1], (i, again)
+    studio.reply_seq = None

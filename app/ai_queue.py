@@ -74,8 +74,11 @@ def _lease_release() -> None:
 
 
 async def _lease_acquire(t: "Ticket") -> None:
-    while not await asyncio.to_thread(_lease_try, t.label):
-        await asyncio.sleep(LEASE_POLL_SECONDS)
+    # The free lease (the usual case) is taken in place: one small write, and no await, so a task that has the slot starts in the
+    # same turn of the event loop as before the lease existed. Only a lease held by the other process is waited for, off the loop.
+    if not _lease_try(t.label):
+        while not await asyncio.to_thread(_lease_try, t.label):
+            await asyncio.sleep(LEASE_POLL_SECONDS)
 
     async def renew():
         while True:

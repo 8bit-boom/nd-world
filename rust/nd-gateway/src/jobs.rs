@@ -217,8 +217,22 @@ pub fn abort(table: &str, id: i64) -> bool {
     }
 }
 
-/// `_interrupted_note()` without a chunk position
+/// `_interrupted_note()` without a chunk position (audio_jobs)
 pub const INTERRUPTED_NOTE: &str = "Paused by a server restart — the work so far is saved; it will resume automatically, or use ▶ Resume.";
+/// chat_jobs' `_INTERRUPTED_NOTE`
+pub const CHAT_INTERRUPTED_NOTE: &str = "Paused by a server restart — it will restart automatically from the same request.";
+
+/// The job tables the gateway runs jobs of, with their in-progress statuses
+const TABLES: &[(&str, &[&str])] = &[("audio_jobs", &["pending", "transcribing", "summarizing"]), ("chat_jobs", &["pending", "generating"])];
+
+fn mark_interrupted(db: &rusqlite::Connection, table: &str, id: i64) {
+    use rusqlite::types::Value as Sql;
+    let _ = match table {
+        "audio_jobs" => crate::orm::update(db, table, id, &[("status", Sql::Text("interrupted".into())), ("error", Sql::Text(INTERRUPTED_NOTE.into())),
+            ("finished_at", Sql::Text(crate::orm::now_stamp()))]),
+        _ => crate::orm::update(db, table, id, &[("status", Sql::Text("interrupted".into())), ("error", Sql::Text(CHAT_INTERRUPTED_NOTE.into()))]),
+    };
+}
 
 /// A shutdown: every running job stopped and marked interrupted, its ownership key kept for the next start
 pub fn stop_all() {
@@ -227,10 +241,7 @@ pub fn stop_all() {
     let Some(db) = crate::writes::open(&st.cfg) else { return };
     for ((table, id), h) in jobs {
         h.abort();
-        if table == "audio_jobs" {
-            let _ = crate::orm::update(&db, "audio_jobs", id, &[("status", rusqlite::types::Value::Text("interrupted".into())),
-                ("error", rusqlite::types::Value::Text(INTERRUPTED_NOTE.into())), ("finished_at", rusqlite::types::Value::Text(crate::orm::now_stamp()))]);
-        }
+        mark_interrupted(&db, &table, id);
     }
 }
 
@@ -239,30 +250,42 @@ pub fn stop_all() {
 pub fn adopt() {
     let Some(st) = state() else { return };
     let Some(db) = crate::writes::open(&st.cfg) else { return };
-    let keys: Vec<String> = db.prepare("SELECT key FROM shared_state WHERE key LIKE 'jobowner:audio_jobs:%'").ok()
-        .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0)).ok().map(|rows| rows.filter_map(Result::ok).collect())).unwrap_or_default();
-    for key in keys {
-        let Some(id) = key.rsplit(':').next().and_then(|i| i.parse::<i64>().ok()) else { continue };
-        let row: Option<(String, Option<String>, i64)> = db.query_row("SELECT status, purpose, COALESCE(resumed_count, 0) FROM audio_jobs WHERE id = ?1", [id],
-            |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?, r.get(2)?))).ok();
-        let Some((status, purpose, resumed)) = row else {
-            let _ = db.execute("DELETE FROM shared_state WHERE key = ?1", [&key]);
-            continue;
-        };
-        if !matches!(status.as_str(), "pending" | "transcribing" | "summarizing" | "interrupted") || purpose.as_deref() != Some("ai_assist") {
-            if !matches!(status.as_str(), "pending" | "transcribing" | "summarizing" | "interrupted") {
-                let _ = db.execute("DELETE FROM shared_state WHERE key = ?1", [&key]);
+    use rusqlite::types::Value as Sql;
+    for (table, in_progress) in TABLES {
+        let keys: Vec<String> = db.prepare(&format!("SELECT key FROM shared_state WHERE key LIKE 'jobowner:{table}:%'")).ok()
+            .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0)).ok().map(|rows| rows.filter_map(Result::ok).collect())).unwrap_or_default();
+        for key in keys {
+            let Some(id) = key.rsplit(':').next().and_then(|i| i.parse::<i64>().ok()) else { continue };
+            let row: Option<(String, i64)> = db.query_row(&format!("SELECT status, COALESCE(resumed_count, 0) FROM {table} WHERE id = ?1"), [id],
+                |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?))).ok();
+            let forget = || { let _ = db.execute("DELETE FROM shared_state WHERE key = ?1", [&key]); };
+            let Some((status, resumed)) = row else { forget(); continue };
+            if !(in_progress.contains(&status.as_str()) || status == "interrupted") {
+                forget();
+                continue;
             }
-            continue;
+            if status != "interrupted" {
+                mark_interrupted(&db, table, id);
+            }
+            if resumed >= MAX_AUTO_RESUMES {
+                let _ = if *table == "audio_jobs" {
+                    crate::orm::update(&db, table, id, &[("status", Sql::Text("error".into())),
+                        ("error", Sql::Text(format!("Interrupted by a server restart {resumed} times in a row — resume it by hand from Background Jobs once the server is stable."))),
+                        ("finished_at", Sql::Text(crate::orm::now_stamp()))])
+                } else {
+                    crate::orm::update(&db, table, id, &[("status", Sql::Text("error".into())),
+                        ("error", Sql::Text(format!("Interrupted by a server restart {resumed} times in a row — try again once the server is stable.")))])
+                };
+                forget();
+                continue;
+            }
+            let resumed_ok = match *table {
+                "audio_jobs" => crate::ai::resume_assist_job(&db, id, false),
+                _ => crate::ai::restart_chat_job(&db, id),
+            };
+            if resumed_ok.is_none() {
+                forget();
+            }
         }
-        use rusqlite::types::Value as Sql;
-        if resumed >= MAX_AUTO_RESUMES {
-            let _ = crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("error".into())),
-                ("error", Sql::Text(format!("Interrupted by a server restart {resumed} times in a row — resume it by hand from Background Jobs once the server is stable."))),
-                ("finished_at", Sql::Text(crate::orm::now_stamp()))]);
-            let _ = db.execute("DELETE FROM shared_state WHERE key = ?1", [&key]);
-            continue;
-        }
-        crate::ai::resume_assist_job(&db, id, false);
     }
 }
