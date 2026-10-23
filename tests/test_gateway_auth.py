@@ -106,3 +106,22 @@ def test_two_step_is_pythons(client, seed):
     for js in ({"email": "mcp-2fa@test.local", "password": "pw-2fa-123"}, {"email": "mcp-2fa@test.local", "password": "pw-2fa-123", "totp_code": "123"}):
         a, b = _post(DIRECT, "/api/login", js=js)[0], _post(base, "/api/login", js=js)[0]
         assert _norm(a) == _norm(b), js
+
+
+def test_stale_session_is_refreshed_by_the_gateway(client, seed):
+    """A session whose site layout is older than 15 minutes (or signed over 6 hours ago) used to send the page to Python, which
+    rewrites the cookie; the gateway now refreshes it up front (so its own pages can serve it), the new cookie riding on the answer."""
+    import itsdangerous
+    from app.main import SECRET_KEY
+    base = str(client.base_url)
+    r, c = _post(base, "/login", data={"email": seed.gm.email, "password": GM_PASSWORD})
+    data = _session(c)
+    data["site_layout"]["at"] = 1000
+    signer = itsdangerous.TimestampSigner(str(SECRET_KEY))
+    stale = signer.sign(base64.b64encode(json.dumps(data).encode())).decode()
+    r = httpx.get(base + "/", cookies={"session": stale, "active_world": seed.world_a.slug}, follow_redirects=False)
+    assert r.status_code == 200
+    new = [h for h in r.headers.get_list("set-cookie") if h.startswith("session=")]
+    assert len(new) == 1 and "Max-Age=1209600; httponly; samesite=lax" in new[0]
+    fresh = json.loads(base64.b64decode(new[0].split("=", 1)[1].split(";")[0].split(".")[0] + "=="))
+    assert fresh["site_layout"]["at"] > 1000 and fresh["user_id"] == data["user_id"]

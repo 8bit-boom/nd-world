@@ -444,3 +444,38 @@ mod tests {
         assert_eq!(base32_decode("gezdgnbvgy3tqojqgezdgnbvgy3tqojq").unwrap(), b"12345678901234567890");
     }
 }
+
+/// The session refreshed at the front of the gateway (what app/session_cookie.py and site_layout.for_request do on Python's pages): a
+/// session signed more than 6 h ago is re-signed, and a signed-in person's site layout older than 15 min (or another person's) is
+/// read again. Returns (the new cookie value, the Set-Cookie line), or None when nothing needs refreshing.
+pub fn refresh(cfg: &Config, headers: &HeaderMap) -> Option<(String, String)> {
+    let secret = cfg.secret_key.as_deref()?;
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
+    let n = now();
+    let (sess, signed_at) = crate::session::read_with_time(crate::session::cookie(cookie, crate::session::COOKIE_NAME)?, secret, n, crate::session::MAX_AGE_SECONDS)?;
+    let Value::Object(mut s) = sess else { return None };
+    if s.is_empty() {
+        return None;
+    }
+    let mut changed = n.saturating_sub(signed_at) > crate::session::REFRESH_SECONDS;
+    if let Some(uid) = s.get("user_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
+        let fresh = s.get("site_layout").and_then(|v| v.as_object()).is_some_and(|sl| {
+            sl.get("uid").and_then(|v| v.as_i64()) == Some(uid) && sl.get("options").is_some_and(|o| o.is_object())
+                && (n as i64 - sl.get("at").and_then(|v| v.as_i64()).unwrap_or(0)) < 15 * 60
+        });
+        if !fresh {
+            let db = crate::writes::open(cfg)?;
+            let v: Option<i64> = db.query_row("SELECT session_version FROM users WHERE id = ?1", [uid], |r| r.get(0)).ok().flatten();
+            if v.is_some() && s.get("session_version").and_then(|x| x.as_i64()) == v {
+                s.insert("site_layout".into(), site_layout(&db, uid));
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return None;
+    }
+    let value = crate::session::sign(&nd_render::py_dumps(&Value::Object(s)), secret, n);
+    let line = format!("session={value}; path=/; Max-Age={SESSION_MAX_AGE}; {}", flags());
+    Some((value, line))
+}

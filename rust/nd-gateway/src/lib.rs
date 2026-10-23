@@ -67,9 +67,34 @@ pub struct App {
     pub pages: Arc<pages::Pages>,
 }
 
-async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
+async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
     let (m, p) = (req.method().to_string(), req.uri().path().to_string());
-    let resp = handle_inner(State(app), req).await;
+    // the session refreshed up front (auth): every page and API below reads the fresh one, the browser gets it with the answer
+    let mut fresh_cookie = None;
+    if app.cfg.rust_routes.iter().any(|r| r == "auth") && !p.starts_with("/static/") && !p.starts_with("/uploads/") {
+        let (cfg, headers) = (app.cfg.clone(), req.headers().clone());
+        if let Ok(Some((value, line))) = tokio::task::spawn_blocking(move || auth::refresh(&cfg, &headers)).await {
+            let rewritten = req.headers().get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok()).map(|c| {
+                c.split(';').map(|part| {
+                    let t = part.trim();
+                    if t.starts_with("session=") { format!("session={value}") } else { t.to_string() }
+                }).collect::<Vec<_>>().join("; ")
+            });
+            if let Some(Ok(v)) = rewritten.map(|r| r.parse()) {
+                req.headers_mut().insert(axum::http::header::COOKIE, v);
+                fresh_cookie = Some(line);
+            }
+        }
+    }
+    let mut resp = handle_inner(State(app), req).await;
+    if let Some(line) = fresh_cookie {
+        let sets_session = resp.headers().get_all(axum::http::header::SET_COOKIE).iter().any(|v| v.to_str().is_ok_and(|t| t.starts_with("session=")));
+        if !sets_session {
+            if let Ok(v) = line.parse() {
+                resp.headers_mut().append(axum::http::header::SET_COOKIE, v);
+            }
+        }
+    }
     if resp.headers().get("x-nd-served-by").is_some_and(|v| v == "gateway") {
         proxy::census("GW", &m, &p);
     }
