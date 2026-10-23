@@ -275,3 +275,9 @@ Python's do), each page a golden test for a GM and players (`tests/test_gateway_
 `docs/RUST_LIVE.md` ("Phase 4 status"): strict map secrecy, the character-sheet engine's custom systems, file-writing uploads, and the AI
 streams (phase 5).
 
+## 19. Phase 4 closed; phase 5 begun: the Chronicler
+
+Phase 4's leftovers are done: a strict-secrecy map's masked picture (batch 37), the custom sheet systems' engine (`rust/nd-gateway/src/
+sheets.rs`: vitals, Rest, fights, the character page on a custom system; batches 38-40). Phase 5 starts with the Chronicler's streamed
+answers (`docs/RUST_AI.md`): the retrieval code it needs (`rust/nd-gateway/src/retrieval.rs`) is what the other AI surfaces build on next.
+

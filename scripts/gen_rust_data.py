@@ -113,6 +113,8 @@ def make() -> dict:
                                 "skip": v.get("skip_down", combat_rules.SKIP_ENEMIES)} for k, v in combat_rules.RULESETS.items()},
         "combat_template_rulesets": combat_rules._BY_TEMPLATE_SLUG,
         "combat_rule_labels": [[k, v["label"]] for k, v in combat_rules.RULESETS.items()],
+        # app/retrieval.py's stopwords (the words a question's keyword search ignores)
+        "retrieval_stopwords": sorted(__import__("app.retrieval", fromlist=["_STOPWORDS"])._STOPWORDS),
         # the built-in sheet systems (Hunt in the Moonlight, Asterion, N&D): their vital / XP fields, conditions, Rest rules, dice
         "builtin_systems": json.loads(json.dumps(sheet_systems.BUILTIN_SYSTEMS)),
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)

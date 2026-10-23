@@ -9,6 +9,8 @@ pub mod config;
 pub mod strict;
 pub mod rooms;
 pub mod sheets;
+pub mod retrieval;
+pub mod ai;
 pub mod idpages;
 pub mod edits;
 pub mod files;
@@ -214,6 +216,16 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::combat_state_json(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/chronicler/ask" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = ai::chronicler_ask(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && req.uri().path().starts_with("/maps/schematic/") && req.uri().path().ends_with("/bg.webp") {
