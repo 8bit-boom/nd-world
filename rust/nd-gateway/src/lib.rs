@@ -20,6 +20,7 @@ pub mod runners;
 pub mod map_layout;
 pub mod mcp;
 pub mod tuning;
+pub mod fans;
 pub mod ai_runners;
 pub mod template_draft;
 pub mod media_meta;
@@ -269,6 +270,18 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
         }
+    }
+    if matches!(req.uri().path(), "/api/system/fans" | "/api/system/fans/check") && app.cfg.rust_routes.iter().any(|r| r == "fans")
+        && (req.method() == axum::http::Method::POST || (req.method() == axum::http::Method::GET && req.uri().path() == "/api/system/fans")) {
+        // fan control (app/fan_control.py): the gateway owns the fan headers (Python's loop stands down with ND_FANS_OWNER=gateway)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = fans::route(app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/ai/hardware" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         // Settings > System's "Detected hardware" panel (app/ollama_tuning.py)

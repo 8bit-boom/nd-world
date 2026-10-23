@@ -27,10 +27,12 @@ run_shard() {
     mkdir -p "$data"
     # an image model name for both servers: with a Studio key set (tests/test_gateway_ai.py), image jobs run on Unsloth Studio
     export UNSLOTH_IMAGE_MODEL=${UNSLOTH_IMAGE_MODEL-nd-test/image-GGUF}
+    # one fake fan-chip tree both servers read (tests/test_gateway_fans.py builds it)
+    export FAN_HWMON_ROOT=$data/hwmon
     ND_TEST_DATA_DIR=$data ND_ACCEL_TOKEN=ci-token $PY -m tests.serve --port $py_port > "$data/serve.log" 2>&1 &
     local py_pid=$!
     SECRET_KEY=test-secret-key-not-for-production MAX_UPLOAD_BYTES=1048576 MAX_NOTE_IMPORT_BYTES=1048576 ND_ACCEL_TOKEN=ci-token \
-    ND_TEMPLATES_DIR=$ROOT/app/templates DB_PATH=$data/world.db ND_RUST_ROUTES=login,dice_roll,live,pages,writes,ai,mcp \
+    ND_TEMPLATES_DIR=$ROOT/app/templates DB_PATH=$data/world.db ND_RUST_ROUTES=login,dice_roll,live,pages,writes,ai,mcp,fans \
     ND_UPSTREAM=127.0.0.1:$py_port ND_GATEWAY_LISTEN=127.0.0.1:$gw_port ND_STATIC_DIR=$ROOT/static ND_ACCEL_ROOT=$data \
         "$GW" > "$data/gateway.log" 2>&1 &
     local gw_pid=$!

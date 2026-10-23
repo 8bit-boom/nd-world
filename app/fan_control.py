@@ -425,8 +425,16 @@ def _loop(stop):
             continue
 
 
+def _gateway_owns_fans():
+    """ND_FANS_OWNER=gateway: the Rust gateway drives the fans (its `fans` route switch, docs/RUST_FANS.md) - this process must not
+    write to the same headers too."""
+    return os.environ.get("ND_FANS_OWNER", "") == "gateway"
+
+
 def start():
     """Start the background loop if "follow the GPU" is saved as on. Safe to call again; a no-op when it is off."""
+    if _gateway_owns_fans():
+        return
     with _lock:
         if _thread["t"] is not None and _thread["t"].is_alive():
             return
@@ -447,6 +455,8 @@ def stop():
 def shutdown_safe(root=None):
     """The app is stopping. Another container may still be loading the GPU, so no fan this app holds is left slow: any held fan below
     SHUTDOWN_PERCENT is raised to it (never lowered). Quiet again with the BIOS button, or after a reboot."""
+    if _gateway_owns_fans():
+        return
     try:
         held = list(_load_orig())
         if not held:

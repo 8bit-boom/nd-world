@@ -20,7 +20,12 @@ async fn main() {
     };
     eprintln!("nd-gateway: {} -> {} (static: {})", cfg.listen, cfg.upstream, cfg.static_dir.display());
     let ai_jobs = cfg.rust_routes.iter().any(|r| r == "ai");
+    let fans = cfg.rust_routes.iter().any(|r| r == "fans").then(|| cfg.clone());
     let app = router(cfg).into_make_service_with_connect_info::<SocketAddr>();
+    if let Some(c) = &fans {
+        // "follow the GPU temperature", when it was saved as on (docs/RUST_FANS.md)
+        nd_gateway::fans::start(c);
+    }
     if ai_jobs {
         // the background jobs a previous gateway held (docs/RUST_JOBS.md)
         tokio::task::spawn_blocking(nd_gateway::jobs::adopt);
@@ -34,6 +39,10 @@ async fn main() {
         let _ = tx.send(());
         // running jobs are marked interrupted (their ownership kept) so the next start resumes them
         let _ = tokio::task::spawn_blocking(nd_gateway::jobs::stop_all).await;
+        // no fan this app holds is left slow while another container may still load the GPU
+        if let Some(c) = fans {
+            let _ = tokio::task::spawn_blocking(move || nd_gateway::fans::shutdown_safe(&c)).await;
+        }
         // long-lived streams (server-sent events) would keep a graceful shutdown waiting for ever; Python has its own drain
         tokio::time::sleep(Duration::from_secs(8)).await;
         std::process::exit(0);
