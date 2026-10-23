@@ -18,6 +18,7 @@ pub mod tts;
 pub mod ai_more;
 pub mod runners;
 pub mod map_layout;
+pub mod mcp;
 pub mod ai_runners;
 pub mod template_draft;
 pub mod media_meta;
@@ -267,6 +268,17 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
         }
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/mcp" && app.cfg.rust_routes.iter().any(|r| r == "mcp") {
+        // the MCP server (app/mcp_server.py): a bearer token, one JSON-RPC message per POST
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 4 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = mcp::handle(app.cfg.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::POST && ai::is_sync_ai(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();

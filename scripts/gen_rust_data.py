@@ -20,6 +20,21 @@ def assist_systems():
     assert set(ops) == a.FREE_TEXT_OPS, sorted(a.FREE_TEXT_OPS ^ set(ops))
     return ops
 
+def mcp_data() -> dict:
+    """app/mcp_server.py's protocol answers the gateway gives as they are: tools/list's result exactly as the MCP SDK serializes it (a
+    string, so its key order survives), and initialize's server name, version, instructions and protocol versions."""
+    import asyncio
+    import mcp as _mcp_pkg  # noqa: F401
+    from importlib.metadata import version
+    from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+    from mcp.types import LATEST_PROTOCOL_VERSION, ListToolsResult
+    from app.mcp_server import mcp
+    tools = asyncio.run(mcp.list_tools())
+    return {"tools_list_json": ListToolsResult(tools=tools).model_dump_json(by_alias=True, exclude_none=True),
+            "name": mcp.name, "version": version("mcp"), "instructions": mcp.instructions,
+            "supported": list(SUPPORTED_PROTOCOL_VERSIONS), "latest": LATEST_PROTOCOL_VERSION}
+
+
 def column_defaults() -> dict:
     """{table: {column: {"default": value} | {"default": "__utcnow__"}, "onupdate": "__utcnow__"?}} - SQLAlchemy fills these in Python, not
     the database, so a write the gateway makes has to fill them the same way (rust/nd-gateway/src/orm.rs)."""
@@ -151,6 +166,8 @@ def make() -> dict:
         "catalog_equipment": game_catalog.catalog_payload()["equipment"], "catalog_feats": game_catalog.catalog_payload()["feats"],
         # the tracker pages' rules_json, exactly as json.dumps spells it (the GM's whole table; a player's three keys of it)
         "combat_rules_json": json.dumps(combat_rules.RULESETS),
+        # the MCP server's tool list and initialize answer (rust/nd-gateway/src/mcp.rs)
+        "mcp": mcp_data(),
         "combat_player_rules_json": json.dumps({k: {"label": v["label"], "turns": v["turns"], "hp_label": v["hp_label"]} for k, v in combat_rules.RULESETS.items()}),
     }
 

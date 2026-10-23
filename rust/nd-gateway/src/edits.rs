@@ -11225,6 +11225,10 @@ fn hub_loot_claim(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 /// A stored DateTime as Python's `.isoformat()`
+pub(crate) fn py_isoformat_pub(v: Option<&Value>) -> Value {
+    py_isoformat(v)
+}
+
 fn py_isoformat(v: Option<&Value>) -> Value {
     // row_map wraps DATETIME columns as {"__dt__": "..."}
     match v.and_then(|x| x.get("__dt__").unwrap_or(x).as_str()) {
