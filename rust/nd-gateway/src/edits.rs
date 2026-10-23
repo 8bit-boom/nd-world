@@ -3564,6 +3564,72 @@ fn clean_weekday_names(raw: &Value, dpw: i64) -> Result<Vec<String>, PyErr> {
     Ok(names.into_iter().enumerate().map(|(i, n)| if n.is_empty() { format!("Day {}", i + 1) } else { n }).collect())
 }
 
+/// `clean_calendar_config(raw)` for a model's draft: every part cleaned, an unusable part dropped (None: Python's AttributeError, a 500 -
+/// a moon that is not an object). Values the cleaners read with str() are turned into Python's str() of them first.
+pub(crate) fn clean_calendar_config(raw: &Map<String, Value>) -> Option<Value> {
+    let py_s = |v: &Value| -> Value {
+        match v {
+            Value::String(_) => v.clone(),
+            other if !py_truthy(Some(other)) => other.clone(),
+            other => json!(crate::ai::py_repr(other)),
+        }
+    };
+    let text_keys = |list: Option<&Value>, keys: &[&str]| -> Option<Value> {
+        let Some(Value::Array(a)) = list else { return list.cloned() };
+        Some(Value::Array(a.iter().map(|m| match m {
+            Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), if keys.contains(&k.as_str()) { py_s(v) } else { v.clone() })).collect()),
+            other => other.clone(),
+        }).collect()))
+    };
+    if let Some(Value::Array(moons)) = raw.get("moons") {
+        if moons.iter().take(8).any(|m| !m.is_object()) {
+            return None;
+        }
+    }
+    let dpw = clean_days_per_week(raw.get("days_per_week")).unwrap_or(7);
+    let months_raw = text_keys(raw.get("months"), &["name", "season", "color"]).unwrap_or(Value::Null);
+    let months = match clean_months(&months_raw) { Ok(m) if !m.is_empty() => m, _ => DEFAULT_MONTH_NAMES_AI.iter().map(|n| json!({"name": n, "days": 30})).collect() };
+    let or_list = |v: Option<&Value>| match v { Some(x) if py_truthy(Some(x)) => x.clone(), _ => json!([]) };
+    let weekdays = match or_list(raw.get("weekday_names")) {
+        Value::Array(a) => Value::Array(a.iter().map(|x| match x { Value::String(_) => x.clone(), other => json!(crate::ai::py_repr(other)) }).collect()),
+        other => other,
+    };
+    let weekday_names = clean_weekday_names(&weekdays, dpw).unwrap_or_default();
+    let moons = clean_moons(&text_keys(Some(&or_list(raw.get("moons"))), &["name", "color"]).unwrap_or(json!([]))).unwrap_or_default();
+    let month_pairs: Vec<(String, i64)> = months.iter().map(|m| (m["name"].as_str().unwrap_or("").to_string(), m["days"].as_i64().unwrap_or(1))).collect();
+    let holidays_raw = text_keys(Some(&or_list(raw.get("holidays"))), &["name", "notes", "color"]).unwrap_or(json!([]));
+    let holidays_raw = match holidays_raw {
+        Value::Array(a) => Value::Array(a.into_iter().map(|h| match h {
+            Value::Object(mut o) => {
+                if let Some(m) = o.get("month").cloned() {
+                    if !matches!(m, Value::Number(_) | Value::String(_) | Value::Bool(_) | Value::Null) {
+                        o.insert("month".into(), py_s(&m));
+                    }
+                }
+                Value::Object(o)
+            }
+            other => other,
+        }).collect()),
+        other => other,
+    };
+    let holidays = clean_holidays(&holidays_raw, &month_pairs).unwrap_or_default();
+    let text = |k: &str| match raw.get(k) { Some(v) if py_truthy(Some(v)) => match v { Value::String(s) => s.clone(), other => crate::ai::py_repr(other) }, _ => String::new() };
+    let era = take_chars(&strip(&text("era_name")), 64);
+    let year_format = take_chars(&strip(&text("year_format")), 40);
+    Some(json!({
+        "era_name": if era.is_empty() { "Year".to_string() } else { era },
+        "year_format": if year_format.contains("{year}") { year_format } else { "Year {year}".to_string() },
+        "days_per_week": dpw,
+        "weekday_names": weekday_names,
+        "months": months,
+        "moons": moons,
+        "holidays": holidays,
+    }))
+}
+
+const DEFAULT_MONTH_NAMES_AI: [&str; 12] =
+    ["Frostwake", "Thawmoon", "Greentide", "Sunhigh", "Longlight", "Harvestfall", "Amberfall", "Duskmere", "Stormtide", "Coldreach", "Deepwinter", "Yearsend"];
+
 /// `clean_days_per_week(value)`
 fn clean_days_per_week(v: Option<&Value>) -> Result<i64, PyErr> {
     match v.map(py_int_value) {
@@ -9547,6 +9613,80 @@ fn turn_num(v: Option<&Value>) -> Option<i64> {
         },
         Some(_) => 0,
     })
+}
+
+/// `combat_ai_tactics`' roster for the model: (the user message, the ruleset's label, fluid initiative); None for an encounter whose
+/// combatants this port would describe differently (odd types: Python's)
+pub(crate) fn combat_ai_roster(cs: Map<String, Value>) -> Option<(Vec<String>, String, String, bool)> {
+    let f = Fight::load(cs)?;
+    let hp_label = f.rules["hp_label"].as_str()?.to_string();
+    let label = f.rules["label"].as_str()?.to_string();
+    let simple = |v: &Value| match v { Value::String(s) => Some(s.clone()), Value::Number(n) if n.is_i64() => Some(n.to_string()), Value::Null => Some("None".into()),
+        Value::Bool(b) => Some(if *b { "True".into() } else { "False".into() }), _ => None };
+    let get_or = |c: &Value, k: &str, d: &str| -> Option<String> { match c.get(k) { None => Some(d.to_string()), Some(v) => simple(v) } };
+    let active = f.current()?.map(|i| f.combatants[i].get("id").cloned().unwrap_or(Value::Null));
+    let acted = f.acted();
+    let mut roster = vec![];
+    for c in f.combatants.iter().take(20) {
+        let side = if c.get("source").and_then(|v| v.as_str()) == Some("pc") { "PLAYER CHARACTER" } else { "NPC/monster" };
+        let mut bits = vec![format!("{hp_label} {}/{}", get_or(c, "hp", "?")?, get_or(c, "max_hp", "?")?)];
+        if py_truthy(c.get("temp_hp")) {
+            bits.push(format!("temp {}", simple(&c["temp_hp"])?));
+        }
+        if py_truthy(c.get("max_shock")) {
+            bits.push(format!("Shock {}/{}", get_or(c, "shock", "0")?, simple(&c["max_shock"])?));
+        }
+        match c.get("res") {
+            v if !py_truthy(v) => {}
+            Some(Value::Object(res)) => {
+                for (rid, r) in res {
+                    if let Value::Object(r) = r {
+                        let rl = match r.get("label") { v if !py_truthy(v) => rid.clone(), Some(v) => simple(v)?, None => rid.clone() };
+                        let num = |k: &str| match r.get(k) { None => Some("0".to_string()), Some(v) => simple(v) };
+                        bits.push(format!("{rl} {}/{}", num("cur")?, num("max")?));
+                    }
+                }
+            }
+            _ => return None,
+        }
+        if py_truthy(c.get("armor")) {
+            bits.push(format!("armor {}", simple(&c["armor"])?));
+        }
+        let mut conds: Vec<(String, i64)> = vec![];
+        match c.get("conditions") {
+            v if !py_truthy(v) => {}
+            Some(Value::Array(a)) => {
+                for x in a {
+                    let Value::String(x) = x else { return None };
+                    match conds.iter_mut().find(|(k, _)| k == x) { Some(e) => e.1 += 1, None => conds.push((x.clone(), 1)) }
+                }
+            }
+            _ => return None,
+        }
+        if !conds.is_empty() {
+            bits.push(format!("conditions: {}", conds.iter().map(|(k, v)| if *v > 1 { format!("{k} x{v}") } else { k.clone() }).collect::<Vec<_>>().join(", ")));
+        }
+        if f.out(c)? {
+            bits.push("OUT (cannot act)".into());
+        }
+        let id = c.get("id").cloned().unwrap_or(Value::Null);
+        if active.as_ref() == Some(&id) {
+            bits.push("ACTING NOW".into());
+        } else if f.fluid && id.as_str().is_some_and(|i| acted.iter().any(|a| a == i)) {
+            bits.push("already acted this round".into());
+        }
+        if !f.fluid {
+            bits.push(format!("initiative {}", get_or(c, "initiative", "0")?));
+        }
+        if py_truthy(c.get("notes")) {
+            bits.push(format!("GM note: {}", simple(&c["notes"])?.chars().take(120).collect::<String>()));
+        }
+        roster.push(format!("- {} [{side}]: {}", get_or(c, "name", "?")?, bits.join("; ")));
+    }
+    let name = match f.cs.get("name") { Some(v) => simple(v)?, None => "None".into() };
+    let round = match f.cs.get("round_num") { Some(v) => simple(v)?, None => "None".into() };
+    let header = format!("Fight: {name}\nRound {round}\n");
+    Some((roster, header, label, f.fluid))
 }
 
 /// An encounter as the turn helpers read it

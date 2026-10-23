@@ -207,7 +207,7 @@ async fn reencoded(b: &Backend, path: &Path, duration: f64, fmt: &str, model: &s
 }
 
 /// `_transcribe_one_file`
-async fn one_file(b: &Backend, path: &Path, model: &str) -> Result<String, SttError> {
+pub async fn one_file(b: &Backend, path: &Path, model: &str) -> Result<String, SttError> {
     if !path.is_file() {
         return Err(err(format!("Audio file not found: {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())));
     }

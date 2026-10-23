@@ -132,7 +132,7 @@ def make() -> dict:
         "recap_texts": {k: getattr(__import__("app.ai", fromlist=[k]), k) for k in ("_SUMMARIZE_FACTS_SYSTEM", "_STRICT_COMPLIANCE_NOTE", "_CONDENSE_RECAP_SYSTEM", "_RECAP_SYSTEM", "_RECAP_FACTS_SCHEMA",
                                                                                       "_SUMMARIZE_TRANSCRIPT_SYSTEM", "_SUMMARIZE_TRANSCRIPT_PART_SYSTEM", "_EXPAND_NOTES_SYSTEM", "_COMPACT_CHAT_SYSTEM", "_SYSTEM",
                                                                                       "_ENTITY_FROM_TEXT_SYSTEM", "_ENTITIES_BATCH_SYSTEM",
-                                                                                      "_CHARACTER_FROM_IMAGES_SYSTEM", "_ENTITY_FROM_IMAGES_SYSTEM")},
+                                                                                      "_CHARACTER_FROM_IMAGES_SYSTEM", "_ENTITY_FROM_IMAGES_SYSTEM", "_FIND_REPLACE_SYSTEM")},
         # the entity kinds the AI drafts choose from (app/constants.py KINDS)
         "entity_kinds": __import__("app.constants", fromlist=["KINDS"]).KINDS,
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)

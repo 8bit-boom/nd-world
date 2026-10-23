@@ -1144,6 +1144,11 @@ def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
         ("/api/ai/entity-from-text", {"text": "Bree, a rainy town", "kind": "nonsense"},
          [_reply(json.dumps({"kind": "location", "name": "Bree", "description": "Rainy."}))]),
         ("/api/ai/entity-from-text", {"text": "something"}, [_reply("not json")]),
+        ("/api/bulk-edit/parse", {"instruction": "rename Skinwalker to Ashwalker"},
+         [_reply(json.dumps({"understood": True, "find": " Skinwalker ", "replace": "Ashwalker", "note": 5}))]),
+        ("/api/bulk-edit/parse", {"instruction": "rewrite all of it"}, [_reply(json.dumps({"understood": True, "find": ""}))]),
+        ("/api/bulk-edit/parse", {"instruction": "x"}, [_reply("[1]")]),
+        ("/api/bulk-edit/parse", {"instruction": "  "}, []),
         ("/api/ai/entities-from-text-batch", {"text": "Borin the smith. Bree the town."},
          [_reply(json.dumps({"entities": [{"kind": "character", "name": "Borin"}, {"kind": "location", "name": "Bree"}]}))]),
     ]
@@ -1333,3 +1338,186 @@ def test_recap_song_is_pythons(client, seed, studio):
             out.append((r.status_code, data, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
         assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2])
         assert out[1][3] == "gateway", i
+
+
+def test_clip_transcription_is_pythons(client, seed, studio):
+    """/audio/<id>/transcribe and /video/<id>/transcribe: the clip's file sent to speech-to-text, repeats collapsed, the transcript saved -
+    an empty one and Studio's failure refused as Python does, a missing file 404s."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AudioClip, VideoClip
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (up / "audio").mkdir(parents=True, exist_ok=True)
+    (up / "video").mkdir(parents=True, exist_ok=True)
+    (up / "audio" / "talk.mp3").write_bytes(b"ID3" + b"\x00" * 64)
+    (up / "video" / "talk.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64)
+    db = SessionLocal()
+    try:
+        a = AudioClip(world_id=w, name="Talk", file_url="/uploads/audio/talk.mp3")
+        v = VideoClip(world_id=w, name="Talk", file_url="/uploads/video/talk.mp4")
+        gone = AudioClip(world_id=w, name="Gone", file_url="/uploads/audio/missing.mp3")
+        db.add_all([a, v, gone])
+        db.commit()
+        ids = {"audio": a.id, "video": v.id, "gone": gone.id}
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [
+        (f"/audio/{ids['audio']}/transcribe", ["Hello\nHello\nHello\nHello\nHello\nBye"], AudioClip, ids["audio"]),
+        (f"/video/{ids['video']}/transcribe", ["Spoken words."], VideoClip, ids["video"]),
+        (f"/audio/{ids['audio']}/transcribe", ["   "], AudioClip, ids["audio"]),
+        (f"/audio/{ids['audio']}/transcribe", [None], AudioClip, ids["audio"]),
+        (f"/audio/{ids['gone']}/transcribe", [], AudioClip, ids["gone"]),
+    ]
+    for i, (path, texts, model, cid) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            d = SessionLocal()
+            try:
+                d.get(model, cid).transcript = ""
+                d.commit()
+            finally:
+                d.close()
+            studio.requests.clear()
+            studio.stt_texts = list(texts)
+            r = side.post(path)
+            d = SessionLocal()
+            try:
+                saved = d.get(model, cid).transcript
+            finally:
+                d.close()
+            out.append((r.status_code, r.json(), saved, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (i, out[0][:3], out[1][:3])
+        assert out[1][4] == "gateway", i
+
+
+def test_mystery_board_is_pythons(client, seed, studio):
+    """/boards/generate-mystery: the reply read as Python reads it (fences, trailing prose, a reply cut off mid-list), the board laid out
+    by role with the same positions, links and slug - a replaced board updated in place - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import InvestBoard
+    base = str(client.base_url)
+    w = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nodes = [{"role": "Victim", "title": "Lord Ash", "body": "Found dead " * 40, "links": []},
+             {"role": "suspect", "title": "Mira", "body": "Spy", "links": [0, "2", 2, 1, 9, "x", 1.0]},
+             {"role": "suspect", "title": "Tom", "links": "03"},
+             {"role": "clue", "title": " Knife ", "body": 7, "links": {"1": True}},
+             {"role": "", "title": "Fog", "links": None},
+             {"role": "location", "title": ""},
+             "junk"]
+    full = json.dumps({"title": "  The Missing Ring  ", "nodes": nodes})
+    cut = json.dumps({"title": "Cut", "nodes": nodes[:5]})
+    cut = cut[:cut.rindex('{"role": "", "title": "Fog"') + 12]
+    cases = [
+        ({"premise": " A lord is dead "}, [_reply("```json\n" + full + "\n```\nHope this helps!")]),
+        ({"premise": "Cut off", "title": ""}, [_reply("Here: " + cut)]),
+        ({"premise": "Named", "title": "Case of the Ring", "replace": "case-the-missing-ring"}, [_reply(full)]),
+        ({"premise": "Bad"}, [_reply("no board here")]),
+        ({"premise": "Few"}, [_reply(json.dumps({"nodes": nodes[:2]}))]),
+        ({"premise": "  "}, []),
+        ({"premise": "x" * 4001}, []),
+    ]
+    for i, (form, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            d = SessionLocal()
+            try:
+                d.query(InvestBoard).filter(InvestBoard.world_id == w, InvestBoard.slug != "case-the-missing-ring").delete()
+                if not d.query(InvestBoard).filter(InvestBoard.slug == "case-the-missing-ring").first():
+                    d.add(InvestBoard(world_id=w, name="Old", slug="case-the-missing-ring", nodes_json="{}", edges_json="[]"))
+                d.commit()
+            finally:
+                d.close()
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/boards/generate-mystery", data=form, follow_redirects=False)
+            d = SessionLocal()
+            try:
+                boards = sorted((b.name, b.slug, b.description, b.canvas_bg, b.nodes_json, b.edges_json) for b in d.query(InvestBoard).filter(InvestBoard.world_id == w))
+            finally:
+                d.close()
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
+            out.append((r.status_code, r.headers.get("location"), body, boards, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:5] == out[1][:5], (i, out[0][:4], out[1][:4])
+        assert out[1][5] == "gateway", i
+    studio.reply_seq = None
+
+
+def test_calendar_ai_helpers_are_pythons(client, seed, studio):
+    """/calendar/ai-day and /calendar/ai-design: the same prompt, the reply read and cleaned as Python does (a draft calendar's months,
+    weekdays, moons and holidays fitted to the limits), and the 'not usable' refusals."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    design = {"era_name": "  After the Fall  ", "year_format": "{year} AF", "days_per_week": "5", "weekday_names": ["Ash", 2, "", None, "Ember", "Extra"],
+              "months": [{"name": "Frost", "days": 75, "season": "Winter", "color": "#abc"}, {"name": 12, "days": "20"}, {"days": 0}],
+              "moons": [{"name": "Pale", "cycle_days": "31", "color": "#fff"}, {"cycle_days": 0, "offset": 3}],
+              "holidays": [{"name": "Thaw", "month": "frost", "day": 99, "notes": "Melt"}, {"name": "Second", "month": 1, "day": 2},
+                           {"name": "Nowhere", "month": "Nope"}, {"name": "Listy", "month": [1]}, "junk"]}
+    cases = [
+        ("/calendar/ai-day", {"date_label": " 3rd of Frost ", "context": "A port town " * 60},
+         [_reply(json.dumps({"weather": "Rain " * 60, "omen": 5, "sights": ["A", " ", "B" * 200, "C", "D"]}))]),
+        ("/calendar/ai-day", {}, [_reply("Sure! " + json.dumps({"sights": "xy"}) + " enjoy")]),
+        ("/calendar/ai-day", {}, [_reply(json.dumps({"weather": ""}))]),
+        ("/calendar/ai-design", {"brief": " moons please "}, [_reply("```json\n" + json.dumps(design) + "\n```")]),
+        ("/calendar/ai-design", {}, [_reply(json.dumps({"months": "lots", "days_per_week": 99, "weekday_names": "A, B;C\nD"}))]),
+        ("/calendar/ai-design", {}, [_reply(json.dumps({"months": [{"name": "A", "days": [1]}], "moons": "x", "year_format": "no year"}))]),
+    ]
+    for i, (path, form, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(path, data=form)
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, path, out[0][:2], out[1][:2])
+        assert out[1][3] == "gateway", (i, path)
+    studio.reply_seq = None
+
+
+def test_combat_tactics_is_pythons(client, seed, studio):
+    """/combat/<id>/ai-tactics: the roster described the same way (HP, shock, resources, conditions, who acts, initiative or fluid turns),
+    the reply read into at most six tactics and a beat - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import CombatSession
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fighters = [
+        {"id": "a", "name": "Orc", "source": "npc", "hp": 7, "max_hp": 10, "temp_hp": 2, "armor": 3, "initiative": 12,
+         "conditions": ["prone", "dazed", "prone"], "res": {"rage": {"label": "Rage", "cur": 1, "max": 3}, "x": {"cur": 2}, "bad": 5}, "notes": "Hates elves " * 20},
+        {"id": "b", "name": "Ana", "source": "pc", "pc_id": 1, "hp": 0, "max_hp": 8, "max_shock": 4, "initiative": 15},
+        {"id": "c", "name": "Wolf", "hp": 3, "max_hp": 3, "initiative": 9, "status": "dead"},
+        {"name": "Nameless", "initiative": 1},
+    ]
+    db = SessionLocal()
+    try:
+        fight = CombatSession(world_id=w, name="Ambush", ruleset="generic", round_num=2, active_idx=1, combatants_json=json.dumps(fighters))
+        fluid = CombatSession(world_id=w, name="Chase", ruleset="generic", round_num=1, combatants_json=json.dumps(fighters[:2]),
+                              turn_json=json.dumps({"mode": "fluid", "active_id": "b", "acted": ["a"]}))
+        empty = CombatSession(world_id=w, name="Quiet", ruleset="generic", combatants_json="[]")
+        db.add_all([fight, fluid, empty])
+        db.commit()
+        ids = (fight.id, fluid.id, empty.id)
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    tactics = [{"who": "Orc", "move": "Charge " * 50}, {"who": "", "move": "x"}, "junk"] + [{"who": f"N{i}", "move": "m"} for i in range(8)]
+    cases = [
+        (ids[0], [_reply(json.dumps({"tactics": tactics, "beat": "The roof caves in. " * 30}))]),
+        (ids[1], [_reply("```" + json.dumps({"tactics": "none", "beat": "Smoke"}) + "```")]),
+        (ids[0], [_reply(json.dumps({"tactics": []}))]),
+        (ids[2], []),
+    ]
+    for i, (cid, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/combat/{cid}/ai-tactics")
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
+        assert out[1][3] == "gateway", i
+    studio.reply_seq = None

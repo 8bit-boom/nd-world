@@ -1126,7 +1126,7 @@ fn assist_plan_for(cfg: &Config, db: &rusqlite::Connection, body: &[u8]) -> Opti
 
 /// `generate_chat` on the Unsloth backend (one non-streamed answer, Python's sentinel texts on a failure), with the retry of a refused
 /// Thinking request
-async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>) -> String {
+pub(crate) async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>) -> String {
     let mut full: Vec<Value> = if system.is_empty() { vec![] } else { vec![json!({"role": "system", "content": system})] };
     full.extend(messages.iter().cloned());
     let mut opts = b.options_for(model);
@@ -1617,7 +1617,7 @@ const RECAP_ERROR_BACKOFF_SECS: i64 = 60;
 const DEFAULT_RAG_ENTITY_LIMIT: i64 = 15;
 const DEFAULT_RAG_NOTES_LIMIT: i64 = 5;
 
-fn recap_text(k: &str) -> String {
+pub(crate) fn recap_text(k: &str) -> String {
     nd_render::app::data()["recap_texts"][k].as_str().unwrap_or("").to_string()
 }
 
@@ -2415,7 +2415,7 @@ fn split_chunks(text: &str, size: usize) -> Vec<String> {
 }
 
 /// One `client.chat(..., format=schema)` call (not streamed): the reply's content, or `_parse_facts_chat_call`'s ValueError text
-async fn chat_with_schema(b: &Backend, model: &str, messages: &[Value], think: bool, schema: &Value) -> Result<String, String> {
+pub(crate) async fn chat_with_schema(b: &Backend, model: &str, messages: &[Value], think: bool, schema: &Value) -> Result<String, String> {
     let send = |messages: Vec<Value>, think: bool| {
         let mut opts = b.options_for(model);
         let mut body = Map::new();
@@ -2846,7 +2846,7 @@ pub(crate) async fn text_recap_body(id: i64) {
 // ── session recordings: the audio recap job (POST /api/sessions/ai/audio-jobs/from-clip and /complete; audio_jobs purpose="session_recap") ──
 
 /// `request.form()` for a form without files (urlencoded or multipart)
-fn small_form(headers: &HeaderMap, body: &[u8]) -> Option<crate::form::Form> {
+pub(crate) fn small_form(headers: &HeaderMap, body: &[u8]) -> Option<crate::form::Form> {
     match crate::form::content_type(headers).as_str() {
         "multipart/form-data" => {
             let (f, files) = crate::form::parse_multipart(headers, body)?;
@@ -3658,10 +3658,16 @@ enum SyncAi {
     /// `/api/sessions/<id>/recap-song`: the lyrics performed, saved as a clip and attached to the recap
     RecapSong { cfg: std::sync::Arc<Config>, b: Backend, wid: i64, gs_id: i64, title: String, lyrics: String, spoken: String, model: String, voice: String,
         instructions: String, language: String, name: String, visible: bool },
+    /// `/audio/<id>/transcribe`, `/video/<id>/transcribe`: the clip's transcript replaced
+    ClipTranscript { cfg: std::sync::Arc<Config>, b: Backend, table: &'static str, id: i64, path: std::path::PathBuf, model: String },
+    /// `/api/bulk-edit/parse`: an instruction turned into a find/replace pair
+    BulkParse { b: Backend, instruction: String },
     /// `/api/ai/tts`: speech saved as a GM-only clip of the world
     Tts { cfg: std::sync::Arc<Config>, b: Backend, wid: i64, text: String, model: String, voice: String, instructions: String, language: String, name: String, description: String, body_model: String },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
     Refuse(StatusCode, String),
+    /// a route of crate::ai_more: its answer, ready to run
+    Fut(std::pin::Pin<Box<dyn std::future::Future<Output = Response<Body>> + Send>>),
 }
 
 fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<(SyncAi, i64)> {
@@ -3672,6 +3678,9 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         return None;
     }
     let path = uri.path();
+    if let Some(plan) = crate::ai_more::plan(cfg, &db, &p, path, headers, body) {
+        return plan.map(|f| (SyncAi::Fut(f), p.user_id));
+    }
     if matches!(path, "/api/ai/character-from-images" | "/api/ai/entity-from-images") {
         return images_plan(&db, &p, headers, body, path.ends_with("/character-from-images")).map(|plan| (plan, p.user_id));
     }
@@ -3812,9 +3821,44 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
             SyncAi::RecapSong { cfg: std::sync::Arc::new(cfg.clone()), b: backend(&db)?, wid, gs_id, title, lyrics, spoken, model, voice, instructions, language,
                 name: reply_str(b.get("name")), visible }
         }
+        _ if (path.starts_with("/audio/") || path.starts_with("/video/")) && path.ends_with("/transcribe") => {
+            let video = path.starts_with("/video/");
+            let id: i64 = path.strip_prefix(if video { "/video/" } else { "/audio/" })?.strip_suffix("/transcribe")?.parse().ok()?;
+            let w = p.world.as_ref()?;
+            if !(p.is_gm || p.role.as_deref() == Some("assistant")) || !section_ok(w, if video { "video" } else { "audio" }) {
+                return None;
+            }
+            let table = if video { "video_clips" } else { "audio_clips" };
+            let clip = db.query_row(&format!("SELECT world_id, file_url FROM {table} WHERE id = ?1"), [id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()?;
+            if clip.0 != w.get("id")?.as_i64()? {
+                return None;
+            }
+            let uploads = cfg.db_path.parent()?.join("uploads");
+            let found = clip.1.as_deref().and_then(|u| u.strip_prefix("/uploads/")).and_then(|rel| {
+                let (root, path) = (uploads.canonicalize().ok()?, uploads.join(rel).canonicalize().ok()?);
+                (path.starts_with(&root) && path.is_file()).then_some(path)
+            });
+            let Some(file) = found else { return refuse(StatusCode::NOT_FOUND, "Clip file not found") };
+            SyncAi::ClipTranscript { cfg: std::sync::Arc::new(cfg.clone()), b: backend(&db)?, table, id, path: file, model: crate::stt::stt_model(cfg) }
+        }
         _ if path.starts_with("/api/npc-talk/") && path.ends_with("/speak") => {
             let eid: i64 = path.strip_prefix("/api/npc-talk/")?.strip_suffix("/speak")?.parse().ok()?;
             return npc_speak_plan(cfg, &db, &p, eid, &b).map(|plan| (plan, p.user_id));
+        }
+        "/api/bulk-edit/parse" => {
+            if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+                return None;
+            }
+            let Some(w) = p.world.as_ref() else { return refuse(StatusCode::BAD_REQUEST, "No active world") };
+            if !section_ok(w, "bulk_edit") {
+                return None;
+            }
+            let Some(Value::String(i)) = b.get("instruction") else { return None };
+            let instruction = crate::edits::py_strip_pub(i);
+            if instruction.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "No instruction provided");
+            }
+            SyncAi::BulkParse { b: backend(&db)?, instruction }
         }
         "/api/ai/tts" => {
             if !p.is_gm {
@@ -4003,6 +4047,42 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
         },
         SyncAi::NpcSpeak(n) => npc_speak(*n).await,
+        SyncAi::Fut(f) => f.await,
+        SyncAi::BulkParse { b, instruction } => {
+            let schema = json!({"type": "object", "properties": {"understood": {"type": "boolean"}, "find": {"type": "string"}, "replace": {"type": "string"},
+                "note": {"type": "string"}}, "required": ["understood"]});
+            let model = b.model.clone();
+            let msgs = [json!({"role": "system", "content": recap_text("_FIND_REPLACE_SYSTEM")}), json!({"role": "user", "content": instruction})];
+            match chat_with_schema(&b, &model, &msgs, false, &schema).await {
+                Err(e) => err(StatusCode::BAD_GATEWAY, e),
+                Ok(reply) => match serde_json::from_str::<Value>(&reply) {
+                    Ok(Value::Object(o)) => {
+                        let find = reply_str(o.get("find"));
+                        let understood = crate::edits::py_truthy_pub(o.get("understood")) && !find.is_empty();
+                        ok(json!({"understood": understood, "find": find, "replace": reply_str(o.get("replace")), "note": reply_str(o.get("note"))}))
+                    }
+                    _ => err(StatusCode::BAD_GATEWAY, "The model returned malformed JSON — try again or switch models.".into()),
+                },
+            }
+        }
+        SyncAi::ClipTranscript { cfg, b, table, id, path, model } => {
+            let text = match crate::stt::one_file(&b, &path, &model).await {
+                Ok(t) => crate::stt::collapse_repeats(&t),
+                Err(e) => return err(StatusCode::BAD_REQUEST, e.message),
+            };
+            if text.is_empty() {
+                return err(StatusCode::BAD_REQUEST, "Speech-to-text finished this clip but found no speech in it.".into());
+            }
+            let saved = tokio::task::spawn_blocking(move || {
+                let db = crate::writes::open(&cfg)?;
+                crate::orm::update(&db, table, id, &[("transcript", rusqlite::types::Value::Text(text))])
+            }).await.ok().flatten();
+            match saved {
+                Some(_) => ok(json!({"ok": true})),
+                None => Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .header("x-nd-served-by", "gateway").body(Body::from("Internal Server Error")).unwrap(),
+            }
+        }
         SyncAi::RecapSong { cfg, b, wid, gs_id, title, lyrics, spoken, model, voice, instructions, language, name, visible } => {
             let (audio, ctype) = match crate::tts::speech(&b, &spoken, &model, &voice, &instructions, &language).await {
                 Ok(a) => a,
@@ -4323,14 +4403,17 @@ pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
         | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images" | "/api/ai/tts")
+        || path == "/api/bulk-edit/parse"
+        || crate::ai_more::serves(path)
         || (path.starts_with("/api/npc-talk/") && path.ends_with("/speak"))
+        || ((path.starts_with("/audio/") || path.starts_with("/video/")) && path.ends_with("/transcribe"))
         || (path.starts_with("/api/sessions/") && path.ends_with("/recap-song"))
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// A `str` field of a Pydantic body read as given ("" when absent; None when not a string)
-fn text_raw(b: &Map<String, Value>, k: &str) -> Option<String> {
+pub(crate) fn text_raw(b: &Map<String, Value>, k: &str) -> Option<String> {
     match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), Some(_) => None }
 }
 
@@ -4341,7 +4424,7 @@ fn entity_kinds() -> Vec<String> {
 }
 
 /// `str(x or "").strip()` for a field of a model's JSON reply
-fn reply_str(v: Option<&Value>) -> String {
+pub(crate) fn reply_str(v: Option<&Value>) -> String {
     match v {
         v if !crate::edits::py_truthy_pub(v) => String::new(),
         Some(Value::String(s)) => crate::edits::py_strip_pub(s),
@@ -4352,7 +4435,7 @@ fn reply_str(v: Option<&Value>) -> String {
 }
 
 /// `str(x)` of a parsed JSON value as Python prints it (lists and dicts as their repr)
-fn py_repr(v: &Value) -> String {
+pub(crate) fn py_repr(v: &Value) -> String {
     match v {
         Value::Null => "None".into(),
         Value::Bool(t) => if *t { "True".into() } else { "False".into() },
@@ -4380,7 +4463,7 @@ fn py_repr(v: &Value) -> String {
 }
 
 /// `int(x)` for a field of a model's JSON reply (Err: Python's ValueError)
-fn reply_int(v: &Value) -> Result<i64, ()> {
+pub(crate) fn reply_int(v: &Value) -> Result<i64, ()> {
     match v {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f.trunc() as i64)).ok_or(()),
         Value::Bool(t) => Ok(*t as i64),
