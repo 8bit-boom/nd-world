@@ -2228,3 +2228,97 @@ def test_map_build_draw_is_pythons(client, seed, studio):
         assert side.post("/maps/schematic/nope/ai-build/start", data={"description": "x"}).status_code == 404
         assert side.get(f"/maps/schematic/gw-build/ai-build/{10**10}").status_code == 404
     studio.reply_seq = None
+
+
+def test_map_build_plan_is_pythons(client, seed, studio):
+    """/maps/schematic/{slug}/ai-build/start in plan mode: the plan cleaned (aliases, string rooms, list links, unknown rooms, the
+    unreachable joined), laid out with Python's own seeded randomness (rooms, walls with door gaps, doors, furniture, a library prop),
+    the room tool's state on an empty map, the canvas fit, append vs replace, and the failures (Python's JSON error text)."""
+    from app.database import SessionLocal
+    from app.models import Entity, MapProp, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        ent = "The Drowned Rat Inn"
+        db.add(Entity(world_id=w, kind="location", name=ent, summary="A dockside inn"))
+        db.add(MapProp(world_id=w, name="Oak table", tags="furniture", file_url="/uploads/props/oak.webp", cells_w=2, cells_h=1))
+        db.add_all([Schematic(world_id=w, name="Empty", slug="gw-plan", canvas_width=2000, canvas_height=1500, grid_type="square",
+                              grid_config_json=json.dumps({"cell_size": 40, "offset_x": 7, "offset_y": 3, "color": "#fff"})),
+                    Schematic(world_id=w, name="Small", slug="gw-plan-small", canvas_width=600, canvas_height=500,
+                              elements_json=json.dumps([{"id": "old", "type": "rect", "x": 1, "y": 2, "w": 3, "h": 4}]),
+                              walls_json=json.dumps([{"id": "w1", "pts": [[0, 0], [100, 0]], "kind": "wall"}]), rooms_json='{"cell": 50}')])
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    tavern = {"title": "The Drowned Rat", "entry": "Common Room",
+              "rooms": [{"id": "common", "name": "Common Room", "kind": "inn", "size": "large", "entity": ent},
+                        {"id": "kitchen", "name": "Back kitchen", "size": "small"}, {"name": "Old cellar", "kind": "", "size": "big"},
+                        {"id": "hall", "name": "Upstairs hallway", "kind": "passage"}, {"id": "bed1", "name": "Guest room", "kind": "bedroom"},
+                        {"id": "bed2", "name": "Guest room", "kind": "quarters", "size": "tiny"}, "Smugglers' den",
+                        {"id": "shrine", "name": "Little chapel", "kind": "temple"}, {"id": "lib", "name": "Study", "size": "medium"},
+                        {"id": "arm", "name": "Forge"}, {"id": "cell", "name": "Lock-up", "kind": "jail"}, {"id": "cave", "name": "Grotto", "kind": "cave"}],
+              "links": [{"a": "common", "b": "kitchen"}, {"from": "kitchen", "to": "old-cellar", "type": "trapdoor"}, ["common", "hall", "archway"],
+                        {"a": "hall", "b": "bed1", "type": "Locked Door"}, {"a": "hall", "b": "bed2"}, {"a": "old-cellar", "b": "smugglers-den", "type": "hidden"},
+                        {"a": "common", "b": "nowhere"}, {"a": "common", "b": "common"}, {"a": "kitchen", "b": "common"}, {"a": "hall", "b": "shrine"},
+                        {"a": {"id": "hall"}, "b": {"name": "Study"}}, {"a": "lib", "b": "arm", "type": "open"}, {"a": "common", "b": "cell", "type": "barred"}]}
+    big = {"rooms": [{"id": f"r{i}", "name": f"Vault {i}", "kind": "storage", "size": "large"} for i in range(9)],
+           "links": [[f"r{i}", f"r{i + 1}"] for i in range(8)], "entry": "r0"}
+    cases = [("gw-plan", {"description": "A smugglers' tavern", "mode": "plan"}, [_reply("Here you go:\n" + json.dumps(tavern) + "\nEnjoy!")]),
+             ("gw-plan", {"description": "Same, replaced", "mode": " PLAN ", "replace": "1"}, [_reply("```json\n" + json.dumps(tavern) + "\n```")]),
+             ("gw-plan-small", {"description": "A vault", "mode": "plan"}, [_reply(json.dumps(big))]),
+             ("gw-plan-small", {"description": "A vault", "mode": "plan", "replace": "true"}, [_reply(json.dumps({"areas": ["Hall", "Pantry"], "start": 0}))]),
+             ("gw-plan", {"description": "x", "mode": "plan"}, [_reply('{"rooms" [1]}')]),
+             ("gw-plan", {"description": "x", "mode": "plan"}, [_reply('{"rooms": [{"name": "A"},]}')]),
+             ("gw-plan", {"description": "x", "mode": "plan"}, [_reply("no plan here")]),
+             ("gw-plan", {"description": "x", "mode": "plan"}, [_reply('{"rooms": []}')]),
+             ("gw-plan", {"description": "x", "mode": "plan"}, [_reply('["a"]')]),
+             ("gw-plan", {"description": "x", "mode": "plan"}, [_reply("")])]
+
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k != "id"}
+        return [strip(x) for x in v] if isinstance(v, list) else v
+
+    cols = ("elements_json", "rooms_json", "walls_json", "grid_type", "grid_config_json")
+
+    def saved(slug):
+        db = SessionLocal()
+        try:
+            sc = db.query(Schematic).filter(Schematic.slug == slug).one()
+            return {c: getattr(sc, c) for c in cols}
+        finally:
+            db.close()
+
+    def restore(slug, vals):
+        db = SessionLocal()
+        try:
+            sc = db.query(Schematic).filter(Schematic.slug == slug).one()
+            for c, v in vals.items():
+                setattr(sc, c, v)
+            db.commit()
+        finally:
+            db.close()
+
+    for i, (slug, form, replies) in enumerate(cases):
+        if i == 5:
+            continue                                      # Python 3.11 / 3.13 spell a trailing comma differently (the gateway: 3.13)
+        out = []
+        for side in (gm, _via(gm, base)):
+            before = saved(slug)
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/maps/schematic/{slug}/ai-build/start", data=form)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/maps/schematic/{slug}/ai-build/{r.json()['job_id']}")
+            after = saved(slug)
+            out.append((p.status_code, strip(p.json()), [q["body"] for q in studio.requests],
+                        {c: (strip(json.loads(v)) if c.endswith("_json") and v else v) for c, v in after.items()},
+                        r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+            restore(slug, before)
+        a, b = out
+        for k in range(4):
+            assert a[k] == b[k], (i, k)
+        assert b[4:] == ("gateway", "gateway"), i
+    studio.reply_seq = None

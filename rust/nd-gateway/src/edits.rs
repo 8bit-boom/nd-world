@@ -9137,7 +9137,7 @@ fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, 
 }
 
 /// `map_walls.clean_walls` -> (walls, warnings); None for what Python spells or rounds its own way
-fn clean_walls(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
+pub(crate) fn clean_walls(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
     let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64).max(1.0);
     let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
     let (mut out, mut warnings, mut total, mut seen, mut dropped) = (vec![], vec![], 0usize, Vec::<String>::new(), 0);
@@ -9448,7 +9448,7 @@ fn room_int(v: Option<&Value>) -> Result<Option<i64>, ()> {
 }
 
 /// `map_rooms.clean_rooms` for a drawing (the refusals, and anything Python spells or rounds its own way: None)
-fn clean_rooms(d: &Map<String, Value>) -> Option<Value> {
+pub(crate) fn clean_rooms(d: &Map<String, Value>) -> Option<Value> {
     if d.is_empty() {
         return Some(json!({}));
     }

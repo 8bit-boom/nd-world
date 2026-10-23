@@ -1341,8 +1341,9 @@ fn map_build_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, pat
     if desc.is_empty() {
         return Some(detail(StatusCode::BAD_REQUEST, "Describe the space to build"));
     }
-    if crate::edits::py_strip_pub(form.get("mode").unwrap_or("draw")).to_lowercase() == "plan" {
-        return None; // plan mode (the layout engine): Python's
+    let plan = crate::edits::py_strip_pub(form.get("mode").unwrap_or("draw")).to_lowercase() == "plan";
+    if plan && plan_grid(db, &slug, wid).is_none() {
+        return None; // a grid setting Python would trip over (its own crash message)
     }
     if world_has_vault(db, wid) {
         return None;
@@ -1356,7 +1357,8 @@ fn map_build_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, pat
     let rerun: Rerun = Arc::new(move |id| {
         let (cfg, bk, slug, desc, images) = (cfg.clone(), bk.clone(), slug.clone(), desc.clone(), images.clone());
         Box::pin(async move {
-            match map_build_task(cfg, bk, &slug, wid, &desc, replace, &images).await {
+            let done = if plan { map_plan_task(cfg, bk, &slug, wid, &desc, replace, &images).await } else { map_build_task(cfg, bk, &slug, wid, &desc, replace, &images).await };
+            match done {
                 Ok(done) => crate::runners::update("map build", id, |e| { for (k, v) in done { e.insert(k, v); } }),
                 Err(m) => crate::runners::update("map build", id, |e| { e.insert("status".into(), json!("error")); e.insert("error".into(), json!(m)); }),
             }
@@ -1518,6 +1520,136 @@ async fn map_build_task(cfg: Arc<Config>, b: Backend, slug: &str, wid: i64, desc
         done.insert("added".into(), json!(added));
         done.insert("total".into(), json!(elements.len()));
         done.insert("elements".into(), Value::Array(elements));
+        Ok(done)
+    }).await.map_err(|_| "Cancelled.".to_string())?
+}
+
+/// The plan task's square grid: (cell, origin) - 50 px at 0,0 when the map has none; None for a setting Python would trip over
+fn plan_grid(db: &rusqlite::Connection, slug: &str, wid: i64) -> Option<(f64, (f64, f64))> {
+    let (gt, gc): (Option<String>, Option<String>) = db.query_row("SELECT grid_type, grid_config_json FROM schematics WHERE slug = ?1 AND world_id = ?2",
+        rusqlite::params![slug, wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let gcfg = match serde_json::from_str::<Value>(gc.as_deref().filter(|x| !x.is_empty()).unwrap_or("{}")) { Ok(Value::Object(o)) => o, _ => Map::new() };
+    if gt.as_deref().filter(|x| !x.is_empty()).unwrap_or("none") != "square" {
+        return Some((50.0, (0.0, 0.0)));
+    }
+    let num = |k: &str| -> Option<f64> {
+        match gcfg.get(k) {
+            v if !truthy(v) => Some(0.0),
+            Some(Value::Number(n)) => n.as_f64(),
+            _ => None,
+        }
+    };
+    let cell = num("cell_size")?;
+    if cell <= 0.0 {
+        return Some((50.0, (0.0, 0.0)));
+    }
+    Some((cell, (num("offset_x")?, num("offset_y")?)))
+}
+
+/// `_schematic_ai_plan_task_inner`: the model plans rooms and links, app/map_layout.py lays them out (walls with door gaps, doors,
+/// furniture from the world's prop library); a plan on an empty map (or one replacing everything) becomes editable as rooms
+async fn map_plan_task(cfg: Arc<Config>, b: Backend, slug: &str, wid: i64, desc: &str, replace: bool, images: &[String]) -> Result<Map<String, Value>, String> {
+    use crate::map_layout as ml;
+    use std::collections::HashMap;
+    let (c, s, d) = (cfg.clone(), slug.to_string(), desc.to_string());
+    type Loaded = (i64, i64, f64, (f64, f64), bool, Vec<ml::Prop>, HashMap<String, i64>, String);
+    let (cw, ch, cell, origin, want_state, props, entity_ids, system) = tokio::task::spawn_blocking(move || -> Result<Loaded, String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let gone = || "Schematic no longer exists.".to_string();
+        let (cw, ch, els, rooms): (Option<i64>, Option<i64>, Option<String>, Option<String>) = db.query_row(
+            "SELECT canvas_width, canvas_height, elements_json, rooms_json FROM schematics WHERE slug = ?1 AND world_id = ?2", rusqlite::params![s, wid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(|_| gone())?;
+        let (cw, ch) = (cw.filter(|x| *x != 0).unwrap_or(2000), ch.filter(|x| *x != 0).unwrap_or(1500));
+        let (cell, origin) = plan_grid(&db, &s, wid).ok_or("AI build crashed: the map's grid settings could not be read")?;
+        let had = serde_json::from_str::<Value>(els.as_deref().filter(|x| !x.is_empty()).unwrap_or("[]")).is_ok_and(|v| truthy(Some(&v)));
+        let rooms_empty = rooms.as_deref().unwrap_or("").trim_matches(|c| c == '{' || c == '}' || c == ' ').is_empty();
+        let want_state = replace || (!had && rooms_empty);
+        let mut st = db.prepare("SELECT id, name, tags, file_url, cells_w, cells_h FROM map_props WHERE world_id = ?1").map_err(|_| "database")?;
+        let props: Vec<ml::Prop> = st.query_map([wid], |r| Ok(ml::Prop { id: r.get(0)?, name: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "None".into()),
+            tags: r.get::<_, Option<String>>(2)?.unwrap_or_default(), url: r.get::<_, Option<String>>(3)?.map_or(Value::Null, |u| json!(u)),
+            cells_w: r.get(4)?, cells_h: r.get(5)? })).map_err(|_| "database")?.filter_map(Result::ok).collect();
+        let mut st = db.prepare("SELECT id, name FROM entities WHERE world_id = ?1 LIMIT 5000").map_err(|_| "database")?;
+        let mut entity_ids = HashMap::new();
+        for row in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).map_err(|_| "database")?.flatten() {
+            entity_ids.insert(crate::edits::py_strip_pub(&row.1.unwrap_or_default()).to_lowercase(), row.0);
+        }
+        let mut system = nd_render::app::data()["map_plan_system"].as_str().unwrap_or("").to_string();
+        let rag = crate::retrieval::smart_world_context(&db, wid, &d, 8, 2).unwrap_or_default();
+        if !rag.is_empty() {
+            system.push_str(&format!("\n=== World lore — match the setting, names, architecture, and factions described below ===\n{}", take(&rag, 4000)));
+        }
+        Ok((cw, ch, cell, origin, want_state, props, entity_ids, system))
+    }).await.map_err(|_| "Cancelled.".to_string())??;
+    let content = if images.is_empty() { json!(desc) } else {
+        let mut parts = vec![json!({"type": "text", "text": desc})];
+        parts.extend(images.iter().map(|i| json!({"type": "image_url", "image_url": {"url": format!("data:{};base64,{i}", if i.starts_with("/9j/") { "image/jpeg" } else { "image/png" })}})));
+        Value::Array(parts)
+    };
+    let schema = json!({"type": "object", "properties": {"rooms": {"type": "array"}, "links": {"type": "array"}}, "required": ["rooms"]});
+    let model = b.model.clone();
+    let raw = crate::ai::generate_chat_format(&b, &model, &system, &[json!({"role": "user", "content": content})], true, &Map::new(), Some(&schema)).await;
+    if crate::edits::py_strip_pub(&raw).is_empty() {
+        return Err("The model returned nothing — try a more concrete description.".into());
+    }
+    let (spec, mut warnings) = ml::extract_json(&raw).and_then(|v| ml::clean_map_spec(&v))
+        .map_err(|e| format!("The model's plan could not be used ({e}) — try again or rephrase."))?;
+    let (mut new_elements, new_walls, more, rooms_state) = ml::layout_full(&spec, cell, cw, ch, &props, origin, want_state);
+    warnings.extend(more);
+    for el in new_elements.iter_mut() {
+        if let Some(Value::String(name)) = el.as_object_mut().and_then(|o| o.shift_remove("entity_name")) {
+            if let Some(id) = entity_ids.get(&crate::edits::py_strip_pub(&name).to_lowercase()).filter(|i| **i != 0) {
+                el["entity_id"] = json!(id);
+            }
+        }
+    }
+    if new_elements.is_empty() {
+        return Err(format!("The plan could not be laid out — {}", if warnings.is_empty() { "try again.".to_string() } else { warnings.join(" ") }));
+    }
+    let (c, s, added, title) = (cfg.clone(), slug.to_string(), new_elements.len(), spec.title.clone());
+    tokio::task::spawn_blocking(move || -> Result<Map<String, Value>, String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let (sid, raw, rooms_json, gc, walls_json): (i64, Option<String>, Option<String>, Option<String>, Option<String>) = db.query_row(
+            "SELECT id, elements_json, rooms_json, grid_config_json, walls_json FROM schematics WHERE slug = ?1 AND world_id = ?2", rusqlite::params![s, wid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(|_| "Schematic no longer exists.")?;
+        let load = |t: &Option<String>, d: &str| serde_json::from_str::<Value>(t.as_deref().filter(|x| !x.is_empty()).unwrap_or(d));
+        let mut elements = if replace { vec![] } else { match load(&raw, "[]") { Ok(Value::Array(a)) => a, _ => vec![] } };
+        elements.extend(new_elements);
+        let text = |v: &Value| rusqlite::types::Value::Text(nd_render::py_dumps(v));
+        let mut cols = vec![("elements_json", text(&Value::Array(elements.clone())))];
+        let mut rooms_state = rooms_state;
+        let theirs = !rooms_json.as_deref().unwrap_or("").trim_matches(|c| c == '{' || c == '}' || c == ' ').is_empty();
+        if rooms_state.is_some() && !replace && theirs {
+            rooms_state = None; // someone drew rooms while the model was thinking: leave theirs be
+        }
+        if let Some(mut st) = rooms_state {
+            let grid = st.shift_remove("grid").unwrap_or(json!({}));
+            let state = crate::edits::clean_rooms(&st).unwrap_or(Value::Object(st));
+            cols.push(("rooms_json", text(&state)));
+            cols.push(("grid_type", rusqlite::types::Value::Text("square".into())));
+            let mut g = match load(&gc, "{}") { Ok(Value::Object(o)) => o, _ => Map::new() };
+            if let Value::Object(gr) = grid {
+                g.extend(gr);
+            }
+            cols.push(("grid_config_json", text(&Value::Object(g))));
+        } else if want_state && replace {
+            cols.push(("rooms_json", rusqlite::types::Value::Text("{}".into()))); // the old rooms' floors were just replaced
+        }
+        let mut all_walls = if replace { vec![] } else { match load(&walls_json, "[]") { Ok(Value::Array(a)) => a, _ => vec![] } };
+        all_walls.extend(new_walls);
+        let mut sc = Map::new();
+        sc.insert("canvas_width".into(), json!(cw));
+        sc.insert("canvas_height".into(), json!(ch));
+        let merged = crate::edits::clean_walls(&all_walls, &sc).map(|(w, _)| w).unwrap_or(all_walls);
+        cols.push(("walls_json", text(&Value::Array(merged))));
+        crate::orm::update(&db, "schematics", sid, &cols).ok_or("database")?;
+        crate::orm::touch(&db, wid);
+        let mut done = Map::new();
+        done.insert("status".into(), json!("done"));
+        done.insert("added".into(), json!(added));
+        done.insert("total".into(), json!(elements.len()));
+        done.insert("elements".into(), Value::Array(elements));
+        done.insert("warnings".into(), json!(warnings.into_iter().take(12).collect::<Vec<_>>()));
+        done.insert("title".into(), json!(title));
         Ok(done)
     }).await.map_err(|_| "Cancelled.".to_string())?
 }

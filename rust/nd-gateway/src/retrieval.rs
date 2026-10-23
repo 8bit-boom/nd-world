@@ -279,7 +279,8 @@ pub fn find_relevant_entities(db: &Connection, wid: i64, query: &str, limit: usi
     use rusqlite::types::Value as V;
     let words = query_words(query)?;
     if words.is_empty() {
-        return rows(&format!("SELECT e.* FROM entities e WHERE e.world_id = ?1{visible} ORDER BY e.kind, e.name LIMIT {limit}"), vec![V::Integer(wid), V::Integer(uid)]);
+        return rows(&format!("SELECT e.* FROM entities e WHERE e.world_id = ?1{visible} ORDER BY e.kind, e.name LIMIT {limit}"),
+                    if gm { vec![V::Integer(wid)] } else { vec![V::Integer(wid), V::Integer(uid)] });
     }
     // find_relevant_entities_fts (an FTS failure - Python's ILIKE fallback - is Python's)
     let term = |w: &str| {

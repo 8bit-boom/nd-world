@@ -17,6 +17,7 @@ pub mod tasks;
 pub mod tts;
 pub mod ai_more;
 pub mod runners;
+pub mod map_layout;
 pub mod ai_runners;
 pub mod template_draft;
 pub mod media_meta;
