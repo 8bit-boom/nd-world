@@ -62,6 +62,7 @@ fn cooldowns() -> &'static Mutex<HashMap<i64, Instant>> {
 }
 
 /// The LLM backend as app.ai resolves it (Settings row first, then the environment); None when it is not Unsloth over plain http
+#[derive(Clone)]
 pub struct Backend {
     pub host: String,
     pub base_path: String,
@@ -283,12 +284,12 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
 
 type Client = hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Full<bytes::Bytes>>;
 
-fn client() -> &'static Client {
+pub(crate) fn client() -> &'static Client {
     static C: OnceLock<Client> = OnceLock::new();
     C.get_or_init(|| hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http())
 }
 
-fn backend_request(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Option<hyper::Request<http_body_util::Full<bytes::Bytes>>> {
+pub(crate) fn backend_request(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Option<hyper::Request<http_body_util::Full<bytes::Bytes>>> {
     let uri = format!("http://{}{}{}", b.host, b.base_path, path);
     let data = body.map(|v| serde_json::to_vec(v).unwrap_or_default()).unwrap_or_default();
     let mut req = hyper::Request::builder().method(method).uri(uri).header(header::AUTHORIZATION, format!("Bearer {}", b.key));
@@ -679,7 +680,7 @@ const PLAYER_SYSTEM_MAX_CHARS: usize = 50_000;
 const MAX_ATTACHMENT_TEXT_CHARS: usize = 12_000;
 
 /// `get_defaults()[surface]` from ai_models.json beside the database
-fn surface_default(cfg: &Config, surface: &str) -> Option<String> {
+pub(crate) fn surface_default(cfg: &Config, surface: &str) -> Option<String> {
     let path = cfg.db_path.parent().map(|p| p.join("ai_models.json"))?;
     let data = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
     let defaults = match data.as_ref().and_then(|d| d.get("defaults")) {
@@ -1296,7 +1297,17 @@ pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: boo
         Some("world_summary") => start_world_summary_job(id),
         Some("condense") => start_condense_job(id),
         Some("facts_parse") => start_facts_parse_job(id),
-        Some("session_recap") => start_text_recap_job(id),
+        Some("session_recap") => {
+            let (audio, transcript, cp): (Option<String>, Option<String>, Option<String>) = db.query_row("SELECT audio_path, transcript, checkpoint_json FROM audio_jobs WHERE id = ?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?;
+            let transcribing = cp.as_deref().is_some_and(|c| c.contains("\"phase\": \"transcribe\""));
+            if audio.as_deref().is_some_and(|a| !a.is_empty()) && (transcript.as_deref().unwrap_or("").is_empty() || transcribing) {
+                crate::orm::update(db, "audio_jobs", id, &[("status", Sql::Text("transcribing".into()))])?;
+                start_audio_job(id)
+            } else {
+                start_text_recap_job(id)
+            }
+        }
         _ => start_assist_job(id),
     }
     Some(())
@@ -1390,6 +1401,11 @@ pub async fn audio_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
         use rusqlite::types::Value as Sql;
         crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("cancelled".into())), ("error", Sql::Text("Cancelled by GM.".into())),
             ("finished_at", Sql::Text(crate::orm::now_stamp()))])?;
+        // a cancelled recording's file goes, as _run_job's `finally` removes it (an interrupted one is kept to resume)
+        let (audio, delete_after): (Option<String>, Option<i64>) = db.query_row("SELECT audio_path, delete_after FROM audio_jobs WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+        if delete_after.unwrap_or(0) != 0 {
+            if let Some(a) = audio.filter(|a| !a.is_empty()) { let _ = std::fs::remove_file(a); }
+        }
         crate::edits::json_response(&json!({"ok": true}))
     }).await.ok()?
 }
@@ -2715,6 +2731,11 @@ fn start_text_recap_job(id: i64) {
 /// (resuming from the row's checkpoint), the pending facts drafted from the transcript, the done / error row
 async fn run_text_recap_job(id: i64) {
     let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    text_recap_body(id).await;
+}
+
+/// The recap half of a session_recap job (the transcript already on the row), run inside the AI slot
+pub(crate) async fn text_recap_body(id: i64) {
     let Some(cfg) = crate::jobs::cfg() else { return };
     use rusqlite::types::Value as Sql;
     struct Job { b: Backend, model: String, think: bool, text: String, instructions: String, lore: String, resume: Option<Value> }
@@ -2794,4 +2815,184 @@ async fn run_text_recap_job(id: i64) {
         if via_token { f.push(("think_token_fallback", Sql::Integer(1))) } else { f.push(("think", Sql::Integer(0))) }
     }
     write(f);
+}
+
+// ── session recordings: the audio recap job (POST /api/sessions/ai/audio-jobs/from-clip and /complete; audio_jobs purpose="session_recap") ──
+
+/// `request.form()` for a form without files (urlencoded or multipart)
+fn small_form(headers: &HeaderMap, body: &[u8]) -> Option<crate::form::Form> {
+    match crate::form::content_type(headers).as_str() {
+        "multipart/form-data" => {
+            let (f, files) = crate::form::parse_multipart(headers, body)?;
+            files.is_empty().then_some(f)
+        }
+        "application/x-www-form-urlencoded" => crate::form::Form::parse(body),
+        "" if body.is_empty() => Some(crate::form::Form(vec![])),
+        _ => None,
+    }
+}
+
+/// A `bool = Form(default)` field as Pydantic reads it (None: a 422, Python's)
+fn form_bool(f: &crate::form::Form, k: &str, default: bool) -> Option<bool> {
+    match f.get(k) {
+        None => Some(default),
+        Some(v) => match v.trim().to_lowercase().as_str() {
+            "1" | "true" | "t" | "on" | "yes" | "y" => Some(true),
+            "0" | "false" | "f" | "off" | "no" | "n" => Some(false),
+            _ => None,
+        },
+    }
+}
+
+/// The recap options every audio-job form carries: (session id, model, instructions, think, use_rag, entity limit, notes limit)
+fn audio_job_fields(f: &crate::form::Form, gm: bool) -> Option<(Option<i64>, String, String, bool, bool, Option<i64>, Option<i64>)> {
+    let digits = |k: &str| { let t = f.get(k).unwrap_or("").trim(); (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.parse::<i64>().ok()).flatten() };
+    Some((digits("game_session_id"), f.get("model").unwrap_or("").trim().to_string(), crate::edits::py_strip_pub(f.get("extra_instructions").unwrap_or("")),
+        form_bool(f, "think", true)?, form_bool(f, "use_rag", false)? && gm, digits("rag_entity_limit"), digits("rag_notes_limit")))
+}
+
+const SESSION_AUDIO_EXTS: &[&str] = &[".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"];
+
+fn audio_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    if p.user_id <= 0 || crate::pages::edit_level(&p, w, "sessions") != Some(true) {
+        return None;
+    }
+    let f = small_form(headers, body)?;
+    let (gs_id, model, extra, think, use_rag, rag_e, rag_n) = audio_job_fields(&f, p.is_gm)?;
+    if use_rag && gs_id.is_some_and(|g| !crate::retrieval::session_picks(&db, g).1.is_empty()) {
+        return None;
+    }
+    backend(&db)?;
+    let uploads = cfg.db_path.parent()?.join("uploads");
+    let (filename, path, delete_after) = if uri.path().ends_with("/from-clip") {
+        let clip_id = crate::form::py_int(f.get("clip_id")?)?;
+        let (name, url): (Option<String>, Option<String>) = db.query_row("SELECT name, file_url FROM audio_clips WHERE id = ?1 AND world_id = ?2", [clip_id, wid],
+            |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+        // _audio_clip_disk_path: a file under uploads/ (else Python's 404)
+        let rel = url.as_deref()?.strip_prefix("/uploads/")?;
+        let root = uploads.canonicalize().ok()?;
+        let path = root.join(rel).canonicalize().ok().filter(|p| p.starts_with(&root) && p.is_file())?;
+        let fname = path.file_name()?.to_string_lossy().to_string();
+        (name.filter(|n| !n.is_empty()).unwrap_or(fname), path, false)
+    } else {
+        // /complete: the parts /chunk saved, reassembled into the jobs folder
+        let (upload_id, filename, total) = (f.get("upload_id")?, f.get("filename")?.to_string(), crate::form::py_int(f.get("total_chunks")?)?);
+        let ext = std::path::Path::new(&filename).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
+        if !SESSION_AUDIO_EXTS.contains(&ext.as_str()) || upload_id.is_empty() || !upload_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || upload_id.len() > 64 || !(1..=2001).contains(&total) {
+            return None;
+        }
+        let dir = uploads.join("session_audio").join("_chunks").join(upload_id);
+        let parts: Vec<std::path::PathBuf> = (0..total).map(|i| dir.join(format!("{i:06}.part"))).collect();
+        let mut size = 0u64;
+        for part in &parts {
+            size += std::fs::metadata(part).ok().filter(|m| m.is_file())?.len();
+        }
+        let cap = std::env::var("MAX_SESSION_AUDIO_BYTES").ok().or_else(|| std::env::var("MAX_AUDIO_UPLOAD_BYTES").ok()).and_then(|v| v.parse::<u64>().ok()).unwrap_or(3 * 1024 * 1024 * 1024);
+        if size > cap {
+            return None;
+        }
+        let jobs = uploads.join("session_audio").join("_jobs");
+        std::fs::create_dir_all(&jobs).ok()?;
+        let dest = jobs.join(format!("{:032x}{ext}", rand::random::<u128>()));
+        let mut out = std::fs::File::create(&dest).ok()?;
+        for part in &parts {
+            if std::io::copy(&mut std::fs::File::open(part).ok()?, &mut out).is_err() {
+                let _ = std::fs::remove_file(&dest);
+                return None;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        (filename, dest, true)
+    };
+    use rusqlite::types::Value as Sql;
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("session_recap".into())), ("filename", Sql::Text(filename)),
+        ("game_session_id", opt_int(gs_id)), ("created_by_user_id", Sql::Integer(p.user_id)), ("attachment_url", Sql::Text(String::new())),
+        ("status", Sql::Text("pending".into())), ("model", if model.is_empty() { Sql::Null } else { Sql::Text(model) }),
+        ("extra_instructions", if extra.is_empty() { Sql::Null } else { Sql::Text(extra) }), ("think", Sql::Integer(think as i64)),
+        ("use_rag", Sql::Integer(use_rag as i64)), ("rag_entity_limit", opt_int(rag_e)), ("rag_notes_limit", opt_int(rag_n)),
+        ("audio_path", Sql::Text(path.to_string_lossy().to_string())), ("delete_after", Sql::Integer(delete_after as i64))])
+}
+
+/// `POST /api/sessions/ai/audio-jobs/from-clip` and `/complete`: {job_id}, the recording transcribed and recapped here
+pub async fn audio_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || audio_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_audio_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_audio_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_audio_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `_run_job` for a session_recap with a recording: the transcribe phase (checkpointed, resumed), then the recap; the recording deleted
+/// afterwards when the row says so
+async fn run_audio_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    let c = cfg.clone();
+    let row = tokio::task::spawn_blocking(move || {
+        let db = crate::writes::open(&c)?;
+        db.query_row("SELECT audio_path, delete_after, transcript, checkpoint_json FROM audio_jobs WHERE id = ?1", [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))).ok()
+    }).await.ok().flatten();
+    let Some((audio, delete_after, transcript, checkpoint)) = row else { return };
+    let audio = audio.filter(|a| !a.is_empty()).map(std::path::PathBuf::from);
+    let checkpoint = checkpoint.filter(|c| !c.is_empty()).and_then(|c| serde_json::from_str::<Value>(&c).ok());
+    let in_transcribe = checkpoint.as_ref().and_then(|c| c.get("phase")).and_then(|p| p.as_str()) == Some("transcribe");
+    let write = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        std::thread::spawn(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "audio_jobs", id, &fields); } }).join().ok();
+    };
+    let remove_audio = || if delete_after.unwrap_or(0) != 0 { if let Some(a) = &audio { let _ = std::fs::remove_file(a); } };
+    if transcript.as_deref().unwrap_or("").is_empty() || in_transcribe {
+        write(vec![("status", Sql::Text("transcribing".into())), ("run_started_at", Sql::Text(crate::orm::now_stamp())), ("finished_at", Sql::Null)]);
+        let c = cfg.clone();
+        let b = tokio::task::spawn_blocking(move || crate::writes::open(&c).and_then(|db| backend(&db))).await.ok().flatten();
+        let Some(b) = b else {
+            write(vec![("status", Sql::Text("error".into())), ("error", Sql::Text("STT backend is set to Unsloth but no UNSLOTH_API_KEY is configured (Settings → System).".into())),
+                ("finished_at", Sql::Text(crate::orm::now_stamp())), ("checkpoint_json", Sql::Text(String::new()))]);
+            remove_audio();
+            return;
+        };
+        let model = crate::stt::stt_model(&cfg);
+        let path = audio.clone().unwrap_or_default();
+        let progress = |cur: usize, total: usize| write(vec![("chunk_current", Sql::Integer(cur as i64)), ("chunk_total", Sql::Integer(total as i64))]);
+        let save = |state: Value| {
+            let text = state.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            write(vec![("checkpoint_json", Sql::Text(nd_render::py_dumps(&state))), ("transcript", Sql::Text(text))]);
+        };
+        let resume = checkpoint.as_ref().filter(|_| in_transcribe);
+        match crate::stt::transcribe(&b, &path, &model, resume, &progress, &save).await {
+            Err(e) => {
+                let mut f = vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e.message)), ("finished_at", Sql::Text(crate::orm::now_stamp())),
+                    ("checkpoint_json", Sql::Text(String::new()))];
+                if !e.partial.is_empty() {
+                    f.push(("transcript", Sql::Text(e.partial)));
+                }
+                write(f);
+                remove_audio();
+                return;
+            }
+            Ok(t) if t.is_empty() => {
+                write(vec![("status", Sql::Text("error".into())), ("finished_at", Sql::Text(crate::orm::now_stamp())), ("checkpoint_json", Sql::Text(String::new())),
+                    ("error", Sql::Text("Speech-to-text finished this clip but found no speech in it — check the recording actually captured audio.".into()))]);
+                remove_audio();
+                return;
+            }
+            Ok(t) => write(vec![("transcript", Sql::Text(t)), ("chunk_current", Sql::Null), ("chunk_total", Sql::Null), ("checkpoint_json", Sql::Text(String::new()))]),
+        }
+    }
+    text_recap_body(id).await;
+    remove_audio();
 }

@@ -20,6 +20,7 @@ class _Fake:
         self.script = []
         self.status = 200
         self.reply = {}                 # the answer to a request that is not streamed
+        self.stt_texts = []             # speech-to-text answers in turn (None: a failure)
         self.delay = 0                  # seconds before that answer
         self.reply_seq = None           # answers to give in turn first (then `reply`)
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
@@ -39,6 +40,21 @@ class _Fake:
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
+                if self.path.endswith("/v1/audio/transcriptions"):
+                    import re as _re
+                    raw = self.rfile.read(n)
+                    fname = _re.search(rb'filename="([^"]*)"', raw)
+                    model = _re.search(rb'name="model"\r\n\r\n([^\r]*)', raw)
+                    fake.requests.append({"auth": self.headers.get("Authorization"), "body": {"stt": fname and fname.group(1).decode(),
+                                                                                              "model": model and model.group(1).decode()}})
+                    text = fake.stt_texts.pop(0) if fake.stt_texts else "Someone speaks."
+                    body = json.dumps({"text": text} if text is not None else {"error": {"message": "STT exploded"}}).encode()
+                    self.send_response(200 if text is not None else 500)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 req = json.loads(self.rfile.read(n))
                 fake.requests.append({"auth": self.headers.get("Authorization"), "body": req})
                 rejected = fake.reject_thinking and (req.get("chat_template_kwargs") or {}).get("enable_thinking")
@@ -811,3 +827,86 @@ def test_live_transcript_recap_job_is_pythons(client, seed, studio):
     finally:
         studio.reply_seq = None
         _settings(gm, llm_url=studio.url, llm_model="studio", llm_api_key="sk-test", ollama_temperature="0.4", ollama_num_predict="300", ollama_num_ctx="8192")
+
+
+
+def _tone(path, seconds):
+    import subprocess
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", "-ac", "1", "-ar", "8000",
+                    "-b:a", "8k", str(path)], check=True)
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="needs ffmpeg")
+def test_session_recording_jobs_are_pythons(client, seed, studio, tmp_path):
+    """POST /api/sessions/ai/audio-jobs/from-clip and /complete: the same row (filename, the recording's path kept or the reassembled
+    upload, delete_after), the recording transcribed (a long one split by ffmpeg into pieces, each to Studio's speech-to-text, with
+    progress and checkpoints; a failing piece keeps the transcript so far), then the recap - and the same row at the end."""
+    import os
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AudioClip, AudioJob
+    base = str(client.base_url)
+    w = seed.world_a.id
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (uploads / "audio").mkdir(parents=True, exist_ok=True)
+    short, long_ = uploads / "audio" / "nd-test-short.mp3", uploads / "audio" / "nd-test-long.mp3"
+    _tone(short, 20)
+    _tone(long_, 16 * 60 + 30)
+    db = SessionLocal()
+    try:
+        a = AudioClip(world_id=w, name="Table talk", file_url="/uploads/audio/nd-test-short.mp3")
+        b = AudioClip(world_id=w, name="", file_url="/uploads/audio/nd-test-long.mp3")
+        db.add_all([a, b])
+        db.commit()
+        ca, cb = a.id, b.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    facts = _reply(json.dumps({"facts": []}))
+
+    def wait(job_id):
+        end = time.time() + 60
+        s = SessionLocal()
+        try:
+            while time.time() < end and s.get(AudioJob, job_id).status in ("pending", "transcribing", "summarizing"):
+                s.expire_all()
+                time.sleep(0.15)
+            j = s.get(AudioJob, job_id)
+            return {k: getattr(j, k) for k in ("filename", "status", "error", "transcript", "recap", "pending_facts_json", "chunk_current",
+                                                "chunk_total", "checkpoint_json", "delete_after", "think", "model", "extra_instructions")}, j.audio_path
+        finally:
+            s.close()
+
+    cases = [({"clip_id": str(ca), "think": "false", "extra_instructions": " Short. "}, ["Hello there.\nHello there."], [_reply("Recap of the clip."), facts]),
+             ({"clip_id": str(cb), "think": "false"}, ["Part one words.", "Part two words."], [_reply("Long recap."), facts]),
+             ({"clip_id": str(cb), "think": "false"}, ["Part one words.", None], [])]
+    for i, (form, stt, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.stt_texts, studio.reply_seq = list(stt), list(replies)
+            r = side.post("/api/sessions/ai/audio-jobs/from-clip", data=form)
+            assert r.status_code == 200, (i, r.text)
+            row, path = wait(r.json()["job_id"])
+            out.append((row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), Path(path).is_file()))
+        assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], out[0][1], out[1][1])
+        assert out[1][2] == "gateway" and out[0][3] and out[1][3], (i, out[1][2:])     # a library clip is never deleted
+    # /complete: the parts /chunk saved, reassembled; the reassembled file deleted after the run
+    data = short.read_bytes()
+    out = []
+    for side in (gm, _via(gm, base)):
+        studio.requests.clear()
+        studio.stt_texts, studio.reply_seq = ["Uploaded words."], [_reply("Uploaded recap."), facts]
+        uid = __import__("uuid").uuid4().hex
+        for k, piece in enumerate((data[: len(data) // 2], data[len(data) // 2:])):
+            assert gm.post("/api/sessions/ai/audio-jobs/chunk", data={"upload_id": uid, "chunk_index": str(k)},
+                           files={"file": ("blob", piece, "application/octet-stream")}).status_code == 200
+        r = side.post("/api/sessions/ai/audio-jobs/complete", data={"upload_id": uid, "filename": "night.MP3", "total_chunks": "2", "think": "0"})
+        assert r.status_code == 200, r.text
+        row, path = wait(r.json()["job_id"])
+        sent = [{**q["body"], "stt": Path(q["body"]["stt"]).suffix} if "stt" in q["body"] else q["body"] for q in studio.requests]   # a random file name
+        out.append((row, sent, r.headers.get("x-nd-served-by"), Path(path).exists()))
+    assert out[0][:2] == out[1][:2], (out[0][0], out[1][0])
+    assert out[1][2] == "gateway" and not out[0][3] and not out[1][3]
+    studio.stt_texts, studio.reply_seq = [], None

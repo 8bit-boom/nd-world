@@ -173,16 +173,19 @@ where
     let task = tokio::spawn(async move {
         let c = cfg.clone();
         let _ = tokio::task::spawn_blocking(move || own(&c, table, id)).await;
+        // the heartbeat runs in this task (not a task of its own), so stopping the job stops it too
         let c = cfg.clone();
-        let renew = tokio::spawn(async move {
+        let renew = async move {
             loop {
                 tokio::time::sleep(OWNER_RENEW).await;
                 let c2 = c.clone();
                 let _ = tokio::task::spawn_blocking(move || own(&c2, table, id)).await;
             }
-        });
-        let Ended::Final = work.await;
-        renew.abort();
+        };
+        tokio::select! {
+            Ended::Final = work => {}
+            _ = renew => {}
+        }
         let c = cfg.clone();
         let _ = tokio::task::spawn_blocking(move || disown(&c, table, id)).await;
         if let Some(st) = state() {
@@ -208,9 +211,7 @@ pub fn abort(table: &str, id: i64) -> bool {
     match handle {
         Some(h) if !h.is_finished() => {
             h.abort();
-            let cfg = st.cfg.clone();
-            let t = table.to_string();
-            std::thread::spawn(move || disown(&cfg, &t, id));
+            disown(&st.cfg, table, id); // called from a blocking thread (the cancel routes)
             true
         }
         _ => false,
