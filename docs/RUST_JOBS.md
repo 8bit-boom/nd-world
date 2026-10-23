@@ -73,7 +73,9 @@ Answered by the gateway, inline or as a background task (below), with the same f
 `POST /api/sessions/ai/expand-notes` (`expand_recap_notes`), `/api/sessions/ai/condense-recap` (`condense_recap`, no ladder),
 `/api/sessions/ai/summarize-transcript` (`summarize_transcript`, `{transcript, recap, recap_failed}`), `/api/sessions/<id>/ai/summarize-live-transcript`
 (`{transcript, recap}`), `/api/sessions/<id>/ai/summarize-from-facts` (`summarize_session_from_facts`), `/api/facts/parse`
-(`parse_facts_from_recap`, a 502 with its failure) and `/api/facts/folk-tale` (run_assist `folk_tale` over the facts, a GM's lore). Python's
+(`parse_facts_from_recap`, a 502 with its failure) `/api/facts/folk-tale` (run_assist `folk_tale` over the facts, a GM's lore), `/api/ai/chat` (one `generate_chat`, `{result}`; a GM's - the
+route itself checks nothing, the rest stays Python's) and `/api/ai/chat/compact` (`condense_chat_history`, the AI-chat access rule, its ceiling
+and 502). Python's
 own refusals (no notes, no facts) are answered the same way; its section checks, a session of another world, a recap over the
 condense ceiling and every body its parsers would reject stay Python's.
 

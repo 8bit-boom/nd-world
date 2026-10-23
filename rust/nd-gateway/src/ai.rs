@@ -3646,6 +3646,8 @@ enum SyncAi {
     FromFacts { b: Backend, model: String, facts: Vec<String>, think: bool, instr: String },
     Facts { b: Backend, model: String, text: String, think: bool, lore: String, extra: String },
     FolkTale(Assist),
+    Compact { b: Backend, model: String, history: String, think: bool },
+    Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
     Refuse(StatusCode, String),
 }
 
@@ -3728,6 +3730,43 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 if facts.is_empty() || !section_ok(w, "sessions") { return None; }
                 let bk = backend(&db)?;
                 SyncAi::FromFacts { b: bk, model: recap_model()?, facts, think: think_default_true, instr: world_instr(w) }
+            }
+        }
+        "/api/ai/chat" | "/api/ai/chat/compact" => {
+            let compact = path.ends_with("/compact");
+            if !p.is_gm {
+                // /chat: a GM's (the route itself checks nothing); /compact: the AI-chat access rule
+                let w = p.world.as_ref()?;
+                let on = |k: &str| crate::edits::py_truthy_pub(w.get(k));
+                if !compact || !(on("players_can_ask_ai") || on("players_can_use_ai_chat")) {
+                    return None;
+                }
+            }
+            let model = text_raw(&b, "model")?;
+            let system = text_raw(&b, "system")?;
+            text_raw(&b, "surface")?;
+            let think = match b.get("think") { None => false, Some(Value::Bool(t)) => *t, Some(_) => return None };
+            let options = match b.get("options") { None => Map::new(), Some(o @ Value::Object(_)) => clamp_options(o)?, Some(_) => return None };
+            let messages = build_messages(b.get("messages")?)?;
+            let bk = backend(&db)?;
+            let model = if model.is_empty() { bk.model.clone() } else { model };
+            if !compact {
+                SyncAi::Chat { b: bk, model, system, messages, options }
+            } else {
+                if messages.is_empty() { return refuse(StatusCode::BAD_REQUEST, "No messages to compact"); }
+                let all: String = messages.iter().map(|m| m["content"].as_str().unwrap_or("")).collect();
+                let cpt = chars_per_token(&all);
+                let tokens = (all.chars().count() as i64 + cpt - 1) / cpt;
+                let ceiling = max_auto_ctx() - 512;
+                if tokens > ceiling {
+                    return refuse(StatusCode::BAD_REQUEST, &format!("Too much conversation to compact in one call (≈{tokens} tokens > the {ceiling}-token ceiling) — try compacting more often, or clear the chat instead"));
+                }
+                // _chat_history_to_text
+                let history = messages.iter().filter_map(|m| {
+                    let c = crate::edits::py_strip_pub(m["content"].as_str().unwrap_or(""));
+                    (!c.is_empty()).then(|| format!("{}: {c}", if m["role"] == "user" { "GM" } else { "Assistant" }))
+                }).collect::<Vec<_>>().join("\n\n");
+                SyncAi::Compact { b: bk, model, history, think }
             }
         }
         "/api/facts/parse" => {
@@ -3826,6 +3865,16 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             Ok(facts) => ok(json!({"facts": facts})),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
         },
+        SyncAi::Compact { b, model, history, think } => {
+            let summary = if history.is_empty() { String::new() } else {
+                generate_chat(&b, &model, &recap_text("_COMPACT_CHAT_SYSTEM"), &[json!({"role": "user", "content": history})], think, &assist_options(&b, think)).await
+            };
+            if failed(&summary) { err(StatusCode::BAD_GATEWAY, format!("Compaction failed: {summary}")) } else { ok(json!({"summary": summary})) }
+        }
+        SyncAi::Chat { b, model, system, messages, options } => {
+            let result = generate_chat(&b, &model, &system, &messages, false, &options).await;
+            ok(json!({"result": result}))
+        }
         SyncAi::FolkTale(a) => {
             let text = clean_degenerate(&generate_chat(&a.backend, &a.model, &a.system, &[json!({"role": "user", "content": a.user})], a.think, &a.extra).await);
             if failed(&text) { err(StatusCode::BAD_GATEWAY, text) } else { ok(json!({"op": a.op, "mode": "text", "text": text, "model": a.model})) }
@@ -3846,7 +3895,13 @@ pub async fn sync_ai(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, 
 
 /// The paths `sync_ai` serves
 pub fn is_sync_ai(path: &str) -> bool {
-    matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale")
+    matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
+        | "/api/ai/chat" | "/api/ai/chat/compact")
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
+}
+
+/// A `str` field of a Pydantic body read as given ("" when absent; None when not a string)
+fn text_raw(b: &Map<String, Value>, k: &str) -> Option<String> {
+    match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), Some(_) => None }
 }

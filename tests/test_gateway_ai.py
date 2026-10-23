@@ -1117,6 +1117,11 @@ def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
         ("/api/facts/parse", {"text": "went to the ruins"}, [_reply("not json")]),
         ("/api/facts/folk-tale", {"instruction": "Sing it", "game_session_id": sid}, [_reply("Once upon a time.")]),
         ("/api/facts/folk-tale", {"game_session_id": 999999}, []),
+        ("/api/ai/chat", {"messages": [{"role": "user", "content": "Hi"}], "system": "Be kind.", "options": {"temperature": 0.2}}, [_reply("Hello!")]),
+        ("/api/ai/chat/compact", {"messages": [{"role": "user", "content": "Who is Borin?"}, {"role": "assistant", "content": " A smith. "}], "think": True},
+         [_reply("They talked about Borin.")]),
+        ("/api/ai/chat/compact", {"messages": []}, []),
+        ("/api/ai/chat/compact", {"messages": [{"role": "user", "content": "x"}]}, [_reply("", finish="length")]),
     ]
     for i, (path, body, replies) in enumerate(cases):
         out = []

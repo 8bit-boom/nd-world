@@ -46614,6 +46614,7 @@
   "secret"
  ],
  "recap_texts": {
+  "_COMPACT_CHAT_SYSTEM": "You are compacting an ongoing AI Chat conversation between a GM and their world-building assistant for a tabletop RPG. Summarize the conversation below into a concise recap of what was discussed, decided, or created — preserve concrete facts, names, numbers, and decisions the GM will still need, and drop exploratory back-and-forth, false starts, and small talk. Write in flowing prose, third person. Respond with the summary only, no preamble or commentary.",
   "_CONDENSE_RECAP_SYSTEM": "You are a scribe for a tabletop RPG campaign. Condense the following session recap into a short, tight summary — a few sentences at most, hitting only the key beats a player would need to remember before the next session. Keep it in flowing prose. Don't invent details that aren't in the original. Respond with the condensed recap only, no preamble or commentary.",
   "_EXPAND_NOTES_SYSTEM": "You are a scribe for a tabletop RPG campaign. The GM will give you rough, terse session notes (e.g. \"went to the tavern, met Elyra, found a clock, fought goblins\"). Expand them into a well-written, readable session recap in flowing prose — a few short paragraphs, past tense, third person. Preserve every detail from the notes; don't invent new plot points, names, or outcomes that aren't implied. Markdown is fine for light formatting (e.g. **bold** for names) but keep it simple — this is a narrative recap, not a bulleted list. Respond with the recap text only, no preamble or commentary.",
   "_RECAP_FACTS_SCHEMA": {
