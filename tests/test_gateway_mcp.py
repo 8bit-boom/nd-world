@@ -109,7 +109,7 @@ def test_mcp_protocol_and_read_tools_are_pythons(client, seed, mcp_world):
     # left to Python - and still the same answer
     python_s = [rpc("tools/call", {"name": "nope", "arguments": {}}), tool("list_facts", world_id="7"), tool("list_facts", world_id=True),
                 tool("list_quests", world_id=w, status="null"), [rpc("ping")], rpc("bogus"), "notjson",
-                rpc("tools/list", {"cursor": "x"}), tool("get_session", session_id=m["s1"])]
+                rpc("tools/list", {"cursor": "x"})]
     for body in python_s:
         a, b = _both(base, gm, body)
         assert a[:3] == b[:3], (body, a[2][:600], b[2][:600])
@@ -151,3 +151,121 @@ def test_mcp_sdk_client_through_the_gateway(client, seed, mcp_world):
     assert "list_facts" in names and "ask_chronicler" in names
     assert not facts.isError
     assert {f["content"] for f in facts.structuredContent["result"]} >= {"The bridge fell.", "Vane did it — secretly."}
+
+
+def _call(url, token, name, args, id_=1):
+    r = httpx.post(url + "/mcp", headers={**HEADERS, "Authorization": f"Bearer {token}"}, timeout=60,
+                   content=json.dumps({"jsonrpc": "2.0", "id": id_, "method": "tools/call", "params": {"name": name, "arguments": args}}))
+    return r.status_code, r.text, r.headers.get("x-nd-served-by")
+
+
+def _row(table, id_, drop=("id", "created_at", "updated_at")):
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        r = db.execute(text(f"SELECT * FROM {table} WHERE id = :i"), {"i": id_}).mappings().first()
+        return None if r is None else {k: v for k, v in r.items() if k not in drop}
+    finally:
+        db.close()
+
+
+def test_mcp_write_tools_are_pythons(client, seed, mcp_world):
+    """create / update / delete for facts, entities, notes and quests, get_session and roll_table: each side works on its own copy of the
+    same rows, and gives the same answer (ids aside) and leaves the same row behind."""
+    from app.database import SessionLocal
+    from app.models import AudioClip, Entity, EntityNote, EntityRelation, Fact, GameSession, Quest, RandomTable, World
+    base = str(client.base_url)
+    gm = _token(seed.gm.id, "mcp-parity-gm")
+    player = _token(seed.player_a.id, "mcp-parity-player")
+    w = mcp_world["w"]
+    db = SessionLocal()
+    try:
+        db.get(World, w).custom_kinds_json = json.dumps([{"id": "custom_ship", "label": "Ship"}, {"id": "custom_ship", "label": "Ship again"}, {"id": "bad", "label": "x"}])
+        a1 = AudioClip(world_id=w, name="Ballad", file_url="/uploads/audio/a.mp3", visible_to_players=True, transcript="La la")
+        a2 = AudioClip(world_id=w, name="Secret", file_url="/uploads/audio/b.mp3", visible_to_players=False, description="GM")
+        db.add_all([a1, a2])
+        db.commit()
+        pairs = []
+        for _ in range(2):
+            f = Fact(world_id=w, content="Old fact", visible_to_players=None)
+            e = Entity(world_id=w, kind="location", name="Keep", summary="s", body="b", tags="t", visible_to_players=True)
+            noted = Entity(world_id=w, kind="location", name="Noted", visible_to_players=True)
+            q = Quest(world_id=w, title="Q", status="active", category="main", summary="", visible_to_players=True)
+            gs = GameSession(world_id=w, session_num=7, title="Seven", player_summary="Recap", player_summary_published=True,
+                             summary="GM notes", recap_audio_json=json.dumps([a2.id, a1.id, a1.id, True, 999999]))
+            t = RandomTable(world_id=w, name="Loot", slug=f"mcp-loot-{_}-{w}", entries_json=json.dumps([{"label": "Gold", "weight": 0}, {"label": "Gem", "weight": 3}]))
+            db.add_all([f, e, noted, q, gs, t])
+            db.commit()
+            db.add_all([EntityNote(entity_id=noted.id, content="n"), EntityRelation(world_id=w, source_id=e.id, target_id=noted.id, relation="near")])
+            db.commit()
+            pairs.append({"fact": f.id, "entity": e.id, "noted": noted.id, "quest": q.id, "session": gs.id, "table": t.id})
+    finally:
+        db.close()
+
+    def same(name, args_for, token=gm, table=None, key=None, python=False):
+        outs = []
+        for i, url in enumerate((DIRECT, base)):
+            args = args_for(pairs[i])
+            status, body, by = _call(url, token, name, args)
+            ids = set(pairs[i].values())
+            result = json.loads(body.split("data: ", 1)[1])["result"]
+            created = None
+            if result["isError"]:
+                text = result["content"][0]["text"]
+                for v in sorted(ids, reverse=True):
+                    text = __import__("re").sub(rf"\b{v}\b", "<id>", text)
+                shown = text
+            else:
+                shown = json.loads(result["content"][0]["text"])
+                if table:
+                    created = _row(table, shown["id"]) if key is None else _row(table, pairs[i][key])
+                    if key is None:
+                        shown["id"] = "<new>"
+                for k in ("id", "deleted"):
+                    if shown.get(k) in ids:
+                        shown[k] = "<id>"
+            body = (result["isError"], shown)
+            if created:
+                created = {k: ("<id>" if isinstance(v, int) and k.endswith("_id") and v in ids else v) for k, v in created.items()}
+            outs.append((status, body, created, by))
+        a, b = outs
+        if python:                                       # Python's answer names a timestamp: both refused, by Python
+            assert a[1][0] and b[1][0] and b[3] != "gateway", (name, a, b)
+            return
+        assert a[:3] == b[:3], (name, a[:3], b[:3])
+        assert b[3] == "gateway", (name, b[3])
+
+    same("create_fact", lambda p: {"world_id": w, "content": "  A new fact ", "visible_to_players": False, "game_session_id": p["session"]}, table="facts")
+    same("create_fact", lambda p: {"world_id": w, "content": "  "})
+    same("create_fact", lambda p: {"world_id": w, "content": "x"}, token=player)
+    same("create_fact", lambda p: {"world_id": 999999, "content": "x"})
+    same("update_fact", lambda p: {"fact_id": p["fact"], "content": " Edited "}, table="facts", key="fact")
+    same("update_fact", lambda p: {"fact_id": p["fact"], "content": "  ", "visible_to_players": True}, table="facts", key="fact")
+    same("update_fact", lambda p: {"fact_id": 999999})
+    same("create_entity", lambda p: {"world_id": w, "kind": "custom_ship", "name": " The Gull ", "summary": " fast ", "tags": " sea ", "visible_to_players": False}, table="entities")
+    same("create_entity", lambda p: {"world_id": w, "kind": "dragon", "name": "x"})
+    same("create_entity", lambda p: {"world_id": w, "kind": "item", "name": " "})
+    same("create_note", lambda p: {"world_id": w, "name": "Lore", "body": "  " + "word " * 40}, table="entities")
+    same("create_note", lambda p: {"world_id": w, "name": "Lore 2", "body": "b", "summary": " Sum "}, table="entities")
+    same("update_entity", lambda p: {"entity_id": p["entity"], "name": " ", "summary": " New ", "body": "B2", "folder": " Places ", "visible_to_players": False}, table="entities", key="entity")
+    same("update_entity", lambda p: {"entity_id": p["entity"], "summary": "New"}, table="entities", key="entity")
+    same("update_entity", lambda p: {"entity_id": 999999, "summary": "x"})
+    same("create_quest", lambda p: {"world_id": w, "title": " Rescue ", "status": "  ", "category": "side", "body": "Go."}, table="quests")
+    same("update_quest", lambda p: {"quest_id": p["quest"], "title": "Q2", "status": " done ", "category": " ", "visible_to_players": False}, table="quests", key="quest")
+    same("update_quest", lambda p: {"quest_id": p["quest"]}, table="quests", key="quest")
+    same("get_session", lambda p: {"session_id": p["session"]})
+    same("get_session", lambda p: {"session_id": p["session"]}, token=player)
+    same("get_session", lambda p: {"session_id": 999999})
+    same("delete_entity", lambda p: {"entity_id": p["noted"]}, python=True)          # it has a note: the ORM's own handling
+    same("delete_entity", lambda p: {"entity_id": p["entity"]})
+    same("delete_entity", lambda p: {"entity_id": p["entity"]})
+    same("delete_fact", lambda p: {"fact_id": p["fact"]})
+    same("delete_fact", lambda p: {"fact_id": p["fact"]})
+    same("roll_table", lambda p: {"table_id": 999999})
+    same("roll_table", lambda p: {"table_id": p["table"]}, token=player)
+    for p in pairs:
+        assert _row("entities", p["entity"]) is None and _row("entity_relations", 0) is None
+    status, body, by = _call(base, gm, "roll_table", {"table_id": pairs[1]["table"], "times": 25})
+    res = json.loads(json.loads(body.split("data: ", 1)[1])["result"]["content"][0]["text"])
+    assert by == "gateway" and res["table"] == "Loot" and len(res["results"]) == 10 and set(res["results"]) <= {"Gold", "Gem"}

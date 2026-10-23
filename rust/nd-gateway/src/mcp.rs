@@ -173,8 +173,15 @@ pub async fn handle(cfg: Arc<Config>, headers: HeaderMap, body: Bytes) -> Option
 enum P {
     Int,
     OptInt,
+    /// `int = n`
+    IntOr(i64),
     Str,
     OptStr,
+    /// `str = "..."`
+    StrOr(&'static str),
+    /// `bool = b`
+    BoolOr(bool),
+    OptBool,
 }
 
 /// The arguments by name, or None when the SDK would coerce or refuse one (its own messages - Python's)
@@ -184,9 +191,13 @@ fn args_of(args: &Map<String, Value>, spec: &[(&str, P)]) -> Option<Map<String, 
         let v = args.get(*name);
         let ok = match (p, v) {
             (P::Int | P::Str, None) => false,
-            (P::OptInt | P::OptStr, None | Some(Value::Null)) => true,
-            (P::Int | P::OptInt, Some(Value::Number(n))) => n.is_i64(),
-            (P::Str, Some(Value::String(_))) => true,
+            (P::OptInt | P::OptStr | P::OptBool, None | Some(Value::Null)) => true,
+            (P::IntOr(d), None) => { out.insert((*name).into(), json!(d)); continue }
+            (P::StrOr(d), None) => { out.insert((*name).into(), json!(d)); continue }
+            (P::BoolOr(d), None) => { out.insert((*name).into(), json!(d)); continue }
+            (P::Int | P::OptInt | P::IntOr(_), Some(Value::Number(n))) => n.is_i64(),
+            (P::Str | P::StrOr(_), Some(Value::String(_))) => true,
+            (P::BoolOr(_) | P::OptBool, Some(Value::Bool(_))) => true,
             // pre_parse_json: a string for a parameter not annotated `str` is read as JSON first when it holds a list, a dict, ...
             (P::OptStr, Some(Value::String(s))) => !matches!(crate::map_layout::py_loads(s), Ok(Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_))),
             _ => false,
@@ -210,6 +221,36 @@ fn call(db: &Connection, user: User, name: &str, args: &Map<String, Value>) -> O
         "get_rules" => { let a = args_of(args, &[("world_id", Int)])?; get_rules(db, user, &a) }
         "list_sessions" => { let a = args_of(args, &[("world_id", Int)])?; list_sessions(db, user, &a) }
         "list_tables" => { let a = args_of(args, &[("world_id", Int)])?; list_tables(db, user, &a) }
+        "get_session" => { let a = args_of(args, &[("session_id", Int)])?; get_session(db, user, &a) }
+        "roll_table" => { let a = args_of(args, &[("table_id", Int), ("times", IntOr(1))])?; roll_table(db, user, &a) }
+        "create_fact" => { let a = args_of(args, &[("world_id", Int), ("content", Str), ("visible_to_players", BoolOr(true)), ("game_session_id", OptInt)])?; create_fact(db, user, &a) }
+        "update_fact" => { let a = args_of(args, &[("fact_id", Int), ("content", OptStr), ("visible_to_players", OptBool)])?; update_fact(db, user, &a) }
+        "delete_fact" => { let a = args_of(args, &[("fact_id", Int)])?; delete_fact(db, user, &a) }
+        "create_entity" => {
+            let a = args_of(args, &[("world_id", Int), ("kind", Str), ("name", Str), ("summary", StrOr("")), ("body", StrOr("")), ("subtype", StrOr("")),
+                                    ("tags", StrOr("")), ("folder", StrOr("")), ("visible_to_players", BoolOr(true))])?;
+            create_entity(db, user, &a)
+        }
+        "create_note" => {
+            let a = args_of(args, &[("world_id", Int), ("name", Str), ("body", Str), ("summary", StrOr("")), ("visible_to_players", BoolOr(true))])?;
+            create_note(db, user, &a)
+        }
+        "update_entity" => {
+            let a = args_of(args, &[("entity_id", Int), ("name", OptStr), ("summary", OptStr), ("body", OptStr), ("subtype", OptStr), ("tags", OptStr),
+                                    ("folder", OptStr), ("visible_to_players", OptBool)])?;
+            update_entity(db, user, &a)
+        }
+        "delete_entity" => { let a = args_of(args, &[("entity_id", Int)])?; delete_entity(db, user, &a) }
+        "create_quest" => {
+            let a = args_of(args, &[("world_id", Int), ("title", Str), ("summary", StrOr("")), ("body", StrOr("")), ("status", StrOr("active")),
+                                    ("category", StrOr("main")), ("visible_to_players", BoolOr(true))])?;
+            create_quest(db, user, &a)
+        }
+        "update_quest" => {
+            let a = args_of(args, &[("quest_id", Int), ("title", OptStr), ("summary", OptStr), ("body", OptStr), ("status", OptStr), ("category", OptStr),
+                                    ("visible_to_players", OptBool)])?;
+            update_quest(db, user, &a)
+        }
         _ => return None,
     };
     match r {
@@ -447,4 +488,367 @@ fn list_tables(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResul
         out.push(json!({"id": t[0], "name": t[1], "category": t[2], "description": t[3], "entry_count": n}));
     }
     Ok(Some(Out::List(out)))
+}
+
+// ── sessions, tables, and the write tools ────────────────────────────────────────────────────────────────
+
+fn gm_only(user: User) -> Result<(), Fail> {
+    if user.gm { Ok(()) } else { Err("This action requires a GM token".into()) }
+}
+
+fn s(a: &Map<String, Value>, k: &str) -> Option<String> {
+    a.get(k).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+fn strip(t: &str) -> String {
+    crate::edits::py_strip_pub(t)
+}
+
+fn b(a: &Map<String, Value>, k: &str) -> Option<bool> {
+    a.get(k).and_then(|v| v.as_bool())
+}
+
+/// A row's columns by name (None: no such row)
+fn row_of(db: &Connection, table: &str, cols: &str, id: i64) -> Result<Option<Map<String, Value>>, ()> {
+    let names: Vec<&str> = cols.split(", ").collect();
+    match db.query_row(&format!("SELECT {cols} FROM {table} WHERE id = ?1"), [id], |r| {
+        let mut m = Map::new();
+        for (i, n) in names.iter().enumerate() {
+            m.insert((*n).to_string(), sql_json(r.get(i)?));
+        }
+        Ok(m)
+    }) {
+        Ok(m) => Ok(Some(m)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+/// `bool(x)` of a stored Boolean (NULL is False)
+fn truthy_int(v: &Value) -> bool {
+    v.as_i64().is_some_and(|i| i != 0)
+}
+
+/// A stored Boolean as Python reads it back (None stays None)
+fn as_bool(v: &Value) -> Value {
+    match v.as_i64() { Some(i) => json!(i != 0), None => Value::Null }
+}
+
+fn get_session(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    let sid = int(a, "session_id");
+    let Ok(gs) = row_of(db, "game_sessions", "id, world_id, session_num, title, session_date, summary, player_summary, player_summary_published, recap_audio_json", sid) else { return Ok(None) };
+    let Some(gs) = gs else { return Err(format!("Session {sid} not found")) };
+    let wid = gs["world_id"].as_i64().unwrap_or(0);
+    let w = try_some!(load_world(db, wid, user));
+    try_some!(require_view(user, &w, "sessions"));
+    let mut base = json!({"id": gs["id"], "session_num": gs["session_num"], "title": gs["title"], "session_date": gs["session_date"]});
+    // session_media.attached_clips: the recap's audio, in order, that this viewer may hear
+    let ids: Vec<i64> = match crate::map_layout::py_loads(gs["recap_audio_json"].as_str().filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(raw)) => {
+            let mut out = vec![];
+            for v in raw {
+                if let Some(i) = v.as_i64().filter(|_| v.is_i64() || v.is_u64()) {
+                    if !out.contains(&i) {
+                        out.push(i);
+                    }
+                }
+            }
+            out
+        }
+        _ => vec![],
+    };
+    let mut clips = vec![];
+    for i in ids {
+        let Ok(c) = row_of(db, "audio_clips", "id, world_id, name, description, file_url, visible_to_players, transcript", i) else { return Ok(None) };
+        let Some(c) = c.filter(|c| c["world_id"].as_i64() == Some(wid)) else { continue };
+        if user.gm || truthy_int(&c["visible_to_players"]) {
+            let or_empty = |k: &str| if c[k].is_null() { json!("") } else { c[k].clone() };
+            clips.push(json!({"id": c["id"], "name": c["name"], "description": or_empty("description"), "file_url": c["file_url"],
+                "visible_to_players": truthy_int(&c["visible_to_players"]), "transcript": or_empty("transcript")}));
+        }
+    }
+    let ps = gs["player_summary"].as_str().unwrap_or("").to_string();
+    let published = truthy_int(&gs["player_summary_published"]);
+    if user.gm {
+        base["summary"] = json!(gs["summary"].as_str().unwrap_or(""));
+        base["player_summary_published"] = json!(published);
+        if published {
+            base["player_summary"] = json!(ps);
+        }
+        base["recap_audio"] = json!(clips);
+        return Ok(Some(Out::Dict(base)));
+    }
+    let shown = published && !strip(&ps).is_empty();
+    base["player_summary"] = if shown { gs["player_summary"].clone() } else { json!("") };
+    base["note"] = json!(if shown { "" } else { "No recap has been published for this session yet." });
+    base["recap_audio"] = json!(clips);
+    Ok(Some(Out::Dict(base)))
+}
+
+fn roll_table(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let tid = int(a, "table_id");
+    let Ok(t) = row_of(db, "random_tables", "id, world_id, name, entries_json", tid) else { return Ok(None) };
+    let Some(t) = t else { return Err(format!("Table {tid} not found")) };
+    if let Some(wid) = t["world_id"].as_i64() {
+        try_some!(load_world(db, wid, user));
+    }
+    let times = int(a, "times").clamp(1, 10) as usize;
+    let entries = match crate::map_layout::py_loads(t["entries_json"].as_str().filter(|x| !x.is_empty()).unwrap_or("[]"))? {
+        Value::Array(e) => e,
+        _ => return Ok(None), // a dict / string of entries: Python's own failure
+    };
+    if entries.is_empty() {
+        return Err("This table has no entries".into());
+    }
+    // weights = [max(0, int(e.get("weight", 1) or 1)) ...] - anything but a whole number is read Python's way
+    let mut weights = vec![];
+    for e in &entries {
+        let Value::Object(e) = e else { return Ok(None) };
+        let w = match e.get("weight") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => 1,
+            Some(Value::Number(n)) if n.is_i64() => match n.as_i64().unwrap() { 0 => 1, x => x.max(0) },
+            _ => return Ok(None),
+        };
+        weights.push(w as u64);
+    }
+    if weights.iter().sum::<u64>() == 0 {
+        weights = vec![1; entries.len()];
+    }
+    let total: u64 = weights.iter().sum();
+    let mut results = vec![];
+    for _ in 0..times {
+        let mut r = rand::random::<u64>() % total;
+        let mut k = 0;
+        while r >= weights[k] {
+            r -= weights[k];
+            k += 1;
+        }
+        results.push(entries[k].get("label").cloned().unwrap_or(json!("")));
+    }
+    Ok(Some(Out::Dict(json!({"table": t["name"], "results": results}))))
+}
+
+fn insert(db: &Connection, table: &str, vals: Vec<(&str, Sql)>) -> Option<i64> {
+    crate::orm::insert(db, table, &vals)
+}
+
+fn text(t: String) -> Sql {
+    Sql::Text(t)
+}
+
+fn create_fact(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let wid = int(a, "world_id");
+    try_some!(load_world(db, wid, user));
+    let content = strip(&s(a, "content").unwrap_or_default());
+    if content.is_empty() {
+        return Err("content must not be empty".into());
+    }
+    let vis = b(a, "visible_to_players").unwrap_or(true);
+    let gs = a.get("game_session_id").and_then(|v| v.as_i64()).map_or(Sql::Null, Sql::Integer);
+    let Some(id) = insert(db, "facts", vec![("world_id", Sql::Integer(wid)), ("game_session_id", gs), ("content", text(content.clone())),
+        ("visible_to_players", Sql::Integer(vis as i64)), ("author_id", Sql::Integer(user.id)), ("updated_at", text(crate::orm::now_stamp()))]) else { return Ok(None) };
+    Ok(Some(Out::Dict(json!({"id": id, "content": content, "visible_to_players": vis}))))
+}
+
+fn update_fact(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let fid = int(a, "fact_id");
+    let Ok(f) = row_of(db, "facts", "id, world_id, content, visible_to_players", fid) else { return Ok(None) };
+    let Some(f) = f else { return Err(format!("Fact {fid} not found")) };
+    try_some!(load_world(db, f["world_id"].as_i64().unwrap_or(0), user));
+    let mut content = f["content"].clone();
+    let mut vis = as_bool(&f["visible_to_players"]);
+    let mut vals: Vec<(&str, Sql)> = vec![];
+    if let Some(c) = s(a, "content").map(|c| strip(&c)).filter(|c| !c.is_empty()) {
+        content = json!(c);
+        vals.push(("content", text(c)));
+    }
+    if let Some(v) = b(a, "visible_to_players") {
+        vis = json!(v);
+        vals.push(("visible_to_players", Sql::Integer(v as i64)));
+    }
+    vals.push(("updated_at", text(crate::orm::now_stamp())));
+    if crate::orm::update(db, "facts", fid, &vals).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Out::Dict(json!({"id": fid, "content": content, "visible_to_players": vis}))))
+}
+
+fn delete_fact(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let fid = int(a, "fact_id");
+    let Ok(f) = row_of(db, "facts", "id, world_id", fid) else { return Ok(None) };
+    let Some(f) = f else { return Err(format!("Fact {fid} not found")) };
+    let wid = f["world_id"].as_i64().unwrap_or(0);
+    try_some!(load_world(db, wid, user));
+    if db.execute("DELETE FROM facts WHERE id = ?1", [fid]).is_err() {
+        return Ok(None);
+    }
+    // no Fact row survives to carry a timestamp: the world's recap watermark records the removal
+    crate::orm::update(db, "worlds", wid, &[("recap_content_touch", text(crate::orm::now_stamp()))]);
+    Ok(Some(Out::Dict(json!({"deleted": fid}))))
+}
+
+fn create_entity(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let wid = int(a, "world_id");
+    let w = try_some!(load_world(db, wid, user));
+    let name = strip(&s(a, "name").unwrap_or_default());
+    if name.is_empty() {
+        return Err("name must not be empty".into());
+    }
+    // _world_entity_kinds: the fixed kinds plus the world's own, each once
+    let Some(all) = nd_perm::sections::effective_kinds(w.1.as_deref()) else { return Ok(None) };
+    let mut valid: Vec<String> = vec![];
+    for k in all {
+        if !valid.contains(&k) {
+            valid.push(k);
+        }
+    }
+    let kind = s(a, "kind").unwrap_or_default();
+    if !valid.contains(&kind) {
+        return Err(format!("kind must be one of: {}", valid.join(", ")));
+    }
+    let vis = b(a, "visible_to_players").unwrap_or(true);
+    let Some(id) = insert(db, "entities", vec![("world_id", Sql::Integer(wid)), ("kind", text(kind.clone())), ("name", text(name.clone())),
+        ("subtype", text(strip(&s(a, "subtype").unwrap_or_default()))), ("summary", text(strip(&s(a, "summary").unwrap_or_default()))),
+        ("body", text(s(a, "body").unwrap_or_default())), ("tags", text(strip(&s(a, "tags").unwrap_or_default()))),
+        ("folder", text(strip(&s(a, "folder").unwrap_or_default()))), ("visible_to_players", Sql::Integer(vis as i64))]) else { return Ok(None) };
+    Ok(Some(Out::Dict(json!({"id": id, "kind": kind, "name": name}))))
+}
+
+fn create_note(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let wid = int(a, "world_id");
+    try_some!(load_world(db, wid, user));
+    let name = strip(&s(a, "name").unwrap_or_default());
+    if name.is_empty() {
+        return Err("name must not be empty".into());
+    }
+    let body = s(a, "body").unwrap_or_default();
+    let summary = s(a, "summary").filter(|x| !x.is_empty()).unwrap_or_else(|| body.chars().take(120).collect());
+    let vis = b(a, "visible_to_players").unwrap_or(true);
+    let Some(id) = insert(db, "entities", vec![("world_id", Sql::Integer(wid)), ("kind", text("note".into())), ("name", text(name.clone())),
+        ("summary", text(strip(&summary))), ("body", text(body)), ("visible_to_players", Sql::Integer(vis as i64))]) else { return Ok(None) };
+    Ok(Some(Out::Dict(json!({"id": id, "name": name}))))
+}
+
+/// Set the changed columns only (SQLAlchemy writes nothing - not even an `onupdate` stamp - when no value really changed)
+fn update_changed(db: &Connection, table: &str, id: i64, row: &Map<String, Value>, changes: Vec<(&str, Value)>) -> Option<()> {
+    let mut vals: Vec<(&str, Sql)> = vec![];
+    for (k, v) in changes {
+        let cur = &row[k];
+        let same = match &v {
+            Value::Bool(bv) => cur.as_i64().is_some_and(|i| (i != 0) == *bv),
+            other => cur == other,
+        };
+        if !same {
+            vals.push((k, match v { Value::Bool(bv) => Sql::Integer(bv as i64), Value::String(t) => Sql::Text(t), _ => Sql::Null }));
+        }
+    }
+    if vals.is_empty() {
+        return Some(());
+    }
+    crate::orm::update(db, table, id, &vals).map(|_| ())
+}
+
+fn update_entity(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let eid = int(a, "entity_id");
+    let Ok(e) = row_of(db, "entities", "id, world_id, name, summary, body, subtype, tags, folder, visible_to_players", eid) else { return Ok(None) };
+    let Some(e) = e else { return Err(format!("Entity {eid} not found")) };
+    try_some!(load_world(db, e["world_id"].as_i64().unwrap_or(0), user));
+    let mut ch: Vec<(&str, Value)> = vec![];
+    let mut name = e["name"].clone();
+    if let Some(n) = s(a, "name").map(|n| strip(&n)).filter(|n| !n.is_empty()) {
+        name = json!(n);
+        ch.push(("name", json!(n)));
+    }
+    for k in ["summary", "subtype", "tags", "folder"] {
+        if let Some(v) = s(a, k) {
+            ch.push((k, json!(strip(&v))));
+        }
+    }
+    if let Some(v) = s(a, "body") {
+        ch.push(("body", json!(v)));
+    }
+    if let Some(v) = b(a, "visible_to_players") {
+        ch.push(("visible_to_players", json!(v)));
+    }
+    if update_changed(db, "entities", eid, &e, ch).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Out::Dict(json!({"id": eid, "name": name, "updated": true}))))
+}
+
+fn delete_entity(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let eid = int(a, "entity_id");
+    let Ok(e) = row_of(db, "entities", "id, world_id", eid) else { return Ok(None) };
+    let Some(e) = e else { return Err(format!("Entity {eid} not found")) };
+    try_some!(load_world(db, e["world_id"].as_i64().unwrap_or(0), user));
+    // an entity with notes: the ORM's own unlinking of them (and its failure) is Python's
+    if db.query_row("SELECT 1 FROM entity_notes WHERE entity_id = ?1", [eid], |_| Ok(())).is_ok() {
+        return Ok(None);
+    }
+    for sql in ["DELETE FROM entity_relations WHERE source_id = ?1 OR target_id = ?1", "DELETE FROM entity_links WHERE source_id = ?1 OR target_id = ?1",
+                "DELETE FROM entities WHERE id = ?1"] {
+        if db.execute(sql, [eid]).is_err() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(Out::Dict(json!({"deleted": eid}))))
+}
+
+fn create_quest(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let wid = int(a, "world_id");
+    try_some!(load_world(db, wid, user));
+    let title = strip(&s(a, "title").unwrap_or_default());
+    if title.is_empty() {
+        return Err("title must not be empty".into());
+    }
+    let or = |k: &str, d: &str| Some(strip(&s(a, k).unwrap_or_default())).filter(|x| !x.is_empty()).unwrap_or_else(|| d.to_string());
+    let status = or("status", "active");
+    let vis = b(a, "visible_to_players").unwrap_or(true);
+    let Some(id) = insert(db, "quests", vec![("world_id", Sql::Integer(wid)), ("title", text(title.clone())), ("summary", text(strip(&s(a, "summary").unwrap_or_default()))),
+        ("body", text(s(a, "body").unwrap_or_default())), ("status", text(status.clone())), ("category", text(or("category", "main"))),
+        ("visible_to_players", Sql::Integer(vis as i64))]) else { return Ok(None) };
+    Ok(Some(Out::Dict(json!({"id": id, "title": title, "status": status}))))
+}
+
+fn update_quest(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResult {
+    gm_only(user)?;
+    let qid = int(a, "quest_id");
+    let Ok(q) = row_of(db, "quests", "id, world_id, title, summary, body, status, category, visible_to_players", qid) else { return Ok(None) };
+    let Some(q) = q else { return Err(format!("Quest {qid} not found")) };
+    try_some!(load_world(db, q["world_id"].as_i64().unwrap_or(0), user));
+    let mut ch: Vec<(&str, Value)> = vec![];
+    let (mut title, mut status) = (q["title"].clone(), q["status"].clone());
+    if let Some(t) = s(a, "title").map(|t| strip(&t)).filter(|t| !t.is_empty()) {
+        title = json!(t);
+        ch.push(("title", json!(t)));
+    }
+    if let Some(v) = s(a, "summary") {
+        ch.push(("summary", json!(strip(&v))));
+    }
+    if let Some(v) = s(a, "body") {
+        ch.push(("body", json!(v)));
+    }
+    if let Some(v) = s(a, "status").map(|v| strip(&v)).filter(|v| !v.is_empty()) {
+        status = json!(v);
+        ch.push(("status", json!(v)));
+    }
+    if let Some(v) = s(a, "category").map(|v| strip(&v)).filter(|v| !v.is_empty()) {
+        ch.push(("category", json!(v)));
+    }
+    if let Some(v) = b(a, "visible_to_players") {
+        ch.push(("visible_to_players", json!(v)));
+    }
+    if update_changed(db, "quests", qid, &q, ch).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Out::Dict(json!({"id": qid, "title": title, "status": status, "updated": true}))))
 }
