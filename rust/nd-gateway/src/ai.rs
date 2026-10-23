@@ -3647,6 +3647,8 @@ enum SyncAi {
     Facts { b: Backend, model: String, text: String, think: bool, lore: String, extra: String },
     FolkTale(Assist),
     Compact { b: Backend, model: String, history: String, think: bool },
+    /// `generate(prompt)`: the default system prompt, one user message
+    Generate { b: Backend, prompt: String },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
     Refuse(StatusCode, String),
 }
@@ -3731,6 +3733,40 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 let bk = backend(&db)?;
                 SyncAi::FromFacts { b: bk, model: recap_model()?, facts, think: think_default_true, instr: world_instr(w) }
             }
+        }
+        "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest" => {
+            if !p.is_gm {
+                return None; // the routes check nothing themselves: a GM's here, the rest Python's
+            }
+            let req = |k: &str| match b.get(k) { Some(Value::String(s)) => Some(s.clone()), _ => None };
+            let opt = |k: &str| text_raw(&b, k);
+            let prompt = match path.rsplit('/').next()? {
+                "entity" => format!("Write an expanded description for this {} named '{}'. Existing notes: {}", req("type")?, req("name")?, opt("description")?),
+                "npc" => format!("Create a backstory and personality for an NPC named '{}' who is a {}. Notes: {}", req("name")?, req("role")?, opt("notes")?),
+                "location" => format!("Describe the location '{}' in the region '{}'. Notes: {}", req("name")?, req("region")?, opt("notes")?),
+                _ => format!("Create a quest hook for '{}'. World context: {}", req("title")?, opt("context")?),
+            };
+            SyncAi::Generate { b: backend(&db)?, prompt }
+        }
+        "/api/ai/generate/entity-smart" => {
+            if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+                return None;
+            }
+            let req = |k: &str| match b.get(k) { Some(Value::String(s)) => Some(s.clone()), _ => None };
+            let (name, kind, subtype, summary) = (req("name")?, req("kind")?, text_raw(&b, "subtype")?, text_raw(&b, "summary")?);
+            let related = match p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) {
+                Some(wid) => {
+                    let found = crate::retrieval::find_relevant_entities(&db, wid, &format!("{name} {summary}"), 12, (p.user_id, p.is_gm))?;
+                    crate::retrieval::format_context(&db, &found, !p.is_gm, "")?
+                }
+                None => String::new(),
+            };
+            let mut prompt = format!("Write an expanded lore entry for this {kind}");
+            if !subtype.is_empty() { prompt.push_str(&format!(" ({subtype})")); }
+            prompt.push_str(&format!(" named '{name}'."));
+            if !summary.is_empty() { prompt.push_str(&format!(" Summary: {summary}.")); }
+            if !related.is_empty() { prompt.push_str(&format!("\n\nRelated world lore for context:\n{related}")); }
+            SyncAi::Generate { b: backend(&db)?, prompt }
         }
         "/api/ai/chat" | "/api/ai/chat/compact" => {
             let compact = path.ends_with("/compact");
@@ -3871,6 +3907,10 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             };
             if failed(&summary) { err(StatusCode::BAD_GATEWAY, format!("Compaction failed: {summary}")) } else { ok(json!({"summary": summary})) }
         }
+        SyncAi::Generate { b, prompt } => {
+            let result = generate_chat(&b, &b.model, &recap_text("_SYSTEM"), &[json!({"role": "user", "content": prompt})], false, &Map::new()).await;
+            ok(json!({"result": result}))
+        }
         SyncAi::Chat { b, model, system, messages, options } => {
             let result = generate_chat(&b, &model, &system, &messages, false, &options).await;
             ok(json!({"result": result}))
@@ -3896,7 +3936,8 @@ pub async fn sync_ai(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, 
 /// The paths `sync_ai` serves
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
-        | "/api/ai/chat" | "/api/ai/chat/compact")
+        | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
+        | "/api/ai/generate/entity-smart")
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }

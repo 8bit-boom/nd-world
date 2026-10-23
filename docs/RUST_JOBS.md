@@ -74,8 +74,9 @@ Answered by the gateway, inline or as a background task (below), with the same f
 `/api/sessions/ai/summarize-transcript` (`summarize_transcript`, `{transcript, recap, recap_failed}`), `/api/sessions/<id>/ai/summarize-live-transcript`
 (`{transcript, recap}`), `/api/sessions/<id>/ai/summarize-from-facts` (`summarize_session_from_facts`), `/api/facts/parse`
 (`parse_facts_from_recap`, a 502 with its failure) `/api/facts/folk-tale` (run_assist `folk_tale` over the facts, a GM's lore), `/api/ai/chat` (one `generate_chat`, `{result}`; a GM's - the
-route itself checks nothing, the rest stays Python's) and `/api/ai/chat/compact` (`condense_chat_history`, the AI-chat access rule, its ceiling
-and 502). Python's
+route itself checks nothing, the rest stays Python's) `/api/ai/chat/compact` (`condense_chat_history`, the AI-chat access rule, its ceiling
+and 502), the four `/api/ai/generate/{entity,npc,location,quest}` (`generate(prompt)`: the default system prompt; a GM's) and
+`/api/ai/generate/entity-smart` (the prompt with related lore found the Chronicler's way, filtered for an assistant). Python's
 own refusals (no notes, no facts) are answered the same way; its section checks, a session of another world, a recap over the
 condense ceiling and every body its parsers would reject stay Python's.
 

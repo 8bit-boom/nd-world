@@ -1121,6 +1121,11 @@ def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
         ("/api/ai/chat/compact", {"messages": [{"role": "user", "content": "Who is Borin?"}, {"role": "assistant", "content": " A smith. "}], "think": True},
          [_reply("They talked about Borin.")]),
         ("/api/ai/chat/compact", {"messages": []}, []),
+        ("/api/ai/generate/entity", {"name": "Borin", "type": "character", "description": "A smith"}, [_reply("Borin is...")]),
+        ("/api/ai/generate/npc", {"name": "Mira", "role": "spy"}, [_reply("Mira...")]),
+        ("/api/ai/generate/location", {"name": "Bree", "region": "North", "notes": "rainy"}, [_reply("Bree...")]),
+        ("/api/ai/generate/quest", {"title": "The ring"}, [_reply("A hook.")]),
+        ("/api/ai/generate/entity-smart", {"name": "Ruins", "kind": "location", "subtype": "ancient", "summary": "old stones"}, [_reply("Lore.")]),
         ("/api/ai/chat/compact", {"messages": [{"role": "user", "content": "x"}]}, [_reply("", finish="length")]),
     ]
     for i, (path, body, replies) in enumerate(cases):
