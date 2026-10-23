@@ -281,3 +281,9 @@ Phase 4's leftovers are done: a strict-secrecy map's masked picture (batch 37), 
 sheets.rs`: vitals, Rest, fights, the character page on a custom system; batches 38-40). Phase 5 starts with the Chronicler's streamed
 answers (`docs/RUST_AI.md`): the retrieval code it needs (`rust/nd-gateway/src/retrieval.rs`) is what the other AI surfaces build on next.
 
+
+## 20. Phase 5: the AI chat streams
+
+`POST /api/ai/stream` and `POST /api/npc-talk/<id>/stream` are answered by the gateway on the same backend client and stream as the
+Chronicler (`docs/RUST_AI.md`), and a GM's own model and Thinking choices on the Chronicler are honoured. The King in Yellow streams stay
+Python's for good reasons given there. Still Python's in phase 5: the background AI jobs (recaps, condensing, AI assist, image generation).

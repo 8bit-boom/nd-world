@@ -1,9 +1,8 @@
-//! The Chronicler (`POST /api/chronicler/ask`, app/routers/chronicler.py) answered by the gateway: the same system prompt (facts, the
+//! The Chronicler (`POST /api/chronicler/ask`), `POST /api/ai/stream` and NPC talk answered by the gateway: the same system prompt (facts, the
 //! entities the question finds with their excerpts and notes, the GM's AI instructions), the same request to an Unsloth Studio
 //! backend (OpenAI dialect, app/llm_client.py) and the same SSE stream back, with Python's error texts, keep-alives and `<think>` split.
-//! Answered only on the Unsloth backend over plain http, and for a GM only without a model or Thinking choice of their own (those -
-//! capability probes, the prompt-token fallback - and the legacy Ollama backend stay Python's). The 30 s answer cache and a player's
-//! 3 s cooldown are kept here, as Python keeps them in its process.
+//! Answered only on the Unsloth backend over plain http (the legacy Ollama backend stays Python's). The Chronicler's 30 s answer cache
+//! and a player's 3 s cooldown are kept here, as Python keeps them in its process. docs/RUST_AI.md lists what each route leaves to Python.
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Response, StatusCode, Uri};
@@ -165,6 +164,8 @@ struct Job {
     think: bool,
     extra: Map<String, Value>,
     cache: Option<CacheKey>,
+    /// run (blocking) with the answer when it finished cleanly with something in it, before [DONE]
+    on_done: Option<Box<dyn FnOnce(String) + Send>>,
 }
 
 fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Plan> {
@@ -239,7 +240,7 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
         lines.push(crate::retrieval::format_context(&db, &entities, !p.is_gm, &question)?);
     }
     let extra = if think { backend.thinking_predict() } else { Map::new() };
-    Some(Plan::Fresh(Job { backend, requested: model, system: lines.join("\n"), messages: vec![json!({"role": "user", "content": question})], think, extra, cache: Some(key) }))
+    Some(Plan::Fresh(Job { backend, requested: model, system: lines.join("\n"), messages: vec![json!({"role": "user", "content": question})], think, extra, cache: Some(key), on_done: None }))
 }
 
 type Client = hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Full<bytes::Bytes>>;
@@ -471,7 +472,7 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
 fn run(job: Job) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     tokio::spawn(async move {
-        let Job { backend, requested, system, messages, think, extra, cache: key } = job;
+        let Job { backend, requested, system, messages, think, extra, cache: key, on_done } = job;
         let (model, note) = resolve_model(&backend, &requested).await;
         if let Some(n) = note {
             let _ = tx.send(sse(&json!({"note": n}))).await;
@@ -508,7 +509,12 @@ fn run(job: Job) -> Response<Body> {
         if let (Some(key), false) = (key, had_error) {
             if let Ok(mut c) = cache().lock() {
                 c.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
-                c.insert(key, (Instant::now(), answer));
+                c.insert(key, (Instant::now(), answer.clone()));
+            }
+        }
+        if let (Some(done), false) = (on_done, had_error) {
+            if !crate::edits::py_strip_pub(&answer).is_empty() {
+                let _ = tokio::task::spawn_blocking(move || done(answer)).await;
             }
         }
         let _ = tx.send("data: [DONE]\n\n".into()).await;
@@ -531,4 +537,357 @@ pub async fn chronicler_ask(cfg: std::sync::Arc<Config>, uri: Uri, headers: Head
         }
         Plan::Fresh(job) => run(job),
     })
+}
+
+/// `_OPTION_ALLOWLIST`: (kind, lowest, highest) of a chat preset's generation options
+const OPTION_ALLOWLIST: &[(&str, char, Option<f64>, Option<f64>)] = &[
+    ("temperature", 'f', Some(0.0), Some(2.0)), ("top_p", 'f', Some(0.0), Some(1.0)), ("top_k", 'i', Some(0.0), None),
+    ("repeat_penalty", 'f', Some(0.0), Some(5.0)), ("num_predict", 'i', Some(-2.0), None), ("num_ctx", 'i', Some(1.0), None),
+    ("seed", 'i', None, None), ("mirostat", 'i', Some(0.0), Some(2.0)), ("mirostat_tau", 'f', Some(0.0), Some(100.0)),
+    ("mirostat_eta", 'f', Some(0.0), Some(10.0)), ("num_gpu", 'i', Some(0.0), Some(1000.0)), ("min_p", 'f', Some(0.0), Some(1.0)),
+    ("typical_p", 'f', Some(0.0), Some(1.0)), ("repeat_last_n", 'i', Some(-1.0), Some(131072.0)), ("presence_penalty", 'f', Some(-2.0), Some(2.0)),
+    ("frequency_penalty", 'f', Some(-2.0), Some(2.0)), ("num_keep", 'i', Some(0.0), Some(131072.0)), ("num_batch", 'i', Some(1.0), Some(4096.0)),
+    ("num_thread", 'i', Some(0.0), Some(256.0)), ("main_gpu", 'i', Some(0.0), Some(15.0)), ("use_mmap", 'b', None, None),
+];
+
+/// `_clamp_options`; None for a value whose conversion is Python's to decide (a string, a number past i64)
+fn clamp_options(raw: &Value) -> Option<Map<String, Value>> {
+    let mut out = Map::new();
+    let Value::Object(raw) = raw else { return Some(out) };
+    for (k, v) in raw {
+        let Some(&(_, kind, lo, hi)) = OPTION_ALLOWLIST.iter().find(|o| o.0 == k) else { continue };
+        if v.is_null() {
+            continue;
+        }
+        let (val, num) = match (kind, v) {
+            ('b', _) => (json!(crate::edits::py_truthy_pub(Some(v))), None),
+            (_, Value::String(_)) => return None,
+            ('f', Value::Bool(b)) => (json!(if *b { 1.0 } else { 0.0 }), Some(if *b { 1.0 } else { 0.0 })),
+            ('f', Value::Number(n)) => {
+                let f = n.as_f64()?;
+                (json!(f), Some(f))
+            }
+            ('i', Value::Bool(b)) => (json!(*b as i64), Some(*b as i64 as f64)),
+            ('i', Value::Number(n)) => {
+                let i = match n.as_i64() {
+                    Some(i) => i,
+                    None if n.is_f64() => {
+                        let f = n.as_f64()?.trunc();
+                        if f.abs() > 9.0e15 { return None; }
+                        f as i64
+                    }
+                    None => return None,
+                };
+                (json!(i), Some(i as f64))
+            }
+            _ => continue, // a list or object: TypeError, skipped
+        };
+        if let Some(x) = num {
+            if lo.is_some_and(|lo| x < lo) || hi.is_some_and(|hi| x > hi) {
+                continue;
+            }
+        }
+        out.insert(k.clone(), val);
+    }
+    Some(out)
+}
+
+const PLAYER_SYSTEM_MAX_CHARS: usize = 50_000;
+const MAX_ATTACHMENT_TEXT_CHARS: usize = 12_000;
+
+/// `get_defaults()[surface]` from ai_models.json beside the database
+fn surface_default(cfg: &Config, surface: &str) -> Option<String> {
+    let path = cfg.db_path.parent().map(|p| p.join("ai_models.json"))?;
+    let data = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let defaults = match data.as_ref().and_then(|d| d.get("defaults")) {
+        None => return Some(String::new()),
+        Some(Value::Object(d)) => d,
+        Some(_) => return None, // Python's AttributeError
+    };
+    if !["chat", "ask_ai", "image", "recap", "assist"].contains(&surface) {
+        return Some(String::new());
+    }
+    match defaults.get(surface) {
+        None => Some(String::new()),
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => None,
+    }
+}
+
+fn stream_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Job> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm {
+        let w = p.world.as_ref()?;
+        let on = |k: &str| crate::edits::py_truthy_pub(w.get(k));
+        if !(on("players_can_ask_ai") || on("players_can_use_ai_chat")) {
+            return None; // the 403 is Python's
+        }
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) {
+            None => Some(String::new()),
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => None,
+        }
+    };
+    let (mut system, model, surface) = (text("system")?, text("model")?, match b.get("surface") { None => "chat".to_string(), Some(Value::String(s)) => s.clone(), _ => return None });
+    let think = match b.get("think") {
+        None => false,
+        Some(Value::Bool(t)) => *t,
+        Some(_) => return None,
+    };
+    let options = match b.get("options") {
+        None => Map::new(),
+        Some(o @ Value::Object(_)) => clamp_options(o)?,
+        Some(_) => return None,
+    };
+    // _build_ollama_messages: only messages without attachments or with document ones (pictures and audio are Python's)
+    let mut messages = vec![];
+    for m in b.get("messages")?.as_array()? {
+        let Value::Object(m) = m else { return None };
+        let (Some(Value::String(role)), Some(Value::String(content))) = (m.get("role"), m.get("content")) else { return None };
+        let mut content = content.clone();
+        for a in m.get("attachments").map(|a| a.as_array()).unwrap_or(Some(&vec![]))? {
+            let Value::Object(a) = a else { return None };
+            let s = |k: &str| match a.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None };
+            if a.get("kind") != Some(&json!("document")) || !matches!(a.get("url"), Some(Value::String(_))) {
+                return None;
+            }
+            let (name, t) = (s("name")?, s("text")?);
+            if !t.is_empty() {
+                let snippet: String = t.chars().take(MAX_ATTACHMENT_TEXT_CHARS).collect();
+                content.push_str(&format!("\n\n---\nAttached file: {}\n\n{snippet}\n---", if name.is_empty() { "document" } else { &name }));
+            }
+        }
+        messages.push(json!({"role": role, "content": content}));
+    }
+    let surface = if p.is_gm || surface == "chat" || surface == "ask_ai" { surface } else { "chat".into() };
+    let requested = if p.is_gm && !model.is_empty() { model } else { surface_default(cfg, &surface)? };
+    if !p.is_gm && system.chars().count() > PLAYER_SYSTEM_MAX_CHARS {
+        system = system.chars().take(PLAYER_SYSTEM_MAX_CHARS).collect();
+    }
+    let backend = backend(&db)?;
+    let mut extra = options;
+    if think && !extra.contains_key("num_predict") {
+        extra.extend(backend.thinking_predict());
+    }
+    Some(Job { backend, requested, system, messages, think, extra, cache: None, on_done: None })
+}
+
+/// `POST /api/ai/stream`: the answer, or None (the request goes to Python unchanged)
+pub async fn ai_stream(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let job = tokio::task::spawn_blocking(move || stream_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    Some(run(job))
+}
+
+
+const ROLEPLAY_SYSTEM: &str = "You are roleplaying AS the character described below, speaking entirely in first person and in character — never as a narrator or assistant, never breaking character to explain yourself. Infer this character's voice, personality, and manner of speech from the context given. If asked about something the character wouldn't plausibly know, respond the way the character actually would (deflect, guess, get confused, or admit ignorance in-character) rather than stepping outside the role to say you don't have this information. Keep replies conversational — a spoken answer, not a document.";
+const NPC_BODY_PREFIX_CHARS: usize = 2500;
+const NPC_MAX_MODEL_TURNS: usize = 40;
+const NPC_MAX_PERSONALITY_CHARS: usize = 4000;
+
+fn chead(t: &str, n: usize) -> String {
+    t.chars().take(n).collect()
+}
+
+/// str.capitalize() for ASCII text (None otherwise: Python's)
+fn capitalize(t: &str) -> Option<String> {
+    if !t.is_ascii() {
+        return None;
+    }
+    let l = t.to_ascii_lowercase();
+    let mut c = l.chars();
+    Some(c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default())
+}
+
+/// str(v) of a custom field value Python would print the same (None for a float or nested value: Python's)
+fn py_str(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Bool(b) => Some(if *b { "True" } else { "False" }.into()),
+        Value::Number(n) if n.is_i64() || n.is_u64() => Some(n.to_string()),
+        Value::Null => Some("None".into()),
+        _ => None,
+    }
+}
+
+/// `_identity_context`: what the model learns about the NPC, under the caller's visibility
+fn identity_context(db: &rusqlite::Connection, e: &Map<String, Value>, viewer: (i64, bool)) -> Option<String> {
+    let gm = viewer.1;
+    let s = |k: &str| -> Option<String> {
+        match e.get(k) {
+            None | Some(Value::Null) => Some(String::new()),
+            Some(Value::String(t)) => Some(t.clone()),
+            Some(_) => None,
+        }
+    };
+    let clean = |t: String| -> Option<String> { if gm { Some(t) } else { crate::retrieval::strip(&t, None) } };
+    let kind = s("kind")?;
+    let mut header = format!("{}: {}", capitalize(if kind.is_empty() { "entity" } else { &kind })?, s("name")?);
+    let subtype = s("subtype")?;
+    if !subtype.is_empty() {
+        header.push_str(&format!("\nSubtype: {subtype}"));
+    }
+    let summary = crate::edits::py_strip_pub(&clean(s("summary")?)?);
+    if !summary.is_empty() {
+        header.push_str(&format!("\nSummary: {summary}"));
+    }
+    let mut parts = vec![header];
+    let body = crate::edits::py_strip_pub(&clean(s("body")?)?);
+    if !body.is_empty() {
+        parts.push(chead(&body, NPC_BODY_PREFIX_CHARS));
+    }
+    let raw = s("custom_fields_json")?;
+    let fields = match serde_json::from_str::<Value>(if raw.is_empty() { "{}" } else { &raw }) {
+        Ok(Value::Object(f)) => f,
+        Ok(_) => return None,
+        Err(_) => Map::new(),
+    };
+    let mut field_lines = vec![];
+    for (k, v) in &fields {
+        if matches!(v, Value::Null) || v == &json!("") || v == &json!([]) {
+            continue;
+        }
+        let value = match v {
+            Value::Array(a) => a.iter().map(py_str).collect::<Option<Vec<_>>>()?.join(", "),
+            Value::Object(o) => o.iter().map(|(k, v)| py_str(v).map(|v| format!("{k}: {v}"))).collect::<Option<Vec<_>>>()?.join("; "),
+            other => py_str(other)?,
+        };
+        let shown = if gm { value } else { crate::edits::py_strip_pub(&crate::retrieval::strip(&value, None)?) };
+        if !shown.is_empty() {
+            field_lines.push(format!("- {k}: {shown}"));
+        }
+    }
+    if !field_lines.is_empty() {
+        parts.push(format!("Custom fields:\n{}", field_lines.join("\n")));
+    }
+    let personality = crate::edits::py_strip_pub(&clean(s("roleplay_personality")?)?);
+    if !personality.is_empty() {
+        parts.push(format!("How you speak and behave (standing direction from the GM — follow it over any general instinct):\n{}", chead(&personality, NPC_MAX_PERSONALITY_CHARS)));
+    }
+    // entity_extra_context(notes, related, strip_gm_only=not gm)
+    let eid = e.get("id")?.as_i64()?;
+    let mut extra = vec![];
+    let mut st = db.prepare(&format!("SELECT content, content_is_html, visible_to_players FROM entity_notes WHERE entity_id = ?1{} ORDER BY created_at DESC LIMIT 10",
+        if gm { "" } else { " AND visible_to_players = 1" })).ok()?;
+    let notes: Vec<(Option<String>, Option<i64>)> = st.query_map([eid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    let mut note_lines = vec![];
+    for (content, html) in notes {
+        if html.unwrap_or(0) != 0 {
+            return None; // a note stored as HTML: Python's markdown conversion
+        }
+        let content = content.unwrap_or_default();
+        let content = crate::edits::py_strip_pub(&if gm { content } else { crate::retrieval::strip(&content, None)? });
+        if !content.is_empty() {
+            note_lines.push(format!("- {content}"));
+        }
+    }
+    if !note_lines.is_empty() {
+        extra.push(format!("Notes:\n{}", note_lines.join("\n")));
+    }
+    let visible = if gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))" };
+    let mut st = db.prepare(&format!("SELECT DISTINCT e.name FROM entities e JOIN entity_links l ON l.target_id = e.id WHERE l.source_id = ?1{visible}")).ok()?;
+    let mut names: Vec<String> = if gm {
+        st.query_map([eid], |r| r.get::<_, Option<String>>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?
+    } else {
+        st.query_map([eid, viewer.0], |r| r.get::<_, Option<String>>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?
+    }.into_iter().map(|n| n.unwrap_or_default()).collect();
+    names.sort();
+    names.dedup();
+    if !names.is_empty() {
+        extra.push(format!("Related entities: {}", names.join(", ")));
+    }
+    let extra = extra.join("\n\n");
+    if !extra.is_empty() {
+        parts.push(extra);
+    }
+    Some(parts.into_iter().filter(|p| !crate::edits::py_strip_pub(p).is_empty()).collect::<Vec<_>>().join("\n\n"))
+}
+
+fn npc_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Job> {
+    let eid: i64 = uri.path().strip_prefix("/api/npc-talk/")?.strip_suffix("/stream")?.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if p.user_id <= 0 {
+        return None;
+    }
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    if !p.is_gm {
+        let on = |k: &str| crate::edits::py_truthy_pub(w.get(k));
+        if !(on("players_can_ask_ai") || on("players_can_use_ai_chat")) {
+            return None;
+        }
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let Some(Value::String(message)) = b.get("message") else { return None };
+    let flag = |k: &str| match b.get(k) { None => Some(false), Some(Value::Bool(t)) => Some(*t), _ => None };
+    let (think, use_rag) = (flag("think")?, flag("use_rag")?);
+    let model = match b.get("model") { None => String::new(), Some(Value::String(m)) => m.clone(), _ => return None };
+    if use_rag && p.is_gm {
+        return None; // the GM's lore retrieval (smart_world_context): Python's
+    }
+    let visible = if p.is_gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))" };
+    let mut st = db.prepare(&format!("SELECT e.* FROM entities e WHERE e.id = ?1 AND e.world_id = ?2{visible}")).ok()?;
+    let npc = if p.is_gm { st.query_row(rusqlite::params![eid, wid], |r| crate::layout::row_map(r)) } else { st.query_row(rusqlite::params![eid, wid, p.user_id], |r| crate::layout::row_map(r)) }.ok()?;
+    if !matches!(npc.get("kind").and_then(|k| k.as_str()), Some("character" | "creature" | "organization")) {
+        return None;
+    }
+    let text = crate::edits::py_strip_pub(message);
+    if text.is_empty() {
+        return None;
+    }
+    let conv: Option<(i64, Option<String>)> = db.query_row("SELECT id, messages_json FROM chat_sessions WHERE world_id = ?1 AND user_id = ?2 AND surface = 'npc' AND entity_id = ?3 ORDER BY id LIMIT 1",
+        rusqlite::params![wid, p.user_id, eid], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+    let mut history = match conv.as_ref().map(|c| c.1.clone().unwrap_or_default()) {
+        None => vec![],
+        Some(raw) => match serde_json::from_str::<Value>(if raw.is_empty() { "[]" } else { &raw }) {
+            Ok(Value::Array(h)) => h,
+            _ => return None,
+        },
+    };
+    history.push(json!({"role": "user", "content": text}));
+    let mut system = format!("{ROLEPLAY_SYSTEM}\n\n=== The character ===\n\n{}", identity_context(&db, &npc, (p.user_id, p.is_gm))?);
+    let instructions = crate::retrieval::instructions_text(&db, wid, !p.is_gm)?;
+    if !instructions.is_empty() {
+        system.push_str(&format!("\n\n=== Standing setting notes from the GM — inform how you portray the character, never break character to mention them ===\n\n{instructions}"));
+    }
+    let mut messages = vec![];
+    for m in &history[history.len().saturating_sub(NPC_MAX_MODEL_TURNS)..] {
+        let Value::Object(m) = m else { return None };
+        let Some(Value::String(role)) = m.get("role") else { return None };
+        let content = match m.get("content") { None => String::new(), Some(Value::String(c)) => c.clone(), _ => return None };
+        messages.push(json!({"role": role, "content": content}));
+    }
+    let requested = if p.is_gm && !model.is_empty() { model } else { surface_default(cfg, "ask_ai")? };
+    let backend = backend(&db)?;
+    let extra = if think { backend.thinking_predict() } else { Map::new() };
+    let (cfg2, uid, title) = (cfg.clone(), p.user_id, npc.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string());
+    let on_done = Box::new(move |answer: String| {
+        let Some(db) = crate::writes::open(&cfg2) else { return };
+        let mut all = history;
+        all.push(json!({"role": "assistant", "content": answer}));
+        let stored = nd_render::py_dumps(&Value::Array(all));
+        use rusqlite::types::Value as Sql;
+        let row: Option<i64> = db.query_row("SELECT id FROM chat_sessions WHERE world_id = ?1 AND user_id = ?2 AND surface = 'npc' AND entity_id = ?3 ORDER BY id LIMIT 1",
+            rusqlite::params![wid, uid, eid], |r| r.get(0)).ok();
+        match row {
+            Some(id) => { crate::orm::update(&db, "chat_sessions", id, &[("messages_json", Sql::Text(stored))]); }
+            None => {
+                crate::orm::insert(&db, "chat_sessions", &[("world_id", Sql::Integer(wid)), ("user_id", Sql::Integer(uid)), ("surface", Sql::Text("npc".into())),
+                    ("entity_id", Sql::Integer(eid)), ("title", Sql::Text(title)), ("messages_json", Sql::Text(stored))]);
+            }
+        }
+    });
+    Some(Job { backend, requested, system, messages, think, extra, cache: None, on_done: Some(on_done) })
+}
+
+/// `POST /api/npc-talk/<id>/stream`: the NPC's answer (the conversation saved on a clean finish), or None (Python's)
+pub async fn npc_talk_stream(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let job = tokio::task::spawn_blocking(move || npc_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    Some(run(job))
 }

@@ -170,3 +170,134 @@ def test_chronicler_gm_model_and_thinking_are_pythons(client, seed, studio):
             out.append((status, text, [r["body"] for r in studio.requests], by))
         assert out[0][:3] == out[1][:3], (extra, out)
         assert out[1][3] == "gateway", extra
+
+
+def _stream(side, body):
+    r = side.post("/api/ai/stream", json=body)
+    return r.status_code, r.text, r.headers.get("x-nd-served-by")
+
+
+def _set_world(world_id, **kw):
+    from app.database import SessionLocal
+    from app.models import World
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        for k, v in kw.items():
+            setattr(w, k, v)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_ai_stream_is_pythons(client, seed, studio):
+    """POST /api/ai/stream (the AI Chat page and the entity page's Ask AI): the same request reaches the backend and the same SSE comes
+    back - a GM's model, surface, preset options (clamped) and Thinking; a player's pinned to the surface default with a capped system text;
+    document attachments folded into the message."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    studio.script = [_delta(reasoning_content="hmm"), _delta(content="Hello "), _delta(content="there.")]
+    doc = {"kind": "document", "url": "/uploads/ai/x.txt", "name": "notes.txt", "text": "Line one. " * 2000}
+    msgs = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Yes?"}, {"role": "user", "content": "Read this", "attachments": [doc]}]
+    assert gm.post("/api/ai/defaults", json={"surface": "chat", "model_id": "other"}).status_code == 200
+    _set_world(seed.world_a.id, players_can_use_ai_chat=True)
+    try:
+        cases = [
+            (gm, {"messages": msgs, "system": "Be brief."}),
+            (gm, {"messages": msgs, "model": "studio", "think": True}),
+            (gm, {"messages": msgs, "surface": "recap", "options": {"temperature": 3, "top_k": 2.7, "num_predict": 99, "seed": True, "bogus": 1,
+                                                                   "top_p": None, "num_ctx": 4096, "min_p": [1]}, "think": True}),
+            (player, {"messages": msgs, "model": "studio", "surface": "assist", "system": "S" * 60000, "think": True}),
+            (player, {"messages": [], "surface": "ask_ai"}),
+        ]
+        for i, (d, body) in enumerate(cases):
+            out = []
+            for side in (d, _via(d, base)):
+                studio.requests.clear()
+                status, text, by = _stream(side, body)
+                out.append((status, text, [r["body"] for r in studio.requests], by))
+            assert out[0][0] == 200, (i, out[0][:2])
+            assert out[0][:3] == out[1][:3], (i, out[0][1], out[1][1], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
+            assert out[1][3] == "gateway", i
+        # what stays Python's: a refused player, a picture, a string option
+        _set_world(seed.world_a.id, players_can_use_ai_chat=False)
+        for d, body in ((player, {"messages": msgs}), (gm, {"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/uploads/a.png"}]}]}),
+                        (gm, {"messages": msgs, "options": {"temperature": "0.5"}})):
+            assert _stream(_via(d, base), body)[2] != "gateway", body
+    finally:
+        _set_world(seed.world_a.id, players_can_use_ai_chat=False)
+        gm.post("/api/ai/defaults", json={"surface": "chat", "model_id": ""})
+
+
+def test_npc_talk_stream_is_pythons(client, seed, studio):
+    """POST /api/npc-talk/<id>/stream: the same in-character system prompt (the NPC's sheet under the caller's visibility, notes, related
+    entities, the GM's standing notes), the same history sent, the same SSE, and the same conversation saved afterwards."""
+    from app.database import SessionLocal
+    from app.models import ChatSession, Entity, EntityNote
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        friend = Entity(world_id=w, kind="character", name="Mira", visible_to_players=True)
+        secret = Entity(world_id=w, kind="location", name="Hidden Lair", visible_to_players=False)
+        npc = Entity(world_id=w, kind="character", subtype="smith", name="Borin", summary="A smith [gmonly]and a spy[/gmonly]",
+                     body="Borin forges blades.\n[gmonly]He sells them to the enemy.[/gmonly]" + " More." * 600,
+                     custom_fields_json=json.dumps({"Age": 52, "Traits": ["gruff", "loyal"], "Mood": "[gmonly]scheming[/gmonly] calm", "Empty": "",
+                                                    "Stats": {"STR": 14, "DEX": True}}),
+                     roleplay_personality="  Speaks in short sentences. ", visible_to_players=True)
+        npc.related = [friend, secret]
+        db.add_all([friend, secret, npc])
+        db.flush()
+        db.add_all([EntityNote(entity_id=npc.id, content="Owes Mira money.", visible_to_players=True),
+                    EntityNote(entity_id=npc.id, content="Has a trapdoor [gmonly]to the lair[/gmonly].", visible_to_players=False)])
+        db.commit()
+        nid = npc.id
+    finally:
+        db.close()
+    _set_world(w, players_can_ask_ai=True)
+
+    def conv(uid):
+        s = SessionLocal()
+        try:
+            row = s.query(ChatSession).filter_by(world_id=w, user_id=uid, surface="npc", entity_id=nid).first()
+            return (row.messages_json, row.title) if row else None
+        finally:
+            s.close()
+
+    def restore(uid, snap):
+        s = SessionLocal()
+        try:
+            s.query(ChatSession).filter_by(world_id=w, user_id=uid, surface="npc", entity_id=nid).delete()
+            if snap:
+                s.add(ChatSession(world_id=w, user_id=uid, surface="npc", entity_id=nid, title=snap[1], messages_json=snap[0]))
+            s.commit()
+        finally:
+            s.close()
+
+    try:
+        for user, pw, extra in ((seed.gm, GM_PASSWORD, {"model": "other", "think": True}), (seed.player_a, PLAYER_PASSWORD, {"model": "other"})):
+            d = _signed_in(user.email, pw, seed.world_a.slug)
+            for turn, (msg, script) in enumerate((("  Hello, smith. ", [_delta(content="Aye.")]), ("What do you make?", [_delta(content="  Blades.  ")]),
+                                                   ("And now?", [_delta(content="   ")]))):
+                studio.script = script
+                before = conv(user.id)
+                out = []
+                for side in (d, _via(d, base)):
+                    restore(user.id, before)
+                    studio.requests.clear()
+                    status, text, by = _stream_npc(side, nid, {"message": msg, **extra})
+                    out.append((status, text, [r["body"] for r in studio.requests], conv(user.id), by))
+                assert out[0][0] == 200, out[0][:2]
+                assert out[0][:4] == out[1][:4], (user.email, turn, json.dumps(out[0][2])[:3000], json.dumps(out[1][2])[:3000], out[0][3], out[1][3])
+                assert out[1][4] == "gateway", turn
+        gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        for body in ({"message": "x", "use_rag": True}, {"message": "   "}, {"message": 5}):
+            assert _stream_npc(_via(gm, base), nid, body)[2] != "gateway", body
+    finally:
+        _set_world(w, players_can_ask_ai=False)
+
+
+def _stream_npc(side, nid, body):
+    r = side.post(f"/api/npc-talk/{nid}/stream", json=body)
+    return r.status_code, r.text, r.headers.get("x-nd-served-by")

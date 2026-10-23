@@ -257,7 +257,7 @@ fn text(e: &Map<String, Value>, k: &str) -> Option<String> {
 }
 
 /// `strip_gm_only(text)` for a non-GM (viewer as given)
-fn strip(t: &str, viewer: Option<i64>) -> Option<String> {
+pub fn strip(t: &str, viewer: Option<i64>) -> Option<String> {
     nd_perm::gmonly::strip_gm_only(t, viewer, nd_render::now_minute())
 }
 

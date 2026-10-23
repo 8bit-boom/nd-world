@@ -217,12 +217,19 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/chronicler/ask" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+    if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/stream") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
-        if let Some(resp) = ai::chronicler_ask(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+        let served = if parts.uri.path().starts_with("/api/npc-talk/") {
+            ai::npc_talk_stream(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else if parts.uri.path() == "/api/ai/stream" {
+            ai::ai_stream(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        } else {
+            ai::chronicler_ask(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await
+        };
+        if let Some(resp) = served {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
