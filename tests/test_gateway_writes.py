@@ -4575,3 +4575,24 @@ def test_hub_rest_on_a_custom_system_is_pythons(client, seed):
             served += out[1][3] == "gateway"
             undone += len(out[1]) > 4 and out[1][6] == "gateway"
     assert served >= 4 and undone >= 4, (served, undone)
+
+
+def test_party_launch_combat_with_custom_systems_is_pythons(client, seed):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    fields = [{"id": "health", "label": "Health (0 = Broken)", "type": "resource", "default_value": "6/6", "vital": "hp"},
+              {"id": "shield", "label": "Spark Shield", "type": "resource", "default_value": "2/3"}, {"id": "ichor", "label": "Ichor", "type": "resource"}]
+    tid = _add("SheetTemplate", name="Asterionish", slug="launch-ast", sheet_mode="custom", fields_json=json.dumps(fields))
+    novital = _add("SheetTemplate", name="No vital", slug="launch-nv", sheet_mode="custom", fields_json=json.dumps([{"id": "pts", "type": "resource", "default_value": "1/1"}]))
+    a = _pc(world_id=w, name="God", sheet_template_id=tid, custom_fields_json=json.dumps({"health_current": 2, "ichor_max": 4}), conditions_json='["Vulnerable"]')
+    b = _pc(world_id=w, name="Plain", sheet_template_id=novital, current_hp=3)
+    c = _pc(world_id=w, name="Hero", current_hp=5)
+    out = []
+    for side in (gm, _via(gm, base)):
+        party = _add("Party", world_id=w, name="Pantheon", member_pc_ids_json=json.dumps([a, b, c]))
+        r = side.post(f"/api/parties/{party}/launch-combat")
+        cs = _row("combat_sessions", int(r.json()["redirect"].rsplit("/", 1)[1]))
+        out.append((r.status_code, [{k: v for k, v in x.items() if k != "id"} for x in json.loads(cs["combatants_json"])], r.headers.get("x-nd-served-by")))
+    assert out[0][:2] == out[1][:2], out
+    assert out[1][2] == "gateway", out

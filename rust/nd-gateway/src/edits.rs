@@ -8258,20 +8258,44 @@ fn combat_copy(c: &Ctx, src: &Map<String, Value>, name: &str, npcs_only: bool, t
 
 /// `pc_to_combatant(pc, db)` for a native (Neon & Dragons / Worm) sheet; None for a custom system's (its vital and extra tracks come
 /// from the template's sheet system: Python's)
-fn pc_combatant(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
-    let (hp, shock, pp, mp, native) = pc_maxima(&c.db, pc)?;
-    if !native {
-        return None;
+/// A character's numbers in a fight: (hp, max_hp, res) - `_vital_track` (a custom system's HP track) or the HP column, and
+/// `_extra_tracks` (PP / MP for N&D; a custom system's other resource tracks)
+fn pc_fight_numbers(db: &Connection, pc: &Map<String, Value>) -> Option<(Value, Value, Value)> {
+    let (hp_max, _, pp, mp, native) = pc_maxima(db, pc)?;
+    if native {
+        return Some((json!(col_int(pc, "current_hp")), json!(hp_max),
+            json!({"pp": {"cur": col_int(pc, "pp_current"), "max": pp, "label": "PP"}, "mp": {"cur": col_int(pc, "mp_current"), "max": mp, "label": "MP"}})));
     }
+    let Some(tpl) = crate::sheets::pc_template(db, pc)? else {
+        return Some((json!(col_int(pc, "current_hp")), json!(hp_max), json!({})));
+    };
+    let cf = crate::sheets::custom_fields(pc)?;
+    let hp_id = tpl.meta()?.0;
+    let mut res = Map::new();
+    for t in tpl.tracks(&cf, true)? {
+        if hp_id.as_deref().is_some_and(|h| t["id"] == json!(h)) {
+            continue;
+        }
+        let mx = t["max"].as_i64()?;
+        res.insert(t["id"].as_str()?.to_string(), json!({"cur": t["current"], "max": mx, "label": t["label"]}));
+    }
+    Some(match tpl.hp_track(&cf)? {
+        Some(v) => (v["current"].clone(), v["max"].clone(), Value::Object(res)),
+        None => (json!(col_int(pc, "current_hp")), json!(hp_max), Value::Object(res)),
+    })
+}
+
+fn pc_combatant(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
+    let (_, shock, _, _, _) = pc_maxima(&c.db, pc)?;
+    let (hp, max_hp, res) = pc_fight_numbers(&c.db, pc)?;
     let stats = stat_values(pc)?;
     let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
     let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
         Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_string()).collect(),
         Ok(_) | Err(_) => vec![],
     };
-    Some(json!({"res": {"pp": {"cur": col_int(pc, "pp_current"), "max": pp, "label": "PP"}, "mp": {"cur": col_int(pc, "mp_current"), "max": mp, "label": "MP"}},
-                "id": new_cid(), "name": pc.get("name")?, "source": "pc", "pc_id": pc.get("id")?, "entity_id": null, "initiative": 0,
-                "init_bonus": get("dex") + get("itu"), "max_hp": hp, "hp": col_int(pc, "current_hp"), "max_shock": shock,
+    Some(json!({"res": res, "id": new_cid(), "name": pc.get("name")?, "source": "pc", "pc_id": pc.get("id")?, "entity_id": null, "initiative": 0,
+                "init_bonus": get("dex") + get("itu"), "max_hp": max_hp, "hp": hp, "max_shock": shock,
                 "shock": col_int(pc, "shock_current"), "armor": 0, "conditions": conds, "notes": ""}))
 }
 
@@ -11147,20 +11171,17 @@ pub fn combat_candidates(db: &Connection, wid: i64) -> Option<(Vec<Value>, Vec<V
     };
     let mut pcs = vec![];
     for pc in rows("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name")? {
-        let (hp, shock, pp, mp, native) = pc_maxima(db, &pc)?;
-        if !native {
-            return None;
-        }
+        let (_, shock, _, _, _) = pc_maxima(db, &pc)?;
+        let (hp, max_hp, res) = pc_fight_numbers(db, &pc)?;
         let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
             Ok(Value::Array(a)) => a.into_iter().filter(|x| x.is_string()).collect(),
             _ => vec![],
         };
         let stats = stat_values(&pc)?;
         let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
-        pcs.push(json!({"id": pc.get("id"), "name": pc.get("name"), "max_hp": hp, "hp": col_int(&pc, "current_hp"), "max_shock": shock,
+        pcs.push(json!({"id": pc.get("id"), "name": pc.get("name"), "max_hp": max_hp, "hp": hp, "max_shock": shock,
             "shock": col_int(&pc, "shock_current"), "conditions": conds, "portrait_url": pc.get("portrait_url").and_then(|v| v.as_str()).unwrap_or(""),
-            "res": {"pp": {"cur": col_int(&pc, "pp_current"), "max": pp, "label": "PP"}, "mp": {"cur": col_int(&pc, "mp_current"), "max": mp, "label": "MP"}},
-            "speed": get("dex") + get("itu")}));
+            "res": res, "speed": get("dex") + get("itu")}));
     }
     let mut ents = vec![];
     for e in rows("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character', 'creature') ORDER BY name")? {

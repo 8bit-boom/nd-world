@@ -1659,3 +1659,25 @@ def test_player_cockpit_with_custom_systems_is_pythons(client, seed):
         d = _signed_in(email, pw, seed.world_a.slug)
         served += _same_page(d, _via(d, base), "/player-cockpit", email)
     assert served == 2, served
+
+
+def test_combat_tracker_with_custom_system_candidates_is_pythons(client, seed):
+    from app.models import CombatSession, PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fields = [{"id": "flesh", "label": "Flesh", "type": "resource", "default_value": "8/8", "vital": "hp"}, {"id": "stamina", "label": "Stamina (x)", "type": "resource", "default_value": "3"}]
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(name="Hunt", slug="ct-hunt", sheet_mode="custom", fields_json=json.dumps(fields))
+        db.add(tpl)
+        db.flush()
+        db.add_all([PlayerCharacter(world_id=w, name="Hunter", sheet_template_id=tpl.id, custom_fields_json=json.dumps({"flesh_current": 5})),
+                    PlayerCharacter(world_id=w, name="Hero", current_hp=4)])
+        cs = CombatSession(world_id=w, name="Hunt night", ruleset="hunt", combatants_json="[]")
+        db.add(cs)
+        db.commit()
+        cid = cs.id
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    assert _same_page(d, _via(d, base), f"/combat/{cid}", "gm")
