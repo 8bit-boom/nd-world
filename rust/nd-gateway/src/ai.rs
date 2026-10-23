@@ -71,6 +71,8 @@ pub struct Backend {
     pub options: Map<String, Value>,
     /// Settings' per-model overrides ({model: {"options": {...}}})
     pub per_model: Map<String, Value>,
+    /// `llm_context_tokens()`: Settings' context window, else LLM_CONTEXT_TOKENS (16,384)
+    pub context_tokens: i64,
 }
 
 impl Backend {
@@ -144,7 +146,9 @@ pub fn backend(db: &rusqlite::Connection) -> Option<Backend> {
     if st.get("ollama_use_mmap").and_then(|v| v.as_str()).is_some_and(|m| m == "0" || m == "1") {
         options.insert("use_mmap".into(), json!(s("ollama_use_mmap") == "1"));
     }
-    Some(Backend { host, base_path, key, model, options, per_model })
+    let context_tokens = st.get("llm_context_tokens").and_then(|v| v.as_i64()).filter(|n| *n > 0)
+        .unwrap_or_else(|| env("LLM_CONTEXT_TOKENS").parse::<i64>().unwrap_or(16384).max(1024));
+    Some(Backend { host, base_path, key, model, options, per_model, context_tokens })
 }
 
 /// `_translate_options`: ollama option names to the OpenAI body's (num_ctx dropped: fixed at model load; others unknown there dropped)
@@ -1279,9 +1283,12 @@ fn start_assist_job(id: i64) {
 /// its run started
 pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: bool) -> Option<()> {
     use rusqlite::types::Value as Sql;
-    let resumed: i64 = db.query_row("SELECT COALESCE(resumed_count, 0) FROM audio_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+    let (resumed, checkpoint): (i64, Option<String>) = db.query_row("SELECT COALESCE(resumed_count, 0), checkpoint_json FROM audio_jobs WHERE id = ?1", [id],
+        |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let cp = checkpoint.filter(|c| !c.is_empty()).and_then(|c| serde_json::from_str::<Value>(&c).ok());
+    let num = |k: &[&str]| cp.as_ref().and_then(|c| k.iter().find_map(|k| c.get(*k).and_then(|v| v.as_i64()).filter(|n| *n != 0))).map_or(Sql::Null, Sql::Integer);
     crate::orm::update(db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into())), ("error", Sql::Text(String::new())),
-        ("chunk_current", Sql::Null), ("chunk_total", Sql::Null), ("resumed_count", Sql::Integer(if reset_attempts { 0 } else { resumed + 1 })),
+        ("chunk_current", num(&["chunks_done", "parts_done"])), ("chunk_total", num(&["chunk_total"])), ("resumed_count", Sql::Integer(if reset_attempts { 0 } else { resumed + 1 })),
         ("run_started_at", Sql::Text(crate::orm::now_stamp())), ("finished_at", Sql::Null)])?;
     let purpose: Option<String> = db.query_row("SELECT purpose FROM audio_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
     match purpose.as_deref() {
@@ -1289,6 +1296,7 @@ pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: boo
         Some("world_summary") => start_world_summary_job(id),
         Some("condense") => start_condense_job(id),
         Some("facts_parse") => start_facts_parse_job(id),
+        Some("session_recap") => start_text_recap_job(id),
         _ => start_assist_job(id),
     }
     Some(())
@@ -2582,4 +2590,208 @@ async fn run_facts_parse_job(id: i64) {
         Ok(facts) => { write(end("done", ("result_json", nd_render::py_dumps(&Value::Array(facts))))); }
         Err(e) => { write(end("error", ("error", e))); }
     }
+}
+
+
+// ── a transcript's recap (summarize_transcript), and the live-transcript recap job (audio_jobs purpose="session_recap") ──
+
+/// The generation options summarize_transcript sends with every part (`expanded_thinking_options()` or the Thinking widening, capped)
+fn transcript_options(b: &Backend, think: bool, expanded: bool) -> Map<String, Value> {
+    let mut opts = Map::new();
+    if expanded {
+        let configured = b.options.get("num_predict").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+        let headroom = env_i64("THINKING_HEADROOM_TOKENS", 4096).max(0);
+        opts.insert("num_predict".into(), json!(configured + env_i64("THINKING_EXPANDED_HEADROOM_TOKENS", 12288).max(headroom)));
+        return opts;
+    }
+    opts.extend(b.thinking_predict_if(think));
+    if !opts.contains_key("num_predict") {
+        let configured = b.options.get("num_predict").and_then(|v| v.as_f64());
+        if !configured.is_some_and(|c| c != 0.0 && c >= 0.0) {
+            opts.insert("num_predict".into(), json!(RECAP_NUM_PREDICT_DEFAULT));
+        }
+    }
+    opts
+}
+
+/// `summarize_transcript`: one call for a transcript that fits, else a summary per part (checkpointed after each), joined in order
+async fn summarize_transcript(b: &Backend, transcript: &str, model: &str, extra: &str, think: bool, lore: &str, expanded: bool,
+                              resume: Option<&Value>, progress: &(dyn Fn(usize, usize) + Sync), checkpoint: &(dyn Fn(Value) + Sync)) -> String {
+    let transcript = crate::edits::py_strip_pub(transcript);
+    if transcript.is_empty() {
+        return String::new();
+    }
+    let with_instr = |base: String| if extra.is_empty() { base } else { format!("{base}\n\nAdditional instructions from the GM (follow these too): {extra}") };
+    let part_system = with_world_context(&with_instr(recap_text("_SUMMARIZE_TRANSCRIPT_PART_SYSTEM")), lore);
+    // _transcript_chunk_char_budget
+    let ctx = max_auto_ctx().min(b.context_tokens);
+    let reserved = 1200 + (part_system.chars().count() as i64) / chars_per_token(&part_system) + if think { env_i64("THINKING_HEADROOM_TOKENS", 4096).max(0) } else { 0 };
+    let chunk_chars = ((ctx - reserved).max(500) * chars_per_token(&transcript)) as usize;
+    let opts = transcript_options(b, think, expanded);
+    let chunks = split_chunks(&transcript, chunk_chars);
+    if chunks.len() <= 1 {
+        let system = with_world_context(&with_instr(recap_text("_SUMMARIZE_TRANSCRIPT_SYSTEM")), lore);
+        return generate_chat(b, model, &system, &[json!({"role": "user", "content": transcript})], think, &opts).await;
+    }
+    let (mut start, mut parts) = (0usize, vec![]);
+    if let Some(r) = resume {
+        if r.get("phase").and_then(|v| v.as_str()) == Some("summarize") && r.get("chunk_total").and_then(|v| v.as_u64()) == Some(chunks.len() as u64)
+            && r.get("chunk_chars").and_then(|v| v.as_u64()) == Some(chunk_chars as u64) {
+            start = r.get("parts_done").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            parts.push(r.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string());
+        }
+    }
+    for i in start..chunks.len() {
+        progress(i + 1, chunks.len());
+        let part = generate_chat(b, model, &part_system, &[json!({"role": "user", "content": chunks[i]})], think, &opts).await;
+        if part.starts_with("[AI ") || part.starts_with("[empty response") {
+            return part;
+        }
+        let part = crate::edits::py_strip_pub(&part);
+        if part.is_empty() {
+            return format!("[empty response from part {} of {} — the model returned no usable text for this part]", i + 1, chunks.len());
+        }
+        parts.push(part);
+        checkpoint(json!({"phase": "summarize", "parts_done": i + 1, "chunk_total": chunks.len(), "chunk_chars": chunk_chars, "text": parts.join("\n\n")}));
+    }
+    parts.join("\n\n")
+}
+
+fn text_recap_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<i64> {
+    let sid: i64 = uri.path().strip_prefix("/api/sessions/")?.strip_suffix("/ai/summarize-live-transcript-job")?.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let w = p.world.as_ref()?;
+    let (wid, transcript): (i64, Option<String>) = db.query_row("SELECT world_id, live_transcript FROM game_sessions WHERE id = ?1", [sid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    // the section check reads the session's own world: answered here only when that is the active one
+    if p.user_id <= 0 || w.get("id")?.as_i64()? != wid || crate::pages::edit_level(&p, w, "sessions") != Some(true) {
+        return None;
+    }
+    let transcript = transcript.unwrap_or_default();
+    if crate::edits::py_strip_pub(&transcript).is_empty() {
+        return None;
+    }
+    let b = if body.is_empty() { Map::new() } else { match serde_json::from_slice::<Value>(body).ok()? { Value::Object(m) => m, _ => return None } };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)), Some(_) => None }
+    };
+    let use_rag = crate::edits::py_truthy_pub(b.get("use_rag")) && p.is_gm;
+    let (rag_e, rag_n) = (body_int(b.get("rag_entity_limit")).ok()?, body_int(b.get("rag_notes_limit")).ok()?);
+    if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) {
+        return None;
+    }
+    if use_rag && !crate::retrieval::session_picks(&db, sid).1.is_empty() {
+        return None;
+    }
+    let (model, extra) = (text("model")?, text("extra_instructions")?);
+    let think = match b.get("think") { None => true, v => crate::edits::py_truthy_pub(v) };
+    backend(&db)?;
+    use rusqlite::types::Value as Sql;
+    let opt_int = |v: Option<i64>| v.map_or(Sql::Null, Sql::Integer);
+    crate::orm::insert(&db, "audio_jobs", &[("world_id", Sql::Integer(wid)), ("purpose", Sql::Text("session_recap".into())), ("filename", Sql::Text("Live Transcript".into())),
+        ("status", Sql::Text("pending".into())), ("game_session_id", Sql::Integer(sid)), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("model", if model.is_empty() { Sql::Null } else { Sql::Text(model) }), ("think", Sql::Integer(think as i64)),
+        ("extra_instructions", if extra.is_empty() { Sql::Null } else { Sql::Text(extra) }), ("use_rag", Sql::Integer(use_rag as i64)),
+        ("rag_entity_limit", opt_int(rag_e)), ("rag_notes_limit", opt_int(rag_n)), ("transcript", Sql::Text(transcript)),
+        ("audio_path", Sql::Text(String::new())), ("delete_after", Sql::Integer(0))])
+}
+
+/// `POST /api/sessions/<id>/ai/summarize-live-transcript-job`: {job_id}, the job run here
+pub async fn text_recap_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let id = tokio::task::spawn_blocking(move || text_recap_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_text_recap_job(id);
+    crate::edits::json_response(&json!({"job_id": id}))
+}
+
+fn start_text_recap_job(id: i64) {
+    crate::jobs::spawn("audio_jobs", id, async move {
+        run_text_recap_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// `_run_job` for purpose="session_recap" with the transcript already on the row: lore, summarize_transcript under the Thinking ladder
+/// (resuming from the row's checkpoint), the pending facts drafted from the transcript, the done / error row
+async fn run_text_recap_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("audio job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    struct Job { b: Backend, model: String, think: bool, text: String, instructions: String, lore: String, resume: Option<Value> }
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<Result<Job, String>> {
+        let db = crate::writes::open(&c)?;
+        let row: (i64, Option<String>, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>) =
+            db.query_row("SELECT world_id, model, think, transcript, extra_instructions, use_rag, rag_entity_limit, rag_notes_limit, game_session_id, checkpoint_json FROM audio_jobs WHERE id = ?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?))).ok()?;
+        let (wid, model, think, text, extra, use_rag, rag_e, rag_n, gsid, checkpoint) = row;
+        let text = text.unwrap_or_default();
+        let resume = checkpoint.filter(|c| !c.is_empty()).and_then(|c| serde_json::from_str::<Value>(&c).ok()).filter(|c| c.get("phase").and_then(|p| p.as_str()) == Some("summarize"));
+        let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
+            let pins = gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default();
+            crate::retrieval::build_rag_context(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins).unwrap_or_default()
+        } else { String::new() };
+        crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
+        let world_instr: Option<String> = db.query_row("SELECT recap_instructions FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok().flatten();
+        let instructions = [crate::edits::py_strip_pub(&world_instr.unwrap_or_default()), crate::edits::py_strip_pub(&extra.unwrap_or_default())]
+            .into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let Some(b) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
+        let model = model.filter(|m| !m.is_empty()).or_else(|| surface_default(&c, "recap")).unwrap_or_default();
+        let model = if model.is_empty() { b.model.clone() } else { model };
+        Some(Ok(Job { b, model, think: think.map_or(true, |t| t != 0), text, instructions, lore, resume }))
+    }).await.ok().flatten();
+    let write = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        std::thread::spawn(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "audio_jobs", id, &fields); } }).join().ok();
+    };
+    let j = match prep {
+        None => return,
+        Some(Err(e)) => {
+            write(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(e)), ("chunk_current", Sql::Null), ("chunk_total", Sql::Null),
+                ("finished_at", Sql::Text(crate::orm::now_stamp())), ("checkpoint_json", Sql::Text(String::new()))]);
+            return;
+        }
+        Some(Ok(j)) => j,
+    };
+    let starved = |t: &str| t.starts_with("[empty response") && t.contains("hidden \"thinking\"");
+    let plans: Vec<(bool, bool)> = if j.think { vec![(true, false), (true, true), (false, true)] } else { vec![(false, false), (false, true)] };
+    let latest: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(j.resume.clone());
+    let progress = |cur: usize, total: usize| write(vec![("chunk_current", Sql::Integer(cur as i64)), ("chunk_total", Sql::Integer(total as i64))]);
+    let checkpoint = |state: Value| {
+        if let Ok(mut l) = latest.lock() { *l = Some(state.clone()); }
+        write(vec![("checkpoint_json", Sql::Text(nd_render::py_dumps(&state)))]);
+    };
+    let mut recap = String::new();
+    for (i, (t, x)) in plans.iter().enumerate() {
+        let resume = if *t == j.think { latest.lock().ok().and_then(|l| l.clone()) } else { None };
+        recap = summarize_transcript(&j.b, &j.text, &j.model, &j.instructions, *t, &j.lore, *x, resume.as_ref(), &progress, &checkpoint).await;
+        if !starved(&recap) || i == plans.len() - 1 {
+            break;
+        }
+        let (nt, nx) = plans[i + 1];
+        if nt != *t {
+            write(vec![("think", Sql::Integer(0)), ("think_fallback", Sql::Integer(1)), ("expanded_thinking", Sql::Integer(nx as i64))]);
+        } else {
+            write(vec![("expanded_thinking", Sql::Integer(nx as i64))]);
+        }
+    }
+    let now = Sql::Text(crate::orm::now_stamp());
+    if recap.starts_with("[AI ") || recap.starts_with("[empty response") {
+        write(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(recap)), ("chunk_current", Sql::Null), ("chunk_total", Sql::Null),
+            ("finished_at", now), ("checkpoint_json", Sql::Text(String::new()))]);
+        return;
+    }
+    // _auto_extract_pending_facts: "[]" on any failure
+    let pending = match parse_facts(&j.b, &j.text, &j.model, false, "", "", |_, _| {}).await {
+        Ok(f) => nd_render::py_dumps(&Value::Array(f)),
+        Err(_) => "[]".into(),
+    };
+    let (rejected, via_token) = thinking_rejected(&j.model);
+    let mut f = vec![("status", Sql::Text("done".into())), ("recap", Sql::Text(recap)), ("chunk_current", Sql::Null), ("chunk_total", Sql::Null),
+        ("finished_at", now), ("checkpoint_json", Sql::Text(String::new())), ("pending_facts_json", Sql::Text(pending))];
+    if j.think && rejected {
+        f.push(("think_rejected", Sql::Integer(1)));
+        if via_token { f.push(("think_token_fallback", Sql::Integer(1))) } else { f.push(("think", Sql::Integer(0))) }
+    }
+    write(f);
 }

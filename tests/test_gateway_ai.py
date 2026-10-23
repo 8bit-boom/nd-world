@@ -755,3 +755,59 @@ def test_facts_parse_job_is_pythons(client, seed, studio):
         assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:2500], json.dumps(out[1][1])[:2500])
         assert out[1][2] == "gateway", i
     studio.reply_seq = None
+
+
+def test_live_transcript_recap_job_is_pythons(client, seed, studio):
+    """POST /api/sessions/<id>/ai/summarize-live-transcript-job: the same row and run - one call for a transcript that fits, a summary
+    per part (with checkpoints, progress and a failing part) for one that does not, the pending facts drafted from the transcript."""
+    import time
+    from app.database import SessionLocal
+    from app.models import AudioJob, GameSession
+    base = str(client.base_url)
+    w = seed.world_a.id
+    short = "GM: You enter the cave. Player: I light a torch. GM: Bats fly out."
+    long_t = "\n".join(f"GM: Scene {i}. The party moves deeper into the ruins and finds carving number {i}. Player: We copy it down." for i in range(120))
+    db = SessionLocal()
+    try:
+        a = GameSession(world_id=w, title="Caves", live_transcript=short)
+        b = GameSession(world_id=w, title="Ruins", live_transcript=long_t)
+        db.add_all([a, b])
+        db.commit()
+        sa, sb = a.id, b.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    _settings(gm, llm_url=studio.url, llm_model="studio", llm_api_key="sk-test", ollama_temperature="0.4", ollama_num_predict="300",
+              ollama_num_ctx="8192", llm_context_tokens="2048")
+    facts = _reply(json.dumps({"facts": [{"content": "Bats flew out.", "visible_to_players": True, "tags": ["cave"]}]}))
+    parts = lambda n: [_reply(f"Part {k} summary.") for k in range(1, n + 1)]
+    cases = [(sa, {"think": False, "extra_instructions": "Be vivid."}, [_reply("A short recap."), facts]),
+             (sb, {"think": False}, parts(12) + [facts] * 12),
+             (sb, {"think": False}, [_reply("Part one."), _reply("   ")]),
+             (sa, {"think": True}, [_reply("", reasoning="x"), _reply("", reasoning="y"), _reply("Recap at last."), facts])]
+    try:
+        for i, (sid, body, replies) in enumerate(cases):
+            out = []
+            for side in (gm, _via(gm, base)):
+                studio.requests.clear()
+                studio.reply_seq = list(replies)
+                r = side.post(f"/api/sessions/{sid}/ai/summarize-live-transcript-job", json=body)
+                assert r.status_code == 200, (i, r.text)
+                job_id = r.json()["job_id"]
+                end = time.time() + 30
+                s = SessionLocal()
+                try:
+                    while time.time() < end and s.get(AudioJob, job_id).status in ("pending", "summarizing"):
+                        s.expire_all()
+                        time.sleep(0.1)
+                    j = s.get(AudioJob, job_id)
+                    row = {k: getattr(j, k) for k in ("filename", "status", "error", "recap", "pending_facts_json", "think", "think_fallback",
+                                                        "expanded_thinking", "chunk_current", "chunk_total", "checkpoint_json")}
+                finally:
+                    s.close()
+                out.append((row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+            assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], len(out[0][1]), len(out[1][1]), json.dumps(out[0][1])[:1500], json.dumps(out[1][1])[:1500])
+            assert out[1][2] == "gateway", i
+    finally:
+        studio.reply_seq = None
+        _settings(gm, llm_url=studio.url, llm_model="studio", llm_api_key="sk-test", ollama_temperature="0.4", ollama_num_predict="300", ollama_num_ctx="8192")
