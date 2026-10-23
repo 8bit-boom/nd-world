@@ -17,6 +17,10 @@ Tests: `tests/test_gateway_ai.py` runs a fake Studio both Python and the gateway
 prompt, model, options, key) and the SSE answers are the same, for a GM and a player, from the cache too, and for backend errors, an
 error mid-stream and empty answers; for `/api/ai/stream` and NPC talk too, the NPC's saved conversation compared after each turn.
 
+A Thinking request the backend refuses with a 400 (`_is_thinking_rejection`: Ollama's wording, or any 400 not about the context, a missing
+model and the like) is retried once without Thinking, with the `<|think|>` token at the head of the system prompt for a model known to
+think (Unsloth's built-in Gemma 4, or Settings' per-model "thinking" tick), as `stream_chat` does - on every route here.
+
 Known differences: when the backend cannot be reached at all, the `error` text names the failure in the gateway's words, not httpx's
 (`[AI unavailable: ConnectionError: ...]` either way). The cache and the cooldown live in the process that answers. With `ai` on, that
 is the gateway for every request it serves, so a question answered by Python a moment earlier is not in the gateway's cache.

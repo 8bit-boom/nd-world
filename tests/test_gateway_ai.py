@@ -19,6 +19,7 @@ class _Fake:
         self.requests = []
         self.script = []
         self.status = 200
+        self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -35,10 +36,12 @@ class _Fake:
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
-                fake.requests.append({"auth": self.headers.get("Authorization"), "body": json.loads(self.rfile.read(n))})
-                if fake.status != 200:
-                    body = json.dumps({"error": {"message": "model exploded"}}).encode()
-                    self.send_response(fake.status)
+                req = json.loads(self.rfile.read(n))
+                fake.requests.append({"auth": self.headers.get("Authorization"), "body": req})
+                rejected = fake.reject_thinking and (req.get("chat_template_kwargs") or {}).get("enable_thinking")
+                if fake.status != 200 or rejected:
+                    body = json.dumps({"error": {"message": fake.reject_thinking if rejected else "model exploded"}}).encode()
+                    self.send_response(400 if rejected else fake.status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
@@ -301,3 +304,25 @@ def test_npc_talk_stream_is_pythons(client, seed, studio):
 def _stream_npc(side, nid, body):
     r = side.post(f"/api/npc-talk/{nid}/stream", json=body)
     return r.status_code, r.text, r.headers.get("x-nd-served-by")
+
+
+def test_a_refused_thinking_request_is_retried_as_python_does(client, seed, studio):
+    """A 400 to a Thinking request: retried without Thinking (with the <|think|> token for a model known to think), except for a 400
+    about something else (the context, a missing model), which is shown as the error."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    studio.script = [_delta(content="Plain answer.")]
+    run = __import__("uuid").uuid4().hex[:6]
+    for i, (reason, model) in enumerate((("thinking unsupported", "other"), ("thinking unsupported", "unsloth/gemma-4-26B-A4B-it-GGUF"),
+                                         ("prompt exceeds the context window", "other"), ("model does not support thinking", "studio"))):
+        studio.reject_thinking = reason
+        for path, body in (("/api/chronicler/ask", {"question": f"retry {i} {run}", "model": model, "think": True}),
+                           ("/api/ai/stream", {"messages": [{"role": "user", "content": "Hi"}], "system": "Sys", "model": model, "think": True})):
+            out = []
+            for side in (gm, _via(gm, base)):
+                studio.requests.clear()
+                r = side.post(path, json=body)
+                out.append((r.status_code, r.text, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+            assert out[0][:3] == out[1][:3], (reason, model, path, out[0][1], out[1][1], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
+            assert out[1][3] == "gateway", (reason, path)
+            assert len(out[0][2]) == (1 if "context" in reason else 2), (reason, path, len(out[0][2]))

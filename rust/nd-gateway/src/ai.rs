@@ -350,7 +350,8 @@ enum Piece {
 }
 
 /// `stream_chat(...)` with emit_thinking on the Unsloth backend: pieces in order, ending with an error piece on a failure or an empty answer
-async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>, tx: &tokio::sync::mpsc::Sender<Piece>) {
+/// true (nothing sent) when the backend refused a Thinking request before any answer: the caller retries as Python does
+async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>, tx: &tokio::sync::mpsc::Sender<Piece>) -> bool {
     let mut full: Vec<Value> = if system.is_empty() { vec![] } else { vec![json!({"role": "system", "content": system})] };
     full.extend(messages.iter().cloned());
     let mut opts = b.options_for(model);
@@ -363,12 +364,12 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
     body.insert("stream".into(), json!(true));
     body.extend(translate_options(&opts));
     body.insert("chat_template_kwargs".into(), json!({"enable_thinking": think}));
-    let Some(req) = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))) else { return };
+    let Some(req) = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))) else { return false };
     let resp = match client().request(req).await {
         Ok(r) => r,
         Err(e) => {
             let _ = tx.send(Piece::Error(format!("[AI unavailable: ConnectionError: ConnectError: {e}]"))).await;
-            return;
+            return false;
         }
     };
     let status = resp.status().as_u16();
@@ -385,8 +386,11 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
             _ => text.chars().take(500).collect(),
         };
         let message = if message.is_empty() { format!("HTTP {status}") } else { message };
+        if think && thinking_rejection(status as i64, &message) {
+            return true;
+        }
         let _ = tx.send(Piece::Error(format!("[AI error: Unsloth {status}: {message}]"))).await;
-        return;
+        return false;
     }
     let mut splitter = Splitter { buf: String::new(), in_think: false };
     let (mut yielded, mut thinking_chars, mut done_reason): (bool, usize, Option<String>) = (false, 0, None);
@@ -397,7 +401,7 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
             Some(Ok(f)) => f,
             Some(Err(e)) => {
                 let _ = tx.send(Piece::Error(format!("[AI unavailable: ConnectionError: ReadError: {e}]"))).await;
-                return;
+                return false;
             }
         };
         let Ok(data) = frame.into_data() else { continue };
@@ -422,8 +426,11 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
                 };
                 let message: String = message.chars().take(500).collect();
                 let message = if message.is_empty() { "stream error".to_string() } else { message };
+                if think && !yielded && thinking_rejection(status, &message) {
+                    return true;
+                }
                 let _ = tx.send(Piece::Error(format!("[AI error: Unsloth {status}: {message}]"))).await;
-                return;
+                return false;
             }
             for choice in ev.get("choices").and_then(|c| c.as_array()).cloned().unwrap_or_default() {
                 let delta = choice.get("delta").cloned().unwrap_or(json!({}));
@@ -466,6 +473,42 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value],
         };
         let _ = tx.send(Piece::Error(msg)).await;
     }
+    false
+}
+
+/// `_is_thinking_rejection` under the Unsloth backend: Ollama's wording, or any 400 not about something else
+fn thinking_rejection(status: i64, message: &str) -> bool {
+    if message.contains("does not support thinking") {
+        return true;
+    }
+    if status != 400 {
+        return false;
+    }
+    let m = message.to_lowercase();
+    !["not found", "not loaded", "no model", "context", "num_ctx", "too large", "too many", "exceed", "grammar", "response_format", "invalid request"]
+        .iter().any(|k| m.contains(k))
+}
+
+/// stream_chat with Python's retry of a refused Thinking request: think off, the `<|think|>` token in the system prompt for a model known
+/// (UNSLOTH_KNOWN_MODELS) or set (Settings' per-model override) to think
+async fn stream_chat_retrying(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>, tx: &tokio::sync::mpsc::Sender<Piece>) {
+    if !stream_chat(b, model, system, messages, think, extra, tx).await {
+        return;
+    }
+    let mut full: Vec<Value> = if system.is_empty() { vec![] } else { vec![json!({"role": "system", "content": system})] };
+    full.extend(messages.iter().cloned());
+    let thinks = model == "unsloth/gemma-4-26B-A4B-it-GGUF"
+        || crate::edits::py_truthy_pub(b.per_model.get(model).and_then(|m| m.get("thinking")));
+    if thinks {
+        match full.first_mut() {
+            Some(Value::Object(first)) if first.get("role") == Some(&json!("system")) => {
+                let c = match first.get("content") { Some(Value::String(c)) => c.clone(), _ => String::new() };
+                first.insert("content".into(), json!(format!("<|think|>{c}")));
+            }
+            _ => full.insert(0, json!({"role": "system", "content": "<|think|>"})),
+        }
+    }
+    stream_chat(b, model, "", &full, false, extra, tx).await;
 }
 
 /// The SSE answer of a job: the model note, the pieces with keep-alives, [DONE]; a successful answer cached when the job says so
@@ -478,7 +521,7 @@ fn run(job: Job) -> Response<Body> {
             let _ = tx.send(sse(&json!({"note": n}))).await;
         }
         let (ptx, mut prx) = tokio::sync::mpsc::channel::<Piece>(64);
-        tokio::spawn(async move { stream_chat(&backend, &model, &system, &messages, think, &extra, &ptx).await });
+        tokio::spawn(async move { stream_chat_retrying(&backend, &model, &system, &messages, think, &extra, &ptx).await });
         let (mut answer, mut had_error) = (String::new(), false);
         loop {
             match tokio::time::timeout(HEARTBEAT, prx.recv()).await {
