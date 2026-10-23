@@ -67,6 +67,15 @@ pub struct App {
 }
 
 async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
+    let (m, p) = (req.method().to_string(), req.uri().path().to_string());
+    let resp = handle_inner(State(app), req).await;
+    if resp.headers().get("x-nd-served-by").is_some_and(|v| v == "gateway") {
+        proxy::census("GW", &m, &p);
+    }
+    resp
+}
+
+async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0);
     let path = req.uri().path();
     if path == "/__gateway/health" {

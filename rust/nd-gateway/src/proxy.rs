@@ -51,6 +51,7 @@ impl Proxy {
         let req_headers = parts.headers.clone();
 
         let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        census("PY", method.as_str(), parts.uri.path());
         let uri: hyper::Uri = match format!("http://{}{}", self.cfg.upstream, pq).parse() {
             Ok(u) => u,
             Err(_) => return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(),
@@ -133,5 +134,18 @@ fn scrub_request(h: &mut HeaderMap, cfg: &Config, peer: Option<SocketAddr>) {
         h.remove("x-forwarded-port");
         h.remove("forwarded");
         h.remove("x-real-ip");
+    }
+}
+
+/// ND_FORWARD_LOG=<file>: one "METHOD path" line per request handed to Python - the census of what is still Python's (phase 6)
+pub fn census(who: &str, method: &str, path: &str) {
+    static LOG: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let log = LOG.get_or_init(|| std::env::var("ND_FORWARD_LOG").ok().filter(|p| !p.is_empty())
+        .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok()).map(std::sync::Mutex::new));
+    if let Some(f) = log {
+        if let Ok(mut f) = f.lock() {
+            use std::io::Write;
+            let _ = writeln!(f, "{who} {method} {path}");
+        }
     }
 }
