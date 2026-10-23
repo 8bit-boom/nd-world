@@ -135,6 +135,9 @@ def make() -> dict:
                                                                                       "_CHARACTER_FROM_IMAGES_SYSTEM", "_ENTITY_FROM_IMAGES_SYSTEM", "_FIND_REPLACE_SYSTEM", "_SESSION_PREP_SYSTEM")},
         # the entity kinds the AI drafts choose from (app/constants.py KINDS)
         "entity_kinds": __import__("app.constants", fromlist=["KINDS"]).KINDS,
+        # the schematic map AI build's prompts (app/main.py SYSTEM_TEMPLATE, app/map_layout.py PLAN_SYSTEM)
+        "map_build_system": __import__("app.main", fromlist=["SYSTEM_TEMPLATE"]).SYSTEM_TEMPLATE,
+        "map_plan_system": __import__("app.map_layout", fromlist=["PLAN_SYSTEM"]).PLAN_SYSTEM,
         # the built-in systems' rules digests (app/game_data/systems/<slug>.md, sheet_systems.system_rules_markdown)
         "system_digests": {p.stem: p.read_text(encoding="utf-8").strip() for p in sorted((ROOT / "app" / "game_data" / "systems").glob("*.md"))},
         # the sheet review's focus texts (app/routers/character_ai.py)

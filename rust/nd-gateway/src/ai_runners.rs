@@ -71,6 +71,8 @@ fn kind_of(path: &str) -> Option<&'static str> {
         Some("sheet review")
     } else if path.starts_with("/api/characters/ai/") {
         Some("character draft")
+    } else if path.starts_with("/maps/schematic/") && path.contains("/ai-build/") {
+        Some("map build")
     } else {
         None
     }
@@ -102,6 +104,7 @@ pub async fn route(cfg: Arc<Config>, method: &Method, uri: &Uri, headers: &Heade
             "system draft" => system_draft_start(cfg.clone(), &db, &p, &headers2, &body),
             "sheet review" => sheet_review_start(cfg.clone(), &db, &p, &path, &headers2, &body),
             "character draft" => character_draft_start(cfg.clone(), &db, &p, &headers2, &body),
+            "map build" => map_build_start(cfg.clone(), &db, &p, &path, &headers2, &body),
             _ => None,
         }
     }).await.ok().flatten()
@@ -168,6 +171,18 @@ fn poll_answer(kind: &str, p: &PageCtx, job: &Map<String, Value>, path: &str) ->
                     "part": or0("part"), "parts": or0("parts")}),
                 "error" => json!({"status": "error", "error": job.get("error")}),
                 _ => json!({"status": "done", "draft": job.get("draft")}),
+            }))
+        }
+        "map build" => {
+            let slug = path.strip_prefix("/maps/schematic/")?.split('/').next()?;
+            if job.get("slug").and_then(|v| v.as_str()) != Some(slug) {
+                return None;
+            }
+            Some(ok(match status {
+                "error" => json!({"status": "error", "error": match job.get("error") { v if truthy(v) => v.cloned().unwrap(), _ => json!("AI build failed") }}),
+                "running" => json!({"status": "running", "elapsed": elapsed()}),
+                _ => json!({"status": "done", "added": job.get("added"), "total": job.get("total"), "elements": job.get("elements"),
+                    "warnings": job.get("warnings").cloned().unwrap_or(json!([])), "title": job.get("title").cloned().unwrap_or(json!(""))}),
             }))
         }
         "quest sync" => Some(ok(match status {
@@ -1306,4 +1321,203 @@ fn ai_preview_lines(tpl: &crate::sheets::Tpl, cleaned: &Map<String, Value>) -> O
         }
     }
     Some(out)
+}
+
+// ── the schematic map AI build (app/main.py `schematic_ai_build_start` / `_schematic_ai_build_task_inner`), draw mode ──
+
+fn map_build_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, path: &str, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let slug = path.strip_prefix("/maps/schematic/")?.strip_suffix("/ai-build/start")?.to_string();
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    let sw: i64 = db.query_row("SELECT world_id FROM schematics WHERE slug = ?1 ORDER BY id LIMIT 1", [&slug], |r| r.get(0)).ok()?;
+    if sw != wid || crate::pages::edit_level(p, w, "maps") != Some(true) {
+        return None;
+    }
+    let (form, files) = match crate::form::content_type(headers).as_str() {
+        "multipart/form-data" => crate::form::parse_multipart(headers, body)?,
+        _ => (crate::ai::small_form(headers, body)?, vec![]),
+    };
+    let desc = take(&crate::edits::py_strip_pub(form.get("description")?), 4000);
+    if desc.is_empty() {
+        return Some(detail(StatusCode::BAD_REQUEST, "Describe the space to build"));
+    }
+    if crate::edits::py_strip_pub(form.get("mode").unwrap_or("draw")).to_lowercase() == "plan" {
+        return None; // plan mode (the layout engine): Python's
+    }
+    if world_has_vault(db, wid) {
+        return None;
+    }
+    use base64::Engine;
+    let images: Vec<String> = files.iter().filter(|f| f.name == "images" && !f.filename.is_empty()).take(3).filter(|f| !f.data.is_empty())
+        .map(|f| base64::engine::general_purpose::STANDARD.encode(&f.data)).collect();
+    let replace = matches!(crate::edits::py_strip_pub(form.get("replace").unwrap_or("")).to_lowercase().as_str(), "1" | "true" | "yes");
+    let bk = backend(db)?;
+    let id = crate::runners::new_job("map build", json!({"status": "running", "slug": slug, "started": now(), "added": 0, "total": 0, "elements": [], "error": ""}), 12);
+    let rerun: Rerun = Arc::new(move |id| {
+        let (cfg, bk, slug, desc, images) = (cfg.clone(), bk.clone(), slug.clone(), desc.clone(), images.clone());
+        Box::pin(async move {
+            match map_build_task(cfg, bk, &slug, wid, &desc, replace, &images).await {
+                Ok(done) => crate::runners::update("map build", id, |e| { for (k, v) in done { e.insert(k, v); } }),
+                Err(m) => crate::runners::update("map build", id, |e| { e.insert("status".into(), json!("error")); e.insert("error".into(), json!(m)); }),
+            }
+        })
+    });
+    crate::runners::run("map build", "map build", id, rerun);
+    Some(ok(json!({"job_id": id, "status": "running"})))
+}
+
+/// main.py's `_num(v, default)` for a drawn element: a float clamped to 0..20000, or the default as given
+fn el_num(v: Option<&Value>, default: Value) -> Value {
+    let f = match v {
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(Value::Bool(b)) => Some(*b as i64 as f64),
+        Some(Value::String(s)) => crate::edits::py_strip_pub(s).replace('_', "").parse::<f64>().ok(),
+        _ => None,
+    };
+    match f { Some(f) => json!(f.clamp(0.0, 20000.0)), None => default }
+}
+
+/// `min(n, cap)`: the canvas size (an integer) when it is smaller
+fn cap_at(n: Value, cap: i64) -> Value {
+    if n.as_f64().is_some_and(|f| f > cap as f64) { json!(cap) } else { n }
+}
+
+async fn map_build_task(cfg: Arc<Config>, b: Backend, slug: &str, wid: i64, desc: &str, replace: bool, images: &[String]) -> Result<Map<String, Value>, String> {
+    let (c, s, d) = (cfg.clone(), slug.to_string(), desc.to_string());
+    let (cw, ch, system) = tokio::task::spawn_blocking(move || -> Result<(i64, i64, String), String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let (cw, ch): (Option<i64>, Option<i64>) = db.query_row("SELECT canvas_width, canvas_height FROM schematics WHERE slug = ?1 AND world_id = ?2", rusqlite::params![s, wid],
+            |r| Ok((r.get(0)?, r.get(1)?))).map_err(|_| "Schematic no longer exists.")?;
+        let (cw, ch) = (cw.filter(|x| *x != 0).unwrap_or(2000), ch.filter(|x| *x != 0).unwrap_or(1500));
+        let mut system = nd_render::app::data()["map_build_system"].as_str().unwrap_or("").replace("{W}", &cw.to_string()).replace("{H}", &ch.to_string());
+        let rag = crate::retrieval::smart_world_context(&db, wid, &d, 8, 2).unwrap_or_default();
+        if !rag.is_empty() {
+            system.push_str(&format!("\n=== World lore — match the setting, names, architecture, and factions described below ===\n{}", take(&rag, 4000)));
+        }
+        Ok((cw, ch, system))
+    }).await.map_err(|_| "Cancelled.".to_string())??;
+    let content = if images.is_empty() { json!(desc) } else {
+        let mut parts = vec![json!({"type": "text", "text": desc})];
+        parts.extend(images.iter().map(|i| json!({"type": "image_url", "image_url": {"url": format!("data:{};base64,{i}", if i.starts_with("/9j/") { "image/jpeg" } else { "image/png" })}})));
+        Value::Array(parts)
+    };
+    let schema = json!({"type": "object", "properties": {"elements": {"type": "array"}}, "required": ["elements"]});
+    let model = b.model.clone();
+    let raw = crate::ai::generate_chat_format(&b, &model, &system, &[json!({"role": "user", "content": content})], true, &Map::new(), Some(&schema)).await;
+    if crate::edits::py_strip_pub(&raw).is_empty() {
+        return Err("The model returned nothing — try a more concrete description.".into());
+    }
+    // the build's own _extract_json
+    let mut t = crate::edits::py_strip_pub(&raw);
+    if t.starts_with("```") {
+        static A: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
+        let re = A.get_or_init(|| [regex::Regex::new(r"^```[a-zA-Z]*\n?").unwrap(), regex::Regex::new(r"\n?```$").unwrap()]);
+        t = re[1].replace(&re[0].replace(&t, ""), "").into_owned();
+    }
+    let invalid = || "The model's reply wasn't valid JSON — try again.".to_string();
+    let parsed = match serde_json::from_str::<Value>(&t) {
+        Ok(v) => v,
+        Err(_) => match (t.find('{'), t.rfind('}')) { (Some(a), Some(z)) if z > a => serde_json::from_str(&t[a..=z]).map_err(|_| invalid())?, _ => return Err(invalid()) },
+    };
+    let raw_elements = match &parsed {
+        Value::Object(o) => match o.get("elements") {
+            Some(Value::Array(a)) => Some(a.clone()),
+            _ => { let lists: Vec<&Value> = o.values().filter(|v| v.is_array()).collect(); if lists.len() == 1 { lists[0].as_array().cloned() } else { None } }
+        },
+        _ => None,
+    };
+    let Some(raw_elements) = raw_elements.filter(|a| !a.is_empty()) else { return Err("The model's reply contained no usable elements — try rephrasing.".into()) };
+    let alias = |t: &str| -> String {
+        match t {
+            "rect" | "rectangle" | "room" | "area" | "building" | "zone" | "platform" => "rect",
+            "circle" | "ellipse" | "pond" | "fountain" | "pool" => "circle",
+            "line" | "wall" | "door" | "street" | "path" | "corridor" | "road" | "river" => "line",
+            "arrow" => "arrow",
+            "text" | "label" | "note" => "text",
+            other => other,
+        }.to_string()
+    };
+    static COLOR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let color_re = COLOR.get_or_init(|| regex::Regex::new(r"^#[0-9a-fA-F]{3,8}$").unwrap());
+    let color = |v: Option<&Value>, fb: &str| -> String {
+        let s = match v { x if truthy(x) => crate::edits::py_strip_pub(&py_str(x.unwrap())), _ => String::new() };
+        if color_re.is_match(&s) { s } else { fb.to_string() }
+    };
+    let mut new_elements = vec![];
+    for e in raw_elements.iter().take(400) {
+        let Value::Object(e) = e else { continue };
+        let ty = alias(&crate::edits::py_strip_pub(&match e.get("type") { v if truthy(v) => py_str(v.unwrap()), _ => String::new() }).to_lowercase());
+        if !matches!(ty.as_str(), "rect" | "circle" | "line" | "arrow" | "text") {
+            continue;
+        }
+        let mut ne = Map::new();
+        ne.insert("id".into(), json!(format!("ai-{}", &format!("{:032x}", rand::random::<u128>())[..10])));
+        ne.insert("type".into(), json!(ty));
+        let get_or = |k: &str, alt: Option<&str>, d: Value| -> Value { e.get(k).cloned().unwrap_or_else(|| alt.and_then(|a| e.get(a).cloned()).unwrap_or(d)) };
+        match ty.as_str() {
+            "rect" => {
+                ne.insert("x".into(), el_num(e.get("x"), json!(0.0)));
+                ne.insert("y".into(), el_num(e.get("y"), json!(0.0)));
+                ne.insert("w".into(), cap_at(el_num(Some(&get_or("w", Some("width"), json!(100))), json!(100)), cw));
+                ne.insert("h".into(), cap_at(el_num(Some(&get_or("h", Some("height"), json!(100))), json!(100)), ch));
+                ne.insert("fill".into(), json!(color(e.get("fill"), "#2a2a35")));
+                ne.insert("stroke".into(), json!(color(e.get("stroke"), "#888888")));
+                ne.insert("strokeW".into(), el_num(e.get("strokeW"), json!(2)));
+            }
+            "circle" => {
+                ne.insert("cx".into(), el_num(Some(&get_or("cx", Some("x"), json!(0))), json!(0.0)));
+                ne.insert("cy".into(), el_num(Some(&get_or("cy", Some("y"), json!(0))), json!(0.0)));
+                let r = e.get("r").cloned().unwrap_or_else(|| e.get("rx").cloned().unwrap_or_else(|| e.get("ry").cloned().unwrap_or(json!(50))));
+                ne.insert("rx".into(), cap_at(el_num(Some(&r), json!(50)), cw));
+                ne.insert("ry".into(), cap_at(el_num(Some(&r), json!(50)), ch));
+                ne.insert("fill".into(), json!(color(e.get("fill"), "#2a2a35")));
+                ne.insert("stroke".into(), json!(color(e.get("stroke"), "#888888")));
+                ne.insert("strokeW".into(), el_num(e.get("strokeW"), json!(2)));
+            }
+            "line" | "arrow" => {
+                let pts = e.get("points").and_then(|p| p.as_array()).filter(|p| p.len() >= 2)
+                    .and_then(|p| Some([p[0].as_array()?.first()?.clone(), p[0].as_array()?.get(1)?.clone(), p[1].as_array()?.first()?.clone(), p[1].as_array()?.get(1)?.clone()]));
+                let ends: Vec<Value> = match pts {
+                    Some(p) => p.iter().map(|v| el_num(Some(v), json!(0.0))).collect(),
+                    None => ["x1", "y1", "x2", "y2"].iter().map(|k| el_num(e.get(*k), json!(0.0))).collect(),
+                };
+                for (k, v) in ["x1", "y1", "x2", "y2"].iter().zip(ends) {
+                    ne.insert((*k).into(), v);
+                }
+                ne.insert("stroke".into(), json!(color(e.get("stroke"), "#aaaaaa")));
+                ne.insert("strokeW".into(), el_num(e.get("strokeW"), json!(3)));
+            }
+            _ => {
+                ne.insert("x".into(), el_num(e.get("x"), json!(0.0)));
+                ne.insert("y".into(), el_num(e.get("y"), json!(0.0)));
+            }
+        }
+        let label = take(&crate::edits::py_strip_pub(&match e.get("label") { v if truthy(v) => py_str(v.unwrap()), _ => String::new() }), 200);
+        if !label.is_empty() {
+            ne.insert("label".into(), json!(label));
+        }
+        new_elements.push(Value::Object(ne));
+    }
+    if new_elements.is_empty() {
+        let snippet: String = take(&py_repr(&Value::Array(raw_elements.clone())), 220).split_whitespace().collect::<Vec<_>>().join(" ");
+        return Err(format!("The model's shapes didn't map to canvas elements — reply started: {snippet}"));
+    }
+    let (c, s, added) = (cfg.clone(), slug.to_string(), new_elements.len());
+    tokio::task::spawn_blocking(move || -> Result<Map<String, Value>, String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let (sid, raw): (i64, Option<String>) = db.query_row("SELECT id, elements_json FROM schematics WHERE slug = ?1 AND world_id = ?2", rusqlite::params![s, wid],
+            |r| Ok((r.get(0)?, r.get(1)?))).map_err(|_| "Schematic no longer exists.")?;
+        let mut elements = if replace { vec![] } else {
+            match serde_json::from_str::<Value>(raw.as_deref().filter(|x| !x.is_empty()).unwrap_or("[]")) { Ok(Value::Array(a)) => a, _ => vec![] }
+        };
+        elements.extend(new_elements);
+        crate::orm::update(&db, "schematics", sid, &[("elements_json", rusqlite::types::Value::Text(nd_render::py_dumps(&Value::Array(elements.clone()))))]).ok_or("database")?;
+        crate::orm::touch(&db, wid);
+        let mut done = Map::new();
+        done.insert("status".into(), json!("done"));
+        done.insert("added".into(), json!(added));
+        done.insert("total".into(), json!(elements.len()));
+        done.insert("elements".into(), Value::Array(elements));
+        Ok(done)
+    }).await.map_err(|_| "Cancelled.".to_string())?
 }

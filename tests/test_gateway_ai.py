@@ -2166,3 +2166,65 @@ def test_character_draft_is_pythons(client, seed, studio):
         r = side.post("/api/characters/ai/start", data={"prompt": "x", "template_id": "999999"})
         assert (r.status_code, r.json()["detail"]) == (400, "Pick one of the listed systems.")
     studio.reply_seq = None
+
+
+def test_map_build_draw_is_pythons(client, seed, studio):
+    """/maps/schematic/{slug}/ai-build/start in draw mode and its poll: the element aliases, numbers and colours, append vs replace, the
+    saved elements (ids are random, so compared without them), and the failures."""
+    from app.database import SessionLocal
+    from app.models import Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add(Schematic(world_id=w, name="Keep", slug="gw-build", canvas_width=800, canvas_height=600,
+                         elements_json=json.dumps([{"id": "old", "type": "rect", "x": 1, "y": 2, "w": 3, "h": 4}])))
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    els = {"elements": [{"type": "Room", "x": "10", "y": -5, "width": 5000, "fill": "#abc", "stroke": "red", "label": " Hall "},
+                        {"type": "pond", "x": 40, "r": "30"}, {"type": "wall", "points": [[0, 1], [2, 3]], "strokeW": "x"},
+                        {"type": "arrow", "x1": 1, "y2": 99999}, {"type": "label", "x": 5, "y": 6, "label": "Hi"}, {"type": "blob"}, "x"]}
+    cases = [({"description": "A hall"}, [_reply("```json\n" + json.dumps(els) + "\n```")]),
+             ({"description": "Again", "replace": "yes"}, [_reply(json.dumps({"shapes": [{"type": "circle", "cx": 1, "cy": 2}]}))]),
+             ({"description": "x"}, [_reply("not json")]), ({"description": "x"}, [_reply(json.dumps({"elements": [{"type": "blob"}]}))]),
+             ({"description": "x"}, [_reply(json.dumps({"elements": []}))]), ({"description": "x"}, [_reply("")])]
+
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k != "id"}
+        return [strip(x) for x in v] if isinstance(v, list) else v
+
+    def saved():
+        db = SessionLocal()
+        try:
+            return db.query(Schematic).filter(Schematic.slug == "gw-build").one().elements_json
+        finally:
+            db.close()
+
+    for i, (form, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            before = saved()
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/maps/schematic/gw-build/ai-build/start", data=form)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/maps/schematic/gw-build/ai-build/{r.json()['job_id']}")
+            out.append((r.json()["status"], p.status_code, strip(p.json()), [q["body"] for q in studio.requests], strip(json.loads(saved())),
+                        r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+            db = SessionLocal()
+            try:
+                db.query(Schematic).filter(Schematic.slug == "gw-build").one().elements_json = before
+                db.commit()
+            finally:
+                db.close()
+        a, b = out
+        assert a[:5] == b[:5], (i, a[:3], b[:3])
+        assert b[5:] == ("gateway", "gateway"), i
+    for side in (gm, _via(gm, base)):
+        assert side.post("/maps/schematic/gw-build/ai-build/start", data={"description": " "}).status_code == 400
+        assert side.post("/maps/schematic/nope/ai-build/start", data={"description": "x"}).status_code == 404
+        assert side.get(f"/maps/schematic/gw-build/ai-build/{10**10}").status_code == 404
+    studio.reply_seq = None
