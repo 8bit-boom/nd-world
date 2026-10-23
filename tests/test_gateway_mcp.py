@@ -102,9 +102,20 @@ def test_mcp_protocol_and_read_tools_are_pythons(client, seed, mcp_world):
         tool("get_entity", entity_id=m["sword"]), tool("get_entity", entity_id=999999),
         tool("get_rules", world_id=w), tool("list_sessions", world_id=w), tool("list_tables", world_id=w),
     ]
+    def docs(r):
+        # tools/list: Python before 3.13 keeps a docstring's indentation, which 3.13 (the image's) strips - compare without it
+        status, ctype, text, by = r
+        if '"tools":[' not in text:
+            return r
+        import inspect
+        msg = json.loads(text.split("data: ", 1)[1])
+        for t in msg["result"]["tools"]:
+            t["description"] = inspect.cleandoc(t.get("description") or "")
+        return status, ctype, msg, by
+
     for token in (gm, player):
         for body in served:
-            a, b = _both(base, token, body)
+            a, b = map(docs, _both(base, token, body))
             assert a[:3] == b[:3], (token, body, a[2][:600], b[2][:600])
             assert b[3] == "gateway", (token, body)
     # left to Python - and still the same answer

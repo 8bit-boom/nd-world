@@ -30,6 +30,15 @@ def mcp_data() -> dict:
     from mcp.types import LATEST_PROTOCOL_VERSION, ListToolsResult
     from app.mcp_server import mcp
     tools = asyncio.run(mcp.list_tools())
+    if sys.version_info < (3, 13):
+        # Python 3.13 (the image's, and CI's) strips a docstring's common indentation when it compiles it; do the same here, so the
+        # data is the same whichever Python writes it
+        for t in tools:
+            if t.description and "\n" in t.description:
+                first, rest = t.description.split("\n", 1)
+                lines = rest.split("\n")
+                pad = min((len(l) - len(l.lstrip(" ")) for l in lines if l.strip()), default=0)
+                t.description = "\n".join([first] + [l[pad:] if l.strip() else l.strip(" ") for l in lines])
     return {"tools_list_json": ListToolsResult(tools=tools).model_dump_json(by_alias=True, exclude_none=True),
             "name": mcp.name, "version": version("mcp"), "instructions": mcp.instructions,
             "supported": list(SUPPORTED_PROTOCOL_VERSIONS), "latest": LATEST_PROTOCOL_VERSION}
