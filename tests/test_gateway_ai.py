@@ -152,6 +152,21 @@ def test_chronicler_what_stays_pythons(client, seed, studio):
     base = str(client.base_url)
     gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     studio.script = [_delta(content="ok")]
-    for body in ({"question": "x", "model": "other"}, {"question": "y", "think": True}, {"question": "  "}, {"question": 5}):
+    for body in ({"question": "  "}, {"question": 5}):
         r = _via(gm, base).post("/api/chronicler/ask", json=body)
         assert r.headers.get("x-nd-served-by") != "gateway", body
+
+
+def test_chronicler_gm_model_and_thinking_are_pythons(client, seed, studio):
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    studio.script = [_delta(reasoning_content="hmm"), _delta(content="Answer.")]
+    run = __import__("uuid").uuid4().hex[:6]
+    for i, extra in enumerate(({"model": "other"}, {"think": True}, {"model": " other ", "think": 1})):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            status, text, by = _ask(side, {"question": f"model case {i} {run}", **extra})
+            out.append((status, text, [r["body"] for r in studio.requests], by))
+        assert out[0][:3] == out[1][:3], (extra, out)
+        assert out[1][3] == "gateway", extra

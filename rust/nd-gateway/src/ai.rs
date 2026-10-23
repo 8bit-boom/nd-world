@@ -20,7 +20,8 @@ const CACHE_TTL: Duration = Duration::from_secs(30);
 const COOLDOWN: Duration = Duration::from_secs(3);
 const HEARTBEAT: Duration = Duration::from_secs(12);
 
-type CacheKey = (i64, i64, String);
+/// (world, user, question lowered, model, think) - the Chronicler's answer cache key
+type CacheKey = (i64, i64, String, String, bool);
 
 fn cache() -> &'static Mutex<HashMap<CacheKey, (Instant, String)>> {
     static C: OnceLock<Mutex<HashMap<CacheKey, (Instant, String)>>> = OnceLock::new();
@@ -38,7 +39,33 @@ pub struct Backend {
     pub base_path: String,
     pub key: String,
     pub model: String,
+    /// Settings > System's generation options (instance-wide)
     pub options: Map<String, Value>,
+    /// Settings' per-model overrides ({model: {"options": {...}}})
+    pub per_model: Map<String, Value>,
+}
+
+impl Backend {
+    /// `effective_ollama_options(model)`: the instance-wide options with the model's own layered on top
+    fn options_for(&self, model: &str) -> Map<String, Value> {
+        let mut o = self.options.clone();
+        if let Some(Value::Object(m)) = self.per_model.get(model).and_then(|m| m.get("options")) {
+            for (k, v) in m {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+        o
+    }
+
+    /// `_thinking_num_predict_override(True)`: the configured output cap plus the thinking headroom (nothing when unset or unbounded)
+    fn thinking_predict(&self) -> Map<String, Value> {
+        let mut out = Map::new();
+        if let Some(n) = self.options.get("num_predict").and_then(|v| v.as_i64()).filter(|n| *n > 0) {
+            let headroom = std::env::var("THINKING_HEADROOM_TOKENS").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(4096).max(0);
+            out.insert("num_predict".into(), json!(n + headroom));
+        }
+        out
+    }
 }
 
 fn env(k: &str) -> String {
@@ -77,14 +104,14 @@ pub fn backend(db: &rusqlite::Connection) -> Option<Backend> {
         }
     }
     let raw = s("ollama_model_overrides_json");
-    if let Ok(Value::Object(per)) = serde_json::from_str::<Value>(if raw.is_empty() { "{}" } else { &raw }) {
-        if let Some(Value::Object(o)) = per.get(&model).and_then(|m| m.get("options")) {
-            for (k, v) in o {
-                options.insert(k.clone(), v.clone());
-            }
-        }
+    let per_model = match serde_json::from_str::<Value>(if raw.is_empty() { "{}" } else { &raw }) {
+        Ok(Value::Object(per)) => per,
+        _ => Map::new(),
+    };
+    if st.get("ollama_use_mmap").and_then(|v| v.as_str()).is_some_and(|m| m == "0" || m == "1") {
+        options.insert("use_mmap".into(), json!(s("ollama_use_mmap") == "1"));
     }
-    Some(Backend { host, base_path, key, model, options })
+    Some(Backend { host, base_path, key, model, options, per_model })
 }
 
 /// `_translate_options`: ollama option names to the OpenAI body's (num_ctx dropped: fixed at model load; others unknown there dropped)
@@ -125,8 +152,19 @@ fn tokio_stream_from(mut rx: tokio::sync::mpsc::Receiver<String>) -> impl future
 /// What the blocking part decides: answer from the cache, stream a fresh answer, refuse (a player's cooldown), or leave it to Python
 enum Plan {
     Cached(String),
-    Fresh { backend: Backend, system: String, question: String, key: CacheKey },
+    Fresh(Job),
     Refuse(Response<Body>),
+}
+
+/// One streamed answer to produce
+struct Job {
+    backend: Backend,
+    requested: String,
+    system: String,
+    messages: Vec<Value>,
+    think: bool,
+    extra: Map<String, Value>,
+    cache: Option<CacheKey>,
 }
 
 fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Plan> {
@@ -150,14 +188,20 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
     if question.is_empty() || question.contains('\u{130}') {
         return None;
     }
-    if p.is_gm {
-        let model_set = matches!(b.get("model"), Some(v) if crate::edits::py_truthy_pub(Some(v)));
-        if model_set || crate::edits::py_truthy_pub(b.get("think")) {
-            return None; // a GM's own model / Thinking: Python's
-        }
-    }
+    // a GM's own model and Thinking choice (a player's are ignored server-side)
+    let (model, think) = if p.is_gm {
+        let model = match b.get("model") {
+            v if !crate::edits::py_truthy_pub(v) => String::new(),
+            Some(Value::String(m)) => m.trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)).to_string(),
+            Some(_) => return None,
+            None => String::new(),
+        };
+        (model, crate::edits::py_truthy_pub(b.get("think")))
+    } else {
+        (String::new(), false)
+    };
     let backend = backend(&db)?;
-    let key: CacheKey = (wid, p.user_id, question.to_lowercase());
+    let key: CacheKey = (wid, p.user_id, question.to_lowercase(), model.clone(), think);
     if let Some((at, answer)) = cache().lock().ok()?.get(&key) {
         if at.elapsed() < CACHE_TTL {
             return Some(Plan::Cached(answer.clone()));
@@ -194,7 +238,8 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
         lines.push("## Relevant entities".into());
         lines.push(crate::retrieval::format_context(&db, &entities, !p.is_gm, &question)?);
     }
-    Some(Plan::Fresh { backend, system: lines.join("\n"), question, key })
+    let extra = if think { backend.thinking_predict() } else { Map::new() };
+    Some(Plan::Fresh(Job { backend, requested: model, system: lines.join("\n"), messages: vec![json!({"role": "user", "content": question})], think, extra, cache: Some(key) }))
 }
 
 type Client = hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Full<bytes::Bytes>>;
@@ -215,8 +260,8 @@ fn backend_request(b: &Backend, method: &str, path: &str, body: Option<&Value>) 
 }
 
 /// `resolve_model`: the configured model, or the closest available one with a note (`/v1/models`, 10 s)
-async fn resolve_model(b: &Backend) -> (String, Option<String>) {
-    let target = b.model.clone();
+async fn resolve_model(b: &Backend, requested: &str) -> (String, Option<String>) {
+    let target = if requested.is_empty() { b.model.clone() } else { requested.to_string() };
     let Some(req) = backend_request(b, "GET", "/v1/models", None) else { return (target, None) };
     let fetch = async {
         let resp = client().request(req).await.ok()?;
@@ -304,13 +349,19 @@ enum Piece {
 }
 
 /// `stream_chat(...)` with emit_thinking on the Unsloth backend: pieces in order, ending with an error piece on a failure or an empty answer
-async fn stream_chat(b: &Backend, model: &str, system: &str, question: &str, tx: &tokio::sync::mpsc::Sender<Piece>) {
+async fn stream_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>, tx: &tokio::sync::mpsc::Sender<Piece>) {
+    let mut full: Vec<Value> = if system.is_empty() { vec![] } else { vec![json!({"role": "system", "content": system})] };
+    full.extend(messages.iter().cloned());
+    let mut opts = b.options_for(model);
+    for (k, v) in extra {
+        opts.insert(k.clone(), v.clone());
+    }
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
-    body.insert("messages".into(), json!([{"role": "system", "content": system}, {"role": "user", "content": question}]));
+    body.insert("messages".into(), Value::Array(full));
     body.insert("stream".into(), json!(true));
-    body.extend(translate_options(&b.options));
-    body.insert("chat_template_kwargs".into(), json!({"enable_thinking": false}));
+    body.extend(translate_options(&opts));
+    body.insert("chat_template_kwargs".into(), json!({"enable_thinking": think}));
     let Some(req) = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))) else { return };
     let resp = match client().request(req).await {
         Ok(r) => r,
@@ -416,30 +467,17 @@ async fn stream_chat(b: &Backend, model: &str, system: &str, question: &str, tx:
     }
 }
 
-/// The entry point: the answer, or the request forwarded to Python unchanged
-pub async fn chronicler_ask(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
-    let (c2, u2, h2, b2) = (cfg.clone(), uri.clone(), headers.clone(), body.clone());
-    let plan = tokio::task::spawn_blocking(move || plan(&c2, &u2, &h2, &b2)).await.ok()??;
-    let (backend, system, question, key) = match plan {
-        Plan::Refuse(r) => return Some(r),
-        Plan::Cached(answer) => {
-            let (tx, rx) = tokio::sync::mpsc::channel(4);
-            tokio::spawn(async move {
-                let _ = tx.send(sse(&json!({"token": answer}))).await;
-                let _ = tx.send("data: [DONE]\n\n".to_string()).await;
-            });
-            return Some(stream_response(rx));
-        }
-        Plan::Fresh { backend, system, question, key } => (backend, system, question, key),
-    };
+/// The SSE answer of a job: the model note, the pieces with keep-alives, [DONE]; a successful answer cached when the job says so
+fn run(job: Job) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     tokio::spawn(async move {
-        let (model, note) = resolve_model(&backend).await;
+        let Job { backend, requested, system, messages, think, extra, cache: key } = job;
+        let (model, note) = resolve_model(&backend, &requested).await;
         if let Some(n) = note {
             let _ = tx.send(sse(&json!({"note": n}))).await;
         }
         let (ptx, mut prx) = tokio::sync::mpsc::channel::<Piece>(64);
-        tokio::spawn(async move { stream_chat(&backend, &model, &system, &question, &ptx).await });
+        tokio::spawn(async move { stream_chat(&backend, &model, &system, &messages, think, &extra, &ptx).await });
         let (mut answer, mut had_error) = (String::new(), false);
         loop {
             match tokio::time::timeout(HEARTBEAT, prx.recv()).await {
@@ -467,7 +505,7 @@ pub async fn chronicler_ask(cfg: std::sync::Arc<Config>, uri: Uri, headers: Head
                 }
             }
         }
-        if !had_error {
+        if let (Some(key), false) = (key, had_error) {
             if let Ok(mut c) = cache().lock() {
                 c.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
                 c.insert(key, (Instant::now(), answer));
@@ -475,5 +513,22 @@ pub async fn chronicler_ask(cfg: std::sync::Arc<Config>, uri: Uri, headers: Head
         }
         let _ = tx.send("data: [DONE]\n\n".into()).await;
     });
-    Some(stream_response(rx))
+    stream_response(rx)
+}
+
+/// `POST /api/chronicler/ask`: the answer, or None (the request goes to Python unchanged)
+pub async fn chronicler_ask(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let plan = tokio::task::spawn_blocking(move || plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    Some(match plan {
+        Plan::Refuse(r) => r,
+        Plan::Cached(answer) => {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            tokio::spawn(async move {
+                let _ = tx.send(sse(&json!({"token": answer}))).await;
+                let _ = tx.send("data: [DONE]\n\n".to_string()).await;
+            });
+            stream_response(rx)
+        }
+        Plan::Fresh(job) => run(job),
+    })
 }
