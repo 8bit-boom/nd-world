@@ -52,13 +52,26 @@ fn round2(x: f64) -> Value {
 pub fn serves(method: &Method, path: &str) -> bool {
     let start = *method == Method::POST && path.ends_with("/start");
     let poll = *method == Method::GET && path.rsplit('/').next().is_some_and(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()));
-    (start || poll) && path.starts_with("/api/maps/") && path.contains("/ai-markers/")
+    (start || poll) && kind_of(path).is_some()
+}
+
+/// The job kind a start / poll path belongs to
+fn kind_of(path: &str) -> Option<&'static str> {
+    if path.starts_with("/api/maps/") && path.contains("/ai-markers/") {
+        Some("map markers")
+    } else if path.starts_with("/api/cockpit/ai/find/") {
+        Some("cockpit find")
+    } else if path.starts_with("/api/quests/suggest/") {
+        Some("quest sync")
+    } else {
+        None
+    }
 }
 
 /// The routes this module serves: (method, path)
 pub async fn route(cfg: Arc<Config>, method: &Method, uri: &Uri, headers: &HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
     let path = uri.path().to_string();
-    let kind = if path.starts_with("/api/maps/") && path.contains("/ai-markers/") { "map markers" } else { return None };
+    let kind = kind_of(&path)?;
     if *method == Method::GET {
         let id: i64 = path.rsplit('/').next()?.parse().ok()?;
         let state = crate::runners::poll(kind, id)?;
@@ -75,6 +88,8 @@ pub async fn route(cfg: Arc<Config>, method: &Method, uri: &Uri, headers: &Heade
         let db = crate::writes::open(&cfg)?;
         match kind {
             "map markers" => map_markers_start(cfg.clone(), &db, &p, &path, &body),
+            "cockpit find" => cockpit_find_start(cfg.clone(), &db, &p, &body),
+            "quest sync" => quest_sync_start(cfg.clone(), &db, &p, &body),
             _ => None,
         }
     }).await.ok().flatten()
@@ -92,16 +107,22 @@ fn poll_answer(kind: &str, p: &PageCtx, job: &Map<String, Value>) -> Option<Resp
     let status = job.get("status").and_then(|v| v.as_str()).unwrap_or("");
     let elapsed = || json!((now() - job.get("started").and_then(|v| v.as_f64()).unwrap_or(0.0)).round_ties_even() as i64);
     match kind {
-        "map markers" => {
+        "map markers" | "cockpit find" => {
             if !p.is_gm {
                 return None;
             }
+            let key = if kind == "map markers" { "markers" } else { "results" };
             Some(ok(match status {
                 "running" => json!({"status": "running", "elapsed": elapsed()}),
                 "error" => json!({"status": "error", "error": job.get("error")}),
-                _ => json!({"status": "done", "markers": job.get("markers")}),
+                _ => json!({"status": "done", key: job.get(key)}),
             }))
         }
+        "quest sync" => Some(ok(match status {
+            "running" => json!({"status": "running", "elapsed": elapsed()}),
+            "error" => json!({"status": "error", "error": job.get("error")}),
+            _ => json!({"status": "done", "suggestions": job.get("suggestions")}),
+        })),
         _ => None,
     }
 }
@@ -253,4 +274,239 @@ async fn map_markers_task(cfg: Arc<Config>, b: Backend, slug: &str, wid: i64, pr
         return Err("The model's reply contained no usable markers — try rephrasing.".into());
     }
     Ok(Value::Array(markers))
+}
+
+/// Finish a job: its status dict to done (with `key`) or error
+fn settle(kind: &'static str, id: i64, key: &str, res: Result<Value, String>) {
+    crate::runners::update(kind, id, |e| match res {
+        Ok(v) => {
+            e.insert("status".into(), json!("done"));
+            e.insert(key.into(), v);
+        }
+        Err(m) => {
+            e.insert("status".into(), json!("error"));
+            e.insert("error".into(), json!(m));
+        }
+    });
+}
+
+/// cockpit.py / quests.py `_extract_json`: the reply's object, fences tolerated
+fn extract_object(raw: &str) -> Result<Value, String> {
+    let mut t = crate::edits::py_strip_pub(raw);
+    if t.starts_with("```") {
+        static A: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
+        let re = A.get_or_init(|| [regex::Regex::new(r"^```[a-zA-Z0-9]*\n?").unwrap(), regex::Regex::new(r"\n?```\s*$").unwrap()]);
+        t = re[1].replace(&re[0].replace(&t, ""), "").into_owned();
+    }
+    match (t.find('{'), t.rfind('}')) {
+        (Some(a), Some(z)) if z > a => serde_json::from_str(&t[a..=z]).map_err(|e| e.to_string()),
+        _ => Err("no JSON object in the model's reply".into()),
+    }
+}
+
+// ── cockpit find (app/routers/cockpit.py) ──────────────────────────────────
+
+fn cockpit_find_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, body: &[u8]) -> Option<Response<Body>> {
+    if !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let b = json_body(body)?;
+    let query = text(&b, "query");
+    let entity_id = match b.get("entity_id") { v if !truthy(v) => None, Some(v) => crate::ai::reply_int(v).ok(), None => None };
+    if query.is_empty() && entity_id.is_none() {
+        return Some(detail(StatusCode::BAD_REQUEST, "Type what to look for first — or seed me from an entity card."));
+    }
+    if world_has_vault(db, wid) {
+        return None;
+    }
+    let bk = backend(db)?;
+    let id = crate::runners::new_job("cockpit find", json!({"status": "running", "started": now(), "results": null, "error": ""}), 12);
+    let rerun: Rerun = Arc::new(move |id| {
+        let (cfg, bk, query) = (cfg.clone(), bk.clone(), query.clone());
+        Box::pin(async move {
+            let res = cockpit_find_task(cfg, bk, wid, &query, entity_id).await;
+            settle("cockpit find", id, "results", res);
+        })
+    });
+    crate::runners::run("cockpit find", "cockpit find", id, rerun);
+    Some(ok(json!({"job_id": id, "status": "running"})))
+}
+
+async fn cockpit_find_task(cfg: Arc<Config>, b: Backend, wid: i64, query: &str, entity_id: Option<i64>) -> Result<Value, String> {
+    let (c, q) = (cfg.clone(), query.to_string());
+    let (user, cands) = tokio::task::spawn_blocking(move || -> Result<(String, Vec<(i64, String, String)>), String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let mut material = q.clone();
+        let mut exclude = vec![0i64];
+        if let Some(eid) = entity_id {
+            let ent = db.query_row("SELECT * FROM entities WHERE id = ?1", [eid], |r| crate::layout::row_map(r)).ok()
+                .filter(|e| e.get("world_id").and_then(|v| v.as_i64()) == Some(wid)).ok_or("Focused entity not found in this world")?;
+            exclude.push(eid);
+            let s = |k: &str| ent.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            material = format!("{}{}\n{}", s("name"), if s("summary").is_empty() { String::new() } else { format!(" — {}", s("summary")) }, take(&s("body"), 1500));
+            if !q.is_empty() {
+                material = format!("{q}\n\n{material}");
+            }
+        }
+        let rag = take(&crate::retrieval::smart_world_context(&db, wid, &take(&material, 1500), 10, 4).unwrap_or_default(), 4000);
+        let ex = exclude.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let mut st = db.prepare(&format!("SELECT id, kind, name, summary FROM entities WHERE world_id = ?1 AND id NOT IN ({ex}) ORDER BY name LIMIT 200")).map_err(|e| e.to_string())?;
+        let rows: Vec<(i64, Option<String>, Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+        let board: Vec<String> = rows.iter().map(|(id, k, n, sm)| {
+            let k = k.clone().filter(|k| !k.is_empty()).unwrap_or_else(|| "?".into());
+            let mut l = format!("- id={id} [{k}] {}", n.clone().unwrap_or_else(|| "None".into()));
+            if let Some(sm) = sm.as_ref().filter(|s| !s.is_empty()) { l.push_str(&format!(" — {}", take(sm, 100))); }
+            l
+        }).collect();
+        let board = if board.is_empty() { "(none)".to_string() } else { board.join("\n") };
+        let user = format!("=== FOCUS ===\n{}\n\n=== RETRIEVED WORLD EXCERPTS ===\n{}\n\n=== CANDIDATES ===\n{board}", take(&material, 3000), if rag.is_empty() { "(none)".to_string() } else { rag });
+        Ok((user, rows.into_iter().map(|(i, k, n, _)| (i, k.unwrap_or_default(), n.unwrap_or_default())).collect()))
+    }).await.map_err(|_| "Cancelled.".to_string())??;
+    let system = "You are a campaign co-GM's research assistant. From the CANDIDATE list and the RETRIEVED WORLD EXCERPTS, select the entities and notes most connected to the FOCUS and give each a one-line reason. Return STRICT JSON only:\n{\"results\": [{\"id\": int, \"reason\": str}]}\nRules: only propose ids that appear verbatim in the candidate list; 3-8 results, most relevant first; reasons are one short in-world sentence; return an empty list when nothing is genuinely connected. No comments, no markdown fences.";
+    let schema = json!({"type": "object", "properties": {"results": {"type": "array"}}, "required": ["results"]});
+    let model = b.model.clone();
+    let raw = crate::ai::generate_chat_format(&b, &model, system, &[json!({"role": "user", "content": user})], true, &Map::new(), Some(&schema)).await;
+    let parsed = extract_object(&raw)?;
+    let Value::Object(parsed) = parsed else { return Err("'list' object has no attribute 'get'".into()) };
+    let items = match parsed.get("results") { v if !truthy(v) => vec![], Some(Value::Array(a)) => a.clone(), _ => return Err("unsupported reply".into()) };
+    let mut out = vec![];
+    let mut seen = vec![];
+    for item in items.into_iter().take(8) {
+        let Value::Object(item) = item else { continue };
+        let Some(eid) = item.get("id").and_then(|v| crate::ai::reply_int(v).ok()) else { continue };
+        let Some((_, kind, name)) = cands.iter().find(|c| c.0 == eid) else { continue };
+        if seen.contains(&eid) {
+            continue;
+        }
+        seen.push(eid);
+        let reason = match item.get("reason") { v if !truthy(v) => String::new(), Some(v) => py_str(v), None => String::new() };
+        out.push(json!({"id": eid, "name": name, "kind": kind, "reason": take(&reason, 300)}));
+    }
+    Ok(Value::Array(out))
+}
+
+// ── quest sync (app/routers/quests.py) ─────────────────────────────────────
+
+fn quest_sync_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, body: &[u8]) -> Option<Response<Body>> {
+    if !p.is_gm {
+        return None;
+    }
+    let Some(w) = p.world.as_ref() else { return Some(detail(StatusCode::BAD_REQUEST, "No active world")) };
+    let wid = w.get("id")?.as_i64()?;
+    let b = json_body(body)?;
+    let session_id = match b.get("session_id") { v if !truthy(v) => None, Some(v) => Some(crate::ai::reply_int(v).ok()?), None => None };
+    let txt = text(&b, "text");
+    if session_id.is_none() && txt.is_empty() {
+        return Some(detail(StatusCode::BAD_REQUEST, "Provide session_id or text"));
+    }
+    let (model, use_rag, think) = (text(&b, "model"), flag(&b, "use_rag", true), flag(&b, "think", true));
+    if use_rag && world_has_vault(db, wid) {
+        return None;
+    }
+    let bk = backend(db)?;
+    let id = crate::runners::new_job("quest sync", json!({"status": "running", "started": now(), "suggestions": null, "error": ""}), 12);
+    let rerun: Rerun = Arc::new(move |id| {
+        let (cfg, bk, txt, model) = (cfg.clone(), bk.clone(), txt.clone(), model.clone());
+        Box::pin(async move {
+            let res = quest_sync_task(cfg, bk, wid, session_id, &txt, &model, use_rag, think).await;
+            settle("quest sync", id, "suggestions", res);
+        })
+    });
+    crate::runners::run("quest sync", "quest sync", id, rerun);
+    Some(ok(json!({"job_id": id, "status": "running"})))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn quest_sync_task(cfg: Arc<Config>, b: Backend, wid: i64, session_id: Option<i64>, txt: &str, model: &str, use_rag: bool, think: bool) -> Result<Value, String> {
+    let (c, t) = (cfg.clone(), txt.to_string());
+    let (user, quest_ids) = tokio::task::spawn_blocking(move || -> Result<(String, Vec<i64>), String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let mut material = String::new();
+        let gs = session_id.and_then(|sid| db.query_row("SELECT * FROM game_sessions WHERE id = ?1 AND world_id = ?2", rusqlite::params![sid, wid], |r| crate::layout::row_map(r)).ok());
+        if let Some(gs) = &gs {
+            // _session_quest_material
+            let s = |k: &str| crate::edits::py_strip_pub(gs.get(k).and_then(|v| v.as_str()).unwrap_or(""));
+            let mut parts = vec![];
+            let summary = s("summary");
+            if !summary.is_empty() {
+                parts.push(format!("Session summary:\n{}", take(&summary, 3000)));
+            }
+            let transcript = s("live_transcript");
+            if !transcript.is_empty() && summary.is_empty() {
+                let n = transcript.chars().count();
+                parts.push(format!("Session transcript (tail):\n{}", transcript.chars().skip(n.saturating_sub(6000)).collect::<String>()));
+            }
+            let mut st = db.prepare("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+            let facts: Vec<Option<String>> = st.query_map([gs.get("id").and_then(|v| v.as_i64()).unwrap_or(0)], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+            if !facts.is_empty() {
+                let tail = &facts[facts.len().saturating_sub(30)..];
+                parts.push(format!("Logged facts:\n{}", tail.iter().map(|f| format!("- {}", f.as_deref().unwrap_or("None"))).collect::<Vec<_>>().join("\n")));
+            }
+            material = crate::edits::py_strip_pub(&parts.join("\n\n"));
+        }
+        if material.is_empty() && !t.is_empty() {
+            material = take(&t, 8000);
+        }
+        if let (true, Some(gs)) = (material.is_empty(), gs.as_ref()) {
+            let num = gs.get("session_num").map(|v| match v { Value::Null => "None".to_string(), other => py_str(other) }).unwrap_or_else(|| "None".into());
+            material = format!("Session #{num}: {}", gs.get("title").and_then(|v| v.as_str()).unwrap_or(""));
+        }
+        let mut st = db.prepare("SELECT id, status, category, title, summary FROM quests WHERE world_id = ?1 ORDER BY title").map_err(|e| e.to_string())?;
+        let quests: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+        let board: Vec<String> = quests.iter().map(|(id, st, cat, title, sm)| {
+            let or = |v: &Option<String>, d: &str| v.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| d.into());
+            let mut l = format!("- id={id} [{}/{}] {}", or(st, "active"), or(cat, "main"), title.clone().unwrap_or_else(|| "None".into()));
+            if let Some(sm) = sm.as_ref().filter(|x| !x.is_empty()) { l.push_str(&format!(" — {}", take(sm, 120))); }
+            l
+        }).collect();
+        let board = if board.is_empty() { "(no quests yet)".to_string() } else { board.join("\n") };
+        let mut world_ctx = String::new();
+        if use_rag {
+            let rag = crate::retrieval::smart_world_context(&db, wid, &take(&material, 1500), 8, 2).unwrap_or_default();
+            if !rag.is_empty() {
+                world_ctx = format!("\n\n=== World lore (ground the suggestions in this) ===\n{}", take(&rag, 4000));
+            }
+        }
+        Ok((format!("=== CURRENT QUEST BOARD ===\n{board}\n\n=== SESSION MATERIAL ===\n{material}{world_ctx}"), quests.iter().map(|q| q.0).collect()))
+    }).await.map_err(|_| "Cancelled.".to_string())??;
+    let system = "You are a campaign co-GM. Compare the session material against the CURRENT QUEST BOARD and report what changed. Return STRICT JSON only:\n{\"new_quests\": [{\"title\": str, \"summary\": str, \"category\": \"main\"|\"side\"|\"personal\"}], \"quest_updates\": [{\"quest_id\": int, \"status\": \"active\"|\"complete\"|\"failed\", \"note\": str}]}\nRules: only propose quest_updates whose quest_id appears verbatim in the current quest board; only mark complete/failed when the session says it plainly; keep new quest titles short and in-world; propose a new quest only for a genuine open plot thread the session introduced (not a one-off scene beat); it is fine to return empty arrays if nothing changed. No comments, no markdown fences.";
+    let schema = json!({"type": "object", "properties": {"new_quests": {"type": "array"}, "quest_updates": {"type": "array"}}, "required": ["new_quests", "quest_updates"]});
+    let m = if model.is_empty() { b.model.clone() } else { model.to_string() };
+    let raw = crate::ai::generate_chat_format(&b, &m, system, &[json!({"role": "user", "content": user})], think, &Map::new(), Some(&schema)).await;
+    // quests.py _extract_json: the whole reply (fences off), else its outermost object
+    let mut t = crate::edits::py_strip_pub(&raw);
+    if t.starts_with("```") {
+        static A: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
+        let re = A.get_or_init(|| [regex::Regex::new(r"^```[a-zA-Z]*\n?").unwrap(), regex::Regex::new(r"\n?```$").unwrap()]);
+        t = re[1].replace(&re[0].replace(&t, ""), "").into_owned();
+    }
+    let invalid = || "The model's reply wasn't valid JSON — try again.".to_string();
+    let parsed = match serde_json::from_str::<Value>(&t) {
+        Ok(v) => v,
+        Err(_) => match (t.find('{'), t.rfind('}')) {
+            (Some(a), Some(z)) if z > a => serde_json::from_str::<Value>(&t[a..=z]).map_err(|_| invalid())?,
+            _ => return Err(invalid()),
+        },
+    };
+    let Value::Object(parsed) = parsed else { return Err(format!("AttributeError: '{}' object has no attribute 'get'", if parsed.is_array() { "list" } else { "str" })) };
+    let list = |k: &str| -> Result<Vec<Value>, String> {
+        match parsed.get(k) { v if !truthy(v) => Ok(vec![]), Some(Value::Array(a)) => Ok(a.clone()), Some(Value::String(_)) | Some(Value::Object(_)) => Ok(vec![]),
+            _ => Err("TypeError: object is not iterable".into()) }
+    };
+    let (new_q, upd) = (list("new_quests")?, list("quest_updates")?);
+    let statuses = ["active", "complete", "failed", "secret"];
+    let new_quests: Vec<Value> = new_q.iter().filter_map(|n| n.as_object()).filter(|n| !text(n, "title").is_empty()).take(12).map(|n| {
+        let cat = n.get("category").and_then(|c| c.as_str()).filter(|c| ["main", "side", "personal"].contains(c)).unwrap_or("side");
+        json!({"title": take(&text(n, "title"), 256), "summary": take(&text(n, "summary"), 512), "category": cat})
+    }).collect();
+    let updates: Vec<Value> = upd.iter().filter_map(|u| u.as_object())
+        .filter_map(|u| u.get("quest_id").filter(|v| v.is_i64() || v.is_u64()).and_then(|v| v.as_i64()).filter(|q| quest_ids.contains(q)).map(|q| (q, u)))
+        .take(24).map(|(q, u)| {
+            let st = u.get("status").and_then(|c| c.as_str()).filter(|c| statuses.contains(c)).unwrap_or("active");
+            json!({"quest_id": q, "status": st, "note": take(&text(u, "note"), 512)})
+        }).collect();
+    Ok(json!({"new_quests": new_quests, "quest_updates": updates}))
 }

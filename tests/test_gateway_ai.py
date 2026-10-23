@@ -1904,3 +1904,82 @@ def test_map_marker_drafts_are_pythons(client, seed, studio):
         r = side.post(f"/api/maps/{slug}/ai-markers/start", json={"prompt": "  "})
         assert (r.status_code, r.json()) == (400, {"detail": "Describe what to place first"})
     studio.reply_seq = None
+
+
+def test_cockpit_find_is_pythons(client, seed, studio):
+    """/api/cockpit/ai/find/start and its poll: the focus (free text or an entity), the lore, the candidate board, the results checked
+    against the real candidates - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import Entity
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        a = Entity(world_id=w, kind="character", name="Vex the Fence", summary="Buys stolen relics " * 10, body="Lives by the docks.")
+        b = Entity(world_id=w, kind="location", name="Dockside", summary="")
+        db.add_all([a, b])
+        db.commit()
+        ids = (a.id, b.id)
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    reply = _reply("```json\n" + json.dumps({"results": [{"id": ids[1], "reason": "Docks " * 80}, {"id": str(ids[1])}, {"id": 999999}, {"id": "x"}, "junk"]}) + "\n```")
+    cases = [({"query": "who buys relics at the docks"}, [reply]), ({"entity_id": ids[0], "query": "allies"}, [reply]), ({"entity_id": ids[0]}, [_reply("none")])]
+    for i, (body, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/api/cockpit/ai/find/start", json=body)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/api/cockpit/ai/find/{r.json()['job_id']}")
+            out.append((p.status_code, p.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2])
+        assert out[1][3:] == ("gateway", "gateway"), i
+    for side in (gm, _via(gm, base)):
+        r = side.post("/api/cockpit/ai/find/start", json={"query": " "})
+        assert (r.status_code, r.json()["detail"]) == (400, "Type what to look for first — or seed me from an entity card.")
+    studio.reply_seq = None
+
+
+def test_quest_sync_is_pythons(client, seed, studio):
+    """/api/quests/suggest/start and its poll: the session material (summary, transcript tail, facts), the quest board, the lore, the
+    suggestions filtered to real quests - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import Fact, GameSession, Quest
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        q1 = Quest(world_id=w, title="Find the relic", status="active", category="main", summary="It is lost " * 30)
+        gs = GameSession(world_id=w, session_num=7, title="Ruins", live_transcript="GM: You find the relic. " * 400)
+        db.add_all([q1, gs])
+        db.flush()
+        db.add(Fact(world_id=w, game_session_id=gs.id, content="The relic was found."))
+        bare = GameSession(world_id=w, session_num=8, title="Empty")
+        db.add(bare)
+        db.commit()
+        qid, sid, bare_id = q1.id, gs.id, bare.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    reply = _reply(json.dumps({"new_quests": [{"title": " The Black Gate ", "summary": "x" * 600, "category": "weird"}, {"title": ""}, "junk"],
+                               "quest_updates": [{"quest_id": qid, "status": "complete", "note": " Found "}, {"quest_id": 999999}, {"quest_id": str(qid)},
+                                                 {"quest_id": qid, "status": "odd"}]}))
+    cases = [({"session_id": sid, "think": False}, [reply]), ({"text": "They burned the bridge.", "use_rag": False}, [_reply("```\n" + json.dumps({"new_quests": "abc"}) + "\n```")]),
+             ({"session_id": bare_id}, [_reply("no json")])]
+    for i, (body, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/api/quests/suggest/start", json=body)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/api/quests/suggest/{r.json()['job_id']}")
+            out.append((p.status_code, p.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2])
+        assert out[1][3:] == ("gateway", "gateway"), i
+    for side in (gm, _via(gm, base)):
+        r = side.post("/api/quests/suggest/start", json={})
+        assert (r.status_code, r.json()["detail"]) == (400, "Provide session_id or text")
+    studio.reply_seq = None
