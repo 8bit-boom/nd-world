@@ -296,3 +296,27 @@ The background jobs need two processes to share one GPU and one set of job rows:
 `jobowner:<table>:<id>` marks that keep Python's sweeps off the gateway's jobs until it has been silent for ten minutes
 (`docs/RUST_JOBS.md`). The first job kind on the gateway is the AI Assist job (free-text operations), with cancel, the shutdown
 sweep and the resume at the next start.
+
+## 22. Phase 5: the rest of the jobs, the MCP server, hardware and fans
+
+The gateway now runs the remaining AI and job surfaces (batches 6-41), each with a parity test against Python:
+
+- Background jobs (`docs/RUST_JOBS.md`): chat jobs, the recap family, transcription with its chunking, retries and resume, image and
+  video jobs on Unsloth Studio, and the media renamer's durable runs.
+- In-memory AI jobs (`rust/nd-gateway/src/runners.rs`, shown on the Background Jobs page with cancel / restart / remove): map markers,
+  cockpit find, quest sync, auto-tag, the sheet-system drafter, sheet review, the character draft from a request, and the map build in
+  both modes. Plan mode runs `app/map_layout.py`'s layout with Python's own seeded randomness (MT19937), so the same plan gives the same map.
+- Synchronous AI helpers (`docs/RUST_AI.md`): mystery board, calendar, combat tactics, party insights, random tables, session prep,
+  TTS, clip transcripts, bulk parsing.
+- The MCP server (`docs/RUST_MCP.md`): the transport and all 32 tools, behind `mcp`. It does not use `rmcp`: the answers must stay the
+  Python SDK's own, byte for byte.
+- Hardware detection and setting recommendations (`GET /api/ai/hardware`), and fan control owned by the gateway behind `fans`, with
+  Python standing down under `ND_FANS_OWNER=gateway` (`docs/RUST_FANS.md`).
+
+Still Python's at the end of phase 5:
+- File uploads to the AI drafters: the character draft from a PDF, HTML, images or text sheet; the system drafter's PDF and JSON imports.
+- The legacy Ollama backend, SwarmUI and ComfyUI. Image generation is Unsloth Studio only.
+- The Settings page, which writes the Ollama server env file.
+- The King in Yellow generator.
+
+These are listed per route in the docs above.
