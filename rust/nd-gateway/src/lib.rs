@@ -14,6 +14,7 @@ pub mod ai;
 pub mod jobs;
 pub mod stt;
 pub mod tasks;
+pub mod tts;
 pub mod idpages;
 pub mod edits;
 pub mod files;

@@ -27,6 +27,10 @@ class _Fake:
         self.image_reply = (200, {"images": [{"url": "/gallery/one.png"}, {"url": "http://studio/gallery/two.png"}]})
         import base64 as _b64
         self.png = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEJMDEwMDAwAAA5vAIBl3P8SQAAAABJRU5ErkJggg==")
+        import struct as _st
+        pcm = b"\x00\x00" * 800
+        self.wav = b"RIFF" + _st.pack("<I", 36 + len(pcm)) + b"WAVEfmt " + _st.pack("<IHHIIHH", 16, 1, 1, 8000, 16000, 2, 16) + b"data" + _st.pack("<I", len(pcm)) + pcm
+        self.speech = (200, self.wav, "audio/wav")   # the text-to-speech answer: (status, body, content type)
         self.delay = 0                  # seconds before that answer
         self.reply_seq = None           # answers to give in turn first (then `reply`)
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
@@ -94,6 +98,14 @@ class _Fake:
                     return
                 req = json.loads(self.rfile.read(n))
                 fake.requests.append({"auth": self.headers.get("Authorization"), "body": req})
+                if self.path == "/v1/audio/speech":
+                    status, body, ctype = fake.speech
+                    self.send_response(status)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.path == "/v1/videos":
                     body = json.dumps(fake.video_reply).encode()
                     self.send_response(200)
@@ -1172,3 +1184,39 @@ def test_photo_import_drafts_are_pythons(client, seed, studio):
         assert out[0][:3] == out[1][:3], (i, path, out[0][:2], out[1][:2])
         assert out[1][3] == "gateway", (i, path)
     studio.reply_seq = None
+
+
+def test_text_to_speech_is_pythons(client, seed, studio):
+    """/api/ai/tts: the same speech request to Studio, the WAV kept or turned into Opus the same way, a GM-only clip saved with Python's
+    name and description - and Studio's refusal and the route's own 400s word for word."""
+    from app.database import SessionLocal
+    from app.models import AudioClip
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [
+        ({"text": " Hello there ", "name": " Greeting ", "voice": "tara", "instructions": " gruff ", "language": "en"}, None),
+        ({"text": "Hi", "model": "my/tts", "description": "x" * 300}, None),
+        ({"text": "Hi", "name": "Raw"}, (200, b"ID3fake-mp3", "audio/mpeg")),
+        ({"text": "Hi"}, (400, json.dumps({"error": {"message": "no TTS model loaded"}}).encode(), "application/json")),
+        ({"text": "   "}, None),
+        ({"text": "x" * 20001}, None),
+    ]
+    for i, (body, speech) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.speech = speech or (200, studio.wav, "audio/wav")
+            r = side.post("/api/ai/tts", json=body)
+            data = r.json()
+            clip = None
+            if r.status_code == 200:
+                db = SessionLocal()
+                try:
+                    c = db.get(AudioClip, data["id"])
+                    clip = (c.world_id, c.name, c.description, c.visible_to_players, c.file_url.rsplit(".", 1)[1])
+                finally:
+                    db.close()
+                data = {k: v for k, v in data.items() if k not in ("id", "file_url")}
+            out.append((r.status_code, data, clip, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (i, out[0][:3], out[1][:3])
+        assert out[1][4] == "gateway", i

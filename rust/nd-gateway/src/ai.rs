@@ -3653,6 +3653,8 @@ enum SyncAi {
     EntityText { b: Backend, text: String, hint: String, batch: bool },
     /// `parse_character_from_images` (character) / `parse_entity_from_images`
     Images { b: Backend, images: Vec<Vec<u8>>, hint: String, character: bool },
+    /// `/api/ai/tts`: speech saved as a GM-only clip of the world
+    Tts { cfg: std::sync::Arc<Config>, b: Backend, wid: i64, text: String, model: String, voice: String, instructions: String, language: String, name: String, description: String, body_model: String },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
     Refuse(StatusCode, String),
 }
@@ -3770,6 +3772,29 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 if entity_kinds().contains(&k) { k } else { String::new() }
             };
             SyncAi::EntityText { b: backend(&db)?, text, hint, batch }
+        }
+        "/api/ai/tts" => {
+            if !p.is_gm {
+                return None;
+            }
+            let Some(Value::String(text)) = b.get("text") else { return None };
+            let f = |k: &str| text_raw(&b, k);
+            let (name, description, voice, model, instructions, language) = (f("name")?, f("description")?, f("voice")?, f("model")?, f("instructions")?, f("language")?);
+            let text = crate::edits::py_strip_pub(text);
+            if text.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "No text to speak");
+            }
+            if text.chars().count() > 20000 {
+                return refuse(StatusCode::BAD_REQUEST, "Text too long for one TTS call (over 20k chars) — split it up");
+            }
+            let Some(wid) = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) else {
+                return refuse(StatusCode::BAD_REQUEST, "No active world");
+            };
+            let (d_model, d_voice, d_instr, d_lang) = crate::tts::prefs(cfg);
+            let or = |v: &str, d: String| { let v = crate::edits::py_strip_pub(v); if v.is_empty() { d } else { v } };
+            SyncAi::Tts { cfg: std::sync::Arc::new(cfg.clone()), b: backend(&db)?, wid, text, model: or(&model, d_model.clone()), voice: or(&voice, d_voice),
+                instructions: or(&instructions, d_instr), language: or(&language, d_lang), name, description,
+                body_model: if model.is_empty() { d_model } else { model } }
         }
         "/api/ai/generate/entity-smart" => {
             if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
@@ -3934,6 +3959,28 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             Ok(v) => ok(v),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
         },
+        SyncAi::Tts { cfg, b, wid, text, model, voice, instructions, language, name, description, body_model } => {
+            let (audio, ctype) = match crate::tts::speech(&b, &text, &model, &voice, &instructions, &language).await {
+                Ok(a) => a,
+                Err((code, m)) => return err(StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY), format!("Unsloth Studio TTS: {m}")),
+            };
+            let Some(url) = crate::tts::save(&cfg, &audio, "tts", crate::tts::audio_extension(&ctype)) else {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".into());
+            };
+            let cut = |s: &str, n: usize| crate::edits::py_strip_pub(s).chars().take(n).collect::<String>();
+            let name = { let n = cut(&name, 80); if n.is_empty() { format!("TTS {}", crate::tts::hh_mm()) } else { n } };
+            let description = { let d = cut(&description, 200); if d.is_empty() { format!("Generated speech ({body_model})") } else { d } };
+            let (n2, u2) = (name.clone(), url.clone());
+            let id = tokio::task::spawn_blocking(move || {
+                let db = crate::writes::open(&cfg)?;
+                crate::orm::insert(&db, "audio_clips", &[("world_id", rusqlite::types::Value::Integer(wid)), ("name", rusqlite::types::Value::Text(n2)),
+                    ("description", rusqlite::types::Value::Text(description)), ("file_url", rusqlite::types::Value::Text(u2)), ("visible_to_players", rusqlite::types::Value::Integer(0))])
+            }).await.ok().flatten();
+            match id {
+                Some(id) => ok(json!({"id": id, "name": name, "file_url": url, "bytes": audio.len()})),
+                None => err(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".into()),
+            }
+        }
         SyncAi::Images { b, images, hint, character } => match draft_from_images(&b, &images, &hint, character).await {
             Ok(v) => ok(v),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
@@ -3999,7 +4046,7 @@ fn images_plan(db: &rusqlite::Connection, p: &crate::layout::PageCtx, headers: &
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
-        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images")
+        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images" | "/api/ai/tts")
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }
