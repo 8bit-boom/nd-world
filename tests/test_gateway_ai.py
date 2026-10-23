@@ -1613,3 +1613,47 @@ def test_random_table_generator_is_pythons(client, seed, studio):
         assert out[0][:5] == out[1][:5], (i, out[0][:4], out[1][:4])
         assert out[1][5] == "gateway", i
     studio.reply_seq = None
+
+
+def test_session_prep_is_pythons(client, seed, studio):
+    """/api/sessions/<id>/prep/generate: the context built from the last session's recap and facts, the open quests and the party, the
+    checklist read back - an empty context and an unusable reply refused as Python does."""
+    from app.database import SessionLocal
+    from app.models import Fact, GameSession, Party, PlayerCharacter, Quest
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        prior = GameSession(world_id=w, session_num=900, title="Old Road", summary="They walked.")
+        db.add(prior)
+        db.flush()
+        db.add_all([Fact(world_id=w, game_session_id=prior.id, content="A bridge fell."), Fact(world_id=w, game_session_id=prior.id, content="Mira lied.")])
+        pc = PlayerCharacter(world_id=w, name="Ana", race="Elf", char_class="Rogue", level=2)
+        db.add(pc)
+        db.flush()
+        party = Party(world_id=w, name="Lanterns", member_pc_ids_json=json.dumps([pc.id]))
+        db.add_all([party, Quest(world_id=w, title="Zeta hunt", status="active", summary="Find it"), Quest(world_id=w, title="Alpha", status="active"),
+                    Quest(world_id=w, title="Done", status="completed")])
+        db.flush()
+        nxt = GameSession(world_id=w, session_num=901, title="Next", party_id=party.id)
+        db.add(nxt)
+        db.commit()
+        sid = nxt.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [
+        [_reply(json.dumps({"tasks": [" Prep the bridge ", "", 5, "Stat Mira"]}))],
+        [_reply(json.dumps({"tasks": "nope"}))],
+        [_reply("not json")],
+    ]
+    for i, replies in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/api/sessions/{sid}/prep/generate")
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
+        assert out[1][3] == "gateway", i
+    studio.reply_seq = None

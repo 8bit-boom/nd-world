@@ -21,6 +21,7 @@ pub fn serves(path: &str) -> bool {
         || (path.starts_with("/combat/") && path.ends_with("/ai-tactics"))
         || (path.starts_with("/parties/") && path.ends_with("/ai-insights"))
         || path == "/tables/generate-ai"
+        || (path.starts_with("/api/sessions/") && path.ends_with("/prep/generate"))
 }
 
 /// None: not one of these paths; Some(None): the request is Python's; Some(Some(f)): the gateway's answer
@@ -34,6 +35,7 @@ pub fn plan(cfg: &Config, db: &rusqlite::Connection, p: &PageCtx, path: &str, he
         _ if path.starts_with("/combat/") => tactics_plan(db, p, path),
         _ if path.starts_with("/parties/") => insights_plan(db, p, path),
         "/tables/generate-ai" => table_plan(cfg, db, p, headers, body),
+        _ if path.ends_with("/prep/generate") => prep_plan(db, p, path),
         "/calendar/ai-day" | "/calendar/ai-design" => calendar_plan(db, p, path.ends_with("/ai-design"), headers, body),
         _ => None,
     })
@@ -543,4 +545,78 @@ fn slugify(db: &rusqlite::Connection, name: &str) -> Option<String> {
         n += 1;
     }
     Some(slug)
+}
+
+// ── session prep (app/routers/sessions.py `prep_generate`) ──────────────────
+
+fn prep_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<Fut> {
+    let id: i64 = path.strip_prefix("/api/sessions/")?.strip_suffix("/prep/generate")?.parse().ok()?;
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    let gs = db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok()?;
+    // another world's session (membership and that world's section rules) stays Python's
+    if gs.get("world_id").and_then(|v| v.as_i64()) != Some(wid) || crate::pages::edit_level(p, w, "sessions") != Some(true) {
+        return None;
+    }
+    let text = |v: Option<&Value>| -> Option<String> {
+        match v { None | Some(Value::Null) => Some("None".into()), Some(Value::String(s)) => Some(s.clone()), Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()), _ => None }
+    };
+    let mut parts = vec![];
+    if let Some(num) = gs.get("session_num").filter(|v| !v.is_null()) {
+        let prior = db.query_row("SELECT * FROM game_sessions WHERE world_id = ?1 AND session_num < ?2 ORDER BY session_num DESC LIMIT 1",
+            rusqlite::params![wid, num.as_i64()?], |r| crate::layout::row_map(r)).ok();
+        if let Some(prior) = prior {
+            if crate::edits::py_truthy_pub(prior.get("summary")) {
+                parts.push(format!("Recap of the last session (#{} {}):\n{}", text(prior.get("session_num"))?, text(prior.get("title"))?, text(prior.get("summary"))?));
+            }
+            let mut st = db.prepare("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").ok()?;
+            let facts: Vec<Option<String>> = st.query_map([prior.get("id")?.as_i64()?], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+            if !facts.is_empty() {
+                parts.push(format!("Facts from the last session:\n{}", facts.iter().map(|f| format!("- {}", f.as_deref().unwrap_or("None"))).collect::<Vec<_>>().join("\n")));
+            }
+        }
+    }
+    let mut st = db.prepare("SELECT title, summary FROM quests WHERE world_id = ?1 AND status = 'active' ORDER BY title").ok()?;
+    let quests: Vec<(Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    if !quests.is_empty() {
+        let lines: Vec<String> = quests.iter().map(|(t, s)| {
+            let t = t.as_deref().unwrap_or("None");
+            match s.as_deref().filter(|s| !s.is_empty()) { Some(s) => format!("- {t}: {s}"), None => format!("- {t}") }
+        }).collect();
+        parts.push(format!("Open quests:\n{}", lines.join("\n")));
+    }
+    if let Some(party_id) = gs.get("party_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
+        let party = db.query_row("SELECT member_pc_ids_json FROM parties WHERE id = ?1", [party_id], |r| r.get::<_, Option<String>>(0)).ok();
+        let pc_ids = match party { Some(raw) => id_list(Some(&json!(raw.unwrap_or_default())))?, None => vec![] };
+        if !pc_ids.is_empty() {
+            let marks = pc_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({marks}) ORDER BY id")).ok()?;
+            let pcs: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+            if !pcs.is_empty() {
+                let lines: Option<Vec<String>> = pcs.iter().map(|pc| crate::edits::pc_digest_line(db, pc, false, true).map(|l| format!("- {l}"))).collect();
+                parts.push(format!("Party:\n{}", lines?.join("\n")));
+            }
+        }
+    }
+    let context = parts.join("\n\n");
+    if crate::edits::py_strip_pub(&context).is_empty() {
+        return refuse(StatusCode::BAD_REQUEST, "Nothing to generate from yet — add a recap/facts to a prior session, an open quest, or a party first.");
+    }
+    let b = backend(db)?;
+    let model = b.model.clone();
+    Some(Box::pin(async move {
+        let schema = json!({"type": "object", "properties": {"tasks": {"type": "array", "items": {"type": "string"}}}, "required": ["tasks"]});
+        let msgs = [json!({"role": "system", "content": crate::ai::recap_text("_SESSION_PREP_SYSTEM")}), json!({"role": "user", "content": context})];
+        let reply = match crate::ai::chat_with_schema(&b, &model, &msgs, false, &schema).await {
+            Ok(r) => r,
+            Err(e) => return detail(StatusCode::BAD_GATEWAY, e),
+        };
+        let tasks = match serde_json::from_str::<Value>(&reply) {
+            Ok(Value::Object(o)) => match o.get("tasks") { Some(Value::Array(a)) => Some(a.clone()), _ => None },
+            _ => None,
+        };
+        let Some(tasks) = tasks else { return detail(StatusCode::BAD_GATEWAY, "Could not generate a prep checklist — try again.") };
+        let tasks: Vec<String> = tasks.iter().map(|t| crate::edits::py_strip_pub(&py_str(t))).filter(|t| !t.is_empty()).collect();
+        crate::edits::json_response(&json!({"tasks": tasks})).unwrap_or_else(crash)
+    }))
 }
