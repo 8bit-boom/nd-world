@@ -90,6 +90,173 @@ impl Tpl {
         Some((hp, xp))
     }
 
+    /// `system_meta`'s binds: {field id: column} - a field's own `binds` ("name" / "player_name"), then the built-in table's for ids the
+    /// template has
+    pub fn binds(&self) -> Option<Vec<(String, String)>> {
+        let mut out: Vec<(String, String)> = vec![];
+        for f in &self.fields {
+            if let Some(col) = f.get("binds").and_then(|v| v.as_str()).filter(|c| *c == "name" || *c == "player_name") {
+                let id = f.get("id")?.as_str()?.to_string();
+                out.retain(|(k, _)| *k != id);
+                out.push((id, col.to_string()));
+            }
+        }
+        let ids = self.ids();
+        if let Some(Value::Object(b)) = self.spec.get("binds") {
+            for (fid, col) in b {
+                if ids.contains(&json!(fid)) && !out.iter().any(|(k, _)| k == fid) {
+                    out.push((fid.clone(), col.as_str()?.to_string()));
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// `enrich_fields`: the fields with the resolved vital / binds / xp written onto them
+    pub fn enrich_fields(&self) -> Option<Vec<Value>> {
+        let (hp, xp) = self.meta()?;
+        let binds = self.binds()?;
+        let mut out = vec![];
+        for f in &self.fields {
+            let mut f = f.clone();
+            let id = f.get("id").cloned().unwrap_or(Value::Null);
+            if hp.as_ref().is_some_and(|h| id == json!(h)) {
+                f.insert("vital".into(), json!("hp"));
+            }
+            if let Some((_, col)) = binds.iter().find(|(k, _)| id == json!(k)) {
+                f.insert("binds".into(), json!(col));
+            }
+            if xp.iter().any(|x| id == json!(x)) {
+                f.insert("xp".into(), json!(true));
+            }
+            out.push(Value::Object(f));
+        }
+        Some(out)
+    }
+
+    /// `system_conditions`: the condition chips the sheet offers
+    pub fn conditions(&self) -> Value {
+        if let Some(c) = self.spec.get("conditions").filter(|c| truthy(Some(c))) {
+            return c.clone();
+        }
+        if !self.custom() {
+            return json!(["Burn", "Freeze", "Toxin", "Bleeding", "Blind", "Yellow", "Charm", "Daze", "Stunned"]);
+        }
+        json!(["Bleeding", "Burning", "Blinded", "Restrained", "Stunned", "Weakened", "Vulnerable"])
+    }
+
+    /// `sheet_pages(tpl, section names)`: how the sections are grouped into the Sheet tab's pages, or Null (one long page)
+    pub fn sheet_pages(&self, names: &[String]) -> Option<Value> {
+        let mut pages: Vec<Value> = vec![];
+        let mut section_page: Vec<(String, String)> = vec![];
+        let mut cond: Option<Value> = None;
+        match self.spec.get("pages").filter(|p| truthy(Some(p))) {
+            Some(Value::Array(spec)) => {
+                for (idx, page) in spec.iter().enumerate() {
+                    let page = page.as_object()?;
+                    let pid = match page.get("id") {
+                        v if !truthy(v) => json!(format!("p{idx}")),
+                        Some(v) => v.clone(),
+                        None => unreachable!(),
+                    };
+                    let wanted = match page.get("sections") {
+                        None => vec![],
+                        Some(Value::Array(a)) => a.clone(),
+                        Some(_) => return None,
+                    };
+                    let mine: Vec<String> = wanted.iter().filter_map(|n| n.as_str()).filter(|n| names.iter().any(|x| x == n)).map(str::to_string).collect();
+                    if mine.is_empty() {
+                        continue;
+                    }
+                    let label = match page.get("label") { v if truthy(v) => v.cloned()?, _ => pid.clone() };
+                    pages.push(json!({"id": pid, "label": label, "icon": page.get("icon").cloned().unwrap_or(json!(""))}));
+                    for n in mine {
+                        section_page.retain(|(k, _)| *k != n);
+                        section_page.push((n, pid.as_str()?.to_string()));
+                    }
+                    if truthy(page.get("conditions")) {
+                        cond = Some(pid);
+                    }
+                }
+                let rest: Vec<&String> = names.iter().filter(|n| !section_page.iter().any(|(k, _)| k == *n)).collect();
+                if !rest.is_empty() {
+                    pages.push(json!({"id": "more", "label": "More", "icon": "➕"}));
+                    for n in rest {
+                        section_page.push((n.clone(), "more".into()));
+                    }
+                }
+            }
+            Some(_) => return None,
+            None if names.len() >= 4 => {
+                for (i, n) in names.iter().enumerate() {
+                    pages.push(json!({"id": format!("s{i}"), "label": n, "icon": ""}));
+                    section_page.push((n.clone(), format!("s{i}")));
+                }
+            }
+            None => {}
+        }
+        if pages.len() < 2 {
+            return Some(Value::Null);
+        }
+        let sp: Map<String, Value> = section_page.into_iter().map(|(k, v)| (k, json!(v))).collect();
+        Some(json!({"pages": pages, "section_page": sp, "conditions": cond.unwrap_or_else(|| pages[0]["id"].clone()), "linked": pages.last()?["id"].clone()}))
+    }
+
+    /// `_roll_cfg`'s pool mode (`dice_spec`, `pool_dice`): Null when the system has no dice rules
+    pub fn pool_roll(&self, pc: &Map<String, Value>, cf: &Map<String, Value>) -> Option<Value> {
+        let Some(Value::Object(spec)) = self.spec.get("dice") else { return Some(Value::Null) };
+        let pools = match spec.get("pools") {
+            Some(Value::Array(a)) if !a.is_empty() => a,
+            v if !truthy(v) => return Some(Value::Null),
+            _ => return None, // iterating another truthy value: Python's
+        };
+        let int_of = |v: Option<&Value>, d: i64| -> Option<i64> {
+            match v {
+                x if !truthy(x) => Some(d),
+                Some(Value::Number(n)) => n.as_i64(),
+                _ => None,
+            }
+        };
+        let mut out = vec![];
+        for p in pools {
+            let p = p.as_object()?;
+            let pid = p.get("id")?;
+            // pool_dice: the first pool with this id, its dice or its override's when the character's field matches
+            let pool = pools.iter().filter_map(|q| q.as_object()).find(|q| q.get("id") == Some(pid))?;
+            let mut dice = int_of(pool.get("dice"), 1)?;
+            if let Some(Value::Object(ov)) = pool.get("override") {
+                let field = ov.get("field").and_then(|v| v.as_str());
+                let have = match field.and_then(|f| cf.get(f)) {
+                    None => String::new(),
+                    Some(Value::String(t)) => t.clone(),
+                    Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+                    Some(_) => return None,
+                };
+                let want = match ov.get("equals") {
+                    None => String::new(),
+                    Some(Value::String(t)) => t.clone(),
+                    Some(_) => return None,
+                };
+                if !have.is_ascii() || !want.is_ascii() {
+                    return None;
+                }
+                let head = have.split(" (").next().unwrap_or("");
+                if crate::edits::py_strip_pub(head).to_ascii_lowercase() == want.to_ascii_lowercase() {
+                    dice = int_of(ov.get("dice"), dice)?;
+                }
+            }
+            out.push(json!({"id": pid, "label": p.get("label")?, "dice": dice.max(1)}));
+        }
+        let spend = match spec.get("spend") {
+            Some(Value::Object(sp)) if truthy(Some(&Value::Object(sp.clone()))) => json!({"field": sp.get("field")?, "label": sp.get("label")?,
+                "per": sp.get("per").cloned().unwrap_or(json!(1))}),
+            v if !truthy(v) => Value::Null,
+            _ => return None,
+        };
+        Some(json!({"mode": "pool", "pc_id": pc.get("id"), "pc_name": pc.get("name"), "pools": out, "threshold": spec.get("threshold").cloned().unwrap_or(json!(6)),
+            "explode": spec.get("explode").cloned().unwrap_or(json!(true)), "spend": spend}))
+    }
+
     /// `resource_tracks(fields, cf, meta)`: every resource field {id, label, current, max} (defaults for unsaved halves), the vital one
     /// first when `vital_first`
     pub fn tracks(&self, cf: &Map<String, Value>, vital_first: bool) -> Option<Vec<Value>> {

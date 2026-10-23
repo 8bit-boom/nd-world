@@ -39,8 +39,6 @@ character hub's writes, the schematic editor (writes, the GM's page, the players
 workspace) and the player cockpit. Each live write is checked to wake the same listeners as Python's.
 
 Still Python's, and why:
-- a character on a sheet template - its page (`characters/custom_sheet.html`), and anything its system touches (its Rest rules, vitals,
-  combat tracks): the custom sheet systems' engine (`app/sheet_systems.py`) is not ported;
 - the AI and chronicler streams - phase 5, with the other AI work.
 
 ## Phase 4, full port: the table tools' writes
@@ -90,3 +88,4 @@ the named signals (`sig:<world>:combat` ...) in `shared_state` move by the same 
 | `GET /maps/schematic/<slug>/bg.webp` (a strict-secrecy map's picture with the unseen squares painted over: libwebp at quality 88 as Pillow; the Lanczos resize is not bit-identical to Pillow's - measured mean difference 0.08-0.45 of 255 per channel, the same squares hidden) | P4-37 |
 | The custom sheet systems' engine (`rust/nd-gateway/src/sheets.rs`: `app/sheet_systems.py`'s system spec with the built-in table, fields, meta, resource tracks with their defaults, the vital track, Rest rules) - used by the party vitals (`_member_vitals` for every character, the cockpits and the hub roster) and by the hub's Rest and its undo on a custom system | P4-38 |
 | Characters on a custom system in a fight (`pc_to_combatant`, `_vital_track`, `_extra_tracks`): the party launch, the fight pickers of the tracker and the map editor, adding a character to a fight | P4-39 |
+| `GET /characters/<id>` for a character on a sheet template: a custom system's page (`characters/custom_sheet.html`: `enrich_fields`, sections and `sheet_pages`, the condition chips, pool dice with their override) and an N&D-mode template's extra fields | P4-40 |

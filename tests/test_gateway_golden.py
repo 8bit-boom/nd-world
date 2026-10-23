@@ -1681,3 +1681,41 @@ def test_combat_tracker_with_custom_system_candidates_is_pythons(client, seed):
         db.close()
     d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     assert _same_page(d, _via(d, base), f"/combat/{cid}", "gm")
+
+
+def test_character_sheet_on_custom_systems_is_pythons(client, seed):
+    from .conftest import PLAYER_PASSWORD
+    from app.models import PlayerCharacter, SheetTemplate, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fields = [{"id": "hunter", "label": "Hunter", "type": "text", "section": "Who"}, {"id": "health", "label": "Health (0 = Broken)", "type": "resource",
+               "default_value": "6/6", "section": "Body"}, {"id": "stamina", "label": "Stamina", "type": "resource", "default_value": "3/5", "section": "Body"},
+              {"id": "kind", "label": "Kind", "type": "select", "options": ["Mortal", "God"], "section": "Who"}, {"id": "xpCurrent", "label": "XP", "type": "number", "section": "Growth"},
+              {"id": "gear", "label": "Gear", "type": "list", "section": "Gear"}, {"id": "notes", "label": "Notes", "type": "textarea"}]
+    system = {"dice": {"threshold": 5, "pools": [{"id": "p0", "label": "Roll", "dice": 2, "override": {"field": "kind", "equals": "God", "dice": 3}}],
+                       "spend": {"field": "stamina", "label": "Stamina", "per": 1}},
+              "rest": {"long": [["full", "stamina"]]}, "conditions": ["Marked", "Prone"]}
+    db = SessionLocal()
+    try:
+        db.get(World, w).players_see_party = True
+        own = SheetTemplate(name="Moonlight <m>", slug="cs-own", sheet_mode="custom", fields_json=json.dumps(fields), system_json=json.dumps(system))
+        builtin = db.query(SheetTemplate).filter(SheetTemplate.slug == "hunt-in-the-moonlight").first()   # the seeded built-in system
+        ndtpl = SheetTemplate(name="N&D extra", slug="cs-nd", sheet_mode="nd", fields_json=json.dumps([{"id": "oath", "label": "Oath", "type": "text"}]))
+        db.add_all([own, ndtpl])
+        db.flush()
+        pcs = [PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Moon", sheet_template_id=own.id,
+                               custom_fields_json=json.dumps({"kind": "God (old)", "health_current": 2, "notes": "<b>"}), conditions_json='["Marked", "marked", "Prone"]'),
+               PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Built", sheet_template_id=builtin.id),
+               PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Extra", sheet_template_id=ndtpl.id, custom_fields_json='{"oath": "x"}',
+                               stats_json=json.dumps([{"id": "str", "value": 2}]))]
+        db.add_all(pcs)
+        db.commit()
+        ids = [p.id for p in pcs]
+    finally:
+        db.close()
+    served = 0
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for i in ids:
+            served += _same_page(d, _via(d, base), f"/characters/{i}", email)
+    assert served == 6, served

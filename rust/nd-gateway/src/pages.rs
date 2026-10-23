@@ -1613,8 +1613,9 @@ pub fn character_sheet(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         return None;
     }
     let ctx = crate::edits::character_sheet_ctx(&db, &p, &pc)?;
+    let template = if ctx.contains_key("sections") { "characters/custom_sheet.html" } else { "characters/sheet.html" };
     p.ctx.extend(ctx);
-    render_with(pages, "characters/sheet.html", p.ctx, headers)
+    render_with(pages, template, p.ctx, headers)
 }
 
 /// `GET /maps/schematic/<slug>/bg.webp` (`map_strict.mask_image`): the picture of a strict-secrecy map with every square the party has

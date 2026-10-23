@@ -2993,6 +2993,10 @@ fn pc_carry_limit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 /// Python's `bool(v)` for a JSON value
+pub fn py_strip_pub(t: &str) -> String {
+    strip(t)
+}
+
 pub fn py_truthy_pub(v: Option<&Value>) -> bool {
     py_truthy(v)
 }
@@ -11351,9 +11355,7 @@ fn list_col(pc: &Map<String, Value>, col: &str) -> Option<Vec<Value>> {
 /// The context of `characters/sheet.html` for an N&D character without a sheet template, viewed by someone who may see it; None for
 /// anything Python's own page would read its own way
 pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
-    if pc.get("sheet_template_id").is_some_and(|v| !v.is_null()) {
-        return None;
-    }
+    let tpl = crate::sheets::pc_template(db, pc)?;
     let pid = pc.get("id")?.as_i64()?;
     let wid = pc.get("world_id")?.as_i64()?;
     let owner = pc.get("owner_user_id").and_then(|v| v.as_i64());
@@ -11364,6 +11366,9 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
         if see.unwrap_or(0) == 0 || owner.is_none() {
             return None;
         }
+    }
+    if let Some(t) = tpl.as_ref().filter(|t| t.custom()) {
+        return character_custom_sheet_ctx(db, p, pc, t, can_manage);
     }
     // _derived
     let stats = list_col(pc, "stats_json")?;
@@ -11447,31 +11452,26 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
     ctx.insert("mp_current".into(), json!(col_int(pc, "mp_current")));
     ctx.insert("minor_edge".into(), json!(text("minor_edge")));
     ctx.insert("major_edge".into(), json!(text("major_edge")));
-    ctx.insert("chosen_template".into(), Value::Null);
-    ctx.insert("tpl_fields".into(), json!([]));
+    ctx.insert("chosen_template".into(), tpl.as_ref().map_or(Value::Null, |t| Value::Object(t.row.clone())));
+    ctx.insert("tpl_fields".into(), match &tpl { Some(t) => Value::Array(t.enrich_fields()?), None => json!([]) });
     let cf_raw = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
     ctx.insert("custom_fields".into(), canonical_json(cf_raw)?);
-    ctx.insert("condition_presets".into(), json!(["Burn", "Freeze", "Toxin", "Bleeding", "Blind", "Yellow", "Charm", "Daze", "Stunned"]));
+    ctx.insert("condition_presets".into(), match &tpl { Some(t) => t.conditions(), None => json!(["Burn", "Freeze", "Toxin", "Bleeding", "Blind", "Yellow", "Charm", "Daze", "Stunned"]) });
     ctx.insert("can_manage".into(), json!(can_manage));
-    let rows = |sql: &str, params: &[i64]| -> Option<Vec<Value>> {
-        let mut st = db.prepare(sql).ok()?;
-        let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-        Some(r.into_iter().map(Value::Object).collect())
-    };
-    let members = if p.is_gm {
-        rows("SELECT u.* FROM users u JOIN world_memberships m ON m.user_id = u.id WHERE m.world_id = ?1 AND u.is_gm = 0 ORDER BY u.display_name", &[wid])?
-    } else {
-        vec![]
-    };
-    ctx.insert("world_members".into(), Value::Array(members));
     let data = nd_render::app::data();
     ctx.insert("equipment_catalog".into(), data.get("catalog_equipment")?.clone());
     ctx.insert("feats_catalog".into(), data.get("catalog_feats")?.clone());
-    ctx.insert("linked_sheets".into(), Value::Array(rows("SELECT * FROM character_sheets WHERE player_character_id = ?1", &[pid])?));
-    ctx.insert("levelup_ready".into(), json!(level < 20 && xp >= XP_THRESHOLDS[level.min(19) as usize]));
+    sheet_people_ctx(db, p, pid, wid, &mut ctx)?;
+    let native = pc_maxima(db, pc)?.4;
+    ctx.insert("levelup_ready".into(), json!(level < 20 && native && xp >= XP_THRESHOLDS[level.min(19) as usize]));
     ctx.insert("carry".into(), carry_info(db, pc, &equipment)?);
     // _roll_cfg (the owner's or the GM's roll sheet: Stat + d10)
-    let roll = if can_manage {
+    let roll = if can_manage && !native {
+        match &tpl {
+            Some(t) => t.pool_roll(pc, &crate::sheets::custom_fields(pc)?)?,
+            None => Value::Null,
+        }
+    } else if can_manage {
         let names = [("str", "Strength"), ("dex", "Dexterity"), ("bod", "Body"), ("per", "Perception"), ("wil", "Willpower"), ("int", "Intellect"), ("cha", "Charisma"), ("itu", "Intuition")];
         let mut by_id: Vec<(String, i64)> = vec![];
         for x in stats.iter().filter_map(|x| x.as_object()) {
@@ -11491,6 +11491,20 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
         Value::Null
     };
     ctx.insert("roll_cfg".into(), roll);
+    sheet_hub_ctx(db, p, pc, &mut ctx)?;
+    Some(ctx)
+}
+
+/// The player hub's part of a character page (`journey_context`): the owner's, or a GM looking in
+fn sheet_hub_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, Value>, ctx: &mut Map<String, Value>) -> Option<()> {
+    let pid = pc.get("id")?.as_i64()?;
+    let wid = pc.get("world_id")?.as_i64()?;
+    let owner = pc.get("owner_user_id").and_then(|v| v.as_i64());
+    let rows = |sql: &str, params: &[i64]| -> Option<Vec<Value>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r.into_iter().map(Value::Object).collect())
+    };
     // the player hub (the owner's, or a GM looking in)
     let hub_mode = if owner == Some(p.user_id) { Some("owner") } else if p.is_gm { Some("gm") } else { None };
     ctx.insert("hub_enabled".into(), json!(hub_mode.is_some()));
@@ -11554,7 +11568,68 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
     ctx.insert("hub_roster".into(), Value::Array(hub_roster));
     ctx.insert("hub_xp_ledger".into(), Value::Array(hub_ledger));
     ctx.insert("hub_sessions".into(), Value::Array(hub_sessions));
+    Some(())
+}
+
+/// The context of `characters/custom_sheet.html`: a character on a custom sheet system (its sections grouped into pages, its pool dice)
+fn character_custom_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, Value>, t: &crate::sheets::Tpl, can_manage: bool) -> Option<Map<String, Value>> {
+    let pid = pc.get("id")?.as_i64()?;
+    let wid = pc.get("world_id")?.as_i64()?;
+    let conds = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(v) => json!(clean_conditions(&v)?),
+        Err(_) => json!([]),
+    };
+    let fields = t.enrich_fields()?;
+    // _group_by_section of the fields without binds: (section, fields) in first-seen order
+    let mut sections: Vec<(String, Vec<Value>)> = vec![];
+    for f in fields.iter().filter(|f| !py_truthy(f.get("binds"))) {
+        let sec = match f.get("section") {
+            Some(Value::String(t)) if !t.is_empty() => t.clone(),
+            v if !py_truthy(v) => "Custom".to_string(),
+            _ => return None,
+        };
+        match sections.iter_mut().find(|(n, _)| *n == sec) {
+            Some((_, list)) => list.push(f.clone()),
+            None => sections.push((sec, vec![f.clone()])),
+        }
+    }
+    let names: Vec<String> = sections.iter().map(|(n, _)| n.clone()).collect();
+    let cf_raw = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+    let cf_value = canonical_json(cf_raw)?;
+    let cf = match &cf_value { Value::Object(o) => o.clone(), _ => Map::new() };
+    let mut ctx = Map::new();
+    ctx.insert("pc".into(), Value::Object(pc.clone()));
+    ctx.insert("can_manage".into(), json!(can_manage));
+    ctx.insert("conditions".into(), conds);
+    ctx.insert("condition_presets".into(), t.conditions());
+    ctx.insert("chosen_template".into(), Value::Object(t.row.clone()));
+    ctx.insert("sections".into(), Value::Array(sections.into_iter().map(|(n, f)| json!([n, f])).collect()));
+    ctx.insert("sheet_pages".into(), t.sheet_pages(&names)?);
+    ctx.insert("tpl_fields".into(), Value::Array(fields));
+    ctx.insert("custom_fields".into(), cf_value);
+    sheet_people_ctx(db, p, pid, wid, &mut ctx)?;
+    pc.get("level")?.as_i64()?;
+    ctx.insert("levelup_ready".into(), json!(false)); // levels and XP thresholds are N&D rules
+    ctx.insert("roll_cfg".into(), if can_manage { t.pool_roll(pc, &cf)? } else { Value::Null });
+    sheet_hub_ctx(db, p, pc, &mut ctx)?;
     Some(ctx)
+}
+
+/// The GM's owner picker (`_assignable_members`) and the linked fillable sheets
+fn sheet_people_ctx(db: &Connection, p: &crate::layout::PageCtx, pid: i64, wid: i64, ctx: &mut Map<String, Value>) -> Option<()> {
+    let rows = |sql: &str, params: &[i64]| -> Option<Vec<Value>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r.into_iter().map(Value::Object).collect())
+    };
+    let members = if p.is_gm {
+        rows("SELECT u.* FROM users u JOIN world_memberships m ON m.user_id = u.id WHERE m.world_id = ?1 AND u.is_gm = 0 ORDER BY u.display_name", &[wid])?
+    } else {
+        vec![]
+    };
+    ctx.insert("world_members".into(), Value::Array(members));
+    ctx.insert("linked_sheets".into(), Value::Array(rows("SELECT * FROM character_sheets WHERE player_character_id = ?1", &[pid])?));
+    Some(())
 }
 
 /// `schematic_payload.strict_view`: the View when strict secrecy is on (newly explored squares recorded), Some(None) when it is off
