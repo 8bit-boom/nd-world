@@ -3368,3 +3368,243 @@ pub async fn image_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
         crate::edits::json_response(&json!({"ok": true}))
     }).await.ok()?
 }
+
+// ── AI video generation on Unsloth Studio (POST /api/video-jobs/start; app/video_jobs.py) ──
+
+/// `str(x or "").strip()` for a body field: None when Python's str() of it is not something this port writes the same way
+fn py_str_or_blank(v: Option<&Value>) -> Option<String> {
+    match v {
+        v if !crate::edits::py_truthy_pub(v) => Some(String::new()),
+        Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)),
+        Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// `_video_job_to_dict`
+fn video_job_dict(db: &rusqlite::Connection, id: i64) -> Option<Value> {
+    let (prompt, status, error, vid, clip, created): (Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>) =
+        db.query_row("SELECT prompt, status, error, studio_video_id, clip_id, created_at FROM video_jobs WHERE id = ?1", [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).ok()?;
+    let iso = |t: String| { let t = t.replacen(' ', "T", 1); t.strip_suffix(".000000").map(str::to_string).unwrap_or(t) };
+    let mut out = json!({"id": id, "prompt": prompt.unwrap_or_default(), "status": status.filter(|s| !s.is_empty()).unwrap_or_else(|| "pending".into()),
+        "error": error.unwrap_or_default(), "studio_video_id": vid.unwrap_or_default(), "clip_id": clip, "created_at": created.map(iso)});
+    if let Some(c) = clip {
+        if let Ok((url, name)) = db.query_row("SELECT file_url, name FROM video_clips WHERE id = ?1", [c], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))) {
+            out["clip_url"] = json!(url);
+            out["clip_name"] = json!(name);
+        }
+    }
+    Some(out)
+}
+
+fn video_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<(i64, Value)> {
+    let db = crate::writes::open(cfg)?;
+    let (p, wid) = assist_caller(&db, cfg, uri, headers)?;
+    if crate::pages::edit_level(&p, p.world.as_ref()?, "video") != Some(true) {
+        return None;
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let prompt = py_str_or_blank(b.get("prompt"))?;
+    if prompt.is_empty() || prompt.chars().count() > 4000 {
+        return None; // Python's 400s
+    }
+    backend(&db)?;
+    let seconds = b.get("seconds").cloned().unwrap_or(Value::Null);
+    if matches!(seconds, Value::Number(ref n) if !n.is_i64()) {
+        return None; // a decimal: json.dumps' spelling of it is Python's
+    }
+    let mut params = Map::new();
+    params.insert("prompt".into(), json!(prompt));
+    params.insert("model".into(), json!(py_str_or_blank(b.get("model"))?));
+    params.insert("seconds".into(), seconds);
+    params.insert("size".into(), json!(py_str_or_blank(b.get("size"))?));
+    params.insert("name".into(), json!(py_str_or_blank(b.get("name"))?));
+    use rusqlite::types::Value as Sql;
+    let id = crate::orm::insert(&db, "video_jobs", &[("world_id", Sql::Integer(wid)), ("prompt", Sql::Text(prompt)),
+        ("params_json", Sql::Text(nd_render::py_dumps(&Value::Object(params)))), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("status", Sql::Text("pending".into()))])?;
+    Some((id, video_job_dict(&db, id)?))
+}
+
+/// `POST /api/video-jobs/start`: {id, job}, the generation run here
+pub async fn video_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let (id, job) = tokio::task::spawn_blocking(move || video_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    start_video_job(id);
+    crate::edits::json_response(&json!({"id": id, "job": job}))
+}
+
+fn start_video_job(id: i64) {
+    crate::jobs::spawn("video_jobs", id, async move {
+        run_video_job(id).await;
+        crate::jobs::Ended::Final
+    });
+}
+
+/// video_jobs' resume for one row: back to pending, the poll re-attached to the Studio generation
+pub fn restart_video_job(db: &rusqlite::Connection, id: i64) -> Option<()> {
+    use rusqlite::types::Value as Sql;
+    let resumed: i64 = db.query_row("SELECT COALESCE(resumed_count, 0) FROM video_jobs WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+    crate::orm::update(db, "video_jobs", id, &[("resumed_count", Sql::Integer(resumed + 1)), ("status", Sql::Text("pending".into()))])?;
+    start_video_job(id);
+    Some(())
+}
+
+/// `_extract_video_id`
+fn video_id_of(v: &Value) -> String {
+    let id = |x: Option<&Value>| match x { Some(Value::String(s)) => Some(s.clone()), Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()), _ => None };
+    let Value::Object(o) = v else { return String::new() };
+    for k in ["id", "video_id", "job_id"] {
+        if let Some(s) = id(o.get(k)) { return s; }
+    }
+    for w in ["data", "video", "job"] {
+        match o.get(w) {
+            Some(Value::Object(inner)) => {
+                let v = inner.get("id").filter(|v| crate::edits::py_truthy_pub(Some(v))).or_else(|| inner.get("video_id"));
+                if let Some(s) = id(v) { return s; }
+            }
+            Some(Value::Array(a)) => {
+                if let Some(s) = a.first().and_then(|f| f.as_object()).and_then(|f| id(f.get("id"))) { return s; }
+            }
+            _ => {}
+        }
+    }
+    String::new()
+}
+
+/// `_entry_state`: failed / done / running from an entry's status words or its content url
+fn video_state(e: &Map<String, Value>) -> &'static str {
+    let tokens_match = |v: &str, marks: &[&str]| v.split(|c: char| c.is_whitespace() || c == '_' || c == '-').filter(|t| !t.is_empty()).any(|t| marks.iter().any(|m| t.starts_with(m)));
+    for k in ["status", "state", "phase"] {
+        let v = match e.get(k) { Some(Value::String(s)) => s.to_lowercase(), Some(v) if crate::edits::py_truthy_pub(Some(v)) => v.to_string().to_lowercase(), _ => String::new() };
+        if v.is_empty() { continue; }
+        if tokens_match(&v, &["fail", "error", "cancel"]) { return "failed"; }
+        if tokens_match(&v, &["succeed", "done", "complete", "ready"]) { return "done"; }
+        return "running";
+    }
+    if ["content_url", "video_url", "output_url"].iter().any(|k| crate::edits::py_truthy_pub(e.get(*k))) { "done" } else { "running" }
+}
+
+/// video_jobs' `_run_job`: the generation (started, or the one the row remembers), polled until done, the file kept as a clip
+async fn run_video_job(id: i64) {
+    let Some(_slot) = crate::jobs::slot("video job").await else { return };
+    let Some(cfg) = crate::jobs::cfg() else { return };
+    use rusqlite::types::Value as Sql;
+    let set = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        std::thread::spawn(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "video_jobs", id, &fields); } }).join().ok();
+    };
+    let c = cfg.clone();
+    let prep = tokio::task::spawn_blocking(move || -> Option<(Option<Backend>, String, Map<String, Value>, Option<String>, i64)> {
+        let db = crate::writes::open(&c)?;
+        let (vid, params, prompt, wid): (Option<String>, Option<String>, Option<String>, i64) = db.query_row(
+            "SELECT studio_video_id, params_json, prompt, world_id FROM video_jobs WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()?;
+        let params = serde_json::from_str::<Value>(params.as_deref().unwrap_or("{}")).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        Some((backend(&db), vid.unwrap_or_default(), params, prompt, wid))
+    }).await.ok().flatten();
+    let Some((b, mut vid, params, prompt, wid)) = prep else { return };
+    let fail = |m: String| set(vec![("status", Sql::Text("error".into())), ("error", Sql::Text(m))]);
+    let Some(b) = b else { return fail("No Unsloth backend configured — set UNSLOTH_API_KEY (Settings → System)".into()) };
+    set(vec![("status", Sql::Text("generating".into()))]);
+    if vid.is_empty() {
+        let mut body = json!({"prompt": params.get("prompt").and_then(|v| v.as_str()).unwrap_or("")});
+        for k in ["model", "seconds", "size"] {
+            if let Some(v) = params.get(k).filter(|v| crate::edits::py_truthy_pub(Some(v))) { body[k] = v.clone(); }
+        }
+        match studio(&b, "POST", "/v1/videos", Some(&body)).await {
+            Ok(r) => vid = video_id_of(&r),
+            Err(e) => return fail(e.map(|e| e.1).unwrap_or_else(|| "/v1/videos".into())),
+        }
+        if vid.is_empty() {
+            return fail("Studio accepted the video request but returned no generation id — its /v1/videos response shape isn't one nd-world recognizes (see docs/UNSLOTH_PHASE0_FINDINGS.md); update nd-world once verified.".into());
+        }
+        set(vec![("studio_video_id", Sql::Text(vid.clone()))]);
+    }
+    // _poll_until_done
+    let max_wait = env("ND_VIDEO_JOB_MAX_SECONDS").parse::<f64>().unwrap_or(4.0 * 3600.0);
+    let deadline = Instant::now() + Duration::from_secs_f64(max_wait);
+    let mut errors = 0;
+    loop {
+        let listing = match studio(&b, "GET", "/v1/videos", None).await {
+            Ok(l) => { errors = 0; Some(l) }
+            Err(e) => {
+                errors += 1;
+                if errors >= 30 { return fail(e.map(|e| e.1).unwrap_or_else(|| "/v1/videos".into())); }
+                None
+            }
+        };
+        let entries = listing.as_ref().map(|l| if l.is_object() { l.get("data").cloned().unwrap_or(Value::Null) } else { l.clone() });
+        let entry = entries.as_ref().and_then(|e| e.as_array()).and_then(|a| a.iter().filter_map(|e| e.as_object())
+            .find(|e| match e.get("id") { Some(Value::String(s)) => *s == vid, Some(Value::Number(n)) => n.to_string() == vid, _ => false }).cloned());
+        if let Some(e) = entry {
+            match video_state(&e) {
+                "failed" => {
+                    let m = e.get("error").filter(|v| crate::edits::py_truthy_pub(Some(v))).or_else(|| e.get("status").filter(|v| crate::edits::py_truthy_pub(Some(v))))
+                        .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_else(|| "generation failed".into());
+                    return fail(format!("Studio video generation failed: {m}"));
+                }
+                "done" => break,
+                _ => {}
+            }
+        }
+        if Instant::now() >= deadline {
+            return fail(format!("Video generation did not finish within {:.1} h (ND_VIDEO_JOB_MAX_SECONDS) — it may still complete on the Studio side; try again with a shorter clip or raise the limit.", max_wait / 3600.0));
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+    set(vec![("status", Sql::Text("fetching".into()))]);
+    let Some(req) = backend_request(&b, "GET", &format!("/v1/videos/{vid}/content"), None) else { return };
+    let resp = match client().request(req).await {
+        Ok(r) => r,
+        Err(e) => return fail(format!("Unsloth Studio unreachable: ConnectError: {e}")),
+    };
+    let status = resp.status().as_u16();
+    let ctype = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("video/mp4").to_lowercase();
+    let bytes = match resp.into_body().collect().await { Ok(c) => c.to_bytes(), Err(e) => return fail(format!("Unsloth Studio unreachable: ReadError: {e}")) };
+    if status >= 400 {
+        return fail(crate::stt::studio_message_pub(&bytes, status));
+    }
+    if bytes.is_empty() {
+        return fail("Studio returned an empty video file".into());
+    }
+    let ext = if ctype.contains("webm") { ".webm" } else if ctype.contains("quicktime") { ".mov" } else { ".mp4" };
+    let c = cfg.clone();
+    let done = tokio::task::spawn_blocking(move || -> Option<()> {
+        let dir = c.db_path.parent()?.join("uploads").join("video");
+        std::fs::create_dir_all(&dir).ok()?;
+        let fname = format!("ai-video-{:08x}{ext}", rand::random::<u32>());
+        std::fs::write(dir.join(&fname), &bytes).ok()?;
+        let db = crate::writes::open(&c)?;
+        let given: String = params.get("name").and_then(|v| v.as_str()).map(|n| crate::edits::py_strip_pub(n).chars().take(250).collect()).unwrap_or_default();
+        let prompt = prompt.unwrap_or_default();
+        let name = if given.is_empty() { (if prompt.is_empty() { "AI video".to_string() } else { prompt.clone() }).chars().take(60).collect() } else { given };
+        let clip = crate::orm::insert(&db, "video_clips", &[("world_id", Sql::Integer(wid)), ("name", Sql::Text(name)),
+            ("description", Sql::Text(format!("Generated by Unsloth Studio — {prompt}").chars().take(500).collect())),
+            ("file_url", Sql::Text(format!("/uploads/video/{fname}"))), ("visible_to_players", Sql::Integer(0))])?;
+        crate::orm::update(&db, "video_jobs", id, &[("status", Sql::Text("done".into())), ("clip_id", Sql::Integer(clip))])?;
+        Some(())
+    }).await.ok().flatten();
+    if done.is_none() {
+        fail("could not keep the generated video".into());
+    }
+}
+
+/// `POST /api/video-jobs/<id>/cancel` for a video job running here
+pub async fn video_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let id: i64 = uri.path().strip_prefix("/api/video-jobs/")?.strip_suffix("/cancel")?.parse().ok()?;
+    if !crate::jobs::is_running("video_jobs", id) {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+        let db = crate::writes::open(&cfg)?;
+        let (_, wid) = assist_caller(&db, &cfg, &uri, &headers)?;
+        let status: String = db.query_row("SELECT status FROM video_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+            |r| Ok(r.get::<_, Option<String>>(0)?.unwrap_or_default())).ok()?;
+        if !matches!(status.as_str(), "pending" | "generating" | "fetching") || !crate::jobs::abort("video_jobs", id) {
+            return None;
+        }
+        use rusqlite::types::Value as Sql;
+        crate::orm::update(&db, "video_jobs", id, &[("status", Sql::Text("cancelled".into())), ("error", Sql::Text("Cancelled by GM.".into()))])?;
+        crate::edits::json_response(&json!({"ok": true}))
+    }).await.ok()?
+}

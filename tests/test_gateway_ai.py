@@ -22,6 +22,8 @@ class _Fake:
         self.reply = {}                 # the answer to a request that is not streamed
         self.stt_texts = []             # speech-to-text answers in turn (None: a failure)
         self.image_refusals = 0         # "no model loaded" answers to give the image endpoint first
+        self.video_reply = {"id": "vid-1"}
+        self.video_list = {"data": [{"id": "vid-1", "status": "completed"}]}
         self.image_reply = (200, {"images": [{"url": "/gallery/one.png"}, {"url": "http://studio/gallery/two.png"}]})
         import base64 as _b64
         self.png = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEJMDEwMDAwAAA5vAIBl3P8SQAAAABJRU5ErkJggg==")
@@ -35,6 +37,18 @@ class _Fake:
                 pass
 
             def do_GET(self):
+                if self.path.startswith("/v1/videos"):
+                    fake.requests.append({"auth": self.headers.get("Authorization"), "body": {"get": self.path}})
+                    if self.path.endswith("/content"):
+                        body, ctype = b"\x00\x00\x00\x18ftypmp42fake-video", "video/mp4"
+                    else:
+                        body, ctype = json.dumps(fake.video_list).encode(), "application/json"
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.path.startswith("/gallery/"):
                     body = fake.png
                     self.send_response(200)
@@ -80,6 +94,14 @@ class _Fake:
                     return
                 req = json.loads(self.rfile.read(n))
                 fake.requests.append({"auth": self.headers.get("Authorization"), "body": req})
+                if self.path == "/v1/videos":
+                    body = json.dumps(fake.video_reply).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.path.startswith("/api/inference/images/"):
                     if self.path.endswith("/generate") and fake.image_refusals:
                         fake.image_refusals -= 1
@@ -991,3 +1013,44 @@ def test_image_jobs_on_studio_are_pythons(client, seed, studio):
         assert out[0][:2] == out[1][:2], (i, out[0][0], out[1][0], json.dumps(out[0][1]), json.dumps(out[1][1]))
         assert out[1][2] == "gateway" and all(out[0][3]) and all(out[1][3]), (i, out[1][2:], out[0][3])
     studio.image_refusals = 0
+
+
+
+def test_video_jobs_are_pythons(client, seed, studio):
+    """POST /api/video-jobs/start: the same video_jobs row and answer, the generation started on Studio, its id kept, the list polled
+    until the entry is done, the file kept as a hidden Video Library clip - or Studio's failure as the job's error."""
+    import time
+    from app.database import SessionLocal
+    from app.models import VideoClip, VideoJob
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    cases = [({"prompt": "  A dragon over the sea  ", "model": "vid/model", "seconds": 4, "size": "640x360", "name": " Sea dragon "},
+              {"data": {"id": "vid-1"}}, {"data": [{"id": "vid-1", "status": "succeeded"}]}),
+             ({"prompt": "A castle"}, {"id": "vid-1"}, {"data": [{"id": "vid-1", "status": "generation_failed", "error": "out of memory"}]}),
+             ({"prompt": "A forest", "seconds": 0}, {"nope": True}, {"data": []})]
+    for i, (body, reply, listing) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.video_reply, studio.video_list = reply, listing
+            r = side.post("/api/video-jobs/start", json=body)
+            assert r.status_code == 200, (i, r.text)
+            answer = r.json()
+            job_id = answer.pop("id")
+            answer["job"].pop("id")
+            answer["job"].pop("created_at")
+            end = time.time() + 20
+            s = SessionLocal()
+            try:
+                while time.time() < end and s.get(VideoJob, job_id).status in ("pending", "generating", "fetching"):
+                    s.expire_all()
+                    time.sleep(0.1)
+                j = s.get(VideoJob, job_id)
+                clip = s.get(VideoClip, j.clip_id) if j.clip_id else None
+                row = {"status": j.status, "error": j.error, "vid": j.studio_video_id, "params": j.params_json, "prompt": j.prompt,
+                       "clip": clip and (clip.name, clip.description, clip.visible_to_players, clip.file_url.rsplit(".", 1)[-1])}
+            finally:
+                s.close()
+            out.append((answer, row, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:3], out[1][:3])
+        assert out[1][3] == "gateway", i

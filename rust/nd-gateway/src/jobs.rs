@@ -223,15 +223,19 @@ pub const INTERRUPTED_NOTE: &str = "Paused by a server restart — the work so f
 /// chat_jobs' `_INTERRUPTED_NOTE`
 pub const CHAT_INTERRUPTED_NOTE: &str = "Paused by a server restart — it will restart automatically from the same request.";
 
+/// video_jobs' `_INTERRUPTED_NOTE`
+pub const VIDEO_INTERRUPTED_NOTE: &str = "Paused by a server restart — it will re-attach to the Studio-side generation automatically on the next boot.";
+
 /// The job tables the gateway runs jobs of, with their in-progress statuses
 const TABLES: &[(&str, &[&str])] = &[("audio_jobs", &["pending", "transcribing", "summarizing"]), ("chat_jobs", &["pending", "generating"]),
-    ("image_jobs", &["pending", "generating"])];
+    ("image_jobs", &["pending", "generating"]), ("video_jobs", &["pending", "generating", "fetching"])];
 
 fn mark_interrupted(db: &rusqlite::Connection, table: &str, id: i64) {
     use rusqlite::types::Value as Sql;
     let _ = match table {
         "audio_jobs" => crate::orm::update(db, table, id, &[("status", Sql::Text("interrupted".into())), ("error", Sql::Text(INTERRUPTED_NOTE.into())),
             ("finished_at", Sql::Text(crate::orm::now_stamp()))]),
+        "video_jobs" => crate::orm::update(db, table, id, &[("status", Sql::Text("interrupted".into())), ("error", Sql::Text(VIDEO_INTERRUPTED_NOTE.into()))]),
         // chat_jobs and image_jobs share the note
         _ => crate::orm::update(db, table, id, &[("status", Sql::Text("interrupted".into())), ("error", Sql::Text(CHAT_INTERRUPTED_NOTE.into()))]),
     };
@@ -276,7 +280,7 @@ pub fn adopt() {
                         ("error", Sql::Text(format!("Interrupted by a server restart {resumed} times in a row — resume it by hand from Background Jobs once the server is stable."))),
                         ("finished_at", Sql::Text(crate::orm::now_stamp()))])
                 } else {
-                    let again = if *table == "image_jobs" { "try generating again" } else { "try again" };
+                    let again = if *table == "image_jobs" || *table == "video_jobs" { "try generating again" } else { "try again" };
                     crate::orm::update(&db, table, id, &[("status", Sql::Text("error".into())),
                         ("error", Sql::Text(format!("Interrupted by a server restart {resumed} times in a row — {again} once the server is stable.")))])
                 };
@@ -286,6 +290,7 @@ pub fn adopt() {
             let resumed_ok = match *table {
                 "audio_jobs" => crate::ai::resume_assist_job(&db, id, false),
                 "image_jobs" => crate::ai::restart_image_job(&db, id),
+                "video_jobs" => crate::ai::restart_video_job(&db, id),
                 _ => crate::ai::restart_chat_job(&db, id),
             };
             if resumed_ok.is_none() {
