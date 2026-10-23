@@ -135,6 +135,11 @@ def make() -> dict:
                                                                                       "_CHARACTER_FROM_IMAGES_SYSTEM", "_ENTITY_FROM_IMAGES_SYSTEM", "_FIND_REPLACE_SYSTEM", "_SESSION_PREP_SYSTEM")},
         # the entity kinds the AI drafts choose from (app/constants.py KINDS)
         "entity_kinds": __import__("app.constants", fromlist=["KINDS"]).KINDS,
+        # the built-in systems' rules digests (app/game_data/systems/<slug>.md, sheet_systems.system_rules_markdown)
+        "system_digests": {p.stem: p.read_text(encoding="utf-8").strip() for p in sorted((ROOT / "app" / "game_data" / "systems").glob("*.md"))},
+        # the sheet review's focus texts (app/routers/character_ai.py)
+        "analysis_focus": __import__("app.routers.character_ai", fromlist=["_ANALYSIS_FOCUS"])._ANALYSIS_FOCUS,
+        "analysis_focus_order": list(__import__("app.routers.character_ai", fromlist=["_ANALYSIS_FOCUS"])._ANALYSIS_FOCUS),
         # the sheet-template drafter's prompt (app/template_draft.py)
         "template_draft_system": __import__("app.template_draft", fromlist=["DRAFT_SYSTEM"]).DRAFT_SYSTEM,
         # the bundled core rules (retrieval.world_rules_markdown for a world with no rules of its own)

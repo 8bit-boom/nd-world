@@ -219,3 +219,11 @@ pub fn poll(kind: &'static str, id: i64) -> Option<Map<String, Value>> {
         _ => None,
     }
 }
+
+/// A job of this kind whose status dict matches (the lowest id)
+pub fn find(kind: &'static str, pred: impl Fn(&Map<String, Value>) -> bool) -> Option<i64> {
+    let s = store().lock().ok()?;
+    let mut ids: Vec<i64> = s.entries.iter().filter(|((k, _), v)| *k == kind && v.as_object().is_some_and(&pred)).map(|((_, i), _)| *i).collect();
+    ids.sort();
+    ids.first().copied()
+}

@@ -2072,3 +2072,49 @@ def test_system_draft_is_pythons(client, seed, studio):
         r = side.post("/api/sheet-templates/ai/start", files={"file": ("rules.docx", b"x")})
         assert (r.status_code, r.json()["detail"]) == (400, "Word documents aren't readable here — export the rules to PDF or plain text, or paste them.")
     studio.reply_seq = None
+
+
+def test_sheet_review_is_pythons(client, seed, studio):
+    """/api/characters/<id>/analyze and its poll: the rules the character plays by (the world's for a native sheet, the system's digest
+    for a custom one), the sheet as its .md export writes it, the lore, the reply clamped - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        native = PlayerCharacter(world_id=w, name="Ana", player_name="Archie", race="Elf", char_class="Rogue", level=3, xp=120, current_hp=7,
+                                 stats_json=json.dumps([{"id": "str", "label": "Strength", "value": 3}, {"id": "dex", "value": "4"}, {"id": "wil", "value": 2}]),
+                                 equipment_json=json.dumps([{"name": "Rope", "qty": 2, "notes": "silk"}, {"name": "Torch"}]), feats_json=json.dumps([{"name": "Quick", "description": "Fast"}]),
+                                 currency_json=json.dumps([{"abbr": "gp", "value": 12}]), conditions_json=json.dumps(["Prone"]), backstory="  Raised by wolves.  ", ideals="Freedom")
+        tpl = SheetTemplate(world_id=w, name="Moonlit", slug=f"moonlit-r-{w}", sheet_mode="custom", rules_md="Roll 2d6.",
+                            fields_json=json.dumps([{"id": "hp", "label": "Health (0 = down)", "type": "resource", "default_value": "5/5", "section": "Vitals"},
+                                                    {"id": "calling", "label": "Calling", "type": "select", "default_value": "Hunter"},
+                                                    {"id": "gear", "label": "Gear", "type": "list", "item_fields": [{"id": "item", "label": "Item"}, {"id": "qty"}]}]))
+        db.add_all([native, tpl])
+        db.flush()
+        custom = PlayerCharacter(world_id=w, name="Bo", sheet_template_id=tpl.id, custom_fields_json=json.dumps({"hp_current": 3, "gear": [{"item": "Knife", "qty": 1}, "x", {"qty": 0}]}))
+        db.add(custom)
+        db.commit()
+        ids = (native.id, custom.id)
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    reply = _reply(json.dumps({"verdict": " Solid. ", "strengths": ["Fast", 5, None, "x" * 500], "issues": [{"severity": "ERROR", "text": "HP"}, {"issue": "XP", "severity": "odd"}, "plain", {}],
+                               "suggestions": "nope"}))
+    cases = [(ids[0], {"focus": "rules", "think": "false"}, [reply]), (ids[1], {}, [reply]), (ids[1], {"use_rag": "false"}, [_reply(json.dumps({"verdict": ""}))])]
+    for i, (pc, form, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/api/characters/{pc}/analyze", data=form)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/api/characters/{pc}/analyze/{r.json()['job_id']}")
+            out.append((p.status_code, p.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:5000], json.dumps(out[1][2])[:5000])
+        assert out[1][3:] == ("gateway", "gateway"), i
+    for side in (gm, _via(gm, base)):
+        r = side.post(f"/api/characters/{ids[0]}/analyze", data={"focus": "nope"})
+        assert r.status_code == 400 and r.json()["detail"].startswith("focus must be one of: overview, rules")
+    studio.reply_seq = None

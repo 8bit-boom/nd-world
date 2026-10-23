@@ -2285,6 +2285,160 @@ pub(crate) fn pc_digest_line(db: &Connection, pc: &Map<String, Value>, detail: b
     Some(line)
 }
 
+/// `_pc_to_markdown(pc, db)`: the character as the .md export (and the sheet review's prompt) writes it; None for stored JSON this port
+/// would read differently
+pub(crate) fn pc_markdown(db: &Connection, pc: &Map<String, Value>) -> Option<String> {
+    let py = |v: &Value| match v { Value::String(s) => s.clone(), other => crate::ai::py_repr(other) };
+    let col = |k: &str| pc.get(k).cloned().unwrap_or(Value::Null);
+    let text = |k: &str| match pc.get(k) { Some(Value::String(s)) => s.clone(), _ => String::new() };
+    let load = |k: &str, d: &str| -> Option<Value> {
+        let raw = pc.get(k).and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or(d);
+        serde_json::from_str::<Value>(raw).ok()
+    };
+    let (_, _, _, _, native) = pc_maxima(db, pc)?;
+    let tpl: Option<Map<String, Value>> = pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0)
+        .and_then(|t| db.query_row("SELECT * FROM sheet_templates WHERE id = ?1", [t], |r| crate::layout::row_map(r)).ok());
+    let cf = match load("custom_fields_json", "{}")? { Value::Object(o) => o, _ => return None };
+    let is_custom = tpl.as_ref().and_then(|t| t.get("sheet_mode")).and_then(|v| v.as_str()) == Some("custom");
+    let mut lines = vec![format!("# {}", { let n = text("name"); if n.is_empty() { "Character".to_string() } else { n } })];
+    let mut subtitle = [text("race"), text("char_class")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
+    if py_truthy(pc.get("level")) && native {
+        subtitle = format!("{subtitle} — Level {}", py(&col("level"))).trim_matches(|c| c == ' ' || c == '—').to_string();
+    }
+    if !subtitle.is_empty() {
+        lines.push(format!("*{subtitle}*"));
+    }
+    lines.push(String::new());
+    let mut sections: Vec<(String, Vec<(String, String)>)> = vec![];
+    let lvl = |k: &str| if py_truthy(pc.get(k)) && !is_custom { py(&col(k)) } else { String::new() };
+    let basics: Vec<(String, String)> = [("System", tpl.as_ref().and_then(|t| t.get("name")).map(py).unwrap_or_default()), ("Player", text("player_name")),
+        ("Race", text("race")), ("Class", text("char_class")), ("Level", lvl("level")), ("XP", lvl("xp"))]
+        .into_iter().filter(|(_, v)| !v.is_empty()).map(|(l, v)| (l.to_string(), v)).collect();
+    if !basics.is_empty() {
+        sections.push(("Basics".into(), basics));
+    }
+    let conds = match load("conditions_json", "[]") { Some(v) => clean_conditions(&v)?, None => vec![] };
+    if !conds.is_empty() {
+        sections.push(("Conditions".into(), vec![("Active".into(), conds.join(", "))]));
+    }
+    let fnum = |v: Option<&Value>, d: f64| -> f64 { match v { Some(Value::Number(n)) => n.as_f64().unwrap_or(d), Some(Value::String(s)) => s.trim().parse().unwrap_or(d), Some(Value::Bool(b)) => *b as i64 as f64, _ => d } };
+    if !is_custom {
+        let list = |k: &str| -> Option<Vec<Value>> { match load(k, "[]")? { Value::Array(a) => Some(a), _ => None } };
+        let (stats, currency, equipment, feats) = (list("stats_json")?, list("currency_json")?, list("equipment_json")?, list("feats_json")?);
+        let sv = |id: &str| stats.iter().filter(|s| s.get("id").and_then(|v| v.as_str()) == Some(id)).last().map_or(0, |s| fnum(s.get("value"), 0.0).trunc() as i64);
+        let phys = sv("str") + sv("dex") + sv("bod") + sv("per");
+        let ment = sv("wil") + sv("int") + sv("cha") + sv("itu");
+        let n = |k: &str| pc.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+        let hp_max = if n("max_hp") > 0 { n("max_hp") } else { phys + 10 };
+        let shock_max = if n("shock_max") > 0 { n("shock_max") } else { ment };
+        let mut resources = vec![("HP".to_string(), format!("{}/{hp_max}", py(&col("current_hp"))))];
+        if shock_max != 0 {
+            resources.push(("Shock".into(), format!("{}/{shock_max}", n("shock_current"))));
+        }
+        if n("pp_current") != 0 || n("mp_current") != 0 {
+            resources.push(("PP".into(), n("pp_current").to_string()));
+            resources.push(("MP".into(), n("mp_current").to_string()));
+        }
+        if py_truthy(pc.get("armor_class")) { resources.push(("Armor Class".into(), py(&col("armor_class")))); }
+        if py_truthy(pc.get("speed")) { resources.push(("Speed".into(), py(&col("speed")))); }
+        sections.push(("Resources".into(), resources));
+        let get_or = |o: &Value, k: &str, d: Value| o.get(k).cloned().unwrap_or(d);
+        let first = |o: &Value, ks: &[&str]| ks.iter().filter_map(|k| o.get(*k)).find(|v| py_truthy(Some(v))).map(py).unwrap_or_default();
+        let stat_lines: Vec<(String, String)> = stats.iter().filter(|s| s.is_object() && py_truthy(s.get("id")))
+            .map(|s| (first(s, &["label", "id"]), py(&get_or(s, "value", json!(""))))).collect();
+        if !stat_lines.is_empty() { sections.push(("Ability Scores".into(), stat_lines)); }
+        let cur: Vec<(String, String)> = currency.iter().filter(|c| c.is_object()).map(|c| (first(c, &["label", "abbr"]), py(&get_or(c, "value", json!(0))))).collect();
+        if !cur.is_empty() { sections.push(("Currency".into(), cur)); }
+        let eq: Vec<(String, String)> = equipment.iter().filter(|e| e.is_object()).map(|e| {
+            let notes = get_or(e, "notes", json!(""));
+            let tail = if py_truthy(Some(&notes)) { format!(" — {}", py(&notes)) } else { String::new() };
+            (py(&get_or(e, "name", json!(""))), format!("x{}{tail}", py(&get_or(e, "qty", json!(1)))))
+        }).collect();
+        if !eq.is_empty() { sections.push(("Equipment".into(), eq)); }
+        let ft: Vec<(String, String)> = feats.iter().filter(|f| f.is_object()).map(|f| (py(&get_or(f, "name", json!(""))), first(f, &["notes", "description"]))).collect();
+        if !ft.is_empty() { sections.push(("Feats".into(), ft)); }
+    }
+    if let Some(t) = &tpl {
+        let fields = match serde_json::from_str::<Value>(t.get("fields_json").and_then(|v| v.as_str()).filter(|x| !x.is_empty()).unwrap_or("[]")).ok()? { Value::Array(a) => a, _ => return None };
+        let mut groups: Vec<(String, Vec<Value>)> = vec![];
+        for f in fields {
+            let sec = match f.get("section") { v if py_truthy(v) => py(v?), _ => "Custom".into() };
+            match groups.iter_mut().find(|g| g.0 == sec) { Some(g) => g.1.push(f), None => groups.push((sec, vec![f])) }
+        }
+        for (sec, fs) in groups {
+            let mut pairs = vec![];
+            for f in fs {
+                let fid = f.get("id").cloned().unwrap_or(Value::Null);
+                let fid_s = fid.as_str().unwrap_or("").to_string();
+                let label = match f.get("label") { v if py_truthy(v) => py(v?), _ => if py_truthy(Some(&fid)) { py(&fid) } else { String::new() } };
+                match f.get("type").and_then(|t| t.as_str()) {
+                    Some("list") => {
+                        let Some(Value::Array(items)) = cf.get(&fid_s) else { continue };
+                        let subs = f.get("item_fields").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                        for (i, item) in items.iter().enumerate() {
+                            let Value::Object(item) = item else { continue };
+                            let parts: Vec<String> = subs.iter().filter_map(|sf| {
+                                let sid = sf.get("id").and_then(|v| v.as_str())?;
+                                let v = item.get(sid).filter(|v| py_truthy(Some(v)))?;
+                                let sl = match sf.get("label") { x if py_truthy(x) => py(x?), _ => sid.to_string() };
+                                Some(format!("{sl}: {}", py(v)))
+                            }).collect();
+                            pairs.push((format!("{label} #{}", i + 1), parts.join("; ")));
+                        }
+                    }
+                    Some("resource") => {
+                        let dv = match f.get("default_value") { v if py_truthy(v) => v?.as_str()?.to_string(), _ => "0/0".into() };
+                        let half = |s: &str| -> Value { match crate::edits::sheet_num_text_pub(s).ok().flatten() { Some(n) => json!(n), None => json!(0) } };
+                        let dcur = half(dv.split('/').next().unwrap_or(""));
+                        let dmax = if dv.contains('/') { half(dv.split('/').nth(1).unwrap_or("")) } else { json!(0) };
+                        let cur = cf.get(&format!("{fid_s}_current")).cloned().unwrap_or(dcur);
+                        let mx = cf.get(&format!("{fid_s}_max")).cloned().unwrap_or(dmax);
+                        if !strip(&py(&cur)).is_empty() || !strip(&py(&mx)).is_empty() {
+                            let short = sheet_short_label(&label)?;
+                            pairs.push((if short.is_empty() { label.clone() } else { short }, format!("{} / {}", py(&cur), py(&mx))));
+                        }
+                    }
+                    _ => {
+                        let v = cf.get(&fid_s).cloned().unwrap_or_else(|| f.get("default_value").cloned().unwrap_or(json!("")));
+                        if v.is_null() || v == json!("") {
+                            continue;
+                        }
+                        pairs.push((label, py(&v)));
+                    }
+                }
+            }
+            if !pairs.is_empty() {
+                sections.push((sec, pairs));
+            }
+        }
+    }
+    let personality: Vec<(String, String)> = [("Personality Traits", "personality_traits"), ("Ideals", "ideals"), ("Bonds", "bonds"), ("Flaws", "flaws")]
+        .iter().filter(|(_, k)| py_truthy(pc.get(*k))).map(|(l, k)| (l.to_string(), py(&col(k)))).collect();
+    if !personality.is_empty() {
+        sections.push(("Personality".into(), personality));
+    }
+    for (name, pairs) in sections {
+        lines.push(format!("## {name}"));
+        for (l, v) in pairs {
+            lines.push(format!("- **{l}:** {v}"));
+        }
+        lines.push(String::new());
+    }
+    for (h, k) in [("Backstory", "backstory"), ("Notes", "notes")] {
+        if py_truthy(pc.get(k)) {
+            lines.push(format!("## {h}"));
+            lines.push(strip(&text(k)));
+            lines.push(String::new());
+        }
+    }
+    Some(format!("{}\n", strip(&lines.join("\n"))))
+}
+
+/// `pc_maxima(pc)["native"]`
+pub(crate) fn pc_native(db: &Connection, pc: &Map<String, Value>) -> Option<bool> {
+    pc_maxima(db, pc).map(|m| m.4)
+}
+
 /// `pc_maxima(pc)`: (hp, shock, pp, mp, native)
 fn pc_maxima(db: &Connection, pc: &Map<String, Value>) -> Option<(i64, i64, i64, i64, bool)> {
     let stats = stat_values(pc)?;
