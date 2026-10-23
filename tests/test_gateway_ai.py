@@ -1220,3 +1220,69 @@ def test_text_to_speech_is_pythons(client, seed, studio):
             out.append((r.status_code, data, clip, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
         assert out[0][:4] == out[1][:4], (i, out[0][:3], out[1][:3])
         assert out[1][4] == "gateway", i
+
+
+def test_npc_voice_is_pythons(client, seed, studio):
+    """/api/npc-talk/<id>/speak: the voice hint derived from the public card (cleaned the same way) and cached, the speech asked for with
+    it, the audio linked into the stored message - a cached hint and existing audio reused, `regenerate` redoing both - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import ChatSession, Entity, EntityVoiceHint
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        npc = Entity(world_id=w, kind="character", subtype="smith", tags="dwarf", name="Borin", summary="A smith [gmonly]and a spy[/gmonly]",
+                     body="Short. " * 300, roleplay_personality="Grumbles.")
+        db.add(npc)
+        db.commit()
+        eid = npc.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    gm_id = seed.gm.id
+    msgs = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": " Well met. "}, {"role": "assistant", "content": "x" * 4001}]
+
+    def reset(hint=None, audio=None):
+        d = SessionLocal()
+        try:
+            d.query(EntityVoiceHint).filter(EntityVoiceHint.entity_id == eid).delete()
+            d.query(ChatSession).filter(ChatSession.entity_id == eid).delete()
+            if hint is not None:
+                d.add(EntityVoiceHint(entity_id=eid, world_id=w, instructions=hint, model="m"))
+            m = [dict(x) for x in msgs]
+            if audio:
+                m[1]["audio"] = audio
+            d.add(ChatSession(world_id=w, user_id=gm_id, surface="npc", entity_id=eid, title="Borin", messages_json=json.dumps(m)))
+            d.commit()
+        finally:
+            d.close()
+
+    def state():
+        d = SessionLocal()
+        try:
+            h = d.get(EntityVoiceHint, eid)
+            row = d.query(ChatSession).filter(ChatSession.entity_id == eid).first()
+            return (h and (h.instructions, h.model), row and row.messages_json)
+        finally:
+            d.close()
+
+    cases = [
+        ({"index": 1}, {}, [_reply('Voice: "Gruff, slow, low."\nExtra')]),
+        ({"index": 1}, {"hint": "  cached  "}, []),
+        ({"index": 1}, {"hint": "cached", "audio": "/uploads/npc-talk/old.opus"}, []),
+        ({"index": 1, "regenerate": True}, {"hint": "cached", "audio": "/uploads/npc-talk/old.opus"}, [_reply("a " * 300)]),
+        ({"index": 0}, {}, []),
+        ({"index": 7}, {}, []),
+        ({"index": 2}, {}, []),
+    ]
+    for i, (body, setup, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            reset(**setup)
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(f"/api/npc-talk/{eid}/speak", json=body)
+            out.append((r.status_code, r.json(), state(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (i, out[0][:3], out[1][:3])
+        assert out[1][4] == "gateway", i
+    studio.reply_seq = None

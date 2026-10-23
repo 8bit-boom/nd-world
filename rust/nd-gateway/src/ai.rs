@@ -3653,6 +3653,8 @@ enum SyncAi {
     EntityText { b: Backend, text: String, hint: String, batch: bool },
     /// `parse_character_from_images` (character) / `parse_entity_from_images`
     Images { b: Backend, images: Vec<Vec<u8>>, hint: String, character: bool },
+    /// `/api/npc-talk/<id>/speak`: one of the caller's NPC replies spoken (the voice hint derived first when there is none)
+    NpcSpeak(Box<NpcSpeak>),
     /// `/api/ai/tts`: speech saved as a GM-only clip of the world
     Tts { cfg: std::sync::Arc<Config>, b: Backend, wid: i64, text: String, model: String, voice: String, instructions: String, language: String, name: String, description: String, body_model: String },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
@@ -3772,6 +3774,10 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 if entity_kinds().contains(&k) { k } else { String::new() }
             };
             SyncAi::EntityText { b: backend(&db)?, text, hint, batch }
+        }
+        _ if path.starts_with("/api/npc-talk/") && path.ends_with("/speak") => {
+            let eid: i64 = path.strip_prefix("/api/npc-talk/")?.strip_suffix("/speak")?.parse().ok()?;
+            return npc_speak_plan(cfg, &db, &p, eid, &b).map(|plan| (plan, p.user_id));
         }
         "/api/ai/tts" => {
             if !p.is_gm {
@@ -3959,6 +3965,7 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             Ok(v) => ok(v),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
         },
+        SyncAi::NpcSpeak(n) => npc_speak(*n).await,
         SyncAi::Tts { cfg, b, wid, text, model, voice, instructions, language, name, description, body_model } => {
             let (audio, ctype) = match crate::tts::speech(&b, &text, &model, &voice, &instructions, &language).await {
                 Ok(a) => a,
@@ -4042,11 +4049,182 @@ fn images_plan(db: &rusqlite::Connection, p: &crate::layout::PageCtx, headers: &
     Some(SyncAi::Images { b: backend(db)?, images, hint, character })
 }
 
+pub(crate) struct NpcSpeak {
+    cfg: std::sync::Arc<Config>,
+    b: Backend,
+    wid: i64,
+    uid: i64,
+    is_gm: bool,
+    eid: i64,
+    index: usize,
+    text: String,
+    /// the message's audio already (no synthesis unless `regenerate`)
+    audio_url: String,
+    regenerate: bool,
+    /// the cached hint (None: derive it from `card`)
+    cached_hint: Option<String>,
+    card: String,
+}
+
+const VOICE_HINT_SYSTEM: &str = "You write text-to-speech voice directions. Given a character sheet, output ONE concise instruction sentence (at most ~30 words) describing how this character should sound when speaking: apparent age, pitch, pace, texture/roughness, accent only if the sheet clearly implies one, and overall attitude. Base it strictly on the sheet; where the sheet is silent, choose something plain and neutral. Output ONLY the instruction itself — no quotes, no preamble, no explanation.";
+const MAX_SPEAK_CHARS: usize = 4000;
+
+/// `npc_talk_speak`'s first phase: the checks, the stored text and the voice card
+fn npc_speak_plan(cfg: &Config, db: &rusqlite::Connection, p: &crate::layout::PageCtx, eid: i64, b: &Map<String, Value>) -> Option<SyncAi> {
+    if p.user_id <= 0 {
+        return None;
+    }
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    if !p.is_gm {
+        let on = |k: &str| crate::edits::py_truthy_pub(w.get(k));
+        if !(on("players_can_ask_ai") || on("players_can_use_ai_chat")) {
+            return None;
+        }
+    }
+    let Some(Value::Number(n)) = b.get("index") else { return None };
+    let index = n.as_i64()?;
+    let regenerate = match b.get("regenerate") { None => false, Some(Value::Bool(t)) => *t, _ => return None };
+    let visible = if p.is_gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))" };
+    let mut st = db.prepare(&format!("SELECT e.* FROM entities e WHERE e.id = ?1 AND e.world_id = ?2{visible}")).ok()?;
+    let npc = if p.is_gm { st.query_row(rusqlite::params![eid, wid], |r| crate::layout::row_map(r)) } else { st.query_row(rusqlite::params![eid, wid, p.user_id], |r| crate::layout::row_map(r)) }.ok()?;
+    if !matches!(npc.get("kind").and_then(|k| k.as_str()), Some("character" | "creature" | "organization")) {
+        return None;
+    }
+    let refuse = |code: StatusCode, m: String| Some(SyncAi::Refuse(code, m));
+    let raw: Option<Option<String>> = db.query_row("SELECT messages_json FROM chat_sessions WHERE world_id = ?1 AND user_id = ?2 AND surface = 'npc' AND entity_id = ?3 ORDER BY id LIMIT 1",
+        rusqlite::params![wid, p.user_id, eid], |r| r.get(0)).ok();
+    let Some(raw) = raw else { return refuse(StatusCode::NOT_FOUND, "No conversation with this character yet — talk to them first".into()) };
+    let raw = raw.filter(|r| !r.is_empty()).unwrap_or_else(|| "[]".into());
+    let Ok(Value::Array(messages)) = serde_json::from_str::<Value>(&raw) else { return None };
+    if index < 0 || index as usize >= messages.len() {
+        return refuse(StatusCode::BAD_REQUEST, "No such message in your conversation".into());
+    }
+    let Value::Object(m) = &messages[index as usize] else { return None };
+    if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+        return refuse(StatusCode::BAD_REQUEST, "Only the character's replies can be spoken".into());
+    }
+    let text = match m.get("content") { v if !crate::edits::py_truthy_pub(v) => String::new(), Some(Value::String(c)) => crate::edits::py_strip_pub(c), _ => return None };
+    if text.is_empty() {
+        return refuse(StatusCode::BAD_REQUEST, "That reply has no text to speak".into());
+    }
+    let n = text.chars().count();
+    if n > MAX_SPEAK_CHARS {
+        return refuse(StatusCode::BAD_REQUEST, format!("That reply is too long to speak in one go ({n} chars — the cap is {MAX_SPEAK_CHARS})"));
+    }
+    let audio_url = match m.get("audio") { v if !crate::edits::py_truthy_pub(v) => String::new(), Some(Value::String(a)) => a.clone(), _ => return None };
+    let cached_hint = if regenerate { None } else {
+        db.query_row("SELECT instructions FROM entity_voice_hints WHERE entity_id = ?1", [eid], |r| r.get::<_, Option<String>>(0)).ok().flatten()
+            .map(|h| crate::edits::py_strip_pub(&h)).filter(|h| !h.is_empty())
+    };
+    // _voice_card: the public card ([gmonly] stripped for everyone)
+    let f = |k: &str| npc.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let clean = |t: &str| nd_perm::gmonly::strip_gm_only(t, None, nd_render::now_minute()).map(|t| crate::edits::py_strip_pub(&t));
+    let kind = { let k = f("kind"); let k = if k.is_empty() { "character".to_string() } else { k };
+        let mut c = k.chars(); c.next().map(|h| h.to_uppercase().collect::<String>() + &c.as_str().to_lowercase()).unwrap_or_default() };
+    let mut lines = vec![format!("{kind}: {}", f("name"))];
+    if !f("subtype").is_empty() { lines.push(format!("Subtype: {}", f("subtype"))); }
+    if !f("tags").is_empty() { lines.push(format!("Tags: {}", f("tags"))); }
+    let summary = clean(&f("summary"))?;
+    if !summary.is_empty() { lines.push(format!("Summary: {summary}")); }
+    let personality = clean(&f("roleplay_personality"))?;
+    if !personality.is_empty() { lines.push(format!("How they speak (GM direction):\n{}", personality.chars().take(4000).collect::<String>())); }
+    let body = clean(&f("body"))?;
+    if !body.is_empty() { lines.push(format!("Sheet excerpt:\n{}", body.chars().take(1200).collect::<String>())); }
+    Some(SyncAi::NpcSpeak(Box::new(NpcSpeak { cfg: std::sync::Arc::new(cfg.clone()), b: backend(db)?, wid, uid: p.user_id, is_gm: p.is_gm, eid, index: index as usize,
+        text, audio_url, regenerate, cached_hint, card: lines.join("\n") })))
+}
+
+/// `npc_talk_speak`'s network phases: the hint (cached or derived and stored), the speech, the link patched into the message
+async fn npc_speak(n: NpcSpeak) -> Response<Body> {
+    let err = |code: StatusCode, m: &str| Response::builder().status(code).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway")
+        .body(Body::from(nd_render::py_dumps_compact(&json!({"detail": m})))).unwrap();
+    let crash = || Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).header(header::CONTENT_TYPE, "text/plain; charset=utf-8").header("x-nd-served-by", "gateway")
+        .body(Body::from("Internal Server Error")).unwrap();
+    let mut audio_url = n.audio_url.clone();
+    let mut hint = String::new();
+    if n.regenerate || audio_url.is_empty() {
+        hint = match n.cached_hint.clone() {
+            Some(h) => h,
+            None => {
+                let model = surface_default(&n.cfg, "ask_ai").unwrap_or_default();
+                let m = if model.is_empty() { n.b.model.clone() } else { model.clone() };
+                let mut opts = Map::new();
+                opts.insert("num_predict".into(), json!(120));
+                let raw = generate_chat(&n.b, &m, VOICE_HINT_SYSTEM, &[json!({"role": "user", "content": n.card})], false, &opts).await;
+                let first = crate::edits::py_strip_pub(crate::edits::py_strip_pub(&raw).split('\n').next().unwrap_or(""));
+                let mut h = crate::edits::py_strip_pub(first.trim_matches(|c| matches!(c, '"' | '“' | '”' | '\'')));
+                if h.to_lowercase().starts_with("voice:") {
+                    h = crate::edits::py_strip_pub(&h.chars().skip(6).collect::<String>());
+                }
+                if h.chars().count() > 400 {
+                    let cut: String = h.chars().take(400).collect();
+                    h = cut.rsplit_once(' ').map(|(a, _)| a.to_string()).unwrap_or(cut);
+                }
+                let (cfg, eid, wid, h2) = (n.cfg.clone(), n.eid, n.wid, h.clone());
+                let saved = tokio::task::spawn_blocking(move || {
+                    let db = crate::writes::open(&cfg)?;
+                    use rusqlite::types::Value as Sql;
+                    let exists = db.query_row("SELECT 1 FROM entity_voice_hints WHERE entity_id = ?1", [eid], |_| Ok(())).is_ok();
+                    if exists {
+                        db.execute("UPDATE entity_voice_hints SET instructions = ?1, model = ?2 WHERE entity_id = ?3", rusqlite::params![h2, model, eid]).ok()?;
+                    } else {
+                        crate::orm::insert(&db, "entity_voice_hints", &[("entity_id", Sql::Integer(eid)), ("world_id", Sql::Integer(wid)), ("instructions", Sql::Text(h2)), ("model", Sql::Text(model))])?;
+                    }
+                    Some(())
+                }).await.ok().flatten();
+                if saved.is_none() {
+                    return crash();
+                }
+                h
+            }
+        };
+        let (t_model, t_voice, _, t_lang) = crate::tts::prefs(&n.cfg);
+        let Ok((audio, ctype)) = crate::tts::speech(&n.b, &n.text, &t_model, &t_voice, &hint, &t_lang).await else { return crash() };
+        let ext = crate::tts::audio_extension(&ctype);
+        let Some(dir) = n.cfg.db_path.parent().map(|d| d.join("uploads").join("npc-talk")) else { return crash() };
+        let name = format!("npc{}-u{}-m{}{ext}", n.eid, n.uid, n.index);
+        if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&name), &audio)).is_err() {
+            return crash();
+        }
+        audio_url = format!("/uploads/npc-talk/{name}");
+    }
+    let (cfg, wid, uid, eid, index, url) = (n.cfg.clone(), n.wid, n.uid, n.eid, n.index, audio_url.clone());
+    let patched = tokio::task::spawn_blocking(move || -> Result<(), (StatusCode, &'static str)> {
+        let db = crate::writes::open(&cfg).ok_or((StatusCode::INTERNAL_SERVER_ERROR, ""))?;
+        let row: Option<(i64, Option<String>)> = db.query_row("SELECT id, messages_json FROM chat_sessions WHERE world_id = ?1 AND user_id = ?2 AND surface = 'npc' AND entity_id = ?3 ORDER BY id LIMIT 1",
+            rusqlite::params![wid, uid, eid], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        let (id, raw) = row.ok_or((StatusCode::NOT_FOUND, "Conversation disappeared while speaking"))?;
+        let raw = raw.filter(|r| !r.is_empty()).unwrap_or_else(|| "[]".into());
+        let Ok(Value::Array(mut current)) = serde_json::from_str::<Value>(&raw) else { return Err((StatusCode::INTERNAL_SERVER_ERROR, "")) };
+        let ok = current.get(index).and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("assistant");
+        if !ok {
+            return Err((StatusCode::CONFLICT, "Conversation changed while speaking — try again"));
+        }
+        current[index]["audio"] = json!(url);
+        use rusqlite::types::Value as Sql;
+        crate::orm::update(&db, "chat_sessions", id, &[("messages_json", Sql::Text(nd_render::py_dumps(&Value::Array(current))))]).ok_or((StatusCode::INTERNAL_SERVER_ERROR, ""))?;
+        Ok(())
+    }).await.unwrap_or(Err((StatusCode::INTERNAL_SERVER_ERROR, "")));
+    match patched {
+        Err((StatusCode::INTERNAL_SERVER_ERROR, _)) => crash(),
+        Err((code, m)) => err(code, m),
+        Ok(()) => {
+            let mut out = json!({"audio_url": audio_url});
+            if n.is_gm {
+                out["voice_hint"] = json!(if hint.is_empty() { "(cached earlier)".to_string() } else { hint });
+            }
+            crate::edits::json_response(&out).unwrap_or_else(crash)
+        }
+    }
+}
+
 /// The paths `sync_ai` serves
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
         | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images" | "/api/ai/tts")
+        || (path.starts_with("/api/npc-talk/") && path.ends_with("/speak"))
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }
