@@ -2118,3 +2118,51 @@ def test_sheet_review_is_pythons(client, seed, studio):
         r = side.post(f"/api/characters/{ids[0]}/analyze", data={"focus": "nope"})
         assert r.status_code == 400 and r.json()["detail"].startswith("focus must be one of: overview, rules")
     studio.reply_seq = None
+
+
+def test_character_draft_is_pythons(client, seed, studio):
+    """/api/characters/ai/start (a request, no uploaded sheet) and its poll: the rules frame (the world's for N&D, the system's digest
+    and field catalogue for a custom sheet), the lore, the draft clamped / cleaned with its preview - for a GM and a player - and the
+    refusals."""
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(world_id=w, name="Moonlit Ç", slug=f"moonlit-d-{w}", sheet_mode="custom", rules_md="Roll 2d6 — always.",
+                            fields_json=json.dumps([{"id": "pname", "label": "Name", "type": "text", "binds": "name"},
+                                                    {"id": "hp", "label": "Health (0 = down)", "type": "resource", "default_value": "5/5", "section": "Vitals"},
+                                                    {"id": "calling", "label": "Calling", "type": "select", "options": ["Hunter", "Sage"]},
+                                                    {"id": "grit", "label": "Grit", "type": "number"}, {"id": "bio", "label": "Bio", "type": "textarea"},
+                                                    {"id": "gear", "label": "Gear", "type": "list", "item_fields": [{"id": "item", "label": "Item"}, {"id": "kind", "type": "select", "options": ["Tool"]}]}]))
+        db.add(tpl)
+        db.commit()
+        tid = tpl.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    native = _reply(json.dumps({"name": " Ana ", "level": "25", "xp": -5, "max_hp": 12.7, "stats": {"str": "4", "dex": 40, "bad": [1], "wil": None}, "extra": 1}))
+    custom = _reply("```json\n" + json.dumps({"name": "Bo", "player_name": " Archie ", "backstory": "Born.", "fields": {
+        "pname": "x", "hp": {"current": 3, "max": 2000}, "calling": "hunter", "grit": "7.9", "bio": ["no"], "gear": [{"item": "Knife", "kind": "tool"}, {"kind": "Nope"}, "x"], "zzz": 1}}) + "\n```")
+    cases = [(gm, {"prompt": "A sneaky elf", "think": "false"}, [native]), (gm, {"prompt": "A hunter", "template_id": str(tid)}, [custom]),
+             (player, {"prompt": "A bard", "use_rag": "true"}, [_reply(json.dumps({"name": "", "level": 1}))]), (gm, {"prompt": "x"}, [_reply(json.dumps({"name": "Z", "level": "lots"}))])]
+    for i, (user, form, replies) in enumerate(cases):
+        out = []
+        for side in (user, _via(user, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post("/api/characters/ai/start", data=form)
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/api/characters/ai/{r.json()['job_id']}")
+            out.append((r.json(), p.status_code, {k: v for k, v in p.json().items() if k != "job_id"}, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        a, b = out
+        assert ({k: v for k, v in a[0].items() if k != "job_id"}, a[1], a[2], a[3]) == ({k: v for k, v in b[0].items() if k != "job_id"}, b[1], b[2], b[3]), (i, a[:3], b[:3])
+        assert b[4:] == ("gateway", "gateway"), i
+    for side in (gm, _via(gm, base)):
+        r = side.post("/api/characters/ai/start", data={"prompt": " "})
+        assert r.status_code == 400 and r.json()["detail"].startswith("Describe the character you want")
+        r = side.post("/api/characters/ai/start", data={"prompt": "x", "template_id": "999999"})
+        assert (r.status_code, r.json()["detail"]) == (400, "Pick one of the listed systems.")
+    studio.reply_seq = None

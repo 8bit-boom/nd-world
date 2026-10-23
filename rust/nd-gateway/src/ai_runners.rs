@@ -69,6 +69,8 @@ fn kind_of(path: &str) -> Option<&'static str> {
         Some("system draft")
     } else if path.starts_with("/api/characters/") && path.contains("/analyze") {
         Some("sheet review")
+    } else if path.starts_with("/api/characters/ai/") {
+        Some("character draft")
     } else {
         None
     }
@@ -99,6 +101,7 @@ pub async fn route(cfg: Arc<Config>, method: &Method, uri: &Uri, headers: &Heade
             "auto-tag" => auto_tag_start(cfg.clone(), &db, &p, &body),
             "system draft" => system_draft_start(cfg.clone(), &db, &p, &headers2, &body),
             "sheet review" => sheet_review_start(cfg.clone(), &db, &p, &path, &headers2, &body),
+            "character draft" => character_draft_start(cfg.clone(), &db, &p, &headers2, &body),
             _ => None,
         }
     }).await.ok().flatten()
@@ -153,6 +156,18 @@ fn poll_answer(kind: &str, p: &PageCtx, job: &Map<String, Value>, path: &str) ->
                 "running" => json!({"status": "running", "elapsed": elapsed()}),
                 "error" => json!({"status": "error", "error": job.get("error")}),
                 _ => json!({"status": "done", "focus": job.get("focus"), "result": job.get("result")}),
+            }))
+        }
+        "character draft" => {
+            if !p.is_gm && job.get("user_id").and_then(|v| v.as_i64()) != Some(p.user_id) {
+                return Some(detail(StatusCode::FORBIDDEN, "Forbidden"));
+            }
+            let or0 = |k: &str| match job.get(k) { v if truthy(v) => v.cloned().unwrap(), _ => json!(0) };
+            Some(ok(match status {
+                "running" => json!({"status": "running", "elapsed": elapsed(), "stage": match job.get("stage") { v if truthy(v) => v.cloned().unwrap(), _ => json!("building") },
+                    "part": or0("part"), "parts": or0("parts")}),
+                "error" => json!({"status": "error", "error": job.get("error")}),
+                _ => json!({"status": "done", "draft": job.get("draft")}),
             }))
         }
         "quest sync" => Some(ok(match status {
@@ -937,4 +952,358 @@ async fn sheet_review_task(cfg: Arc<Config>, b: Backend, pc_id: i64, focus: &str
         return Err("The AI reply wasn't usable — try again.".into());
     }
     Ok(json!({"verdict": verdict, "strengths": strengths, "issues": issues, "suggestions": suggestions}))
+}
+
+// ── character draft (app/routers/character_ai.py `pc_ai_start` / `_pc_ai_task`), without an uploaded sheet ──
+
+/// `json.dumps(v, ensure_ascii=False)`
+fn dumps_unicode(v: &Value) -> String {
+    let ascii = nd_render::py_dumps(v);
+    // undo the \uXXXX escapes of everything printable past ASCII (json.dumps keeps those characters as they are)
+    let mut out = String::new();
+    let chars: Vec<char> = ascii.chars().collect();
+    let mut i = 0;
+    let mut in_str = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' && (i == 0 || chars[i - 1] != '\\' || chars[..i].iter().rev().take_while(|x| **x == '\\').count() % 2 == 0) {
+            in_str = !in_str;
+        }
+        if in_str && c == '\\' && chars.get(i + 1) == Some(&'\\') {
+            out.push_str("\\\\");
+            i += 2;
+            continue;
+        }
+        if in_str && c == '\\' && chars.get(i + 1) == Some(&'u') && i + 6 <= chars.len() {
+            let hex: String = chars[i + 2..i + 6].iter().collect();
+            if let Ok(u) = u16::from_str_radix(&hex, 16) {
+                if u >= 0x7f {
+                    // a surrogate pair is two escapes
+                    if (0xD800..0xDC00).contains(&u) && chars.get(i + 6) == Some(&'\\') && chars.get(i + 7) == Some(&'u') {
+                        let lo: String = chars[i + 8..(i + 12).min(chars.len())].iter().collect();
+                        if let Ok(l) = u16::from_str_radix(&lo, 16) {
+                            if let Some(ch) = char::decode_utf16([u, l]).next().and_then(|r| r.ok()) {
+                                out.push(ch);
+                                i += 12;
+                                continue;
+                            }
+                        }
+                    } else if let Some(ch) = char::from_u32(u as u32) {
+                        out.push(ch);
+                        i += 6;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// `int(x)` on a model's value: Ok, or Python's error text
+fn py_int(v: &Value) -> Result<i64, String> {
+    match v {
+        Value::Bool(b) => Ok(*b as i64),
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f.trunc() as i64)).ok_or_else(|| "cannot convert float to integer".to_string()),
+        Value::String(s) => s.trim().parse::<i64>().map_err(|_| format!("invalid literal for int() with base 10: {}", py_repr(v))),
+        Value::Null => Err("int() argument must be a string, a bytes-like object or a real number, not 'NoneType'".into()),
+        Value::Array(_) => Err("int() argument must be a string, a bytes-like object or a real number, not 'list'".into()),
+        Value::Object(_) => Err("int() argument must be a string, a bytes-like object or a real number, not 'dict'".into()),
+    }
+}
+
+/// `x or default` then `int()`
+fn int_or(v: Option<&Value>, d: i64) -> Result<i64, String> {
+    match v { Some(x) if truthy(Some(x)) => py_int(x), _ => Ok(d) }
+}
+
+/// (system prompt, response schema, rules header) for a draft (`_draft_frame`); a custom template's from its own field catalogue
+fn draft_frame(world: &Map<String, Value>, tpl: Option<&crate::sheets::Tpl>) -> Option<(String, Value, String)> {
+    if let Some(t) = tpl {
+        let mut parts = vec![];
+        if truthy(t.row.get("is_builtin")) {
+            if let Some(d) = t.row.get("slug").and_then(|v| v.as_str()).and_then(|s| nd_render::app::data()["system_digests"].get(s)).and_then(|v| v.as_str()) {
+                parts.push(d.to_string());
+            }
+        }
+        let own_t = crate::edits::py_strip_pub(t.row.get("rules_md").and_then(|v| v.as_str()).unwrap_or(""));
+        if !own_t.is_empty() { parts.push(own_t); }
+        let digest = parts.join("\n\n");
+        let own = crate::edits::py_strip_pub(world.get("rules_md").and_then(|v| v.as_str()).unwrap_or(""));
+        let rules = take(&[digest, if own.is_empty() { String::new() } else { format!("## This world's own rules\n{own}") }].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n\n"), 7000);
+        let name = t.row.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // ai_field_catalog
+        let binds = t.binds()?;
+        let mut catalog = vec![];
+        for f in &t.fields {
+            let Some(fid) = f.get("id").filter(|v| truthy(Some(v))) else { continue };
+            if fid.as_str().is_some_and(|i| binds.iter().any(|(k, _)| k == i)) {
+                continue;
+            }
+            let label_src = match f.get("label") { v if truthy(v) => py_str(v.unwrap()), _ => py_str(fid) };
+            let ty = match f.get("type") { v if truthy(v) => py_str(v.unwrap()), _ => "text".into() };
+            let mut e = Map::new();
+            e.insert("id".into(), fid.clone());
+            e.insert("label".into(), json!(take(&crate::edits::sheet_short_label_pub(&label_src)?, 60)));
+            e.insert("type".into(), json!(ty));
+            if let Some(sec) = f.get("section").filter(|v| truthy(Some(v))) { e.insert("section".into(), sec.clone()); }
+            if ty == "select" {
+                e.insert("options".into(), json!(f.get("options").and_then(|o| o.as_array()).map(|a| a.iter().map(py_str).collect::<Vec<_>>()).unwrap_or_default()));
+            }
+            if ty == "resource" {
+                let dv = match f.get("default_value") { v if truthy(v) => v?.as_str()?.to_string(), _ => "0/0".into() };
+                let half = |x: &str| crate::edits::sheet_num_text_pub(x).ok().flatten().unwrap_or(0);
+                let cur = half(dv.split('/').next().unwrap_or(""));
+                let mx = if dv.contains('/') { half(dv.split('/').nth(1).unwrap_or("")) } else { 0 };
+                e.insert("default".into(), json!({"current": cur, "max": mx}));
+            }
+            if ty == "list" {
+                let cols: Vec<Value> = f.get("item_fields").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter()
+                    .filter(|sf| sf.is_object() && truthy(sf.get("id"))).map(|sf| {
+                        let st = match sf.get("type") { v if truthy(v) => py_str(v.unwrap()), _ => "text".into() };
+                        let mut c = json!({"id": sf["id"], "type": st});
+                        if sf.get("type") == Some(&json!("select")) {
+                            c["options"] = json!(sf.get("options").and_then(|o| o.as_array()).map(|a| a.iter().map(py_str).collect::<Vec<_>>()).unwrap_or_default());
+                        }
+                        c
+                    }).collect();
+                e.insert("columns".into(), Value::Array(cols));
+            }
+            catalog.push(Value::Object(e));
+        }
+        let system = format!("You are the character-creation assistant for the tabletop RPG system \"{name}\". Create or translate ONE player character strictly by THAT system's rules (below) — never Neon & Dragons attributes, HP/Shock or feats. Return STRICT JSON only:\n{{\"name\": str, \"player_name\": str, \"backstory\": str (2-4 rich paragraphs, in-world), \"notes\": str (hooks, contacts, appearance), \"fields\": {{<field id>: value, ...}}}}\n`fields` is filled from this catalogue ONLY — use each field's exact id; omit a field rather than invent one. Value rules: text/textarea -> string; number -> integer; select -> exactly one of its options; resource -> {{\"current\": int, \"max\": int}} (a new character starts at its default); list -> an array of objects using only the listed column ids. Respect the rules' costs, tiers and starting values; start low-level for a new character unless the source says otherwise. No comments, no markdown fences.\n\nFIELD CATALOGUE (JSON):\n{}", dumps_unicode(&Value::Array(catalog)));
+        let schema = json!({"type": "object", "properties": {"name": {"type": "string"}, "player_name": {"type": "string"}, "backstory": {"type": "string"},
+            "notes": {"type": "string"}, "fields": {"type": "object"}}, "required": ["name"]});
+        let header = format!("=== {} RULES ===\n{}", name.to_uppercase(), if rules.is_empty() { "(no written rules — use only what the field catalogue implies)".to_string() } else { rules });
+        return Some((system, schema, header));
+    }
+    let rules = take(&crate::retrieval::world_rules_markdown(world), 6000);
+    let system = "You are the character-creation assistant for a tabletop RPG. Create or translate ONE PlayerCharacter for THIS world, strictly following its rules below for stat ranges, level, HP computation, and tone. Return STRICT JSON only:\n{\"name\": str, \"player_name\": str, \"race\": str, \"char_class\": str, \"level\": int, \"xp\": int, \"stats\": {str: int, dex: int, bod: int, per: int, int: int, wil: int, cha: int, itu: int}, \"max_hp\": int, \"shock_max\": int, \"backstory\": str (2-4 rich paragraphs, in-world), \"notes\": str (play hooks, contacts, appearance), \"equipment\": [{\"name\": str, \"qty\": int}]}\nRules: stats respect the world's rules (typical range and point budget); max_hp follows the world's HP formula at that level; start low-level for a new character unless the source clearly says otherwise; equipment is the starting kit the rules give this class/race; every id in stats gets a value. No comments, no markdown fences.".to_string();
+    let schema = json!({"type": "object", "properties": {"name": {"type": "string"}, "player_name": {"type": "string"}, "race": {"type": "string"}, "char_class": {"type": "string"},
+        "level": {"type": "integer"}, "xp": {"type": "integer"}, "stats": {"type": "object"}, "max_hp": {"type": "integer"}, "shock_max": {"type": "integer"},
+        "backstory": {"type": "string"}, "notes": {"type": "string"}, "equipment": {"type": "array"}}, "required": ["name"]});
+    let header = format!("=== WORLD RULES ===\n{}", if rules.is_empty() { "(no custom rules — standard N&D)".to_string() } else { rules });
+    Some((system, schema, header))
+}
+
+/// `_usable_template`: a custom system visible in this world
+fn usable_template(db: &rusqlite::Connection, wid: i64, template_id: i64) -> Option<Option<crate::sheets::Tpl>> {
+    if template_id == 0 {
+        return Some(None);
+    }
+    let Ok(row) = db.query_row("SELECT * FROM sheet_templates WHERE id = ?1", [template_id], |r| crate::layout::row_map(r)) else { return Some(None) };
+    let ok = row.get("sheet_mode").and_then(|v| v.as_str()) == Some("custom") && row.get("world_id").is_none_or(|w| w.is_null() || w.as_i64() == Some(wid));
+    if !ok {
+        return Some(None);
+    }
+    Some(Some(crate::sheets::Tpl::load(row)?))
+}
+
+fn character_draft_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let form = crate::ai::small_form(headers, body)?; // an uploaded sheet: Python's
+    let Some(w) = p.world.as_ref() else { return Some(detail(StatusCode::BAD_REQUEST, "No active world")) };
+    let wid = w.get("id")?.as_i64()?;
+    let think = crate::ai::form_bool(&form, "think", true)?;
+    let mut use_rag = crate::ai::form_bool(&form, "use_rag", true)?;
+    let template_id = match form.get("template_id") { None => 0, Some(t) => crate::form::py_int(t)? };
+    if !p.is_gm {
+        let owned: i64 = db.query_row("SELECT count(*) FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2", rusqlite::params![wid, p.user_id], |r| r.get(0)).ok()?;
+        let limit = w.get("max_characters_per_player").and_then(|v| v.as_i64()).filter(|n| *n != 0).unwrap_or(1).max(1);
+        if owned >= limit {
+            let m = if limit <= 1 { "You already have a character in this world.".to_string() } else {
+                format!("You already have {owned} characters in this world — the limit is {limit}. Delete one, or ask your GM to raise the limit.") };
+            return Some(detail(StatusCode::BAD_REQUEST, m));
+        }
+        use_rag = false;
+    }
+    let prompt = crate::edits::py_strip_pub(form.get("prompt").unwrap_or(""));
+    if template_id != 0 {
+        let row = db.query_row("SELECT sheet_mode, world_id FROM sheet_templates WHERE id = ?1", [template_id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?))).ok();
+        if !row.is_some_and(|(m, tw)| m.as_deref() == Some("custom") && tw.is_none_or(|t| t == wid)) {
+            return Some(detail(StatusCode::BAD_REQUEST, "Pick one of the listed systems."));
+        }
+    }
+    if prompt.is_empty() {
+        return Some(detail(StatusCode::BAD_REQUEST, "Describe the character you want, or upload a sheet (PDF / HTML / MD / TXT / JSON / image)."));
+    }
+    if use_rag && world_has_vault(db, wid) {
+        return None;
+    }
+    let tpl = usable_template(db, wid, template_id)?;
+    draft_frame(w, tpl.as_ref())?;
+    let bk = backend(db)?;
+    let id = crate::runners::new_job("character draft", json!({"status": "running", "started": now(), "user_id": p.user_id, "draft": null, "error": "",
+        "stage": "building", "part": 0, "parts": 0}), 12);
+    let rerun: Rerun = Arc::new(move |id| {
+        let (cfg, bk, prompt) = (cfg.clone(), bk.clone(), prompt.clone());
+        Box::pin(async move {
+            let res = character_draft_task(cfg, bk, id, wid, &prompt, think, use_rag, template_id).await;
+            settle("character draft", id, "draft", res);
+        })
+    });
+    crate::runners::run("character draft", "character draft", id, rerun);
+    Some(ok(json!({"job_id": id, "status": "running", "source_chars": 0, "source_limit": 0, "source_parts": 0, "source_truncated": false, "source_unread_chars": 0})))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn character_draft_task(cfg: Arc<Config>, b: Backend, id: i64, wid: i64, prompt: &str, think: bool, use_rag: bool, template_id: i64) -> Result<Value, String> {
+    let (c, pr) = (cfg.clone(), prompt.to_string());
+    let (system, schema, user, tpl_row) = tokio::task::spawn_blocking(move || -> Result<(String, Value, String, Option<Map<String, Value>>), String> {
+        let db = crate::writes::open(&c).ok_or("database")?;
+        let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).map_err(|e| e.to_string())?;
+        let tpl = usable_template(&db, wid, template_id).ok_or("template")?;
+        let (system, schema, header) = draft_frame(&world, tpl.as_ref()).ok_or("template")?;
+        let mut user = header;
+        if use_rag {
+            let rag = take(&crate::retrieval::smart_world_context(&db, wid, &take(&pr, 1500), 8, 2).unwrap_or_default(), 3000);
+            if !rag.is_empty() {
+                user.push_str(&format!("\n\n=== WORLD LORE (for names/places grounding) ===\n{rag}"));
+            }
+        }
+        user.push_str(&format!("\n\n=== PLAYER'S REQUEST ===\n{}", take(&pr, 4000)));
+        Ok((system, schema, user, tpl.map(|t| t.row)))
+    }).await.map_err(|_| "Cancelled.".to_string())??;
+    crate::runners::update("character draft", id, |e| { e.insert("stage".into(), json!("building")); });
+    let model = b.model.clone();
+    let raw = crate::ai::generate_chat_format(&b, &model, &system, &[json!({"role": "user", "content": user})], think, &Map::new(), Some(&schema)).await;
+    let Value::Object(mut draft) = extract_object(&raw)? else { return Err("'list' object has no attribute 'get'".into()) };
+    let name = match draft.get("name") { v if truthy(v) => crate::edits::py_strip_pub(&py_str(v.unwrap())), _ => String::new() };
+    if name.is_empty() {
+        return Err("The model's reply contained no character name — try rephrasing.".into());
+    }
+    if let Some(row) = tpl_row {
+        let tpl = crate::sheets::Tpl::load(row).ok_or("template")?;
+        let cleaned = clean_ai_fields(&tpl, draft.get("fields")).ok_or("fields")?;
+        let preview = ai_preview_lines(&tpl, &cleaned).ok_or("fields")?;
+        let s = |k: &str| match draft.get(k) { v if truthy(v) => py_str(v.unwrap()), _ => String::new() };
+        return Ok(json!({"name": take(&name, 200), "player_name": take(&crate::edits::py_strip_pub(&s("player_name")), 200), "backstory": take(&s("backstory"), 12000),
+            "notes": take(&s("notes"), 6000), "sheet_template_id": tpl.row.get("id"), "system": tpl.row.get("name"), "custom_fields": cleaned,
+            "preview": preview.into_iter().map(|(l, v)| json!({"label": l, "value": v})).collect::<Vec<_>>()}));
+    }
+    let level = int_or(draft.get("level"), 1)?.clamp(1, 20);
+    let xp = int_or(draft.get("xp"), 0)?.max(0);
+    let max_hp = int_or(draft.get("max_hp"), 0)?.max(0);
+    let shock = int_or(draft.get("shock_max"), 0)?.max(0);
+    let mut stats = Map::new();
+    if let Some(Value::Object(st)) = draft.get("stats") {
+        for (k, v) in st {
+            if matches!(v, Value::Number(_) | Value::String(_) | Value::Bool(_)) {
+                stats.insert(k.clone(), json!(int_or(Some(v), 0)?.clamp(0, 30)));
+            }
+        }
+    }
+    draft.insert("level".into(), json!(level));
+    draft.insert("xp".into(), json!(xp));
+    draft.insert("max_hp".into(), json!(max_hp));
+    draft.insert("shock_max".into(), json!(shock));
+    draft.insert("stats".into(), Value::Object(stats));
+    Ok(Value::Object(draft))
+}
+
+/// `clean_ai_fields(tpl, raw)`
+fn clean_ai_fields(tpl: &crate::sheets::Tpl, raw: Option<&Value>) -> Option<Map<String, Value>> {
+    let Some(Value::Object(raw)) = raw else { return Some(Map::new()) };
+    let binds = tpl.binds()?;
+    let num = |v: &Value| -> Option<i64> {
+        match v {
+            Value::Null | Value::Bool(_) => None,
+            Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)),
+            other => {
+                let s = crate::edits::py_strip_pub(&py_str(other));
+                s.parse::<i64>().ok().or_else(|| s.parse::<f64>().ok().filter(|f| f.is_finite()).map(|f| f.trunc() as i64))
+            }
+        }.map(|n| n.clamp(0, 999))
+    };
+    let text = |v: &Value, cap: usize| -> Option<String> { match v { Value::Object(_) | Value::Array(_) | Value::Null => None, other => Some(take(&crate::edits::py_strip_pub(&py_str(other)), cap)) } };
+    let choice = |v: &Value, opts: &[Value]| -> Option<String> {
+        let t = text(v, 400)?;
+        opts.iter().map(py_str).find(|o| crate::edits::py_strip_pub(o).to_lowercase() == t.to_lowercase())
+    };
+    let mut out = Map::new();
+    for f in &tpl.fields {
+        let Some(fid) = f.get("id").and_then(|v| v.as_str()) else { continue };
+        let Some(val) = raw.get(fid) else { continue };
+        let kind = match f.get("type") { v if truthy(v) => py_str(v.unwrap()), _ => "text".into() };
+        if truthy(f.get("binds")) || binds.iter().any(|(k, _)| k == fid) {
+            continue;
+        }
+        match kind.as_str() {
+            "resource" => {
+                let (cur, mx) = match val {
+                    Value::Object(o) => (o.get("current").and_then(num), o.get("max").and_then(num)),
+                    Value::String(s) if s.contains('/') => { let (a, z) = s.split_once('/').unwrap(); (num(&json!(a)), num(&json!(z))) }
+                    Value::Array(_) => (None, None),
+                    other => (num(other), None),
+                };
+                if let Some(c) = cur { out.insert(format!("{fid}_current"), json!(c)); }
+                if let Some(m) = mx { out.insert(format!("{fid}_max"), json!(m)); }
+            }
+            "number" => { if let Some(n) = num(val) { out.insert(fid.into(), json!(n)); } }
+            "select" => { if let Some(c) = choice(val, f.get("options").and_then(|o| o.as_array()).map(|a| a.as_slice()).unwrap_or(&[])) { out.insert(fid.into(), json!(c)); } }
+            "list" => {
+                let Value::Array(items) = val else { continue };
+                let cols: Vec<&Value> = f.get("item_fields").and_then(|v| v.as_array()).map(|a| a.iter().filter(|sf| sf.is_object() && truthy(sf.get("id"))).collect()).unwrap_or_default();
+                let mut rows = vec![];
+                for item in items.iter().take(12) {
+                    let Value::Object(item) = item else { continue };
+                    let mut row = Map::new();
+                    let mut seen: Vec<String> = vec![];
+                    for col in cols.iter().rev() {
+                        let cid = py_str(&col["id"]);
+                        if seen.contains(&cid) { continue; }
+                        seen.push(cid);
+                    }
+                    for cid in seen.iter().rev() {
+                        let col = cols.iter().rev().find(|c| py_str(&c["id"]) == *cid).unwrap();
+                        let Some(cell) = item.get(cid) else { continue };
+                        let v = if col.get("type") == Some(&json!("select")) { choice(cell, col.get("options").and_then(|o| o.as_array()).map(|a| a.as_slice()).unwrap_or(&[])) }
+                            else { text(cell, if col.get("type") == Some(&json!("textarea")) { 4000 } else { 400 }) };
+                        if let Some(v) = v.filter(|v| !v.is_empty()) { row.insert(cid.clone(), json!(v)); }
+                    }
+                    if !row.is_empty() { rows.push(Value::Object(row)); }
+                }
+                if !rows.is_empty() { out.insert(fid.into(), Value::Array(rows)); }
+            }
+            "text" | "textarea" => { if let Some(t) = text(val, if kind == "textarea" { 4000 } else { 400 }).filter(|t| !t.is_empty()) { out.insert(fid.into(), json!(t)); } }
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+/// `ai_preview_lines(tpl, cleaned)`
+fn ai_preview_lines(tpl: &crate::sheets::Tpl, cleaned: &Map<String, Value>) -> Option<Vec<(String, String)>> {
+    let mut out = vec![];
+    for f in &tpl.fields {
+        let Some(fid) = f.get("id").filter(|v| truthy(Some(v))) else { continue };
+        let fid_s = py_str(fid);
+        let label_src = match f.get("label") { v if truthy(v) => py_str(v.unwrap()), _ => fid_s.clone() };
+        let label = crate::edits::sheet_short_label_pub(&label_src)?;
+        match f.get("type").and_then(|t| t.as_str()) {
+            Some("resource") => {
+                if cleaned.contains_key(&format!("{fid_s}_current")) || cleaned.contains_key(&format!("{fid_s}_max")) {
+                    let dv = match f.get("default_value") { v if truthy(v) => v?.as_str()?.to_string(), _ => "0/0".into() };
+                    let half = |x: &str| crate::edits::sheet_num_text_pub(x).ok().flatten().unwrap_or(0);
+                    let (dc, dm) = (half(dv.split('/').next().unwrap_or("")), if dv.contains('/') { half(dv.split('/').nth(1).unwrap_or("")) } else { 0 });
+                    let cur = cleaned.get(&format!("{fid_s}_current")).cloned().unwrap_or(json!(dc));
+                    let mx = cleaned.get(&format!("{fid_s}_max")).cloned().unwrap_or(json!(dm));
+                    out.push((label, format!("{} / {}", py_str(&cur), py_str(&mx))));
+                }
+            }
+            Some("list") => {
+                if let Some(Value::Array(rows)) = cleaned.get(&fid_s) {
+                    let names: Vec<String> = rows.iter().filter_map(|r| r.as_object().and_then(|o| o.values().next()).map(py_str)).take(3).collect();
+                    out.push((label, format!("{} × {}", rows.len(), names.join(", "))));
+                }
+            }
+            _ => {
+                if let Some(v) = cleaned.get(&fid_s) {
+                    out.push((label, take(&py_str(v), 80)));
+                }
+            }
+        }
+    }
+    Some(out)
 }
