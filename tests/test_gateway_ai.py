@@ -1145,3 +1145,30 @@ def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
         assert out[0][:3] == out[1][:3], (i, path, out[0][:2], out[1][:2], json.dumps(out[0][2])[:1500], json.dumps(out[1][2])[:1500])
         assert out[1][3] == "gateway", (i, path)
     studio.reply_seq = None
+
+
+def test_photo_import_drafts_are_pythons(client, seed, studio):
+    """/api/ai/character-from-images and /api/ai/entity-from-images: the photos go to the model as image parts (JPEG sniffed, PNG otherwise),
+    the draft comes back normalized - and the refusals (too many, a wrong type) are Python's, word for word."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    jpeg, png = b"\xff\xd8\xff\xe0" + b"j" * 40, b"\x89PNG\r\n\x1a\n" + b"p" * 40
+    pc = _reply(json.dumps({"name": " Ana ", "race": "Elf", "level": "25", "xp": -4, "notes": "Gear"}))
+    cases = [
+        ("/api/ai/character-from-images", [("files", ("a.JPG", jpeg)), ("files", ("b.png", png))], {"hint": " Page 1 "}, [pc]),
+        ("/api/ai/character-from-images", [("files", ("a.jpg", jpeg))], {}, [_reply(json.dumps({"name": "Bo", "level": "lots"}))]),
+        ("/api/ai/entity-from-images", [("files", ("map.webp", png))], {}, [_reply(json.dumps({"kind": "location", "name": "Bree", "tags": "town"}))]),
+        ("/api/ai/entity-from-images", [("files", ("map.webp", png))], {"hint": "a town"}, [_reply(json.dumps({"kind": "nope", "name": "Bree"}))]),
+        ("/api/ai/entity-from-images", [("files", ("notes.txt", b"hi"))], {}, []),
+        ("/api/ai/entity-from-images", [("files", (f"{i}.png", png)) for i in range(7)], {}, []),
+    ]
+    for i, (path, files, data, replies) in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.reply_seq = list(replies)
+            r = side.post(path, files=files, data=data)
+            out.append((r.status_code, r.json(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, path, out[0][:2], out[1][:2])
+        assert out[1][3] == "gateway", (i, path)
+    studio.reply_seq = None

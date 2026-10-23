@@ -238,7 +238,8 @@ async fn handle(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::POST && ai::is_sync_ai(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, 8 << 20).await else {
+        let limit = if parts.uri.path().ends_with("-from-images") { 160 << 20 } else { 8 << 20 }; // six photos of up to 25 MB
+        let Ok(bytes) = axum::body::to_bytes(body, limit).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         if let Some(resp) = ai::sync_ai(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {

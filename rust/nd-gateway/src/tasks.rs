@@ -53,9 +53,31 @@ fn sweep(tasks: &mut HashMap<String, Task>) {
     }
 }
 
-/// `label_for(path)` for the routes the gateway runs in the background
-fn label_for(path: &str) -> String {
-    if path == "/api/ai/assist" { "AI suggestions".into() } else { path.into() }
+/// `label_for(path)`: app/ai_background.py `_LABELS`, first match wins
+pub fn label_for(path: &str) -> String {
+    let end = |s: &str| path.ends_with(s);
+    let has = |s: &str| path.contains(s);
+    let label = if end("/api/ai/tts") { "Text to speech" }
+        else if end("/speak") { "NPC voice" }
+        else if end("/recap-song") { "Recap song" }
+        else if end("/transcribe") { "Transcription" }
+        else if end("/prep/generate") { "Session prep" }
+        else if has("/ai/summarize") || has("/ai/expand") || has("/ai/condense") { "Session summary" }
+        else if end("/ai-tactics") { "Combat tactics" }
+        else if end("/ai-insights") { "Party insights" }
+        else if end("/generate-mystery") { "Mystery board" }
+        else if end("/ai-day") { "Calendar day" }
+        else if end("/calendar/ai-design") { "Calendar design" }
+        else if end("/api/media-rename/suggest") { "Media names" }
+        else if end("/tables/generate-ai") { "Random table" }
+        else if has("/api/ai/generate/") || has("/entity-from") || has("/entities-from") { "Entity draft" }
+        else if has("/api/ai/chat") { "AI chat" }
+        else if end("/api/ai/assist") { "AI suggestions" }
+        else if has("/api/facts/") { "Facts" }
+        else if end("/api/bulk-edit/parse") { "Bulk edit" }
+        else if end("/character-from-images") { "Character import" }
+        else { return path.into() };
+    label.into()
 }
 
 fn json_answer(status: StatusCode, v: &Value, extra: Option<(&str, String)>) -> Response<Body> {

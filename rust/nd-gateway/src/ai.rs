@@ -3651,6 +3651,8 @@ enum SyncAi {
     Generate { b: Backend, prompt: String },
     /// `parse_entity_from_text` (one draft) or `parse_entities_batch_from_text` (many)
     EntityText { b: Backend, text: String, hint: String, batch: bool },
+    /// `parse_character_from_images` (character) / `parse_entity_from_images`
+    Images { b: Backend, images: Vec<Vec<u8>>, hint: String, character: bool },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
     Refuse(StatusCode, String),
 }
@@ -3663,6 +3665,9 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         return None;
     }
     let path = uri.path();
+    if matches!(path, "/api/ai/character-from-images" | "/api/ai/entity-from-images") {
+        return images_plan(&db, &p, headers, body, path.ends_with("/character-from-images")).map(|plan| (plan, p.user_id));
+    }
     let b = if body.is_empty() { Map::new() } else { match serde_json::from_slice::<Value>(body).ok()? { Value::Object(m) => m, _ => return None } };
     let text = |k: &str| -> Option<String> {
         match b.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)), Some(_) => None }
@@ -3929,6 +3934,10 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             Ok(v) => ok(v),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
         },
+        SyncAi::Images { b, images, hint, character } => match draft_from_images(&b, &images, &hint, character).await {
+            Ok(v) => ok(v),
+            Err(e) => err(StatusCode::BAD_GATEWAY, e),
+        },
         SyncAi::Generate { b, prompt } => {
             let result = generate_chat(&b, &b.model, &recap_text("_SYSTEM"), &[json!({"role": "user", "content": prompt})], false, &Map::new()).await;
             ok(json!({"result": result}))
@@ -3955,11 +3964,42 @@ pub async fn sync_ai(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, 
     Some(answer_sync(plan).await)
 }
 
+/// `_read_import_images` and the two image-to-draft routes: a GM or assistant, the `files` parts checked as Python does
+fn images_plan(db: &rusqlite::Connection, p: &crate::layout::PageCtx, headers: &HeaderMap, body: &[u8], character: bool) -> Option<SyncAi> {
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return None;
+    }
+    let (form, files) = crate::form::parse_multipart(headers, body)?;
+    let hint = form.get("hint").unwrap_or("").to_string();
+    let files: Vec<_> = files.into_iter().filter(|f| f.name == "files").collect();
+    if files.is_empty() {
+        return None; // File(...) missing: Python's 422
+    }
+    let refuse = |m: String| Some(SyncAi::Refuse(StatusCode::BAD_REQUEST, m));
+    if files.len() > MAX_VISION_IMPORT_IMAGES {
+        return refuse(format!("Too many images — limit is {MAX_VISION_IMPORT_IMAGES} per request."));
+    }
+    let max: usize = match std::env::var("MAX_AI_ATTACHMENT_BYTES") { Ok(v) => v.trim().parse().ok()?, Err(_) => 25 * 1024 * 1024 };
+    let mut images = vec![];
+    for f in files {
+        let base = f.filename.rsplit('/').next().unwrap_or("");
+        let ext = base.rfind('.').filter(|&i| i > 0 && i < base.len() - 1).map(|i| base[i..].to_lowercase()).unwrap_or_default();
+        if ![".png", ".jpg", ".jpeg", ".gif", ".webp"].contains(&ext.as_str()) {
+            return refuse(format!("\"{}\" is not a supported image type.", f.filename));
+        }
+        if f.data.len() > max {
+            return refuse(format!("\"{}\" is too large (limit {} MB).", f.filename, max / (1024 * 1024)));
+        }
+        images.push(f.data);
+    }
+    Some(SyncAi::Images { b: backend(db)?, images, hint, character })
+}
+
 /// The paths `sync_ai` serves
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
-        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch")
+        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images")
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }
@@ -4074,16 +4114,71 @@ async fn entity_from_text(b: &Backend, text: &str, hint: &str, batch: bool) -> R
     let entities: Vec<Value> = list("entities")?.iter().filter_map(|i| entity_draft(i, &kinds)).collect();
     let mut pcs = vec![];
     for item in list("player_characters")? {
-        let Some(i) = item.as_object() else { continue };
-        let name = reply_str(i.get("name"));
-        if name.is_empty() { continue; }
-        let num = |k: &str, d: i64| -> Result<i64, String> {
-            let v = i.get(k).filter(|v| crate::edits::py_truthy_pub(Some(v)));
-            if reply_str(v).is_empty() { return Ok(d); }
-            reply_int(v.unwrap_or(&Value::Null)).map_err(|_| unusable())
-        };
-        pcs.push(json!({"name": name, "player_name": reply_str(i.get("player_name")), "race": reply_str(i.get("race")), "char_class": reply_str(i.get("char_class")),
-            "level": num("level", 1)?.clamp(1, 20), "xp": num("xp", 0)?.max(0), "backstory": reply_str(i.get("backstory")), "notes": reply_str(i.get("notes"))}));
+        if let Some(d) = pc_draft(&item).map_err(|_| unusable())? {
+            pcs.push(d);
+        }
     }
     Ok(json!({"entities": entities, "player_characters": pcs}))
+}
+
+/// One player-character draft from a model's JSON (Ok(None): skipped; Err: a number Python's int() refuses)
+fn pc_draft(item: &Value) -> Result<Option<Value>, ()> {
+    let Some(i) = item.as_object() else { return Ok(None) };
+    let name = reply_str(i.get("name"));
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let num = |k: &str, d: i64| -> Result<i64, ()> {
+        let v = i.get(k).filter(|v| crate::edits::py_truthy_pub(Some(v)));
+        if reply_str(v).is_empty() { return Ok(d); }
+        reply_int(v.unwrap_or(&Value::Null))
+    };
+    Ok(Some(json!({"name": name, "player_name": reply_str(i.get("player_name")), "race": reply_str(i.get("race")), "char_class": reply_str(i.get("char_class")),
+        "level": num("level", 1)?.clamp(1, 20), "xp": num("xp", 0)?.max(0), "backstory": reply_str(i.get("backstory")), "notes": reply_str(i.get("notes"))})))
+}
+
+/// `_b64_to_data_url`: the JPEG magic sniffed off the base64, png otherwise
+fn image_data_url(data: &[u8]) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    let media = if b64.starts_with("/9j/") { "image/jpeg" } else { "image/png" };
+    format!("data:{media};base64,{b64}")
+}
+
+/// `parse_character_from_images` / `parse_entity_from_images`: the photos on the user message as image_url parts
+async fn draft_from_images(b: &Backend, images: &[Vec<u8>], hint: &str, character: bool) -> Result<Value, String> {
+    let kinds = entity_kinds();
+    let hint = crate::edits::py_strip_pub(hint);
+    let (system, default_text) = if character {
+        (recap_text("_CHARACTER_FROM_IMAGES_SYSTEM"), "Transcribe this character sheet.")
+    } else {
+        (recap_text("_ENTITY_FROM_IMAGES_SYSTEM"), "Read this document and draft a world entity from it.")
+    };
+    let mut parts = vec![json!({"type": "text", "text": if hint.is_empty() { default_text.to_string() } else { hint }})];
+    parts.extend(images.iter().take(MAX_VISION_IMPORT_IMAGES).map(|d| json!({"type": "image_url", "image_url": {"url": image_data_url(d)}})));
+    let schema = if character {
+        json!({"type": "object", "properties": {"name": {"type": "string"}, "player_name": {"type": "string"}, "race": {"type": "string"},
+            "char_class": {"type": "string"}, "level": {"type": "integer"}, "xp": {"type": "integer"}, "backstory": {"type": "string"}, "notes": {"type": "string"}},
+            "required": ["name"]})
+    } else {
+        entity_schema(&kinds)
+    };
+    let model = b.model.clone();
+    let reply = chat_with_schema(b, &model, &[json!({"role": "system", "content": system}), json!({"role": "user", "content": parts})], false, &schema).await?;
+    let parsed: Value = serde_json::from_str(&reply).unwrap_or(Value::Null);
+    if character {
+        return pc_draft(&parsed).ok().flatten()
+            .ok_or_else(|| "Could not read a character off that photo — try a clearer/closer picture, or a different model.".to_string());
+    }
+    entity_draft(&parsed, &kinds).ok_or_else(|| "Could not turn that photo into an entity — try a clearer/closer picture, or a different model.".to_string())
+}
+
+/// `ai.MAX_VISION_IMPORT_IMAGES`
+const MAX_VISION_IMPORT_IMAGES: usize = 6;
+
+/// `_entity_from_text_schema(kinds)`
+fn entity_schema(kinds: &[String]) -> Value {
+    json!({"type": "object", "properties": {"kind": {"type": "string", "enum": kinds}, "subtype": {"type": "string"}, "name": {"type": "string"},
+        "summary": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "string"}, "folder": {"type": "string"},
+        "visible_to_players": {"type": "boolean"}}, "required": ["kind", "name"]})
 }
