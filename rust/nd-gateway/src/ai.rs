@@ -56,6 +56,11 @@ impl Backend {
         o
     }
 
+    /// `_thinking_num_predict_override(think)`
+    fn thinking_predict_if(&self, think: bool) -> Map<String, Value> {
+        if think { self.thinking_predict() } else { Map::new() }
+    }
+
     /// `_thinking_num_predict_override(True)`: the configured output cap plus the thinking headroom (nothing when unset or unbounded)
     fn thinking_predict(&self) -> Map<String, Value> {
         let mut out = Map::new();
@@ -933,4 +938,209 @@ fn npc_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option
 pub async fn npc_talk_stream(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
     let job = tokio::task::spawn_blocking(move || npc_plan(&cfg, &uri, &headers, &body)).await.ok()??;
     Some(run(job))
+}
+
+const ASSIST_MAX_INTERACTIVE_CHARS: usize = 60_000;
+const RECAP_NUM_PREDICT_DEFAULT: i64 = 1024;
+
+/// One AI Assist call to make (`run_assist` for a free-text operation)
+struct Assist {
+    backend: Backend,
+    op: String,
+    model: String,
+    system: String,
+    user: String,
+    think: bool,
+    extra: Map<String, Value>,
+}
+
+fn assist_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Assist> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if p.user_id <= 0 || !(p.is_gm || p.role.as_deref() == Some("assistant")) || p.world.is_none() {
+        return None; // the 403 / 400 are Python's
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) {
+            None => Some(String::new()),
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => None,
+        }
+    };
+    let Some(Value::String(op)) = b.get("op") else { return None };
+    for k in ["surface", "kind", "name", "summary", "body", "tags", "instruction", "lang", "model"] {
+        text(k)?;
+    }
+    for k in ["rag_entity_limit", "rag_notes_limit"] {
+        if !matches!(b.get(k), None | Some(Value::Null)) && b.get(k).and_then(|v| v.as_i64()).is_none() {
+            return None;
+        }
+    }
+    let flag = |k: &str| match b.get(k) { None => Some(false), Some(Value::Bool(t)) => Some(*t), _ => None };
+    let (think, use_rag) = (flag("think")?, flag("use_rag")?);
+    if use_rag {
+        return None; // the lore retrieval (smart_world_context): Python's
+    }
+    let (summary, body_text, instruction, lang) = (text("summary")?, text("body")?, text("instruction")?, text("lang")?);
+    let content = if !body_text.is_empty() { body_text } else { summary.clone() };
+    if content.chars().count() > ASSIST_MAX_INTERACTIVE_CHARS {
+        return None;
+    }
+    let systems = nd_render::app::data()["assist_systems"].as_object()?;
+    let base = systems.get(op.as_str())?.as_str()?; // a structured or unknown operation: Python's
+    let strip = crate::edits::py_strip_pub;
+    let meta = [("Kind", text("kind")?), ("Name", text("name")?), ("Current summary", summary), ("Tags", text("tags")?)]
+        .into_iter().filter_map(|(k, v)| { let t = strip(&v); (!t.is_empty()).then(|| format!("{k}: {t}")) }).collect::<Vec<_>>().join("\n");
+    let compose = |instruction: &str| -> String {
+        let mut parts = vec![];
+        if !strip(instruction).is_empty() {
+            parts.push(format!("GM instruction: {}", strip(instruction)));
+        }
+        if !strip(&meta).is_empty() {
+            parts.push(strip(&meta));
+        }
+        if !strip(&content).is_empty() {
+            parts.push(format!("Content:\n{}", strip(&content)));
+        }
+        parts.join("\n\n")
+    };
+    let needs_instruction = op == "custom" || op == "code_edit";
+    if needs_instruction && strip(&instruction).is_empty() {
+        return None;
+    }
+    let mut user = compose(&instruction);
+    let mut system = base.to_string();
+    if op == "translate" {
+        let target = if !lang.is_empty() { lang } else if !instruction.is_empty() { instruction.clone() } else { "English".into() };
+        system = format!("{system}\nTarget language: {}.", strip(&target));
+        user = compose("");
+    }
+    let needs_content = ["expand", "improve", "deslop", "summarize", "translate", "rules_rewrite", "world_summary", "folk_tale", "code_edit"].contains(&op.as_str());
+    if (needs_content && strip(&content).is_empty()) || (op == "analyze" && strip(&user).is_empty()) {
+        return None; // Python's 400
+    }
+    let backend = backend(&db)?;
+    let model = Some(text("model")?).filter(|m| !m.is_empty()).map(Some).unwrap_or_else(|| surface_default(cfg, "assist"))?;
+    let model = if model.is_empty() { backend.model.clone() } else { model };
+    // _free_text_call's options: the thinking widening, else the recap family's cap when nothing bounds the answer
+    let mut extra = backend.thinking_predict_if(think);
+    if !extra.contains_key("num_predict") {
+        let configured = backend.options.get("num_predict").and_then(|v| v.as_f64());
+        if !configured.is_some_and(|c| c != 0.0 && c >= 0.0) {
+            extra.insert("num_predict".into(), json!(RECAP_NUM_PREDICT_DEFAULT));
+        }
+    }
+    Some(Assist { backend, op: op.clone(), model, system, user: if user.is_empty() { "(empty draft)".into() } else { user }, think, extra })
+}
+
+/// `generate_chat` on the Unsloth backend (one non-streamed answer, Python's sentinel texts on a failure), with the retry of a refused
+/// Thinking request
+async fn generate_chat(b: &Backend, model: &str, system: &str, messages: &[Value], think: bool, extra: &Map<String, Value>) -> String {
+    let mut full: Vec<Value> = if system.is_empty() { vec![] } else { vec![json!({"role": "system", "content": system})] };
+    full.extend(messages.iter().cloned());
+    let mut opts = b.options_for(model);
+    for (k, v) in extra {
+        opts.insert(k.clone(), v.clone());
+    }
+    let mut body = Map::new();
+    body.insert("model".into(), json!(model));
+    body.insert("messages".into(), Value::Array(full.clone()));
+    body.insert("stream".into(), json!(false));
+    body.extend(translate_options(&opts));
+    body.insert("chat_template_kwargs".into(), json!({"enable_thinking": think}));
+    let Some(req) = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))) else { return "[AI unavailable: request]".into() };
+    let resp = match client().request(req).await {
+        Ok(r) => r,
+        Err(e) => return format!("[AI unavailable: ConnectError: {e}]"),
+    };
+    let status = resp.status().as_u16();
+    let bytes = match resp.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(e) => return format!("[AI unavailable: ReadError: {e}]"),
+    };
+    if status >= 400 {
+        let message = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(o)) => match o.get("error") {
+                Some(Value::Object(e)) => e.get("message").map(|m| match m { Value::String(s) => s.clone(), other => other.to_string() }).unwrap_or_default(),
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+        };
+        let message = if message.is_empty() { format!("HTTP {status}") } else { message };
+        if think && thinking_rejection(status as i64, &message) {
+            let thinks = model == "unsloth/gemma-4-26B-A4B-it-GGUF" || crate::edits::py_truthy_pub(b.per_model.get(model).and_then(|m| m.get("thinking")));
+            let mut retry = full;
+            if thinks {
+                match retry.first_mut() {
+                    Some(Value::Object(first)) if first.get("role") == Some(&json!("system")) => {
+                        let c = match first.get("content") { Some(Value::String(c)) => c.clone(), _ => String::new() };
+                        first.insert("content".into(), json!(format!("<|think|>{c}")));
+                    }
+                    _ => retry.insert(0, json!({"role": "system", "content": "<|think|>"})),
+                }
+            }
+            return Box::pin(generate_chat(b, model, "", &retry, false, extra)).await;
+        }
+        return format!("[AI error: Unsloth {status}: {message}]");
+    }
+    let Ok(data) = serde_json::from_slice::<Value>(&bytes) else { return "[AI unavailable: JSONDecodeError: the backend's answer is not JSON]".into() };
+    let choice = data.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()).cloned().unwrap_or(json!({}));
+    let msg = choice.get("message").cloned().unwrap_or(json!({}));
+    let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    let mut inline = 0;
+    if !content.is_empty() {
+        static THINK: OnceLock<regex::Regex> = OnceLock::new();
+        let stripped = crate::edits::py_strip_pub(&THINK.get_or_init(|| regex::Regex::new(r"(?s)<think>.*?</think>").unwrap()).replace_all(&content, ""));
+        inline = content.chars().count() - stripped.chars().count();
+        if !stripped.is_empty() {
+            return stripped;
+        }
+    }
+    let thinking = msg.get("reasoning_content").and_then(|t| t.as_str()).unwrap_or("").chars().count() + inline;
+    if thinking > 0 {
+        return format!("[empty response from {model} — it produced {thinking} character(s) of hidden \"thinking\" output but no final answer (usually means it ran out of output budget mid-reasoning). Try a shorter prompt, a higher response-length limit, or a non-reasoning model.]");
+    }
+    let detail = match choice.get("finish_reason").and_then(|r| r.as_str()).filter(|r| !r.is_empty()) {
+        Some(d) => format!("done_reason={d}"),
+        None => "no done_reason reported".into(),
+    };
+    format!("[empty response from {model} ({detail}) — try a different model, or check the Unsloth server logs]")
+}
+
+/// `_clean_degenerate_recap`: leaked chat-template tokens removed, a hallucinated new turn cut off, repeated lines collapsed
+fn clean_degenerate(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    static TOKEN: OnceLock<regex::Regex> = OnceLock::new();
+    static ROLE: OnceLock<regex::Regex> = OnceLock::new();
+    let t = TOKEN.get_or_init(|| regex::Regex::new(r"<\|[^<>|]{0,40}\|>").unwrap()).replace_all(text, "").replace("<start_of_turn>", "").replace("<end_of_turn>", "");
+    let role = ROLE.get_or_init(|| regex::Regex::new(r"(?i)^(system|user|assistant|model)$").unwrap());
+    let mut cleaned: Vec<&str> = vec![];
+    for line in t.split('\n') {
+        let stripped = crate::edits::py_strip_pub(line);
+        if role.is_match(&stripped) && cleaned.iter().any(|l| !crate::edits::py_strip_pub(l).is_empty()) {
+            break;
+        }
+        if !stripped.is_empty() && cleaned.last().is_some_and(|l| crate::edits::py_strip_pub(l) == stripped) {
+            continue;
+        }
+        cleaned.push(line);
+    }
+    cleaned.join("\n").trim_end_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)).to_string()
+}
+
+/// `POST /api/ai/assist` for a free-text operation: {op, mode: "text", text, model}, or a 502 with the failure text; None (Python's) otherwise
+pub async fn ai_assist(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let a = tokio::task::spawn_blocking(move || assist_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    let system = a.system.clone();
+    let text = clean_degenerate(&generate_chat(&a.backend, &a.model, &system, &[json!({"role": "user", "content": a.user})], a.think, &a.extra).await);
+    if text.starts_with("[AI ") || text.starts_with("[empty response") {
+        return Response::builder().status(StatusCode::BAD_GATEWAY).header(header::CONTENT_TYPE, "application/json").header("x-nd-served-by", "gateway")
+            .body(Body::from(nd_render::py_dumps_compact(&json!({"detail": text})))).ok();
+    }
+    crate::edits::json_response(&json!({"op": a.op, "mode": "text", "text": text, "model": a.model}))
 }

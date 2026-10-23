@@ -19,6 +19,7 @@ class _Fake:
         self.requests = []
         self.script = []
         self.status = 200
+        self.reply = {}                 # the answer to a request that is not streamed
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -42,6 +43,14 @@ class _Fake:
                 if fake.status != 200 or rejected:
                     body = json.dumps({"error": {"message": fake.reject_thinking if rejected else "model exploded"}}).encode()
                     self.send_response(400 if rejected else fake.status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if req.get("stream") is False:
+                    body = json.dumps(fake.reply).encode()
+                    self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
@@ -326,3 +335,44 @@ def test_a_refused_thinking_request_is_retried_as_python_does(client, seed, stud
             assert out[0][:3] == out[1][:3], (reason, model, path, out[0][1], out[1][1], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
             assert out[1][3] == "gateway", (reason, path)
             assert len(out[0][2]) == (1 if "context" in reason else 2), (reason, path, len(out[0][2]))
+
+
+def _reply(content="", reasoning=None, finish="stop"):
+    msg = {"role": "assistant", "content": content}
+    if reasoning is not None:
+        msg["reasoning_content"] = reasoning
+    return {"model": "x", "choices": [{"message": msg, "finish_reason": finish}], "usage": {"completion_tokens": 5}}
+
+
+def test_ai_assist_free_text_ops_are_pythons(client, seed, studio):
+    """POST /api/ai/assist (the editors' Expand / Improve / Translate / ... panel) for a free-text operation: the same prompt and options
+    reach the backend, the same JSON comes back - the answer cleaned as `_clean_degenerate_recap` does, a failure as a 502."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    entity = {"kind": "character", "name": " Borin ", "summary": "A smith.", "tags": "npc, smith", "body": "Borin forges blades in the old quarter."}
+    cases = [
+        ({"op": "expand", **entity}, _reply("<think>plan</think>\n  Borin forges blades.\nBorin forges blades.\n\nHe is old.<|im_end|>\nuser\nWrite C code.  ")),
+        ({"op": "improve", **entity, "think": True, "model": "other"}, _reply("Better text.", reasoning="hmm")),
+        ({"op": "translate", **entity, "lang": " Spanish ", "instruction": "ignored"}, _reply("Borin forja espadas.")),
+        ({"op": "translate", "body": "Hello", "instruction": "French"}, _reply("Bonjour")),
+        ({"op": "custom", "summary": "Only a summary", "instruction": "Make it rhyme"}, _reply("A rhyme.")),
+        ({"op": "analyze", "name": "Nameless"}, _reply("", reasoning="all thought")),
+        ({"op": "summarize", **entity}, _reply("", finish="length")),
+        ({"op": "folk_tale", **entity}, None),
+    ]
+    for i, (body, reply) in enumerate(cases):
+        studio.reply, studio.status = reply or {}, (500 if reply is None else 200)
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            r = side.post("/api/ai/assist", json=body)
+            out.append((r.status_code, r.text, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2], json.dumps(out[0][2])[:2500], json.dumps(out[1][2])[:2500])
+        assert out[1][3] == "gateway", i
+    studio.status = 200
+    # what stays Python's: lore retrieval, the JSON operations, refusals and Python's 400s
+    for body in ({"op": "expand", **entity, "use_rag": True}, {"op": "suggest", **entity}, {"op": "custom", **entity}, {"op": "nope"},
+                 {"op": "expand", "body": "   "}, {"op": "expand", "body": "x" * 60001}):
+        assert _via(gm, base).post("/api/ai/assist", json=body).headers.get("x-nd-served-by") != "gateway", body
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    assert _via(player, base).post("/api/ai/assist", json={"op": "expand", **entity}).headers.get("x-nd-served-by") != "gateway"

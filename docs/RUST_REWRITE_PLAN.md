@@ -286,4 +286,6 @@ answers (`docs/RUST_AI.md`): the retrieval code it needs (`rust/nd-gateway/src/r
 
 `POST /api/ai/stream` and `POST /api/npc-talk/<id>/stream` are answered by the gateway on the same backend client and stream as the
 Chronicler (`docs/RUST_AI.md`), and a GM's own model and Thinking choices on the Chronicler are honoured. The King in Yellow streams stay
-Python's for good reasons given there. Still Python's in phase 5: the background AI jobs (recaps, condensing, AI assist, image generation).
+Python's for good reasons given there. A Thinking request the backend refuses is retried as Python retries it (batch 4), and the
+editors' interactive AI Assist (free-text operations) is answered by the gateway too (batch 5). Still Python's in phase 5: the background
+AI jobs (recaps, condensing, the AI Assist job variant, image generation).

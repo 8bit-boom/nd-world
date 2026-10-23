@@ -11,6 +11,15 @@ sys.path.insert(0, str(ROOT))
 OUT = ROOT / "rust" / "nd-render" / "data" / "app_data.json"
 
 
+
+def assist_systems():
+    from app import ai_assist as a
+    ops = {a.OP_EXPAND: a._EXPAND_SYSTEM, a.OP_IMPROVE: a._IMPROVE_SYSTEM, a.OP_DESLOP: a._DESLOP_SYSTEM, a.OP_SUMMARIZE: a._SUMMARIZE_SYSTEM,
+           a.OP_ANALYZE: a._ANALYZE_SYSTEM, a.OP_TRANSLATE: a._TRANSLATE_SYSTEM, a.OP_CUSTOM: a._CUSTOM_SYSTEM, a.OP_RULES_REWRITE: a._RULES_REWRITE_SYSTEM,
+           a.OP_WORLD_SUMMARY: a._WORLD_SUMMARY_SYSTEM, a.OP_FOLK_TALE: a._FOLK_TALE_SYSTEM, a.OP_CODE_EDIT: a._CODE_EDIT_SYSTEM}
+    assert set(ops) == a.FREE_TEXT_OPS, sorted(a.FREE_TEXT_OPS ^ set(ops))
+    return ops
+
 def column_defaults() -> dict:
     """{table: {column: {"default": value} | {"default": "__utcnow__"}, "onupdate": "__utcnow__"?}} - SQLAlchemy fills these in Python, not
     the database, so a write the gateway makes has to fill them the same way (rust/nd-gateway/src/orm.rs)."""
@@ -117,6 +126,8 @@ def make() -> dict:
         "retrieval_stopwords": sorted(__import__("app.retrieval", fromlist=["_STOPWORDS"])._STOPWORDS),
         # the built-in sheet systems (Hunt in the Moonlight, Asterion, N&D): their vital / XP fields, conditions, Rest rules, dice
         "builtin_systems": json.loads(json.dumps(sheet_systems.BUILTIN_SYSTEMS)),
+        # app/ai_assist.py's free-text operations: each one's system prompt (the structured ones - suggest, table_entries - stay Python's)
+        "assist_systems": assist_systems(),
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)
         "catalog_equipment": game_catalog.catalog_payload()["equipment"], "catalog_feats": game_catalog.catalog_payload()["feats"],
         # the tracker pages' rules_json, exactly as json.dumps spells it (the GM's whole table; a player's three keys of it)
