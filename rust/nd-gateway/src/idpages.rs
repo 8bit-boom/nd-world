@@ -27,6 +27,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/pages/", "", page_viewer),
     ("/quests/", "", quest_detail),
     ("/entity/", "/edit", entity_edit),
+    ("/sessions/", "", session_detail),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -389,4 +390,109 @@ pub fn rules_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     c.insert("is_custom_rules".into(), json!(is_custom));
     c.insert("can_edit_rules".into(), json!(p.is_gm));
     render_with(pages, "rules.html", p.ctx, headers)
+}
+
+/// `GET /sessions/<id>` (app/routers/sessions.py `session_detail`): the session page - its party, linked combats, featured entities and
+/// characters, the party's characters, the session's own facts (GM-only ones for a GM only) with their tag cloud, prep, loot, and the
+/// gallery picker for a GM
+fn session_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(gs) = row(db, "SELECT * FROM game_sessions WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let gw = gs.get("world_id")?.as_i64()?;
+    // world_row_visible: the session's world must be reachable, and the sessions section open to this role
+    if !p.is_gm {
+        if db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [gw, p.user_id], |_| Ok(())).is_err() {
+            return Some(refusal(404));
+        }
+        let w = row(db, "SELECT * FROM worlds WHERE id = ?1", gw)?;
+        let s = |k: &str| w.get(k).and_then(|v| v.as_str());
+        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), "sessions")? == "none" {
+            return Some(refusal(404));
+        }
+    }
+    let parties = rows(db, "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name", gw)?;
+    let combats = rows(db, "SELECT * FROM combat_sessions WHERE game_session_id = ?1", id)?;
+    let npcs = json_or_empty_list(gs.get("npcs_json"))?;
+    let list = npcs.as_array()?.clone();
+    let kind_of = |n: &Value| n.get("kind").and_then(|k| k.as_str()).unwrap_or("entity").to_string();
+    let (mut names, mut selected) = (vec![], vec![]);
+    for n in &list {
+        let eid = n.get("entity_id")?.as_i64()?;
+        if kind_of(n) == "player_character" {
+            if let Some(pc) = row(db, "SELECT name FROM player_characters WHERE id = ?1", eid) {
+                names.push(pc.get("name").cloned().unwrap_or(Value::Null));
+                selected.push(json!(format!("pc:{eid}")));
+            }
+        } else if n.get("kind").is_none() || kind_of(n) == "entity" {
+            if let Some(e) = row(db, "SELECT name FROM entities WHERE id = ?1", eid) {
+                names.push(e.get("name").cloned().unwrap_or(Value::Null));
+                selected.push(json!(eid));
+            }
+        }
+    }
+    let party_pcs = match gs.get("party_id").and_then(|v| v.as_i64()) {
+        Some(pid) => match row(db, "SELECT member_pc_ids_json FROM parties WHERE id = ?1", pid) {
+            Some(party) => {
+                let ids = json_or_empty_list(party.get("member_pc_ids_json"))?;
+                let ids: Vec<i64> = ids.as_array()?.iter().map(|v| v.as_i64()).collect::<Option<_>>()?;
+                if ids.is_empty() { vec![] } else {
+                    let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+                    let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list})")).ok()?;
+                    let got: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+                    got.into_iter().map(Value::Object).collect()
+                }
+            }
+            None => vec![],
+        },
+        None => vec![],
+    };
+    let vis = if p.is_gm { "" } else { " AND visible_to_players IS NOT 0" };
+    let facts = rows(db, &format!("SELECT * FROM facts WHERE game_session_id = ?1{vis} ORDER BY created_at ASC, id ASC"), id)?;
+    let mut counts: Vec<(String, i64)> = vec![];
+    for f in &facts {
+        for t in f.get("tags").and_then(|v| v.as_str()).unwrap_or("").split(',') {
+            let t = crate::edits::py_strip_pub(t);
+            if t.is_empty() {
+                continue;
+            }
+            match counts.iter_mut().find(|(k, _)| *k == t) {
+                Some(c) => c.1 += 1,
+                None => counts.push((t, 1)),
+            }
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let gallery = match (wid, p.is_gm) {
+        (Some(w), true) => crate::gallery::all_world_image_urls(db, w)?,
+        _ => vec![],
+    };
+    let next = gs.get("session_num").cloned().unwrap_or(Value::Null);
+    let prep = json_or_empty_list(gs.get("prep_json"))?;
+    let loot = json_or_empty_list(gs.get("loot_json"))?;
+    let mut gsv = gs.clone();
+    let live = gs.get("live_transcript").and_then(|v| v.as_str()).is_some_and(|t| !t.is_empty());
+    gsv.insert("has_live_transcript".into(), json!(live));
+    let ctx = &mut p.ctx;
+    ctx.insert("gsession".into(), Value::Object(gsv));
+    ctx.insert("gallery_images".into(), Value::Array(gallery));
+    ctx.insert("parties".into(), Value::Array(parties));
+    ctx.insert("next_num".into(), next);
+    ctx.insert("linked_combats".into(), Value::Array(combats));
+    ctx.insert("npc_names".into(), Value::Array(names));
+    ctx.insert("party_pcs".into(), Value::Array(party_pcs));
+    ctx.insert("npc_selected_json".into(), Value::Array(selected));
+    ctx.insert("prep".into(), prep);
+    ctx.insert("loot".into(), loot);
+    ctx.insert("npcs".into(), npcs);
+    ctx.insert("facts".into(), Value::Array(facts));
+    ctx.insert("fact_top_tags".into(), json!(counts.into_iter().map(|(t, n)| json!([t, n])).collect::<Vec<_>>()));
+    render_with(pages, "sessions/detail.html", p.ctx, headers)
+}
+
+/// FastAPI's answer to `HTTPException(status)` with no detail: {"detail": "<the status phrase>"}
+pub fn refusal(status: u16) -> Response<Body> {
+    let code = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let phrase = code.canonical_reason().unwrap_or("Error");
+    Response::builder().status(code).header("content-type", "application/json").header("x-nd-served-by", "gateway")
+        .body(Body::from(format!("{{\"detail\":\"{phrase}\"}}"))).unwrap()
 }

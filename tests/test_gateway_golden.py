@@ -1254,7 +1254,7 @@ def test_home_page_the_gateway_builds_is_pythons(client, seed):
         d = _signed_in(email, pw, world)
         via = _via(d, base)
         served += _same_page(d, via, "/", email)
-    assert served >= 3, served
+    assert served == 9, served
 
 
 def test_cockpit_page_is_pythons(client, seed):
@@ -1301,7 +1301,7 @@ def test_display_pages_are_pythons(client, seed):
         d = _signed_in(email, pw, world)
         for url in urls:
             served += _same_page(d, _via(d, base), url, email)
-    assert served >= 3, served
+    assert served == 9, served
 
 
 def test_player_cockpit_page_is_pythons(client, seed):
@@ -1719,3 +1719,46 @@ def test_character_sheet_on_custom_systems_is_pythons(client, seed):
         for i in ids:
             served += _same_page(d, _via(d, base), f"/characters/{i}", email)
     assert served == 6, served
+
+
+def test_session_page_is_pythons(client, seed):
+    """GET /sessions/<id> built by the gateway: the party, the featured entities and characters, the party's characters, the session's
+    facts (GM-only ones for the GM only) and their tag cloud, prep, loot, linked combats and the live-transcript flag - for the GM, a
+    player of the world and a player of another world."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id)
+        e = Entity(world_id=w, kind="character", name="Old Mara <m>")
+        db.add_all([pc, e])
+        db.commit()
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([pc.id]))
+        db.add(party)
+        db.commit()
+        full = GameSession(world_id=w, session_num=4, title="Into <the> Dark", session_date="2026-01-02", party_id=party.id, summary="GM *notes*",
+                           player_summary="Recap", player_summary_published=True, live_transcript="hello", xp_awarded=30,
+                           npcs_json=json.dumps([{"entity_id": e.id}, {"entity_id": pc.id, "kind": "player_character"}, {"entity_id": 999999}]),
+                           prep_json=json.dumps(["Draw map"]), loot_json=json.dumps([{"name": "Rope", "qty": 2}]))
+        bare = GameSession(world_id=w, session_num=5, title="Bare")
+        db.add_all([full, bare])
+        db.commit()
+        db.add_all([Fact(world_id=w, game_session_id=full.id, content="The **bridge** fell.", tags="ruin, bridge", visible_to_players=True),
+                    Fact(world_id=w, game_session_id=full.id, content="Secret", tags="bridge,gm", visible_to_players=False),
+                    CombatSession(world_id=w, name="Ambush", game_session_id=full.id)])
+        db.commit()
+        urls = [f"/sessions/{full.id}", f"/sessions/{bare.id}", "/sessions/999999"]
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in urls:
+            _same_page(d, via, url, email)
+            served += via.get(url, follow_redirects=False).headers.get("x-nd-served-by") == "gateway"
+    assert served == 9, served
