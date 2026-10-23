@@ -63,6 +63,8 @@ fn kind_of(path: &str) -> Option<&'static str> {
         Some("cockpit find")
     } else if path.starts_with("/api/quests/suggest/") {
         Some("quest sync")
+    } else if path.starts_with("/api/ai/auto-tag/") {
+        Some("auto-tag")
     } else {
         None
     }
@@ -90,6 +92,7 @@ pub async fn route(cfg: Arc<Config>, method: &Method, uri: &Uri, headers: &Heade
             "map markers" => map_markers_start(cfg.clone(), &db, &p, &path, &body),
             "cockpit find" => cockpit_find_start(cfg.clone(), &db, &p, &body),
             "quest sync" => quest_sync_start(cfg.clone(), &db, &p, &body),
+            "auto-tag" => auto_tag_start(cfg.clone(), &db, &p, &body),
             _ => None,
         }
     }).await.ok().flatten()
@@ -118,6 +121,9 @@ fn poll_answer(kind: &str, p: &PageCtx, job: &Map<String, Value>) -> Option<Resp
                 _ => json!({"status": "done", key: job.get(key)}),
             }))
         }
+        "auto-tag" => Some(ok(if status == "error" { json!({"status": "error", "error": job.get("error")}) } else {
+            json!({"status": status, "processed": job.get("processed"), "total": job.get("total"), "tagged": job.get("tagged")})
+        })),
         "quest sync" => Some(ok(match status {
             "running" => json!({"status": "running", "elapsed": elapsed()}),
             "error" => json!({"status": "error", "error": job.get("error")}),
@@ -509,4 +515,129 @@ async fn quest_sync_task(cfg: Arc<Config>, b: Backend, wid: i64, session_id: Opt
             json!({"quest_id": q, "status": st, "note": take(&text(u, "note"), 512)})
         }).collect();
     Ok(json!({"new_quests": new_quests, "quest_updates": updates}))
+}
+
+// ── auto-tag (app/routers/ai.py) ───────────────────────────────────────────
+
+fn auto_tag_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, body: &[u8]) -> Option<Response<Body>> {
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return None;
+    }
+    let Some(w) = p.world.as_ref() else { return Some(detail(StatusCode::BAD_REQUEST, "No active world")) };
+    let wid = w.get("id")?.as_i64()?;
+    let b = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(o)) => o,
+        Ok(_) => return None,
+        Err(_) => return Some(detail(StatusCode::BAD_REQUEST, "Invalid JSON body")),
+    };
+    let ids = match b.get("entity_ids") { Some(Value::Array(a)) if !a.is_empty() => a.clone(), _ => return Some(detail(StatusCode::BAD_REQUEST, "Select at least one entity first")) };
+    let mut nums = vec![];
+    for i in &ids {
+        match crate::ai::reply_int(i) { Ok(n) => nums.push(n), Err(_) => return Some(detail(StatusCode::BAD_REQUEST, "Invalid entity ids")) }
+    }
+    nums.truncate(500);
+    let (overwrite, think) = (flag(&b, "overwrite", false), flag(&b, "think", true));
+    let marks = nums.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let only_empty = if overwrite { "" } else { " AND (tags IS NULL OR tags = '')" };
+    let mut st = db.prepare(&format!("SELECT id FROM entities WHERE world_id = ?1 AND id IN ({marks}){only_empty} ORDER BY id")).ok()?;
+    let ents: Vec<i64> = st.query_map([wid], |r| r.get(0)).ok()?.filter_map(Result::ok).collect();
+    if ents.is_empty() {
+        return Some(detail(StatusCode::BAD_REQUEST, "Nothing to tag — the selected entities already have tags."));
+    }
+    let bk = backend(db)?;
+    let total = ents.len();
+    let id = crate::runners::new_job("auto-tag", json!({"status": "running", "started": now(), "processed": 0, "total": total, "tagged": 0, "error": ""}), 12);
+    let rerun: Rerun = Arc::new(move |id| {
+        let (cfg, bk, ents) = (cfg.clone(), bk.clone(), ents.clone());
+        Box::pin(async move {
+            if let Err(m) = auto_tag_task(cfg, bk, id, &ents, overwrite, think).await {
+                crate::runners::update("auto-tag", id, |e| {
+                    e.insert("status".into(), json!("error"));
+                    e.insert("error".into(), json!(m));
+                });
+            }
+        })
+    });
+    crate::runners::run("auto-tag", "auto-tag", id, rerun);
+    Some(ok(json!({"job_id": id, "total": total, "status": "running"})))
+}
+
+/// `_auto_tag_normalize`
+fn tag_list(raw: Option<&Value>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for t in raw.and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        let t = take(&crate::edits::py_strip_pub(&py_str(&t)), 40);
+        if t.is_empty() || out.iter().any(|o| o.to_lowercase() == t.to_lowercase()) {
+            continue;
+        }
+        out.push(t);
+        if out.len() >= 10 {
+            break;
+        }
+    }
+    out
+}
+
+async fn auto_tag_task(cfg: Arc<Config>, b: Backend, job: i64, ids: &[i64], overwrite: bool, think: bool) -> Result<(), String> {
+    let system = "You are tagging a tabletop RPG campaign's entities and notes. For EACH entity in the list choose 3-8 short tags describing what it is (type, faction, role, location, mood). Return STRICT JSON only:\n{\"entities\": [{\"id\": int, \"tags\": [str]}]}\nRules: every id in your reply must appear verbatim in the list; each tag is 1-3 words; no comments, no markdown fences.";
+    let schema = json!({"type": "object", "properties": {"entities": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "tags": {"type": "array"}}}}}});
+    let total = ids.len();
+    let model = b.model.clone();
+    for (n, batch) in ids.chunks(8).enumerate() {
+        let (c, bt) = (cfg.clone(), batch.to_vec());
+        let listing = tokio::task::spawn_blocking(move || -> Option<String> {
+            let db = crate::writes::open(&c)?;
+            let mut lines = vec![];
+            for id in bt {
+                let Ok(e) = db.query_row("SELECT * FROM entities WHERE id = ?1", [id], |r| crate::layout::row_map(r)) else { continue };
+                let s = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let kind = if s("kind").is_empty() { "?".to_string() } else { s("kind") };
+                let mut l = format!("- id={id} [{kind}] {}", s("name"));
+                if !s("summary").is_empty() { l.push_str(&format!(" — {}", take(&s("summary"), 150))); }
+                lines.push(l);
+                let excerpt = take(&s("body").split_whitespace().collect::<Vec<_>>().join(" "), 600);
+                if !excerpt.is_empty() { lines.push(format!("  text: {excerpt}")); }
+            }
+            Some(lines.join("\n"))
+        }).await.ok().flatten().ok_or("database")?;
+        let raw = crate::ai::generate_chat_format(&b, &model, system, &[json!({"role": "user", "content": format!("=== ENTITIES TO TAG ===\n{listing}")})], think, &Map::new(), Some(&schema)).await;
+        let parsed = match (raw.find('{'), raw.rfind('}')) { (Some(a), Some(z)) if z > a => serde_json::from_str::<Value>(&raw[a..=z]).ok(), _ => None };
+        let (c, bt) = (cfg.clone(), batch.to_vec());
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let Some(Value::Object(parsed)) = parsed else { return Ok(()) };
+            let items = match parsed.get("entities") { v if !truthy(v) => vec![], Some(Value::Array(a)) => a.clone(), Some(Value::String(_)) | Some(Value::Object(_)) => vec![],
+                _ => return Err("'int' object is not iterable".into()) };
+            let db = crate::writes::open(&c).ok_or("database")?;
+            for item in items {
+                let Value::Object(item) = item else { continue };
+                let Some(eid) = item.get("id").and_then(|v| crate::ai::reply_int(v).ok()) else { continue };
+                if !bt.contains(&eid) {
+                    continue;
+                }
+                let tags = tag_list(item.get("tags"));
+                if tags.is_empty() {
+                    continue;
+                }
+                let current: Option<String> = db.query_row("SELECT tags FROM entities WHERE id = ?1", [eid], |r| r.get(0)).ok().flatten();
+                if !overwrite && !crate::edits::py_strip_pub(current.as_deref().unwrap_or("")).is_empty() {
+                    continue;
+                }
+                crate::orm::update(&db, "entities", eid, &[("tags", rusqlite::types::Value::Text(take(&tags.join(", "), 512)))]);
+            }
+            Ok(())
+        }).await.map_err(|_| "Cancelled.".to_string())??;
+        let (c, all) = (cfg.clone(), ids.to_vec());
+        let tagged = tokio::task::spawn_blocking(move || -> usize {
+            let Some(db) = crate::writes::open(&c) else { return 0 };
+            all.iter().filter(|i| db.query_row("SELECT tags FROM entities WHERE id = ?1", [**i], |r| r.get::<_, Option<String>>(0)).ok().flatten()
+                .is_some_and(|t| !crate::edits::py_strip_pub(&t).is_empty())).count()
+        }).await.unwrap_or(0);
+        let processed = total.min(n * 8 + batch.len());
+        crate::runners::update("auto-tag", job, |e| {
+            e.insert("processed".into(), json!(processed));
+            e.insert("tagged".into(), json!(tagged));
+        });
+    }
+    crate::runners::update("auto-tag", job, |e| { e.insert("status".into(), json!("done")); });
+    Ok(())
 }

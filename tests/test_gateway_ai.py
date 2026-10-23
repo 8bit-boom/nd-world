@@ -1983,3 +1983,48 @@ def test_quest_sync_is_pythons(client, seed, studio):
         r = side.post("/api/quests/suggest/start", json={})
         assert (r.status_code, r.json()["detail"]) == (400, "Provide session_id or text")
     studio.reply_seq = None
+
+
+def test_auto_tag_is_pythons(client, seed, studio):
+    """/api/ai/auto-tag/start and its poll: batches of eight entities described the same way, the tags normalized and written only where
+    allowed, the progress counters - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import Entity
+    base = str(client.base_url)
+    w = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for overwrite in (False, True):
+        out = []
+        for side in (gm, _via(gm, base)):
+            db = SessionLocal()
+            try:
+                db.query(Entity).filter(Entity.world_id == w, Entity.name.like("Tagme %")).delete()
+                ents = [Entity(world_id=w, kind="character", name=f"Tagme {i}", summary="A thing " * 30 if i % 2 else "", body="Lots   of\ntext " * 200,
+                               tags="hand, made" if i == 3 else "") for i in range(10)]
+                db.add_all(ents)
+                db.commit()
+                ids = [e.id for e in ents]
+            finally:
+                db.close()
+            reply1 = _reply(json.dumps({"entities": [{"id": ids[0], "tags": [" Dock ", "dock", "x" * 50, "", 7]}, {"id": str(ids[3]), "tags": ["new"]},
+                                                     {"id": 999999, "tags": ["a"]}, {"id": ids[1], "tags": []}]}))
+            reply2 = _reply("Sure: " + json.dumps({"entities": [{"id": ids[9], "tags": [f"t{n}" for n in range(14)]}]}))
+            studio.requests.clear()
+            studio.reply_seq = [reply1, reply2]
+            r = side.post("/api/ai/auto-tag/start", json={"entity_ids": ids + [999999], "overwrite": overwrite, "think": False})
+            assert r.status_code == 200, r.text
+            p = _poll(side, f"/api/ai/auto-tag/{r.json()['job_id']}")
+            db = SessionLocal()
+            try:
+                tags = [db.get(Entity, i).tags for i in ids]
+            finally:
+                db.close()
+            reqs = [json.dumps(q["body"]).replace(str(ids[0]), "ID") for q in studio.requests]
+            out.append((r.json()["total"], p.json(), tags, len(reqs), r.headers.get("x-nd-served-by"), p.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (overwrite, out[0][:3], out[1][:3])
+        assert out[1][4:] == ("gateway", "gateway")
+    for side in (gm, _via(gm, base)):
+        for body, msg in (({"entity_ids": []}, "Select at least one entity first"), ({"entity_ids": [None]}, "Invalid entity ids")):
+            r = side.post("/api/ai/auto-tag/start", json=body)
+            assert (r.status_code, r.json()["detail"]) == (400, msg)
+    studio.reply_seq = None
