@@ -125,3 +125,56 @@ def test_stale_session_is_refreshed_by_the_gateway(client, seed):
     assert len(new) == 1 and "Max-Age=1209600; httponly; samesite=lax" in new[0]
     fresh = json.loads(base64.b64decode(new[0].split("=", 1)[1].split(";")[0].split(".")[0] + "=="))
     assert fresh["site_layout"]["at"] > 1000 and fresh["user_id"] == data["user_id"]
+
+
+def test_auth_gate_is_pythons(client, seed):
+    """auth_gate's refusals answered by the gateway: not signed in (a page goes to /login?next=..., an /api/ path gets a 401), a player
+    on a GM-only page or API (403), a session from before a password change (cleared; 401 or back to sign in) and a deleted user."""
+    from app.database import SessionLocal
+    from app.models import User
+    base = str(client.base_url)
+    paths = ["/settings", "/api/cockpit/workspace", "/sessions/1", "/a b/ü?x=1", "/api/nope", "/characters", "/cockpit"]
+
+    def both(cookies):
+        out = []
+        for side in (DIRECT, base):
+            res = []
+            for p in paths:
+                r = httpx.get(side + p, cookies=cookies, follow_redirects=False)
+                sc = [h.split(";")[0] for h in r.headers.get_list("set-cookie")]
+                body = r.text if r.status_code in (401, 403) else ""
+                res.append((p, r.status_code, r.headers.get("location"), body, sc))
+            out.append(res)
+        return out
+
+    a, b = both({})
+    assert a == b, (a, b)
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+        r, c = _post(DIRECT, "/login", data={"email": email, "password": pw})
+        a, b = both({"session": c.cookies["session"], "active_world": seed.world_a.slug})
+        strip = lambda rows: [x[:4] for x in rows if x[1] in (303, 401, 403)]
+        assert strip(a) == strip(b), (email, a, b)
+    # a password change elsewhere bumps the version; a deleted person is gone
+    r, c = _post(DIRECT, "/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD})
+    old = c.cookies["session"]
+    db = SessionLocal()
+    try:
+        u = db.get(User, seed.player_a.id)
+        u.session_version = (u.session_version or 0) + 1
+        db.commit()
+        ghost = User(email="ghost@test.local", password_hash=auth_module.hash_password("pw-ghost-1"), display_name="G")
+        db.add(ghost)
+        db.commit()
+    finally:
+        db.close()
+    a, b = both({"session": old})
+    assert a == b, (a, b)
+    r, c = _post(DIRECT, "/login", data={"email": "ghost@test.local", "password": "pw-ghost-1"})
+    db = SessionLocal()
+    try:
+        db.delete(db.query(User).filter(User.email == "ghost@test.local").one())
+        db.commit()
+    finally:
+        db.close()
+    a, b = both({"session": c.cookies["session"]})
+    assert a == b, (a, b)

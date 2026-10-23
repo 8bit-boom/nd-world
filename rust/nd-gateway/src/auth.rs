@@ -479,3 +479,69 @@ pub fn refresh(cfg: &Config, headers: &HeaderMap) -> Option<(String, String)> {
     let line = format!("session={value}; path=/; Max-Age={SESSION_MAX_AGE}; {}", flags());
     Some((value, line))
 }
+
+const PUBLIC_PATHS: [&str; 7] = ["/login", "/login/2fa", "/api/login", "/logout", "/health", "/favicon.ico", "/sw.js"];
+const PUBLIC_PREFIXES: [&str; 3] = ["/join/", "/static/", "/share/"];
+
+/// `urllib.parse.quote(path)` (safe "/")
+fn quote_path(p: &str) -> String {
+    const SAFE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'/').remove(b'_').remove(b'.').remove(b'-').remove(b'~');
+    utf8_percent_encode(p, SAFE).to_string()
+}
+
+fn gate_json(status: StatusCode, detail: &str) -> Response<Body> {
+    Response::builder().status(status).header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&json!({"detail": detail})).unwrap_or_default())).unwrap()
+}
+
+/// app/main.py `auth_gate`, at the front of the gateway: Some(the refusal) for a request that may not reach any route - not signed in
+/// (a 401 for /api/, else to the sign-in page), a person who no longer exists or whose session predates a password change (the
+/// session cleared), or a non-GM on a path their role may not use (403) - else None, and the request goes on.
+pub fn gate(pages: &Pages, cfg: &Config, method: &str, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let raw = uri.path();
+    let path = percent_encoding::percent_decode_str(raw).decode_utf8().ok()?.to_string();
+    if PUBLIC_PATHS.contains(&path.as_str()) || PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p)) {
+        return None;
+    }
+    let api = path.starts_with("/api/");
+    let to_login = || with_cookie(redirect(&format!("/login?next={}", quote_path(&path))), None);
+    let (session, had) = read_session(pages, headers);
+    let Some(uid) = session.get("user_id").filter(|v| crate::edits::py_truthy_pub(Some(v))).cloned() else {
+        return Some(if api { with_cookie(gate_json(StatusCode::UNAUTHORIZED, "Login required"), None) } else { to_login() });
+    };
+    let db = crate::writes::open(cfg)?;
+    let user = uid.as_i64().and_then(|u| db.query_row("SELECT id, is_gm, session_version FROM users WHERE id = ?1", [u],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<bool>>(1)?.unwrap_or(false), r.get::<_, Option<i64>>(2)?))).ok());
+    let cleared = session_cookie(pages, &Map::new(), had);
+    let Some((uid, is_gm, version)) = user else {
+        return Some(with_cookie(redirect("/login"), cleared));
+    };
+    if session.get("session_version").and_then(|v| v.as_i64()) != version || session.get("session_version").is_none() && version.is_some() {
+        return Some(if api {
+            with_cookie(gate_json(StatusCode::UNAUTHORIZED, "Session expired — please log in again."), cleared)
+        } else {
+            with_cookie(redirect(&format!("/login?next={}", quote_path(&path))), cleared)
+        });
+    }
+    if is_gm {
+        return None;
+    }
+    // the role in the active world: ?w=<slug> over the active_world cookie, else the first world this person belongs to
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let wanted = crate::pages::query_param(uri, "w").filter(|s| !s.is_empty())
+        .or_else(|| crate::session::cookie(cookie, "active_world").map(|c| percent_encoding::percent_decode_str(c).decode_utf8_lossy().to_string()));
+    let mut st = db.prepare("SELECT m.role, m.world_id, w.slug FROM world_memberships m JOIN worlds w ON w.id = m.world_id WHERE m.user_id = ?1 ORDER BY w.id").ok()?;
+    let rows: Vec<(Option<String>, i64, String)> = st.query_map([uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    let chosen = rows.iter().find(|r| Some(&r.2) == wanted.as_ref()).or_else(|| rows.first());
+    let viewer = nd_perm::allow::Viewer { is_gm: false, active_role: chosen.and_then(|c| c.0.clone()), active_world_id: chosen.map(|c| c.1) };
+    if nd_perm::allow::gate_allows(&viewer, method, &path) {
+        return None;
+    }
+    Some(with_cookie(if api {
+        gate_json(StatusCode::FORBIDDEN, "GM access required")
+    } else {
+        Response::builder().status(StatusCode::FORBIDDEN).header(header::CONTENT_TYPE, "text/html; charset=utf-8").body(Body::from(
+            "<body style='background:#0a0a0f;color:#c8d0e0;font-family:monospace;padding:2rem'><h1 style='color:#ff2d78'>403 — GM access required</h1>\
+<p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>")).unwrap()
+    }, None))
+}

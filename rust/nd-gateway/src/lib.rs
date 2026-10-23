@@ -22,6 +22,7 @@ pub mod mcp;
 pub mod tuning;
 pub mod fans;
 pub mod auth;
+pub mod apis;
 pub mod ai_runners;
 pub mod template_draft;
 pub mod media_meta;
@@ -86,7 +87,19 @@ async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
             }
         }
     }
-    let mut resp = handle_inner(State(app), req).await;
+    // auth_gate: the refusals no route is reached for (sign in first, an expired session, a path this role may not use)
+    let gated = app.cfg.rust_routes.iter().any(|r| r == "auth") && !p.starts_with("/static/") && !p.starts_with("/uploads/")
+        && !p.starts_with("/__") && p != "/mcp" && !p.starts_with("/mcp/");
+    let refused = if gated {
+        let (pages, cfg, method, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.method().to_string(), req.uri().clone(), req.headers().clone());
+        tokio::task::spawn_blocking(move || auth::gate(&pages, &cfg, &method, &uri, &headers)).await.ok().flatten()
+    } else {
+        None
+    };
+    let mut resp = match refused {
+        Some(r) => r,
+        None => handle_inner(State(app), req).await,
+    };
     if let Some(line) = fresh_cookie {
         let sets_session = resp.headers().get_all(axum::http::header::SET_COOKIE).iter().any(|v| v.to_str().is_ok_and(|t| t.starts_with("session=")));
         if !sets_session {
@@ -303,6 +316,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return ai::live_jobs_list(cfg, python).await;
         }
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && apis::is_get(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || apis::get(cfg, &uri, &headers)).await {
             return resp;
         }
     }

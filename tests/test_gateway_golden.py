@@ -1762,3 +1762,24 @@ def test_session_page_is_pythons(client, seed):
             _same_page(d, via, url, email)
             served += via.get(url, follow_redirects=False).headers.get("x-nd-served-by") == "gateway"
     assert served == 9, served
+
+
+def test_cockpit_workspace_read_is_pythons(client, seed):
+    """GET /api/cockpit/workspace from the gateway: none saved, a saved one, unreadable stored text - and a player's refusal."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for stored in (None, json.dumps({"current": {"panels": [{"id": "p1", "type": "notes", "data": {"text": "ü"}}]}, "presets": {}}), "{oops", "[1]"):
+        db = SessionLocal()
+        try:
+            db.get(World, seed.world_a.id).cockpit_ws_json = stored
+            db.commit()
+        finally:
+            db.close()
+        for d in (gm, player):
+            a, b = d.get("/api/cockpit/workspace"), _via(d, base).get("/api/cockpit/workspace")
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (stored, a.text, b.text)
+            assert b.headers.get("x-nd-served-by") == "gateway"
