@@ -1286,3 +1286,50 @@ def test_npc_voice_is_pythons(client, seed, studio):
         assert out[0][:4] == out[1][:4], (i, out[0][:3], out[1][:3])
         assert out[1][4] == "gateway", i
     studio.reply_seq = None
+
+
+def test_recap_song_is_pythons(client, seed, studio):
+    """/api/sessions/<id>/recap-song: the lyrics cleaned for the voice, the style's delivery instruction, the clip saved with Python's name,
+    description and lyrics and attached to the recap, the panel answered - and the refusals."""
+    from app.database import SessionLocal
+    from app.models import AudioClip, GameSession
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=w, title="The Ruins")
+        db.add(gs)
+        db.commit()
+        sid = gs.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    song = "# The Ruin Song\n\n**Verse 1**  \nWe went _down_ [chorus]\n(repeat x2)\n\n\n\nAnd came back `up`"
+    cases = [
+        {"lyrics": song, "style": "Sea Shanty", "name": " Ruin song ", "voice": "tara", "visible_to_players": True},
+        {"lyrics": "La la", "style": "unknown"},
+        {"lyrics": 12345},
+        {"lyrics": "   "},
+        {"lyrics": "[chorus]"},
+        {"lyrics": "x" * 20001},
+    ]
+    for i, body in enumerate(cases):
+        out = []
+        for side in (gm, _via(gm, base)):
+            d = SessionLocal()
+            try:
+                d.get(GameSession, sid).recap_audio_json = "[]"
+                d.commit()
+            finally:
+                d.close()
+            studio.requests.clear()
+            r = side.post(f"/api/sessions/{sid}/recap-song", json=body)
+            data = r.json()
+            if r.status_code == 200:
+                for k in ("clip",):
+                    data[k] = {x: y for x, y in data[k].items() if x not in ("id", "file_url")}
+                data["clips"] = [{x: y for x, y in c.items() if x not in ("id", "file_url")} for c in data["clips"]]
+                data.pop("library")
+            out.append((r.status_code, data, [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (i, out[0][:2], out[1][:2])
+        assert out[1][3] == "gateway", i

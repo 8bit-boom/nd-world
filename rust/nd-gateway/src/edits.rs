@@ -4344,7 +4344,7 @@ fn image_album_remove(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 /// `media_items(gs)`, when every kept item already has its uid (one that would get a fresh random uid, or a value read through
 /// str(): Python's)
-fn sm_items(gs: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
+pub(crate) fn sm_items(gs: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
     let raw = gs.get("recap_media_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let list = match serde_json::from_str::<Value>(raw).ok()? {
         Value::Array(a) => a,
@@ -4400,7 +4400,7 @@ fn sm_items(gs: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
 }
 
 /// `recap_clip_ids(gs)`
-fn sm_clip_ids(gs: &Map<String, Value>) -> Option<Vec<i64>> {
+pub(crate) fn sm_clip_ids(gs: &Map<String, Value>) -> Option<Vec<i64>> {
     let raw = gs.get("recap_audio_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let list = match serde_json::from_str::<Value>(raw).ok()? {
         Value::Array(a) => a,
@@ -4419,7 +4419,11 @@ fn sm_clip_ids(gs: &Map<String, Value>) -> Option<Vec<i64>> {
 
 /// `limit(db)`: Settings -> System's session media maximum (10 by default)
 fn sm_limit(c: &Ctx) -> Option<i64> {
-    let raw: Option<i64> = c.db.query_row("SELECT session_media_max FROM app_settings LIMIT 1", [], |r| r.get(0)).ok()?;
+    sm_limit_db(&c.db)
+}
+
+pub(crate) fn sm_limit_db(db: &Connection) -> Option<i64> {
+    let raw: Option<i64> = db.query_row("SELECT session_media_max FROM app_settings LIMIT 1", [], |r| r.get(0)).ok()?;
     Some(raw.filter(|n| *n >= 1).map_or(10, |n| n.min(50)))
 }
 
@@ -4435,7 +4439,7 @@ fn sm_store_clips(c: &Ctx, gs_id: i64, ids: &[i64]) -> Option<()> {
     Some(())
 }
 
-fn sm_audio_dict(c: &Map<String, Value>) -> Value {
+pub(crate) fn sm_audio_dict(c: &Map<String, Value>) -> Value {
     let txt = |k: &str| json!(c.get(k).and_then(|v| v.as_str()).unwrap_or(""));
     json!({"id": c.get("id"), "name": c.get("name"), "description": txt("description"), "file_url": c.get("file_url"),
            "visible_to_players": py_truthy(c.get("visible_to_players")), "transcript": txt("transcript")})
@@ -4453,11 +4457,16 @@ fn sm_panel(c: &Ctx, gs_id: i64) -> Option<Response<Body>> {
 }
 
 fn sm_panel_value(c: &Ctx, gs_id: i64) -> Option<Value> {
-    let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", gs_id)?;
+    sm_panel_db(&c.db, gs_id)
+}
+
+/// `panel(db, gs)` from a connection
+pub(crate) fn sm_panel_db(db: &Connection, gs_id: i64) -> Option<Value> {
+    let gs = row(&db, "SELECT * FROM game_sessions WHERE id = ?1", gs_id)?;
     let wid = gs.get("world_id")?.as_i64()?;
     let (ids, items) = (sm_clip_ids(&gs)?, sm_items(&gs)?);
     let clip = |table: &str, id: i64| -> Option<Map<String, Value>> {
-        row(&c.db, &format!("SELECT * FROM {table} WHERE id = ?1", table = table), id).filter(|r| r.get("world_id").and_then(|v| v.as_i64()) == Some(wid))
+        row(&db, &format!("SELECT * FROM {table} WHERE id = ?1", table = table), id).filter(|r| r.get("world_id").and_then(|v| v.as_i64()) == Some(wid))
     };
     let clips: Vec<Value> = ids.iter().filter_map(|i| clip("audio_clips", *i)).map(|c| sm_audio_dict(&c)).collect();
     let videos: Vec<Value> = items
@@ -4467,7 +4476,7 @@ fn sm_panel_value(c: &Ctx, gs_id: i64) -> Option<Value> {
         .collect();
     let video_ids: Vec<i64> = items.iter().filter_map(|i| (i.get("kind").and_then(|k| k.as_str()) == Some("video")).then(|| i.get("clip_id")?.as_i64()).flatten()).collect();
     let lib = |table: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = c.db.prepare(&format!("SELECT * FROM {table} WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 200")).ok()?;
+        let mut st = db.prepare(&format!("SELECT * FROM {table} WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 200")).ok()?;
         let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         Some(rows)
     };
@@ -4490,7 +4499,7 @@ fn sm_panel_value(c: &Ctx, gs_id: i64) -> Option<Value> {
         .map(|i| json!({"uid": i.get("uid"), "url": i.get("url"), "caption": i.get("caption"), "visible_to_players": i.get("visible"), "own": i.get("own")}))
         .collect();
     Some(json!({"clips": clips, "library": library, "videos": videos, "video_library": video_library, "images": images,
-                "max": sm_limit(c)?, "used": ids.len() + items.len()}))
+                "max": sm_limit_db(db)?, "used": ids.len() + items.len()}))
 }
 
 /// `_require_gm_edit`: the session of the active world, with sessions:edit

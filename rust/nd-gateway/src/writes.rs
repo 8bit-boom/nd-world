@@ -171,7 +171,7 @@ pub fn timestamps(now: SystemTime) -> (String, String) {
 }
 
 /// Days since 1970-01-01 -> (year, month, day) (Howard Hinnant's algorithm).
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719468;
     let era = z.div_euclid(146097);
     let doe = z.rem_euclid(146097);

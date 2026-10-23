@@ -3655,6 +3655,9 @@ enum SyncAi {
     Images { b: Backend, images: Vec<Vec<u8>>, hint: String, character: bool },
     /// `/api/npc-talk/<id>/speak`: one of the caller's NPC replies spoken (the voice hint derived first when there is none)
     NpcSpeak(Box<NpcSpeak>),
+    /// `/api/sessions/<id>/recap-song`: the lyrics performed, saved as a clip and attached to the recap
+    RecapSong { cfg: std::sync::Arc<Config>, b: Backend, wid: i64, gs_id: i64, title: String, lyrics: String, spoken: String, model: String, voice: String,
+        instructions: String, language: String, name: String, visible: bool },
     /// `/api/ai/tts`: speech saved as a GM-only clip of the world
     Tts { cfg: std::sync::Arc<Config>, b: Backend, wid: i64, text: String, model: String, voice: String, instructions: String, language: String, name: String, description: String, body_model: String },
     Chat { b: Backend, model: String, system: String, messages: Vec<Value>, options: Map<String, Value> },
@@ -3724,7 +3727,7 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 }
             }
         }
-        _ if path.starts_with("/api/sessions/") => {
+        _ if path.starts_with("/api/sessions/") && !path.ends_with("/recap-song") => {
             let sid: i64 = path.strip_prefix("/api/sessions/")?.split('/').next()?.parse().ok()?;
             let (wid, live): (i64, Option<String>) = db.query_row("SELECT world_id, live_transcript FROM game_sessions WHERE id = ?1", [sid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
             let w = p.world.as_ref()?;
@@ -3774,6 +3777,40 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 if entity_kinds().contains(&k) { k } else { String::new() }
             };
             SyncAi::EntityText { b: backend(&db)?, text, hint, batch }
+        }
+        _ if path.starts_with("/api/sessions/") && path.ends_with("/recap-song") => {
+            let gs_id: i64 = path.strip_prefix("/api/sessions/")?.strip_suffix("/recap-song")?.parse().ok()?;
+            if !p.is_gm {
+                return None;
+            }
+            let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+            let gs = db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [gs_id], |r| crate::layout::row_map(r)).ok()?;
+            if gs.get("world_id").and_then(|v| v.as_i64()) != Some(wid) {
+                return None;
+            }
+            let title = gs.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let lyrics = reply_str(b.get("lyrics"));
+            if lyrics.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "No lyrics to perform");
+            }
+            if lyrics.chars().count() > 20000 {
+                return refuse(StatusCode::BAD_REQUEST, "Lyrics are too long (over 20000 characters)");
+            }
+            if (crate::edits::sm_clip_ids(&gs)?.len() + crate::edits::sm_items(&gs)?.len()) as i64 >= crate::edits::sm_limit_db(&db)? {
+                return None; // require_room's 400: Python's
+            }
+            let spoken = lyrics_for_speech(&lyrics);
+            if spoken.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "No lyrics to perform");
+            }
+            let (model, d_voice, d_instr, language) = crate::tts::prefs(cfg);
+            let voice = { let v = reply_str(b.get("voice")); if v.is_empty() { d_voice } else { v } };
+            let style = match b.get("style") { v if !crate::edits::py_truthy_pub(v) => String::new(), Some(Value::String(t)) => t.clone(), Some(other) => py_repr(other), None => String::new() };
+            let feel = SONG_STYLES.iter().find(|(k, _)| *k == crate::edits::py_strip_pub(&style).to_lowercase()).map_or(SONG_STYLES[0].1, |s| s.1);
+            let instructions = crate::edits::py_strip_pub(&format!("Sing these lyrics as {feel}: melodic, rhythmic and expressive, as a bard would perform it, not read flatly. {}", crate::edits::py_strip_pub(&d_instr)));
+            let visible = matches!(b.get("visible_to_players"), Some(Value::Bool(true)));
+            SyncAi::RecapSong { cfg: std::sync::Arc::new(cfg.clone()), b: backend(&db)?, wid, gs_id, title, lyrics, spoken, model, voice, instructions, language,
+                name: reply_str(b.get("name")), visible }
         }
         _ if path.starts_with("/api/npc-talk/") && path.ends_with("/speak") => {
             let eid: i64 = path.strip_prefix("/api/npc-talk/")?.strip_suffix("/speak")?.parse().ok()?;
@@ -3966,6 +4003,38 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
         },
         SyncAi::NpcSpeak(n) => npc_speak(*n).await,
+        SyncAi::RecapSong { cfg, b, wid, gs_id, title, lyrics, spoken, model, voice, instructions, language, name, visible } => {
+            let (audio, ctype) = match crate::tts::speech(&b, &spoken, &model, &voice, &instructions, &language).await {
+                Ok(a) => a,
+                Err((code, m)) => return err(StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY), format!("Unsloth Studio TTS: {m}")),
+            };
+            let crash = || Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("x-nd-served-by", "gateway").body(Body::from("Internal Server Error")).unwrap();
+            let Some(url) = crate::tts::save(&cfg, &audio, "song", crate::tts::audio_extension(&ctype)) else { return crash() };
+            let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+            let name = { let n = cut(&name, 256); if n.is_empty() { cut(&format!("Song: {title}"), 256) } else { n } };
+            let (y, mo, d) = crate::writes::civil_from_days((SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) / 86400) as i64);
+            let description = cut(&format!("Performed lyrics for {title} ({}, {y:04}-{mo:02}-{d:02})", if model.is_empty() { "TTS" } else { &model }), 512);
+            let answer = tokio::task::spawn_blocking(move || -> Option<Value> {
+                use rusqlite::types::Value as Sql;
+                let db = crate::writes::open(&cfg)?;
+                let cid = crate::orm::insert(&db, "audio_clips", &[("world_id", Sql::Integer(wid)), ("name", Sql::Text(name)), ("description", Sql::Text(description)),
+                    ("file_url", Sql::Text(url)), ("visible_to_players", Sql::Integer(visible as i64)), ("transcript", Sql::Text(lyrics))])?;
+                // _attach (room was checked before the speech)
+                let gs = db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [gs_id], |r| crate::layout::row_map(r)).ok()?;
+                let mut ids = crate::edits::sm_clip_ids(&gs)?;
+                if !ids.contains(&cid) {
+                    ids.push(cid);
+                    let ids: Vec<Value> = ids.iter().take(50).map(|i| json!(i)).collect();
+                    crate::orm::update(&db, "game_sessions", gs_id, &[("recap_audio_json", Sql::Text(nd_render::py_dumps(&Value::Array(ids))))])?;
+                }
+                let clip = db.query_row("SELECT * FROM audio_clips WHERE id = ?1", [cid], |r| crate::layout::row_map(r)).ok()?;
+                let Value::Object(mut out) = crate::edits::sm_panel_db(&db, gs_id)? else { return None };
+                out.insert("clip".into(), crate::edits::sm_audio_dict(&clip));
+                Some(Value::Object(out))
+            }).await.ok().flatten();
+            match answer { Some(v) => ok(v), None => crash() }
+        }
         SyncAi::Tts { cfg, b, wid, text, model, voice, instructions, language, name, description, body_model } => {
             let (audio, ctype) = match crate::tts::speech(&b, &text, &model, &voice, &instructions, &language).await {
                 Ok(a) => a,
@@ -4219,12 +4288,43 @@ async fn npc_speak(n: NpcSpeak) -> Response<Body> {
     }
 }
 
+/// session_audio.SONG_STYLES (the first is the default)
+const SONG_STYLES: [(&str, &str); 7] = [
+    ("folk song", "a warm, unhurried folk ballad"),
+    ("sea shanty", "a rousing sea shanty with a strong, steady beat, as if sung by a crew hauling rope"),
+    ("ballad", "a slow, sorrowful ballad"),
+    ("lament", "a quiet, mournful lament"),
+    ("drinking song", "a rowdy, cheerful tavern drinking song"),
+    ("lullaby", "a soft, gentle lullaby"),
+    ("hymn", "a solemn, resonant hymn"),
+];
+
+/// `lyrics_for_speech`: no markdown marks or [chorus]-style directions, verses apart by single blank lines
+fn lyrics_for_speech(text: &str) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<[regex::Regex; 5]> = OnceLock::new();
+    let re = RE.get_or_init(|| [
+        regex::Regex::new(r"(?m)^\s{0,3}#{1,6}\s*").unwrap(),
+        regex::Regex::new(r"(?i)\[[^\]\n]{0,40}\]|\([^)\n]{0,40}(?:chorus|repeat|x\d)[^)\n]{0,20}\)").unwrap(),
+        regex::Regex::new(r"(\*\*|__|\*|_|`)").unwrap(),
+        regex::Regex::new(r"[ \t]+\n").unwrap(),
+        regex::Regex::new(r"\n{3,}").unwrap(),
+    ]);
+    let t = re[0].replace_all(text, "");
+    let t = re[1].replace_all(&t, "");
+    let t = re[2].replace_all(&t, "");
+    let t = re[3].replace_all(&t, "\n");
+    let t = re[4].replace_all(&t, "\n\n");
+    crate::edits::py_strip_pub(&t)
+}
+
 /// The paths `sync_ai` serves
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
         | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images" | "/api/ai/tts")
         || (path.starts_with("/api/npc-talk/") && path.ends_with("/speak"))
+        || (path.starts_with("/api/sessions/") && path.ends_with("/recap-song"))
         || (path.starts_with("/api/sessions/") && (path.ends_with("/ai/summarize-live-transcript") || path.ends_with("/ai/summarize-from-facts"))
             && path.split('/').nth(3).is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
 }
