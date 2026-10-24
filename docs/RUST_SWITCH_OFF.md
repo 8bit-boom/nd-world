@@ -72,6 +72,14 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **Character reads and exports** (apis.rs): `GET /api/characters/<id>/vitals` (the live numbers with the sheet's effective
+  maxima and the cleaned conditions, viewable by exactly who may view the sheet), `/sync` (the live-sync dict of a character
+  the caller manages, of any world - Python checks no world here), `/advance` (the XP shop; a custom system's 400 keeps
+  Python's wording) and `/ability-cards` (the feat cards with their pools); `GET /characters/<id>/export.json` (the import
+  shape as `json.dumps(indent=2, ensure_ascii=False)` writes it, zero / empty fields omitted, the name defaulted) and
+  `/export.md` (the sections file - a template's list fields expanded per item and resources reading their
+  `{id}_current / {id}_max`, which `field_value_text` now speaks too); a name with a character beyond Python's ASCII file
+  names stays Python's.
 - **The site layout saved and reset** (`POST` / `DELETE /api/view-prefs/site`, edits.rs `view_pref_save` / `view_pref_reset`): the row
   written as Python's `json.dumps` writes it and the session re-signed with `{options, pins, at, uid}` in it (auth.rs `resign`), so the
   pages after it are gateway-served from the fresh layout; an unknown section is Python's 404 "Unknown section" on both verbs.

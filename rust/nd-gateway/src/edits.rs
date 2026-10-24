@@ -3739,18 +3739,13 @@ fn apply_pc_sync(b: &Map<String, Value>, cur: &Map<String, Value>) -> Option<Vec
 }
 
 /// `_pc_to_sync_dict(pc)` of the stored row
-fn pc_sync_dict(pc: &Map<String, Value>) -> Option<Value> {
+pub(crate) fn pc_sync_dict(pc: &Map<String, Value>) -> Option<Value> {
     let txt = |k: &str| json!(pc.get(k).and_then(|v| v.as_str()).unwrap_or(""));
     let num = |k: &str| json!(pc.get(k).and_then(|v| v.as_i64()).unwrap_or(0));
-    // datetime.isoformat(): "T" between date and time, no fraction when the microseconds are 0
-    let updated = pc.get("updated_at").and_then(|v| v.as_str()).map(|u| {
-        let iso = u.replacen(' ', "T", 1);
-        iso.strip_suffix(".000000").map(str::to_string).unwrap_or(iso)
-    });
     let mut d = Map::new();
     d.insert("id".into(), pc.get("id")?.clone());
     d.insert("world_id".into(), pc.get("world_id")?.clone());
-    d.insert("updated_at".into(), updated.map_or(Value::Null, Value::String));
+    d.insert("updated_at".into(), py_isoformat_pub(pc.get("updated_at")));
     d.insert("portrait_url".into(), txt("portrait_url"));
     d.insert("sheet_template_id".into(), pc.get("sheet_template_id").cloned().unwrap_or(Value::Null));
     for k in ["name", "player_name", "race", "char_class", "backstory", "notes"] {
@@ -8338,6 +8333,80 @@ pub(crate) fn field_value_text(f: &Map<String, Value>, cf: &Map<String, Value>) 
         return Some(String::new());
     }
     let id_key = match f.get("id") { Some(Value::String(i)) => Some(i.clone()), None | Some(Value::Null) => None, _ => return None };
+    if f.get("type").and_then(|v| v.as_str()) == Some("resource") {
+        // "cur / max" from the stored {id}_current / {id}_max, else the template's default pair ("5/5", a bare "3" -> 3 / 0)
+        let dv = match f.get("default_value") {
+            None | Some(Value::Null) => "0/0".to_string(),
+            Some(Value::String(t)) => if t.is_empty() { "0/0".to_string() } else { t.clone() },
+            Some(_) => return None, // dv.split("/") on a number: Python's AttributeError
+        };
+        // _num: an int when the value is one (or a whole float), else the float - with Python's str() forms
+        let py_scalar_str = |v: &Value| -> Option<String> {
+            match v {
+                Value::Number(n) if n.as_i64().is_some() => Some(n.as_i64().unwrap().to_string()),
+                Value::Number(n) => {
+                    let x = n.as_f64()?;
+                    if x.is_nan() || x.is_infinite() {
+                        return None;
+                    }
+                    if x == x.trunc() && x.abs() < 9e15 {
+                        Some((x.trunc() as i64).to_string())
+                    } else if x.abs() >= 1e16 || (x != 0.0 && x.abs() < 1e-4) {
+                        None // repr's exponent forms are Python's
+                    } else {
+                        Some(format!("{x}"))
+                    }
+                }
+                Value::String(t) => {
+                    let s = nd_render::text::py_strip(t);
+                    if let Ok(i) = s.parse::<i64>() {
+                        return Some(i.to_string());
+                    }
+                    match s.parse::<f64>() {
+                        Ok(x) if !x.is_nan() && !x.is_infinite() => {
+                            if x == x.trunc() && x.abs() < 9e15 {
+                                Some((x.trunc() as i64).to_string())
+                            } else if x.abs() >= 1e16 || (x != 0.0 && x.abs() < 1e-4) {
+                                None
+                            } else {
+                                Some(format!("{x}"))
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None, // str() of a list / dict / bool: Python's
+            }
+        };
+        let side = |suffix: &str| -> Option<Option<String>> {
+            let key = format!("{}_{suffix}", id_key.as_deref().unwrap_or("None"));
+            match cf.get(&key) {
+                Some(v) => py_scalar_str(v).map(Some),
+                None => Some(None),
+            }
+        };
+        let parse_half = |t: &str| -> Option<i64> {
+            let s = nd_render::text::py_strip(t);
+            if let Ok(i) = s.parse::<i64>() {
+                return Some(i);
+            }
+            let x: f64 = s.parse().ok()?;
+            if x == x.trunc() && x.abs() < 9e15 { Some(x.trunc() as i64) } else { None }
+        };
+        let halves: Vec<&str> = dv.split('/').collect();
+        let cur0 = parse_half(halves[0]).unwrap_or(0);
+        let mx0 = if halves.len() > 1 { parse_half(halves[1]).unwrap_or(0) } else { 0 };
+        let cur = match side("current")? {
+            Some(t) => t,
+            None => cur0.to_string(),
+        };
+        let mx = match side("max")? {
+            Some(t) => t,
+            None => mx0.to_string(),
+        };
+        let blank = |t: &str| nd_render::text::py_strip(t).is_empty();
+        return Some(if blank(&cur) && blank(&mx) { String::new() } else { format!("{cur} / {mx}") });
+    }
     let dv = match f.get("default_value") { v if !py_truthy(v) => json!(""), Some(v) => v.clone(), None => json!("") };
     let v = id_key.as_ref().and_then(|k| cf.get(k)).cloned().unwrap_or(dv);
     Some(match v {
@@ -12648,4 +12717,23 @@ pub fn strict_view(db: &Connection, sc: &Map<String, Value>) -> Option<Option<cr
         let _ = db.execute("UPDATE schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
     }
     Some(Some(view))
+}
+/// A pre-rendered body with a content type and the gateway's header (downloads Python's StreamingResponse sends)
+pub fn json_response_raw(body: &str, content_type: &str) -> Option<Response<Body>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(body.to_string()))
+        .ok()
+}
+
+/// `adv_options` for the read routes (apis.rs)
+pub fn adv_options_pub(c: &Ctx, pc: &Map<String, Value>) -> Option<Value> {
+    adv_options(c, pc)
+}
+
+/// `ability_cards` for the read routes (apis.rs)
+pub fn ability_cards_pub(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Value>> {
+    ability_cards(c, pc)
 }

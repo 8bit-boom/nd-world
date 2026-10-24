@@ -124,6 +124,7 @@
 7/20       POST /tables/import
 6/1        GET /api/audio-jobs/{}/transcript.md
 6/14       GET /api/combat/{}/state
+6/12       GET /characters/{}/export.md
 6/1        GET /media-rename
 6/28       POST /api/calendar/set-date
 6/1        POST /api/facts/from-job/{}
@@ -190,6 +191,7 @@
 3/1        GET /api/combat/recent
 3/11       GET /api/display/combat/{}/state
 3/1        GET /api/saved-views/images
+3/17       GET /characters/{}/export.json
 3/4        GET /editor
 3/36       GET /facts
 3/10       GET /handout/{}
@@ -271,8 +273,8 @@
 2/4        POST /api/characters/{}/hub/keepsakes/{}
 2/3        POST /api/combat/{}/sync-characters
 2/24       POST /api/entities/bulk-folder
-2/1        POST /api/maps/schematic/gw-sc-381a62a81572/buy-item
-2/1        POST /api/maps/schematic/gw-sc-754dc028628d/pickup-item
+2/1        POST /api/maps/schematic/gw-sc-a3bd6cfb4bf2/buy-item
+2/1        POST /api/maps/schematic/gw-sc-f3b3ef10795c/pickup-item
 2/5        POST /api/media-rename/suggest
 2/9        POST /api/parties/{}/launch-combat
 2/1        POST /api/sessions/ai/summarize-from-audio
@@ -399,7 +401,7 @@
 1/1        POST /api/sessions/{}/ai/summarize-live-transcript
 1/4        POST /api/sessions/{}/live-transcript/clear
 1/5        POST /api/sessions/{}/media/audio/{}/rename
-1/1        POST /api/sessions/{}/media/image/44d6930cd9/visibility
+1/1        POST /api/sessions/{}/media/image/1a0cd00423/visibility
 1/5        POST /api/sessions/{}/media/image/img1/rename
 1/2        POST /api/sessions/{}/media/image/own1/remove
 1/3        POST /api/sessions/{}/media/video/{}/rename
