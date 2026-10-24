@@ -2429,3 +2429,54 @@ def test_preview_switch_and_player_chat_are_pythons(client, seed):
                 assert (a.status_code, a.headers.get("location"), a.headers.get("set-cookie"), ta) == \
                        (b.status_code, b.headers.get("location"), b.headers.get("set-cookie"), tb), (email, u)
                 assert b.headers.get("x-nd-served-by") == "gateway", (email, u)
+
+
+def test_job_list_and_assist_status_are_pythons(client, seed):
+    """GET /api/audio-jobs (filters, pages, the assistant's hidden rows) and GET /api/ai/assist-job/<id> (done with a result, done with
+    unreadable result text, still running, not an assist job, another world's) from the gateway."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import AudioJob, GameSession, WorldMembership
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.query(AudioJob).filter(AudioJob.world_id == w).delete()
+        gs = GameSession(world_id=w, session_num=30, title="Thirty")
+        db.add(gs)
+        db.flush()
+        jobs = [AudioJob(world_id=w, purpose="session_recap", status="done", game_session_id=gs.id),
+                AudioJob(world_id=w, purpose="condense", status="transcribing"),
+                AudioJob(world_id=w, purpose="world_summary", audience="gm", status="done"),
+                AudioJob(world_id=w, purpose="world_summary", audience="players", status="done"),
+                AudioJob(world_id=w, purpose="ai_assist", assist_params_json=json.dumps({"op": "code_edit"}), status="done", result_json='{"mode": "text", "text": "x"}'),
+                AudioJob(world_id=w, purpose="ai_assist", assist_params_json=json.dumps({"op": "expand"}), status="done", result_json="not json"),
+                AudioJob(world_id=w, purpose="ai_assist", status="summarizing"),
+                AudioJob(world_id=seed.world_b.id, purpose="ai_assist", status="done")]
+        db.add_all(jobs + [AudioJob(world_id=w, purpose="attachment", status="error") for _ in range(55)])
+        db.commit()
+        ids = [j.id for j in jobs] + [999999]
+        gsid = gs.id
+    finally:
+        db.close()
+    lists = ["", "?page=2", "?page=99", "?page=0", "?purpose=ai_assist", "?status=running", "?status=done", f"?game_session_id={gsid}", "?purpose=nope"]
+    for role in ("player", "assistant"):
+        db = SessionLocal()
+        try:
+            db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_a.id).update({"role": role})
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for u in ["/api/audio-jobs" + x for x in lists] + [f"/api/ai/assist-job/{i}" for i in ids]:
+                a, b = d.get(u), _via(d, base).get(u)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (role, email, u)
+                assert b.headers.get("x-nd-served-by") == "gateway", (role, email, u)
+    db = SessionLocal()
+    try:
+        db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_a.id).update({"role": "player"})
+        db.query(AudioJob).filter(AudioJob.purpose == "attachment", AudioJob.status == "error").delete()
+        db.commit()
+    finally:
+        db.close()

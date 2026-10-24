@@ -23,14 +23,16 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
         path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
+        "/api/audio-jobs" => audio_job_list(&cfg, uri, headers),
+        path if id_between(path, "/api/ai/assist-job/", "").is_some() => assist_job(&cfg, uri, headers, id_between(path, "/api/ai/assist-job/", "")?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path => party_vitals(&cfg, uri, headers, vitals_id(path)?),
     }
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
-        || session_media_id(path).is_some() || id_between(path, "/api/entity/", "/preview").is_some()
+    matches!(path, "/api/audio-jobs" | "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
+        || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
 }
 
@@ -118,45 +120,7 @@ fn audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Op
             return Some(crate::idpages::refusal(404));
         }
     }
-    let label = match purpose.as_str() {
-        "session_recap" => "Session Recap",
-        "attachment" => "Voice Attachment",
-        "condense" => "Condense",
-        "facts_parse" => "Facts",
-        "session_log_recap" => "Session Log recap",
-        "ai_assist" => "AI Assist",
-        "world_summary" => "World Summary",
-        other => other,
-    };
-    let iso = |k: &str| match j.get(k).and_then(|v| v.get("__dt__").or(Some(v))).and_then(|v| v.as_str()).and_then(nd_render::pyvalue::PyDateTime::parse) {
-        Some(d) => json!(d.isoformat()),
-        None => Value::Null,
-    };
-    let flag = |k: &str| j.get(k).and_then(|v| v.as_i64()).unwrap_or(0) != 0;
-    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
-    let error = s("error").unwrap_or_default();
-    let pending = match serde_json::from_str::<Value>(s("pending_facts_json").filter(|t| !t.is_empty()).as_deref().unwrap_or("[]")) {
-        Ok(Value::Array(a)) => Value::Array(a),
-        _ => json!([]),
-    };
-    let out = json!({
-        "id": id, "purpose": purpose, "purpose_label": label, "filename": v("filename"), "status": v("status"), "error": v("error"),
-        "transcript": v("transcript"), "recap": v("recap"), "model": s("model").unwrap_or_default(),
-        "extra_instructions": s("extra_instructions").unwrap_or_default(), "result_json": s("result_json").unwrap_or_default(),
-        "attachment_url": v("attachment_url"), "game_session_id": v("game_session_id"),
-        "chunk_current": v("chunk_current"), "chunk_total": v("chunk_total"),
-        "run_started_at": iso("run_started_at"), "finished_at": iso("finished_at"), "created_at": iso("created_at"), "updated_at": iso("updated_at"),
-        "resumed_count": v("resumed_count"),
-        "think": j.get("think").and_then(|t| t.as_i64()).map_or(json!(true), |t| json!(t != 0)),
-        "fit_context": flag("fit_context"), "strictness": s("condense_strictness").filter(|t| !t.is_empty()).unwrap_or_else(|| "guideline".into()),
-        "use_rag": flag("use_rag"), "rag_entity_limit": v("rag_entity_limit"), "rag_notes_limit": v("rag_notes_limit"),
-        "resumable": s("status").as_deref() == Some("interrupted"),
-        "think_fallback": flag("think_fallback"), "think_rejected": flag("think_rejected"), "think_token_fallback": flag("think_token_fallback"),
-        "expanded_thinking": flag("expanded_thinking"),
-        "thinking_starved": error.starts_with("[empty response") && error.contains("hidden \"thinking\""),
-        "pending_facts": pending,
-    });
-    crate::edits::json_response(&out)
+    crate::edits::json_response(&job_dict(&j)?)
 }
 
 
@@ -450,4 +414,135 @@ fn world_switch(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response
     Response::builder().status(303).header("location", loc)
         .header("set-cookie", format!("active_world={slug}; Max-Age=31536000; Path=/; SameSite=lax"))
         .header("x-nd-served-by", "gateway").body(Body::empty()).ok()
+}
+
+
+/// `_job_to_dict(job)` (app/routers/audio_jobs.py)
+fn job_dict(j: &Map<String, Value>) -> Option<Value> {
+    let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let id = j.get("id")?.as_i64()?;
+    let purpose = s("purpose").unwrap_or_default();
+    let label = match purpose.as_str() {
+        "session_recap" => "Session Recap",
+        "attachment" => "Voice Attachment",
+        "condense" => "Condense",
+        "facts_parse" => "Facts",
+        "session_log_recap" => "Session Log recap",
+        "ai_assist" => "AI Assist",
+        "world_summary" => "World Summary",
+        other => other,
+    };
+    let iso = |k: &str| match j.get(k).and_then(|v| v.get("__dt__").or(Some(v))).and_then(|v| v.as_str()).and_then(nd_render::pyvalue::PyDateTime::parse) {
+        Some(d) => json!(d.isoformat()),
+        None => Value::Null,
+    };
+    let flag = |k: &str| j.get(k).and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
+    let error = s("error").unwrap_or_default();
+    let pending = match serde_json::from_str::<Value>(s("pending_facts_json").filter(|t| !t.is_empty()).as_deref().unwrap_or("[]")) {
+        Ok(Value::Array(a)) => Value::Array(a),
+        _ => json!([]),
+    };
+    let out = json!({
+        "id": id, "purpose": purpose, "purpose_label": label, "filename": v("filename"), "status": v("status"), "error": v("error"),
+        "transcript": v("transcript"), "recap": v("recap"), "model": s("model").unwrap_or_default(),
+        "extra_instructions": s("extra_instructions").unwrap_or_default(), "result_json": s("result_json").unwrap_or_default(),
+        "attachment_url": v("attachment_url"), "game_session_id": v("game_session_id"),
+        "chunk_current": v("chunk_current"), "chunk_total": v("chunk_total"),
+        "run_started_at": iso("run_started_at"), "finished_at": iso("finished_at"), "created_at": iso("created_at"), "updated_at": iso("updated_at"),
+        "resumed_count": v("resumed_count"),
+        "think": j.get("think").and_then(|t| t.as_i64()).map_or(json!(true), |t| json!(t != 0)),
+        "fit_context": flag("fit_context"), "strictness": s("condense_strictness").filter(|t| !t.is_empty()).unwrap_or_else(|| "guideline".into()),
+        "use_rag": flag("use_rag"), "rag_entity_limit": v("rag_entity_limit"), "rag_notes_limit": v("rag_notes_limit"),
+        "resumable": s("status").as_deref() == Some("interrupted"),
+        "think_fallback": flag("think_fallback"), "think_rejected": flag("think_rejected"), "think_token_fallback": flag("think_token_fallback"),
+        "expanded_thinking": flag("expanded_thinking"),
+        "thinking_starved": error.starts_with("[empty response") && error.contains("hidden \"thinking\""),
+        "pending_facts": pending,
+    });
+    Some(out)
+}
+
+
+/// `api_audio_job_list`: the active world's jobs, newest first, filtered and paginated (50 a page); an assistant does not see GM-tier
+/// World Summaries or Code Assist jobs
+fn audio_job_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    if !crate::pages::section_ok(&p, Some(w), "background_jobs")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let q = |k: &str| crate::pages::query_param(uri, k);
+    let int_param = |k: &str| -> Option<Option<i64>> {
+        match q(k) {
+            None => Some(None),
+            Some(v) => { let t = v.trim(); (!t.is_empty() && t.trim_start_matches('-').bytes().all(|b| b.is_ascii_digit())).then(|| t.parse().ok().map(Some))? }
+        }
+    };
+    let page_no = int_param("page")?.unwrap_or(1).max(1);
+    let gsid = int_param("game_session_id")?;
+    let mut sql = "FROM audio_jobs WHERE world_id = ?1".to_string();
+    let mut params: Vec<rusqlite::types::Value> = vec![wid.into()];
+    if !p.is_gm {
+        sql += " AND (purpose != 'world_summary' OR id IN (SELECT id FROM audio_jobs WHERE purpose = 'world_summary' AND audience = 'players'))";
+    }
+    if let Some(purpose) = q("purpose").filter(|s| !s.is_empty()) {
+        params.push(purpose.into());
+        sql += &format!(" AND purpose = ?{}", params.len());
+    }
+    if let Some(status) = q("status").filter(|s| !s.is_empty()) {
+        if status == "running" {
+            sql += " AND status IN ('pending', 'transcribing', 'summarizing')";
+        } else {
+            params.push(status.into());
+            sql += &format!(" AND status = ?{}", params.len());
+        }
+    }
+    if let Some(g) = gsid {
+        params.push(g.into());
+        sql += &format!(" AND game_session_id = ?{}", params.len());
+    }
+    let total: i64 = db.query_row(&format!("SELECT count(*) {sql}"), rusqlite::params_from_iter(params.iter()), |r| r.get(0)).ok()?;
+    let total_pages = ((total + 49) / 50).max(1);
+    let page_no = page_no.min(total_pages);
+    let mut st = db.prepare(&format!("SELECT * {sql} ORDER BY created_at DESC, id LIMIT 50 OFFSET {}", (page_no - 1) * 50)).ok()?;
+    let jobs = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut out = vec![];
+    for j in jobs {
+        if !p.is_gm && j.get("purpose").and_then(|v| v.as_str()) == Some("ai_assist") {
+            let raw = j.get("assist_params_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+            match serde_json::from_str::<Value>(raw) {
+                Ok(Value::Object(o)) if o.get("op") == Some(&json!("code_edit")) => continue,
+                Ok(Value::Object(_)) | Err(_) => {}
+                Ok(_) => return None,
+            }
+        }
+        out.push(job_dict(&j)?);
+    }
+    crate::edits::json_response(&json!({"jobs": out, "page": page_no, "total_pages": total_pages}))
+}
+
+/// `api_ai_assist_job_status`: an AI-assist job's status, and its result once done
+fn assist_job(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let Some(j) = rows_of(&db, "SELECT * FROM audio_jobs WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    if j.get("purpose").and_then(|v| v.as_str()) != Some("ai_assist") || (wid.is_some() && j.get("world_id").and_then(|v| v.as_i64()) != wid) {
+        return Some(crate::idpages::refusal(404));
+    }
+    let status = j.get("status").cloned().unwrap_or(Value::Null);
+    let mut out = json!({"id": id, "status": status, "error": j.get("error").and_then(|v| v.as_str()).unwrap_or("")});
+    let result = j.get("result_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty());
+    if let (Some(r), true) = (result, status == json!("done")) {
+        out["result"] = match serde_json::from_str::<Value>(r) {
+            Ok(v) => v,
+            Err(_) if r.contains("NaN") || r.contains("Infinity") => return None,
+            Err(_) => json!({"op": "?", "mode": "text", "text": r}),
+        };
+    }
+    crate::edits::json_response(&out)
 }
