@@ -40,7 +40,8 @@ def test_pages_are_the_same_through_the_gateway_and_directly(client, seed):
         db.close()
     via = _login(client, seed)
     direct = _login(httpx.Client(base_url=DIRECT, timeout=120), seed)
-    paths = golden.crawl(direct, limit=60)
+    # /settings shows the serving process's own watchdog cells; test_settings_page_is_pythons compares it with those masked
+    paths = [p for p in golden.crawl(direct, limit=60) if not p.startswith("/settings")]
     assert len(paths) >= 5
     res = golden.compare(direct, via, paths)
     assert not res["differ"], {k: v[:4] for k, v in list(res["differ"].items())[:3]}
