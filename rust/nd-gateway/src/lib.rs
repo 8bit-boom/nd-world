@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
 pub mod calendar;
+pub mod export;
 pub mod account;
 pub mod qr;
 pub mod catalog;
@@ -376,6 +377,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::GET && export::route(req.uri().path()).is_some() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // the GM's JSON exports of a world's entities
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || export::get(&cfg, &uri, &headers)).await {
+            return resp;
+        }
     }
     if req.method() == axum::http::Method::GET && apis::is_get(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());

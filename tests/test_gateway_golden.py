@@ -3451,3 +3451,43 @@ def test_npc_talk_page_is_pythons(client, seed):
     a, b = d.get("/npc-talk"), _via(d, base).get("/npc-talk")
     assert b.headers.get("x-nd-served-by") == "gateway"
     assert (a.status_code, a.json()) == (b.status_code, b.json()) == (403, {"detail": "Forbidden"})
+
+
+def test_world_json_exports_are_pythons(client, seed):
+    """GET /worlds/<id>/export and /worlds/<id>/export/entities/<kind>.json from the gateway: the same bytes - the world header, every
+    entity with its template slug, custom fields, visibility and its image embedded (a missing file: none), text beyond ASCII written
+    as it is; an empty kind, an unknown kind (404 with its message), no such world."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import Entity, EntityTemplate, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    img = uploads / "gw-export-test.PNG"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    db = SessionLocal()
+    try:
+        tpl = EntityTemplate(world_id=w, name="Shop Thing", slug="gw-exp-shop", kind="location", fields_json="[]")
+        db.add(tpl)
+        db.flush()
+        db.add_all([Entity(world_id=w, kind="location", name="Café \"Z\"", body="Line 1\nLine\t2 — \U0001F600", template_id=tpl.id,
+                           custom_fields_json=json.dumps({"owner": "Mo", "n": 1.5, "list": [1, {}]}), image_url="/uploads/gw-export-test.PNG"),
+                    Entity(world_id=w, kind="location", name="Alley", visible_to_players=False, image_url="/uploads/missing.png"),
+                    Entity(world_id=w, kind="item", name="Knife", custom_fields_json="")])
+        db.get(World, w).description = "Neon über alles"
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    try:
+        for url in (f"/worlds/{w}/export", f"/worlds/{w}/export/entities/location.json", f"/worlds/{w}/export/entities/creature.json",
+                    f"/worlds/{w}/export/entities/nope.json", "/worlds/999999/export", "/worlds/999999/export/entities/item.json"):
+            a, b = gm.get(url), _via(gm, base).get(url)
+            assert b.headers.get("x-nd-served-by") == "gateway", url
+            assert (a.status_code, a.content) == (b.status_code, b.content), url
+            for h in ("content-type", "content-disposition"):
+                assert a.headers.get(h) == b.headers.get(h), (url, h)
+    finally:
+        img.unlink(missing_ok=True)

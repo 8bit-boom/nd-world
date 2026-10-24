@@ -317,7 +317,34 @@ fn compact_impl(v: &serde_json::Value, out: &mut String) {
 /// Python's plain `json.dumps(x)`: keys in insertion order, otherwise as `py_json`
 /// `json.dumps(v, indent=n)`: one item per line, "," between items and ": " after keys, ASCII only, insertion order
 pub fn py_dumps_indent(v: &serde_json::Value, indent: usize) -> String {
-    fn go(v: &serde_json::Value, indent: usize, level: usize, out: &mut String) {
+    py_dumps_indent_as(v, indent, true)
+}
+
+/// `json.dumps(v, indent=n, ensure_ascii=...)`: with `ensure_ascii` false, text beyond ASCII is written as it is (control characters are
+/// still escaped)
+pub fn py_dumps_indent_as(v: &serde_json::Value, indent: usize, ensure_ascii: bool) -> String {
+    fn text(s: &str, ensure_ascii: bool, out: &mut String) {
+        if ensure_ascii {
+            py_json_impl(&serde_json::Value::String(s.to_string()), out, false);
+            return;
+        }
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+    fn go(v: &serde_json::Value, indent: usize, level: usize, out: &mut String, ea: bool) {
         let pad = |l: usize| " ".repeat(indent * l);
         match v {
             serde_json::Value::Array(a) if !a.is_empty() => {
@@ -327,7 +354,7 @@ pub fn py_dumps_indent(v: &serde_json::Value, indent: usize) -> String {
                         out.push_str(",\n");
                     }
                     out.push_str(&pad(level + 1));
-                    go(x, indent, level + 1, out);
+                    go(x, indent, level + 1, out, ea);
                 }
                 out.push('\n');
                 out.push_str(&pad(level));
@@ -340,19 +367,20 @@ pub fn py_dumps_indent(v: &serde_json::Value, indent: usize) -> String {
                         out.push_str(",\n");
                     }
                     out.push_str(&pad(level + 1));
-                    py_json_impl(&serde_json::Value::String(k.clone()), out, false);
+                    text(k, ea, out);
                     out.push_str(": ");
-                    go(x, indent, level + 1, out);
+                    go(x, indent, level + 1, out, ea);
                 }
                 out.push('\n');
                 out.push_str(&pad(level));
                 out.push('}');
             }
+            serde_json::Value::String(s) => text(s, ea, out),
             other => py_json_impl(other, out, false),
         }
     }
     let mut out = String::new();
-    go(v, indent, 0, &mut out);
+    go(v, indent, 0, &mut out, ensure_ascii);
     out
 }
 

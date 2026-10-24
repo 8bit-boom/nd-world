@@ -70,6 +70,9 @@ them after each batch; the phase is done when both are empty and the steps below
   what the viewer may hear and see.
 - **NPC talk page** (`GET /npc-talk`): the talkable entities the viewer may see, `?entity=` picking one; the 403 for a world closed
   to players' AI.
+- **World JSON exports** (`GET /worlds/<id>/export`, `/export/entities/<kind>.json`, export.rs): the same bytes as
+  `stream_json_array_download` writes (nd-render `py_dumps_indent_as`, `ensure_ascii=False`), images embedded; built whole rather
+  than streamed.
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from
