@@ -19,7 +19,7 @@ fn route(path: &str) -> Option<(&str, i64)> {
     if id.is_empty() || id.len() > 15 || !id.bytes().all(|b| b.is_ascii_digit()) || (id.len() > 1 && id.starts_with('0')) {
         return None;
     }
-    matches!(tab, "quests" | "world" | "now" | "schedule").then(|| Some((tab, id.parse().ok()?)))?
+    matches!(tab, "quests" | "world" | "now" | "schedule" | "log" | "notes").then(|| Some((tab, id.parse().ok()?)))?
 }
 
 pub fn serves(path: &str) -> bool {
@@ -69,13 +69,101 @@ pub fn get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body
     if !p.is_gm && db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_err() {
         return Some(crate::idpages::refusal(404));
     }
+    if tab == "notes" && !is_owner {
+        return Some(crate::idpages::refusal(404)); // _owned_pc: the owner only
+    }
     let out = match tab {
         "quests" => quests(&db, &pc, &world)?,
         "now" => now_strip(&db, &pc, &world, is_owner, p.user_id)?,
         "schedule" => schedule_tab(&db, &pc, &world, p.user_id)?,
+        "log" => change_log(&db, &pc, is_owner)?,
+        "notes" => notes_tab(&db, &pc, &world, p.user_id)?,
         _ => known_world(&db, &p, uri, &pc, &world, is_owner)?,
     };
     crate::edits::json_response(&out)
+}
+
+/// `hub_log`: the newest 60 changes, with which the owner can still undo (`char_extras.can_undo`: nothing later, not undone, changed the
+/// same thing)
+fn change_log(db: &Connection, pc: &Map<String, Value>, is_owner: bool) -> Option<Value> {
+    let pid = int(pc, "id")?;
+    let entries = rows(db, "SELECT * FROM character_log WHERE character_id = ?1 ORDER BY id DESC LIMIT 60", &[&pid])?;
+    let mut out = vec![];
+    for e in &entries {
+        let undone = crate::edits::py_truthy_pub(e.get("undone"));
+        let can_undo = if is_owner && !undone {
+            let spec = crate::edits::log_undo_spec(e);
+            if spec.is_empty() {
+                false
+            } else {
+                let key = crate::edits::log_undo_key(&spec)?;
+                let mut st = db.prepare("SELECT undo_json FROM character_log WHERE character_id = ?1 AND id > ?2 AND undone = 0").ok()?;
+                let later: Vec<Option<String>> = st.query_map([pid, int(e, "id")?], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+                let mut clash = false;
+                for raw in later {
+                    let mut m = Map::new();
+                    m.insert("undo_json".into(), raw.map_or(Value::Null, Value::String));
+                    let sp = crate::edits::log_undo_spec(&m);
+                    if !sp.is_empty() && crate::edits::log_undo_key(&sp)? == key {
+                        clash = true;
+                        break;
+                    }
+                }
+                !clash
+            }
+        } else {
+            false
+        };
+        let at = e.get("created_at").and_then(|v| v.get("__dt__").or(Some(v))).and_then(|v| v.as_str())
+            .and_then(nd_render::pyvalue::PyDateTime::parse).and_then(|d| d.strftime("%Y-%m-%dT%H:%M:%SZ").ok()).map(Value::String).unwrap_or(Value::Null);
+        let txt = |k: &str| e.get(k).cloned().unwrap_or(Value::Null);
+        out.push(json!({"id": int(e, "id")?, "actor": txt("actor"), "kind": txt("kind"), "text": txt("text"), "undone": undone, "at": at,
+                        "can_undo": can_undo}));
+    }
+    Some(json!({"can_edit": is_owner, "entries": out}))
+}
+
+/// `_excerpt(text)`: tags out, markdown stripped, 280 characters at most (279 and an ellipsis)
+fn excerpt(text: &str) -> String {
+    static TAG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let plain = nd_render::text::strip_md(&TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap()).replace_all(text, " "));
+    if plain.chars().count() <= 280 {
+        return plain;
+    }
+    let cut: String = plain.chars().take(279).collect();
+    format!("{}\u{2026}", cut.trim_end())
+}
+
+/// `hub_notes`: the GM's private notes to this player (excerpts and the thread link) and the character's journal
+fn notes_tab(db: &Connection, pc: &Map<String, Value>, world: &Map<String, Value>, user_id: i64) -> Option<Value> {
+    let wid = int(world, "id")?;
+    let notes = rows(db, "SELECT * FROM private_notes WHERE world_id = ?1 AND player_user_id = ?2 ORDER BY updated_at DESC LIMIT 50", &[&wid, &user_id])?;
+    let party = party_ids_of(db, pc)?;
+    let sessions = if party.is_empty() {
+        vec![]
+    } else {
+        let list = party.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        rows(db, &format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({list}) ORDER BY session_num DESC LIMIT 60"), &[&int(pc, "world_id")?])?
+    };
+    let pid = int(pc, "id")?;
+    let entries = rows(db, "SELECT * FROM character_journal_entries WHERE character_id = ?1 AND kind = 'journal' ORDER BY created_at DESC", &[&pid])?;
+    let mut gm_notes = vec![];
+    for n in &notes {
+        gm_notes.push(json!({"id": int(n, "id")?, "title": text(n, "title"), "excerpt": excerpt(&text(n, "content")),
+                             "updated_at": crate::edits::py_isoformat_pub(n.get("updated_at"))}));
+    }
+    let href = if notes.is_empty() { Value::Null } else { json!(with_world(&format!("/worlds/{wid}/notes/{user_id}"), world)) };
+    let label = |s: &Map<String, Value>| -> String {
+        let num = s.get("session_num").and_then(|v| v.as_i64()).map_or("None".to_string(), |n| n.to_string());
+        let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("None");
+        format!("#{num} {title}")
+    };
+    let mut sess = vec![];
+    for s in &sessions {
+        sess.push(json!({"id": int(s, "id")?, "label": label(s)}));
+    }
+    Some(json!({"gm_notes": gm_notes, "thread_href": href,
+                "journal": entries.iter().map(|e| crate::edits::hub_entry_out(e, &sessions)).collect::<Vec<_>>(), "sessions": sess}))
 }
 
 fn with_world(path: &str, world: &Map<String, Value>) -> String {

@@ -11087,7 +11087,7 @@ fn hub_rest_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 /// `char_extras.undo_spec`: the entry's undo as an object with an op, else empty
-fn log_undo_spec(e: &Map<String, Value>) -> Map<String, Value> {
+pub(crate) fn log_undo_spec(e: &Map<String, Value>) -> Map<String, Value> {
     let raw = e.get("undo_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
     match serde_json::from_str::<Value>(raw) {
         Ok(Value::Object(o)) if py_truthy(o.get("op")) => o,
@@ -11096,7 +11096,7 @@ fn log_undo_spec(e: &Map<String, Value>) -> Map<String, Value> {
 }
 
 /// `_undo_key`; None = a spec Python reads its own way (a non-string op, values that are not an object)
-fn log_undo_key(spec: &Map<String, Value>) -> Option<String> {
+pub(crate) fn log_undo_key(spec: &Map<String, Value>) -> Option<String> {
     let op = match spec.get("op") {
         Some(Value::String(t)) => t.clone(),
         _ => return None,
@@ -11631,7 +11631,7 @@ fn py_isoformat(v: Option<&Value>) -> Value {
     }
 }
 
-fn hub_entry_out(e: &Map<String, Value>, sessions: &[Map<String, Value>]) -> Value {
+pub(crate) fn hub_entry_out(e: &Map<String, Value>, sessions: &[Map<String, Value>]) -> Value {
     let txt = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let label = e.get("session_id").and_then(|v| v.as_i64()).and_then(|sid| sessions.iter().find(|s| s.get("id").and_then(|i| i.as_i64()) == Some(sid))).map(|s| {
         let num = s.get("session_num").and_then(|v| v.as_i64()).map_or("None".to_string(), |n| n.to_string());

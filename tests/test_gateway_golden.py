@@ -3147,3 +3147,53 @@ def test_account_name_tokens_and_revokes_are_pythons(client, seed):
         assert db.get(TrustedDevice, ids[2]) is None and db.get(TrustedDevice, ids[3]) is not None
     finally:
         db.close()
+
+
+def test_hub_log_and_notes_are_pythons(client, seed):
+    """GET /api/characters/<id>/hub/log and /hub/notes from the gateway: the change log with what can still be undone (the newest change
+    to each thing, nothing undone, the owner only), the GM's private notes as excerpts with the thread link, the journal with session
+    labels; a GM looking in at the log (read-only) and at the notes (404), someone else's character (404)."""
+    from datetime import datetime
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CharacterJournalEntry, CharacterLog, GameSession, Party, PlayerCharacter, PrivateNote
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id)
+        bare = PlayerCharacter(world_id=w, name="Bare", owner_user_id=seed.player_a.id)
+        other = PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)
+        db.add_all([pc, bare, other])
+        db.flush()
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([pc.id]))
+        db.add(party)
+        db.flush()
+        s1 = GameSession(world_id=w, session_num=1, title="Start", party_id=party.id)
+        s2 = GameSession(world_id=w, session_num=2, title="", party_id=party.id)
+        db.add_all([s1, s2, GameSession(world_id=w, session_num=3, title="Elsewhere")])
+        db.flush()
+        for i, (kind, undo, undone) in enumerate([("hp", {"op": "hp", "value": 10}, False), ("hp", {"op": "hp", "value": 8}, False),
+                                                 ("currency", {"op": "currency", "abbr": "GP", "value": 3}, False), ("xp", {"op": "xp", "value": 0}, True),
+                                                 ("note", {}, False), ("cf", {"op": "cf", "values": {"b": 1, "a": 2}}, False), ("bad", "nope", False)]):
+            db.add(CharacterLog(world_id=w, character_id=pc.id, actor="Al", kind=kind, text=f"change {i}",
+                                undo_json=json.dumps(undo) if not isinstance(undo, str) else undo, undone=undone))
+        db.add_all([CharacterJournalEntry(world_id=w, character_id=pc.id, kind="journal", title="Day 1", body="b", session_id=s1.id),
+                    CharacterJournalEntry(world_id=w, character_id=pc.id, kind="journal", title="Day 2", session_id=s2.id,
+                                          created_at=datetime(2031, 1, 2, 3, 4, 5)),
+                    CharacterJournalEntry(world_id=w, character_id=pc.id, kind="goal", title="Goal")])
+        db.add_all([PrivateNote(world_id=w, player_user_id=seed.player_a.id, title="Psst", content="<b>Hello</b> **there** " + "word " * 80),
+                    PrivateNote(world_id=w, player_user_id=seed.player_a.id, title=None, content="# Short\n[link](http://x)")])
+        db.commit()
+        ids = (pc.id, bare.id, other.id, 999999)
+    finally:
+        db.close()
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        via = _via(d, base)
+        for pid in ids:
+            for tab in ("log", "notes"):
+                url = f"/api/characters/{pid}/hub/{tab}"
+                a, b = d.get(url), via.get(url)
+                assert b.headers.get("x-nd-served-by") == "gateway", (email, url)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, url)

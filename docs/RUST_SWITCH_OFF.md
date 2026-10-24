@@ -59,6 +59,8 @@ them after each batch; the phase is done when both are empty and the steps below
   the row the same way (layout.rs `app_settings_row`).
 - **Race and profession catalogs** (`GET /races`, `GET /professions`, catalog.rs): the world's entries by tier and the bundled
   catalog under app/races/ and app/professions/ (read once, as Python's lru_cache does).
+- **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
+  be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from
   scripts/gen_rust_data.py), and the **two-step confirm** (`POST /account/2fa/setup`): a wrong code (the setup page again, 400), the
   right one (8 backup codes stored as sha256, shown once on the account page), the redirects.
