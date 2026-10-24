@@ -3361,12 +3361,22 @@ pub(crate) fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>
 /// Python's 400s for a body json.loads cannot read ("Invalid JSON body") or that is not an object; Some(None) when it is an object,
 /// None for a body serde cannot read that Python might (NaN, lone surrogates, a BOM, numbers out of range, deep nesting)
 fn json_body_refusal(body: &[u8]) -> Option<Option<Response<Body>>> {
+    json_body_refusal_as(body, "Invalid JSON body", "JSON body must be an object")
+}
+
+/// `json_body_refusal` with a route's own two messages
+fn json_body_refusal_as(body: &[u8], invalid: &str, not_object: &str) -> Option<Option<Response<Body>>> {
     let detail = crate::ai_more::detail;
     match serde_json::from_slice::<Value>(body) {
         Ok(Value::Object(_)) => Some(None),
-        Ok(_) => Some(Some(detail(StatusCode::BAD_REQUEST, "JSON body must be an object"))),
+        Ok(_) => Some(Some(detail(StatusCode::BAD_REQUEST, not_object))),
         Err(e) => {
-            let text = std::str::from_utf8(body).ok()?;
+            // json.loads(bytes) reads UTF-16 / 32 by a BOM or NUL bytes up front; anything else is UTF-8, and bytes that are not is its error
+            let head = &body[..body.len().min(4)];
+            let other_encoding = head.contains(&0) || [&b"\xef\xbb\xbf"[..], b"\xff\xfe", b"\xfe\xff"].iter().any(|b| body.starts_with(b));
+            let Ok(text) = std::str::from_utf8(body) else {
+                return if other_encoding { None } else { Some(Some(detail(StatusCode::BAD_REQUEST, invalid))) };
+            };
             let why = e.to_string();
             if why.contains("out of range") || why.contains("recursion limit") {
                 return None;
@@ -3374,7 +3384,7 @@ fn json_body_refusal(body: &[u8]) -> Option<Option<Response<Body>>> {
             if text.contains("NaN") || text.contains("Infinity") || text.contains("\\u") || text.starts_with('\u{feff}') {
                 return None;
             }
-            Some(Some(detail(StatusCode::BAD_REQUEST, "Invalid JSON body")))
+            Some(Some(detail(StatusCode::BAD_REQUEST, invalid)))
         }
     }
 }
@@ -6233,7 +6243,13 @@ fn named_views(c: &Ctx, section: &str) -> Option<Value> {
 }
 
 fn saved_view_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
-    view_section(section)?;
+    let bad = |m: &str| Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m.to_string()));
+    if view_section(section).is_none() {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Unknown section"));
+    }
+    if let Some(r) = json_body_refusal_as(c.body, "Invalid JSON", "JSON object required")? {
+        return Some(r);
+    }
     let b = c.json()?;
     let name = match b.get("name") {
         Some(Value::String(n)) => take_chars(&nd_render::text::py_split_join(n), 40),
@@ -6241,7 +6257,7 @@ fn saved_view_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
         _ => String::new(),
     };
     if name.is_empty() {
-        return None;
+        return bad("Give the view a name");
     }
     let cleaned = view_clean(section, b.get("state"))?;
     let text = nd_render::py_dumps(&cleaned);
@@ -6256,7 +6272,7 @@ fn saved_view_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
         None => {
             let n: i64 = c.db.query_row("SELECT COUNT(*) FROM saved_views WHERE user_id = ?1 AND section = ?2", rusqlite::params![c.p.user_id, section], |r| r.get(0)).ok()?;
             if n >= 20 {
-                return None;
+                return bad("At most 20 saved views per page - delete one first");
             }
             orm::insert(&c.db, "saved_views", &[("user_id", Sql::Integer(c.p.user_id)), ("section", s(section)), ("name", s(&name)), ("prefs_json", s(&text))])?;
         }
@@ -6269,7 +6285,7 @@ fn saved_view_delete(c: &mut Ctx, key: &str) -> Option<Response<Body>> {
     let id: i64 = id.parse().ok()?;
     let n = c.db.execute("DELETE FROM saved_views WHERE id = ?1 AND user_id = ?2 AND section = ?3", rusqlite::params![id, c.p.user_id, section]).ok()?;
     if n == 0 {
-        return None;
+        return Some(crate::idpages::refusal(404));
     }
     json_response(&named_views(c, section)?)
 }

@@ -3197,3 +3197,24 @@ def test_hub_log_and_notes_are_pythons(client, seed):
                 a, b = d.get(url), via.get(url)
                 assert b.headers.get("x-nd-served-by") == "gateway", (email, url)
                 assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, url)
+
+
+def test_saved_view_refusals_are_pythons(client, seed):
+    """POST /api/saved-views/<section> and DELETE /api/saved-views/<section>/<id> refusals from the gateway: an unknown section, a body
+    that is not JSON or not an object, no name, the 20-view limit, a view that is not there."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    for i in range(20):
+        assert d.post("/api/saved-views/audio", json={"name": f"v{i}", "state": {}}).status_code == 200
+    cases = [("POST", "/api/saved-views/nosuch", b'{"name": "x"}'), ("POST", "/api/saved-views/audio", b"{oops"), ("POST", "/api/saved-views/audio", b"[]"),
+             ("POST", "/api/saved-views/audio", b"\xff"), ("POST", "/api/saved-views/audio", b'{"name": "   "}'), ("POST", "/api/saved-views/audio", b"{}"),
+             ("POST", "/api/saved-views/audio", b'{"name": "one more"}'), ("DELETE", "/api/saved-views/audio/999999", b""),
+             ("DELETE", "/api/saved-views/images/1", b"")]
+    for method, path, body in cases:
+        a = d.request(method, path, content=body, headers={"content-type": "application/json"})
+        b = via.request(method, path, content=body, headers={"content-type": "application/json"})
+        assert b.headers.get("x-nd-served-by") == "gateway", (method, path, body)
+        assert a.status_code >= 400, (method, path, body)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), (method, path, body)
