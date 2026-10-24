@@ -19,7 +19,7 @@ fn route(path: &str) -> Option<(&str, i64)> {
     if id.is_empty() || id.len() > 15 || !id.bytes().all(|b| b.is_ascii_digit()) || (id.len() > 1 && id.starts_with('0')) {
         return None;
     }
-    matches!(tab, "quests" | "world" | "now").then(|| Some((tab, id.parse().ok()?)))?
+    matches!(tab, "quests" | "world" | "now" | "schedule").then(|| Some((tab, id.parse().ok()?)))?
 }
 
 pub fn serves(path: &str) -> bool {
@@ -72,6 +72,7 @@ pub fn get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body
     let out = match tab {
         "quests" => quests(&db, &pc, &world)?,
         "now" => now_strip(&db, &pc, &world, is_owner, p.user_id)?,
+        "schedule" => schedule_tab(&db, &pc, &world, p.user_id)?,
         _ => known_world(&db, &p, uri, &pc, &world, is_owner)?,
     };
     crate::edits::json_response(&out)
@@ -292,4 +293,110 @@ fn now_strip(db: &Connection, pc: &Map<String, Value>, world: &Map<String, Value
     Some(json!({"me": me, "can_edit": is_owner, "combat": combat, "next_session": next_session, "rest_kinds": rest_kinds,
         "handouts_new": handouts_new, "pins": pins, "companions": companions, "polls_waiting": polls_waiting(db, wid, asker)?,
         "schedule_href": with_world("/schedule", world)}))
+}
+
+
+/// the ids of the world's parties that list this character (`_party_ids`)
+fn party_ids_of(db: &Connection, pc: &Map<String, Value>) -> Option<Vec<i64>> {
+    let (wid, pcid) = (int(pc, "world_id")?, int(pc, "id")?);
+    let mut out = vec![];
+    for party in rows(db, "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id", &[&wid])? {
+        if crate::edits::member_ids(party.get("member_pc_ids_json"))?.contains(&pcid) {
+            out.push(int(&party, "id")?);
+        }
+    }
+    Some(out)
+}
+
+/// `date.fromisoformat(text[:10])` for the forms this port is sure of: Some(Some(days since epoch)), Some(None) = ValueError, None = unsure
+fn iso_date(text: &str) -> Option<Option<i64>> {
+    let t: String = text.chars().take(10).collect();
+    let b = t.as_bytes();
+    if t.len() == 10 && b[4] == b'-' && b[7] == b'-' && t.bytes().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit()) {
+        let (y, m, d): (i64, i64, i64) = (t[..4].parse().ok()?, t[5..7].parse().ok()?, t[8..].parse().ok()?);
+        let dim = match m { 1 | 3 | 5 | 7 | 8 | 10 | 12 => 31, 4 | 6 | 9 | 11 => 30, 2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29, 2 => 28, _ => 0 };
+        if y < 1 || d < 1 || d > dim {
+            return Some(None);
+        }
+        let yy = if m <= 2 { y - 1 } else { y };
+        let era = yy.div_euclid(400);
+        let yoe = yy - era * 400;
+        let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+        return Some(Some(era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468));
+    }
+    // the compact and week-date forms fromisoformat also reads: not reproduced
+    if t.contains('W') || (t.len() >= 8 && t[..8].bytes().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    Some(None)
+}
+
+/// `hub_schedule`: upcoming calendar events pinned to the character or its parties, its parties' next dated sessions, the next confirmed
+/// game night and the polls waiting
+fn schedule_tab(db: &Connection, pc: &Map<String, Value>, world: &Map<String, Value>, user_id: i64) -> Option<Value> {
+    let wid = int(world, "id")?;
+    let pcid = int(pc, "id")?;
+    let party_ids = party_ids_of(db, pc)?;
+    let level = player_level(world, "calendar")?;
+    let (mut events, mut today) = (vec![], Value::Null);
+    if level != "none" {
+        let (config, label) = crate::calendar::read_only(db, wid)?;
+        let current = match config.get("current_day") {
+            None => 1,
+            Some(Value::Number(n)) => match n.as_i64() { Some(i) => i, None => n.as_f64().filter(|f| f.is_finite())?.trunc() as i64 },
+            Some(Value::Bool(b)) => *b as i64,
+            Some(Value::String(t)) => {
+                // int(text): an underscore or a non-ASCII digit is read by Python's own rules
+                let s = nd_render::text::py_strip(t);
+                if s.contains('_') || !s.is_ascii() {
+                    return None;
+                }
+                s.parse::<i64>().unwrap_or(1)
+            }
+            _ => 1,
+        };
+        today = json!(label(current)?);
+        let mut cond = format!("character_id = {pcid}");
+        if !party_ids.is_empty() {
+            cond = format!("({cond} OR party_id IN ({}))", party_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        }
+        for e in rows(db, &format!("SELECT * FROM calendar_events WHERE world_id = ?1 AND day >= ?2 AND {cond} ORDER BY day, id LIMIT 20"), &[&wid, &current])? {
+            let day = int(&e, "day")?;
+            events.push(json!({"id": e.get("id"), "title": e.get("title"), "notes": text(&e, "notes"), "color": e.get("color"), "day": day,
+                "days_away": day - current, "date": label(day)?}));
+        }
+    }
+    let today_days = (crate::schedule::now_micros() / 1_000_000).div_euclid(86400);
+    let mut upcoming: Vec<(i64, Map<String, Value>)> = vec![];
+    if !party_ids.is_empty() {
+        let list = party_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        for s in rows(db, &format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({list}) ORDER BY session_num DESC, id LIMIT 60"), &[&wid])? {
+            let Some(when) = iso_date(&text(&s, "session_date"))? else { continue };
+            if when >= today_days {
+                upcoming.push((when, s));
+            }
+        }
+    }
+    upcoming.sort_by_key(|u| u.0);
+    let asker = int(pc, "owner_user_id").filter(|o| *o != 0).unwrap_or(user_id);
+    let next_session = match next_confirmed(db, wid)? {
+        Some((plan, slot)) => {
+            let mine = rows(db, "SELECT choice FROM session_plan_votes WHERE slot_id = ?1 AND user_id = ?2 ORDER BY id LIMIT 1", &[&int(&slot, "id")?, &asker])?;
+            let secs = crate::schedule::stored(slot.get("starts_at"))?.div_euclid(1_000_000);
+            let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
+            let r = secs.rem_euclid(86400);
+            json!({"id": plan.get("id"), "title": plan.get("title"), "location": text(&plan, "location"),
+                "starts_at": format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", r / 3600, r % 3600 / 60, r % 60), "duration_min": plan.get("duration_min"),
+                "my": mine.first().and_then(|x| x.get("choice").cloned())})
+        }
+        None => Value::Null,
+    };
+    let sessions: Vec<Value> = upcoming.iter().take(3).map(|(when, s)| {
+        let (y, m, d) = crate::writes::civil_from_days(*when);
+        json!({"id": s.get("id"), "title": s.get("title"), "num": s.get("session_num"), "date": format!("{y:04}-{m:02}-{d:02}"),
+            "href": with_world(&format!("/sessions/{}", int(s, "id").unwrap_or(0)), world)})
+    }).collect();
+    Some(json!({"calendar_section": level, "calendar_href": if level != "none" { json!(with_world("/calendar", world)) } else { Value::Null },
+        "schedule_href": with_world("/schedule", world), "next_session": next_session, "polls_waiting": polls_waiting(db, wid, asker)?,
+        "today": today, "events": events, "sessions": sessions}))
 }

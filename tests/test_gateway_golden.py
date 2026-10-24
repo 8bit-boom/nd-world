@@ -2568,3 +2568,53 @@ def test_hub_now_is_pythons(client, seed):
             ra, rb = d.get(u), _via(d, base).get(u)
             assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, u)
             assert rb.headers.get("x-nd-served-by") == "gateway", (email, u)
+
+
+def test_hub_schedule_is_pythons(client, seed):
+    """GET /api/characters/<id>/hub/schedule from the gateway: calendar events pinned to the character or its party from today on (with
+    the world's labels), the party's next dated sessions (bad dates skipped), the next confirmed game night, polls waiting, and the
+    calendar closed to players."""
+    from datetime import date, timedelta
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CalendarEvent, GameSession, Party, PlayerCharacter, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id)
+        db.add(pc)
+        db.flush()
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([pc.id]))
+        db.add(party)
+        db.flush()
+        soon = (date.today() + timedelta(days=5)).isoformat()
+        db.add_all([CalendarEvent(world_id=w, day=1, title="Past"), CalendarEvent(world_id=w, day=40, title="Mine", character_id=pc.id),
+                    CalendarEvent(world_id=w, day=90, title="Party's", party_id=party.id, notes="n"), CalendarEvent(world_id=w, day=50, title="Other"),
+                    GameSession(world_id=w, session_num=1, title="Old", party_id=party.id, session_date="2001-01-01"),
+                    GameSession(world_id=w, session_num=2, title="Soon", party_id=party.id, session_date=soon + " evening"),
+                    GameSession(world_id=w, session_num=3, title="Bad", party_id=party.id, session_date="tomorrow"),
+                    GameSession(world_id=w, session_num=4, title="Feb 30", party_id=party.id, session_date="2099-02-30")])
+        db.commit()
+        pid = pc.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for closed in (False, True):
+        if closed:
+            db = SessionLocal()
+            try:
+                db.get(World, w).section_access_json = json.dumps({"calendar": {"player": "none"}})
+                db.commit()
+            finally:
+                db.close()
+        for d in (gm, _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+            u = f"/api/characters/{pid}/hub/schedule"
+            a, b = d.get(u), _via(d, base).get(u)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), u
+            assert b.headers.get("x-nd-served-by") == "gateway"
+        if not closed:
+            gm.get("/calendar")                        # the calendar row, then again with it
+            for d in (gm,):
+                a, b = d.get(f"/api/characters/{pid}/hub/schedule"), _via(d, base).get(f"/api/characters/{pid}/hub/schedule")
+                assert a.json() == b.json()

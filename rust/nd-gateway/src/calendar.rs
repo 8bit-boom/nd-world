@@ -259,6 +259,33 @@ fn load(db: &rusqlite::Connection, wid: i64) -> Option<Cal> {
     let raw: Option<String> = db.query_row("SELECT config_json FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)).ok()?;
     let raw = raw.filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
     let parsed: Value = serde_json::from_str(&raw).ok()?;
+    load_parsed(parsed)
+}
+
+/// The calendar's config as a reader that does not create the row sees it (the hub's Schedule tab): no row or unreadable JSON is {},
+/// and {} is the default calendar. Some((config, labeller)) where the labeller is `date_label(config, day)`.
+pub fn read_only(db: &rusqlite::Connection, wid: i64) -> Option<(Value, impl Fn(i64) -> Option<String>)> {
+    let raw: Option<Option<String>> = match db.query_row("SELECT config_json FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)) {
+        Ok(v) => Some(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(_) => return None,
+    };
+    let text = raw.flatten().filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
+    let parsed = match serde_json::from_str::<Value>(&text) {
+        Ok(v) => v,
+        Err(_) if text.contains("NaN") || text.contains("Infinity") => return None,
+        Err(_) => json!({}),
+    };
+    let cal = load_parsed(parsed)?;
+    let config = cal.config.clone();
+    let label = move |day: i64| -> Option<String> {
+        let (y, i, d) = resolve_date(&cal.months, day.max(1));
+        Some(format!("{} {}, {}", cal.months[i].name, d, format_year(cal.config.as_object()?, y)?))
+    };
+    Some((config, label))
+}
+
+fn load_parsed(parsed: Value) -> Option<Cal> {
     let config = if falsy(&parsed) {
         json!({"era_name": "Year 1", "current_day": 1, "months": default_months(), "days_per_week": 7, "moons": []})
     } else {
