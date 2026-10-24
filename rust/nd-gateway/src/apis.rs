@@ -19,6 +19,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/view-prefs" => view_prefs(&cfg, uri, headers),
         "/api/dice/history" => dice_history(&cfg, uri, headers),
         "/api/display/state" => display_state(&cfg, uri, headers),
+        path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
+        path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
         path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
@@ -28,7 +30,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 
 pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
-        || session_media_id(path).is_some() || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
+        || session_media_id(path).is_some() || id_between(path, "/api/entity/", "/preview").is_some()
+        || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -383,4 +386,68 @@ fn session_media(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Optio
         return Some(crate::idpages::refusal(404));
     }
     crate::edits::json_response(&crate::edits::sm_panel_db(&db, id)?)
+}
+
+
+/// `entity_preview` (app/main.py): the hover popup's data for an entity the viewer may see (`_entity_view_gate`: every refusal a 404)
+fn entity_preview(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(e) = rows_of(&db, "SELECT * FROM entities WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    let Some(wid) = e.get("world_id").and_then(|v| v.as_i64()) else { return None };
+    let Some(w) = rows_of(&db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next() else { return Some(crate::idpages::refusal(404)) };
+    let t = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if !p.is_gm {
+        let member = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_ok();
+        let s = |k: &str| w.get(k).and_then(|v| v.as_str());
+        if !member || nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), &format!("kind_{}", t("kind")))? == "none" {
+            return Some(crate::idpages::refusal(404));
+        }
+        if e.get("visible_to_players").and_then(|v| v.as_i64()).unwrap_or(0) == 0
+            && db.query_row("SELECT 1 FROM entity_player_access WHERE entity_id = ?1 AND user_id = ?2", [id, p.user_id], |_| Ok(())).is_err() {
+            return Some(crate::idpages::refusal(404));
+        }
+    }
+    let strip = |text: &str| nd_perm::gmonly::strip_gm_only(text, Some(p.user_id), nd_render::now_minute());
+    let body = if p.is_gm { e.get("body").cloned().unwrap_or(Value::Null) } else {
+        match e.get("body") {
+            Some(Value::String(b)) => json!(strip(b)?),
+            other => other.cloned().unwrap_or(Value::Null), // None / "" stay as they are (strip_gm_only returns falsy text unchanged)
+        }
+    };
+    let body_s = body.as_str().unwrap_or("").to_string();
+    let summary = if p.is_gm { e.get("summary").cloned().unwrap_or(Value::Null) } else { json!(strip(&t("summary"))?) };
+    let (_, icons, _) = nd_render::app::effective_kind_tables(Some(&w))?;
+    let image = e.get("image_url").cloned().unwrap_or(Value::Null);
+    let thumb = match image.as_str().filter(|s| !s.is_empty()) {
+        Some(u) => json!(nd_render::thumb_url(u)?),
+        None => image.clone(),
+    };
+    let tags: Vec<String> = t("tags").split(',').map(|x| nd_render::text::py_strip(x).to_string()).filter(|x| !x.is_empty()).collect();
+    let cf = Some(t("custom_fields_json")).filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
+    crate::edits::json_response(&json!({"id": id, "name": e.get("name"), "kind": e.get("kind"), "kind_icon": icons.get(&t("kind")).cloned().unwrap_or(json!("")),
+        "subtype": e.get("subtype"), "summary": summary, "image_url": image, "thumb_url": thumb, "tags": tags,
+        "body_html": if body_s.is_empty() { String::new() } else { nd_render::md::render_md(&body_s) }, "body": body_s, "custom_fields_json": cf}))
+}
+
+/// `world_switch` (app/main.py): remember the world (the active_world cookie) and go back where the person was
+fn world_switch(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let slug = percent_encoding::percent_decode_str(uri.path().strip_prefix("/worlds/switch/")?).decode_utf8().ok()?.to_string();
+    // a cookie value SimpleCookie would quote: Python's
+    if slug.is_empty() || !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.') {
+        return None;
+    }
+    let Some(w) = rows_of(&db, "SELECT id FROM worlds WHERE slug = ?1 ORDER BY id LIMIT 1", &[&slug])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let wid = w.get("id")?.as_i64()?;
+    if !p.is_gm && db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_err() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let next = crate::pages::query_param(uri, "next");
+    let dest = crate::pages::safe_next_url(Some(next.as_deref().unwrap_or("/")));
+    let loc = format!("{dest}{}w={slug}", if dest.contains('?') { "&" } else { "?" });
+    Response::builder().status(303).header("location", loc)
+        .header("set-cookie", format!("active_world={slug}; Max-Age=31536000; Path=/; SameSite=lax"))
+        .header("x-nd-served-by", "gateway").body(Body::empty()).ok()
 }

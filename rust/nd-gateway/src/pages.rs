@@ -1887,3 +1887,19 @@ pub fn import_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     c.insert("max_vision_import_images".into(), json!(6));
     render_with(pages, "import.html", p.ctx, headers)
 }
+
+/// `GET /ai-chat` (app/main.py `player_ai_chat`): the lean chat page a world opens to its players (always the GM's), with the
+/// GM-authored instructions a player may see
+pub fn ai_chat_player(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::json;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Some(w) = p.world.clone() else { return Some(crate::idpages::refusal(404)) };
+    if !p.is_gm && w.get("players_can_use_ai_chat").and_then(|v| v.as_i64()).unwrap_or(0) == 0 {
+        return Some(crate::idpages::refusal(403));
+    }
+    let text = crate::retrieval::instructions_text(&db, w.get("id")?.as_i64()?, !p.is_gm)?;
+    p.ctx.insert("ai_custom_instructions".into(), json!(text));
+    render_with(pages, "ai_chat_player.html", p.ctx, headers)
+}

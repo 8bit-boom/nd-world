@@ -187,7 +187,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/characters" | "/ai" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/sessions" => pages::sessions_list,
@@ -195,6 +195,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             "/parties" => pages::parties_list,
             "/characters" => pages::characters_list,
             "/ai" => pages::ai_page,
+            "/ai-chat" => pages::ai_chat_player,
             "/import" => pages::import_page,
             "/tables" => pages::tables_list,
             "/combat" => pages::combat_list,

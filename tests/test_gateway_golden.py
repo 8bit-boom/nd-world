@@ -2377,3 +2377,55 @@ def test_upload_access_is_pythons(client, seed):
         assert (a.status_code, a.content) == (b.status_code, b.content), u
         for h in ("content-type", "cache-control", "content-disposition", "content-security-policy", "x-frame-options", "x-content-type-options", "etag"):
             assert a.headers.get(h) == b.headers.get(h), (u, h, a.headers.get(h), b.headers.get(h))
+
+
+def test_preview_switch_and_player_chat_are_pythons(client, seed):
+    """GET /api/entity/<id>/preview (a [gmonly] block stripped for players, a hidden entity shared with one player, another world's
+    entity), GET /worlds/switch/<slug> (the cookie and the safe redirect) and GET /ai-chat (closed and open to players)."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, World, entity_player_access
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        open_ = Entity(world_id=w, kind="character", name="Open", summary="Hi [gmonly]secret[/gmonly]", body="**Bold** [gmonly]x[/gmonly]",
+                       tags=" a, ,b ", image_url="/uploads/nope.png", custom_fields_json="")
+        hid = Entity(world_id=w, kind="item", name="Hidden", visible_to_players=False, body="")
+        shared = Entity(world_id=w, kind="item", name="Shared", visible_to_players=False)
+        other = Entity(world_id=seed.world_b.id, kind="item", name="Other world")
+        db.add_all([open_, hid, shared, other])
+        db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=shared.id, user_id=seed.player_a.id))
+        db.commit()
+        eids = [open_.id, hid.id, shared.id, other.id, 999999]
+    finally:
+        db.close()
+    switch = [f"/worlds/switch/{seed.world_a.slug}", f"/worlds/switch/{seed.world_b.slug}?next=/facts", f"/worlds/switch/{seed.world_a.slug}?next=//evil",
+              f"/worlds/switch/{seed.world_a.slug}?next=/x%3Fy%3D1", "/worlds/switch/no-such-world"]
+    for chat in (False, True):
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_can_use_ai_chat = chat
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            signed = _signed_in(email, pw, seed.world_a.slug)
+            jar = {c.name: c.value for c in signed.cookies.jar}
+            for u in [f"/api/entity/{i}/preview" for i in eids] + switch + ["/ai-chat"]:
+                d = httpx.Client(base_url=DIRECT, timeout=60, cookies=jar)
+                a = d.get(u, follow_redirects=False)
+                b = httpx.Client(base_url=base, timeout=60, cookies=jar).get(u, follow_redirects=False)
+                d = httpx.Client(base_url=DIRECT, timeout=60, cookies=jar)
+                if u == "/ai-chat" and a.status_code == 200:
+                    assert _same_page(d, _via(d, base), u, email)
+                    continue
+                ta = a.json() if "json" in a.headers.get("content-type", "") else a.text
+                tb = b.json() if "json" in b.headers.get("content-type", "") else b.text
+                for t in (ta, tb):
+                    if isinstance(t, dict) and "body_html" in t:   # markdown2 vs pulldown-cmark whitespace (docs/RUST_PAGES.md)
+                        t["body_html"] = " ".join(t["body_html"].replace(" </", "</").split())
+                assert (a.status_code, a.headers.get("location"), a.headers.get("set-cookie"), ta) == \
+                       (b.status_code, b.headers.get("location"), b.headers.get("set-cookie"), tb), (email, u)
+                assert b.headers.get("x-nd-served-by") == "gateway", (email, u)
