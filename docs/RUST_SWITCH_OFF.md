@@ -39,6 +39,10 @@ them after each batch; the phase is done when both are empty and the steps below
   included. A time `datetime.fromisoformat` reads in one of its rarer forms (week dates, compact `20310504T1830`, an hour alone) and
   a path id FastAPI would coerce (`007`) still go to Python.
 
+- **Party page** (`pages` switch, rust/nd-gateway/src/idpages.rs `party_detail`, apis.rs `party_vitals`): `GET /parties/<id>` and
+  `GET /api/parties/<id>/vitals`, refusals included. A party of a world other than the player's active one, and member lists that are
+  not plain id lists, still go to Python.
+
 ### What has to wait for the switch itself
 
 Python keeps some saved settings in memory and reloads them only when its own handler saves them: the resource sizing

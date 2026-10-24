@@ -1852,3 +1852,68 @@ def test_settings_page_is_pythons(client, seed):
         a, b = player.get(url, follow_redirects=False), _via(player, base).get(url, follow_redirects=False)
         assert (a.status_code, a.text) == (b.status_code, b.text) and a.status_code == 403, url
     gm.post("/settings/resources", data={"res_image_workers": "", "res_render_slots": "", "res_memory_gb": ""}, follow_redirects=False)
+
+
+def test_party_page_is_pythons(client, seed):
+    """GET /parties/<id> built by the gateway: members (an N&D sheet and a custom-system one), companions (a hidden one, shown to the
+    GM and to the player it is shared with), loot (claimed and not), assigned quests (a GM-only one), the XP ledger, sessions, combats
+    and calendar events, conditions and the level-up digest - for the GM, a member player, a non-member player, a player of another
+    world (404), and a missing party."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import (CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate,
+                            entity_player_access)
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = db.query(SheetTemplate).filter(SheetTemplate.slug == "asterion").first()
+        vex = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id, level=3, xp=99999, current_hp=0,
+                              conditions_json=json.dumps(["Poisoned", " poisoned ", "Prone", 5]))
+        ash = PlayerCharacter(world_id=w, name="Ash", level=2, xp=10, current_hp=7, conditions_json=json.dumps(["Prone"]),
+                              sheet_template_id=tpl.id if tpl else None)
+        hidden = Entity(world_id=w, kind="character", name="Secret ally", visible_to_players=False)
+        shared = Entity(world_id=w, kind="creature", name="Shared hound", visible_to_players=False)
+        open_ = Entity(world_id=w, kind="character", name="Open guide")
+        db.add_all([vex, ash, hidden, shared, open_])
+        db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=shared.id, user_id=seed.player_a.id))
+        party = Party(world_id=w, name="Crew <1>", goals="Find **it**", notes="n",
+                      member_pc_ids_json=json.dumps([vex.id, ash.id]), member_entity_ids_json=json.dumps([hidden.id, shared.id, open_.id, 999999]),
+                      loot_json=json.dumps([{"lid": "a", "name": "Gem", "qty": 2, "notes": "", "claimed_by": [vex.id]},
+                                            {"lid": "b", "name": "Rope", "qty": 1, "notes": "50 ft", "claimed_by": []}]),
+                      xp_json=json.dumps([{"amount": 100, "ts": "2026-01-02T03:04:05", "awarded": {"Vex": 100}, "session_id": None},
+                                          {"amount": 50, "ts": "2026-02-02T00:00:00", "awarded": "all"}]))
+        empty = Party(world_id=w, name="Nobody")
+        db.add_all([party, empty])
+        db.flush()
+        db.add_all([GameSession(world_id=w, session_num=4, title="Four", party_id=party.id),
+                    GameSession(world_id=w, session_num=5, title="Five", party_id=party.id),
+                    CombatSession(world_id=w, name="Ambush", party_id=party.id),
+                    CalendarEvent(world_id=w, title="Festival", day=12, party_id=party.id),
+                    Quest(world_id=w, title="Open quest", assigned_party_id=party.id),
+                    Quest(world_id=w, title="GM quest", assigned_party_id=party.id, visible_to_players=False)])
+        other = Party(world_id=seed.world_b.id, name="Elsewhere")
+        db.add(other)
+        db.commit()
+        ids = (party.id, empty.id, other.id)
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for pid in ids + (999999,):
+            url = f"/parties/{pid}"
+            a, b = d.get(url, follow_redirects=False), via.get(url, follow_redirects=False)
+            if a.status_code != 200:
+                assert (a.status_code, a.text) == (b.status_code, b.text), (email, url)
+                served += b.headers.get("x-nd-served-by") == "gateway"
+                continue
+            served += _same_page(d, via, url, email)
+            v = f"/api/parties/{pid}/vitals"
+            a, b = d.get(v), via.get(v)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, v)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, v)
+    assert served == 12, served

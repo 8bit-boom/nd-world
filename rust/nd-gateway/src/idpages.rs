@@ -28,6 +28,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/quests/", "", quest_detail),
     ("/entity/", "/edit", entity_edit),
     ("/sessions/", "", session_detail),
+    ("/parties/", "", party_detail),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -495,4 +496,175 @@ pub fn refusal(status: u16) -> Response<Body> {
     let phrase = code.canonical_reason().unwrap_or("Error");
     Response::builder().status(code).header("content-type", "application/json").header("x-nd-served-by", "gateway")
         .body(Body::from(format!("{{\"detail\":\"{phrase}\"}}"))).unwrap()
+}
+
+/// The ids in a party's member list column when it is a list of plain ints (None: Python's `in_()` / `in` would read it its own way)
+pub(crate) fn party_ids(v: Option<&Value>) -> Option<Vec<i64>> {
+    match json_or_empty_list(v)? {
+        Value::Array(a) => a.iter().map(|x| x.as_i64()).collect(),
+        _ => None,
+    }
+}
+
+fn in_list(ids: &[i64]) -> String {
+    ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
+}
+
+/// `world_row_visible(request, db, world_id, section)` for a row of the active world; None for another world's row (Python's)
+pub(crate) fn row_world_visible(db: &Connection, p: &PageCtx, world_id: i64, section: &str) -> Option<(bool, Map<String, Value>)> {
+    let w = row(db, "SELECT * FROM worlds WHERE id = ?1", world_id);
+    if p.is_gm {
+        return Some((w.is_some(), w.unwrap_or_default()));
+    }
+    let active = p.world.as_ref().and_then(|a| a.get("id")).and_then(|v| v.as_i64());
+    let Some(w) = w else { return Some((false, Map::new())) };
+    let member = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [world_id, p.user_id], |_| Ok(())).is_ok();
+    if !member {
+        return Some((false, w));
+    }
+    if active != Some(world_id) {
+        return None; // the viewer's role is read for the active world; another world's row: Python's
+    }
+    Some((crate::pages::section_ok(p, Some(&w), section)?, w))
+}
+
+/// `GET /parties/<id>` (app/routers/parties.py `party_detail`)
+fn party_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(party) = row(db, "SELECT * FROM parties WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let wid = party.get("world_id")?.as_i64()?;
+    let (ok, pw) = row_world_visible(db, &p, wid, "parties")?;
+    if !ok {
+        return Some(refusal(404));
+    }
+    let gm = p.is_gm;
+    let pc_ids = party_ids(party.get("member_pc_ids_json"))?;
+    let raw_entity_ids = party_ids(party.get("member_entity_ids_json"))?;
+    let pcs: Vec<Map<String, Value>> = if pc_ids.is_empty() { vec![] } else {
+        rows(db, &format!("SELECT * FROM player_characters WHERE id IN ({}) AND ?1 IS NOT NULL ORDER BY id", in_list(&pc_ids)), 0)?
+            .into_iter().filter_map(|v| v.as_object().cloned()).collect()
+    };
+    let my_pc_ids: Vec<i64> = if gm { vec![] } else {
+        pcs.iter().filter(|pc| pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)).filter_map(|pc| pc.get("id")?.as_i64()).collect()
+    };
+    // deps.filter_visible_entities for a non-GM viewer
+    let vis = if gm { String::new() } else {
+        format!(" AND (entities.visible_to_players IS NOT 0 OR entities.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let visible_ids: Vec<i64> = if raw_entity_ids.is_empty() { vec![] } else {
+        rows(db, &format!("SELECT id FROM entities WHERE id IN ({}) AND world_id = ?1{vis} ORDER BY id", in_list(&raw_entity_ids)), wid)?
+            .iter().filter_map(|r| r.get("id")?.as_i64()).collect()
+    };
+    let entity_ids: Vec<i64> = if gm { raw_entity_ids.clone() } else { raw_entity_ids.iter().copied().filter(|i| visible_ids.contains(i)).collect() };
+    let member_entities = if visible_ids.is_empty() { vec![] } else {
+        rows(db, &format!("SELECT * FROM entities WHERE id IN ({}) AND ?1 IS NOT NULL ORDER BY id", in_list(&visible_ids)), 0)?
+    };
+    let all_pcs = rows(db, "SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name, id", wid)?;
+    let all_entities = rows(db, &format!(
+        "SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character', 'creature'){vis} ORDER BY name, id"), wid)?;
+    let quests = if gm {
+        rows(db, "SELECT * FROM quests WHERE assigned_party_id = ?1 ORDER BY id", id)?
+    } else if crate::pages::section_ok(&p, Some(&pw), "quests")? {
+        rows(db, "SELECT * FROM quests WHERE assigned_party_id = ?1 AND visible_to_players IS NOT 0 ORDER BY id", id)?
+    } else {
+        vec![]
+    };
+    let loot = crate::edits::load_loot(&party)?;
+    let vitals = crate::edits::member_vitals(db, &pcs, Some(4))?;
+    let vital_of = |pid: i64| vitals.iter().find(|v| v["id"].as_i64() == Some(pid));
+    let levelup_names: Vec<Value> = pcs.iter()
+        .filter(|pc| pc.get("id").and_then(|v| v.as_i64()).and_then(|i| vital_of(i)).map_or(false, |v| v["levelup"] == json!(true)))
+        .map(|pc| pc.get("name").cloned().unwrap_or(Value::Null)).collect();
+    let mut conds: Vec<(String, i64)> = vec![];
+    let mut downs = 0;
+    for v in &vitals {
+        if v["down"] == json!(true) {
+            downs += 1;
+        }
+        for c in v["conditions"].as_array()? {
+            let k = nd_render::text::py_strip(c.as_str()?).to_lowercase();
+            match conds.iter_mut().find(|x| x.0 == k) {
+                Some(x) => x.1 += 1,
+                None => conds.push((k, 1)),
+            }
+        }
+    }
+    conds.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut summary = conds.iter().map(|(n, c)| if *c > 1 { format!("{n}×{c}") } else { n.clone() }).collect::<Vec<_>>().join(", ");
+    if downs > 0 {
+        summary = if summary.is_empty() { format!("{downs} DOWN") } else { format!("{summary}, {downs} DOWN") };
+    }
+    let unclaimed = loot.iter().filter(|it| !it.get("claimed_by").map_or(false, |c| c.as_array().map_or(true, |a| !a.is_empty()))).count();
+    let can_sessions = crate::pages::section_ok(&p, Some(&pw), "sessions")?;
+    let sessions = if can_sessions { rows(db, "SELECT * FROM game_sessions WHERE party_id = ?1 ORDER BY session_num DESC, id", id)? } else { vec![] };
+    let combats = if crate::pages::section_ok(&p, Some(&pw), "combat")? {
+        rows(db, "SELECT * FROM combat_sessions WHERE party_id = ?1 ORDER BY created_at DESC, id", id)?
+    } else { vec![] };
+    let events = if crate::pages::section_ok(&p, Some(&pw), "calendar")? {
+        rows(db, "SELECT * FROM calendar_events WHERE party_id = ?1 ORDER BY day DESC, id", id)?
+    } else { vec![] };
+    // _party_edit_level
+    let edit_level = if crate::pages::edit_level(&p, &pw, "parties")? {
+        if gm || p.role.as_deref() == Some("assistant") {
+            "full"
+        } else if pc_ids.is_empty() {
+            "none"
+        } else {
+            let owners = rows(db, &format!("SELECT owner_user_id FROM player_characters WHERE id IN ({}) AND ?1 IS NOT NULL", in_list(&pc_ids)), 0)?;
+            if owners.iter().any(|o| o.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) { "member" } else { "none" }
+        }
+    } else {
+        "none"
+    };
+    let xp = match json_or_empty_list(party.get("xp_json"))? {
+        Value::Array(mut a) => {
+            a.reverse();
+            a
+        }
+        _ => return None,
+    };
+    let mut short_rest = false;
+    let mut seen_tpl: Vec<i64> = vec![];
+    for pc in &pcs {
+        let Some(tid) = pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0) else { continue };
+        if seen_tpl.contains(&tid) {
+            continue;
+        }
+        seen_tpl.push(tid);
+        if let Some(t) = row(db, "SELECT * FROM sheet_templates WHERE id = ?1", tid) {
+            short_rest |= crate::sheets::Tpl::load(t)?.has_short_rest();
+        }
+    }
+    let mut names = Map::new();
+    for pc in &pcs {
+        names.insert(pc.get("id")?.as_i64()?.to_string(), pc.get("name").cloned().unwrap_or(Value::Null));
+    }
+    let mut by_id = Map::new();
+    for v in &vitals {
+        by_id.insert(v["id"].as_i64()?.to_string(), v.clone());
+    }
+    let c = &mut p.ctx;
+    c.insert("party".into(), Value::Object(party));
+    c.insert("member_pcs".into(), Value::Array(pcs.into_iter().map(Value::Object).collect()));
+    c.insert("member_entities".into(), Value::Array(member_entities));
+    c.insert("all_pcs".into(), Value::Array(all_pcs));
+    c.insert("all_entities".into(), Value::Array(all_entities));
+    c.insert("assigned_quests".into(), Value::Array(quests));
+    c.insert("loot".into(), Value::Array(loot.into_iter().map(Value::Object).collect()));
+    c.insert("pc_ids".into(), json!(pc_ids));
+    c.insert("entity_ids".into(), json!(entity_ids));
+    c.insert("edit_level".into(), json!(edit_level));
+    c.insert("member_names".into(), json!({"__intkeys__": names}));
+    c.insert("my_pc_ids".into(), json!(my_pc_ids));
+    c.insert("member_vitals".into(), Value::Array(vitals));
+    c.insert("vitals_by_id".into(), json!({"__intkeys__": by_id}));
+    c.insert("xp_ledger".into(), Value::Array(xp));
+    c.insert("history_sessions".into(), Value::Array(sessions));
+    c.insert("history_combats".into(), Value::Array(combats));
+    c.insert("history_events".into(), Value::Array(events));
+    c.insert("can_view_sessions".into(), json!(can_sessions));
+    c.insert("levelup_names".into(), Value::Array(levelup_names));
+    c.insert("condition_summary".into(), json!(summary));
+    c.insert("unclaimed_loot".into(), json!(unclaimed));
+    c.insert("short_rest_available".into(), json!(short_rest));
+    render_with(pages, "parties/detail.html", p.ctx, headers)
 }

@@ -298,6 +298,11 @@ impl Tpl {
         Some(self.tracks(cf, false)?.into_iter().find(|t| t["id"] == json!(hp)))
     }
 
+    /// `has_short_rest(tpl)`: the built-in system defines a Short Rest distinct from its Rest
+    pub fn has_short_rest(&self) -> bool {
+        truthy(self.spec.get("rest").and_then(|r| r.get("short")))
+    }
+
     /// `rest_ops(tpl, kind)`: the Rest rules of this kind (a system with one Rest lists it as "long")
     pub fn rest_ops(&self, kind: &str) -> Vec<Value> {
         let rest = self.spec.get("rest").and_then(|r| r.as_object());
