@@ -3085,7 +3085,7 @@ fn py_num(v: Option<&Value>, default: PyNum) -> Option<PyNum> {
 }
 
 /// `char_extras.carry_info(db, pc)` for the equipment list `equipment`
-fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[Value]) -> Option<Value> {
+pub(crate) fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[Value]) -> Option<Value> {
     // used += float(weight or 0) * float(1 if qty is None else qty); an item float() refuses is skipped
     let mut used = 0.0f64;
     for it in equipment {
@@ -10015,7 +10015,7 @@ pub(crate) fn combat_ai_roster(cs: Map<String, Value>) -> Option<(Vec<String>, S
 }
 
 /// An encounter as the turn helpers read it
-struct Fight {
+pub(crate) struct Fight {
     cs: Map<String, Value>,
     combatants: Vec<Value>,
     rules: Value,
@@ -10155,7 +10155,7 @@ fn short_name(c: &Value) -> Option<String> {
 }
 
 /// `_combat_now(db, pc)` for the encounter `f` holding the character at `mine`
-fn hub_combat_now(f: &Fight, pc_id: i64, mine: usize) -> Option<Value> {
+pub(crate) fn hub_combat_now(f: &Fight, pc_id: i64, mine: usize) -> Option<Value> {
     let me = &f.combatants[mine];
     let my_init = turn_num(me.get("initiative"))?;
     let mut out = Map::new();
@@ -10226,8 +10226,13 @@ fn hub_owned_pc(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
 
 /// `_pc_encounter`: the freshest encounter of the last 12 hours with this character in it, and its place there
 fn hub_encounter(c: &Ctx, pc: &Map<String, Value>) -> Option<Option<(Fight, usize)>> {
+    hub_encounter_db(&c.db, pc)
+}
+
+/// `_pc_encounter`: the live encounter (touched in the last 12 hours, newest first) this character is in, and its place there
+pub(crate) fn hub_encounter_db(db: &Connection, pc: &Map<String, Value>) -> Option<Option<(Fight, usize)>> {
     let since = orm::stamp_after(-12 * 3600);
-    let mut st = c.db.prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND updated_at >= ?2 ORDER BY updated_at DESC LIMIT 8").ok()?;
+    let mut st = db.prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND updated_at >= ?2 ORDER BY updated_at DESC LIMIT 8").ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map(rusqlite::params![pc.get("world_id")?.as_i64()?, since], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     let pid = pc.get("id")?.as_i64()?;
     for cs in rows {
@@ -10549,6 +10554,11 @@ fn hub_handouts_seen(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 /// `_place_rows(world)`: the ids of the pages this world offers players (the navigation bar's visibility, as the PLAYER role)
 fn hub_place_ids(w: &Map<String, Value>) -> Option<Vec<String>> {
+    Some(hub_places(w)?.into_iter().filter_map(|(_, r)| r.get("id")?.as_str().map(str::to_string)).collect())
+}
+
+/// `_place_rows(world)`: [(group, {id, label, icon, href})] for every page the world offers players
+pub(crate) fn hub_places(w: &Map<String, Value>) -> Option<Vec<(&'static str, Value)>> {
     const SKIP: [&str; 7] = ["characters", "cockpit", "schedule", "androidapp", "character_sheets", "editor", "studio_console"];
     let wtext = |k: &str| w.get(k).and_then(|v| v.as_str());
     let mut out = vec![];
@@ -10572,7 +10582,11 @@ fn hub_place_ids(w: &Map<String, Value>) -> Option<Vec<String>> {
                 continue;
             }
         }
-        out.push(id.to_string());
+        let href = item.get("href")?.as_str()?;
+        let slug = w.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+        let href = format!("{href}{}w={slug}", if href.contains('?') { "&" } else { "?" });
+        out.push((if id.starts_with("kind_") { "kinds" } else { "tools" },
+            json!({"id": id, "label": item.get("label"), "icon": item.get("icon"), "href": href})));
     }
     Some(out)
 }

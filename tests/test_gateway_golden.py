@@ -2521,3 +2521,50 @@ def test_picker_and_party_summary_are_pythons(client, seed):
                 assert b.headers.get("x-nd-served-by") == "gateway"
                 continue
             assert _same_page(d, _via(d, base), u, email), (email, u)
+
+
+def test_hub_now_is_pythons(client, seed):
+    """GET /api/characters/<id>/hub/now from the gateway: an N&D character (carry, Shock) and a custom-system one, for the owner and a GM
+    looking in, with the next confirmed game night and the owner's answer, an open poll, pinned pages, companions and new handouts."""
+    from datetime import datetime, timedelta
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import (CharacterCompanion, CharacterPref, PlayerCharacter, SessionPlan, SessionPlanSlot, SessionPlanVote, SheetTemplate,
+                            WorldHandout)
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom").first()
+        a = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id, current_hp=4, shock_current=2,
+                            stats_json=json.dumps([{"id": "str", "value": 3}, {"id": "bod", "value": 2}]),
+                            equipment_json=json.dumps([{"name": "Pack", "weight": 2.5, "qty": 2}, {"name": "x", "weight": "a"}]),
+                            conditions_json=json.dumps(["Prone"] * 14 + [3]))
+        b = PlayerCharacter(world_id=w, name="Ash", owner_user_id=seed.player_a.id, sheet_template_id=tpl.id if tpl else None)
+        db.add_all([a, b])
+        db.flush()
+        db.add_all([CharacterCompanion(character_id=a.id, world_id=w, name="Rex", kind="beast", hp=3, hp_max=5),
+                    CharacterPref(character_id=a.id, world_id=w, prefs_json=json.dumps({"pins": ["dice", "nope", "kind_character"], "handouts_seen": 0})),
+                    WorldHandout(world_id=w, url="/uploads/h.png")])
+        plan = SessionPlan(world_id=w, title="Next night", location="Mo's", status="confirmed", duration_min=120)
+        poll = SessionPlan(world_id=w, title="Poll", status="open")
+        db.add_all([plan, poll])
+        db.flush()
+        start = (datetime.utcnow() + timedelta(days=3)).replace(second=0, microsecond=0)
+        s1 = SessionPlanSlot(plan_id=plan.id, world_id=w, starts_at=start)
+        s2 = SessionPlanSlot(plan_id=poll.id, world_id=w, starts_at=start + timedelta(days=7))
+        db.add_all([s1, s2])
+        db.flush()
+        plan.confirmed_slot_id = s1.id
+        db.add(SessionPlanVote(plan_id=plan.id, slot_id=s1.id, world_id=w, user_id=seed.player_a.id, choice="yes"))
+        db.commit()
+        ids = (a.id, b.id)
+    finally:
+        db.close()
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for i in ids:
+            u = f"/api/characters/{i}/hub/now"
+            ra, rb = d.get(u), _via(d, base).get(u)
+            assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, u)
+            assert rb.headers.get("x-nd-served-by") == "gateway", (email, u)

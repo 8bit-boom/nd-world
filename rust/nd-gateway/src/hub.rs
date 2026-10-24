@@ -19,7 +19,7 @@ fn route(path: &str) -> Option<(&str, i64)> {
     if id.is_empty() || id.len() > 15 || !id.bytes().all(|b| b.is_ascii_digit()) || (id.len() > 1 && id.starts_with('0')) {
         return None;
     }
-    matches!(tab, "quests" | "world").then(|| Some((tab, id.parse().ok()?)))?
+    matches!(tab, "quests" | "world" | "now").then(|| Some((tab, id.parse().ok()?)))?
 }
 
 pub fn serves(path: &str) -> bool {
@@ -71,6 +71,7 @@ pub fn get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body
     }
     let out = match tab {
         "quests" => quests(&db, &pc, &world)?,
+        "now" => now_strip(&db, &pc, &world, is_owner, p.user_id)?,
         _ => known_world(&db, &p, uri, &pc, &world, is_owner)?,
     };
     crate::edits::json_response(&out)
@@ -175,4 +176,120 @@ fn known_world(db: &Connection, p: &PageCtx, uri: &Uri, pc: &Map<String, Value>,
         }).collect()
     };
     Some(json!({"q": term, "revealed": out(revealed)?, "recent": out(recent)?, "results": out(results)?}))
+}
+
+
+/// `next_confirmed(db, world)`: (plan, slot) of the next confirmed session that has not ended yet
+fn next_confirmed(db: &Connection, wid: i64) -> Option<Option<(Map<String, Value>, Map<String, Value>)>> {
+    let now = crate::schedule::now_micros();
+    let mut best: Option<(Map<String, Value>, Map<String, Value>, i64)> = None;
+    for plan in rows(db, "SELECT * FROM session_plans WHERE world_id = ?1 AND status = 'confirmed' ORDER BY id", &[&wid])? {
+        let Some(sid) = int(&plan, "confirmed_slot_id").filter(|i| *i != 0) else { continue };
+        let Some(slot) = rows(db, "SELECT * FROM session_plan_slots WHERE id = ?1", &[&sid])?.into_iter().next() else { continue };
+        if int(&slot, "plan_id") != int(&plan, "id") {
+            continue;
+        }
+        let start = crate::schedule::stored(slot.get("starts_at"))?;
+        let dur = int(&plan, "duration_min").filter(|d| *d != 0).unwrap_or(180);
+        if start + dur * 60_000_000 < now {
+            continue;
+        }
+        if best.as_ref().map_or(true, |b| start < b.2) {
+            best = Some((plan, slot, start));
+        }
+    }
+    Some(best.map(|(p, s, _)| (p, s)))
+}
+
+/// `polls_waiting(db, world, user)`: open polls with slots where this person has not answered any
+fn polls_waiting(db: &Connection, wid: i64, uid: i64) -> Option<i64> {
+    let mut n = 0;
+    for plan in rows(db, "SELECT id FROM session_plans WHERE world_id = ?1 AND status = 'open' ORDER BY id", &[&wid])? {
+        let pid = int(&plan, "id")?;
+        let slots: i64 = db.query_row("SELECT count(*) FROM session_plan_slots WHERE plan_id = ?1", [pid], |r| r.get(0)).ok()?;
+        if slots == 0 {
+            continue;
+        }
+        let answered = db.query_row("SELECT 1 FROM session_plan_votes WHERE user_id = ?1 AND slot_id IN (SELECT id FROM session_plan_slots WHERE plan_id = ?2) LIMIT 1",
+            [uid, pid], |_| Ok(())).is_ok();
+        if !answered {
+            n += 1;
+        }
+    }
+    Some(n)
+}
+
+/// `hub_now`: the strip over every hub tab - the character's live vitals, the live encounter, the next game night, rests, new handouts,
+/// pinned pages, companions and polls waiting
+fn now_strip(db: &Connection, pc: &Map<String, Value>, world: &Map<String, Value>, is_owner: bool, user_id: i64) -> Option<Value> {
+    let pid = int(pc, "id")?;
+    let wid = int(world, "id")?;
+    let v = crate::edits::member_vitals(db, std::slice::from_ref(pc), None)?.into_iter().next()?;
+    let (_, shock, _, _, native) = crate::edits::pc_maxima(db, pc)?;
+    let conds: Vec<Value> = match serde_json::from_str::<Value>(pc.get("conditions_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(a)) => a.into_iter().filter(|c| c.is_string()).take(12).collect(),
+        Ok(Value::Object(_)) => return None, // iterating a dict: Python's own reading
+        _ => vec![],
+    };
+    let carry = if native {
+        let eq = match serde_json::from_str::<Value>(pc.get("equipment_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")) {
+            Ok(Value::Array(a)) => a,
+            Ok(_) => vec![],
+            Err(_) => return None,
+        };
+        crate::edits::carry_info(db, pc, &eq)?
+    } else { Value::Null };
+    let resources: Vec<Value> = v["resources"].as_array()?.iter().filter(|r| r["id"] != v["hp_id"]).cloned().collect();
+    let me = json!({"id": pid, "name": pc.get("name"), "native": v["native"], "system": v["system"], "hp": v["hp"], "max_hp": v["max_hp"],
+        "hp_label": v["hp_label"], "temp_hp": v["temp_hp"], "down": v["down"],
+        "shock": if native { json!(pc.get("shock_current").and_then(|x| x.as_i64()).unwrap_or(0)) } else { Value::Null },
+        "shock_max": if native { json!(shock) } else { Value::Null }, "conditions": conds, "carry": carry, "hp_id": v["hp_id"],
+        "levelup": v["levelup"] == json!(true), "resources": resources});
+    let asker = int(pc, "owner_user_id").filter(|o| *o != 0).unwrap_or(user_id);
+    let next_session = match next_confirmed(db, wid)? {
+        Some((plan, slot)) => {
+            let mine = rows(db, "SELECT choice FROM session_plan_votes WHERE slot_id = ?1 AND user_id = ?2 ORDER BY id LIMIT 1", &[&int(&slot, "id")?, &asker])?;
+            let start = crate::schedule::stored(slot.get("starts_at"))?;
+            let secs = start.div_euclid(1_000_000);
+            let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
+            let r = secs.rem_euclid(86400);
+            json!({"title": plan.get("title"), "location": text(&plan, "location"),
+                "starts_at": format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", r / 3600, r % 3600 / 60, r % 60),
+                "my": mine.first().and_then(|x| x.get("choice").cloned())})
+        }
+        None => Value::Null,
+    };
+    let combat = match crate::edits::hub_encounter_db(db, pc)? {
+        Some((f, i)) => crate::edits::hub_combat_now(&f, pid, i)?,
+        None => Value::Null,
+    };
+    let prefs = crate::edits::pc_prefs(db, pid)?;
+    // _rest_kinds
+    let rest_kinds: Vec<&str> = if !is_owner { vec![] } else if native { vec!["long"] } else {
+        match crate::sheets::pc_template(db, pc)? {
+            Some(t) => ["short", "long"].into_iter().filter(|k| !t.rest_ops(k).is_empty()).collect(),
+            None => vec![],
+        }
+    };
+    let handouts_new = if is_owner {
+        let seen = match prefs.get("handouts_seen") {
+            None | Some(Value::Null) => 0,
+            Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+            Some(Value::Bool(b)) => *b as i64,
+            _ => return None, // int() of text / a float: Python's
+        };
+        db.query_row("SELECT count(*) FROM world_handouts WHERE world_id = ?1 AND id > ?2", [wid, seen], |r| r.get::<_, i64>(0)).ok()?
+    } else { 0 };
+    let places = crate::edits::hub_places(world)?;
+    let pins: Vec<Value> = match prefs.get("pins") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(a)) => a.iter().filter_map(|i| places.iter().find(|(_, r)| r.get("id") == Some(i)).map(|(_, r)| r.clone())).collect(),
+        Some(_) => return None,
+    };
+    let companions: Vec<Value> = rows(db, "SELECT * FROM character_companions WHERE character_id = ?1 ORDER BY id", &[&pid])?.iter().map(|c| json!({
+        "id": c.get("id"), "name": c.get("name"), "kind": c.get("kind"), "hp": int(c, "hp").unwrap_or(0), "hp_max": int(c, "hp_max").unwrap_or(0),
+        "notes": text(c, "notes")})).collect();
+    Some(json!({"me": me, "can_edit": is_owner, "combat": combat, "next_session": next_session, "rest_kinds": rest_kinds,
+        "handouts_new": handouts_new, "pins": pins, "companions": companions, "polls_waiting": polls_waiting(db, wid, asker)?,
+        "schedule_href": with_world("/schedule", world)}))
 }

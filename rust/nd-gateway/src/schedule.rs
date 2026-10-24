@@ -50,7 +50,7 @@ fn parts(t: i64) -> (i64, i64, i64, i64, i64, i64, i64) {
 }
 
 /// a stored naive-UTC DateTime ("2026-05-04 18:30:00.000000") as epoch microseconds
-fn stored(v: Option<&Value>) -> Option<i64> {
+pub(crate) fn stored(v: Option<&Value>) -> Option<i64> {
     // a DATETIME column comes out of crate::layout::row_map as {"__dt__": text}
     let v = v?;
     let raw = v.get("__dt__").unwrap_or(v).as_str()?;
@@ -70,7 +70,7 @@ fn iso(t: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
-fn now_micros() -> i64 {
+pub(crate) fn now_micros() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0)
 }
 
