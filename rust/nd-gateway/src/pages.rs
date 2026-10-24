@@ -649,33 +649,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id])?;
     let notes_vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
     let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id])?;
-    // the autolink names: every other entity of the entity's world the viewer may see, names then aliases, then derived variants
-    let mut names: Vec<(String, i64)> = vec![];
-    {
-        let mut st = db.prepare(&format!("SELECT e.id, e.name, e.aliases FROM entities e WHERE e.world_id = ?1 AND e.id != ?2 AND {vis} ORDER BY e.id")).ok()?;
-        let r: Vec<(i64, Option<String>, Option<String>)> = st.query_map([ewid, id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-        let mut add = |n: String, i: i64| {
-            if !names.iter().any(|(k, _)| *k == n) {
-                names.push((n, i));
-            }
-        };
-        for (eid, name, aliases) in &r {
-            if let Some(n) = name.as_ref().filter(|n| !n.is_empty()) {
-                add(n.clone(), *eid);
-            }
-            for a in aliases.as_deref().unwrap_or("").split(',') {
-                let a = text::py_strip(a);
-                if !a.is_empty() {
-                    add(a.to_string(), *eid);
-                }
-            }
-        }
-        for (eid, name, _) in &r {
-            for v in text::derive_name_variants(name.as_deref().unwrap_or("")) {
-                add(v, *eid);
-            }
-        }
-    }
+    let names = autolink_names(&db, ewid, Some(id), &vis)?;
     for n in notes.iter_mut() {
         let content = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let content = if is_gm { content } else { strip(&content)? };
@@ -1902,4 +1876,94 @@ pub fn ai_chat_player(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
     let text = crate::retrieval::instructions_text(&db, w.get("id")?.as_i64()?, !p.is_gm)?;
     p.ctx.insert("ai_custom_instructions".into(), json!(text));
     render_with(pages, "ai_chat_player.html", p.ctx, headers)
+}
+
+
+/// `_autolink_name_map(db, world, request, exclude)`: (name, entity id) for every entity of the world the viewer may see (`vis`: the
+/// visibility condition on `e`), names then aliases, then the derived short forms - a real name always wins over a derived one
+pub(crate) fn autolink_names(db: &rusqlite::Connection, wid: i64, exclude: Option<i64>, vis: &str) -> Option<Vec<(String, i64)>> {
+    use nd_render::text;
+    let mut names: Vec<(String, i64)> = vec![];
+    let mut st = db.prepare(&format!("SELECT e.id, e.name, e.aliases FROM entities e WHERE e.world_id = ?1 AND e.id != ?2 AND {vis} ORDER BY e.id")).ok()?;
+    let r: Vec<(i64, Option<String>, Option<String>)> = st.query_map([wid, exclude.unwrap_or(-1)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut add = |n: String, i: i64| {
+        if !names.iter().any(|(k, _)| *k == n) {
+            names.push((n, i));
+        }
+    };
+    for (eid, name, aliases) in &r {
+        if let Some(n) = name.as_ref().filter(|n| !n.is_empty()) {
+            add(n.clone(), *eid);
+        }
+        for a in aliases.as_deref().unwrap_or("").split(',') {
+            let a = text::py_strip(a);
+            if !a.is_empty() {
+                add(a.to_string(), *eid);
+            }
+        }
+    }
+    for (eid, name, _) in &r {
+        for v in text::derive_name_variants(name.as_deref().unwrap_or("")) {
+            add(v, *eid);
+        }
+    }
+    Some(names)
+}
+
+/// (world id, player id) of `/worlds/<w>/notes/<u>`
+pub fn notes_path(path: &str) -> Option<(i64, i64)> {
+    let rest = path.strip_prefix("/worlds/")?;
+    let (w, u) = rest.split_once("/notes/")?;
+    let ok = |d: &str| !d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'));
+    (ok(w) && ok(u)).then(|| Some((w.parse().ok()?, u.parse().ok()?)))?
+}
+
+/// `GET /worlds/<w>/notes/<u>` (app/main.py `private_notes_view`): the GM's private notes to one player, newest first, for the GM or
+/// that player
+pub fn private_notes(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let (wid, uid) = notes_path(uri.path())?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Ok(w) = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)) else { return Some(crate::idpages::refusal(404)) };
+    let gm = p.is_gm;
+    if !gm {
+        let member = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_ok();
+        if p.user_id != uid || !member {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let Ok(target) = db.query_row("SELECT * FROM users WHERE id = ?1", [uid], |r| crate::layout::row_map(r)) else { return Some(crate::idpages::refusal(404)) };
+    let mut st = db.prepare("SELECT * FROM private_notes WHERE world_id = ?1 AND player_user_id = ?2 ORDER BY created_at DESC, id").ok()?;
+    let mut notes = st.query_map([wid, uid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let vis = if gm { "1".to_string() } else {
+        format!("(e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let names = autolink_names(&db, wid, None, &vis)?;
+    let mut toc = vec![];
+    for n in notes.iter_mut() {
+        let content = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let content = if gm { content } else { nd_perm::gmonly::strip_gm_only(&content, None, nd_render::now_minute())? };
+        n.insert("content_html".into(), json!(nd_render::text::autolink_entities(&nd_render::md::render_md(&content), &names)?));
+        // _note_toc_label
+        let title = nd_render::text::py_strip(n.get("title").and_then(|v| v.as_str()).unwrap_or("")).to_string();
+        let label = if !title.is_empty() { title } else {
+            let raw = n.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let first = nd_render::text::py_splitlines(raw).into_iter().map(nd_render::text::py_strip).find(|l| !l.is_empty()).unwrap_or("").to_string();
+            let first = nd_render::text::py_strip(first.trim_start_matches(|c: char| matches!(c, '#' | '>' | '*' | '-') || c.is_whitespace())).to_string();
+            if first.is_empty() { "Untitled note".to_string() } else {
+                let chars: Vec<char> = first.chars().collect();
+                if chars.len() > 60 { chars[..60].iter().collect::<String>() + "…" } else { first }
+            }
+        };
+        toc.push(json!({"id": format!("note-{}", n.get("id")?.as_i64()?), "text": label}));
+    }
+    let c = &mut p.ctx;
+    c.insert("world".into(), Value::Object(w));
+    c.insert("target_user".into(), Value::Object(target));
+    c.insert("notes".into(), Value::Array(notes.into_iter().map(Value::Object).collect()));
+    c.insert("can_manage".into(), json!(gm));
+    c.insert("toc".into(), Value::Array(toc));
+    render_with(pages, "private_notes.html", p.ctx, headers)
 }

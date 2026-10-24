@@ -2618,3 +2618,32 @@ def test_hub_schedule_is_pythons(client, seed):
             for d in (gm,):
                 a, b = d.get(f"/api/characters/{pid}/hub/schedule"), _via(d, base).get(f"/api/characters/{pid}/hub/schedule")
                 assert a.json() == b.json()
+
+
+def test_private_notes_page_is_pythons(client, seed):
+    """GET /worlds/<w>/notes/<u> from the gateway: the GM's notes to one player (autolinked entity names, a hidden one only for the GM,
+    [gmonly] stripped for the player, the contents labels), for the GM, that player, another player (403), a missing world or user."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, PrivateNote
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="character", name="Edmund Vosk", aliases="Vosk"), Entity(world_id=w, kind="item", name="Blade of Night", visible_to_players=False),
+                    PrivateNote(world_id=w, player_user_id=seed.player_a.id, title="", content="## Recap\nMet Vosk; the Blade of Night [gmonly]is cursed[/gmonly]."),
+                    PrivateNote(world_id=w, player_user_id=seed.player_a.id, title="Clue", content="Edmund Vosk lied."),
+                    PrivateNote(world_id=w, player_user_id=seed.player_a.id, title=" ", content="   \n> " + "x" * 70)])
+        db.commit()
+    finally:
+        db.close()
+    urls = [f"/worlds/{w}/notes/{seed.player_a.id}", f"/worlds/{w}/notes/{seed.player_b.id}", f"/worlds/999999/notes/{seed.player_a.id}", f"/worlds/{w}/notes/999999"]
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for u in urls:
+            a, b = d.get(u, follow_redirects=False), _via(d, base).get(u, follow_redirects=False)
+            if a.status_code != 200:
+                assert (a.status_code, a.text) == (b.status_code, b.text), (email, u)
+                assert b.headers.get("x-nd-served-by") == "gateway", (email, u)
+                continue
+            assert _same_page(d, _via(d, base), u, email), (email, u)
