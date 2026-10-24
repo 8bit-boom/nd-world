@@ -2299,3 +2299,40 @@ def test_party_roster_is_pythons(client, seed):
                     assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
                     continue
                 assert _same_page(d, _via(d, base), url, email), (email, url)
+
+
+def test_small_reads_are_pythons(client, seed):
+    """Small JSON reads and the calendar jump from the gateway: /api/me, /api/view-prefs, /api/dice/history, /api/display/state,
+    /api/sessions/<id>/media and /calendar/event-jump - for the GM, a player and a player of another world, refusals included."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CalendarEvent, DiceRoll, GameSession, UserViewPref
+    base = str(client.base_url)
+    w = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    gm.get("/calendar")
+    gm.post("/api/display/show", json={"kind": "text", "text": "Hello <b>", "title": "T"})
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=w, session_num=12, title="Twelve")
+        db.add_all([gs, DiceRoll(world_id=w, user_name="GM", notation="2d6+1", label="hit", breakdown=json.dumps([{"t": 1}]), total=8),
+                    DiceRoll(world_id=w, user_name="P", notation="d20", breakdown="", total=3),
+                    CalendarEvent(world_id=w, day=5, title="Early"), CalendarEvent(world_id=w, day=500, title="Late"),
+                    UserViewPref(user_id=seed.player_a.id, section="images", prefs_json=json.dumps({"layout": "masonry", "junk": 1})),
+                    UserViewPref(user_id=seed.player_a.id, section="audio", prefs_json="{bad")])
+        db.commit()
+        sid = gs.id
+    finally:
+        db.close()
+    urls = ["/api/me", "/api/view-prefs", "/api/dice/history", "/api/display/state", f"/api/sessions/{sid}/media", "/api/sessions/999999/media",
+            "/calendar/event-jump?dir=next", "/calendar/event-jump?dir=prev&from=100", "/calendar/event-jump?dir=prev&from=1",
+            "/calendar/event-jump?dir=up", "/calendar/event-jump?dir=next&from=x", "/calendar/event-jump?dir=next&from=99999999"]
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        for u in urls:
+            a, b = d.get(u, follow_redirects=False), _via(d, base).get(u, follow_redirects=False)
+            ta = a.json() if "json" in a.headers.get("content-type", "") else a.text
+            tb = b.json() if "json" in b.headers.get("content-type", "") else b.text
+            assert (a.status_code, a.headers.get("location"), ta) == (b.status_code, b.headers.get("location"), tb), (email, u)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, u)

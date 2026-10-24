@@ -773,3 +773,47 @@ mod search_tests {
         assert_eq!(relative_days_label(400, 360, 12), "in 1 year, 1 month");
     }
 }
+
+
+/// `GET /calendar/event-jump` (app/routers/calendar.py `calendar_event_jump`): the month view at the next / previous event from a day
+pub fn event_jump(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Some(world) = p.world.clone() else { return Some(crate::idpages::refusal(404)) };
+    if !section_ok(&p, Some(&world), "calendar")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let cal = load(&db, wid)?;
+    let dir = query_param(uri, "dir");
+    let next = match dir.as_deref() {
+        Some("next") => true,
+        Some("prev") => false,
+        _ => return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "dir must be 'next' or 'prev'")),
+    };
+    let max_day = MAX_YEAR * year_len(&cal.months);
+    let frm = safe_int_param(query_param(uri, "from"), cal.current_day)?.clamp(1, max_day);
+    let sql = if next {
+        "SELECT day FROM calendar_events WHERE world_id = ?1 AND day > ?2 ORDER BY day, id LIMIT 1"
+    } else {
+        "SELECT day FROM calendar_events WHERE world_id = ?1 AND day < ?2 ORDER BY day DESC, id LIMIT 1"
+    };
+    let day: Option<i64> = match db.query_row(sql, [wid, frm], |r| r.get(0)) {
+        Ok(d) => Some(d),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(_) => return None,
+    };
+    let target = match day {
+        Some(d) => {
+            let (y, i, _) = resolve_date(&cal.months, d);
+            if d != 0 { format!("{}&day={d}", month_href(y, i)) } else { month_href(y, i) }
+        }
+        None => {
+            let (y, i, _) = resolve_date(&cal.months, frm);
+            format!("{}&none={}", month_href(y, i), if next { "next" } else { "prev" })
+        }
+    };
+    let loc = format!("{target}&w={}", world.get("slug")?.as_str()?);
+    Response::builder().status(303).header("location", loc).header("x-nd-served-by", "gateway").body(Body::empty()).ok()
+}

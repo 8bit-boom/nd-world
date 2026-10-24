@@ -14,6 +14,12 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
     match uri.path() {
         "/api/cockpit/workspace" => cockpit_workspace(&cfg, uri, headers),
         "/api/calendar/search" => crate::calendar::search_api(&cfg, uri, headers),
+        "/calendar/event-jump" => crate::calendar::event_jump(&cfg, uri, headers),
+        "/api/me" => me(&cfg, uri, headers),
+        "/api/view-prefs" => view_prefs(&cfg, uri, headers),
+        "/api/dice/history" => dice_history(&cfg, uri, headers),
+        "/api/display/state" => display_state(&cfg, uri, headers),
+        path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path => party_vitals(&cfg, uri, headers, vitals_id(path)?),
@@ -21,7 +27,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/cockpit/workspace" | "/api/calendar/search") || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
+    matches!(path, "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
+        || session_media_id(path).is_some() || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -261,4 +268,119 @@ fn content_pack(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64) -> Optio
         pack[bucket].as_array_mut()?.push(item);
     }
     crate::edits::json_response(&pack)
+}
+
+
+/// a plain-digits id between `prefix` and `suffix`, as FastAPI's int reads it here
+fn id_between(path: &str, prefix: &str, suffix: &str) -> Option<i64> {
+    let d = path.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
+}
+
+fn session_media_id(path: &str) -> Option<i64> {
+    id_between(path, "/api/sessions/", "/media")
+}
+
+fn page(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(rusqlite::Connection, crate::layout::PageCtx)> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    Some((db, p))
+}
+
+fn rows_of(db: &rusqlite::Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
+    let mut st = db.prepare(sql).ok()?;
+    let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    Some(r)
+}
+
+fn iso_of(v: Option<&Value>) -> Option<String> {
+    let raw = v?.get("__dt__").or(v)?.as_str()?;
+    Some(nd_render::pyvalue::PyDateTime::parse(raw)?.isoformat())
+}
+
+/// `api_me` (app/routers/characters.py): the signed-in person and their worlds with their characters there
+fn me(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let user = rows_of(&db, "SELECT id, email, is_gm FROM users WHERE id = ?1", &[&p.user_id])?.into_iter().next()?;
+    let worlds = if p.is_gm {
+        rows_of(&db, "SELECT * FROM worlds ORDER BY name, id", &[])?
+    } else {
+        rows_of(&db, "SELECT w.* FROM worlds w JOIN world_memberships m ON m.world_id = w.id WHERE m.user_id = ?1 ORDER BY w.name, m.id", &[&p.user_id])?
+    };
+    let mut list = vec![];
+    for w in worlds {
+        let wid = w.get("id")?.as_i64()?;
+        let mine: Vec<i64> = rows_of(&db, "SELECT id FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id", &[&wid, &p.user_id])?
+            .iter().filter_map(|r| r.get("id")?.as_i64()).collect();
+        let max = match w.get("max_characters_per_player") {
+            Some(Value::Number(n)) if n.as_i64().map_or(false, |v| v != 0) => n.as_i64()?.max(1),
+            None | Some(Value::Null) | Some(Value::Number(_)) => 1,
+            _ => return None,
+        };
+        list.push(json!({"id": wid, "name": w.get("name"), "slug": w.get("slug"), "character_id": mine.first(), "character_ids": mine, "max_characters": max}));
+    }
+    crate::edits::json_response(&json!({"user": {"id": user.get("id"), "email": user.get("email"), "is_gm": p.is_gm}, "worlds": list}))
+}
+
+/// `view_prefs_get`: {section: cleaned choice} for the signed-in person
+fn view_prefs(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let mut out = Map::new();
+    for r in rows_of(&db, "SELECT section, prefs_json FROM user_view_prefs WHERE user_id = ?1 ORDER BY id", &[&p.user_id])? {
+        let section = r.get("section")?.as_str()?.to_string();
+        let raw: Value = match serde_json::from_str(r.get("prefs_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        out.insert(section.clone(), nd_render::app::clean(&section, &raw)?);
+    }
+    crate::edits::json_response(&Value::Object(out))
+}
+
+/// `api_dice_history`: the active world's last 50 rolls, newest first
+fn dice_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world")) };
+    if !crate::pages::section_ok(&p, Some(w), "dice")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let mut rolls = vec![];
+    for r in rows_of(&db, "SELECT * FROM dice_rolls WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 50", &[&wid])? {
+        let breakdown: Value = serde_json::from_str(r.get("breakdown").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]")).ok()?;
+        rolls.push(json!({"id": r.get("id"), "user_name": r.get("user_name"), "notation": r.get("notation"),
+            "label": r.get("label").and_then(|v| v.as_str()).unwrap_or(""), "breakdown": breakdown, "total": r.get("total"),
+            "created_at": iso_of(r.get("created_at")).map(|t| format!("{t}Z"))}));
+    }
+    crate::edits::json_response(&json!({"rolls": rolls}))
+}
+
+/// `display_state`: the second screen's stage (shared_state "stage:<world>"), GM only
+fn display_state(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(w) = p.world.as_ref() else { return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "No world selected")) };
+    let wid = w.get("id")?.as_i64()?;
+    let raw: Option<String> = db.query_row("SELECT value FROM shared_state WHERE key = ?1", [format!("stage:{wid}")], |r| r.get(0)).ok().flatten();
+    let s = raw.and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| !v.is_null()).unwrap_or(json!({"seq": 0, "current": null, "recent": []}));
+    let s = s.as_object()?;
+    crate::edits::json_response(&json!({"seq": s.get("seq")?, "current": s.get("current")?, "recent": s.get("recent")?.as_array()?}))
+}
+
+/// `media_list`: the GM's session media panel, for a session of the active world the caller may edit Sessions in
+fn session_media(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    if !crate::pages::edit_level(&p, w, "sessions")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let owner: Option<i64> = db.query_row("SELECT world_id FROM game_sessions WHERE id = ?1", [id], |r| r.get(0)).ok();
+    if owner != Some(wid) {
+        return Some(crate::idpages::refusal(404));
+    }
+    crate::edits::json_response(&crate::edits::sm_panel_db(&db, id)?)
 }
