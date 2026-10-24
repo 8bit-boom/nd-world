@@ -2584,6 +2584,11 @@ fn pc_mp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     pc_pool(c, ids[0], "mp_current", "mp", "MP", 3, true, "mp_max")
 }
 
+/// XP_THRESHOLDS[level] for a level in 1..=19
+pub(crate) fn xp_threshold(level: i64) -> i64 {
+    XP_THRESHOLDS[level.clamp(0, 19) as usize]
+}
+
 const XP_THRESHOLDS: [i64; 20] = [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000,
                                   305000, 355000];
 
@@ -11370,7 +11375,7 @@ fn hub_entry_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 // ── the player cockpit (app/routers/cockpit.py _player_cockpit) ──
 
 /// `party_refs.member_ids`: the int ids of a JSON list column, bad data tolerated (a bool, which `isinstance(int)` takes: Python's)
-fn member_ids(raw: Option<&Value>) -> Option<Vec<i64>> {
+pub(crate) fn member_ids(raw: Option<&Value>) -> Option<Vec<i64>> {
     let raw = raw.and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
     Some(match serde_json::from_str::<Value>(raw) {
         Ok(Value::Array(a)) => {
@@ -11802,25 +11807,8 @@ fn list_col(pc: &Map<String, Value>, col: &str) -> Option<Vec<Value>> {
     }
 }
 
-/// The context of `characters/sheet.html` for an N&D character without a sheet template, viewed by someone who may see it; None for
-/// anything Python's own page would read its own way
-pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
-    let tpl = crate::sheets::pc_template(db, pc)?;
-    let pid = pc.get("id")?.as_i64()?;
-    let wid = pc.get("world_id")?.as_i64()?;
-    let owner = pc.get("owner_user_id").and_then(|v| v.as_i64());
-    let can_manage = p.is_gm || owner == Some(p.user_id);
-    if !can_manage {
-        // _can_view_character: a member of the character's world, the GM letting players see the party, an owned character
-        let see: Option<i64> = db.query_row("SELECT players_see_party FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
-        if see.unwrap_or(0) == 0 || owner.is_none() {
-            return None;
-        }
-    }
-    if let Some(t) = tpl.as_ref().filter(|t| t.custom()) {
-        return character_custom_sheet_ctx(db, p, pc, t, can_manage);
-    }
-    // _derived
+/// `_derived(pc)`: the N&D numbers the sheet and the roster cards show; None for anything Python's would read its own way (or fail on)
+pub(crate) fn derived(pc: &Map<String, Value>) -> Option<Map<String, Value>> {
     let stats = list_col(pc, "stats_json")?;
     let currency = list_col(pc, "currency_json")?;
     let equipment = list_col(pc, "equipment_json")?;
@@ -11875,7 +11863,6 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
     }
     let text = |k: &str| pc.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let mut ctx = Map::new();
-    ctx.insert("pc".into(), Value::Object(pc.clone()));
     ctx.insert("stats".into(), Value::Array(stats.clone()));
     ctx.insert("currency".into(), Value::Array(currency));
     ctx.insert("secondary".into(), json!({"name": "Shock", "max": shock_max, "current": col_int(pc, "shock_current")}));
@@ -11902,6 +11889,33 @@ pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map
     ctx.insert("mp_current".into(), json!(col_int(pc, "mp_current")));
     ctx.insert("minor_edge".into(), json!(text("minor_edge")));
     ctx.insert("major_edge".into(), json!(text("major_edge")));
+    Some(ctx)
+}
+
+/// The context of `characters/sheet.html` for an N&D character without a sheet template, viewed by someone who may see it; None for
+/// anything Python's own page would read its own way
+pub fn character_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let tpl = crate::sheets::pc_template(db, pc)?;
+    let pid = pc.get("id")?.as_i64()?;
+    let wid = pc.get("world_id")?.as_i64()?;
+    let owner = pc.get("owner_user_id").and_then(|v| v.as_i64());
+    let can_manage = p.is_gm || owner == Some(p.user_id);
+    if !can_manage {
+        // _can_view_character: a member of the character's world, the GM letting players see the party, an owned character
+        let see: Option<i64> = db.query_row("SELECT players_see_party FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
+        if see.unwrap_or(0) == 0 || owner.is_none() {
+            return None;
+        }
+    }
+    if let Some(t) = tpl.as_ref().filter(|t| t.custom()) {
+        return character_custom_sheet_ctx(db, p, pc, t, can_manage);
+    }
+    let mut ctx = derived(pc)?;
+    ctx.insert("pc".into(), Value::Object(pc.clone()));
+    let level = pc.get("level")?.as_i64()?;
+    let xp = pc.get("xp")?.as_i64()?;
+    let equipment = ctx.get("equipment")?.as_array()?.clone();
+    let stats = ctx.get("stats")?.as_array()?.clone();
     ctx.insert("chosen_template".into(), tpl.as_ref().map_or(Value::Null, |t| Value::Object(t.row.clone())));
     ctx.insert("tpl_fields".into(), match &tpl { Some(t) => Value::Array(t.enrich_fields()?), None => json!([]) });
     let cf_raw = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");

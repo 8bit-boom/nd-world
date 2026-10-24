@@ -1676,3 +1676,138 @@ pub fn schematic_masked_background(_pages: &Pages, cfg: &Config, uri: &Uri, head
         .body(Body::from(data))
         .ok()
 }
+
+/// `GET /characters` (app/routers/characters.py `characters_list`): the world's characters a viewer may see, searched and sorted, with
+/// the derived N&D numbers, custom-system tracks, party badges, owners (GM view) and level-up flags
+pub fn characters_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone();
+    if !section_ok(&p, world.as_ref(), "characters")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let user = db.query_row("SELECT * FROM users WHERE id = ?1", [p.user_id], |r| crate::layout::row_map(r)).ok()?;
+    let gm = p.is_gm;
+    let term = nd_render::text::py_strip(&query_param(uri, "q").unwrap_or_default()).to_string();
+    let sort = query_param(uri, "sort").unwrap_or_else(|| "name".into());
+    let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    let wid = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let mut pcs: Vec<Map<String, Value>> = vec![];
+    if let Some(wid) = wid {
+        let mut sql = "SELECT * FROM player_characters WHERE world_id = ?1".to_string();
+        if !gm {
+            let see = world.as_ref().and_then(|w| w.get("players_see_party")).map_or(false, |v| v.as_i64().unwrap_or(0) != 0);
+            sql += if see { " AND (owner_user_id = ?2 OR owner_user_id IS NOT NULL)" } else { " AND owner_user_id = ?2" };
+        } else {
+            sql += " AND ?2 IS NOT NULL";
+        }
+        if !term.is_empty() {
+            // ilike: lower() LIKE lower() (ASCII case folding in SQLite either way)
+            sql += " AND (lower(name) LIKE lower(?3) OR lower(char_class) LIKE lower(?3) OR lower(race) LIKE lower(?3) OR lower(player_name) LIKE lower(?3))";
+        } else {
+            sql += " AND ?3 IS NOT NULL";
+        }
+        sql += if sort == "level" { " ORDER BY level DESC, name, id" } else { " ORDER BY name, id" };
+        pcs = rows(&sql, &[&wid, &p.user_id, &format!("%{term}%")])?;
+        if sort == "hp" {
+            let mut keyed = vec![];
+            for pc in pcs {
+                let top = crate::edits::pc_maxima(&db, &pc)?.0;
+                let cur = pc.get("current_hp").and_then(|v| v.as_i64()).unwrap_or(0);
+                let f = if top != 0 { cur as f64 / top as f64 } else { f64::INFINITY };
+                keyed.push((f, pc));
+            }
+            keyed.sort_by(|a, b| {
+                let n = |m: &Map<String, Value>| m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then_with(|| n(&a.1).cmp(&n(&b.1)))
+            });
+            pcs = keyed.into_iter().map(|k| k.1).collect();
+        }
+    }
+    let tpls = rows("SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name, id", &[&wid])?;
+    let custom_ids: Vec<i64> = tpls.iter().filter(|t| t.get("sheet_mode").and_then(|v| v.as_str()) == Some("custom")).filter_map(|t| t.get("id")?.as_i64()).collect();
+    let mine = match (wid, gm) {
+        (Some(w), false) => rows("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id", &[&w, &p.user_id])?,
+        _ => vec![],
+    };
+    let my_ids: Vec<i64> = mine.iter().filter_map(|c| c.get("id")?.as_i64()).collect();
+    let limit = match world.as_ref().and_then(|w| w.get("max_characters_per_player")) {
+        Some(Value::Number(n)) if n.as_i64().map_or(false, |v| v != 0) => n.as_i64()?.max(1),
+        None | Some(Value::Null) | Some(Value::Number(_)) => 1,
+        _ => return None,
+    };
+    let can_create = gm || (mine.len() as i64) < limit;
+    let (mut pc_party, mut my_party) = (Map::new(), Value::Null);
+    if let Some(w) = wid {
+        for party in rows("SELECT * FROM parties WHERE world_id = ?1 ORDER BY id", &[&w])? {
+            let ids = crate::edits::member_ids(party.get("member_pc_ids_json"))?;
+            for i in &ids {
+                pc_party.entry(i.to_string()).or_insert_with(|| Value::Object(party.clone()));
+            }
+            if my_party.is_null() && my_ids.iter().any(|m| ids.contains(m)) {
+                my_party = Value::Object(party.clone());
+            }
+        }
+    }
+    let (mut derived, mut tracks, mut levelup, mut owners) = (Map::new(), Map::new(), vec![], Map::new());
+    let mut out = vec![];
+    for mut pc in pcs {
+        let id = pc.get("id")?.as_i64()?;
+        derived.insert(id.to_string(), Value::Object(crate::edits::derived(&pc)?));
+        let tid = pc.get("sheet_template_id").and_then(|v| v.as_i64());
+        let tpl = tid.and_then(|t| tpls.iter().find(|x| x.get("id").and_then(|v| v.as_i64()) == Some(t)));
+        if let (Some(t), true) = (tpl, tid.map_or(false, |t| custom_ids.contains(&t))) {
+            let mut tr = crate::sheets::Tpl::load(t.clone())?.tracks(&crate::sheets::custom_fields(&pc)?, true)?;
+            tr.truncate(4);
+            tracks.insert(id.to_string(), Value::Array(tr));
+        }
+        // _levelup_ready
+        let level = pc.get("level")?.as_i64()?;
+        let native = crate::edits::pc_maxima(&db, &pc)?.4;
+        if (1..20).contains(&level) && native && pc.get("xp")?.as_i64()? >= crate::edits::xp_threshold(level) {
+            levelup.push(id);
+        } else if level < 1 && native {
+            return None;
+        }
+        if gm {
+            if let Some(o) = pc.get("owner_user_id").and_then(|v| v.as_i64()).filter(|o| *o != 0) {
+                if let Ok(u) = db.query_row("SELECT * FROM users WHERE id = ?1", [o], |r| crate::layout::row_map(r)) {
+                    let dn = u.get("display_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| json!(s));
+                    owners.insert(o.to_string(), dn.unwrap_or_else(|| u.get("email").cloned().unwrap_or(Value::Null)));
+                }
+            }
+        }
+        // the sheet_template relationship (a template of any world: the row the id names)
+        let rel = match tid {
+            Some(t) => db.query_row("SELECT * FROM sheet_templates WHERE id = ?1", [t], |r| crate::layout::row_map(r)).ok().map(Value::Object).unwrap_or(Value::Null),
+            None => Value::Null,
+        };
+        pc.insert("sheet_template".into(), rel);
+        out.push(Value::Object(pc));
+    }
+    let c = &mut p.ctx;
+    c.insert("pcs".into(), Value::Array(out));
+    c.insert("derived".into(), json!({"__intkeys__": derived}));
+    c.insert("sheet_templates".into(), Value::Array(tpls.into_iter().map(Value::Object).collect()));
+    c.insert("custom_tpl_ids".into(), json!(custom_ids));
+    c.insert("custom_tracks".into(), json!({"__intkeys__": tracks}));
+    c.insert("user".into(), Value::Object(user));
+    c.insert("my_character".into(), mine.first().cloned().map(Value::Object).unwrap_or(Value::Null));
+    c.insert("my_character_ids".into(), json!(my_ids));
+    c.insert("character_limit".into(), json!(limit));
+    c.insert("my_character_count".into(), json!(mine.len()));
+    c.insert("can_create_character".into(), json!(can_create));
+    c.insert("q".into(), json!(term));
+    c.insert("sort".into(), json!(sort));
+    c.insert("pc_party".into(), json!({"__intkeys__": pc_party}));
+    c.insert("owner_names".into(), json!({"__intkeys__": owners}));
+    c.insert("my_party".into(), my_party);
+    c.insert("levelup_ready".into(), json!(levelup));
+    render_with(pages, "characters/list.html", p.ctx, headers)
+}

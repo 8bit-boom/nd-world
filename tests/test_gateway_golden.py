@@ -1917,3 +1917,46 @@ def test_party_page_is_pythons(client, seed):
             assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, v)
             assert b.headers.get("x-nd-served-by") == "gateway", (email, v)
     assert served == 12, served
+
+
+def test_character_list_is_pythons(client, seed):
+    """GET /characters from the gateway: the GM's whole roster with owners, a player's own (and, with the party switch on, everyone
+    owned), the search box over name / class / race / player, the three sorts, custom-system cards with their tracks, party badges,
+    level-up flags, the character limit."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Party, PlayerCharacter, SheetTemplate, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom").first()
+        stats = json.dumps([{"id": "str", "value": 3, "abbr": "STR"}, {"id": "dex", "value": 2, "label": "Dex"}, {"id": "wil", "value": "4"}])
+        pcs = [PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id, level=3, xp=99999, current_hp=4, char_class="Netrunner",
+                               race="Elf", stats_json=stats, player_name="Al"),
+               PlayerCharacter(world_id=w, name="ash", owner_user_id=seed.gm.id, level=7, xp=10, current_hp=20, max_hp=40, race="Dwarf"),
+               PlayerCharacter(world_id=w, name="Zed", level=1, xp=0, current_hp=0),
+               PlayerCharacter(world_id=w, name="Mira", owner_user_id=seed.player_b.id, level=2, xp=5, current_hp=3,
+                               sheet_template_id=tpl.id if tpl else None)]
+        db.add_all(pcs)
+        db.flush()
+        db.add(Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([pcs[0].id, pcs[3].id])))
+        db.commit()
+    finally:
+        db.close()
+    urls = ["/characters", "/characters?sort=level", "/characters?sort=hp", "/characters?q=elf", "/characters?q=%20AL%20", "/characters?q=nobody",
+            "/characters?sort=nope"]
+    served = 0
+    for see in (False, True):
+        db = SessionLocal()
+        try:
+            wa = db.get(World, w)
+            wa.players_see_party, wa.max_characters_per_player = see, 2 if see else None
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for u in urls:
+                served += _same_page(d, _via(d, base), u, email)
+    assert served == 2 * 2 * len(urls), served
