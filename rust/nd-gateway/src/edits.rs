@@ -2030,7 +2030,109 @@ fn loot_int(b: &Map<String, Value>, key: &str, default: Option<i64>, lo: Option<
     (lo.map_or(true, |l| v >= l) && hi.map_or(true, |h| v <= h)).then_some(v)
 }
 
+/// `_loot_int` with its refusals: Ok(value), Err(Some(400)), Err(None) to decline (a string or float int() reads: Python's)
+fn loot_int_r(b: &Map<String, Value>, key: &str, default: Option<Value>, lo: Option<i64>, hi: Option<i64>) -> Result<i64, Option<Response<Body>>> {
+    let bad = |m: String| Err(Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m)));
+    let v = match b.get(key).cloned().or(default) {
+        None | Some(Value::Null) | Some(Value::Bool(_)) => return bad(format!("{key} must be a whole number")),
+        Some(Value::Number(n)) => n.as_i64().ok_or(None)?,
+        Some(Value::Array(_)) | Some(Value::Object(_)) => return bad(format!("{key} must be a whole number")),
+        Some(Value::String(_)) => return Err(None),
+    };
+    if lo.map_or(false, |l| v < l) || hi.map_or(false, |h| v > h) {
+        return bad(format!("{key} is out of range"));
+    }
+    Ok(v)
+}
+
+/// Python's refusals of a stash edit (no such party, no edit right, a bad body, a bad item / member / action); Some(None) when it goes on
+fn loot_refusal(c: &Ctx, id: i64) -> Option<Option<Response<Body>>> {
+    let detail = crate::ai_more::detail;
+    let Some(p) = row(&c.db, "SELECT * FROM parties WHERE id = ?1", id) else {
+        return Some(Some(detail(StatusCode::NOT_FOUND, "Not Found")));
+    };
+    if p.get("world_id")?.as_i64() != c.world_id() {
+        return if c.p.is_gm { None } else { Some(Some(detail(StatusCode::NOT_FOUND, "Not Found"))) };
+    }
+    let (p, level) = party_for_write(c, id)?;
+    if level == "none" {
+        return Some(Some(detail(StatusCode::FORBIDDEN, "Forbidden")));
+    }
+    if let Some(r) = json_body_refusal(c.body)? {
+        return Some(Some(r));
+    }
+    let b = c.json()?;
+    let loot = load_loot(&p)?;
+    let members = int_list(p.get("member_pc_ids_json"))?;
+    let bad = |m: &str| Some(Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m.to_string())));
+    macro_rules! int_or {
+        ($e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(r) => return r.map(Some),
+            }
+        };
+    }
+    let index_ok = || -> Option<Option<Response<Body>>> {
+        match b.get("lid") {
+            None | Some(Value::Null) => {
+                let i = int_or!(loot_int_r(&b, "index", Some(json!(-1)), None, None));
+                if !(0..loot.len() as i64).contains(&i) {
+                    return bad("Invalid loot item");
+                }
+            }
+            Some(lid) => {
+                if !loot.iter().any(|it| it.get("lid") == Some(lid)) {
+                    if !lid.is_string() {
+                        return None; // Python's == between other types
+                    }
+                    return Some(Some(detail(StatusCode::CONFLICT, "That loot item no longer exists \u{2014} it was removed or given away. Refresh the page.")));
+                }
+            }
+        }
+        Some(None)
+    };
+    let member_ok = || -> Option<Option<Response<Body>>> {
+        let pc = int_or!(loot_int_r(&b, "pc_id", None, None, None));
+        if !members.contains(&pc) {
+            return bad("That character is not in this party");
+        }
+        if level != "full" {
+            let owner: Option<i64> = c.db.query_row("SELECT owner_user_id FROM player_characters WHERE id = ?1", [pc], |r| r.get(0)).ok().flatten();
+            if owner != Some(c.p.user_id) {
+                return Some(Some(detail(StatusCode::FORBIDDEN, "You can only do that for your own character.")));
+            }
+        }
+        Some(None)
+    };
+    match b.get("action").and_then(|v| v.as_str()) {
+        Some("add") => {
+            match b.get("name") {
+                Some(Value::String(n)) if !strip(n).is_empty() => {}
+                _ => return bad("Item name is required"),
+            }
+            match b.get("notes") {
+                None | Some(Value::String(_)) => {}
+                _ => return bad("notes must be text"),
+            }
+            int_or!(loot_int_r(&b, "qty", Some(json!(1)), Some(1), Some(LOOT_QTY_MAX)));
+        }
+        Some("remove") => return index_ok(),
+        Some("claim" | "unclaim" | "give") => {
+            if let Some(r) = index_ok()? {
+                return Some(Some(r));
+            }
+            return member_ok();
+        }
+        _ => return bad("action must be add, remove, claim, unclaim or give"),
+    }
+    Some(None)
+}
+
 fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = loot_refusal(c, ids[0])? {
+        return Some(r);
+    }
     let b = c.json()?;
     let (p, level) = party_for_write(c, ids[0])?;
     if level == "none" {
@@ -2636,13 +2738,15 @@ fn pc_conditions(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let action = b.get("action").cloned().unwrap_or(json!("toggle"));
     let new = match action.as_str() {
         Some("set") => {
-            let list = b.get("conditions").filter(|v| v.is_array())?;
+            let Some(list) = b.get("conditions").filter(|v| v.is_array()) else {
+                return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "conditions must be a list"));
+            };
             clean_conditions(list)?
         }
         Some(a @ ("add" | "remove" | "toggle")) => {
             let name = clean_condition(b.get("name").unwrap_or(&Value::Null))?;
             if name.is_empty() {
-                return None;
+                return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "name is required"));
             }
             let has = current.iter().any(|x| x.eq_ignore_ascii_case(&name));
             if a == "remove" || (a == "toggle" && has) {
@@ -2650,12 +2754,12 @@ fn pc_conditions(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             } else if has {
                 current.clone()
             } else if current.len() >= 12 {
-                return None;
+                return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "A character can have at most 12 conditions"));
             } else {
                 current.iter().cloned().chain([name]).collect()
             }
         }
-        _ => return None,
+        _ => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "action must be add, remove, toggle or set")),
     };
     if new != current {
         let gained = new.iter().filter(|x| !current.contains(x)).map(|x| format!("+{x}"));
@@ -2704,7 +2808,9 @@ fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             break;
         }
     }
-    let (i, ab, lb) = hit?;
+    let Some((i, ab, lb)) = hit else {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No such currency on this character"));
+    };
     let coin = coins.as_array_mut()?.get_mut(i)?.as_object_mut()?;
     let before = match coin.get("value") {
         None | Some(Value::Null) => 0,
@@ -3167,26 +3273,35 @@ pub(crate) fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>
     }
 }
 
+/// Python's 400s for a body json.loads cannot read ("Invalid JSON body") or that is not an object; Some(None) when it is an object,
+/// None for a body serde cannot read that Python might (NaN, lone surrogates, a BOM, numbers out of range, deep nesting)
+fn json_body_refusal(body: &[u8]) -> Option<Option<Response<Body>>> {
+    let detail = crate::ai_more::detail;
+    match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(_)) => Some(None),
+        Ok(_) => Some(Some(detail(StatusCode::BAD_REQUEST, "JSON body must be an object"))),
+        Err(e) => {
+            let text = std::str::from_utf8(body).ok()?;
+            let why = e.to_string();
+            if why.contains("out of range") || why.contains("recursion limit") {
+                return None;
+            }
+            if text.contains("NaN") || text.contains("Infinity") || text.contains("\\u") || text.starts_with('\u{feff}') {
+                return None;
+            }
+            Some(Some(detail(StatusCode::BAD_REQUEST, "Invalid JSON body")))
+        }
+    }
+}
+
 /// Python's refusals that come before a character quick-edit reads anything else: (when `body_first`, `_json_dict_raw`'s bad body,) no
 /// such character (404), not the GM or its owner (403; Python does not check the world). None when it goes on - or for a body
 /// serde cannot read that Python might (NaN, lone surrogates, other encodings), which the handler then declines.
 fn pc_gate(c: &Ctx, id: i64, body_first: bool) -> Option<Response<Body>> {
     let detail = crate::ai_more::detail;
     if body_first {
-        match serde_json::from_slice::<Value>(c.body) {
-            Ok(Value::Object(_)) => {}
-            Ok(_) => return Some(detail(StatusCode::BAD_REQUEST, "JSON body must be an object")),
-            Err(e) => {
-                let text = std::str::from_utf8(c.body).ok()?;
-                let why = e.to_string();
-                if why.contains("out of range") || why.contains("recursion limit") {
-                    return None;
-                }
-                if text.contains("NaN") || text.contains("Infinity") || text.contains("\\u") || text.starts_with('\u{feff}') {
-                    return None;
-                }
-                return Some(detail(StatusCode::BAD_REQUEST, "Invalid JSON body"));
-            }
+        if let Some(r) = json_body_refusal(c.body)? {
+            return Some(r);
         }
     }
     let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id) else {

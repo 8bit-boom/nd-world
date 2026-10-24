@@ -2781,3 +2781,45 @@ def test_character_quick_edit_refusals_are_pythons(client, seed):
         assert b.headers.get("x-nd-served-by") == "gateway", (route, body)
         assert a.status_code >= 400, (route, body)
         assert (a.status_code, a.json()) == (b.status_code, b.json()), (route, body)
+
+
+def test_loot_and_condition_refusals_are_pythons(client, seed):
+    """Party stash and character condition / currency refusals from the gateway: same status and message as Python."""
+    from app.database import SessionLocal
+    from app.models import Party, PlayerCharacter
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        mine = PlayerCharacter(world_id=seed.world_a.id, name="Mine", owner_user_id=seed.player_a.id,
+                               conditions_json=json.dumps([f"C{i}" for i in range(12)]), currency_json=json.dumps([{"abbr": "gp", "value": 3}]))
+        other = PlayerCharacter(world_id=seed.world_a.id, name="Other")
+        db.add_all([mine, other])
+        db.flush()
+        party = Party(world_id=seed.world_a.id, name="Stash", member_pc_ids_json=json.dumps([mine.id, other.id]),
+                      loot_json=json.dumps([{"lid": "abcd1234", "name": "Gem", "qty": 2, "notes": "", "claimed_by": []}]))
+        db.add(party)
+        db.commit()
+        pid, me, them = party.id, mine.id, other.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    url = f"/api/parties/{pid}/loot"
+    cases = [(gm, "/api/parties/999999/loot", b"{}"), (gm, url, b"{oops"), (gm, url, b"[]"), (gm, url, b"{}")]
+    cases += [(gm, url, json.dumps(b).encode()) for b in (
+        {"action": "add"}, {"action": "add", "name": "  "}, {"action": "add", "name": "X", "notes": 3}, {"action": "add", "name": "X", "qty": 0},
+        {"action": "add", "name": "X", "qty": True}, {"action": "remove", "lid": "gone0000"}, {"action": "remove", "index": 4},
+        {"action": "remove", "index": None}, {"action": "claim", "index": 0}, {"action": "claim", "index": 0, "pc_id": 999999},
+        {"action": "give", "lid": "abcd1234", "pc_id": []}, {"action": "sell"})]
+    cases += [(player, url, json.dumps({"action": "claim", "index": 0, "pc_id": them}).encode())]
+    cases += [(gm, f"/api/characters/{me}/conditions", json.dumps(b).encode()) for b in (
+        {"action": "set", "conditions": "x"}, {"action": "add", "name": "  "}, {"action": "add", "name": 5}, {"action": "add", "name": "New"},
+        {"action": "heal"})]
+    cases += [(gm, f"/api/characters/{me}/currency", json.dumps({"abbr": "pp", "value": 1}).encode())]
+    for who, path, body in cases:
+        a = who.post(path, content=body, headers={"content-type": "application/json"})
+        b = _via(who, base).post(path, content=body, headers={"content-type": "application/json"})
+        assert b.headers.get("x-nd-served-by") == "gateway", (path, body)
+        assert a.status_code >= 400, (path, body)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), (path, body)
