@@ -124,14 +124,20 @@ async fn a_precompressed_twin_is_sent_when_accepted_and_only_when_fresh() {
     assert_eq!(resp.headers()["content-encoding"], "gzip");
     assert_eq!(resp.text().await.unwrap(), "GZIP");
     std::thread::sleep(std::time::Duration::from_millis(30));
-    // the source changed after the twins were made: they are stale, so Python (which compresses) answers
+    // the source changed after the twins were made: they are stale, so the gateway compresses it itself, as Python's GZipMiddleware did
     write(&src, &vec![b'y'; 5000]);
     let resp = get("br").await;
     assert!(resp.headers().get("content-encoding").is_none());
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap().len(), 5000, "a browser that only takes br gets the plain file");
     let resp = get("gzip").await;
-    assert_eq!(resp.headers().get("x-seen-method").map(|v| v.to_str().unwrap()), Some("GET"), "text that Python would gzip is left to Python");
+    assert!(resp.headers().get("x-seen-method").is_none(), "python was not asked");
+    assert_eq!(resp.headers()["content-encoding"], "gzip");
+    assert_eq!(resp.headers()["vary"], "Accept-Encoding");
+    let gz = resp.bytes().await.unwrap();
+    let mut plain = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&gz[..]), &mut plain).unwrap();
+    assert_eq!(plain, "y".repeat(5000), "the stale twin is not used; the fresh file, gzipped");
 }
 
 #[tokio::test]
