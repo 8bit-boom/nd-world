@@ -24,6 +24,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
         "/api/audio-jobs" => audio_job_list(&cfg, uri, headers),
+        "/api/entities/picker" => entities_picker(&cfg, uri, headers),
         path if id_between(path, "/api/ai/assist-job/", "").is_some() => assist_job(&cfg, uri, headers, id_between(path, "/api/ai/assist-job/", "")?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path => party_vitals(&cfg, uri, headers, vitals_id(path)?),
@@ -31,7 +32,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/audio-jobs" | "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
+    matches!(path, "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
 }
@@ -545,4 +546,49 @@ fn assist_job(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<R
         };
     }
     crate::edits::json_response(&out)
+}
+
+
+/// json.dumps(v, separators=(",", ":")) with Python's default ensure_ascii
+fn dumps_ascii_compact(v: &Value) -> String {
+    let raw = serde_json::to_string(v).unwrap_or_default();
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for u in c.encode_utf16(&mut buf) {
+                out.push_str(&format!("\\u{:04x}", u));
+            }
+        }
+    }
+    out
+}
+
+/// `api_entities_picker` (app/main.py): {id, name, kind, folder} of every entity the viewer may see in the active world, with an ETag
+fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use md5::Digest;
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world")) };
+    let wid = w.get("id")?.as_i64()?;
+    let exclude = match crate::pages::query_param(uri, "exclude_id") {
+        None => None,
+        Some(v) if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.len() < 16 => Some(v.parse::<i64>().ok()?),
+        Some(_) => return None, // FastAPI's 422 / int coercions: Python's
+    };
+    let vis = if p.is_gm { String::new() } else {
+        format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let ex = exclude.map(|e| format!(" AND id != {e}")).unwrap_or_default();
+    let mut st = db.prepare(&format!("SELECT id, name, kind, folder FROM entities WHERE world_id = ?1{ex}{vis} ORDER BY kind, folder, name, id")).ok()?;
+    let rows: Vec<Value> = st.query_map([wid], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, Option<String>>(1)?,
+        "kind": r.get::<_, Option<String>>(2)?, "folder": r.get::<_, Option<String>>(3)?.unwrap_or_default()}))).ok()?.collect::<Result<_, _>>().ok()?;
+    let payload = dumps_ascii_compact(&json!({"entities": rows}));
+    let etag = format!("\"{:x}\"", md5::Md5::digest(payload.as_bytes()));
+    let b = Response::builder().header("etag", &etag).header("cache-control", "private, no-cache").header("x-nd-served-by", "gateway");
+    if headers.get("if-none-match").and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+        return b.status(304).body(Body::empty()).ok();
+    }
+    b.status(200).header("content-type", "application/json").body(Body::from(payload)).ok()
 }

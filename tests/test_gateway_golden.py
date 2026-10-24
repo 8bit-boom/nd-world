@@ -2480,3 +2480,44 @@ def test_job_list_and_assist_status_are_pythons(client, seed):
         db.commit()
     finally:
         db.close()
+
+
+def test_picker_and_party_summary_are_pythons(client, seed):
+    """GET /api/entities/picker (the viewer's visibility, exclude_id, the ETag and its 304) and GET /parties/<id>/summary from the gateway."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, Party, PlayerCharacter, Quest
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        e1 = Entity(world_id=w, kind="character", name="Zoë", folder="People/Ä")
+        e2 = Entity(world_id=w, kind="item", name="Secret", visible_to_players=False)
+        pc = PlayerCharacter(world_id=w, name="Vex", current_hp=3, conditions_json=json.dumps(["Prone"]))
+        db.add_all([e1, e2, pc])
+        db.flush()
+        party = Party(world_id=w, name="Crew", goals="Win", notes="**n**", member_pc_ids_json=json.dumps([pc.id]),
+                      member_entity_ids_json=json.dumps([e1.id, e2.id]), loot_json=json.dumps([{"name": "Gem", "qty": 2}]))
+        db.add(party)
+        db.flush()
+        db.add_all([Quest(world_id=w, title="Q1", assigned_party_id=party.id), Quest(world_id=w, title="GM Q", assigned_party_id=party.id, visible_to_players=False)])
+        db.commit()
+        pid, eid = party.id, e1.id
+    finally:
+        db.close()
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        for u in ["/api/entities/picker", f"/api/entities/picker?exclude_id={eid}"]:
+            a, b = d.get(u), _via(d, base).get(u)
+            assert (a.status_code, a.content, a.headers.get("etag"), a.headers.get("cache-control")) == \
+                   (b.status_code, b.content, b.headers.get("etag"), b.headers.get("cache-control")), (email, u)
+            a2, b2 = d.get(u, headers={"if-none-match": a.headers["etag"]}), _via(d, base).get(u, headers={"if-none-match": a.headers["etag"]})
+            assert a2.status_code == b2.status_code == 304
+        for u in [f"/parties/{pid}/summary", "/parties/999999/summary"]:
+            a, b = d.get(u, follow_redirects=False), _via(d, base).get(u, follow_redirects=False)
+            if a.status_code != 200:
+                assert (a.status_code, a.text) == (b.status_code, b.text), (email, u)
+                assert b.headers.get("x-nd-served-by") == "gateway"
+                continue
+            assert _same_page(d, _via(d, base), u, email), (email, u)

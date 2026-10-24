@@ -29,6 +29,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/entity/", "/edit", entity_edit),
     ("/sessions/", "", session_detail),
     ("/parties/", "/roster", party_roster),
+    ("/parties/", "/summary", party_summary),
     ("/parties/", "", party_detail),
     ("/session-log/", "", session_log_detail),
 ];
@@ -955,4 +956,50 @@ fn party_roster(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers
     c.insert("companions".into(), Value::Array(companions));
     c.insert("is_gm".into(), json!(gm));
     render_with(pages, "parties/roster.html", p.ctx, headers)
+}
+
+/// `GET /parties/<id>/summary` (app/routers/parties.py `party_summary`): the printable party card
+fn party_summary(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(party) = row(db, "SELECT * FROM parties WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let wid = party.get("world_id")?.as_i64()?;
+    let (ok, pw) = row_world_visible(db, &p, wid, "parties")?;
+    if !ok {
+        return Some(refusal(404));
+    }
+    let gm = p.is_gm;
+    let pc_ids = party_ids(party.get("member_pc_ids_json"))?;
+    let raw_entity_ids = party_ids(party.get("member_entity_ids_json"))?;
+    let pcs: Vec<Map<String, Value>> = if pc_ids.is_empty() { vec![] } else {
+        rows(db, &format!("SELECT * FROM player_characters WHERE id IN ({}) AND ?1 IS NOT NULL ORDER BY id", in_list(&pc_ids)), 0)?
+            .into_iter().filter_map(|v| v.as_object().cloned()).collect()
+    };
+    let vis = if gm { String::new() } else {
+        format!(" AND (entities.visible_to_players IS NOT 0 OR entities.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let visible: Vec<i64> = if raw_entity_ids.is_empty() { vec![] } else {
+        rows(db, &format!("SELECT id FROM entities WHERE id IN ({}) AND world_id = ?1{vis} ORDER BY id", in_list(&raw_entity_ids)), wid)?
+            .iter().filter_map(|r| r.get("id")?.as_i64()).collect()
+    };
+    let ents = if visible.is_empty() { vec![] } else { rows(db, &format!("SELECT * FROM entities WHERE id IN ({}) AND ?1 IS NOT NULL ORDER BY id", in_list(&visible)), 0)? };
+    let quests = if gm {
+        rows(db, "SELECT * FROM quests WHERE assigned_party_id = ?1 ORDER BY id", id)?
+    } else if crate::pages::section_ok(&p, Some(&pw), "quests")? {
+        rows(db, "SELECT * FROM quests WHERE assigned_party_id = ?1 AND visible_to_players IS NOT 0 ORDER BY id", id)?
+    } else { vec![] };
+    let loot = json_or_empty_list(party.get("loot_json"))?;
+    let vitals = crate::edits::member_vitals(db, &pcs, Some(4))?;
+    let mut names = Map::new();
+    for pc in &pcs {
+        names.insert(pc.get("id")?.as_i64()?.to_string(), pc.get("name").cloned().unwrap_or(Value::Null));
+    }
+    p.ctx.remove("worlds"); // the handler hands the template no worlds list
+    let c = &mut p.ctx;
+    c.insert("party".into(), Value::Object(party));
+    c.insert("member_pcs".into(), Value::Array(pcs.into_iter().map(Value::Object).collect()));
+    c.insert("member_entities".into(), Value::Array(ents));
+    c.insert("member_vitals".into(), Value::Array(vitals));
+    c.insert("loot".into(), loot);
+    c.insert("assigned_quests".into(), Value::Array(quests));
+    c.insert("member_names".into(), json!({"__intkeys__": names}));
+    render_with(pages, "parties/summary.html", p.ctx, headers)
 }
