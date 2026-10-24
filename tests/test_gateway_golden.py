@@ -2719,3 +2719,33 @@ def test_world_context_smart_is_pythons(client, seed):
         b = _via(gm, base).post("/api/ai/world-context-smart", json=body)
         assert (a.status_code, a.json()) == (b.status_code, b.json()), body
         assert b.headers.get("x-nd-served-by") == "gateway", body
+
+
+def test_equipment_refusals_are_pythons(client, seed):
+    """POST /api/characters/<id>/equipment refusals from the gateway: a missing character, a player who does not own it, an empty
+    name, a bad index, an unknown action - same status and message as Python, nothing written."""
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, name="Packer", equipment_json=json.dumps([{"name": "Rope", "qty": 1}, "loose"]))
+        db.add(pc)
+        db.commit()
+        pid = pc.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    cases = [(gm, 999999, {"action": "add", "item": {"name": "X"}}), (player, pid, {"action": "add", "item": {"name": "X"}})]
+    cases += [(gm, pid, b) for b in ({"action": "add", "item": {"name": "  "}}, {"item": {}}, {"action": "add", "item": []}, {"action": "add"},
+                                      {"action": "remove"}, {"action": "remove", "index": 5}, {"action": "remove", "index": "0"},
+                                      {"action": "qty", "index": 1, "delta": 1}, {"action": "weight", "index": -1}, {"action": "sell"},
+                                      {"action": 3})]
+    for who, target, body in cases:
+        a = who.post(f"/api/characters/{target}/equipment", json=body)
+        b = _via(who, base).post(f"/api/characters/{target}/equipment", json=body)
+        assert b.headers.get("x-nd-served-by") == "gateway", body
+        assert a.status_code >= 400, body
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), body

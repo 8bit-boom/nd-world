@@ -3146,9 +3146,53 @@ pub(crate) fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>
     }
 }
 
+/// Python's refusal for a bad `index` (missing, not an int, out of range, or not an object when `need_obj`); None to decline on a
+/// bool, which Python takes as an int
+fn bad_index(b: &Map<String, Value>, list: &[Value], need_obj: bool) -> Option<bool> {
+    match b.get("index") {
+        Some(Value::Bool(_)) => None,
+        Some(Value::Number(n)) if n.is_i64() => {
+            let i = n.as_i64()?;
+            Some(!(0..list.len() as i64).contains(&i) || (need_obj && !list[i as usize].is_object()))
+        }
+        _ => Some(true),
+    }
+}
+
 fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    // the refusals come before the body is read, as in Python (which does not check the world)
+    let Some(found) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0]) else {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Not Found"));
+    };
+    if !(c.p.is_gm || found.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)) {
+        return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "Forbidden"));
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
+    {
+        let eq = pc_list(&pc, "equipment_json")?;
+        let refuse = |m: &str| Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m));
+        match b.get("action").cloned().unwrap_or(json!("add")).as_str() {
+            Some("add") => {
+                let empty = match b.get("item") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Object(o)) => match o.get("name") {
+                        None => true,
+                        Some(Value::String(s)) => strip(s).is_empty(),
+                        _ => false,
+                    },
+                    Some(v) if !py_truthy(Some(v)) => true,
+                    _ => return None, // a truthy non-object: Python fails on it
+                };
+                if empty {
+                    return refuse("Item name is required");
+                }
+            }
+            Some("remove") => if bad_index(&b, &eq, false)? { return refuse("Invalid index") },
+            Some("qty" | "weight") => if bad_index(&b, &eq, true)? { return refuse("Invalid index") },
+            _ => return refuse("Unknown action"),
+        }
+    }
     let before = pc.get("equipment_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]").to_string();
     let mut eq = pc_list(&pc, "equipment_json")?;
     let action = b.get("action").cloned().unwrap_or(json!("add"));
