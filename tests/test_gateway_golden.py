@@ -2251,3 +2251,51 @@ def test_content_pack_is_pythons(client, seed):
             a, b = d.get(url), _via(d, base).get(url)
             assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, wid)
             assert b.headers.get("x-nd-served-by") == "gateway", (email, wid)
+
+
+def test_party_roster_is_pythons(client, seed):
+    """GET /parties/<id>/roster from the gateway: an N&D member (stats, CA/Speed, edges, cyberware, Shock, PP/MP) beside a custom-system
+    one (its vital, resource tracks and comparison fields), mixed vital labels, a character of another world left out, companions for the
+    GM only; a player sees it only with the party switch on."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, Party, PlayerCharacter, SheetTemplate, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom").first()
+        a = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id, level=4, race="Elf", char_class="Netrunner", player_name="Al",
+                            current_hp=3, temp_hp=2, shock_current=1, pp_current=2, mp_current=1, minor_edge="Quick", major_edge="",
+                            stats_json=json.dumps([{"id": "str", "value": 3}, {"id": "dex", "value": "2"}, {"id": "wil", "value": 4}, {"id": "str", "value": 5}]),
+                            cyberware_json=json.dumps([{"name": "Eye", "ca_cost": 1}, {"name": ""}, "junk", {"name": 7}]),
+                            conditions_json=json.dumps(["Prone", 3]))
+        b = PlayerCharacter(world_id=w, name="Ash", sheet_template_id=tpl.id if tpl else None, player_name="Bo")
+        c = PlayerCharacter(world_id=seed.world_b.id, name="Elsewhere")
+        comp = Entity(world_id=w, kind="creature", name="Hound")
+        db.add_all([a, b, c, comp])
+        db.flush()
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([a.id, b.id, c.id]), member_entity_ids_json=json.dumps([comp.id]))
+        empty = Party(world_id=w, name="Empty")
+        db.add_all([party, empty])
+        db.commit()
+        ids = (party.id, empty.id, 999999)
+    finally:
+        db.close()
+    for see in (False, True):
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_see_party = see
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for i in ids:
+                url = f"/parties/{i}/roster"
+                ra, rb = d.get(url, follow_redirects=False), _via(d, base).get(url, follow_redirects=False)
+                if ra.status_code != 200:
+                    assert (ra.status_code, ra.text) == (rb.status_code, rb.text), (email, url)
+                    assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
+                    continue
+                assert _same_page(d, _via(d, base), url, email), (email, url)

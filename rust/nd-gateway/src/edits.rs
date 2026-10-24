@@ -2191,41 +2191,14 @@ pub(crate) fn pc_digest_line(db: &Connection, pc: &Map<String, Value>, detail: b
                 resources.push(track(&r)?);
             }
         }
-        // roster_field_groups
-        let by_id = |id: &Value| t.fields.iter().find(|f| f.get("id").unwrap_or(&Value::Null) == id);
-        let mut groups: Vec<(String, Vec<&Map<String, Value>>)> = vec![];
-        if let Some(Value::Array(roster)) = t.spec.get("roster").filter(|r| py_truthy(Some(r))) {
-            for g in roster {
-                let g = g.as_array()?;
-                let title = g.first()?.as_str()?.to_string();
-                let picked: Vec<&Map<String, Value>> = g.get(1)?.as_array()?.iter().filter_map(|i| by_id(i)).collect();
-                if !picked.is_empty() {
-                    groups.push((title, picked));
-                }
-            }
-        } else if t.spec.get("roster").is_some_and(|r| py_truthy(Some(r))) {
-            return None;
-        } else {
-            let binds = t.binds()?;
-            let picked: Vec<&Map<String, Value>> = t.fields.iter().filter(|f| matches!(f.get("type").and_then(|v| v.as_str()), Some("number" | "select"))
-                && !binds.iter().any(|(k, _)| f.get("id") == Some(&json!(k))) && !py_truthy(f.get("xp"))).take(10).collect();
-            if !picked.is_empty() {
-                groups.push(("Sheet".into(), picked));
-            }
-        }
+        let groups = roster_field_groups(t)?;
         for (title, group) in groups {
             for f in group {
                 let ty = f.get("type").and_then(|v| v.as_str());
                 if ty == Some("resource") {
                     continue;
                 }
-                // field_value_text
-                let value = if ty == Some("list") { String::new() } else {
-                    let id_key = match f.get("id") { Some(Value::String(i)) => Some(i.clone()), None | Some(Value::Null) => None, _ => return None };
-                    let dv = match f.get("default_value") { v if !py_truthy(v) => json!(""), Some(v) => v.clone(), None => json!("") };
-                    let v = id_key.as_ref().and_then(|k| cf.get(k)).cloned().unwrap_or(dv);
-                    if v.is_null() { String::new() } else { strip(&text(Some(&v))?) }
-                };
+                let value = field_value_text(f, &cf)?;
                 if value.is_empty() {
                     continue;
                 }
@@ -7995,6 +7968,50 @@ pub fn sheet_num_text_pub(t: &str) -> Result<Option<i64>, ()> {
 
 pub fn sheet_short_label_pub(label: &str) -> Option<String> {
     sheet_short_label(label)
+}
+
+/// `roster_field_groups(tpl)`: [(title, fields)] worth comparing across a party - a built-in system's own "roster", else the first
+/// number / select fields (not bound, not XP) under "Sheet"
+pub(crate) fn roster_field_groups(t: &crate::sheets::Tpl) -> Option<Vec<(String, Vec<&Map<String, Value>>)>> {
+    let by_id = |id: &Value| t.fields.iter().find(|f| f.get("id").unwrap_or(&Value::Null) == id);
+    let mut groups: Vec<(String, Vec<&Map<String, Value>>)> = vec![];
+    if let Some(Value::Array(roster)) = t.spec.get("roster").filter(|r| py_truthy(Some(r))) {
+        for g in roster {
+            let g = g.as_array()?;
+            let title = g.first()?.as_str()?.to_string();
+            let picked: Vec<&Map<String, Value>> = g.get(1)?.as_array()?.iter().filter_map(|i| by_id(i)).collect();
+            if !picked.is_empty() {
+                groups.push((title, picked));
+            }
+        }
+    } else if t.spec.get("roster").is_some_and(|r| py_truthy(Some(r))) {
+        return None;
+    } else {
+        let binds = t.binds()?;
+        let picked: Vec<&Map<String, Value>> = t.fields.iter().filter(|f| matches!(f.get("type").and_then(|v| v.as_str()), Some("number" | "select"))
+            && !binds.iter().any(|(k, _)| f.get("id") == Some(&json!(k))) && !py_truthy(f.get("xp"))).take(10).collect();
+        if !picked.is_empty() {
+            groups.push(("Sheet".into(), picked));
+        }
+    }
+    Some(groups)
+}
+
+/// `field_value_text(field, cf)` for a field that is not a resource track: its stored value (the default when unsaved), "" for a list
+pub(crate) fn field_value_text(f: &Map<String, Value>, cf: &Map<String, Value>) -> Option<String> {
+    if f.get("type").and_then(|v| v.as_str()) == Some("list") {
+        return Some(String::new());
+    }
+    let id_key = match f.get("id") { Some(Value::String(i)) => Some(i.clone()), None | Some(Value::Null) => None, _ => return None };
+    let dv = match f.get("default_value") { v if !py_truthy(v) => json!(""), Some(v) => v.clone(), None => json!("") };
+    let v = id_key.as_ref().and_then(|k| cf.get(k)).cloned().unwrap_or(dv);
+    Some(match v {
+        Value::Null => String::new(),
+        Value::String(t) => strip(&t),
+        Value::Number(n) if n.is_i64() => n.to_string(),
+        Value::Bool(b) => if b { "True".into() } else { "False".into() },
+        _ => return None, // str() of a float, a list: Python's
+    })
 }
 
 /// `short_label`

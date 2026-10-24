@@ -28,6 +28,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/quests/", "", quest_detail),
     ("/entity/", "/edit", entity_edit),
     ("/sessions/", "", session_detail),
+    ("/parties/", "/roster", party_roster),
     ("/parties/", "", party_detail),
     ("/session-log/", "", session_log_detail),
 ];
@@ -740,4 +741,218 @@ fn session_log_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, h
     c.insert("recap_audio".into(), Value::Array(audio.clone()));
     c.insert("session_media".into(), json!({"audio": audio, "videos": videos, "images": images}));
     render_with(pages, "sessions/player_detail.html", p.ctx, headers)
+}
+
+/// `str(v)` of a stored value as Python prints it (None for a float or a list: not reproduced)
+fn py_str(v: Option<&Value>) -> Option<String> {
+    Some(match v {
+        None | Some(Value::Null) => "None".into(),
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Number(n)) if n.is_i64() => n.to_string(),
+        Some(Value::Bool(b)) => if *b { "True".into() } else { "False".into() },
+        _ => return None,
+    })
+}
+
+fn cell_text(text: String, down: bool, prefix: &str) -> Value {
+    json!({"kind": "text", "text": text, "down": down, "prefix": prefix})
+}
+
+fn cell_na() -> Value {
+    json!({"kind": "na"})
+}
+
+fn cell_chips(chips: Vec<Value>) -> Value {
+    json!({"kind": "chips", "chips": chips})
+}
+
+/// `GET /parties/<id>/roster` (app/routers/parties.py `party_roster`, `_roster_table`): the members side by side, every row from what
+/// each member's own system has
+fn party_roster(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(party) = row(db, "SELECT * FROM parties WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let wid = party.get("world_id")?.as_i64()?;
+    let (ok, pw) = row_world_visible(db, &p, wid, "parties")?;
+    if !ok {
+        return Some(refusal(404));
+    }
+    let gm = p.is_gm;
+    let active = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let full = gm || (active == Some(wid) && crate::pages::edit_level(&p, &pw, "parties")? && p.role.as_deref() == Some("assistant"));
+    if !(full || pw.get("players_see_party").and_then(|v| v.as_i64()).unwrap_or(0) != 0) {
+        return Some(refusal(404));
+    }
+    let ids = crate::edits::member_ids(party.get("member_pc_ids_json"))?;
+    let mut pcs: Vec<Map<String, Value>> = if ids.is_empty() { vec![] } else {
+        rows(db, &format!("SELECT * FROM player_characters WHERE id IN ({}) AND world_id = ?1 ORDER BY id", in_list(&ids)), wid)?
+            .into_iter().filter_map(|v| v.as_object().cloned()).collect()
+    };
+    let companions = if gm {
+        let e = crate::edits::member_ids(party.get("member_entity_ids_json"))?;
+        if e.is_empty() { vec![] } else { rows(db, &format!("SELECT * FROM entities WHERE id IN ({}) AND ?1 IS NOT NULL ORDER BY id", in_list(&e)), 0)? }
+    } else { vec![] };
+    // _roster_table
+    let name_of = |m: &Map<String, Value>| m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    pcs.sort_by(|a, b| name_of(a).cmp(&name_of(b)));
+    let vitals = crate::edits::member_vitals(db, &pcs, None)?;
+    struct Info { pc: Map<String, Value>, v: Value, native: bool, shock: i64, pp: i64, mp: i64, tpl: Option<crate::sheets::Tpl>, cf: Map<String, Value> }
+    let mut columns = vec![];
+    let mut info: Vec<Info> = vec![];
+    for pc in &pcs {
+        let pid = pc.get("id")?.as_i64()?;
+        let v = vitals.iter().find(|v| v["id"].as_i64() == Some(pid))?.clone();
+        let (_, shock, pp, mp, native) = crate::edits::pc_maxima(db, pc)?;
+        let tpl = crate::sheets::pc_template(db, pc)?;
+        let t = |k: &str| pc.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let sub = if native {
+            [format!("Lv {}", py_str(pc.get("level"))?), t("race"), t("char_class"), t("player_name")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+        } else {
+            let tn = tpl.as_ref().and_then(|x| x.row.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            [tn, t("player_name")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+        };
+        columns.push(json!({"id": pid, "name": pc.get("name"), "sub": sub}));
+        info.push(Info { pc: pc.clone(), v, native, shock, pp, mp, cf: crate::sheets::custom_fields(pc)?, tpl });
+    }
+    let mut groups: Vec<(String, Vec<Value>)> = vec![];
+    let mut add = |title: &str, label: String, cells: Vec<Value>| {
+        let row = json!({"label": label, "cells": cells});
+        match groups.iter_mut().find(|g| g.0 == title) {
+            Some(g) => g.1.push(row),
+            None => groups.push((title.to_string(), vec![row])),
+        }
+    };
+    let any_native = info.iter().any(|i| i.native);
+    let truthy_num = |v: &Value| v.as_i64().map_or(false, |n| n != 0);
+    let mut labels: Vec<String> = vec![];
+    for i in &info {
+        if truthy_num(&i.v["max_hp"]) {
+            let l = i.v["hp_label"].as_str()?.to_string();
+            if !labels.contains(&l) {
+                labels.push(l);
+            }
+        }
+    }
+    let mixed = labels.len() > 1;
+    let mut cells = vec![];
+    for i in &info {
+        if truthy_num(&i.v["max_hp"]) {
+            let mut t = format!("{} / {}", py_str(Some(&i.v["hp"]))?, py_str(Some(&i.v["max_hp"]))?);
+            if truthy_num(&i.v["temp_hp"]) {
+                t += &format!(" (+{} temp)", py_str(Some(&i.v["temp_hp"]))?);
+            }
+            cells.push(cell_text(t, i.v["down"] == json!(true), if mixed { i.v["hp_label"].as_str()? } else { "" }));
+        } else {
+            cells.push(cell_na());
+        }
+    }
+    add("Condition", if mixed { "HP / vital".into() } else { labels.first().cloned().unwrap_or_else(|| "HP".into()) }, cells);
+    let col = |pc: &Map<String, Value>, k: &str| pc.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    if any_native {
+        add("Condition", "Shock".into(), info.iter().map(|i| if i.native { cell_text(format!("{} / {}", col(&i.pc, "shock_current"), i.shock), false, "") } else { cell_na() }).collect());
+        add("Condition", "PP / MP".into(), info.iter().map(|i| if i.native {
+            cell_text(format!("{}/{} · {}/{}", col(&i.pc, "pp_current"), i.pp, col(&i.pc, "mp_current"), i.mp), false, "")
+        } else { cell_na() }).collect());
+    }
+    add("Condition", "Conditions".into(), info.iter().map(|i| cell_chips(i.v["conditions"].as_array().cloned().unwrap_or_default())).collect());
+    if any_native {
+        let mut derived: Vec<(i64, Map<String, Value>)> = vec![];
+        for i in info.iter().filter(|i| i.native) {
+            derived.push((i.pc.get("id")?.as_i64()?, crate::edits::derived(&i.pc)?));
+        }
+        let d_of = |i: &Info| derived.iter().find(|d| Some(d.0) == i.pc.get("id").and_then(|v| v.as_i64())).map(|d| &d.1);
+        for (sid, label) in [("str", "STR"), ("dex", "DEX"), ("bod", "BOD"), ("per", "PER"), ("wil", "WIL"), ("int", "INT"), ("cha", "CHA"), ("itu", "ITU")] {
+            let mut cells = vec![];
+            for i in &info {
+                let val = if i.native {
+                    // {st["id"]: st.get("value")}: the last stat with this id wins
+                    d_of(i)?.get("stats")?.as_array()?.iter().filter_map(|s| s.as_object())
+                        .filter(|s| s.get("id").and_then(|v| v.as_str()) == Some(sid)).last().map(|s| s.get("value").cloned().unwrap_or(Value::Null))
+                } else { None };
+                cells.push(match val {
+                    Some(v) if !v.is_null() => cell_text(py_str(Some(&v))?, false, ""),
+                    _ => cell_na(),
+                });
+            }
+            add("Attributes", label.into(), cells);
+        }
+        let mut ca = vec![];
+        let mut speed = vec![];
+        let mut edges = vec![];
+        let mut cyber = vec![];
+        for i in &info {
+            if !i.native {
+                for v in [&mut ca, &mut speed, &mut edges, &mut cyber] {
+                    v.push(cell_na());
+                }
+                continue;
+            }
+            let d = d_of(i)?;
+            ca.push(cell_text(py_str(d.get("ca_derived"))?, false, ""));
+            speed.push(cell_text(py_str(d.get("speed_derived"))?, false, ""));
+            edges.push(cell_chips(["minor_edge", "major_edge"].iter().filter_map(|k| d.get(*k).filter(|e| e.as_str().map_or(false, |s| !s.is_empty())).cloned()).collect()));
+            let mut chips = vec![];
+            for c in d.get("cyberware")?.as_array()?.iter().filter_map(|c| c.as_object()) {
+                match c.get("name") {
+                    None | Some(Value::Null) => {}
+                    Some(Value::String(n)) if n.is_empty() => {}
+                    Some(v) => chips.push(json!(py_str(Some(v))?)),
+                }
+            }
+            cyber.push(cell_chips(chips));
+        }
+        add("Attributes", "Cyber Adapt.".into(), ca);
+        add("Attributes", "Speed".into(), speed);
+        add("Build", "Edges".into(), edges);
+        add("Build", "Cyberware".into(), cyber);
+    }
+    let n = info.len();
+    let mut track_rows: Vec<(String, Vec<(usize, Value)>)> = vec![];
+    let mut field_rows: Vec<((String, String), Vec<(usize, Value)>)> = vec![];
+    for (idx, i) in info.iter().enumerate() {
+        if i.native {
+            continue;
+        }
+        for t in i.v["resources"].as_array()? {
+            if t["id"] == i.v["hp_id"] {
+                continue;
+            }
+            let label = py_str(Some(&t["label"]))?;
+            let c = cell_text(format!("{} / {}", py_str(Some(&t["current"]))?, py_str(Some(&t["max"]))?), false, "");
+            match track_rows.iter_mut().find(|r| r.0 == label) {
+                Some(r) => { r.1.retain(|x| x.0 != idx); r.1.push((idx, c)) }
+                None => track_rows.push((label, vec![(idx, c)])),
+            }
+        }
+        if let Some(t) = &i.tpl {
+            for (title, fields) in crate::edits::roster_field_groups(t)? {
+                for f in fields {
+                    if f.get("type").and_then(|v| v.as_str()) == Some("resource") {
+                        continue;
+                    }
+                    let txt = crate::edits::field_value_text(f, &i.cf)?;
+                    let src = match f.get("label") { Some(Value::String(l)) if !l.is_empty() => Some(l.clone()), Some(v) if !v.is_null() && v != &json!("") => return None, _ => f.get("id").and_then(|v| v.as_str()).map(str::to_string) };
+                    let short = match src { Some(l) if !l.is_empty() => crate::edits::sheet_short_label_pub(&l)?, _ => String::new() };
+                    let key = (title.clone(), short);
+                    let c = if txt.is_empty() { cell_na() } else { cell_text(txt, false, "") };
+                    match field_rows.iter_mut().find(|r| r.0 == key) {
+                        Some(r) => { r.1.retain(|x| x.0 != idx); r.1.push((idx, c)) }
+                        None => field_rows.push((key, vec![(idx, c)])),
+                    }
+                }
+            }
+        }
+    }
+    let fill = |cells: &Vec<(usize, Value)>| (0..n).map(|k| cells.iter().find(|x| x.0 == k).map(|x| x.1.clone()).unwrap_or_else(cell_na)).collect::<Vec<_>>();
+    for (label, cells) in &track_rows {
+        add("Resources", label.clone(), fill(cells));
+    }
+    for ((title, label), cells) in &field_rows {
+        add(title, label.clone(), fill(cells));
+    }
+    let groups: Vec<Value> = groups.into_iter().map(|(t, rows)| json!({"title": t, "rows": rows})).collect();
+    let c = &mut p.ctx;
+    c.insert("party".into(), Value::Object(party));
+    c.insert("table".into(), json!({"columns": columns, "groups": groups}));
+    c.insert("companions".into(), Value::Array(companions));
+    c.insert("is_gm".into(), json!(gm));
+    render_with(pages, "parties/roster.html", p.ctx, headers)
 }
