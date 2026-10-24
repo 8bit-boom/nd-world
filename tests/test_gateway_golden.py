@@ -2067,3 +2067,57 @@ def test_import_page_is_pythons(client, seed):
             continue
         served += _same_page(d, _via(d, base), "/import", email)
     assert served == 3, served
+
+
+def test_hub_quests_and_world_are_pythons(client, seed):
+    """GET /api/characters/<id>/hub/quests and /hub/world from the gateway, for the owning player and a GM looking in (both see the
+    player's view): quests with sub-quest counts, the character's party flagged, GM-only quests left out, goals; revealed, recent and
+    searched entities with [gmonly] text stripped; a character of someone else (404) and the Quests section closed to players."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CharacterJournalEntry, Entity, Party, PlayerCharacter, Quest, World, entity_player_access
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id)
+        other = PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)
+        db.add_all([pc, other])
+        db.flush()
+        party = Party(world_id=w, name="Crew", member_pc_ids_json=json.dumps([pc.id]))
+        db.add(party)
+        db.flush()
+        main = Quest(world_id=w, title="Main thing", status="active", assigned_party_id=party.id, summary="s")
+        db.add_all([main, Quest(world_id=w, title="beta", status="complete"), Quest(world_id=w, title="Alpha", status="active"),
+                    Quest(world_id=w, title="Secret", visible_to_players=False)])
+        db.flush()
+        db.add_all([Quest(world_id=w, title="sub 1", parent_id=main.id, status="complete"), Quest(world_id=w, title="sub 2", parent_id=main.id)])
+        db.add_all([CharacterJournalEntry(world_id=w, character_id=pc.id, kind="goal", title="Get rich", status="achieved"),
+                    CharacterJournalEntry(world_id=w, character_id=pc.id, kind="goal", title="Survive", status="active"),
+                    CharacterJournalEntry(world_id=w, character_id=pc.id, kind="journal", title="Day 1")])
+        shown = Entity(world_id=w, kind="character", name="Revealed one", visible_to_players=False, summary="Hi [gmonly]secret[/gmonly] there")
+        db.add_all([shown, Entity(world_id=w, kind="item", name="Open_knife", summary="a 100% blade"),
+                    Entity(world_id=w, kind="item", name="Hidden knife", visible_to_players=False)])
+        db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=shown.id, user_id=seed.player_a.id))
+        db.commit()
+        ids = (pc.id, other.id, 999999)
+    finally:
+        db.close()
+    tabs = ["quests", "world", "world?q=knife", "world?q=_", "world?q=100%25", "world?q=SECRET", "world?q=%20%20"]
+    for closed in (False, True):
+        if closed:
+            db = SessionLocal()
+            try:
+                db.get(World, w).section_access_json = json.dumps({"quests": {"player": "none"}})
+                db.commit()
+            finally:
+                db.close()
+        for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for i in ids:
+                for t in tabs:
+                    url = f"/api/characters/{i}/hub/{t}"
+                    a, b = d.get(url), _via(d, base).get(url)
+                    assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, url)
+                    assert b.headers.get("x-nd-served-by") == "gateway", (email, url)

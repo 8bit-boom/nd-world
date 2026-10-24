@@ -33,6 +33,7 @@ pub mod files;
 pub mod form;
 pub mod gallery;
 pub mod home;
+pub mod hub;
 pub mod imaging;
 pub mod markup;
 pub mod layout;
@@ -326,6 +327,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return ai::live_jobs_list(cfg, python).await;
         }
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && hub::serves(req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || hub::get(&cfg, &uri, &headers)).await {
             return resp;
         }
     }
