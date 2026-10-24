@@ -1811,3 +1811,49 @@ pub fn characters_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     c.insert("levelup_ready".into(), json!(levelup));
     render_with(pages, "characters/list.html", p.ctx, headers)
 }
+
+const AI_GROUNDING: &str = "When asked whether something already exists in this world's rules or lore (a trait, an item, a price, a named NPC, a fact), answer only from what the retrieved world lore/Rules text actually says — never invent specific names, numbers, or details to fill a gap. If it isn't covered, say so plainly rather than presenting an invented answer as fact, and offer to help create it instead. When the retrieved text includes a markdown table relevant to the question, that table IS the answer: list its actual named rows verbatim (item names, prices, stats) rather than summarizing them into categories or ranges from surrounding overview prose — an overview paragraph is a summary of the table, not a substitute for it. If a table excerpt says more rows were truncated, list every row you were given and say the list continues in the full Rules text rather than treating the partial list as complete.";
+const AI_TABLES: &str = "When the provided lore or Rules text contains a table and the question asks to list, enumerate, or compare its entries, reproduce ALL of its rows in your answer — as a markdown table or a complete list. Never answer with a summary, a few examples, or 'the list includes...'. Mention missing rows only if the provided text itself is visibly cut off mid-table.";
+
+/// `GET /ai` (app/main.py `ai_chat_page`): the GM's AI chat, its system prompt built from the world's entity counts and the
+/// GM-authored instructions
+pub fn ai_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone();
+    if !section_ok(&p, world.as_ref(), "ai")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let mut counts = Map::new();
+    let mut system = format!("You are a creative world-building AI assistant for a Neon & Dragons cyberpunk-fantasy TTRPG setting. Help the Game Master with world-building, lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive. {AI_GROUNDING} {AI_TABLES}");
+    if let Some(w) = &world {
+        let wid = w.get("id")?.as_i64()?;
+        for k in nd_perm::sections::effective_kinds(w.get("custom_kinds_json").and_then(|v| v.as_str()))? {
+            counts.insert(k, json!(0));
+        }
+        // _kind_counts: deps.filter_visible_entities for a non-GM viewer, one GROUP BY
+        let vis = if p.is_gm { " AND ?2 IS NOT NULL" } else {
+            " AND (entities.visible_to_players IS NOT 0 OR entities.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))"
+        };
+        let mut st = db.prepare(&format!("SELECT kind, count(id) FROM entities WHERE world_id = ?1{vis} GROUP BY kind")).ok()?;
+        for r in st.query_map(rusqlite::params![wid, p.user_id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?))).ok()? {
+            let (k, n) = r.ok()?;
+            counts.insert(k?, json!(n));
+        }
+        let listed = counts.iter().filter(|(_, v)| v.as_i64().unwrap_or(0) > 0).map(|(k, v)| format!("{v} {k}s")).collect::<Vec<_>>().join(", ");
+        let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        system = format!("You are a creative world-building AI assistant for '{name}', a Neon & Dragons cyberpunk-fantasy TTRPG setting. The world currently contains: {listed}. Help the Game Master with world-building, lore, NPC backstories, plot hooks, and creative writing. Be vivid, immersive, and consistent with the cyberpunk-fantasy tone. Keep responses focused; expand only when asked. {AI_GROUNDING} {AI_TABLES}");
+        let extra = crate::retrieval::instructions_text(&db, wid, !p.is_gm)?;
+        if !extra.is_empty() {
+            system = format!("{system}\n\n{extra}");
+        }
+    }
+    let c = &mut p.ctx;
+    c.insert("kinds".into(), json!(nd_perm::sections::KINDS));
+    c.insert("kind_icons".into(), nd_render::app::data().get("kind_icons")?.clone());
+    c.insert("entity_counts".into(), Value::Object(counts));
+    c.insert("world_system".into(), json!(system));
+    render_with(pages, "ai_chat.html", p.ctx, headers)
+}

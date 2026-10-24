@@ -1960,3 +1960,44 @@ def test_character_list_is_pythons(client, seed):
             for u in urls:
                 served += _same_page(d, _via(d, base), u, email)
     assert served == 2 * 2 * len(urls), served
+
+
+def test_ai_page_is_pythons(client, seed):
+    """GET /ai from the gateway: the system prompt with the world's entity counts (hidden ones only for the GM) and the GM-authored
+    instructions (only the player-facing ones for a player), a world with nothing in it, and the player's refusal while the AI
+    section is closed to them."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import AiInstruction, Entity, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="character", name="A"), Entity(world_id=w, kind="character", name="B", visible_to_players=False),
+                    Entity(world_id=w, kind="item", name="C"), Entity(world_id=w, kind="oddkind", name="D"),
+                    AiInstruction(world_id=w, title="Tone", content="  Be grim.  ", enabled=True, applies_to_players=True),
+                    AiInstruction(world_id=w, title="Secret", content="The butler did it.", enabled=True, applies_to_players=False),
+                    AiInstruction(world_id=w, title="Off", content="x", enabled=False, applies_to_players=True),
+                    AiInstruction(world_id=w, title="Blank", content="   ", enabled=True, applies_to_players=True)])
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for open_ in (False, True):
+        db = SessionLocal()
+        try:
+            wa = db.get(World, w)
+            wa.section_access_json = json.dumps({"ai": {"player": "read" if open_ else "none"}})
+            db.commit()
+        finally:
+            db.close()
+        for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                                 (seed.gm.email, GM_PASSWORD, seed.world_b.slug)):
+            d = _signed_in(email, pw, world)
+            a, b = d.get("/ai", follow_redirects=False), _via(d, base).get("/ai", follow_redirects=False)
+            if a.status_code != 200:
+                assert (a.status_code, a.text) == (b.status_code, b.text), email
+                served += b.headers.get("x-nd-served-by") == "gateway"
+                continue
+            served += _same_page(d, _via(d, base), "/ai", email)
+    assert served == 6, served
