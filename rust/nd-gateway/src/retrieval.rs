@@ -485,8 +485,18 @@ pub fn world_rules_markdown(world: &Map<String, Value>) -> String {
     }
 }
 
-/// `rules_context(world, query, limit, is_gm=True)`: the rules sections the query matches (a GM's view: nothing stripped)
-fn rules_context(world: &Map<String, Value>, query: &str, limit: usize) -> Option<String> {
+/// `rules_render.strip_gm_directives`: every :::gm block dropped, the other blocks' own text kept
+fn strip_gm_directives(md: &str) -> String {
+    let (mut skeleton, blocks) = nd_render::rules::extract_blocks(md);
+    for b in &blocks {
+        let repl = if b.kind == "callout" && b.btype == "gm" { "" } else { b.text.as_str() };
+        skeleton = skeleton.replace(&b.sentinel, repl);
+    }
+    skeleton
+}
+
+/// `rules_context(..., is_gm)`: for a non-GM the :::gm blocks and [gmonly] text are taken out first
+fn rules_context_as(world: &Map<String, Value>, query: &str, limit: usize, is_gm: bool) -> Option<String> {
     if limit == 0 {
         return Some(String::new());
     }
@@ -498,24 +508,33 @@ fn rules_context(world: &Map<String, Value>, query: &str, limit: usize) -> Optio
     if md.is_empty() {
         return Some(String::new());
     }
+    let md = if is_gm { md } else { strip(&strip_gm_directives(&md), None)? };
     let picks = select_sections_capped(&sections_full(&md), &words, RULES_EXCERPT_TOTAL_BUDGET, limit, Some(RULES_EXCERPT_CHARS))?;
     Some(picks.into_iter().map(|(h, e)| format!("- [Rules] {h}:{}{e}", if e.contains('\n') { "\n" } else { " " })).collect::<Vec<_>>().join("\n\n"))
 }
 
 /// `priority_entities_context(db, world, query, exclude_ids=...)` for a GM: the "High priority for AI" entities the query matches
-fn priority_entities_context(db: &Connection, wid: i64, query: &str, exclude: &std::collections::HashSet<i64>) -> Option<String> {
+fn priority_entities_context_as(db: &Connection, wid: i64, query: &str, exclude: &std::collections::HashSet<i64>, player: Option<i64>) -> Option<String> {
     let words = query_words(query)?;
     if words.is_empty() {
         return Some(String::new());
     }
-    let mut st = db.prepare("SELECT * FROM entities WHERE world_id = ?1 AND rag_priority = 1").ok()?;
+    let visible = match player {
+        Some(uid) => format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {uid}))"),
+        None => String::new(),
+    };
+    let mut st = db.prepare(&format!("SELECT * FROM entities WHERE world_id = ?1 AND rag_priority = 1{visible}")).ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     let mut scored: Vec<(i64, Map<String, Value>, String, String)> = vec![];
     for e in rows {
         if e.get("id").and_then(|v| v.as_i64()).is_some_and(|i| exclude.contains(&i)) {
             continue;
         }
-        let (summary, body) = (text(&e, "summary").unwrap_or_default(), text(&e, "body").unwrap_or_default());
+        let (mut summary, mut body) = (text(&e, "summary").unwrap_or_default(), text(&e, "body").unwrap_or_default());
+        if player.is_some() {
+            summary = strip(&summary, None)?;
+            body = strip(&body, None)?;
+        }
         let score = keyword_score(&text(&e, "name").unwrap_or_else(|| "None".into()), &format!("{summary}\n{body}"), &words)?;
         if score > 0 {
             scored.push((score, e, summary, body));
@@ -546,7 +565,8 @@ fn priority_entities_context(db: &Connection, wid: i64, query: &str, exclude: &s
 
 /// `characters_context(db, world, query, user=None)`: the player characters the question names (in detail), or all of them when it asks
 /// about the party
-fn characters_context(db: &Connection, wid: i64, query: &str) -> Option<String> {
+fn characters_context_as(db: &Connection, world: &Map<String, Value>, query: &str, player: Option<i64>) -> Option<String> {
+    let wid = world.get("id")?.as_i64()?;
     let q = lower(query)?;
     if py_strip(&q).is_empty() {
         return Some(String::new());
@@ -554,7 +574,13 @@ fn characters_context(db: &Connection, wid: i64, query: &str) -> Option<String> 
     static TOK: OnceLock<Regex> = OnceLock::new();
     let tok = TOK.get_or_init(|| Regex::new(r"[\w'’-]+").unwrap());
     let tokens: Vec<String> = tok.find_iter(&q).map(|m| m.as_str().to_string()).filter(|t| !stopwords().contains(t)).collect();
-    let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
+    // a player sees the owned characters when the party is shared with players, else only their own
+    let who = match player {
+        None => String::new(),
+        Some(_) if crate::edits::py_truthy_pub(world.get("players_see_party")) => " AND owner_user_id IS NOT NULL".into(),
+        Some(uid) => format!(" AND owner_user_id = {uid}"),
+    };
+    let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE world_id = ?1{who} ORDER BY name")).ok()?;
     let pcs: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     if pcs.is_empty() {
         return Some(String::new());
@@ -584,7 +610,7 @@ fn characters_context(db: &Connection, wid: i64, query: &str) -> Option<String> 
     }
     let mut lines = vec![];
     for pc in chosen.into_iter().take(CHARACTERS_CONTEXT_LIMIT) {
-        lines.push(format!("- {}", crate::edits::pc_digest_line(db, pc, named(pc)?, true)?));
+        lines.push(format!("- {}", crate::edits::pc_digest_line(db, pc, named(pc)?, player.is_none())?));
     }
     Some(format!("Player characters (live state):\n{}", lines.join("\n")))
 }
@@ -620,13 +646,25 @@ pub fn smart_world_context(db: &Connection, wid: i64, query: &str, entity_limit:
 /// The same, with the entity rows behind it: (context, non-notes, notes) as Python's returns them
 pub fn smart_world_context_full(db: &Connection, wid: i64, query: &str, entity_limit: usize, notes_limit: usize)
     -> Option<(String, Vec<Map<String, Value>>, Vec<Map<String, Value>>)> {
+    smart_world_context_as(db, wid, query, entity_limit, notes_limit, None)
+}
+
+/// `smart_world_context(..., user=<a player>)` when `player` is Some(their id): every query through `_visibility_filter`, [gmonly] and
+/// :::gm text stripped, the characters they may see, and no vault layer (Python leaves it out for a player too)
+pub fn smart_world_context_as(db: &Connection, wid: i64, query: &str, entity_limit: usize, notes_limit: usize, player: Option<i64>)
+    -> Option<(String, Vec<Map<String, Value>>, Vec<Map<String, Value>>)> {
     let world: Map<String, Value> = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
-    if world.get("obsidian_vault_path").and_then(|v| v.as_str()).is_some_and(|p| !py_strip(p).is_empty()) {
+    let strip_secrets = player.is_some();
+    if !strip_secrets && world.get("obsidian_vault_path").and_then(|v| v.as_str()).is_some_and(|p| !py_strip(p).is_empty()) {
         return None;
     }
+    let visible = match player {
+        Some(uid) => format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {uid}))"),
+        None => String::new(),
+    };
     let id_of = |e: &Map<String, Value>| e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let is_note = |e: &Map<String, Value>| e.get("kind").and_then(|v| v.as_str()) == Some("note");
-    let entities = find_relevant_entities(db, wid, query, entity_limit, (0, true))?;
+    let entities = find_relevant_entities(db, wid, query, entity_limit, player.map_or((0, true), |u| (u, false)))?;
     let mut notes: Vec<Map<String, Value>> = entities.iter().filter(|e| is_note(e)).cloned().collect();
     let mut non_notes: Vec<Map<String, Value>> = entities.iter().filter(|e| !is_note(e)).cloned().collect();
     let matched: std::collections::HashSet<i64> = entities.iter().map(id_of).collect();
@@ -639,10 +677,10 @@ pub fn smart_world_context_full(db: &Connection, wid: i64, query: &str, entity_l
         let not_in = if matched.is_empty() { String::new() } else {
             format!(" AND id NOT IN ({})", matched.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
         };
-        non_notes.extend(rows(format!("SELECT * FROM entities WHERE world_id = ?1 AND kind != 'note'{not_in} ORDER BY kind, name LIMIT {}", entity_limit - non_notes.len()))?);
+        non_notes.extend(rows(format!("SELECT * FROM entities WHERE world_id = ?1 AND kind != 'note'{not_in}{visible} ORDER BY kind, name LIMIT {}", entity_limit - non_notes.len()))?);
     }
     if notes_limit > 0 {
-        let latest = rows(format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = 'note' ORDER BY updated_at DESC LIMIT {notes_limit}"))?;
+        let latest = rows(format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = 'note'{visible} ORDER BY updated_at DESC LIMIT {notes_limit}"))?;
         notes.extend(latest.into_iter().filter(|e| !matched.contains(&id_of(e))));
     }
     let mut display: Vec<Map<String, Value>> = vec![];
@@ -667,10 +705,10 @@ pub fn smart_world_context_full(db: &Connection, wid: i64, query: &str, entity_l
         front.extend(display.into_iter().filter(|e| !exact.contains(&id_of(e))));
         display = front;
     }
-    let context = format_context_eligible(db, &display, false, query, Some(&matched))?;
-    let rules = rules_context(&world, query, RULES_SECTION_LIMIT)?;
-    let priority = priority_entities_context(db, wid, query, &matched)?;
-    let chars = characters_context(db, wid, query)?;
+    let context = format_context_eligible(db, &display, strip_secrets, query, Some(&matched))?;
+    let rules = rules_context_as(&world, query, RULES_SECTION_LIMIT, !strip_secrets)?;
+    let priority = priority_entities_context_as(db, wid, query, &matched, player)?;
+    let chars = characters_context_as(db, &world, query, player)?;
     let extra = [rules, priority, chars].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
     let context = if extra.is_empty() { context } else if context.is_empty() { extra } else { format!("{extra}\n\n{context}") };
     Some((context, non_notes, notes))

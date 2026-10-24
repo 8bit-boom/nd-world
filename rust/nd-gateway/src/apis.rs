@@ -596,12 +596,13 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     match uri.path() {
         "/api/ai/world-context-smart" => world_context_smart(&cfg, uri, headers, body),
+        "/api/ai/world-context-player" => world_context_player(&cfg, uri, headers, body),
         _ => None,
     }
 }
@@ -613,6 +614,48 @@ fn body_int(b: &Map<String, Value>, k: &str, default: i64) -> Option<i64> {
         Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
         _ => None,
     }
+}
+
+/// `ai_world_context_player` (app/routers/ai.py): the player-safe Smart Context of the /ai-chat page - the same retrieval through the
+/// caller's own visibility (a GM's is unfiltered); a player only when the world lets players ask the AI
+fn world_context_player(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    // PlayerContextBody: query a string, the limits whole numbers or null (anything else is pydantic's 422: Python's)
+    let b = match serde_json::from_slice::<Value>(raw).ok()? {
+        Value::Object(o) if crate::edits::plain_numbers(raw) => o,
+        _ => return None,
+    };
+    let query = match b.get("query") {
+        None => String::new(),
+        Some(Value::String(q)) => q.clone(),
+        _ => return None,
+    };
+    let opt_int = |k: &str| -> Option<Option<i64>> {
+        match b.get(k) {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::Number(n)) if n.is_i64() => Some(n.as_i64()),
+            _ => None,
+        }
+    };
+    let (limit, notes_limit) = (opt_int("limit")?, opt_int("notes_limit")?);
+    let world = p.world.clone();
+    if !p.is_gm {
+        let open = world.as_ref().is_some_and(|w| crate::edits::py_truthy_pub(w.get("players_can_ask_ai")) || crate::edits::py_truthy_pub(w.get("players_can_use_ai_chat")));
+        if !open {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let Some(w) = world else {
+        return crate::edits::json_response(&json!({"context": ""}));
+    };
+    if crate::edits::py_strip_pub(&query).is_empty() {
+        return crate::edits::json_response(&json!({"context": ""}));
+    }
+    let entity_limit = limit.or_else(|| w.get("ai_chat_rag_entity_limit").and_then(|v| v.as_i64())).unwrap_or(15).clamp(0, 100) as usize;
+    let notes_limit = notes_limit.or_else(|| w.get("ai_chat_rag_notes_limit").and_then(|v| v.as_i64())).unwrap_or(3).clamp(0, 100) as usize;
+    let player = if p.is_gm { None } else { Some(p.user_id) };
+    let (context, non_notes, notes) = crate::retrieval::smart_world_context_as(&db, w.get("id")?.as_i64()?, &query, entity_limit, notes_limit, player)?;
+    crate::edits::json_response(&json!({"context": context, "count": non_notes.len(), "notes": notes.len()}))
 }
 
 /// `ai_world_context_smart` (app/main.py): the AI Chat's Smart Context for a GM (an assistant's filtered view is Python's)

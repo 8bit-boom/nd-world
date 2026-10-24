@@ -3218,3 +3218,70 @@ def test_saved_view_refusals_are_pythons(client, seed):
         assert b.headers.get("x-nd-served-by") == "gateway", (method, path, body)
         assert a.status_code >= 400, (method, path, body)
         assert (a.status_code, a.json()) == (b.status_code, b.json()), (method, path, body)
+
+
+def test_world_context_player_is_pythons(client, seed):
+    """POST /api/ai/world-context-player from the gateway - the player-safe Smart Context: hidden entities left out unless shared with
+    that player, [gmonly] text and :::gm rules blocks stripped, hidden priority entities left out, only the characters the player may
+    see (theirs, or every owned one when the party is shared); the GM's unfiltered view; the world's own limits; a world that does not
+    let players ask the AI (403)."""
+    from app.database import SessionLocal
+    from app.models import Entity, PlayerCharacter, World, entity_player_access
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        shared = Entity(world_id=w, kind="item", name="Shared blade", body="A blade the GM showed you.", visible_to_players=False)
+        db.add_all([Entity(world_id=w, kind="item", name="Vibro Blade", body="A humming blade. [gmonly]Cursed![/gmonly] Costs 200.",
+                           summary="Sharp [gmonly]secret[/gmonly]"),
+                    Entity(world_id=w, kind="item", name="Secret blade", body="The hidden blade.", visible_to_players=False),
+                    Entity(world_id=w, kind="lore", name="Blade lore", body="Blades of old. [gmonly]The king forged them.[/gmonly]", rag_priority=True),
+                    Entity(world_id=w, kind="lore", name="Hidden blade lore", body="Blades secret lore.", rag_priority=True, visible_to_players=False),
+                    Entity(world_id=w, kind="note", name="Blade rumours", body="Someone sells blades."),
+                    Entity(world_id=w, kind="note", name="GM blade note", body="Blades are a trap.", visible_to_players=False),
+                    shared,
+                    PlayerCharacter(world_id=w, name="Vexa", owner_user_id=seed.player_a.id, char_class="Netrunner"),
+                    PlayerCharacter(world_id=w, name="Bramble", owner_user_id=seed.player_b.id),
+                    PlayerCharacter(world_id=w, name="Unowned")])
+        db.flush()
+        db.execute(entity_player_access.insert().values(entity_id=shared.id, user_id=seed.player_a.id))
+        wa = db.get(World, w)
+        wa.rules_md = "# Rules\n\n## Blades\n\nBlades deal 1d8.\n\n:::gm\nBlades secretly explode.\n:::\n\n:::note Tip\nSharpen blades.\n:::\n\n## Armor\n\nArmor soaks."
+        wa.players_can_use_ai_chat = True
+        db.commit()
+    finally:
+        db.close()
+    bodies = ({"query": "blade"}, {"query": "the party characters"}, {"query": "vexa bramble"}, {"query": "blades armor", "limit": 1, "notes_limit": 0},
+              {"query": "  "}, {}, {"query": "blade", "limit": 500, "notes_limit": -2})
+    for see_party in (False, True):
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_see_party = see_party
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for body in bodies:
+                a = d.post("/api/ai/world-context-player", json=body)
+                b = _via(d, base).post("/api/ai/world-context-player", json=body)
+                assert b.headers.get("x-nd-served-by") == "gateway", (email, body)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, see_party, body)
+                if email != seed.gm.email:
+                    ctx = b.json().get("context", "")
+                    for secret in ("Cursed", "secret", "Secret blade", "Hidden blade lore", "GM blade note", "explode", "king forged"):
+                        assert secret not in ctx, (secret, body)
+    db = SessionLocal()
+    try:
+        wa = db.get(World, w)
+        wa.players_can_use_ai_chat = False
+        wa.rules_md = ""
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a = d.post("/api/ai/world-context-player", json={"query": "blade"})
+    b = _via(d, base).post("/api/ai/world-context-player", json={"query": "blade"})
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert (a.status_code, a.json()) == (b.status_code, b.json()) == (403, {"detail": "Forbidden"})
