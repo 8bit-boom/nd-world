@@ -66,6 +66,15 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Player-safe Smart Context** (`POST /api/ai/world-context-player`, retrieval.rs `smart_world_context_as`): the same retrieval as
   the GM's, through the player's own visibility at every step (search, top-up, latest notes, priority entities), [gmonly] text and
   :::gm rules blocks stripped, only the characters the player may see; no vault layer for a player (as in Python).
+- **The player cockpit's live board** (`GET /api/cockpit/player-board`, apis.rs `cockpit_player_board`): the viewer's own parties with
+  member vitals (a GM's `?pc=` reads the board through that character's owner), the world's player-visible active top-level quests with
+  party names, the viewer's characters with vitals and XP; an unknown `?w=` falls back to the viewer's world, as Python's does.
+- **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
+  every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
+  malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The site layout saved and reset** (`POST` / `DELETE /api/view-prefs/site`, edits.rs `view_pref_save` / `view_pref_reset`): the row
+  written as Python's `json.dumps` writes it and the session re-signed with `{options, pins, at, uid}` in it (auth.rs `resign`), so the
+  pages after it are gateway-served from the fresh layout; an unknown section is Python's 404 "Unknown section" on both verbs.
 - **Studio TTS / STT preferences** (`POST /api/ai/unsloth/prefs`): ai_models.json written byte for byte as Python's
   `json.dumps(indent=2)` writes it (nd-render `py_dumps_indent`); Python reads that file afresh on every call, so the two never disagree.
 - **An entity as markdown** (`GET /entity/<id>/download.md`, apis.rs `entity_download`): the same file and headers; a name beyond

@@ -4596,3 +4596,76 @@ def test_party_launch_combat_with_custom_systems_is_pythons(client, seed):
         out.append((r.status_code, [{k: v for k, v in x.items() if k != "id"} for x in json.loads(cs["combatants_json"])], r.headers.get("x-nd-served-by")))
     assert out[0][:2] == out[1][:2], out
     assert out[1][2] == "gateway", out
+
+
+def test_party_rest_undo_is_pythons(client, seed):
+    """POST /api/parties/<id>/rest/undo from the gateway: the snapshot /rest returned put back on every member (PP / MP / Shock and the
+    custom fields a Rest touches), a crafted snapshot's columns clamped and truncated as Python's int() does, foreign / non-member /
+    non-member-shaped ids skipped, Python's refusals (bad JSON, a snapshot that is not a list) - and stored data the port declines
+    (a bool id, a text column value, a float in the stored member list, NaN) reaching Python unchanged."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    w = seed.world_a.id
+    stats = json.dumps([{"id": k, "value": v} for k, v in {"str": 3, "dex": 2, "bod": 4, "per": 1, "wil": 2, "int": 3, "cha": 1, "itu": 2}.items()])
+
+    def state(p1, p2):
+        r1, r2 = _row_by("player_characters", "id", p1), _row_by("player_characters", "id", p2)
+        return ({k: r1[k] for k in ("pp_current", "mp_current", "shock_current", "custom_fields_json")},
+                {k: r2[k] for k in ("pp_current", "mp_current", "shock_current", "custom_fields_json")})
+
+    served = 0
+    cases = [
+        ("the rest's own snapshot", None), ("empty snapshot", []), ("foreign id", [{"id": 999999, "pp_current": 1}]),
+        ("string id", [{"id": "x", "pp_current": 1}]), ("missing pc id", [{"id": 9999999, "pp_current": 1}]),
+        ("float id", [{"id": 1.5, "pp_current": 1}]), ("bool id", [{"id": True, "pp_current": 1}]),
+        ("clamped columns", [{"pp_current": -3, "mp_current": 2.7, "shock_current": None}, {"mp_current": "5", "shock_current": True}]),
+        ("custom fields on a native sheet", [{"id": 0, "custom_fields_json": json.dumps({"f1": 3, "gone": 4})}]),
+        ("snapshot not a list", {"id": 1}), ("no snapshot", {}),
+    ]
+    for label, snap in cases:
+        out = []
+        for side in (gm, _via(gm, base)):
+            p1 = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Undo A", stats_json=stats, pp_current=5, mp_current=4, shock_current=3)
+            p2 = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Undo B", stats_json=stats, pp_current=2, mp_current=2, shock_current=2)
+            pid = _party(world_id=w, name="Undoers", member_pc_ids_json=json.dumps([p1, p2]))
+            before = state(p1, p2)
+            if label == "the rest's own snapshot":
+                r = side.post(f"/api/parties/{pid}/rest", json={"kind": "long"})
+                assert r.status_code == 200, r.text
+                body = {"snapshot": r.json()["snapshot"]}
+            elif label == "bool id":
+                body = {"snapshot": [{"id": bool(p1 > 0 and True), "pp_current": 9}]}
+            elif label == "missing pc id":
+                body = {"snapshot": [{"id": p1 + 10_000_000, "pp_current": 1}]}
+            else:
+                body = {"snapshot": json.loads(json.dumps(snap)) if isinstance(snap, list) else snap}
+            if label == "custom fields on a native sheet":
+                body["snapshot"][0]["id"] = p1
+            if label == "float id":
+                body = {"snapshot": [{"id": float(p2), "pp_current": 8}]}
+            r = side.post(f"/api/parties/{pid}/rest/undo", json=body)
+            j = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
+            out.append((r.status_code, j, state(p1, p2), before, r.headers.get("x-nd-served-by")))
+        assert out[0][:4] == out[1][:4], (label, out)
+        served += out[1][4] == "gateway"
+    # raw bodies Python's json.loads refuses or reads its own way
+    for raw, expect_gateway in ((b"oops", True), (b'{"snapshot": "x"}', True), (b'{"snapshot": NaN}', False),
+                                (b'[]', True), (b"", True), (b'{"snapshot": [1, 2', False)):
+        out = []
+        for side in (gm, _via(gm, base)):
+            p1 = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Raw", pp_current=1)
+            pid = _party(world_id=w, name="Rawers", member_pc_ids_json=json.dumps([p1]))
+            r = side.post(f"/api/parties/{pid}/rest/undo", content=raw)
+            out.append((r.status_code, r.text, r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (raw, out)
+        served += (out[1][2] == "gateway") == expect_gateway
+    # a float in the stored member list (5.0 matches pc 5 in Python's set): the port declines, Python answers
+    out = []
+    for side in (gm, _via(gm, base)):
+        p1 = _pc(world_id=w, owner_user_id=seed.player_a.id, name="Float", pp_current=7)
+        pid = _party(world_id=w, name="Floaters", member_pc_ids_json=json.dumps([float(p1)]))
+        r = side.post(f"/api/parties/{pid}/rest/undo", json={"snapshot": [{"id": p1, "pp_current": 9}]})
+        out.append((r.status_code, r.json(), _row_by("player_characters", "id", p1)["pp_current"], r.headers.get("x-nd-served-by")))
+    assert out[0][:3] == out[1][:3], out
+    assert out[1][0] == 200 and out[0][2] == 9, out
+    assert served >= 10, served

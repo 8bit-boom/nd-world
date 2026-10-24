@@ -26,6 +26,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
         "/api/audio-jobs" => audio_job_list(&cfg, uri, headers),
         "/api/entities/picker" => entities_picker(&cfg, uri, headers),
+        "/api/cockpit/player-board" => cockpit_player_board(&cfg, uri, headers),
         path if id_between(path, "/api/ai/assist-job/", "").is_some() => assist_job(&cfg, uri, headers, id_between(path, "/api/ai/assist-job/", "")?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path if media_run_id(path).is_some() => media_rename_run(&cfg, uri, headers, media_run_id(path)?),
@@ -36,7 +37,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
+    matches!(path, "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
@@ -993,4 +994,92 @@ fn world_context_smart(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8])
     let (context, non_notes, notes) = crate::retrieval::smart_world_context_full(&db, w.get("id")?.as_i64()?, &query, limit, notes_limit)?;
     let entities: Vec<Value> = non_notes.iter().chain(notes.iter()).map(|e| json!({"id": e.get("id"), "name": e.get("name"), "kind": e.get("kind")})).collect();
     crate::edits::json_response(&json!({"context": context, "count": non_notes.len(), "notes": notes.len(), "entities": entities}))
+}
+
+/// `_viewer_pcs` (app/routers/cockpit.py): the characters the player cockpit is FOR - the viewer's own, or a GM's `?pc=` view through
+/// that character's owner (just the character when it has no owner)
+fn viewer_pcs(db: &rusqlite::Connection, p: &crate::layout::PageCtx, wid: i64, as_pc: i64) -> Option<Vec<serde_json::Map<String, Value>>> {
+    let mut owner = p.user_id;
+    if as_pc != 0 && p.is_gm {
+        let t = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [as_pc], |r| crate::layout::row_map(r)).ok();
+        if let Some(t) = t {
+            if t.get("world_id").and_then(|v| v.as_i64()) == Some(wid) {
+                match t.get("owner_user_id").and_then(|v| v.as_i64()) {
+                    None | Some(0) => return Some(vec![t]),
+                    Some(o) => owner = o,
+                }
+            }
+        }
+    }
+    let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY name").ok()?;
+    let rows: Vec<serde_json::Map<String, Value>> = st.query_map([wid, owner], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    Some(rows)
+}
+
+/// `GET /api/cockpit/player-board` (app/routers/cockpit.py `cockpit_player_board`): the player cockpit's live data - the viewer's
+/// own parties with member vitals, the world's player-visible active quests, the viewer's characters with vitals and XP
+fn cockpit_player_board(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let wid = w.get("id")?.as_i64()?;
+    // as_pc: int(pc) if pc.isdigit() else 0 - plain digits only; Unicode digits are Python's
+    let pc_param = crate::pages::query_param(uri, "pc").unwrap_or_default();
+    let as_pc = if !pc_param.is_empty() && pc_param.bytes().all(|b| b.is_ascii_digit()) && pc_param.len() < 16 { pc_param.parse::<i64>().unwrap_or(0) } else if pc_param.is_empty() { 0 } else { return None };
+    let pcs = viewer_pcs(&db, &p, wid, as_pc)?;
+    let name_or = |m: &serde_json::Map<String, Value>| m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // _player_parties: the parties one of the viewer's own characters belongs to, member vitals included
+    let my_pc_ids: Vec<i64> = pcs.iter().filter_map(|pc| pc.get("id").and_then(|v| v.as_i64())).collect();
+    let mut parties = vec![];
+    if !my_pc_ids.is_empty() {
+        let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
+        let rows: Vec<serde_json::Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        drop(st);
+        for party in rows {
+            let ids = crate::edits::member_ids(party.get("member_pc_ids_json"))?;
+            if !my_pc_ids.iter().any(|i| ids.contains(i)) {
+                continue;
+            }
+            let members: Vec<serde_json::Map<String, Value>> = if ids.is_empty() { vec![] } else {
+                let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+                let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list})")).ok()?;
+                let r: Vec<serde_json::Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+                r
+            };
+            parties.push(json!({"id": party.get("id"), "name": party.get("name"),
+                "members": crate::edits::member_vitals(&db, &members, Some(4))?}));
+        }
+    }
+    // _player_quests: active top-level quests the world shows players, party names attached
+    let mut st = db.prepare("SELECT * FROM quests WHERE world_id = ?1 AND status = 'active' AND parent_id IS NULL AND visible_to_players = 1 ORDER BY category, title LIMIT 12").ok()?;
+    let quests: Vec<serde_json::Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+    drop(st);
+    let mut party_names = serde_json::Map::new();
+    let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
+    for r in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
+        let (id, name) = r.ok()?;
+        party_names.insert(id.to_string(), json!(name));
+    }
+    drop(st);
+    let truthy = |v: Option<&Value>| matches!(v, Some(Value::String(s)) if !s.is_empty());
+    let quests: Vec<Value> = quests.iter().map(|q| {
+        let cat = q.get("category").filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!("main"));
+        json!({
+            "id": q.get("id"), "title": q.get("title"), "category": cat,
+            "summary": q.get("summary").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| Value::String(s.to_string())).unwrap_or_else(|| json!("")),
+            "party_id": q.get("assigned_party_id"),
+            "party": q.get("assigned_party_id").and_then(|v| v.as_i64()).and_then(|i| party_names.get(&i.to_string())).cloned().unwrap_or(Value::Null),
+        })
+    }).collect();
+    // _player_my_pcs: the viewer's characters, vitals + XP; the vitals strip is built in SQL order and zipped onto the name-sorted rows
+    let mut sorted: Vec<&serde_json::Map<String, Value>> = pcs.iter().collect();
+    sorted.sort_by(|a, b| name_or(a).cmp(&name_or(b)));
+    let vitals = crate::edits::member_vitals(&db, &pcs, None)?;
+    let my_pcs: Vec<Value> = sorted.iter().zip(vitals.iter()).map(|(pc, v)| {
+        let mut o = match v { Value::Object(o) => o.clone(), _ => return None };
+        o.insert("xp".into(), pc.get("xp").cloned().unwrap_or(Value::Null));
+        Some(Value::Object(o))
+    }).collect::<Option<Vec<_>>>()?;
+    crate::edits::json_response(&json!({"parties": parties, "quests": quests, "my_pcs": my_pcs}))
 }

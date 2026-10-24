@@ -345,6 +345,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/parties/{}/location", party_location),
     ("/api/parties/{}/loot", party_loot),
     ("/api/parties/{}/rest", party_rest),
+    ("/api/parties/{}/rest/undo", party_rest_undo),
     ("/api/parties/{}/launch-combat", party_launch_combat),
     ("/api/parties/{}/members/toggle", party_member_toggle),
     ("/new", entity_new),
@@ -6200,8 +6201,9 @@ fn view_clean(section: &str, raw: Option<&Value>) -> Option<Value> {
 }
 
 fn view_pref_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
-    if section == "site" {
-        return None; // remembered in the session cookie too (site_layout.remember): Python's
+    // a section Python does not know: its 404 "Unknown section" (names the path filter would not read as one are Python's already)
+    if view_section(section).is_none() {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Unknown section"));
     }
     let raw: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
     let cleaned = view_clean(section, Some(&raw))?;
@@ -6215,14 +6217,39 @@ fn view_pref_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
             orm::insert(&c.db, "user_view_prefs", &[("user_id", Sql::Integer(c.p.user_id)), ("section", s(section)), ("prefs_json", s(&text))])?;
         }
     }
+    if section == "site" {
+        // site_layout.remember: the session carries {options, pins, at, uid}, re-signed like Starlette sends it
+        let uid = c.p.user_id;
+        let at = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+        let value = cleaned.clone();
+        let line = crate::auth::resign(c.cfg, c.headers, move |sess| {
+            sess.insert("site_layout".into(), json!({"options": value.get("options"), "pins": value.get("pins"), "at": at, "uid": uid}));
+        })?;
+        let mut r = json_response(&cleaned)?;
+        if let Ok(v) = line.parse() {
+            r.headers_mut().append(header::SET_COOKIE, v);
+        }
+        return Some(r);
+    }
     json_response(&cleaned)
 }
 
 fn view_pref_reset(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
-    if section == "site" || view_section(section).is_none() {
-        return None;
+    if view_section(section).is_none() {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Unknown section"));
     }
     c.db.execute("DELETE FROM user_view_prefs WHERE user_id = ?1 AND section = ?2", rusqlite::params![c.p.user_id, section]).ok()?;
+    if section == "site" {
+        // site_layout.forget: the key out of the session, which Starlette then re-signs
+        let line = crate::auth::resign(c.cfg, c.headers, |sess| {
+            sess.shift_remove("site_layout");
+        })?;
+        let mut r = json_response(&json!({"reset": section}))?;
+        if let Ok(v) = line.parse() {
+            r.headers_mut().append(header::SET_COOKIE, v);
+        }
+        return Some(r);
+    }
     json_response(&json!({"reset": section}))
 }
 
@@ -11040,6 +11067,118 @@ fn party_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::touch(&c.db, party.get("world_id")?.as_i64()?)?;
     json_response(&json!({"applied": applied, "snapshot": snapshot, "kind": kind}))
+}
+
+/// `party_rest_undo` (app/routers/parties.py): put back what `party_rest` changed - only member PCs, only the fields a Rest of their
+/// system can change (the same snapshot restore `hub_rest_undo` does), malformed entries skipped, never applied
+fn party_rest_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (party, level) = party_for_write(c, ids[0])?;
+    if level != "full" {
+        return None;
+    }
+    // parse_json's two refusals: a body json.loads fails on is Python's "Invalid JSON body"; a body it reads (a list) has no
+    // "snapshot" list -> "snapshot must be a list". A body the two readers disagree on is Python's.
+    let body = match json_body_refusal_as(c.body, "Invalid JSON body", "snapshot must be a list")? {
+        Some(r) => return Some(r),
+        None => serde_json::from_slice::<Value>(c.body).unwrap_or(Value::Null),
+    };
+    let Some(snapshot) = body.get("snapshot").filter(|v| v.is_array()).and_then(|v| v.as_array()) else {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "snapshot must be a list"));
+    };
+    let members: Value = match party.get("member_pc_ids_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+        Some(t) => match serde_json::from_str(t) {
+            Ok(v) => v,
+            Err(_) => return None, // a stored list json.loads fails on: Python 500s
+        },
+        None => json!([]),
+    };
+    let member_ids = match members {
+        Value::Array(a) => {
+            // a float member id (5.0) matches pc 5 in Python's set; the port does not, so that stored list is Python's
+            if a.iter().any(|m| m.is_number() && m.as_i64().is_none()) {
+                return None;
+            }
+            a
+        }
+        _ => return None, // a stored list json.loads reads as a non-list: Python's set() of it is not ported
+    };
+    let mut restored: i64 = 0;
+    for entry in snapshot {
+        let Some(e) = entry.as_object() else { continue };
+        let Some(pid) = e.get("id").and_then(|v| v.as_i64()) else {
+            if e.get("id").map_or(false, |v| v.is_boolean()) {
+                return None; // isinstance(bool, int) is Python's; decline rather than match a bool to 1
+            }
+            continue;
+        };
+        if !member_ids.iter().any(|m| m.as_i64() == Some(pid)) {
+            continue;
+        }
+        let Ok(pc) = c.db.query_row("SELECT * FROM player_characters WHERE id = ?1", [pid], |r| crate::layout::row_map(r)) else {
+            continue;
+        };
+        restore_snapshot(c, &pc, e)?;
+        restored += 1;
+    }
+    orm::touch(&c.db, party.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"ok": true, "restored": restored}))
+}
+
+/// `restore_pc_snapshot` on one character row: the PP / MP / Shock columns the entry carries, and - when its system has Rest rules -
+/// the custom fields they touch, back to the entry's values (a key the Rest saved is unsaved again). Returns None when something the
+/// two JSON readers or the sheet port see differently is inside; Python answers that entry's request instead.
+fn restore_snapshot(c: &Ctx, pc: &Map<String, Value>, e: &Map<String, Value>) -> Option<()> {
+    let mut set = vec![];
+    for col in ["pp_current", "mp_current", "shock_current"] {
+        let v = match e.get(col) {
+            None => continue,
+            Some(Value::Null) | Some(Value::Bool(false)) => 0,
+            Some(Value::Bool(true)) => 1,
+            Some(Value::Number(n)) => match n.as_i64() {
+                Some(i) => i,
+                None => {
+                    let f = n.as_f64()?.trunc();
+                    if !f.is_finite() || f.abs() > 9e15 {
+                        return None;
+                    }
+                    f as i64
+                }
+            },
+            Some(_) => return None, // int("12") and friends: Python's setattr accepts more; forwarded
+        };
+        set.push((col, Sql::Integer(v.max(0))));
+    }
+    let tpl: Option<crate::sheets::Tpl> = crate::sheets::pc_template(&c.db, pc)?;
+    if let (Some(Value::String(raw)), Some(t)) = (e.get("custom_fields_json"), &tpl) {
+        if raw.chars().count() <= 200_000 {
+            if let Ok(Value::Object(before)) = serde_json::from_str::<Value>(raw) {
+                let mut cf = crate::sheets::custom_fields(pc)?;
+                for key in t.rest_touched_keys() {
+                    match before.get(&key) {
+                        None => {
+                            cf.shift_remove(&key);
+                        }
+                        Some(v @ Value::Number(_)) => {
+                            cf.insert(key, v.clone());
+                        }
+                        Some(v @ Value::String(t)) if t.chars().count() <= 100 => {
+                            cf.insert(key, v.clone());
+                        }
+                        Some(Value::Bool(_)) => return None, // isinstance(bool, int): Python's
+                        Some(_) => {}
+                    }
+                }
+                set.push(("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf)))));
+            } else if raw.contains("NaN") || raw.contains("Infinity") {
+                return None;
+            }
+        }
+    }
+    if !set.is_empty() {
+        let pid = pc.get("id")?.as_i64()?;
+        orm::update(&c.db, "player_characters", pid, &set)?;
+    }
+    Some(())
 }
 
 /// `hub_rest_undo` (`restore_pc_snapshot`): PP, MP and Shock put back, and - on a custom system - only the custom fields its Rest can

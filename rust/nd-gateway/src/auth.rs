@@ -587,6 +587,20 @@ mod tests {
     }
 }
 
+/// The session re-signed after `change`, as Starlette's SessionMiddleware sends a mutated session: the Set-Cookie
+/// line, or None when the request carries no readable session (the route is forwarded, Python answers instead).
+pub(crate) fn resign<F: FnOnce(&mut Map<String, Value>)>(cfg: &Config, headers: &HeaderMap, change: F) -> Option<String> {
+    let secret = cfg.secret_key.as_deref()?;
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
+    let value = crate::session::cookie(cookie, crate::session::COOKIE_NAME)?;
+    let n = now();
+    let sess = crate::session::read(value, secret, n, crate::session::MAX_AGE_SECONDS)?;
+    let Value::Object(mut s) = sess else { return None };
+    change(&mut s);
+    let text = nd_render::py_dumps(&Value::Object(s));
+    Some(format!("session={}; path=/; Max-Age={SESSION_MAX_AGE}; {}", crate::session::sign(&text, secret, n), flags()))
+}
+
 /// The session refreshed at the front of the gateway (what app/session_cookie.py and site_layout.for_request do on Python's pages): a
 /// session signed more than 6 h ago is re-signed, and a signed-in person's site layout older than 15 min (or another person's) is
 /// read again. Returns (the new cookie value, the Set-Cookie line), or None when nothing needs refreshing.
