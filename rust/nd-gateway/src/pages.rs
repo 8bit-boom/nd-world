@@ -1857,3 +1857,33 @@ pub fn ai_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> O
     c.insert("world_system".into(), json!(system));
     render_with(pages, "ai_chat.html", p.ctx, headers)
 }
+
+/// `GET /import` (app/routers/importer.py `import_page`): the import tools, with the world's schematics, maps and entities as JSON
+pub fn import_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone();
+    if !section_ok(&p, world.as_ref(), "import")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
+    let mut st = db.prepare("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name, id").ok()?;
+    let schematics: Vec<Value> = st.query_map([wid], |r| Ok(json!({"slug": r.get::<_, Option<String>>(0)?, "name": r.get::<_, Option<String>>(1)?})))
+        .ok()?.collect::<Result<_, _>>().ok()?;
+    let maps: Vec<Value> = crate::maps::world_maps(cfg, wid)?.into_iter()
+        .map(|(slug, d)| { let name = d.get("name").cloned().unwrap_or_else(|| json!(slug)); json!({"slug": slug, "name": name}) }).collect();
+    let mut st = db.prepare("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY kind, name, id").ok()?;
+    let entities: Vec<Value> = st.query_map([wid], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, Option<String>>(1)?,
+        "kind": r.get::<_, Option<String>>(2)?, "has_image": r.get::<_, Option<String>>(3)?.map_or(false, |s| !s.is_empty())})))
+        .ok()?.collect::<Result<_, _>>().ok()?;
+    let c = &mut p.ctx;
+    c.insert("schematics_json".into(), json!(nd_render::py_dumps(&Value::Array(schematics))));
+    c.insert("maps_json".into(), json!(nd_render::py_dumps(&Value::Array(maps))));
+    c.insert("entities_json".into(), json!(nd_render::py_dumps(&Value::Array(entities))));
+    c.insert("bulk_image_max_files".into(), json!(100));
+    c.insert("kinds_json".into(), json!(nd_render::py_dumps(&json!(nd_perm::sections::KINDS))));
+    c.insert("max_vision_import_images".into(), json!(6));
+    render_with(pages, "import.html", p.ctx, headers)
+}

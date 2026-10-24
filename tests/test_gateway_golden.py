@@ -2039,3 +2039,31 @@ def test_calendar_search_is_pythons(client, seed):
             a, b = d.get(url), _via(d, base).get(url)
             assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, q)
             assert b.headers.get("x-nd-served-by") == "gateway", (email, q)
+
+
+def test_import_page_is_pythons(client, seed):
+    """GET /import from the gateway: the world's schematics (not the HTML ones), maps and entities as the page's JSON, for the GM and an
+    assistant-free player refusal, and a world with nothing in it."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, Schematic
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Schematic(world_id=w, name="Base ü", slug="gw-imp-base"), Schematic(world_id=w, name="Html", slug="gw-imp-html", is_html=True),
+                    Entity(world_id=w, kind="item", name="Knife \"x\"", image_url="/uploads/k.png"), Entity(world_id=w, kind="character", name="Bo")])
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.gm.email, GM_PASSWORD, seed.world_b.slug),
+                             (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        a, b = d.get("/import", follow_redirects=False), _via(d, base).get("/import", follow_redirects=False)
+        if a.status_code != 200:
+            assert (a.status_code, a.text) == (b.status_code, b.text)
+            served += b.headers.get("x-nd-served-by") == "gateway"
+            continue
+        served += _same_page(d, _via(d, base), "/import", email)
+    assert served == 3, served
