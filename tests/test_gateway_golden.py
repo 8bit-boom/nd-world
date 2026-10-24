@@ -2647,3 +2647,50 @@ def test_private_notes_page_is_pythons(client, seed):
                 assert b.headers.get("x-nd-served-by") == "gateway", (email, u)
                 continue
             assert _same_page(d, _via(d, base), u, email), (email, u)
+
+
+def test_party_rest_is_pythons(client, seed):
+    """POST /api/parties/<id>/rest from the gateway: the same Rest (long, short, an unreadable body) written as Python writes it - each
+    member by its own system (an N&D sheet, a built-in custom system, a custom system without Rest rules) - checked by running it on
+    Python, undoing it, and running it through the gateway."""
+    from app.database import SessionLocal
+    from app.models import Party, PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        ast = db.query(SheetTemplate).filter(SheetTemplate.slug == "asterion").first()
+        plain = db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom", SheetTemplate.slug != "asterion").first()
+        pcs = [PlayerCharacter(world_id=w, name="Nat", pp_current=1, mp_current=0, shock_current=0,
+                               stats_json=json.dumps([{"id": k, "value": 3} for k in ("str", "dex", "bod", "per", "wil", "int", "cha", "itu")])),
+               PlayerCharacter(world_id=w, name="Ast", sheet_template_id=ast.id if ast else None, custom_fields_json=json.dumps({"health_current": 1})),
+               PlayerCharacter(world_id=w, name="Plain", sheet_template_id=plain.id if plain else None)]
+        db.add_all(pcs)
+        db.flush()
+        party = Party(world_id=w, name="Resting", member_pc_ids_json=json.dumps([p.id for p in pcs]))
+        db.add(party)
+        db.commit()
+        pid, pc_ids = party.id, [p.id for p in pcs]
+    finally:
+        db.close()
+
+    def state():
+        db = SessionLocal()
+        try:
+            return [(p.pp_current, p.mp_current, p.shock_current, p.custom_fields_json) for p in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).order_by(PlayerCharacter.id)]
+        finally:
+            db.close()
+
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for body in ({"kind": "long"}, {"kind": "short"}, None):
+        before = state()
+        post = (lambda c: c.post(f"/api/parties/{pid}/rest", json=body)) if body is not None else (lambda c: c.post(f"/api/parties/{pid}/rest", content=b"{oops"))
+        a = post(gm)
+        after_a = state()
+        assert gm.post(f"/api/parties/{pid}/rest/undo", json={"snapshot": a.json()["snapshot"]}).status_code == 200
+        assert state() == before
+        b = post(_via(gm, base))
+        assert b.headers.get("x-nd-served-by") == "gateway", body
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), body
+        assert state() == after_a, body
+        gm.post(f"/api/parties/{pid}/rest/undo", json={"snapshot": b.json()["snapshot"]})

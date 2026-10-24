@@ -345,6 +345,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/parties/{}/delete", party_delete),
     ("/api/parties/{}/location", party_location),
     ("/api/parties/{}/loot", party_loot),
+    ("/api/parties/{}/rest", party_rest),
     ("/api/parties/{}/launch-combat", party_launch_combat),
     ("/api/parties/{}/members/toggle", party_member_toggle),
     ("/new", entity_new),
@@ -10630,7 +10631,7 @@ fn hub_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         Some(Value::String(k)) if k == "short" || k == "long" => k.clone(),
         _ => return None,
     };
-    let (_, shock, pp, mp, native) = pc_maxima(&c.db, &pc)?;
+    let (.., native) = pc_maxima(&c.db, &pc)?;
     let tpl = crate::sheets::pc_template(&c.db, &pc)?;
     // _rest_kinds: N&D has one Rest ("long"); a custom system the kinds it defines
     let kinds: Vec<&str> = if native { vec!["long"] } else {
@@ -10639,16 +10640,28 @@ fn hub_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     if !kinds.contains(&kind.as_str()) {
         return None;
     }
-    let ops = tpl.as_ref().map(|t| t.rest_ops(&kind)).unwrap_or_default();
+    let (result, entry) = pc_rest(c, &pc, &kind)??;
+    char_log(c, &pc, "rest", if kind == "short" { "Took a short rest" } else { "Took a rest" }, &json!({}))?;
+    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"kind": kind, "result": result, "snapshot": entry}))
+}
+
+/// `apply_pc_rest(db, pc, kind)`: a Rest on one character by its own system's rules - Some(None) when its system has no Rest rules,
+/// Some(Some((result, snapshot entry))) once written (not committed)
+fn pc_rest(c: &Ctx, pc: &Map<String, Value>, kind: &str) -> Option<Option<(Map<String, Value>, Map<String, Value>)>> {
+    let pid = pc.get("id")?.as_i64()?;
+    let (_, shock, pp, mp, native) = pc_maxima(&c.db, pc)?;
+    let tpl = crate::sheets::pc_template(&c.db, pc)?;
+    let ops = tpl.as_ref().map(|t| t.rest_ops(kind)).unwrap_or_default();
     if !native && ops.is_empty() {
-        return None;
+        return Some(None);
     }
     // _refresh_feats_after_rest
-    if let Some(used) = pc_prefs(&c.db, ids[0])?.get("feat_used").filter(|v| py_truthy(Some(v))) {
+    if let Some(used) = pc_prefs(&c.db, pid)?.get("feat_used").filter(|v| py_truthy(Some(v))) {
         let used = used.as_object()?;
         if used.values().any(|v| v == "rest") {
             let keep: Map<String, Value> = used.iter().filter(|(_, v)| *v != "rest").map(|(k, v)| (k.clone(), v.clone())).collect();
-            set_pc_pref(c, &pc, "feat_used", (!keep.is_empty()).then(|| Value::Object(keep)))?;
+            set_pc_pref(c, pc, "feat_used", (!keep.is_empty()).then(|| Value::Object(keep)))?;
         }
     }
     let (id, name) = (pc.get("id").cloned(), pc.get("name").cloned());
@@ -10672,14 +10685,54 @@ fn hub_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         let t = tpl.as_ref()?;
         let raw = pc.get("custom_fields_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}").to_string();
         entry.insert("custom_fields_json".into(), json!(raw));
-        let cf = t.apply_rest(&crate::sheets::custom_fields(&pc)?, &kind)?;
+        let cf = t.apply_rest(&crate::sheets::custom_fields(pc)?, kind)?;
         set.push(("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf.clone())))));
         result.insert("tracks".into(), Value::Array(t.tracks(&cf, true)?));
     }
-    orm::update(&c.db, "player_characters", ids[0], &set)?;
-    char_log(c, &pc, "rest", if kind == "short" { "Took a short rest" } else { "Took a rest" }, &json!({}))?;
-    orm::touch(&c.db, pc.get("world_id")?.as_i64()?)?;
-    json_response(&json!({"kind": kind, "result": result, "snapshot": entry}))
+    orm::update(&c.db, "player_characters", pid, &set)?;
+    Some(Some((result, entry)))
+}
+
+/// `party_rest` (`apply_party_rest`): a Rest for every member of a party of the active world, each by its own system (full edit tier)
+fn party_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let (party, level) = party_for_write(c, ids[0])?;
+    if level != "full" {
+        return None;
+    }
+    // parse_json failing reads as {}: a long Rest
+    let body = if c.body.is_empty() { Map::new() } else {
+        match serde_json::from_slice::<Value>(c.body) {
+            Ok(Value::Object(o)) if plain_numbers(c.body) => o,
+            Ok(Value::Object(_)) => return None,
+            Ok(_) => Map::new(),
+            Err(_) => {
+                let t = String::from_utf8_lossy(c.body);
+                if t.contains("NaN") || t.contains("Infinity") { return None; }
+                Map::new()
+            }
+        }
+    };
+    let kind = match body.get("kind") {
+        None => "long".to_string(),
+        Some(Value::String(k)) if k == "short" || k == "long" => k.clone(),
+        _ => return None, // the 400: Python's
+    };
+    let ids_list = int_list(party.get("member_pc_ids_json"))?;
+    let (mut applied, mut snapshot) = (vec![], vec![]);
+    if !ids_list.is_empty() {
+        let list = ids_list.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let mut st = c.db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list}) ORDER BY id")).ok()?;
+        let pcs: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
+        drop(st);
+        for pc in pcs {
+            if let Some((r, e)) = pc_rest(c, &pc, &kind)? {
+                applied.push(Value::Object(r));
+                snapshot.push(Value::Object(e));
+            }
+        }
+    }
+    orm::touch(&c.db, party.get("world_id")?.as_i64()?)?;
+    json_response(&json!({"applied": applied, "snapshot": snapshot, "kind": kind}))
 }
 
 /// `hub_rest_undo` (`restore_pc_snapshot`): PP, MP and Shock put back, and - on a custom system - only the custom fields its Rest can
