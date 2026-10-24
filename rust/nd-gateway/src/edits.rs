@@ -316,7 +316,6 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/worlds/{}/home/pinned-tile", home_pin_tile),
     ("/api/worlds/{}/home/pinned-tile/remove", home_unpin_tile),
     ("/api/worlds/{}/home/hide-kind", home_hide_kind),
-    ("/account/name", account_name),
     ("/account/tokens/{}/revoke", account_token_revoke),
     ("/account/trusted-devices/{}/revoke", account_device_revoke),
     ("/worlds/{}/edit", world_edit),
@@ -6488,17 +6487,7 @@ fn home_hide_kind(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     json_response(&json!({"ok": true}))
 }
 
-// ── the account page (app/routers/account.py): the plain parts ───────────────
-
-fn account_name(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
-    let f = c.form()?;
-    let name = strip(f.get("display_name").unwrap_or(""));
-    if name.is_empty() || name.chars().count() > 256 {
-        return None; // the page again with its error: Python's
-    }
-    orm::update(&c.db, "users", c.p.user_id, &[("display_name", s(&name))])?;
-    redirect("/account?saved=name")
-}
+// ── the account page (app/routers/account.py): the revokes (the name, tokens and two-step are auth.rs) ───────────────
 
 /// Delete one of the viewer's own rows of `table` (another's, or none: nothing happens), then back to /account
 fn account_revoke(c: &mut Ctx, table: &str, id: i64) -> Option<Response<Body>> {

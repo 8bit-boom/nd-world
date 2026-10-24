@@ -294,6 +294,8 @@ pub async fn route(pages: Arc<Pages>, cfg: Arc<Config>, method: Method, uri: Uri
             ("POST", "/login/2fa") => login_2fa(&pages, &db, &headers, &body),
             ("GET", "/account/2fa/setup") => twofa_setup(&pages, &cfg, &db, &uri, &headers),
             ("POST", "/account/2fa/setup") => twofa_confirm(&pages, &cfg, &db, &uri, &headers, &body),
+            ("POST", "/account/name") => account_name(&pages, &cfg, &db, &uri, &headers, &body),
+            ("POST", "/account/tokens/new") => account_token_new(&pages, &cfg, &db, &uri, &headers, &body),
             _ => None,
         }
     }).await.ok()?
@@ -351,6 +353,57 @@ fn twofa_page(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri,
     Some(with_cookie(crate::pages::html(status, html, headers), None))
 }
 
+/// `request.base_url` as uvicorn reads it from the browser's request (scheme from a trusted proxy's X-Forwarded-Proto, else http)
+fn base_url(cfg: &Config, headers: &HeaderMap) -> Option<String> {
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    let scheme = if cfg.trust_proxy {
+        headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).map(|s| s.split(',').next().unwrap_or("").trim().to_string())
+            .filter(|s| !s.is_empty()).unwrap_or_else(|| "http".into())
+    } else {
+        "http".into()
+    };
+    Some(format!("{scheme}://{host}/"))
+}
+
+/// `POST /account/name` (`account_update_name`)
+fn account_name(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let user = signed_in_user(cfg, db, headers)?;
+    let form = crate::ai::small_form(headers, body)?;
+    let name = crate::edits::py_strip_pub(form.get("display_name").unwrap_or("")).to_string();
+    let error = if name.is_empty() {
+        "Display name can't be blank."
+    } else if name.chars().count() > 256 {
+        "Display name is too long."
+    } else {
+        crate::orm::update(db, "users", user.get("id")?.as_i64()?, &[("display_name", rusqlite::types::Value::Text(name))])?;
+        return Some(with_cookie(redirect("/account?saved=name"), None));
+    };
+    let mut extra = Map::new();
+    extra.insert("name_error".into(), json!(error));
+    Some(with_cookie(crate::account::render(pages, cfg, db, "POST", uri, headers, extra, StatusCode::BAD_REQUEST)?, None))
+}
+
+/// `POST /account/tokens/new` (`account_token_new`): a new MCP token, shown once on the account page (only its sha256 is kept)
+fn account_token_new(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let user = signed_in_user(cfg, db, headers)?;
+    let form = crate::ai::small_form(headers, body)?;
+    let base = base_url(cfg, headers)?;
+    let label: String = crate::edits::py_strip_pub(form.get("label").unwrap_or("")).chars().take(256).collect();
+    let label = if label.is_empty() { "Unlabeled token".to_string() } else { label };
+    // secrets.token_urlsafe(32)
+    use rand::RngCore;
+    let mut b = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    use base64::Engine;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+    crate::orm::insert(db, "api_tokens", &[("user_id", rusqlite::types::Value::Integer(user.get("id")?.as_i64()?)),
+        ("token_hash", rusqlite::types::Value::Text(sha256_hex(&raw))), ("label", rusqlite::types::Value::Text(label))])?;
+    let mut extra = Map::new();
+    extra.insert("new_token".into(), json!(raw));
+    extra.insert("__base_url".into(), json!(base));
+    Some(with_cookie(crate::account::render(pages, cfg, db, "POST", uri, headers, extra, StatusCode::OK)?, None))
+}
+
 /// `POST /account/2fa/setup` (`account_2fa_confirm`): a wrong code shows the setup page again (400); the right one turns two-step on with
 /// 8 fresh backup codes (stored as sha256) and shows them on the account page
 fn twofa_confirm(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
@@ -382,7 +435,7 @@ fn twofa_confirm(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &U
     s.shift_remove("pending_totp_secret");
     let mut extra = Map::new();
     extra.insert("new_backup_codes".into(), json!(codes));
-    let r = crate::account::render(pages, cfg, db, &Uri::from_static("/account/2fa/setup"), headers, extra, StatusCode::OK)?;
+    let r = crate::account::render(pages, cfg, db, "POST", &Uri::from_static("/account/2fa/setup"), headers, extra, StatusCode::OK)?;
     Some(with_cookie(r, session_cookie(pages, &s, had)))
 }
 

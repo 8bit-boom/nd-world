@@ -3056,3 +3056,94 @@ def test_account_page_and_2fa_confirm_are_pythons(client, seed):
     r = via.post("/account/2fa/setup", data={"code": "1"}, follow_redirects=False)
     assert (r.status_code, r.headers.get("location"), r.headers.get("x-nd-served-by")) == (303, "/account", "gateway")
     reset()
+
+
+def test_account_name_tokens_and_revokes_are_pythons(client, seed):
+    """POST /account/name (blank, too long, saved), /account/tokens/new (shown once; only its sha256 kept) and the token / trusted
+    device revokes (someone else's row left alone) from the gateway."""
+    import hashlib
+    import re
+    from datetime import datetime, timedelta
+    from app.database import SessionLocal
+    from app.models import ApiToken, TrustedDevice, User
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+
+    def name():
+        db = SessionLocal()
+        try:
+            return db.query(User).filter(User.email == seed.player_a.email).first().display_name
+        finally:
+            db.close()
+
+    original = name()
+    for value in ("   ", "x" * 257, "é" * 256 + " "):
+        a = d.post("/account/name", data={"display_name": value}, follow_redirects=False)
+        after_a = name()
+        db = SessionLocal()
+        try:
+            db.query(User).filter(User.email == seed.player_a.email).first().display_name = original
+            db.commit()
+        finally:
+            db.close()
+        b = via.post("/account/name", data={"display_name": value}, follow_redirects=False)
+        assert b.headers.get("x-nd-served-by") == "gateway", value
+        assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location")), value
+        if a.status_code != 303:
+            assert golden.normalise("text/html", a.content) == golden.normalise("text/html", b.content), value
+        assert name() == after_a, value
+    db = SessionLocal()
+    try:
+        db.query(User).filter(User.email == seed.player_a.email).first().display_name = original
+        db.commit()
+    finally:
+        db.close()
+
+    def tokens():
+        db = SessionLocal()
+        try:
+            return [(t.label, t.token_hash) for t in db.query(ApiToken).filter(ApiToken.user_id == seed.player_a.id).order_by(ApiToken.id)]
+        finally:
+            db.close()
+
+    pat = r'<code style="display:block;word-break:break-all;font-size:.82rem;background:var\(--bg3\);padding:.5rem;border-radius:3px">([A-Za-z0-9_-]{43})</code>'
+
+    def norm(html, raw):
+        html = html.replace(raw, "TOKEN")
+        return re.sub(r'"url": "http://[^/"]+/mcp"', '"url": "BASE/mcp"', html)
+
+    for label in ("  My phone  ", ""):
+        a = d.post("/account/tokens/new", data={"label": label})
+        b = via.post("/account/tokens/new", data={"label": label})
+        assert b.headers.get("x-nd-served-by") == "gateway"
+        assert a.status_code == b.status_code == 200
+        ra, rb = re.search(pat, a.text).group(1), re.search(pat, b.text).group(1)
+        assert f'"url": "{base}/mcp"' in b.text
+        got = tokens()
+        assert [t[0] for t in got[-2:]] == [label.strip() or "Unlabeled token"] * 2
+        assert got[-1][1] == hashlib.sha256(rb.encode()).hexdigest() and got[-2][1] == hashlib.sha256(ra.encode()).hexdigest()
+        # the gateway's page lists one token more (a row says Revoke twice: the button and its confirm)
+        assert golden.normalise("text/html", norm(a.text, ra).encode()).count("Revoke") + 2 == golden.normalise("text/html", norm(b.text, rb).encode()).count("Revoke")
+    db = SessionLocal()
+    try:
+        mine = db.query(ApiToken).filter(ApiToken.user_id == seed.player_a.id).first().id
+        theirs = ApiToken(user_id=seed.gm.id, token_hash="e" * 64, label="GM's")
+        dev = TrustedDevice(user_id=seed.player_a.id, token_hash="f" * 64, label="mine", expires_at=datetime.utcnow() + timedelta(days=3))
+        gm_dev = TrustedDevice(user_id=seed.gm.id, token_hash="9" * 64, label="gm", expires_at=datetime.utcnow() + timedelta(days=3))
+        db.add_all([theirs, dev, gm_dev])
+        db.commit()
+        ids = (mine, theirs.id, dev.id, gm_dev.id)
+    finally:
+        db.close()
+    for path in (f"/account/tokens/{ids[1]}/revoke", f"/account/tokens/{ids[0]}/revoke", f"/account/trusted-devices/{ids[3]}/revoke",
+                 f"/account/trusted-devices/{ids[2]}/revoke", "/account/tokens/999999/revoke"):
+        r = via.post(path, follow_redirects=False)
+        assert (r.status_code, r.headers.get("location"), r.headers.get("x-nd-served-by")) == (303, "/account", "gateway"), path
+    db = SessionLocal()
+    try:
+        assert db.get(ApiToken, ids[0]) is None and db.get(ApiToken, ids[1]) is not None
+        assert db.get(TrustedDevice, ids[2]) is None and db.get(TrustedDevice, ids[3]) is not None
+    finally:
+        db.close()

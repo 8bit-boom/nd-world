@@ -62,6 +62,7 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from
   scripts/gen_rust_data.py), and the **two-step confirm** (`POST /account/2fa/setup`): a wrong code (the setup page again, 400), the
   right one (8 backup codes stored as sha256, shown once on the account page), the redirects.
+  Also `POST /account/name` (its 400 page too) and `POST /account/tokens/new` (shown once; only the sha256 kept).
 - **Two-step setup** (`GET /account/2fa/setup`, auth.rs `twofa_setup`, qr.rs): the pending secret kept in the session across
   reloads, and a QR code drawn module for module as Python's qrcode package draws it - its segments (`optimal_data_chunks`, minimum
   20), the smallest version at level M, and its own mask scoring (`lost_point`, format/version areas light while scoring). The PNG
@@ -74,6 +75,10 @@ Python keeps some saved settings in memory and reloads them only when its own ha
 (`workers.apply`), the LLM URL / model / key / context overrides (`ai.set_llm_override`) and the Ollama tuning. A save written
 by the gateway would leave Python running on the old values, so `POST /settings`, `/settings/system*` and `/settings/resources` stay
 Python's until Python is switched off, and then move in one step.
+
+The account routes that check the current password - `POST /account/password`, `/account/2fa/disable` and
+`/account/2fa/backup-codes/regenerate` - count failed attempts in Python's memory (`_failed_password_changes`, a lockout after 5). A
+gateway answer would not count toward Python's lockout, so they move at the switch, with the gateway's own counter.
 
 Python-only libraries with no exact Rust twin (reportlab for PDF export, the PDF / HTML sheet readers behind the AI drafters) may stay
 in a small sidecar, as the plan allows, if a port is not good enough.

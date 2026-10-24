@@ -12,10 +12,10 @@ use crate::config::Config;
 use crate::pages::Pages;
 
 /// `_render(request, db, user, active_world, **extra)` with the status it answers; None when the page context is Python's
-pub fn render(pages: &Pages, cfg: &Config, db: &Connection, uri: &Uri, headers: &HeaderMap, extra: Map<String, Value>, status: StatusCode)
+pub fn render(pages: &Pages, cfg: &Config, db: &Connection, method: &str, uri: &Uri, headers: &HeaderMap, extra: Map<String, Value>, status: StatusCode)
     -> Option<Response<Body>> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let mut p = crate::layout::build(db, cfg, "GET", uri, headers, now)?;
+    let mut p = crate::layout::build(db, cfg, method, uri, headers, now)?;
     let rows = |sql: &str, arg: &dyn rusqlite::ToSql| -> Option<Vec<Value>> {
         let mut st = db.prepare(sql).ok()?;
         let r = st.query_map([arg], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
@@ -35,6 +35,13 @@ pub fn render(pages: &Pages, cfg: &Config, db: &Connection, uri: &Uri, headers: 
     p.ctx.insert("tokens".into(), Value::Array(tokens));
     p.ctx.insert("trusted_devices".into(), json!(devices));
     for (k, v) in extra {
+        if k == "__base_url" {
+            // request.base_url (the new token's MCP config)
+            if let Some(Value::Object(req)) = p.ctx.get_mut("request") {
+                req.insert("base_url".into(), v);
+            }
+            continue;
+        }
         p.ctx.insert(k, v);
     }
     let html = pages.env.get_template("account.html").ok()?.render(nd_render::pyvalue::to_value(&Value::Object(p.ctx)));
@@ -53,5 +60,5 @@ pub fn render(pages: &Pages, cfg: &Config, db: &Connection, uri: &Uri, headers: 
 /// `GET /account`
 pub fn page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
-    render(pages, cfg, &db, uri, headers, Map::new(), StatusCode::OK)
+    render(pages, cfg, &db, "GET", uri, headers, Map::new(), StatusCode::OK)
 }

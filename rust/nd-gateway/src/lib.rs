@@ -393,7 +393,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
-    if matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa") | ("GET", "/account/2fa/setup") | ("POST", "/account/2fa/setup"))
+    if (matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa") | ("GET", "/account/2fa/setup") | ("POST", "/account/2fa/setup") | ("POST", "/account/name") | ("POST", "/account/tokens/new")))
         && app.cfg.rust_routes.iter().any(|r| r == "auth") {
         // signing in and out (app/routers/auth.py)
         let (parts, body) = req.into_parts();
