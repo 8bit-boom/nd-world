@@ -292,9 +292,49 @@ pub async fn route(pages: Arc<Pages>, cfg: Arc<Config>, method: Method, uri: Uri
                 Some(with_cookie(page(&pages, "auth/login_2fa.html", json!({"error": null}), StatusCode::OK, &headers)?, None))
             }
             ("POST", "/login/2fa") => login_2fa(&pages, &db, &headers, &body),
+            ("GET", "/account/2fa/setup") => twofa_setup(&pages, &cfg, &db, &uri, &headers),
             _ => None,
         }
     }).await.ok()?
+}
+
+/// `GET /account/2fa/setup` (app/routers/account.py `account_2fa_setup`): the pending secret kept in the session across reloads, its
+/// otpauth URI as a QR code (crate::qr, module for module Python's)
+fn twofa_setup(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let mut p = crate::layout::build(db, cfg, "GET", uri, headers, now())?;
+    let user = db.query_row("SELECT * FROM users WHERE id = ?1", [p.user_id], |r| crate::layout::row_map(r)).ok()?;
+    if crate::edits::py_truthy_pub(user.get("totp_enabled")) {
+        return Some(with_cookie(redirect("/account"), None));
+    }
+    let (mut s, had) = read_session(pages, headers);
+    let mut cookie = None;
+    let secret = match s.get("pending_totp_secret") {
+        Some(Value::String(t)) if !t.is_empty() => t.clone(),
+        Some(v) if crate::edits::py_truthy_pub(Some(v)) => return None, // not text: Python's
+        _ => {
+            // pyotp.random_base32(): 32 characters of A-Z2-7
+            const B32: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+            use rand::Rng;
+            let mut rng = rand::rngs::OsRng;
+            let t: String = (0..32).map(|_| B32[rng.gen_range(0..32)] as char).collect();
+            s.insert("pending_totp_secret".into(), json!(t));
+            cookie = session_cookie(pages, &s, had);
+            t
+        }
+    };
+    let email = user.get("email").and_then(|v| v.as_str())?;
+    // pyotp's provisioning_uri: quote(issuer) ":" quote(name), then urlencode({secret, issuer}) with "+" as %20
+    const QUOTE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'/').remove(b'_').remove(b'.').remove(b'-').remove(b'~');
+    const PLUS: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'_').remove(b'.').remove(b'-').remove(b'~');
+    let issuer = "N&D World";
+    let otp = format!("otpauth://totp/{}:{}?secret={}&issuer={}", utf8_percent_encode(issuer, QUOTE), utf8_percent_encode(email, QUOTE),
+        utf8_percent_encode(&secret, PLUS), utf8_percent_encode(issuer, PLUS));
+    p.ctx.insert("user".into(), Value::Object(user));
+    p.ctx.insert("secret".into(), json!(secret));
+    p.ctx.insert("qr_data_uri".into(), json!(crate::qr::data_uri(&otp)?));
+    p.ctx.insert("error".into(), Value::Null);
+    let html = pages.env.get_template("account_2fa_setup.html").ok()?.render(nd_render::pyvalue::to_value(&Value::Object(p.ctx))).ok()?;
+    Some(with_cookie(crate::pages::html(StatusCode::OK, html, headers), cookie))
 }
 
 fn login(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body: &[u8], peer: Option<SocketAddr>) -> Option<Response<Body>> {

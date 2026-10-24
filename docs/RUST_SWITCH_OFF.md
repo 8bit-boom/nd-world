@@ -56,8 +56,13 @@ them after each batch; the phase is done when both are empty and the steps below
 - **The settings row**: Python's `get_app_settings` creates the one `app_settings` row on first use; the gateway's page context
   declined while it was missing, so the first pages of a fresh instance (and of nearly every test) went to Python. It now creates
   the row the same way (layout.rs `app_settings_row`).
-- **Not yet**: `GET /account/2fa/setup` draws its QR code with Python's `qrcode` package; the gateway's image will be a different
-  (equally scannable) PNG, so that page needs its own parity rule (decode the QR, compare the otpauth URI) when it moves.
+- **Race and profession catalogs** (`GET /races`, `GET /professions`, catalog.rs): the world's entries by tier and the bundled
+  catalog under app/races/ and app/professions/ (read once, as Python's lru_cache does).
+- **Two-step setup** (`GET /account/2fa/setup`, auth.rs `twofa_setup`, qr.rs): the pending secret kept in the session across
+  reloads, and a QR code drawn module for module as Python's qrcode package draws it - its segments (`optimal_data_chunks`, minimum
+  20), the smallest version at level M, and its own mask scoring (`lost_point`, format/version areas light while scoring). The PNG
+  bytes differ; the parity rule compares decoded pixels (tests/test_gateway_golden.py) and module matrices for 40 URIs, versions
+  6-14 (rust/nd-gateway/tests/qr.rs).
 
 ### What has to wait for the switch itself
 

@@ -2855,3 +2855,57 @@ def test_race_and_profession_catalogs_are_pythons(client, seed):
         for url in urls:
             served += _same_page(d, via, url, email)
     assert served == len(urls) * 3
+
+
+def test_2fa_setup_page_is_pythons(client, seed):
+    """GET /account/2fa/setup from the gateway: the same page, the pending secret kept in the session across reloads (whichever side
+    made it), and a QR code whose pixels are exactly the ones Python's qrcode package draws (the PNG bytes themselves may differ);
+    someone with two-step already on is sent back to /account."""
+    import base64
+    import io
+    import re
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import User
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+
+    def qr_pixels(html):
+        uri = re.search(r'src="data:image/png;base64,([^"]+)"', html).group(1)
+        img = Image.open(io.BytesIO(base64.b64decode(uri))).convert("L")
+        return img.size, img.tobytes()
+
+    def strip(html):
+        return re.sub(r'data:image/png;base64,[^"]+', "QR", html)
+
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        for first_gateway in (False, True):
+            if first_gateway:
+                d = _signed_in(email, pw, world)
+                b = _via(d, base).get("/account/2fa/setup")
+                assert b.headers.get("x-nd-served-by") == "gateway"
+                for k, v in b.cookies.items():
+                    d.cookies.set(k, v)
+                a = d.get("/account/2fa/setup")
+            else:
+                a = d.get("/account/2fa/setup")
+                b = _via(d, base).get("/account/2fa/setup")
+                assert b.headers.get("x-nd-served-by") == "gateway"
+            assert a.status_code == b.status_code == 200
+            na = golden.normalise("text/html", strip(a.text).encode())
+            nb = golden.normalise("text/html", strip(b.text).encode())
+            assert na == nb, email
+            assert qr_pixels(a.text) == qr_pixels(b.text), email
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.email == seed.player_a.email).first()
+        u.totp_enabled = True
+        db.commit()
+        b = _via(d, base).get("/account/2fa/setup", follow_redirects=False)
+        assert (b.status_code, b.headers.get("location"), b.headers.get("x-nd-served-by")) == (303, "/account", "gateway")
+    finally:
+        u.totp_enabled = False
+        db.commit()
+        db.close()
