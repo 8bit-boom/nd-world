@@ -47,6 +47,17 @@ fn truthy(v: Option<&Value>) -> bool {
     }
 }
 
+/// `get_app_settings(db)`: the one settings row, created with the model's defaults on first use (a row another process created meanwhile
+/// is simply read)
+pub(crate) fn app_settings_row(db: &Connection) -> Option<Map<String, Value>> {
+    let read = || db.query_row("SELECT * FROM app_settings ORDER BY id LIMIT 1", [], |r| row_map(r)).ok();
+    if let Some(s) = read() {
+        return Some(s);
+    }
+    let _ = crate::orm::insert(db, "app_settings", &[("id", rusqlite::types::Value::Integer(1))]);
+    read()
+}
+
 pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &HeaderMap, now: u64) -> Option<PageCtx> {
     let secret = cfg.secret_key.as_deref()?;
     let cookie_header = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
@@ -127,7 +138,7 @@ pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &H
     }
 
     // app settings: the nav flags and the hover-preview settings (database.get_app_settings_flags_cached)
-    let s = db.query_row("SELECT * FROM app_settings LIMIT 1", [], |r| row_map(r)).ok()?;
+    let s = app_settings_row(db)?;
     let num = |k: &str, d: i64| s.get(k).and_then(|v| v.as_i64()).filter(|n| *n != 0).unwrap_or(d);
     let hover = json!({
         "enabled": truthy(s.get("hover_preview_enabled")),
