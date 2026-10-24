@@ -592,3 +592,50 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
     }
     b.status(200).header("content-type", "application/json").body(Body::from(payload)).ok()
 }
+
+
+/// POST routes served here (small JSON reads that take a body)
+pub fn is_post(path: &str) -> bool {
+    matches!(path, "/api/ai/world-context-smart")
+}
+
+pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    match uri.path() {
+        "/api/ai/world-context-smart" => world_context_smart(&cfg, uri, headers, body),
+        _ => None,
+    }
+}
+
+/// a pydantic body field: absent = the default, a JSON int as it is; anything pydantic would coerce or refuse (Python's 422) = None
+fn body_int(b: &Map<String, Value>, k: &str, default: i64) -> Option<i64> {
+    match b.get(k) {
+        None => Some(default),
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
+        _ => None,
+    }
+}
+
+/// `ai_world_context_smart` (app/main.py): the AI Chat's Smart Context for a GM (an assistant's filtered view is Python's)
+fn world_context_smart(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let b = match serde_json::from_slice::<Value>(raw).ok()? {
+        Value::Object(o) if crate::edits::plain_numbers(raw) => o,
+        _ => return None,
+    };
+    let query = match b.get("query") {
+        None => String::new(),
+        Some(Value::String(q)) => q.chars().take(4000).collect(),
+        _ => return None,
+    };
+    let limit = body_int(&b, "limit", 25)?.clamp(0, 100) as usize;
+    let notes_limit = body_int(&b, "notes_limit", 5)?.clamp(0, 100) as usize;
+    let Some(w) = p.world.as_ref() else {
+        return crate::edits::json_response(&json!({"context": "", "count": 0, "notes": 0, "entities": []}));
+    };
+    let (context, non_notes, notes) = crate::retrieval::smart_world_context_full(&db, w.get("id")?.as_i64()?, &query, limit, notes_limit)?;
+    let entities: Vec<Value> = non_notes.iter().chain(notes.iter()).map(|e| json!({"id": e.get("id"), "name": e.get("name"), "kind": e.get("kind")})).collect();
+    crate::edits::json_response(&json!({"context": context, "count": non_notes.len(), "notes": notes.len(), "entities": entities}))
+}

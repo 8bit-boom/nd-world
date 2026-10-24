@@ -614,6 +614,12 @@ fn has_matching_heading(body: &str, words: &[String]) -> Option<bool> {
 /// latest notes, and leading them the matching rules sections, priority entities and player characters. None for a world with an
 /// Obsidian vault (its vector / graph layer is Python's) or anything read differently.
 pub fn smart_world_context(db: &Connection, wid: i64, query: &str, entity_limit: usize, notes_limit: usize) -> Option<String> {
+    Some(smart_world_context_full(db, wid, query, entity_limit, notes_limit)?.0)
+}
+
+/// The same, with the entity rows behind it: (context, non-notes, notes) as Python's returns them
+pub fn smart_world_context_full(db: &Connection, wid: i64, query: &str, entity_limit: usize, notes_limit: usize)
+    -> Option<(String, Vec<Map<String, Value>>, Vec<Map<String, Value>>)> {
     let world: Map<String, Value> = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
     if world.get("obsidian_vault_path").and_then(|v| v.as_str()).is_some_and(|p| !py_strip(p).is_empty()) {
         return None;
@@ -666,5 +672,6 @@ pub fn smart_world_context(db: &Connection, wid: i64, query: &str, entity_limit:
     let priority = priority_entities_context(db, wid, query, &matched)?;
     let chars = characters_context(db, wid, query)?;
     let extra = [rules, priority, chars].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
-    Some(if extra.is_empty() { context } else if context.is_empty() { extra } else { format!("{extra}\n\n{context}") })
+    let context = if extra.is_empty() { context } else if context.is_empty() { extra } else { format!("{extra}\n\n{context}") };
+    Some((context, non_notes, notes))
 }

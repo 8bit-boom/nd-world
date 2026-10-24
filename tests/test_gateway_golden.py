@@ -2694,3 +2694,28 @@ def test_party_rest_is_pythons(client, seed):
         assert (a.status_code, a.json()) == (b.status_code, b.json()), body
         assert state() == after_a, body
         gm.post(f"/api/parties/{pid}/rest/undo", json={"snapshot": b.json()["snapshot"]})
+
+
+def test_world_context_smart_is_pythons(client, seed):
+    """POST /api/ai/world-context-smart for the GM from the gateway: matched entities and notes, the top-up, the latest notes, the
+    rules section a query hits, the clamps - and an empty query."""
+    from app.database import SessionLocal
+    from app.models import Entity, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="item", name="Vibro Blade", body="A humming blade. Costs 200."),
+                    Entity(world_id=w, kind="character", name="Edmund Vosk", body="A fixer."),
+                    Entity(world_id=w, kind="note", name="Blade rumours", body="Someone sells blades."),
+                    Entity(world_id=w, kind="note", name="Unrelated note", body="Rain.")])
+        db.get(World, w).rules_md = "# Rules\n\n## Blades\n\nBlades deal 1d8.\n\n## Armor\n\nArmor soaks."
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for body in ({"query": "blade cost"}, {"query": "vosk", "limit": 1, "notes_limit": 0}, {"query": ""}, {"query": "armor", "limit": 500, "notes_limit": -3}, {}):
+        a = gm.post("/api/ai/world-context-smart", json=body)
+        b = _via(gm, base).post("/api/ai/world-context-smart", json=body)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), body
+        assert b.headers.get("x-nd-served-by") == "gateway", body
