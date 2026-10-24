@@ -9089,6 +9089,12 @@ fn clean_fog(d: &Map<String, Value>) -> Option<Map<String, Value>> {
 }
 
 /// `_load(raw, default)`: the stored JSON when it has the default's type, else the default; None for text Python reads its own way
+/// `schematic_payload.map_is_strict(sc)`: fog on and strict
+pub(crate) fn map_is_strict(sc: &Map<String, Value>) -> Option<bool> {
+    let fog = clean_fog(sc_load(sc, "fog_json", false)?.as_object()?)?;
+    Some(fog["enabled"] == json!(true) && fog["strict"] == json!(true))
+}
+
 fn sc_load(sc: &Map<String, Value>, col: &str, want_list: bool) -> Option<Value> {
     let raw = sc.get(col).and_then(|v| v.as_str()).unwrap_or("");
     let v = if raw.is_empty() { None } else { canonical_json(raw) };

@@ -2336,3 +2336,44 @@ def test_small_reads_are_pythons(client, seed):
             tb = b.json() if "json" in b.headers.get("content-type", "") else b.text
             assert (a.status_code, a.headers.get("location"), ta) == (b.status_code, b.headers.get("location"), tb), (email, u)
             assert b.headers.get("x-nd-served-by") == "gateway", (email, u)
+
+
+def test_static_text_without_a_twin_is_gzipped_like_python(client, seed):
+    """A static text file with no pre-compressed twin, asked for with gzip: the gateway gzips it itself (Python's GZipMiddleware did);
+    the decoded bytes and the headers that matter are the same, and a small file or a client without gzip gets it plain."""
+    import glob
+    base = str(client.base_url)
+    found = [p for p in glob.glob("static/js/*.js") if not os.path.exists(p + ".gz") and os.path.getsize(p) >= 1024][:3]
+    small = [p for p in glob.glob("static/**/*.css", recursive=True) + glob.glob("static/js/*.js") if os.path.getsize(p) < 1024][:1]
+    assert found
+    for p in found + small:
+        url = "/" + p
+        for enc in ("gzip, deflate", "identity"):
+            a = httpx.get(DIRECT + url, headers={"accept-encoding": enc})
+            b = httpx.get(base + url, headers={"accept-encoding": enc})
+            assert a.status_code == b.status_code == 200, url
+            assert a.content == b.content, url
+            for h in ("content-encoding", "content-type", "cache-control", "etag", "last-modified", "accept-ranges", "vary"):
+                assert a.headers.get(h) == b.headers.get(h), (url, enc, h, a.headers.get(h), b.headers.get(h))
+            assert b.headers.get("x-nd-served-by") != "python", url
+
+
+def test_upload_access_is_pythons(client, seed):
+    """GET /uploads/<path> decided by the gateway: a picture, an HTML page (sandboxed), an old SVG (download), a map picture (revalidate),
+    a thumbnail asked for in the other format, the live-recording archive and paths outside the folder (404), a missing file."""
+    from app.database import DB_PATH
+    base = str(client.base_url)
+    up = Path(DB_PATH).parent / "uploads"
+    files = {"gwacc/pic.png": b"\x89PNG\r\n\x1a\nxx", "gwacc/page.html": b"<p>hi</p>", "gwacc/old.svg": b"<svg/>", "maps/gwacc-map.png": b"png",
+             "gwacc/one_thumb.avif": b"avif", "live/1/2/000001.webm": b"webm"}
+    for rel, data in files.items():
+        (up / rel).parent.mkdir(parents=True, exist_ok=True)
+        (up / rel).write_bytes(data)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for u in ["/uploads/gwacc/pic.png", "/uploads/gwacc/page.html", "/uploads/gwacc/old.svg", "/uploads/maps/gwacc-map.png",
+              "/uploads/gwacc/one_thumb.webp", "/uploads/live/1/2/000001.webm", "/uploads/../world.db", "/uploads/gwacc/%2e%2e/%2e%2e/world.db",
+              "/uploads/gwacc/missing.png", "/uploads/gwacc/"]:
+        a, b = gm.get(u, follow_redirects=False), _via(gm, base).get(u, follow_redirects=False)
+        assert (a.status_code, a.content) == (b.status_code, b.content), u
+        for h in ("content-type", "cache-control", "content-disposition", "content-security-policy", "x-frame-options", "x-content-type-options", "etag"):
+            assert a.headers.get(h) == b.headers.get(h), (u, h, a.headers.get(h), b.headers.get(h))

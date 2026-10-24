@@ -96,10 +96,22 @@ pub async fn serve(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap
             }
         }
     }
-    // no twin: text the browser would get gzipped by Python's middleware is left to Python (same bytes as before)
-    if text_like(&real) && accept.iter().any(|a| a == "gzip") && tokio::fs::metadata(&real).await.map(|m| m.len() >= 1024).unwrap_or(false) {
-        return None;
-    }
+    // no twin: text is gzipped on the way out, as Python's GZipMiddleware does to a streamed FileResponse (whatever its size; pictures,
+    // which it also recompresses for nothing, are sent as they are - the decoded bytes are the same)
+    let gzip = text_like(&real) && accept.iter().any(|a| a == "gzip");
     let extra = files::Extra { content_type: None, headers: vec![(header::CACHE_CONTROL, HeaderValue::from_static(IMMUTABLE))] };
-    files::send(method, headers, &real, extra).await
+    let resp = files::send(method, headers, &real, extra).await?;
+    if !gzip || resp.status() != StatusCode::OK {
+        return Some(resp);
+    }
+    let (mut parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 << 20).await.ok()?;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(9));
+    std::io::Write::write_all(&mut enc, &bytes).ok()?;
+    let out = enc.finish().ok()?;
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    parts.headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    let body = if *method == Method::HEAD { Body::empty() } else { Body::from(out) };
+    Some(Response::from_parts(parts, body))
 }

@@ -14,8 +14,17 @@ pub struct Extra {
     pub content_type: Option<String>,
 }
 
-pub fn etag(len: u64, mtime_ns: u128) -> String {
-    format!("\"{:x}-{:x}\"", mtime_ns, len)
+/// Starlette's FileResponse ETag: md5 of "<st_mtime as Python prints the float>-<size>"
+pub fn etag(len: u64, mtime: std::time::SystemTime) -> String {
+    use md5::Digest;
+    let d = mtime.duration_since(UNIX_EPOCH).unwrap_or_default();
+    // CPython's st_mtime: (double)sec + (double)nsec * 1e-9
+    let f = d.as_secs() as f64 + d.subsec_nanos() as f64 * 1e-9;
+    let mut repr = format!("{f}");
+    if !repr.contains('.') && !repr.contains('e') && !repr.contains("inf") && !repr.contains("NaN") {
+        repr.push_str(".0");
+    }
+    format!("\"{:x}\"", md5::Md5::digest(format!("{repr}-{len}").as_bytes()))
 }
 
 /// `bytes=a-b`, `a-`, `-n` (one range; more than one is answered with the whole file, as the standards allow).
@@ -62,8 +71,7 @@ pub async fn send(method: &Method, req_headers: &HeaderMap, path: &Path, extra: 
     let mut file = tokio::fs::File::open(path).await.ok()?;
     let len = meta.len();
     let mtime = meta.modified().ok()?;
-    let mtime_ns = mtime.duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let tag = etag(len, mtime_ns);
+    let tag = etag(len, mtime);
     let ctype = extra
         .content_type
         .clone()

@@ -49,6 +49,7 @@ pub mod settings;
 pub mod session;
 pub mod static_files;
 pub mod uploads;
+pub mod upload_files;
 pub mod writes;
 
 use axum::{body::Body, extract::State, http::Request, response::Response, Router};
@@ -135,6 +136,20 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         let (method, uri, headers) = (req.method().clone(), req.uri().clone(), req.headers().clone());
         if let Some(resp) = static_files::serve(&app.cfg, &method, &uri, &headers).await {
             return resp;
+        }
+    }
+    if (req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD) && req.uri().path().starts_with("/uploads/")
+        && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // the upload's access decision (app/main.py serve_upload), then the file
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        match tokio::task::spawn_blocking(move || upload_files::decide(&cfg, &uri, &headers)).await.ok().flatten() {
+            Some(Ok(d)) => {
+                if let Some(resp) = upload_files::send(req.method(), req.headers(), d).await {
+                    return resp;
+                }
+            }
+            Some(Err(())) => return idpages::refusal(404),
+            None => {}
         }
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
