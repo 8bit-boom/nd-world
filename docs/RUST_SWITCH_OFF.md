@@ -43,6 +43,9 @@ them after each batch; the phase is done when both are empty and the steps below
   `GET /api/parties/<id>/vitals`, refusals included. A party of a world other than the player's active one, and member lists that are
   not plain id lists, still go to Python.
 
+- **Character list** (`GET /characters`), **the GM's AI chat page** (`GET /ai`) and **calendar search** (`GET /api/calendar/search`),
+  refusals included. A calendar not created yet (Python makes the row on the first visit) still goes to Python.
+
 ### What has to wait for the switch itself
 
 Python keeps some saved settings in memory and reloads them only when its own handler saves them: the resource sizing

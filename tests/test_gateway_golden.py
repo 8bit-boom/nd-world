@@ -2001,3 +2001,41 @@ def test_ai_page_is_pythons(client, seed):
                 continue
             served += _same_page(d, _via(d, base), "/ai", email)
     assert served == 6, served
+
+
+def test_calendar_search_is_pythons(client, seed):
+    """GET /api/calendar/search from the gateway: matches on title, notes and the names of what an event links to (a hidden entity's
+    name only for the GM), LIKE characters taken literally, nearest-first order around ?near=, ?limit= and truncation, the labels and
+    links - and the empty query."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CalendarEvent, Entity, GameSession, Party, PlayerCharacter
+    base = str(client.base_url)
+    w = seed.world_a.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    gm.get("/calendar")                                  # Python makes the world's calendar row on the first visit
+    db = SessionLocal()
+    try:
+        hidden = Entity(world_id=w, kind="character", name="Shadow broker", visible_to_players=False)
+        pc = PlayerCharacter(world_id=w, name="Vex")
+        party = Party(world_id=w, name="Crew 100%")
+        gs = GameSession(world_id=w, session_num=3, title="Harbour heist")
+        db.add_all([hidden, pc, party, gs])
+        db.flush()
+        evs = [CalendarEvent(world_id=w, day=d, title=t, notes=n, entity_id=e, character_id=c, party_id=pa, session_id=s, color="#123456")
+               for d, t, n, e, c, pa, s in ((1, "New year", "", None, None, None, None), (40, "Meeting", "with the broker", hidden.id, None, None, None),
+                                            (75, "Duel", "x" * 200, None, pc.id, None, None), (400, "Raid", "", None, None, party.id, None),
+                                            (500, "Heist", "", None, None, None, gs.id), (12, "under_score", "100% sure", None, None, None, None))]
+        db.add_all(evs)
+        db.commit()
+    finally:
+        db.close()
+    queries = ["", "   ", "year", "BROKER", "shadow", "vex", "100%", "_", "%", "heist", "e", "e&limit=2", "e&limit=x", "e&near=450", "e&near=-5",
+               "e&limit=999", "zzz"]
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for q in queries:
+            url = "/api/calendar/search?q=" + q.replace("%", "%25").replace(" ", "%20").replace("&", "&", 1)
+            a, b = d.get(url), _via(d, base).get(url)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, q)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, q)

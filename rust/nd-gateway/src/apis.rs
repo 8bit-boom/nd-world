@@ -13,12 +13,13 @@ use crate::config::Config;
 pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     match uri.path() {
         "/api/cockpit/workspace" => cockpit_workspace(&cfg, uri, headers),
+        "/api/calendar/search" => crate::calendar::search_api(&cfg, uri, headers),
         path => party_vitals(&cfg, uri, headers, vitals_id(path)?),
     }
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/cockpit/workspace") || vitals_id(path).is_some()
+    matches!(path, "/api/cockpit/workspace" | "/api/calendar/search") || vitals_id(path).is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)

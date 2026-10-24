@@ -680,3 +680,96 @@ pub fn start_of(days: &[i64], year: i64, idx: usize) -> i64 {
 }
 
 pub const MAX_YEAR_PUB: i64 = MAX_YEAR;
+
+/// Python's round() of a non-negative float: half to even
+fn round_half_even(x: f64) -> i64 {
+    let f = x.floor();
+    let d = x - f;
+    let n = if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) { f + 1.0 } else { f };
+    n as i64
+}
+
+/// `_relative_days_label`: "today", "5 days ago", "in 3 months"
+fn relative_days_label(delta: i64, year_days: i64, per_year: i64) -> String {
+    match delta {
+        0 => return "today".into(),
+        1 => return "tomorrow".into(),
+        -1 => return "yesterday".into(),
+        _ => {}
+    }
+    let span = if delta.abs() < 60 {
+        plural(delta.abs(), "day")
+    } else {
+        let month_len = (year_days as f64 / per_year.max(1) as f64).max(1.0);
+        let s = span_label(round_half_even(delta.abs() as f64 / month_len), per_year);
+        if s.is_empty() { plural(delta.abs(), "day") } else { s }
+    };
+    if delta > 0 { format!("in {span}") } else { format!("{span} ago") }
+}
+
+/// `GET /api/calendar/search` (app/routers/calendar.py `calendar_search`): events by title, notes or the name of what they link to,
+/// nearest to a day first
+pub fn search_api(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Some(world) = p.world.clone() else { return Some(crate::idpages::refusal(404)) };
+    if !section_ok(&p, Some(&world), "calendar")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let cal = load(&db, wid)?; // no calendar row yet: Python makes one
+    let q = |k: &str| crate::pages::query_param(uri, k);
+    let text: String = nd_render::text::py_strip(&q("q").unwrap_or_default()).chars().take(100).collect();
+    if text.is_empty() {
+        return crate::edits::json_response(&json!({"results": [], "truncated": false}));
+    }
+    let limit = safe_int_param(q("limit"), 20)?.clamp(1, 50);
+    let max_day = MAX_YEAR * year_len(&cal.months);
+    let near = safe_int_param(q("near"), cal.current_day)?.clamp(1, max_day);
+    let pattern = format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let like = |col: &str| format!("lower({col}) LIKE lower(?2) ESCAPE '\\'");
+    let editor = p.is_gm || p.role.as_deref() == Some("assistant");
+    let ent = if editor { like("e.name") } else { format!("e.visible_to_players IS 1 AND {}", like("e.name")) };
+    let sql = format!(
+        "SELECT ev.* FROM calendar_events ev WHERE ev.world_id = ?1 AND ({} OR {} \
+         OR EXISTS (SELECT 1 FROM entities e WHERE e.id = ev.entity_id AND {ent}) \
+         OR EXISTS (SELECT 1 FROM player_characters c WHERE c.id = ev.character_id AND {}) \
+         OR EXISTS (SELECT 1 FROM parties pa WHERE pa.id = ev.party_id AND {}) \
+         OR EXISTS (SELECT 1 FROM game_sessions s WHERE s.id = ev.session_id AND {})) \
+         ORDER BY abs(ev.day - ?3), ev.day, ev.id LIMIT ?4",
+        like("ev.title"), like("ev.notes"), like("c.name"), like("pa.name"), like("s.title"));
+    let mut st = db.prepare(&sql).ok()?;
+    let rows = st.query_map(rusqlite::params![wid, pattern, near, limit + 1], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let c = cal.config.as_object()?;
+    let year_days = year_len(&cal.months);
+    let mut results = vec![];
+    for ev in rows.iter().take(limit as usize) {
+        let day = ev.get("day")?.as_i64()?;
+        let (year, idx, _) = resolve_date(&cal.months, day);
+        let (ly, li, ld) = resolve_date(&cal.months, day.max(1));
+        let label = format!("{} {}, {}", cal.months[li].name, ld, format_year(c, ly)?);
+        let notes: String = ev.get("notes").and_then(|v| v.as_str()).unwrap_or("").chars().take(140).collect();
+        let delta = day - cal.current_day;
+        let href = format!("{}{}w={}", if day != 0 { format!("{}&day={day}", month_href(year, idx)) } else { month_href(year, idx) },
+            "&", world.get("slug")?.as_str()?);
+        results.push(json!({"id": ev.get("id"), "day": day, "title": ev.get("title"), "notes": notes, "color": ev.get("color"),
+            "label": label, "delta_days": delta, "when": relative_days_label(delta, year_days, cal.months.len() as i64), "href": href}));
+    }
+    crate::edits::json_response(&json!({"results": results, "truncated": rows.len() as i64 > limit}))
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn labels() {
+        assert_eq!(relative_days_label(0, 360, 12), "today");
+        assert_eq!(relative_days_label(-1, 360, 12), "yesterday");
+        assert_eq!(relative_days_label(59, 360, 12), "in 59 days");
+        assert_eq!(relative_days_label(-75, 360, 12), "2 months ago"); // 2.5 -> 2, Python's round
+        assert_eq!(relative_days_label(105, 360, 12), "in 4 months"); // 3.5 -> 4
+        assert_eq!(relative_days_label(400, 360, 12), "in 1 year, 1 month");
+    }
+}
