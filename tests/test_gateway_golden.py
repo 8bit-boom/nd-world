@@ -2749,3 +2749,35 @@ def test_equipment_refusals_are_pythons(client, seed):
         assert b.headers.get("x-nd-served-by") == "gateway", body
         assert a.status_code >= 400, body
         assert (a.status_code, a.json()) == (b.status_code, b.json()), body
+
+
+def test_character_quick_edit_refusals_are_pythons(client, seed):
+    """The character quick-edits' shared refusals from the gateway - a body that is not JSON or not an object (where Python reads the
+    body first), a missing character, a player who does not own it - and the feats list's 400s."""
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, name="Gated", feats_json=json.dumps([{"name": "Tough"}]))
+        db.add(pc)
+        db.commit()
+        pid = pc.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    cases = []
+    for route in ("hp-async", "xp", "conditions", "currency", "carry-limit", "shock", "pp", "mp"):
+        cases += [(gm, pid, route, b"{oops"), (gm, pid, route, b"[1]"), (gm, pid, route, b""), (gm, 999999, route, b"{}"), (player, pid, route, b"{}")]
+    for route in ("feats", "equipment"):
+        cases += [(gm, 999999, route, b"{}"), (player, pid, route, b"{}")]
+    cases += [(gm, pid, "feats", json.dumps(b).encode()) for b in ({"item": {"name": " "}}, {"action": "add", "item": 0}, {"action": "remove", "index": 1},
+                                                                     {"action": "remove", "index": 0.0}, {"action": "qty", "index": 0}, {"action": None})]
+    for who, target, route, body in cases:
+        a = who.post(f"/api/characters/{target}/{route}", content=body, headers={"content-type": "application/json"})
+        b = _via(who, base).post(f"/api/characters/{target}/{route}", content=body, headers={"content-type": "application/json"})
+        assert b.headers.get("x-nd-served-by") == "gateway", (route, body)
+        assert a.status_code >= 400, (route, body)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), (route, body)

@@ -2478,6 +2478,9 @@ fn log_num(c: &Ctx, pc: &Map<String, Value>, op: &str, label: &str, before: i64,
 }
 
 fn pc_hp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], true) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let action = b.get("action").cloned().unwrap_or(json!("set"));
@@ -2524,6 +2527,9 @@ fn pc_hp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 /// The Shock / PP / MP steppers: (column, log op, label, which maximum, whether "rest" restores half)
 fn pc_pool(c: &mut Ctx, id: i64, col: &str, op: &str, label: &str, which: usize, rest: bool, max_key: &str) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, id, true) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, id)?;
     let action = b.get("action").cloned().unwrap_or(json!("set"));
@@ -2567,6 +2573,9 @@ const XP_THRESHOLDS: [i64; 20] = [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 
                                   305000, 355000];
 
 fn pc_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], true) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let delta = match b.get("delta") {
@@ -2614,6 +2623,9 @@ pub(crate) fn clean_conditions(seq: &Value) -> Option<Vec<String>> {
 }
 
 fn pc_conditions(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], true) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let raw = pc.get("conditions_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
@@ -2664,6 +2676,9 @@ fn canonical_json(raw: &str) -> Option<Value> {
 }
 
 fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], true) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let raw = pc.get("currency_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
@@ -3006,9 +3021,15 @@ fn list_index(b: &Map<String, Value>, len: usize) -> Option<usize> {
 }
 
 fn pc_feats(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], false) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let mut feats = pc_list(&pc, "feats_json")?;
+    if let Some(r) = list_refusal(&b, &feats, "Feat name is required", false)? {
+        return Some(r);
+    }
     match b.get("action").cloned().unwrap_or(json!("add")).as_str() {
         Some("add") => {
             let item = match b.get("item") {
@@ -3146,6 +3167,37 @@ pub(crate) fn pc_prefs(db: &Connection, pc_id: i64) -> Option<Map<String, Value>
     }
 }
 
+/// Python's refusals that come before a character quick-edit reads anything else: (when `body_first`, `_json_dict_raw`'s bad body,) no
+/// such character (404), not the GM or its owner (403; Python does not check the world). None when it goes on - or for a body
+/// serde cannot read that Python might (NaN, lone surrogates, other encodings), which the handler then declines.
+fn pc_gate(c: &Ctx, id: i64, body_first: bool) -> Option<Response<Body>> {
+    let detail = crate::ai_more::detail;
+    if body_first {
+        match serde_json::from_slice::<Value>(c.body) {
+            Ok(Value::Object(_)) => {}
+            Ok(_) => return Some(detail(StatusCode::BAD_REQUEST, "JSON body must be an object")),
+            Err(e) => {
+                let text = std::str::from_utf8(c.body).ok()?;
+                let why = e.to_string();
+                if why.contains("out of range") || why.contains("recursion limit") {
+                    return None;
+                }
+                if text.contains("NaN") || text.contains("Infinity") || text.contains("\\u") || text.starts_with('\u{feff}') {
+                    return None;
+                }
+                return Some(detail(StatusCode::BAD_REQUEST, "Invalid JSON body"));
+            }
+        }
+    }
+    let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id) else {
+        return Some(detail(StatusCode::NOT_FOUND, "Not Found"));
+    };
+    if !(c.p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)) {
+        return Some(detail(StatusCode::FORBIDDEN, "Forbidden"));
+    }
+    None
+}
+
 /// Python's refusal for a bad `index` (missing, not an int, out of range, or not an object when `need_obj`); None to decline on a
 /// bool, which Python takes as an int
 fn bad_index(b: &Map<String, Value>, list: &[Value], need_obj: bool) -> Option<bool> {
@@ -3159,39 +3211,41 @@ fn bad_index(b: &Map<String, Value>, list: &[Value], need_obj: bool) -> Option<b
     }
 }
 
+/// The 400s of the equipment / feats lists (`name_msg` for an empty name to add; `qty` and `weight` only when `qty_actions`); Some(None)
+/// when it goes on, None to decline
+fn list_refusal(b: &Map<String, Value>, list: &[Value], name_msg: &str, qty_actions: bool) -> Option<Option<Response<Body>>> {
+    let refuse = |m: &str| Some(Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m)));
+    match b.get("action").cloned().unwrap_or(json!("add")).as_str() {
+        Some("add") => {
+            let empty = match b.get("item") {
+                None | Some(Value::Null) => true,
+                Some(Value::Object(o)) => match o.get("name") {
+                    None => true,
+                    Some(Value::String(s)) => strip(s).is_empty(),
+                    _ => false,
+                },
+                Some(v) if !py_truthy(Some(v)) => true,
+                _ => return None, // a truthy non-object: Python fails on it
+            };
+            if empty {
+                return refuse(name_msg);
+            }
+        }
+        Some("remove") => if bad_index(b, list, false)? { return refuse("Invalid index") },
+        Some("qty" | "weight") if qty_actions => if bad_index(b, list, true)? { return refuse("Invalid index") },
+        _ => return refuse("Unknown action"),
+    }
+    Some(None)
+}
+
 fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
-    // the refusals come before the body is read, as in Python (which does not check the world)
-    let Some(found) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0]) else {
-        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Not Found"));
-    };
-    if !(c.p.is_gm || found.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)) {
-        return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "Forbidden"));
+    if let Some(r) = pc_gate(c, ids[0], false) {
+        return Some(r);
     }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
-    {
-        let eq = pc_list(&pc, "equipment_json")?;
-        let refuse = |m: &str| Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m));
-        match b.get("action").cloned().unwrap_or(json!("add")).as_str() {
-            Some("add") => {
-                let empty = match b.get("item") {
-                    None | Some(Value::Null) => true,
-                    Some(Value::Object(o)) => match o.get("name") {
-                        None => true,
-                        Some(Value::String(s)) => strip(s).is_empty(),
-                        _ => false,
-                    },
-                    Some(v) if !py_truthy(Some(v)) => true,
-                    _ => return None, // a truthy non-object: Python fails on it
-                };
-                if empty {
-                    return refuse("Item name is required");
-                }
-            }
-            Some("remove") => if bad_index(&b, &eq, false)? { return refuse("Invalid index") },
-            Some("qty" | "weight") => if bad_index(&b, &eq, true)? { return refuse("Invalid index") },
-            _ => return refuse("Unknown action"),
-        }
+    if let Some(r) = list_refusal(&b, &pc_list(&pc, "equipment_json")?, "Item name is required", true)? {
+        return Some(r);
     }
     let before = pc.get("equipment_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]").to_string();
     let mut eq = pc_list(&pc, "equipment_json")?;
@@ -3283,6 +3337,9 @@ fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 fn pc_carry_limit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], true) {
+        return Some(r);
+    }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let val = body_int(&b, "value")?.clamp(0, 99999);
