@@ -9,9 +9,11 @@ census below. Ids are folded to `{}`.
 
 | Route patterns seen in the suite | Count | Requests still answered by Python |
 |---|---|---|
-| Answered by the gateway every time | 133 | 0 |
-| Gateway for some cases, Python for the rest (edge cases, refusals, coercions) | 376 | 5,388 |
-| Python every time | 555 | 5,877 |
+| Answered by the gateway every time | 375 | 0 |
+| Gateway for some cases, Python for the rest (edge cases, refusals, coercions) | 435 | 2,695 |
+| Python every time | 258 | 561 |
+
+(The logs are one full run of the suite, split into groups on one machine each with its own shard folder - `scripts/run_group.sh`.)
 
 The lists, busiest first, are in `docs/census/python_only.txt` and `docs/census/mixed.txt` (`forwarded / gateway` counts). Regenerate
 them after each batch; the phase is done when both are empty and the steps below are done.
@@ -88,6 +90,12 @@ them after each batch; the phase is done when both are empty and the steps below
   20), the smallest version at level M, and its own mask scoring (`lost_point`, format/version areas light while scoring). The PNG
   bytes differ; the parity rule compares decoded pixels (tests/test_gateway_golden.py) and module matrices for 40 URIs, versions
   6-14 (rust/nd-gateway/tests/qr.rs).
+- **Job status polls** (apis.rs): `GET /api/media-rename/runs/<id>` (the results included, the "stored results were unreadable"
+  fallback either column tripping, the audio / video / images edit-level 403, the author's display name or email prefix),
+  `GET /api/sessions/ai/audio-jobs/<id>` (sessions.py's own smaller `_job_to_dict`; a job of any other purpose is the same 404 a
+  missing one is), and `GET /api/ai/imagegen/player/jobs/<id>` (the gate first - a GM always may, anyone else needs the world's
+  image-gen toggle, a missing world 403 there - then "wrong world" and "not mine" collapsing into one 404 for a player). Also
+  `POST /logout` (Python has no such route: Starlette's method-not-allowed, answered without reading the body, lib.rs).
 
 ### What has to wait for the switch itself
 

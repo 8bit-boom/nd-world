@@ -3586,3 +3586,129 @@ def test_character_sheets_are_pythons(client, seed):
         assert (a.status_code, a.json()) == (b.status_code, b.json())
         assert sheets() == after_a
     (up / "gw-sheet.html").unlink(missing_ok=True)
+
+
+def test_media_rename_run_is_pythons(client, seed):
+    """GET /api/media-rename/runs/<id> from the gateway: a finished run with results and errors, one with unreadable columns
+    (both reset to the fallback), a pending one with no author ("someone"), another world's run and a missing id (404) - for
+    the GM, and for a player, whose default read-only sections are a 403 the gateway answers itself."""
+    from .conftest import PLAYER_PASSWORD
+    from app.models import MediaRenameRun
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        runs = [MediaRenameRun(world_id=w, status="done", total=3, done=3, created_by_user_id=seed.gm.id,
+                               results_json=json.dumps([{"kind": "audio", "id": 1, "name": "Theme"}, {"kind": "video", "id": 2}]),
+                               errors_json=json.dumps(["no metadata for x"])),
+                MediaRenameRun(world_id=w, status="error", error="boom", created_by_user_id=seed.player_a.id,
+                               results_json="{bad", errors_json=None),
+                MediaRenameRun(world_id=w, status="pending", created_by_user_id=None),
+                MediaRenameRun(world_id=seed.world_b.id, status="done", created_by_user_id=seed.gm.id)]
+        db.add_all(runs)
+        db.commit()
+        ids = [r.id for r in runs] + [999999]
+    finally:
+        db.close()
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for i in ids:
+            url = f"/api/media-rename/runs/{i}"
+            a, b = d.get(url), _via(d, base).get(url)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, i)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, i)
+
+
+def test_session_audio_job_status_is_pythons(client, seed):
+    """GET /api/sessions/ai/audio-jobs/<id> from the gateway: a recap and a condense job (the purposes sessions.py answers),
+    an attachment and a world-summary job - the same 404 a missing id is - and another world's job, for the GM and for a
+    player of the world."""
+    from .conftest import PLAYER_PASSWORD
+    from app.models import AudioJob
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        jobs = [AudioJob(world_id=w, purpose="session_recap", filename="rec.mp3", status="done", transcript="t", recap="r",
+                         model="m1", extra_instructions="slow down", chunk_current=2, chunk_total=4),
+                AudioJob(world_id=w, purpose="condense", status="error", error="model offline"),
+                AudioJob(world_id=w, purpose="attachment", status="done", transcript="att"),
+                AudioJob(world_id=w, purpose="world_summary", audience="players", status="done"),
+                AudioJob(world_id=seed.world_b.id, purpose="condense", status="done")]
+        db.add_all(jobs)
+        db.commit()
+        ids = [j.id for j in jobs] + [999999]
+    finally:
+        db.close()
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for i in ids:
+            url = f"/api/sessions/ai/audio-jobs/{i}"
+            a, b = d.get(url), _via(d, base).get(url)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, i)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, i)
+
+
+def test_player_image_job_status_is_pythons(client, seed):
+    """GET /api/ai/imagegen/player/jobs/<id> from the gateway: the toggle-off 403 (a GM's too), a player's own job, the GM
+    seeing it, another player's job and another world's job (the same 404), and a missing id - with the gate's no-world 403
+    answered before the handler's own 404, as Python's _require_player_image_gen_access raises first."""
+    from .conftest import PLAYER_PASSWORD
+    from app.models import ImageJob, World, WorldMembership
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_b.id).delete()
+        db.add(WorldMembership(world_id=w, user_id=seed.player_b.id))
+        mine = ImageJob(world_id=w, prompt="a neon dragon", status="done", created_by_user_id=seed.player_a.id,
+                        result_urls_json=json.dumps(["/uploads/g1.png"]))
+        other = ImageJob(world_id=w, prompt="of someone else", status="done", created_by_user_id=seed.gm.id)
+        foreign = ImageJob(world_id=seed.world_b.id, prompt="elsewhere", status="done", created_by_user_id=seed.player_b.id)
+        db.add_all([mine, other, foreign])
+        db.commit()
+        ids = [mine.id, other.id, foreign.id, 999999]
+    finally:
+        db.close()
+    try:
+        # the toggle off: every viewer is 403, the handler's own checks never run
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for i in ids:
+                url = f"/api/ai/imagegen/player/jobs/{i}"
+                a, b = d.get(url), _via(d, base).get(url)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), ("closed", email, i)
+                assert b.headers.get("x-nd-served-by") == "gateway", ("closed", email, i)
+        db = SessionLocal()
+        try:
+            world = db.get(World, w)
+            world.players_can_use_image_gen = True
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD), (seed.player_b.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for i in ids:
+                url = f"/api/ai/imagegen/player/jobs/{i}"
+                a, b = d.get(url), _via(d, base).get(url)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), ("open", email, i)
+                assert b.headers.get("x-nd-served-by") == "gateway", ("open", email, i)
+    finally:
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_can_use_image_gen = False
+            db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_b.id).delete()
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_post_logout_is_pythons(client, seed):
+    """POST /logout from the gateway: Python has no POST /logout, so Starlette's router raises HTTPException(405) - the
+    gateway's answer, signed in or not."""
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for c in (d, httpx.Client(base_url=base, timeout=60)):
+        a, b = c.post("/logout"), _via(d, base).post("/logout")
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), c
+        assert b.headers.get("x-nd-served-by") == "gateway", c

@@ -79,8 +79,8 @@ Read this first, then `docs/RUST_SWITCH_OFF.md` (the phase 6 work list and what 
 
 ## Progress
 
-Census from the latest gateway suite (logs of two runs combined, so counts are roughly doubled):
-**359 route patterns answered only by the gateway, 695 mixed, 654 still Python-only.** Phase 6 steps:
+Census from the latest gateway suite (one full run, split into groups on one machine - scripts/run_group.sh):
+**375 route patterns answered only by the gateway, 435 mixed, 258 still Python-only.** Phase 6 steps:
 
 | Step | State |
 |---|---|
@@ -99,11 +99,11 @@ JSON exports, character sheets, and the app-settings row creation (it used to se
 
 ### Python-only routes (busiest first; full list `docs/census/python_only.txt`)
 
-Already ported since the census was taken (ignore in the list): `/pages/sheets*`, `/npc-talk`, `/session-log`, `/worlds/{}/export`.
+Already ported since the census was taken (ignore in the list): `/pages/sheets*`, `/npc-talk`, `/session-log`, `/worlds/{}/export`,
+`GET /api/media-rename/runs/{}`, `GET /api/sessions/ai/audio-jobs/{}`, `GET /api/ai/imagegen/player/jobs/{}`, `POST /logout`.
 
 - AI attachments: `POST /api/ai/attachments/upload`, `/upload/chunk`, `/upload/complete`, `/api/ai/attachments/audio-jobs*`
-- Image generation for players: `POST /api/ai/imagegen/player/generate`, `GET /api/ai/imagegen/player/jobs/{}`, `/api/ai/imagegen/jobs/{}`, `/model-templates`, `GET /image-gen`
-- Job status polls: `GET /api/media-rename/runs/{}`, `GET /api/sessions/ai/audio-jobs/{}`
+- Image generation for players: `POST /api/ai/imagegen/player/generate`, `/api/ai/imagegen/jobs/{}`, `/model-templates`, `GET /image-gen`
 - `GET /api/cockpit/player-board`
 - `POST /api/parties/{}/rest/undo`
 - `POST /api/view-prefs/site`, `DELETE /api/view-prefs/<unknown>` (404 answer)
@@ -115,7 +115,6 @@ Already ported since the census was taken (ignore in the list): `/pages/sheets*`
 - Import: `POST /api/import/detect`, `POST /api/import/execute` (large), `POST /worlds/{}/import`
 - Maps: `POST /maps/schematic/new`, `GET /maps/<slug>` (incl. unknown slugs -> 404)
 - `GET /api/ai/world-summary`, `POST /api/ai/entity-context`, `GET /tools/code-assist`, `GET /boards/<unknown>/notes`
-- Python has no `POST /logout` (a 405 answer could be ported)
 
 ### Mixed routes (gateway answers the common case; Python still answers the rest)
 

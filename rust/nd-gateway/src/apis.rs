@@ -28,6 +28,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/entities/picker" => entities_picker(&cfg, uri, headers),
         path if id_between(path, "/api/ai/assist-job/", "").is_some() => assist_job(&cfg, uri, headers, id_between(path, "/api/ai/assist-job/", "")?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
+        path if media_run_id(path).is_some() => media_rename_run(&cfg, uri, headers, media_run_id(path)?),
+        path if session_audio_job_id(path).is_some() => session_audio_job_status(&cfg, uri, headers, session_audio_job_id(path)?),
+        path if player_image_job_id(path).is_some() => player_image_job_status(&cfg, uri, headers, player_image_job_id(path)?),
         path => party_vitals(&cfg, uri, headers, vitals_id(path)?),
     }
 }
@@ -36,6 +39,7 @@ pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
+        || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -90,6 +94,27 @@ fn audio_job_id(path: &str) -> Option<i64> {
     (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
 }
 
+/// a trailing plain-digits path id under `prefix`, as FastAPI's `{run_id: int}` reads it (no leading zeros, fits i64)
+fn trailing_id(path: &str, prefix: &str) -> Option<i64> {
+    let d = path.strip_prefix(prefix)?;
+    (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
+}
+
+/// the id of `/api/media-rename/runs/<id>` (the GET status; the /cancel and /delete POSTs are ai.rs's)
+fn media_run_id(path: &str) -> Option<i64> {
+    trailing_id(path, "/api/media-rename/runs/")
+}
+
+/// the id of `/api/sessions/ai/audio-jobs/<id>` (from-clip and complete are POSTs of their own)
+fn session_audio_job_id(path: &str) -> Option<i64> {
+    trailing_id(path, "/api/sessions/ai/audio-jobs/")
+}
+
+/// the id of `/api/ai/imagegen/player/jobs/<id>`
+fn player_image_job_id(path: &str) -> Option<i64> {
+    trailing_id(path, "/api/ai/imagegen/player/jobs/")
+}
+
 /// `api_audio_job_status` (app/routers/audio_jobs.py): one background job of the active world as `_job_to_dict` writes it; a GM or an
 /// assistant, who does not see a GM-tier World Summary or a Code Assist job
 fn audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
@@ -123,6 +148,149 @@ fn audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Op
         }
     }
     crate::edits::json_response(&job_dict(&j)?)
+}
+
+/// a stored JSON column as `json.loads(col or "[]")` reads it, with the length Python's `len()` gives a list or a dict
+/// (a number or a bool has no len - Python's own 500; a string is measured by its characters, too odd to answer here)
+fn stored_collection(r: &Map<String, Value>, key: &str) -> Option<(Value, usize)> {
+    let t = r.get(key).and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    match serde_json::from_str::<Value>(t).ok()? {
+        Value::Array(a) => Some((Value::Array(a.clone()), a.len())),
+        Value::Object(o) => Some((Value::Object(o.clone()), o.len())),
+        _ => None,
+    }
+}
+
+/// a DATETIME column as `.strftime(...)` writes it (None in, null out; unparseable text is a row Python could not load either)
+fn dt_strftime(r: &Map<String, Value>, key: &str, fmt: &str) -> Option<Value> {
+    match r.get(key) {
+        None | Some(Value::Null) => Some(Value::Null),
+        Some(v) => {
+            let t = v.get("__dt__").or(Some(v)).and_then(|x| x.as_str())?;
+            match nd_render::pyvalue::PyDateTime::parse(t) {
+                Some(d) => Some(json!(d.strftime(fmt).ok()?)),
+                None => None,
+            }
+        }
+    }
+}
+
+/// a DATETIME column as `.isoformat()` writes it (None in, null out)
+fn dt_iso(r: &Map<String, Value>, key: &str) -> Option<Value> {
+    match r.get(key) {
+        None | Some(Value::Null) => Some(Value::Null),
+        Some(v) => {
+            let t = v.get("__dt__").or(Some(v)).and_then(|x| x.as_str())?;
+            match nd_render::pyvalue::PyDateTime::parse(t) {
+                Some(d) => Some(json!(d.isoformat())),
+                None => None,
+            }
+        }
+    }
+}
+
+/// `media_rename_run` (app/routers/media_rename.py): one rename run of the active world, its results included - a viewer
+/// who may edit none of the audio / video / images sections is 403, a run of another world (or missing) is 404
+fn media_rename_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let level = |s: &str| crate::pages::edit_level(&p, w, s);
+    if !(level("audio")? || level("video")? || level("images")?) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let Ok(r) = db.query_row("SELECT * FROM media_rename_runs WHERE id = ?1 AND world_id = ?2", [id, wid], |row| crate::layout::row_map(row)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    // _run_names: {user id: display_name or email local part}; no author in the row: "someone"
+    let by = match r.get("created_by_user_id").and_then(|v| v.as_i64()) {
+        Some(uid) => db.query_row("SELECT * FROM users WHERE id = ?1", [uid], |row| crate::layout::row_map(row)).ok().and_then(|u| {
+            u.get("display_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+                .or_else(|| u.get("email")?.as_str()?.split('@').next().map(str::to_string))
+        }),
+        None => None,
+    };
+    // _run_view: both columns are parsed in one try; either failing resets both to the unreadable fallback
+    let parsed = (|| Some((stored_collection(&r, "results_json")?, stored_collection(&r, "errors_json")?)))();
+    let (results, errors, proposals, errors_count) = match parsed {
+        Some(((rv, rn), (ev, en))) => (rv, ev, rn, en),
+        None => (json!([]), json!(["Stored results were unreadable."]), 0, 1),
+    };
+    let out = json!({
+        "id": r.get("id")?.as_i64()?, "status": r.get("status").cloned().unwrap_or(Value::Null),
+        "done": r.get("done").and_then(|v| v.as_i64()).unwrap_or(0),
+        "total": r.get("total").and_then(|v| v.as_i64()).unwrap_or(0),
+        "error": r.get("error").and_then(|v| v.as_str()).unwrap_or(""),
+        "resumed": r.get("resumed_count").and_then(|v| v.as_i64()).unwrap_or(0),
+        "proposals": proposals, "errors_count": errors_count,
+        "created_at": dt_strftime(&r, "created_at", "%Y-%m-%dT%H:%M:%SZ")?,
+        "by": by.as_deref().unwrap_or("someone"),
+        "results": results, "errors": errors,
+    });
+    crate::edits::json_response(&out)
+}
+
+/// `api_audio_job_status` (app/routers/sessions.py): a session-recap or condense job of the active world, as sessions.py's
+/// own `_job_to_dict` writes it - a smaller dict than audio_jobs.py's (no purpose_label, no resumable flag, ...), and a job
+/// of another purpose is the same 404 a missing one is
+fn session_audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let wid = w.get("id")?.as_i64()?;
+    let Ok(j) = db.query_row("SELECT * FROM audio_jobs WHERE id = ?1 AND world_id = ?2", [id, wid], |r| crate::layout::row_map(r)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let purpose = j.get("purpose").and_then(|v| v.as_str()).unwrap_or_default();
+    if purpose != "session_recap" && purpose != "condense" {
+        return Some(crate::idpages::refusal(404));
+    }
+    let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
+    let out = json!({
+        "id": j.get("id")?.as_i64()?, "purpose": purpose, "filename": v("filename"),
+        "status": v("status"), "error": v("error"),
+        "transcript": v("transcript"), "recap": v("recap"), "model": s("model").unwrap_or_default(),
+        "extra_instructions": s("extra_instructions").unwrap_or_default(),
+        "game_session_id": v("game_session_id"),
+        "chunk_current": v("chunk_current"), "chunk_total": v("chunk_total"),
+        "run_started_at": dt_iso(&j, "run_started_at")?, "finished_at": dt_iso(&j, "finished_at")?,
+        "created_at": dt_iso(&j, "created_at")?, "updated_at": dt_iso(&j, "updated_at")?,
+    });
+    crate::edits::json_response(&out)
+}
+
+/// `api_imagegen_player_job_status` (app/routers/ai.py): a player's own image job (any of them for a GM). The gate comes
+/// first - a GM always may, anyone else needs the world's image-gen toggle (a missing world is 403 there, as Python's
+/// `_require_player_image_gen_access` raises before the handler's own 404) - and "wrong world" and "not mine" collapse
+/// into the same 404 for a player
+fn player_image_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let w = p.world.as_ref();
+    if !p.is_gm && !w.map(|w| crate::edits::py_truthy_pub(w.get("players_can_use_image_gen"))).unwrap_or(false) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let w = w?;
+    let wid = w.get("id")?.as_i64()?;
+    let Ok(j) = db.query_row("SELECT * FROM image_jobs WHERE id = ?1", [id], |r| crate::layout::row_map(r)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    if j.get("world_id").and_then(|v| v.as_i64()) != Some(wid) {
+        return Some(crate::idpages::refusal(404));
+    }
+    if !p.is_gm && j.get("created_by_user_id").and_then(|v| v.as_i64()) != Some(p.user_id) {
+        return Some(crate::idpages::refusal(404));
+    }
+    // _image_job_to_dict: result_urls_json is json.loads'd with no fallback - unreadable text is Python's own 500
+    let urls = match j.get("result_urls_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+        Some(t) => serde_json::from_str::<Value>(t).ok()?,
+        None => json!([]),
+    };
+    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
+    let out = json!({
+        "id": j.get("id")?.as_i64()?, "prompt": v("prompt"), "status": v("status"), "error": v("error"),
+        "urls": urls, "created_at": dt_iso(&j, "created_at")?, "updated_at": dt_iso(&j, "updated_at")?,
+    });
+    crate::edits::json_response(&out)
 }
 
 
