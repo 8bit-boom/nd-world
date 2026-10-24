@@ -72,6 +72,10 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **Hub keepsakes, places and handouts tabs** (hub.rs `keepsakes_tab` / `places_tab` / `handouts_tab`): what the character
+  kept (newest first, the world's per-kind personal-file limits) with everything the viewer could still keep - shown handouts,
+  the owner's private notes with [gmonly] stripped, the session log's player-visible media (`viewer_media` extracted into
+  edits.rs); every page the world opens to a player with the character's pins; the shown pictures with their new flags.
 - **Character reads and exports** (apis.rs): `GET /api/characters/<id>/vitals` (the live numbers with the sheet's effective
   maxima and the cleaned conditions, viewable by exactly who may view the sheet), `/sync` (the live-sync dict of a character
   the caller manages, of any world - Python checks no world here), `/advance` (the XP shop; a custom system's 400 keeps
