@@ -3413,3 +3413,41 @@ def test_session_log_list_is_pythons(client, seed):
             assert r.headers.get("x-nd-served-by") == "gateway", (email, closed)
             served += _same_page(d, _via(d, base), "/session-log", email) or r.status_code == 403
     assert served == 4
+
+
+def test_npc_talk_page_is_pythons(client, seed):
+    """GET /npc-talk from the gateway: the talkable kinds in kind then name order (what the viewer may see), ?entity= picking one (or
+    one they may not see: none), for the GM and a player; a world that does not let players ask the AI (403)."""
+    from app.database import SessionLocal
+    from app.models import Entity, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        es = [Entity(world_id=w, kind="organization", name="Guild"), Entity(world_id=w, kind="character", name="zed", image_url="/uploads/z.png"),
+              Entity(world_id=w, kind="character", name="Amy"), Entity(world_id=w, kind="creature", name="Wolf"),
+              Entity(world_id=w, kind="character", name="Spy", visible_to_players=False), Entity(world_id=w, kind="item", name="Sword")]
+        db.add_all(es)
+        db.get(World, w).players_can_ask_ai = True
+        db.commit()
+        spy, amy = es[4].id, es[2].id
+    finally:
+        db.close()
+    urls = ["/npc-talk", f"/npc-talk?entity={amy}", f"/npc-talk?entity={spy}", "/npc-talk?entity=0"]
+    served = 0
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        for url in urls:
+            served += _same_page(d, _via(d, base), url, email)
+    assert served == 8
+    db = SessionLocal()
+    try:
+        db.get(World, w).players_can_ask_ai = False
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a, b = d.get("/npc-talk"), _via(d, base).get("/npc-talk")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert (a.status_code, a.json()) == (b.status_code, b.json()) == (403, {"detail": "Forbidden"})

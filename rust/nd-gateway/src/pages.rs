@@ -952,6 +952,43 @@ pub fn session_log_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
     render_with(pages, "sessions/player_list.html", p.ctx, headers)
 }
 
+/// `GET /npc-talk` (app/routers/npc_talk.py `npc_talk_page`): the characters, creatures and organizations the viewer may see to talk
+/// to, and the one `?entity=` picks; a player only when the world lets players ask the AI
+pub fn npc_talk_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let pick: i64 = match query_param(uri, "entity") {
+        None => 0,
+        Some(v) => v.trim().parse().ok()?, // int() of anything else is pydantic's 422: Python's
+    };
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !p.is_gm {
+        let open = p.world.as_ref().is_some_and(|w| crate::edits::py_truthy_pub(w.get("players_can_ask_ai")) || crate::edits::py_truthy_pub(w.get("players_can_use_ai_chat")));
+        if !open {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let Some(world) = p.world.clone() else {
+        let mut r = Response::builder().status(StatusCode::TEMPORARY_REDIRECT).header(header::LOCATION, "/worlds").body(Body::empty()).ok()?;
+        r.headers_mut().insert("x-nd-served-by", axum::http::HeaderValue::from_static("gateway"));
+        return Some(r);
+    };
+    let wid = world.get("id")?.as_i64()?;
+    let vis = if p.is_gm { String::new() } else {
+        format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let mut st = db.prepare(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character', 'creature', 'organization'){vis}")).ok()?;
+    let mut rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let order = |k: &str| match k { "character" => 0, "creature" => 1, "organization" => 2, _ => 3 };
+    rows.sort_by_key(|e| (order(e.get("kind").and_then(|v| v.as_str()).unwrap_or("")), e.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase()));
+    let selected = if pick != 0 { rows.iter().find(|e| e.get("id").and_then(|v| v.as_i64()) == Some(pick)).cloned().map(Value::Object) } else { None };
+    p.ctx.insert("npcs".into(), Value::Array(rows.into_iter().map(Value::Object).collect()));
+    p.ctx.insert("selected".into(), selected.unwrap_or(Value::Null));
+    p.ctx.insert("is_gm".into(), json!(p.is_gm));
+    render_with(pages, "npc_talk.html", p.ctx, headers)
+}
+
 /// `GET /quests` (app/routers/quests.py `quests_list`)
 pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     use serde_json::{json, Map, Value};

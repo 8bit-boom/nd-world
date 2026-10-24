@@ -68,6 +68,8 @@ them after each batch; the phase is done when both are empty and the steps below
   ASCII (Python's `isalnum` / `capitalize`) stays Python's.
 - **Session Log list** (`GET /session-log`, pages.rs `session_log_list`): recap markers and the audio / picture / video marks by
   what the viewer may hear and see.
+- **NPC talk page** (`GET /npc-talk`): the talkable entities the viewer may see, `?entity=` picking one; the 403 for a world closed
+  to players' AI.
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from
