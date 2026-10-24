@@ -46,6 +46,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Character list** (`GET /characters`), **the GM's AI chat page** (`GET /ai`) and **calendar search** (`GET /api/calendar/search`),
   refusals included. A calendar not created yet (Python makes the row on the first visit) still goes to Python.
 
+- **Import page** (`GET /import`), **Session Log page** (`GET /session-log/<id>`), **a job's status** (`GET /api/audio-jobs/<id>`) and
+  the **character hub's quests and known-world tabs** (`GET /api/characters/<id>/hub/quests`, `/hub/world`), refusals included.
+- **Not yet**: `GET /account/2fa/setup` draws its QR code with Python's `qrcode` package; the gateway's image will be a different
+  (equally scannable) PNG, so that page needs its own parity rule (decode the QR, compare the otpauth URI) when it moves.
+
 ### What has to wait for the switch itself
 
 Python keeps some saved settings in memory and reloads them only when its own handler saves them: the resource sizing
