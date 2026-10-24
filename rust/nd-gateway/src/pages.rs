@@ -823,7 +823,7 @@ pub fn sessions_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let total: i64 = db.query_row("SELECT count(*) FROM game_sessions WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
     let total_pages = std::cmp::max(1, (total + 49) / 50);
     let page = page.max(1).min(total_pages);
-    let mut st = db.prepare("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 50 OFFSET ?2").ok()?;
+    let mut st = db.prepare("SELECT *, coalesce(live_transcript, '') != '' AS has_live_transcript FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 50 OFFSET ?2").ok()?;
     let sessions = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
     let mut names = Map::new();

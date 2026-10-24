@@ -499,3 +499,4 @@ tests/test_audio_jobs.py::test_cancel_stops_an_in_progress_job
 tests/test_audio_jobs.py::test_cancel_requires_gm
 tests/test_audio_jobs.py::test_delete_route_rejects_in_progress_job
 tests/test_diagnostics.py::test_events_route_serves_full_journal
+tests/test_gallery.py::test_spotlight_cache_serves_a_hit_within_ttl_and_invalidates_on_write
