@@ -52,7 +52,8 @@ them after each batch; the phase is done when both are empty and the steps below
   `currency`, `carry-limit`, `feats`, `equipment`) and the party stash (`POST /api/parties/<id>/loot`) now answer Python's 400 / 403 /
   404 / 409 themselves, with Python's messages (edits.rs `pc_gate`, `json_body_refusal`, `list_refusal`, `loot_refusal`). Bodies
   serde reads differently from `json.loads` (NaN, lone surrogates, a BOM, out-of-range numbers, deep nesting), a GM's stash edit in
-  another world and the stash's `give` itself still go to Python.
+  another world still go to Python. The stash's `give` (into a member's equipment, merging a matching item) is the
+  gateway's too.
 - **The settings row**: Python's `get_app_settings` creates the one `app_settings` row on first use; the gateway's page context
   declined while it was missing, so the first pages of a fresh instance (and of nearly every test) went to Python. It now creates
   the row the same way (layout.rs `app_settings_row`).

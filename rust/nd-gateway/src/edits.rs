@@ -2192,7 +2192,93 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
                 _ => {}
             }
         }
-        _ => return None, // give (the character's equipment, by its system) and bad actions: Python's
+        Some("give") => {
+            let i = index(&loot)?;
+            let pc_id = loot_int(&b, "pc_id", None, None, None)?;
+            if !members.contains(&pc_id) {
+                return None;
+            }
+            if level != "full" {
+                let owner: Option<i64> = c.db.query_row("SELECT owner_user_id FROM player_characters WHERE id = ?1", [pc_id], |r| r.get(0)).ok().flatten();
+                if owner != Some(c.p.user_id) {
+                    return None;
+                }
+            }
+            let have = loot[i].get("qty")?.as_i64()?;
+            let n = match loot_int_r(&b, "qty", Some(json!(have)), Some(1), Some(LOOT_QTY_MAX)) {
+                Ok(n) => n,
+                Err(r) => return r,
+            };
+            let bad = |m: String| Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m));
+            if n > have {
+                return bad(format!("Only {have} available"));
+            }
+            let native = match row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", pc_id) {
+                Some(pc) => Some((pc_maxima(&c.db, &pc)?.4, pc)),
+                None => None,
+            };
+            let Some((true, pc)) = native else {
+                return bad("Custom-sheet characters keep their inventory in the sheet's own fields \u{2014} add it there instead.".into());
+            };
+            let name = loot[i].get("name")?.as_str()?.to_string();
+            let notes = loot[i].get("notes").cloned().unwrap_or(json!(""));
+            if !name.is_ascii() {
+                return None; // str.lower() beyond ASCII: Python's
+            }
+            let raw = pc.get("equipment_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+            let mut gear = match serde_json::from_str::<Value>(raw).ok()? {
+                Value::Array(a) => a,
+                _ => vec![],
+            };
+            let mut hit = None;
+            for (k, g) in gear.iter().enumerate() {
+                let Some(m) = g.as_object() else { continue };
+                let gname = match m.get("name") {
+                    None => String::new(),
+                    Some(Value::String(s)) if s.is_ascii() => s.clone(),
+                    _ => return None, // str() of another value, or lower() beyond ASCII: Python's
+                };
+                if strip(&gname).to_ascii_lowercase() == name.to_ascii_lowercase() {
+                    hit = Some(k);
+                    break;
+                }
+            }
+            match hit {
+                Some(k) => {
+                    let m = gear[k].as_object_mut()?;
+                    // int(match.get("qty") or 0) + n; a TypeError / ValueError is n
+                    let q = match m.get("qty") {
+                        None | Some(Value::Null) | Some(Value::Bool(false)) => Some(0),
+                        Some(Value::Bool(true)) => Some(1),
+                        Some(Value::Number(x)) if x.is_i64() => x.as_i64(),
+                        Some(Value::Number(x)) => match x.as_f64() {
+                            Some(f) if f.is_finite() && f.abs() < 1e15 => Some(f.trunc() as i64),
+                            _ => return None,
+                        },
+                        Some(Value::String(s)) if s.is_empty() => Some(0), // "" or 0
+                        Some(Value::String(s)) => {
+                            // int(text): ASCII digits with an optional sign and padding; underscores and other digits are Python's
+                            let t = s.trim_matches(|ch: char| ch.is_ascii_whitespace());
+                            let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+                            if !s.is_ascii() || s.contains('_') {
+                                return None;
+                            }
+                            if !digits.is_empty() && digits.len() < 16 && digits.bytes().all(|b| b.is_ascii_digit()) { t.parse::<i64>().ok() } else { None }
+                        }
+                        Some(_) => None,
+                    };
+                    m.insert("qty".into(), json!(q.map_or(n, |q| q + n)));
+                }
+                None => gear.push(json!({"name": name, "qty": n, "weight": 0, "equipped": false, "notes": notes})),
+            }
+            orm::update(&c.db, "player_characters", pc_id, &[("equipment_json", s(&nd_render::py_dumps(&Value::Array(gear))))])?;
+            if n == have {
+                loot.remove(i);
+            } else {
+                loot[i].insert("qty".into(), json!(have - n));
+            }
+        }
+        _ => return None, // bad actions: answered by loot_refusal
     }
     let list = Value::Array(loot.into_iter().map(Value::Object).collect());
     orm::update(&c.db, "parties", ids[0], &[("loot_json", s(&nd_render::py_dumps(&list)))])?;

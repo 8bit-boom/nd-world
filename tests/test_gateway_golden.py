@@ -2909,3 +2909,57 @@ def test_2fa_setup_page_is_pythons(client, seed):
         u.totp_enabled = False
         db.commit()
         db.close()
+
+
+def test_loot_give_is_pythons(client, seed):
+    """POST /api/parties/<id>/loot {action: give} from the gateway: part of a stack, the rest of it, a merge into a matching item
+    (odd stored qty values), a new item, too many, a custom-sheet member - each run on Python, put back, and run through the gateway."""
+    from app.database import SessionLocal
+    from app.models import Party, PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = db.query(SheetTemplate).filter(SheetTemplate.sheet_mode == "custom").first()
+        nat = PlayerCharacter(world_id=w, name="Nat", equipment_json=json.dumps([{"name": " gem ", "qty": "x"}, {"name": "Rope", "qty": 2.7}, "junk"]))
+        cust = PlayerCharacter(world_id=w, name="Cust", sheet_template_id=tpl.id if tpl else None)
+        db.add_all([nat, cust])
+        db.flush()
+        party = Party(world_id=w, name="Givers", member_pc_ids_json=json.dumps([nat.id, cust.id]),
+                      loot_json=json.dumps([{"lid": "aaaa0001", "name": "Gem", "qty": 3, "notes": "", "claimed_by": []},
+                                            {"lid": "aaaa0002", "name": "rope", "qty": 1, "notes": "", "claimed_by": []},
+                                            {"lid": "aaaa0003", "name": "Map", "qty": 1, "notes": "old", "claimed_by": [nat.id]}]))
+        db.add(party)
+        db.commit()
+        pid, nid, cid = party.id, nat.id, cust.id
+    finally:
+        db.close()
+
+    def state():
+        db = SessionLocal()
+        try:
+            return db.get(Party, pid).loot_json, db.get(PlayerCharacter, nid).equipment_json
+        finally:
+            db.close()
+
+    def put(s):
+        db = SessionLocal()
+        try:
+            db.get(Party, pid).loot_json, db.get(PlayerCharacter, nid).equipment_json = s
+            db.commit()
+        finally:
+            db.close()
+
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for body in ({"action": "give", "lid": "aaaa0001", "pc_id": nid, "qty": 2}, {"action": "give", "lid": "aaaa0001", "pc_id": nid},
+                 {"action": "give", "lid": "aaaa0002", "pc_id": nid}, {"action": "give", "lid": "aaaa0003", "pc_id": nid},
+                 {"action": "give", "lid": "aaaa0001", "pc_id": nid, "qty": 4}, {"action": "give", "lid": "aaaa0001", "pc_id": cid}):
+        before = state()
+        a = gm.post(f"/api/parties/{pid}/loot", json=body)
+        after_a = state()
+        put(before)
+        b = _via(gm, base).post(f"/api/parties/{pid}/loot", json=body)
+        assert b.headers.get("x-nd-served-by") == "gateway", body
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), body
+        assert state() == after_a, body
+        put(before)
