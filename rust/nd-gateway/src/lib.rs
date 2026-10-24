@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
 pub mod calendar;
+pub mod catalog;
 pub mod config;
 pub mod strict;
 pub mod rooms;
@@ -187,10 +188,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/races" | "/professions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/sessions" => pages::sessions_list,
+            "/races" => crate::catalog::races,
+            "/professions" => crate::catalog::professions,
             "/quests" => pages::quests_list,
             "/parties" => pages::parties_list,
             "/characters" => pages::characters_list,

@@ -2823,3 +2823,35 @@ def test_loot_and_condition_refusals_are_pythons(client, seed):
         assert b.headers.get("x-nd-served-by") == "gateway", (path, body)
         assert a.status_code >= 400, (path, body)
         assert (a.status_code, a.json()) == (b.status_code, b.json()), (path, body)
+
+
+def test_race_and_profession_catalogs_are_pythons(client, seed):
+    """GET /races and /professions from the gateway: the world's entries by tier (padded / capitalised / blank / free-text subtypes
+    in Unsorted, hidden ones only for the GM or a player they are shared with), the bundled catalog minus what the world has, the
+    ?added= note - for the GM, a player, and a player of the other world."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="race", name="Dwarf", subtype=" Standard ", body="**Stout** folk."),
+                    Entity(world_id=w, kind="race", name="ash-born", subtype="advanced", image_url="/uploads/races/a.png"),
+                    Entity(world_id=w, kind="race", name="Secret", subtype="exceptional", visible_to_players=False),
+                    Entity(world_id=w, kind="race", name="Oddity", subtype="weird"),
+                    Entity(world_id=w, kind="race", name="Blank"),
+                    Entity(world_id=w, kind="profession", name="Hacker", subtype="standard", summary="Breaks in."),
+                    Entity(world_id=w, kind="profession", name="Ghost", subtype="STANDARD", visible_to_players=False)])
+        db.commit()
+    finally:
+        db.close()
+    urls = ["/races", "/professions", "/races?added=3", "/professions?added=%3Cb%3E"]
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for url in urls:
+            served += _same_page(d, via, url, email)
+    assert served == len(urls) * 3
