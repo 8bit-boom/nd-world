@@ -42,6 +42,7 @@ pub mod orm;
 pub mod media;
 pub mod pages;
 pub mod proxy;
+pub mod schedule;
 pub mod search;
 pub mod settings;
 pub mod session;
@@ -330,6 +331,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || apis::get(cfg, &uri, &headers)).await {
             return resp;
         }
+    }
+    if schedule::serves(req.method(), req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // the session planner (app/routers/schedule.py)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (pages_, cfg, method, uri, headers, b) = (app.pages.clone(), app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || schedule::handle(&pages_, &cfg, &method, &uri, &headers, &b)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa"))
         && app.cfg.rust_routes.iter().any(|r| r == "auth") {

@@ -34,6 +34,11 @@ them after each batch; the phase is done when both are empty and the steps below
   page-build limit is Python's render gate, which the gateway does not have (the page shows the starting value); the Diagnostics
   tab's watchdog thread, event-loop heartbeat and database pool are Python's and read "not started" / "inactive" / "unavailable".
 
+- **Session planner** (`pages` switch, rust/nd-gateway/src/schedule.rs): `GET /schedule`, `GET /api/schedule/state`, every plan /
+  slot / vote write, confirm (optionally creating the session log), reopen, cancel, delete and both `.ics` downloads, refusals
+  included. A time `datetime.fromisoformat` reads in one of its rarer forms (week dates, compact `20310504T1830`, an hour alone) and
+  a path id FastAPI would coerce (`007`) still go to Python.
+
 ### What has to wait for the switch itself
 
 Python keeps some saved settings in memory and reloads them only when its own handler saves them: the resource sizing

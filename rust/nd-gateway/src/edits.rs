@@ -106,7 +106,7 @@ impl Ctx<'_> {
 
 /// Whether every whole number in a JSON text fits in 64 bits (Python keeps a bigger one exact; here it would turn into a float and be
 /// written back differently)
-fn plain_numbers(raw: &[u8]) -> bool {
+pub(crate) fn plain_numbers(raw: &[u8]) -> bool {
     let (mut in_str, mut esc, mut run, mut frac) = (false, false, 0usize, false);
     for &b in raw {
         if in_str {
