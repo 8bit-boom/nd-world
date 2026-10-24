@@ -3,7 +3,7 @@
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Response, Uri};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,13 +14,14 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
     match uri.path() {
         "/api/cockpit/workspace" => cockpit_workspace(&cfg, uri, headers),
         "/api/calendar/search" => crate::calendar::search_api(&cfg, uri, headers),
+        path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path => party_vitals(&cfg, uri, headers, vitals_id(path)?),
     }
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/cockpit/workspace" | "/api/calendar/search") || vitals_id(path).is_some() || audio_job_id(path).is_some()
+    matches!(path, "/api/cockpit/workspace" | "/api/calendar/search") || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -146,4 +147,118 @@ fn audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Op
         "pending_facts": pending,
     });
     crate::edits::json_response(&out)
+}
+
+
+fn pack_world(path: &str) -> Option<i64> {
+    let d = path.strip_prefix("/api/worlds/")?.strip_suffix("/content-pack")?;
+    (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
+}
+
+/// `_sections_from_body`: (leading description, {heading: text}) split on "## Heading" lines; None for whitespace Python's `\s` and
+/// Rust's disagree about
+fn sections_from_body(body: &str) -> Option<(String, Map<String, Value>)> {
+    use nd_render::text::py_strip;
+    if body.chars().any(|c| ('\u{1c}'..='\u{1f}').contains(&c)) {
+        return None;
+    }
+    if py_strip(body).is_empty() {
+        return Some((String::new(), Map::new()));
+    }
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?m)^##\s+(.+)$").unwrap());
+    let mut pieces: Vec<(Option<String>, String)> = vec![];
+    let mut last = 0;
+    let mut heading: Option<String> = None;
+    for c in re.captures_iter(body) {
+        let m = c.get(0)?;
+        pieces.push((heading.take(), body[last..m.start()].to_string()));
+        heading = Some(c.get(1)?.as_str().to_string());
+        last = m.end();
+    }
+    pieces.push((heading, body[last..].to_string()));
+    let pre = py_strip(&pieces[0].1).to_string();
+    let mut sections = Map::new();
+    for (h, text) in pieces.into_iter().skip(1) {
+        let h = py_strip(&h?).to_string();
+        if !h.is_empty() {
+            sections.insert(h, json!(py_strip(&text)));
+        }
+    }
+    if sections.is_empty() {
+        let mut m = Map::new();
+        m.insert("Description".into(), json!(py_strip(body)));
+        return Some((String::new(), m));
+    }
+    Some((pre, sections))
+}
+
+/// `api_content_pack` (app/routers/importer.py): a world's homebrew races / professions / feats / items in the Android app's JSON shape,
+/// for any member of the world
+fn content_pack(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let exists = db.query_row("SELECT 1 FROM worlds WHERE id = ?1", [wid], |_| Ok(())).is_ok();
+    let member = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_ok();
+    if !exists || !(p.is_gm || member) {
+        return Some(crate::idpages::refusal(404));
+    }
+    let mut st = db.prepare("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('race', 'profession', 'feat', 'item') ORDER BY name, id").ok()?;
+    let ents = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut pack = json!({"races": [], "professions": [], "feats": [], "items": []});
+    static RACE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static PROF: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let race = RACE.get_or_init(|| regex::Regex::new(r"^Race Feats/([^/]+)/(.+)$").unwrap());
+    let prof = PROF.get_or_init(|| regex::Regex::new(r"^Profession Feats/([^/]+)$").unwrap());
+    for e in ents {
+        let t = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let (pre, sections) = sections_from_body(&t("body"))?;
+        let cf = serde_json::from_str::<Value>(e.get("custom_fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("{}"));
+        let bonuses = match cf {
+            Ok(Value::Object(o)) => o.get("bonuses").filter(|b| b.is_object()).cloned().unwrap_or(json!({})),
+            _ => json!({}),
+        };
+        let kind = t("kind");
+        let summary = t("summary");
+        let mut item = json!({"id": format!("custom_{wid}_{}", e.get("id")?.as_i64()?), "name": e.get("name"), "type": "", "tags": t("tags"),
+            "description": if summary.is_empty() { pre } else { summary }, "sections": sections, "filepath": "", "specialAttributes": [],
+            "bonuses": bonuses, "image_url": t("image_url"), "isCustom": true});
+        let sub = nd_render::text::py_strip(&t("subtype")).to_lowercase();
+        let o = item.as_object_mut()?;
+        match kind.as_str() {
+            "race" | "profession" => {
+                let st = t("subtype");
+                o.insert("tier".into(), json!(nd_render::text::py_strip(if st.is_empty() { "standard" } else { &st }).to_lowercase()));
+            }
+            "feat" => {
+                let cat = match sub.as_str() {
+                    "common feat" => "Common", "origin feat" => "Origin", "profession feat" => "Profession",
+                    "profession ability" => "Profession Ability", "psy power" => "Psy Power", "race feat" => "Race", _ => "Common",
+                };
+                o.insert("category".into(), json!(cat));
+                o.insert("rank".into(), json!(""));
+                let folder = t("folder");
+                if folder.contains('\n') {
+                    return None; // `$` before a trailing newline: Python's regex reads it its own way
+                }
+                if let Some(c) = race.captures(&folder) {
+                    o.insert("associatedRace".into(), json!(c.get(1)?.as_str()));
+                    o.insert("rank".into(), json!(c.get(2)?.as_str()));
+                } else if let Some(c) = prof.captures(&folder) {
+                    o.insert("associatedProfession".into(), json!(c.get(1)?.as_str()));
+                }
+            }
+            _ => {
+                let cat = match sub.as_str() {
+                    "weapon" => "Weapon", "armor" => "Armor", "augment" => "Augment", "bio-augmentation" => "Bio Augment",
+                    "drone" => "Drone", "vehicle" => "Vehicle", "husk" => "Husk", _ => "Special",
+                };
+                o.insert("category".into(), json!(cat));
+            }
+        }
+        let bucket = match kind.as_str() { "race" => "races", "profession" => "professions", "feat" => "feats", _ => "items" };
+        pack[bucket].as_array_mut()?.push(item);
+    }
+    crate::edits::json_response(&pack)
 }

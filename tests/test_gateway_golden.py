@@ -2217,3 +2217,37 @@ def test_audio_job_status_is_pythons(client, seed):
         db.commit()
     finally:
         db.close()
+
+
+def test_content_pack_is_pythons(client, seed):
+    """GET /api/worlds/<id>/content-pack from the gateway: races / professions / feats / items in the Android app's shape - bodies split
+    on "## Heading" lines (or kept whole as a Description), bonuses from the custom fields, race-feat and profession-feat folders, the
+    subtype categories - for the GM, a member player, a non-member (404) and a missing world."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Entity(world_id=w, kind="race", name="Elf", subtype=" Elite ", body="Pointy.\n\n## Traits\nKeen eyes\n## Lore\n\nOld\n## Traits\nagain",
+                   custom_fields_json=json.dumps({"bonuses": {"dex": 2}}), tags="fey"),
+            Entity(world_id=w, kind="profession", name="Netrunner", subtype="", body="Just text, no headings.", summary="Hacker"),
+            Entity(world_id=w, kind="feat", name="Night eyes", subtype="Race Feat", folder="Race Feats/Elf/Rank 2", custom_fields_json="oops"),
+            Entity(world_id=w, kind="feat", name="Overclock", subtype="profession ability", folder="Profession Feats/Netrunner"),
+            Entity(world_id=w, kind="feat", name="Odd", subtype="weird", folder="Elsewhere", custom_fields_json=json.dumps({"bonuses": [1]})),
+            Entity(world_id=w, kind="item", name="Blade", subtype="WEAPON", image_url="/uploads/b.png", body="   "),
+            Entity(world_id=w, kind="item", name="Thing", subtype="gizmo", body="##   \nempty heading\n## Real\nyes"),
+            Entity(world_id=w, kind="character", name="Not in the pack")])
+        db.commit()
+    finally:
+        db.close()
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        for wid in (w, seed.world_b.id, 999999):
+            url = f"/api/worlds/{wid}/content-pack"
+            a, b = d.get(url), _via(d, base).get(url)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, wid)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, wid)
