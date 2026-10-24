@@ -32,6 +32,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/parties/", "/summary", party_summary),
     ("/parties/", "", party_detail),
     ("/session-log/", "", session_log_detail),
+    ("/characters/", "/edit", character_edit),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -1002,4 +1003,31 @@ fn party_summary(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, header
     c.insert("assigned_quests".into(), Value::Array(quests));
     c.insert("member_names".into(), json!({"__intkeys__": names}));
     render_with(pages, "parties/summary.html", p.ctx, headers)
+}
+
+/// `GET /characters/<id>/edit` (app/routers/characters.py `character_edit_form`): the edit form for a character the viewer
+/// manages; a custom-mode sheet is edited in place, so Python just redirects to the character page
+fn character_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let pc = match row(db, "SELECT * FROM player_characters WHERE id = ?1", id) {
+        Some(pc) => pc,
+        None => return Some(refusal(404)),
+    };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(refusal(403));
+    }
+    let chosen_tpl = match pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0) {
+        Some(tid) => crate::pages::sheet_tpl_by(db, "id", &tid.to_string())?,
+        None => None,
+    };
+    if chosen_tpl.is_some() {
+        let t = chosen_tpl.as_ref()?;
+        if t.get("sheet_mode").and_then(|v| v.as_str()) == Some("custom") {
+            return Some(crate::edits::redirect(&format!("/characters/{id}"))?);
+        }
+        if crate::sheets::Tpl::load(t.clone()).is_none() {
+            return None;
+        }
+    }
+    let ctx = crate::pages::character_form_ctx(db, &mut p, &pc, chosen_tpl)?;
+    render_with(pages, "characters/form.html", ctx, headers)
 }

@@ -72,6 +72,13 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The character creation and edit forms** (pages.rs `characters_new`, idpages.rs `character_edit`): the wizard with the
+  N&D default template (or the ?template_id= one - a custom mode template gets its own form page through the ported
+  `tpl_fields_json` filter, now on the gateway's environment), a player at their character limit redirected as Python
+  redirects; the edit form with the row's live JSON columns and the world's templates, a custom-mode character's edit a
+  redirect to its page, a stranger 403.
+- **The session page's featured-entity picker** (`GET /sessions/<id>/npc-candidates`, apis.rs): the world's entities by the
+  picker's groups (NPCs split from subtype-PC write-ups), the real characters as "pc:<id>"; GM-only as Python's allowlist has it.
 - **Hub keepsakes, places and handouts tabs** (hub.rs `keepsakes_tab` / `places_tab` / `handouts_tab`): what the character
   kept (newest first, the world's per-kind personal-file limits) with everything the viewer could still keep - shown handouts,
   the owner's private notes with [gmonly] stripped, the session log's player-visible media (`viewer_media` extracted into
