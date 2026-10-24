@@ -2121,3 +2121,49 @@ def test_hub_quests_and_world_are_pythons(client, seed):
                     a, b = d.get(url), _via(d, base).get(url)
                     assert (a.status_code, a.json()) == (b.status_code, b.json()), (email, url)
                     assert b.headers.get("x-nd-served-by") == "gateway", (email, url)
+
+
+def test_session_log_page_is_pythons(client, seed):
+    """GET /session-log/<id> from the gateway: a published player summary (markdown), an unpublished one, the recap pickers seeded from
+    the last recap job of the viewer's audience, and the audio / pictures / video each viewer may see - for the GM, a player of the
+    world, a player of another world (404) and a missing session."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import AudioClip, AudioJob, GameSession, VideoClip
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        a1 = AudioClip(world_id=w, name="Theme", file_url="/uploads/a1.mp3", visible_to_players=True, transcript="la la")
+        a2 = AudioClip(world_id=w, name="GM cue", file_url="/uploads/a2.mp3", visible_to_players=False)
+        v1 = VideoClip(world_id=w, name="Intro", file_url="/uploads/v1.mp4", visible_to_players=True, poster_url="/uploads/v1.jpg")
+        v2 = VideoClip(world_id=w, name="Secret", file_url="/uploads/v2.mp4", visible_to_players=False)
+        db.add_all([a1, a2, v1, v2])
+        db.flush()
+        media = [{"uid": "img1", "kind": "image", "url": "/uploads/p.png", "caption": "Map", "visible": True},
+                 {"uid": "img2", "kind": "image", "url": "/uploads/q.png", "visible": False},
+                 {"uid": "vid1", "kind": "video", "clip_id": v1.id}, {"uid": "vid2", "kind": "video", "clip_id": v2.id}]
+        pub = GameSession(world_id=w, session_num=8, title="Eight", player_summary="We **won**.\n\n- loot", player_summary_published=True,
+                          recap_audio_json=json.dumps([a1.id, a2.id, a1.id, 999999]), recap_media_json=json.dumps(media))
+        unpub = GameSession(world_id=w, session_num=9, title="Nine", player_summary="draft", player_summary_published=False)
+        db.add_all([pub, unpub])
+        db.flush()
+        db.add(AudioJob(purpose="session_log_recap", game_session_id=pub.id, audience="gm", world_id=w, model="m1", think=False, use_rag=True,
+                        rag_entity_limit=7, condense_strictness="firm", max_tokens=900, status="done"))
+        db.commit()
+        ids = (pub.id, unpub.id, 999999)
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+                             (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)):
+        d = _signed_in(email, pw, world)
+        for i in ids:
+            url = f"/session-log/{i}"
+            a, b = d.get(url, follow_redirects=False), _via(d, base).get(url, follow_redirects=False)
+            if a.status_code != 200:
+                assert (a.status_code, a.text) == (b.status_code, b.text), (email, url)
+                served += b.headers.get("x-nd-served-by") == "gateway"
+                continue
+            served += _same_page(d, _via(d, base), url, email)
+    assert served == 9, served

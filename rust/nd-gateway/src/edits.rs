@@ -4808,7 +4808,7 @@ pub(crate) fn sm_audio_dict(c: &Map<String, Value>) -> Value {
            "visible_to_players": py_truthy(c.get("visible_to_players")), "transcript": txt("transcript")})
 }
 
-fn sm_video_dict(c: &Map<String, Value>, uid: &str) -> Value {
+pub(crate) fn sm_video_dict(c: &Map<String, Value>, uid: &str) -> Value {
     let txt = |k: &str| json!(c.get(k).and_then(|v| v.as_str()).unwrap_or(""));
     json!({"id": c.get("id"), "uid": uid, "name": c.get("name"), "description": txt("description"), "file_url": c.get("file_url"),
            "poster_url": txt("poster_url"), "visible_to_players": py_truthy(c.get("visible_to_players"))})

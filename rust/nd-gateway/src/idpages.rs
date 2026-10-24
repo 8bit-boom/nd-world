@@ -29,6 +29,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/entity/", "/edit", entity_edit),
     ("/sessions/", "", session_detail),
     ("/parties/", "", party_detail),
+    ("/session-log/", "", session_log_detail),
 ];
 
 /// The handler for a path like `/tables/12/edit`, and the id (digits only, as FastAPI's int converter reads them here)
@@ -667,4 +668,76 @@ fn party_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers
     c.insert("unclaimed_loot".into(), json!(unclaimed));
     c.insert("short_rest_available".into(), json!(short_rest));
     render_with(pages, "parties/detail.html", p.ctx, headers)
+}
+
+/// `GET /session-log/<id>` (app/routers/sessions.py `session_log_detail`): a session as the table reads it - the published player
+/// summary, the recap pickers seeded from the last recap job for this audience, and the audio / pictures / videos this viewer may see
+fn session_log_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(gs) = row(db, "SELECT * FROM game_sessions WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let wid = gs.get("world_id")?.as_i64()?;
+    // auth.user_can_access_world
+    let world_exists = row(db, "SELECT id FROM worlds WHERE id = ?1", wid).is_some();
+    let member = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_ok();
+    if !world_exists || !(p.is_gm || member) {
+        return Some(refusal(404));
+    }
+    let gm = p.is_gm;
+    let summary = gs.get("player_summary").and_then(|v| v.as_str()).unwrap_or("");
+    let published = gs.get("player_summary_published").and_then(|v| v.as_i64()).unwrap_or(0) != 0 && !nd_render::text::py_strip(summary).is_empty();
+    let html = if published { nd_render::md::render_md(summary) } else { String::new() };
+    let audience = if gm { "gm" } else { "players" };
+    let job = db.query_row("SELECT * FROM audio_jobs WHERE purpose = 'session_log_recap' AND game_session_id = ?1 AND audience = ?2 \
+        ORDER BY created_at DESC, id DESC LIMIT 1", rusqlite::params![id, audience], |r| crate::layout::row_map(r)).ok();
+    let defaults = match &job {
+        Some(j) => {
+            let int_or = |k: &str, d: i64| j.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
+            let txt = |k: &str| j.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            json!({"model": txt("model"), "think": j.get("think").and_then(|v| v.as_i64()).map_or(true, |t| t != 0),
+                   "use_rag": j.get("use_rag").and_then(|v| v.as_i64()).unwrap_or(0) != 0,
+                   "rag_entity_limit": int_or("rag_entity_limit", 15), "rag_notes_limit": int_or("rag_notes_limit", 5),
+                   "extra_instructions": txt("extra_instructions"), "min_tokens": j.get("min_tokens").cloned().unwrap_or(Value::Null),
+                   "max_tokens": j.get("max_tokens").cloned().unwrap_or(Value::Null),
+                   "strictness": Some(txt("condense_strictness")).filter(|s| !s.is_empty()).unwrap_or_else(|| "guideline".into())})
+        }
+        None => json!({"model": "", "think": true, "use_rag": false, "rag_entity_limit": 15, "rag_notes_limit": 5, "extra_instructions": "",
+                       "min_tokens": null, "max_tokens": null, "strictness": "guideline"}),
+    };
+    // session_media.viewer_media
+    let visible = |r: &Map<String, Value>| gm || r.get("visible_to_players").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    let mut audio = vec![];
+    for cid in crate::edits::sm_clip_ids(&gs)? {
+        if let Some(c) = row(db, "SELECT * FROM audio_clips WHERE id = ?1", cid).filter(|c| c.get("world_id").and_then(|v| v.as_i64()) == Some(wid)) {
+            if visible(&c) {
+                audio.push(crate::edits::sm_audio_dict(&c));
+            }
+        }
+    }
+    let items = crate::edits::sm_items(&gs)?;
+    let mut videos = vec![];
+    let mut images = vec![];
+    for it in &items {
+        match it.get("kind").and_then(|k| k.as_str()) {
+            Some("video") => {
+                let cid = it.get("clip_id")?.as_i64()?;
+                if let Some(c) = row(db, "SELECT * FROM video_clips WHERE id = ?1", cid).filter(|c| c.get("world_id").and_then(|v| v.as_i64()) == Some(wid)) {
+                    if visible(&c) {
+                        videos.push(crate::edits::sm_video_dict(&c, it.get("uid")?.as_str()?));
+                    }
+                }
+            }
+            Some("image") if gm || it.get("visible") == Some(&json!(true)) => {
+                images.push(json!({"uid": it.get("uid"), "url": it.get("url"), "caption": it.get("caption"),
+                    "visible_to_players": it.get("visible") == Some(&json!(true)), "own": it.get("own") == Some(&json!(true))}));
+            }
+            _ => {}
+        }
+    }
+    let c = &mut p.ctx;
+    c.insert("gsession".into(), Value::Object(gs));
+    c.insert("player_recap_published".into(), json!(published));
+    c.insert("player_summary_html".into(), json!(html));
+    c.insert("recap_defaults".into(), defaults);
+    c.insert("recap_audio".into(), Value::Array(audio.clone()));
+    c.insert("session_media".into(), json!({"audio": audio, "videos": videos, "images": images}));
+    render_with(pages, "sessions/player_detail.html", p.ctx, headers)
 }
