@@ -2167,3 +2167,53 @@ def test_session_log_page_is_pythons(client, seed):
                 continue
             served += _same_page(d, _via(d, base), url, email)
     assert served == 9, served
+
+
+def test_audio_job_status_is_pythons(client, seed):
+    """GET /api/audio-jobs/<id> from the gateway: each kind of job row (done, failed thinking-starved, interrupted, with pending facts, a
+    pre-migration NULL think), for the GM and for an assistant - who gets the same 404 as a missing job for a GM-tier World Summary and
+    a Code Assist job - another world's job, and a player's refusal."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import AudioJob, WorldMembership
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        jobs = [AudioJob(world_id=w, purpose="session_recap", filename="rec.mp3", status="done", transcript="t", recap="r", model="m", think=True,
+                         use_rag=True, rag_entity_limit=3, pending_facts_json=json.dumps([{"content": "x"}]), chunk_current=2, chunk_total=4),
+                AudioJob(world_id=w, purpose="condense", status="error", error='[empty response — the model spent its budget on hidden "thinking"]',
+                         condense_strictness="strict", think_fallback=True),
+                AudioJob(world_id=w, purpose="attachment", status="interrupted", think=None, pending_facts_json="{bad"),
+                AudioJob(world_id=w, purpose="world_summary", audience="gm", status="done"),
+                AudioJob(world_id=w, purpose="world_summary", audience="players", status="done"),
+                AudioJob(world_id=w, purpose="ai_assist", assist_params_json=json.dumps({"op": "code_edit"}), status="done"),
+                AudioJob(world_id=w, purpose="ai_assist", assist_params_json="not json", status="done"),
+                AudioJob(world_id=w, purpose="other_kind", status="queued"),
+                AudioJob(world_id=seed.world_b.id, purpose="condense", status="done")]
+        db.add_all(jobs)
+        m = db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_a.id).first()
+        db.commit()
+        ids = [j.id for j in jobs] + [999999]
+    finally:
+        db.close()
+    for role in ("player", "assistant"):
+        db = SessionLocal()
+        try:
+            db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_a.id).update({"role": role})
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for i in ids:
+                url = f"/api/audio-jobs/{i}"
+                a, b = d.get(url), _via(d, base).get(url)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (role, email, i)
+                assert b.headers.get("x-nd-served-by") == "gateway", (role, email, i)
+    db = SessionLocal()
+    try:
+        db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_a.id).update({"role": "player"})
+        db.commit()
+    finally:
+        db.close()
