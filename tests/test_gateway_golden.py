@@ -3322,3 +3322,48 @@ def test_unsloth_prefs_save_is_pythons(client, seed):
             path.unlink(missing_ok=True)
         else:
             path.write_bytes(original)
+
+
+def test_entity_markdown_download_is_pythons(client, seed):
+    """GET /entity/<id>/download.md from the gateway: title, kind line (icon, subtype), summary, body and the notes the viewer may see,
+    [gmonly] stripped for a player; the file name; a player in a world without downloads (403), a hidden entity (404)."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        a = Entity(world_id=w, kind="npc", subtype="Fixer", name="Ed 'Vosk' / #1", summary="Deals [gmonly]in lies[/gmonly] info",
+                   body="Body text.\n\n[gmonly]Works for the mayor.[/gmonly]\n\nMore.   \n")
+        b = Entity(world_id=w, kind="location", name="!!!", summary="", body=None)
+        c = Entity(world_id=w, kind="item", name="Hidden", visible_to_players=False)
+        db.add_all([a, b, c])
+        db.flush()
+        db.add_all([EntityNote(entity_id=a.id, content="Seen at the docks. [gmonly]Armed.[/gmonly]", visible_to_players=True),
+                    EntityNote(entity_id=a.id, content="GM only note", visible_to_players=False)])
+        db.get(World, w).players_can_download_entities = True
+        db.commit()
+        ids = (a.id, b.id, c.id, 999999)
+    finally:
+        db.close()
+    served = 0
+    for allowed in (True, False):
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_can_download_entities = allowed
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for i in ids:
+                url = f"/entity/{i}/download.md"
+                ra, rb = d.get(url), _via(d, base).get(url)
+                assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
+                assert ra.status_code == rb.status_code, (email, url, allowed)
+                assert ra.content == rb.content, (email, url, allowed)
+                for h in ("content-type", "content-disposition"):
+                    assert ra.headers.get(h) == rb.headers.get(h), (h, url)
+                served += 1
+    assert served == 16

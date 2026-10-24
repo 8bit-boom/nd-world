@@ -20,6 +20,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/dice/history" => dice_history(&cfg, uri, headers),
         "/api/display/state" => display_state(&cfg, uri, headers),
         path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
+        path if id_between(path, "/entity/", "/download.md").is_some() => entity_download(&cfg, uri, headers, id_between(path, "/entity/", "/download.md")?),
         path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
         path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
@@ -33,7 +34,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 
 pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
-        || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some()
+        || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
 }
 
@@ -392,6 +393,83 @@ fn entity_preview(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Opti
     crate::edits::json_response(&json!({"id": id, "name": e.get("name"), "kind": e.get("kind"), "kind_icon": icons.get(&t("kind")).cloned().unwrap_or(json!("")),
         "subtype": e.get("subtype"), "summary": summary, "image_url": image, "thumb_url": thumb, "tags": tags,
         "body_html": if body_s.is_empty() { String::new() } else { nd_render::md::render_md(&body_s) }, "body": body_s, "custom_fields_json": cf}))
+}
+
+/// `_entity_view_gate`: the entity and its world when the viewer may see it, else Python's 404 (Err); None when Python reads it its own way
+fn entity_gate(db: &rusqlite::Connection, p: &crate::layout::PageCtx, id: i64) -> Option<Result<(Map<String, Value>, Map<String, Value>), Response<Body>>> {
+    let Some(e) = rows_of(db, "SELECT * FROM entities WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(Err(crate::idpages::refusal(404))) };
+    let wid = e.get("world_id").and_then(|v| v.as_i64())?;
+    let Some(w) = rows_of(db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next() else { return Some(Err(crate::idpages::refusal(404))) };
+    if !p.is_gm {
+        let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let member = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |_| Ok(())).is_ok();
+        let s = |k: &str| w.get(k).and_then(|v| v.as_str());
+        if !member || nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), &format!("kind_{kind}"))? == "none" {
+            return Some(Err(crate::idpages::refusal(404)));
+        }
+        if e.get("visible_to_players").and_then(|v| v.as_i64()).unwrap_or(0) == 0
+            && db.query_row("SELECT 1 FROM entity_player_access WHERE entity_id = ?1 AND user_id = ?2", [id, p.user_id], |_| Ok(())).is_err() {
+            return Some(Err(crate::idpages::refusal(404)));
+        }
+    }
+    Some(Ok((e, w)))
+}
+
+/// `entity_download` (app/main.py, `_entity_to_markdown`): one entity as a standalone .md - title, kind line, summary, body and the
+/// notes the viewer may see, [gmonly] text stripped for a non-GM; a player only when the world allows entity downloads
+fn entity_download(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let (e, w) = match entity_gate(&db, &p, id)? {
+        Ok(x) => x,
+        Err(r) => return Some(r),
+    };
+    if !p.is_gm && !crate::edits::py_truthy_pub(w.get("players_can_download_entities")) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let strip = |v: Option<&Value>| -> Option<Option<String>> {
+        match v {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::String(s)) if p.is_gm || s.is_empty() => Some(Some(s.clone())),
+            Some(Value::String(s)) => Some(Some(nd_perm::gmonly::strip_gm_only(s, Some(p.user_id), nd_render::now_minute())?)),
+            _ => None,
+        }
+    };
+    let name = e.get("name").and_then(|v| v.as_str())?.to_string();
+    let kind = e.get("kind").and_then(|v| v.as_str())?.to_string();
+    if !name.is_ascii() || !kind.is_ascii() {
+        return None; // str.isalnum() / str.capitalize() beyond ASCII: Python's
+    }
+    let (_, icons, _) = nd_render::app::effective_kind_tables(Some(&w))?;
+    let icon = icons.get(&kind).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cap = kind.chars().next().map(|c| c.to_ascii_uppercase().to_string() + &kind[1..].to_ascii_lowercase()).unwrap_or_default();
+    let mut label = nd_render::text::py_strip(&format!("{icon} {cap}")).to_string();
+    match e.get("subtype") {
+        Some(Value::String(s)) if !s.is_empty() => label.push_str(&format!(" \u{2014} {s}")),
+        None | Some(Value::Null) | Some(Value::String(_)) => {}
+        _ => return None,
+    }
+    let body = strip(e.get("body"))?.unwrap_or_default();
+    let mut parts: Vec<String> = vec![format!("# {name}"), String::new(), format!("*{label}*"), String::new()];
+    if let Some(s) = strip(e.get("summary"))?.filter(|s| !s.is_empty()) {
+        parts.push(format!("*{s}*"));
+        parts.push(String::new());
+    }
+    parts.extend(["---".to_string(), String::new(), body, String::new()]);
+    let vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
+    let notes = rows_of(&db, &format!("SELECT * FROM entity_notes WHERE entity_id = ?1{vis} ORDER BY created_at"), &[&id])?;
+    if !notes.is_empty() {
+        parts.extend(["## Notes".to_string(), String::new()]);
+        for n in &notes {
+            let content = strip(n.get("content"))??; // a None note is Python's TypeError
+            parts.extend([content, String::new(), "---".to_string(), String::new()]);
+        }
+    }
+    let text = format!("{}\n", parts.join("\n").trim_end());
+    let fname: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || " -_".contains(*c)).collect();
+    let fname = if fname.is_empty() { "entity".to_string() } else { fname };
+    Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{fname}.md\""))
+        .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap())
 }
 
 /// `world_switch` (app/main.py): remember the world (the active_world cookie) and go back where the person was
