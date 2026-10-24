@@ -3367,3 +3367,49 @@ def test_entity_markdown_download_is_pythons(client, seed):
                     assert ra.headers.get(h) == rb.headers.get(h), (h, url)
                 served += 1
     assert served == 16
+
+
+def test_session_log_list_is_pythons(client, seed):
+    """GET /session-log from the gateway: newest first, the recap marker (published beats facts, a blank published summary is none),
+    the 🎵 for a clip the viewer can hear and the picture / video mark for media they can see - for the GM, a player, and a world that
+    closes the Session Log to players (403)."""
+    from app.database import SessionLocal
+    from app.models import AudioClip, Fact, GameSession, VideoClip, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        heard = AudioClip(world_id=w, name="Song", file_url="/uploads/a.mp3", visible_to_players=True)
+        secret = AudioClip(world_id=w, name="GM song", file_url="/uploads/b.mp3", visible_to_players=False)
+        vid = VideoClip(world_id=w, name="Clip", file_url="/uploads/v.mp4", visible_to_players=False)
+        db.add_all([heard, secret, vid])
+        db.flush()
+        s = [GameSession(world_id=w, session_num=1, title="One", player_summary="Recap", player_summary_published=True,
+                         recap_audio_json=json.dumps([heard.id])),
+             GameSession(world_id=w, session_num=3, title="Three", player_summary="   ", player_summary_published=True,
+                         recap_audio_json=json.dumps([secret.id, True, secret.id]),
+                         recap_media_json=json.dumps([{"kind": "image", "url": "/uploads/p.png", "visible": False}, {"kind": "video", "clip_id": vid.id}])),
+             GameSession(world_id=w, session_num=2, title="Two", recap_media_json=json.dumps([{"kind": "image", "url": "/uploads/q.png", "visible": True}, "junk"])),
+             GameSession(world_id=w, session_num=4, title="Four", recap_media_json="{bad")]
+        db.add_all(s)
+        db.flush()
+        db.add(Fact(world_id=w, content="A fact", game_session_id=s[1].id))
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for closed in (False, True):
+        if closed:
+            db = SessionLocal()
+            try:
+                db.get(World, w).section_access_json = json.dumps({"session_log": {"player": "none"}})
+                db.commit()
+            finally:
+                db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            r = _via(d, base).get("/session-log")
+            assert r.headers.get("x-nd-served-by") == "gateway", (email, closed)
+            served += _same_page(d, _via(d, base), "/session-log", email) or r.status_code == 403
+    assert served == 4

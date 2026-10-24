@@ -838,6 +838,120 @@ pub fn sessions_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     render_with(pages, "sessions/list.html", p.ctx, headers)
 }
 
+/// `media_items(gs)` reduced to what the lists need: (images as (visible), video clip ids), the first 50 kept items; None for JSON Python
+/// would read its own way
+fn session_media_kinds(gs: &serde_json::Map<String, serde_json::Value>) -> Option<(Vec<bool>, Vec<i64>)> {
+    use serde_json::Value;
+    let raw = gs.get("recap_media_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    let list = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => vec![],
+        Err(_) if raw.contains("NaN") || raw.contains("Infinity") => return None,
+        Err(_) => vec![],
+    };
+    let (mut images, mut videos, mut seen_urls, mut kept) = (vec![], vec![], Vec::<String>::new(), 0usize);
+    for it in &list {
+        if kept >= 50 {
+            break;
+        }
+        let Some(o) = it.as_object() else { continue };
+        match o.get("kind").and_then(|k| k.as_str()) {
+            Some("image") => {
+                let Some(url) = o.get("url").and_then(|u| u.as_str()).filter(|u| u.starts_with("/uploads/")) else { continue };
+                if seen_urls.iter().any(|s| s == url) {
+                    continue;
+                }
+                seen_urls.push(url.to_string());
+                images.push(crate::edits::py_truthy_pub(o.get("visible")));
+                kept += 1;
+            }
+            Some("video") => {
+                let Some(cid) = o.get("clip_id").filter(|v| v.is_i64()).and_then(|v| v.as_i64()) else { continue };
+                if videos.contains(&cid) {
+                    continue;
+                }
+                videos.push(cid);
+                kept += 1;
+            }
+            _ => {}
+        }
+    }
+    Some((images, videos))
+}
+
+/// `GET /session-log` (app/routers/sessions.py `session_log_list`): the world's sessions newest first, with their recap marker and
+/// whether the viewer has a song / read-aloud or a picture / video to open
+pub fn session_log_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone();
+    if !section_ok(&p, world.as_ref(), "session_log")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
+    let mut st = db.prepare("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC").ok()?;
+    let sessions = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let id_of = |s: &Map<String, Value>| s.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut fact_ids: Vec<i64> = vec![];
+    if !sessions.is_empty() {
+        let list = sessions.iter().map(|s| id_of(s).to_string()).collect::<Vec<_>>().join(",");
+        let mut st = db.prepare(&format!("SELECT DISTINCT game_session_id FROM facts WHERE world_id = ?1 AND game_session_id IN ({list})")).ok()?;
+        fact_ids = st.query_map([wid], |r| r.get::<_, Option<i64>>(0)).ok()?.filter_map(|r| r.ok().flatten()).collect();
+    }
+    let mut markers = Map::new();
+    for s in &sessions {
+        let published = crate::edits::py_truthy_pub(s.get("player_summary_published"))
+            && !nd_render::text::py_strip(s.get("player_summary").and_then(|v| v.as_str()).unwrap_or("")).is_empty();
+        let m = if published { json!("published") } else if fact_ids.contains(&id_of(s)) { json!("auto") } else { Value::Null };
+        markers.insert(id_of(s).to_string(), m);
+    }
+    let gm = p.is_gm;
+    let visible_ids = |table: &str, ids: &[i64]| -> Option<Vec<i64>> {
+        if ids.is_empty() {
+            return Some(vec![]);
+        }
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let vis = if gm && table == "video_clips" { "" } else { " AND visible_to_players = 1" };
+        let mut st = db.prepare(&format!("SELECT id FROM {table} WHERE id IN ({list}){vis}")).ok()?;
+        let r = st.query_map([], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    // songs / read-alouds: a GM any attached clip, a player one that is visible to players
+    let clip_lists: Vec<(i64, Vec<i64>)> = sessions.iter().map(|s| Some((id_of(s), crate::edits::sm_clip_ids(s)?))).collect::<Option<_>>()?;
+    let audio: Vec<i64> = if gm {
+        clip_lists.iter().filter(|(_, c)| !c.is_empty()).map(|(i, _)| *i).collect()
+    } else {
+        let all: Vec<i64> = clip_lists.iter().flat_map(|(_, c)| c.clone()).collect();
+        let audible = visible_ids("audio_clips", &all)?;
+        clip_lists.iter().filter(|(_, c)| c.iter().any(|x| audible.contains(x))).map(|(i, _)| *i).collect()
+    };
+    let mut media: Vec<i64> = vec![];
+    let mut videos: Vec<(i64, Vec<i64>)> = vec![];
+    for s in &sessions {
+        let (images, vids) = session_media_kinds(s)?;
+        if images.iter().any(|v| gm || *v) {
+            media.push(id_of(s));
+        }
+        if !vids.is_empty() {
+            videos.push((id_of(s), vids));
+        }
+    }
+    let all: Vec<i64> = videos.iter().flat_map(|(_, v)| v.clone()).collect();
+    let watchable = visible_ids("video_clips", &all)?;
+    for (sid, v) in &videos {
+        if v.iter().any(|x| watchable.contains(x)) && !media.contains(sid) {
+            media.push(*sid);
+        }
+    }
+    p.ctx.insert("sessions".into(), Value::Array(sessions.into_iter().map(Value::Object).collect()));
+    p.ctx.insert("recap_markers".into(), json!({"__intkeys__": Value::Object(markers)}));
+    p.ctx.insert("audio_session_ids".into(), json!(audio));
+    p.ctx.insert("media_session_ids".into(), json!(media));
+    render_with(pages, "sessions/player_list.html", p.ctx, headers)
+}
+
 /// `GET /quests` (app/routers/quests.py `quests_list`)
 pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     use serde_json::{json, Map, Value};

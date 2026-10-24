@@ -66,6 +66,8 @@ them after each batch; the phase is done when both are empty and the steps below
   `json.dumps(indent=2)` writes it (nd-render `py_dumps_indent`); Python reads that file afresh on every call, so the two never disagree.
 - **An entity as markdown** (`GET /entity/<id>/download.md`, apis.rs `entity_download`): the same file and headers; a name beyond
   ASCII (Python's `isalnum` / `capitalize`) stays Python's.
+- **Session Log list** (`GET /session-log`, pages.rs `session_log_list`): recap markers and the audio / picture / video marks by
+  what the viewer may hear and see.
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from
