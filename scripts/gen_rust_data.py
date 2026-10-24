@@ -126,6 +126,8 @@ def make() -> dict:
         "view_options_order": {s: list(v["options"]) for s, v in view_prefs.SECTIONS.items() if v.get("options")},
         "view_lists_order": {s: list(v["lists"]) for s, v in view_prefs.SECTIONS.items() if v.get("lists")},
         "view_presets": list(view_prefs.PRESETS),
+        # the account page's layout panel: the presets with every key order kept (json text, as the file sorts keys) and the section titles
+        "view_presets_text": json.dumps(view_prefs.PRESETS), "view_titles": view_prefs.SECTION_TITLES,
         # the built-in world themes as /worlds/<id>/theme/preset stores them (_sanitize_theme already applied), key order kept as pairs
         "theme_presets_clean": theme_presets_clean(),
         "column_defaults": column_defaults(),

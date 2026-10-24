@@ -437,6 +437,11 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     env.add_function("view_spec", |section: String| -> Value {
         Value::from_serialize(app::data()["view_specs"].get(&section).cloned().unwrap_or(serde_json::json!({})))
     });
+    // the account page's layout panel (templating.py: all_view_specs, view_titles, layout_presets - the presets in Python's key order)
+    env.add_function("all_view_specs", || -> Value { Value::from_serialize(app::data()["view_specs"].clone()) });
+    env.add_function("view_titles", || -> Value { Value::from_serialize(app::data()["view_titles"].clone()) });
+    let presets: serde_json::Value = app::data()["view_presets_text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(serde_json::json!({}));
+    env.add_global("layout_presets", Value::from_serialize(presets));
     env.add_function("can_edit", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "can_edit")) });
     env.add_function("saved_view", |state: &State, _req: Value, section: String| -> Result<Value, Error> {
         let v = nd(state, "saved_views");

@@ -48159,6 +48159,7 @@
   "player_phone",
   "reading"
  ],
+ "view_presets_text": "{\"table_night\": {\"label\": \"Table night (GM laptop)\", \"sets\": {\"site\": {\"nav\": \"rail\", \"density\": \"compact\"}, \"cockpit\": \"rail\", \"combat\": \"compact\"}}, \"prep\": {\"label\": \"Prep (GM)\", \"sets\": {\"site\": {\"width\": \"wide\"}, \"entity_page\": \"cols\", \"facts\": \"table\"}}, \"player_phone\": {\"label\": \"Player phone\", \"sets\": {\"site\": {\"nav\": \"bottom\", \"density\": \"touch\"}, \"hub\": \"play\", \"entity_page\": \"tabs\", \"recap\": \"sections\"}}, \"reading\": {\"label\": \"Reading\", \"sets\": {\"site\": {\"width\": \"reading\"}, \"entity_page\": \"reader\", \"rules\": \"book\"}}}",
  "view_sections": {
   "ai_chat": {
    "default": "withside",
@@ -50880,5 +50881,49 @@
     }
    ]
   }
+ },
+ "view_titles": {
+  "ai_chat": "AI chat",
+  "album": "Image album",
+  "audio": "Audio library",
+  "board_notes": "A board's notes",
+  "board_view": "A board",
+  "boards": "Boards",
+  "calendar_agenda": "Calendar agenda",
+  "calendar_view": "Calendar",
+  "catalog": "Races and professions",
+  "characters": "Characters",
+  "cockpit": "Cockpit layout style",
+  "combat": "Combat tracker",
+  "combat_list": "Encounters",
+  "connections": "An entity's connections",
+  "dice": "Dice",
+  "entities": "Entity lists",
+  "entity_notes": "Notes on an entity",
+  "entity_page": "An entity's page",
+  "facts": "Facts",
+  "handouts": "Handouts",
+  "home": "The home page",
+  "hub": "My character page",
+  "images": "All images",
+  "jobs_list": "Background jobs",
+  "map_viewer": "The map viewer",
+  "maps": "Maps",
+  "notes": "My private notes",
+  "parties": "Parties",
+  "party_page": "A party's page",
+  "quests": "Quests",
+  "recap": "A session recap",
+  "rules": "Rules",
+  "search_results": "Search results",
+  "session_gm": "A session (GM)",
+  "session_log": "Session Log",
+  "sessions": "Sessions (GM)",
+  "settings_page": "Settings",
+  "site": "The site (navigation, width, density)",
+  "tables": "Random tables",
+  "templates": "Templates",
+  "video": "Video library",
+  "worlds": "Worlds"
  }
 }

@@ -293,6 +293,7 @@ pub async fn route(pages: Arc<Pages>, cfg: Arc<Config>, method: Method, uri: Uri
             }
             ("POST", "/login/2fa") => login_2fa(&pages, &db, &headers, &body),
             ("GET", "/account/2fa/setup") => twofa_setup(&pages, &cfg, &db, &uri, &headers),
+            ("POST", "/account/2fa/setup") => twofa_confirm(&pages, &cfg, &db, &uri, &headers, &body),
             _ => None,
         }
     }).await.ok()?
@@ -301,8 +302,7 @@ pub async fn route(pages: Arc<Pages>, cfg: Arc<Config>, method: Method, uri: Uri
 /// `GET /account/2fa/setup` (app/routers/account.py `account_2fa_setup`): the pending secret kept in the session across reloads, its
 /// otpauth URI as a QR code (crate::qr, module for module Python's)
 fn twofa_setup(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
-    let mut p = crate::layout::build(db, cfg, "GET", uri, headers, now())?;
-    let user = db.query_row("SELECT * FROM users WHERE id = ?1", [p.user_id], |r| crate::layout::row_map(r)).ok()?;
+    let user = signed_in_user(cfg, db, headers)?;
     if crate::edits::py_truthy_pub(user.get("totp_enabled")) {
         return Some(with_cookie(redirect("/account"), None));
     }
@@ -322,19 +322,68 @@ fn twofa_setup(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri
             t
         }
     };
-    let email = user.get("email").and_then(|v| v.as_str())?;
+    let r = twofa_page(pages, cfg, db, uri, headers, user, &secret, Value::Null, StatusCode::OK)?;
+    Some(with_cookie(r, cookie))
+}
+
+/// The person the (fresh) session names
+fn signed_in_user(cfg: &Config, db: &rusqlite::Connection, headers: &HeaderMap) -> Option<Map<String, Value>> {
+    let p = crate::layout::build(db, cfg, "GET", &Uri::from_static("/account"), headers, now())?;
+    db.query_row("SELECT * FROM users WHERE id = ?1", [p.user_id], |r| crate::layout::row_map(r)).ok()
+}
+
+/// account_2fa_setup.html for `secret`, with `error`
+fn twofa_page(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap, user: Map<String, Value>, secret: &str,
+              error: Value, status: StatusCode) -> Option<Response<Body>> {
+    let mut p = crate::layout::build(db, cfg, "GET", uri, headers, now())?;
+    let email = user.get("email").and_then(|v| v.as_str())?.to_string();
     // pyotp's provisioning_uri: quote(issuer) ":" quote(name), then urlencode({secret, issuer}) with "+" as %20
     const QUOTE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'/').remove(b'_').remove(b'.').remove(b'-').remove(b'~');
     const PLUS: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'_').remove(b'.').remove(b'-').remove(b'~');
     let issuer = "N&D World";
-    let otp = format!("otpauth://totp/{}:{}?secret={}&issuer={}", utf8_percent_encode(issuer, QUOTE), utf8_percent_encode(email, QUOTE),
-        utf8_percent_encode(&secret, PLUS), utf8_percent_encode(issuer, PLUS));
+    let otp = format!("otpauth://totp/{}:{}?secret={}&issuer={}", utf8_percent_encode(issuer, QUOTE), utf8_percent_encode(&email, QUOTE),
+        utf8_percent_encode(secret, PLUS), utf8_percent_encode(issuer, PLUS));
     p.ctx.insert("user".into(), Value::Object(user));
     p.ctx.insert("secret".into(), json!(secret));
     p.ctx.insert("qr_data_uri".into(), json!(crate::qr::data_uri(&otp)?));
-    p.ctx.insert("error".into(), Value::Null);
+    p.ctx.insert("error".into(), error);
     let html = pages.env.get_template("account_2fa_setup.html").ok()?.render(nd_render::pyvalue::to_value(&Value::Object(p.ctx))).ok()?;
-    Some(with_cookie(crate::pages::html(StatusCode::OK, html, headers), cookie))
+    Some(with_cookie(crate::pages::html(status, html, headers), None))
+}
+
+/// `POST /account/2fa/setup` (`account_2fa_confirm`): a wrong code shows the setup page again (400); the right one turns two-step on with
+/// 8 fresh backup codes (stored as sha256) and shows them on the account page
+fn twofa_confirm(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let user = signed_in_user(cfg, db, headers)?;
+    if crate::edits::py_truthy_pub(user.get("totp_enabled")) {
+        return Some(with_cookie(redirect("/account"), None));
+    }
+    let (mut s, had) = read_session(pages, headers);
+    let secret = match s.get("pending_totp_secret") {
+        Some(Value::String(t)) if !t.is_empty() => t.clone(),
+        Some(v) if crate::edits::py_truthy_pub(Some(v)) => return None,
+        _ => return Some(with_cookie(redirect("/account/2fa/setup"), None)),
+    };
+    let form = crate::ai::small_form(headers, body)?;
+    let code = form.get("code").unwrap_or("").to_string();
+    if !verify_totp(&secret, &code) {
+        return twofa_page(pages, cfg, db, uri, headers, user, &secret, json!("Incorrect code \u{2014} try again."), StatusCode::BAD_REQUEST);
+    }
+    use rand::RngCore;
+    let codes: Vec<String> = (0..8).map(|_| {
+        let mut b = [0u8; 5];
+        rand::rngs::OsRng.fill_bytes(&mut b);
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }).collect();
+    let hashes = Value::Array(codes.iter().map(|c| json!(sha256_hex(&c.to_lowercase()))).collect());
+    let uid = user.get("id")?.as_i64()?;
+    crate::orm::update(db, "users", uid, &[("totp_secret", rusqlite::types::Value::Text(secret)), ("totp_enabled", rusqlite::types::Value::Integer(1)),
+        ("totp_backup_codes_json", rusqlite::types::Value::Text(nd_render::py_dumps(&hashes)))])?;
+    s.shift_remove("pending_totp_secret");
+    let mut extra = Map::new();
+    extra.insert("new_backup_codes".into(), json!(codes));
+    let r = crate::account::render(pages, cfg, db, &Uri::from_static("/account/2fa/setup"), headers, extra, StatusCode::OK)?;
+    Some(with_cookie(r, session_cookie(pages, &s, had)))
 }
 
 fn login(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body: &[u8], peer: Option<SocketAddr>) -> Option<Response<Body>> {

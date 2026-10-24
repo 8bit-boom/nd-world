@@ -2963,3 +2963,96 @@ def test_loot_give_is_pythons(client, seed):
         assert (a.status_code, a.json()) == (b.status_code, b.json()), body
         assert state() == after_a, body
         put(before)
+
+
+def test_account_page_and_2fa_confirm_are_pythons(client, seed):
+    """GET /account and POST /account/2fa/setup from the gateway. The account page with its saved-notes, tokens (used and unused) and
+    trusted devices (an expired one left out). The confirm route: no pending secret (back to the setup page), a wrong code (the setup
+    page again, 400), the right code (two-step on, 8 backup codes stored as sha256 and shown once), and someone already on it (to
+    /account)."""
+    import hashlib
+    import re
+    from datetime import datetime, timedelta
+    import pyotp
+    from app.database import SessionLocal
+    from app.models import ApiToken, TrustedDevice, User
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        db.add_all([ApiToken(user_id=seed.gm.id, token_hash="a" * 64, label="Phone", last_used_at=datetime(2031, 5, 4, 12, 0)),
+                    ApiToken(user_id=seed.gm.id, token_hash="b" * 64, label=""),
+                    TrustedDevice(user_id=seed.gm.id, token_hash="c" * 64, label="Firefox <x>", expires_at=datetime.utcnow() + timedelta(days=9)),
+                    TrustedDevice(user_id=seed.gm.id, token_hash="d" * 64, label="Old", expires_at=datetime.utcnow() - timedelta(days=1))])
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+        d = _signed_in(email, pw, world)
+        for url in ("/account", "/account?saved=name", "/account?saved=2fa-off"):
+            served += _same_page(d, _via(d, base), url, email)
+    assert served == 6
+
+    def strip(html):
+        return re.sub(r'data:image/png;base64,[^"]+', "QR", html)
+
+    def strip_codes(html):
+        return re.sub(r'<code style="font-size:.85rem">[0-9a-f]{10}</code>', "CODE", html)
+
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a = d.post("/account/2fa/setup", data={"code": "123456"}, follow_redirects=False)
+    b = _via(d, base).post("/account/2fa/setup", data={"code": "123456"}, follow_redirects=False)
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location")) == (303, "/account/2fa/setup")
+    d.get("/account/2fa/setup")  # Python makes the pending secret
+    for code in ("000000", ""):
+        a = d.post("/account/2fa/setup", data={"code": code})
+        b = _via(d, base).post("/account/2fa/setup", data={"code": code})
+        assert b.headers.get("x-nd-served-by") == "gateway"
+        assert a.status_code == b.status_code == 400
+        assert golden.normalise("text/html", strip(a.text).encode()) == golden.normalise("text/html", strip(b.text).encode())
+    db = SessionLocal()
+    try:
+        secret = None
+        # the pending secret is in the session; read it back from the page
+        page = d.get("/account/2fa/setup").text
+        secret = re.search(r"<code[^>]*>([A-Z2-7]{32})</code>", page).group(1)
+    finally:
+        db.close()
+
+    def reset():
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.email == seed.player_a.email).first()
+            u.totp_enabled, u.totp_secret, u.totp_backup_codes_json = False, None, "[]"
+            db.commit()
+        finally:
+            db.close()
+
+    def stored():
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.email == seed.player_a.email).first()
+            return u.totp_enabled, u.totp_secret, json.loads(u.totp_backup_codes_json or "[]")
+        finally:
+            db.close()
+
+    jar = dict(d.cookies.items())
+    a = d.post("/account/2fa/setup", data={"code": pyotp.TOTP(secret).now()})
+    sa = stored()
+    reset()
+    via = httpx.Client(base_url=base, timeout=60)
+    for k, v in jar.items():
+        via.cookies.set(k, v)
+    b = via.post("/account/2fa/setup", data={"code": pyotp.TOTP(secret).now()})
+    sb = stored()
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert a.status_code == b.status_code == 200
+    assert golden.normalise("text/html", strip_codes(a.text).encode()) == golden.normalise("text/html", strip_codes(b.text).encode())
+    assert (sa[0], sa[1], len(sa[2])) == (sb[0], sb[1], len(sb[2])) == (True, secret, 8)
+    shown = re.findall(r'<code style="font-size:.85rem">([0-9a-f]{10})</code>', b.text)
+    assert sorted(hashlib.sha256(c.encode()).hexdigest() for c in shown) == sorted(sb[2])
+    r = via.post("/account/2fa/setup", data={"code": "1"}, follow_redirects=False)
+    assert (r.status_code, r.headers.get("location"), r.headers.get("x-nd-served-by")) == (303, "/account", "gateway")
+    reset()

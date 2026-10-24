@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
 pub mod calendar;
+pub mod account;
 pub mod qr;
 pub mod catalog;
 pub mod config;
@@ -189,10 +190,11 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/races" | "/professions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/account" | "/races" | "/professions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/sessions" => pages::sessions_list,
+            "/account" => crate::account::page,
             "/races" => crate::catalog::races,
             "/professions" => crate::catalog::professions,
             "/quests" => pages::quests_list,
@@ -391,7 +393,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
-    if matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa") | ("GET", "/account/2fa/setup"))
+    if matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa") | ("GET", "/account/2fa/setup") | ("POST", "/account/2fa/setup"))
         && app.cfg.rust_routes.iter().any(|r| r == "auth") {
         // signing in and out (app/routers/auth.py)
         let (parts, body) = req.into_parts();
