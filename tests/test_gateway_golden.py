@@ -3491,3 +3491,98 @@ def test_world_json_exports_are_pythons(client, seed):
                 assert a.headers.get(h) == b.headers.get(h), (url, h)
     finally:
         img.unlink(missing_ok=True)
+
+
+def test_character_sheets_are_pythons(client, seed):
+    """The character sheets from the gateway: the list (GM grouped by player, a player their own), a sheet's page, its sandboxed render
+    and download (saved data and the bridge put in before </body>), and the writes - new (a missing / hidden / non-template page, a
+    character not theirs), save (not an object, too large), edit and delete; someone else's sheet is a 404 everywhere."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import CharacterSheet, PageDoc, PlayerCharacter
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ["DB_PATH"]).parent / "uploads" / "pages"
+    up.mkdir(parents=True, exist_ok=True)
+    (up / "gw-sheet.html").write_text("<html><BODY><p>Sheet é</p></body></html>", encoding="utf-8")
+    db = SessionLocal()
+    try:
+        tpl = PageDoc(world_id=w, name="Hero Sheet", file_url="/uploads/pages/gw-sheet.html", is_character_sheet_template=True, visible_to_players=True)
+        plain = PageDoc(world_id=w, name="Plain", file_url="/uploads/pages/gw-sheet.html", visible_to_players=True)
+        hidden = PageDoc(world_id=w, name="Hidden", file_url="/uploads/pages/gw-sheet.html", is_character_sheet_template=True, visible_to_players=False)
+        mine = PlayerCharacter(world_id=w, name="Vexa", owner_user_id=seed.player_a.id)
+        theirs = PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)
+        db.add_all([tpl, plain, hidden, mine, theirs])
+        db.flush()
+        s1 = CharacterSheet(world_id=w, template_id=tpl.id, owner_user_id=seed.player_a.id, player_character_id=mine.id, name="Vexa sheet",
+                            data_json=json.dumps({"hp": "12", "note": "</script>x"}))
+        s2 = CharacterSheet(world_id=w, template_id=tpl.id, owner_user_id=seed.gm.id, name="GM's é")
+        db.add_all([s1, s2])
+        db.commit()
+        ids = dict(tpl=tpl.id, plain=plain.id, hidden=hidden.id, mine=mine.id, theirs=theirs.id, s1=s1.id, s2=s2.id)
+    finally:
+        db.close()
+
+    def sheets():
+        db = SessionLocal()
+        try:
+            return [(s.id, s.name, s.player_character_id, s.data_json) for s in db.query(CharacterSheet).order_by(CharacterSheet.id)]
+        finally:
+            db.close()
+
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD), (seed.player_b.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        via = _via(d, base)
+        for url in ("/pages/sheets", f"/pages/sheets/{ids['s1']}"):
+            r = via.get(url)
+            assert r.headers.get("x-nd-served-by") == "gateway", (email, url)
+            _same_page(d, via, url, email)
+        for url in (f"/pages/sheets/{ids['s1']}/render", f"/pages/sheets/{ids['s1']}/download", f"/pages/sheets/{ids['s2']}/render", "/pages/sheets/999999/render"):
+            a, b = d.get(url), via.get(url)
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (email, url)
+            for h in ("content-type", "content-disposition", "content-security-policy", "x-frame-options", "x-content-type-options"):
+                assert a.headers.get(h) == b.headers.get(h), (email, url, h)
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    writes = [("/pages/sheets/new", {"template_id": ""}), ("/pages/sheets/new", {"template_id": str(ids["plain"])}),
+              ("/pages/sheets/new", {"template_id": str(ids["hidden"])}), ("/pages/sheets/new", {"template_id": "999999"}),
+              ("/pages/sheets/new", {"template_id": str(ids["tpl"]), "player_character_id": str(ids["theirs"])}),
+              ("/pages/sheets/new", {"template_id": str(ids["tpl"]), "player_character_id": "x1"}),
+              ("/pages/sheets/new", {"template_id": str(ids["tpl"]), "player_character_id": str(ids["mine"])}),
+              ("/pages/sheets/new", {"template_id": str(ids["tpl"])}),
+              (f"/pages/sheets/{ids['s1']}/edit", {"name": "  Renamed  ", "player_character_id": ""}),
+              (f"/pages/sheets/{ids['s1']}/edit", {"name": "", "player_character_id": str(ids["theirs"])}),
+              (f"/pages/sheets/{ids['s2']}/edit", {"name": "x"}), (f"/pages/sheets/{ids['s2']}/delete", {})]
+    for path, form in writes:
+        before = sheets()
+        a = d.post(path, data=form, follow_redirects=False)
+        after_a = sheets()
+        db = SessionLocal()
+        try:
+            for s in db.query(CharacterSheet).all():
+                db.delete(s)
+            db.commit()
+            for sid, name, pc, data in before:
+                db.add(CharacterSheet(id=sid, world_id=w, template_id=ids["tpl"], owner_user_id=seed.player_a.id if sid != ids["s2"] else seed.gm.id,
+                                      player_character_id=pc, name=name, data_json=data))
+            db.commit()
+        finally:
+            db.close()
+        b = via.post(path, data=form, follow_redirects=False)
+        assert b.headers.get("x-nd-served-by") == "gateway", (path, form)
+        assert (a.status_code, a.headers.get("location") is not None) == (b.status_code, b.headers.get("location") is not None), (path, form)
+        if a.status_code >= 400:
+            assert a.json() == b.json(), (path, form)
+        assert [x[1:] for x in sheets()] == [x[1:] for x in after_a], (path, form)
+    for body in ({"data": {"hp": "9", "x": [1, 2]}}, {"data": "no"}, {"data": {"big": "y" * 300000}}):
+        before = sheets()
+        a = d.post(f"/pages/sheets/{ids['s1']}/save", json=body)
+        after_a = sheets()
+        b = via.post(f"/pages/sheets/{ids['s1']}/save", json=body)
+        assert b.headers.get("x-nd-served-by") == "gateway"
+        assert (a.status_code, a.json()) == (b.status_code, b.json())
+        assert sheets() == after_a
+    (up / "gw-sheet.html").unlink(missing_ok=True)

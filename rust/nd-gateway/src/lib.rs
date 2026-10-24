@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
 pub mod calendar;
+pub mod charsheets;
 pub mod export;
 pub mod account;
 pub mod qr;
@@ -374,6 +375,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         };
         let (cfg, uri, headers, b) = (app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || apis::post(cfg, &uri, &headers, &b)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if charsheets::serves(req.method(), req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // player-fillable character sheets (app/routers/character_sheets.py)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (pages_, cfg, method, uri, headers, b) = (app.pages.clone(), app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || charsheets::handle(&pages_, &cfg, &method, &uri, &headers, &b)).await {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
