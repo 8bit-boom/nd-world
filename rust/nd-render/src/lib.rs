@@ -315,6 +315,47 @@ fn compact_impl(v: &serde_json::Value, out: &mut String) {
 }
 
 /// Python's plain `json.dumps(x)`: keys in insertion order, otherwise as `py_json`
+/// `json.dumps(v, indent=n)`: one item per line, "," between items and ": " after keys, ASCII only, insertion order
+pub fn py_dumps_indent(v: &serde_json::Value, indent: usize) -> String {
+    fn go(v: &serde_json::Value, indent: usize, level: usize, out: &mut String) {
+        let pad = |l: usize| " ".repeat(indent * l);
+        match v {
+            serde_json::Value::Array(a) if !a.is_empty() => {
+                out.push_str("[\n");
+                for (i, x) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(",\n");
+                    }
+                    out.push_str(&pad(level + 1));
+                    go(x, indent, level + 1, out);
+                }
+                out.push('\n');
+                out.push_str(&pad(level));
+                out.push(']');
+            }
+            serde_json::Value::Object(o) if !o.is_empty() => {
+                out.push_str("{\n");
+                for (i, (k, x)) in o.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(",\n");
+                    }
+                    out.push_str(&pad(level + 1));
+                    py_json_impl(&serde_json::Value::String(k.clone()), out, false);
+                    out.push_str(": ");
+                    go(x, indent, level + 1, out);
+                }
+                out.push('\n');
+                out.push_str(&pad(level));
+                out.push('}');
+            }
+            other => py_json_impl(other, out, false),
+        }
+    }
+    let mut out = String::new();
+    go(v, indent, 0, &mut out);
+    out
+}
+
 pub fn py_dumps(v: &serde_json::Value) -> String {
     let mut out = String::new();
     py_json_impl(v, &mut out, false);

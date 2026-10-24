@@ -596,15 +596,81 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     match uri.path() {
         "/api/ai/world-context-smart" => world_context_smart(&cfg, uri, headers, body),
         "/api/ai/world-context-player" => world_context_player(&cfg, uri, headers, body),
+        "/api/ai/unsloth/prefs" => unsloth_prefs(&cfg, uri, headers, body),
         _ => None,
     }
+}
+
+/// `unsloth_prefs_set` (app/routers/ai.py, GM-only by the auth gate): the TTS / STT choices and the Studio console URL in ai_models.json
+/// beside the database, each written in turn as Python's set_* calls do (so an invalid URL still leaves the fields before it saved)
+fn unsloth_prefs(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let b = match serde_json::from_slice::<Value>(raw).ok()? {
+        Value::Object(o) if crate::edits::plain_numbers(raw) => o,
+        _ => return None, // `body: dict` refuses anything else (a 422): Python's
+    };
+    // str(x or "").strip()
+    let text = |k: &str| -> Option<String> {
+        match b.get(k) {
+            Some(Value::String(s)) => Some(crate::edits::py_strip_pub(s)),
+            Some(Value::Number(n)) if n.is_i64() => Some(n.to_string()),
+            Some(v) if !crate::edits::py_truthy_pub(Some(v)) => Some(String::new()),
+            _ => None,
+        }
+    };
+    let path = cfg.db_path.parent()?.join("ai_models.json");
+    let mut data = match std::fs::read_to_string(&path) {
+        Ok(t) => match serde_json::from_str::<Value>(&t) {
+            Ok(Value::Object(o)) => o,
+            Ok(_) => return None, // a list or the like: Python's TypeError
+            Err(_) if t.contains("NaN") || t.contains("Infinity") => return None,
+            Err(_) => serde_json::from_value(json!({"custom": [], "hidden": []})).ok()?,
+        },
+        Err(_) => serde_json::from_value(json!({"custom": [], "hidden": []})).ok()?,
+    };
+    let mut changed = false;
+    for k in ["tts_model", "tts_voice", "tts_instructions", "tts_language", "stt_model"] {
+        if b.contains_key(k) {
+            data.insert(k.into(), json!(text(k)?));
+            changed = true;
+        }
+    }
+    let save = |data: &Map<String, Value>| std::fs::write(&path, nd_render::py_dumps_indent(&Value::Object(data.clone()), 2)).ok();
+    if b.contains_key("studio_console_url") {
+        let url = match b.get("studio_console_url") {
+            Some(Value::String(s)) => crate::edits::py_strip_pub(s),
+            Some(v) if !crate::edits::py_truthy_pub(Some(v)) => String::new(),
+            _ => return None,
+        };
+        // normalize_console_url: a bare host[:port][/path] gets http://
+        static BARE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let bare = BARE.get_or_init(|| regex::Regex::new(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?(?:/\S*)?$").unwrap());
+        let host = url.split('/').next().unwrap_or("");
+        let url = if !url.is_empty() && !url.contains("://") && bare.is_match(&url) && (host.contains('.') || host.contains(':')) { format!("http://{url}") } else { url };
+        static OK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        if !url.is_empty() && !OK.get_or_init(|| regex::Regex::new(r"(?i)^https?://[^\s/]").unwrap()).is_match(&url) {
+            if changed {
+                save(&data)?;
+            }
+            return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "Studio console URL must start with http:// or https://"));
+        }
+        data.insert("studio_console_url".into(), json!(url));
+        changed = true;
+    }
+    if changed {
+        save(&data)?;
+    }
+    crate::edits::json_response(&json!({"ok": true}))
 }
 
 /// a pydantic body field: absent = the default, a JSON int as it is; anything pydantic would coerce or refuse (Python's 422) = None

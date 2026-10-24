@@ -3285,3 +3285,40 @@ def test_world_context_player_is_pythons(client, seed):
     b = _via(d, base).post("/api/ai/world-context-player", json={"query": "blade"})
     assert b.headers.get("x-nd-served-by") == "gateway"
     assert (a.status_code, a.json()) == (b.status_code, b.json()) == (403, {"detail": "Forbidden"})
+
+
+def test_unsloth_prefs_save_is_pythons(client, seed):
+    """POST /api/ai/unsloth/prefs from the gateway: the same ai_models.json, byte for byte (json.dumps indent=2, key order kept), for the
+    TTS / STT fields, a bare Studio host given http://, a cleared value, an invalid console URL (400, the fields before it still saved),
+    a missing or unreadable file, and an empty body."""
+    import os
+    from pathlib import Path
+    base = str(client.base_url)
+    path = Path(os.environ.get("DB_PATH", "tests/_data/world.db")).parent / "ai_models.json"
+    original = path.read_bytes() if path.exists() else None
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    bodies = ({"tts_model": "  kokoro  ", "tts_voice": "af_bella", "stt_model": None}, {"studio_console_url": "192.168.1.5:8000"},
+              {"studio_console_url": "studio.lan/console", "tts_language": "en é"}, {"tts_instructions": "", "studio_console_url": ""},
+              {"tts_voice": "x", "studio_console_url": "javascript:alert(1)"}, {"studio_console_url": "ftp://x"}, {}, {"tts_model": 7})
+    try:
+        for start in (b'{"custom": [{"id": "m"}], "hidden": ["h"], "defaults": {"chat": "a"}}', None, b"{broken"):
+            for body in bodies:
+                def reset():
+                    if start is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(start)
+                reset()
+                a = gm.post("/api/ai/unsloth/prefs", json=body)
+                after_a = path.read_bytes() if path.exists() else None
+                reset()
+                b = _via(gm, base).post("/api/ai/unsloth/prefs", json=body)
+                after_b = path.read_bytes() if path.exists() else None
+                assert b.headers.get("x-nd-served-by") == "gateway", body
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (start, body)
+                assert after_a == after_b, (start, body)
+    finally:
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(original)
