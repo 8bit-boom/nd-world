@@ -1,5 +1,7 @@
 # Phase 6: switching Python off - the work list
 
+(Handoff summary with what is left: `docs/RUST_PORT_HANDOFF.md`.)
+
 Python can leave the image only when the gateway answers every request itself. To know how far that is, the gateway can log who
 answers each request (`ND_FORWARD_LOG=<file>`: one `GW|PY METHOD path` line per request; `scripts/gateway_suite.sh` turns it on per
 shard as `tests/_data/shard<N>/forwarded.log`). The whole suite run through the gateway (Python 3.13, every route switch on) gives the
@@ -73,6 +75,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **World JSON exports** (`GET /worlds/<id>/export`, `/export/entities/<kind>.json`, export.rs): the same bytes as
   `stream_json_array_download` writes (nd-render `py_dumps_indent_as`, `ensure_ascii=False`), images embedded; built whole rather
   than streamed.
+- **Character sheets** (`/pages/sheets*`, charsheets.rs): list, page, sandboxed render and download, new / save / edit / delete,
+  refusals included.
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from

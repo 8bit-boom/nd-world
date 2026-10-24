@@ -1,385 +1,386 @@
-   621 GET /static/*
-   234 POST /account/2fa/setup
-   198 GET /parties/{}/roster
-   198 GET /uploads/*
-   198 POST /api/saved-views/audio
-   170 GET /api/characters/{}/hub/now
-   144 POST /api/ai/world-context-smart
-   135 GET /api/audio-jobs
-   135 GET /calendar/event-jump
-   135 GET /worlds/{}/notes/{}
-   126 POST /api/ai/unsloth/prefs
-   126 POST /api/parties/{}/rest
-   117 GET /ai-chat
-   117 GET /api/dice/history
-   117 GET /api/entity/{}/preview
-   112 GET /api/media-rename/runs/{}
-   108 GET /races
-   108 GET /worlds/switch/world-a
-   108 POST /api/ai/world-context-player
-   102 GET /api/ai/assist-job/{}
-    99 GET /api/characters/{}/hub/schedule
-    99 GET /api/entities/picker
-    99 GET /parties/{}/summary
-    90 GET /api/ai/imagegen/player/jobs/{}
-    90 POST /api/ai/imagegen/player/generate
-    90 POST /pages/sheets/new
-    89 GET /api/cockpit/player-board
-    89 GET /api/sessions/ai/audio-jobs/{}
-    81 GET /api/characters/{}/hub/log
-    81 GET /api/characters/{}/hub/notes
-    81 GET /entity/{}/download.md
-    81 GET /professions
-    81 POST /api/ai/attachments/upload
-    81 POST /api/parties/{}/rest/undo
-    81 POST /logout
-    81 POST /settings
-    72 GET /npc-talk
-    72 GET /pages/sheets/{}
-    72 GET /session-log
-    72 GET /worlds/{}/export
-    72 POST /api/ai/attachments/upload/chunk
-    72 POST /api/view-prefs/site
-    63 GET /api/characters/{}/hub/keepsakes
-    63 GET /characters/ai-new
-    63 GET /characters/{}/edit
-    63 GET /sessions/{}/npc-candidates
-    63 POST /api/characters/{}/roll
-    63 POST /api/maps/schematic/nan-token/move-token
-    63 POST /maps/schematic/new
-    54 GET /api/ai/world-summary
-    54 GET /api/characters/{}/advance
-    54 GET /characters/new
-    54 GET /characters/{}/export.json
-    54 GET /export/book.zip
-    54 GET /sessions/{}/summary.md
-    54 POST /api/ai/entity-context
-    50 GET /api/characters/{}/sync
-    45 GET /admin/backup.zip
-    45 GET /api/characters/{}/hub/places
-    45 GET /api/characters/{}/vitals
-    45 GET /characters/{}/export.md
-    45 GET /kind/character/download-selected.zip
-    45 GET /kind/character/download.zip
-    45 GET /pages/sheets
-    45 GET /sessions/{}/transcript.md
-    45 POST /account/password
-    45 POST /api/ai/attachments/upload/complete
-    45 POST /api/import/detect
-    36 GET /api/ai/imagegen/jobs/{}
-    36 GET /api/ai/imagegen/model-templates
-    36 GET /api/characters/{}/ability-cards
-    36 GET /api/characters/{}/hub/handouts
-    36 GET /api/sessions/{}/live-audio
-    36 GET /api/sessions/{}/live-audio/download
-    36 GET /boards/nope/notes
-    36 GET /export/rules-and-notes.md
-    36 GET /image-gen
-    36 GET /maps/gw-a
-    36 GET /maps/gw-c
-    36 GET /maps/nope
-    36 GET /maps/schematic/fogmap/view.json
-    36 GET /worlds/switch/world-b
-    36 POST /account/tokens/new
-    36 POST /api/ai/attachments/audio-jobs
-    36 POST /maps/schematic/plainmap/fog
-    36 POST /worlds/{}/import
-    35 GET /tools/code-assist
-    27 DELETE /api/view-prefs/nosuch
-    27 GET /api/ai/attachments/audio-jobs
-    27 GET /api/ai/attachments/audio-jobs/{}
-    27 GET /api/ai/chat/jobs/{}
-    27 GET /api/ai/imagegen/jobs
-    27 GET /api/ai/imagegen/player/jobs
-    27 GET /api/ai/presets
-    27 GET /api/hover-preview/config
-    27 GET /boards/gw-bad
-    27 GET /boards/gw-bad/notes
-    27 GET /boards/gw-far
-    27 GET /boards/gw-far/notes
-    27 GET /boards/nope
-    27 GET /imagestudio
-    27 GET /maps/schematic/fogmap/view
-    27 GET /maps/schematic/plainmap/view.json
-    27 GET /maps/schematic/pv-none/view
-    27 GET /maps/schematic/pv-none/view.json
-    27 GET /maps/schematic/strictmap/view.json
-    27 GET /pages/{}/download
-    27 GET /rules/download.md
-    27 GET /tools/code-assist/generate/{}
-    27 GET /worlds/{}/export/templates/{}.json
-    27 POST /account/2fa/backup-codes/regenerate
-    27 POST /account/2fa/disable
-    27 POST /api/maps/props/{}/update
-    27 POST /api/maps/schematic/battle/move-token
-    27 POST /api/saved-views/nosuch
-    27 POST /api/sessions/{}/media/upload/chunk
-    27 POST /api/sessions/{}/recap-audio/upload
-    27 POST /api/view-prefs/nosuch
-    27 POST /pages/sheets/{}/delete
-    27 POST /pages/sheets/{}/edit
-    27 POST /pages/sheets/{}/save
-    24 GET /api/characters/{}/hub/companions
-    18 DELETE /api/ai/imagegen/jobs/{}
-    18 DELETE /api/ai/imagegen/model-templates/custom/{}
-    18 DELETE /api/ai/imagegen/player/jobs/{}
-    18 GET /api/ai/models
-    18 GET /api/ai/world-context
-    18 GET /api/characters/{}/hub/sessions
-    18 GET /api/characters/{}/share
-    18 GET /api/npc-talk/{}/history
-    18 GET /api/sessions/{}/live-transcript/check
-    18 GET /characters/templates/{}/edit
-    18 GET /characters/{}/export.foundry.json
-    18 GET /characters/{}/export.ndc
-    18 GET /characters/{}/export.pdf
-    18 GET /display/map/fogmap/data.json
-    18 GET /health
-    18 GET /maps/schematic/nan-token/view.json
-    18 GET /worlds/{}/export/entities/race.json
-    18 GET /worlds/{}/export/player-characters.json
-    18 GET /worlds/{}/export/rules.json
-    18 POST /api/ai/presets
-    18 POST /api/ai/save-note
-    18 POST /api/maps/schematic/removed-move/move-token
-    18 POST /api/sessions/{}/media/upload/complete
-    18 POST /characters/templates/{}/edit
-    18 POST /dice
-    18 POST /maps/old-cave/rename
-    18 POST /maps/schematic/imp/rooms/detect
-    18 POST /maps/schematic/old-lair/rename
-    18 POST /maps/schematic/pull-ok/pull-combat
-    17 GET /api/ai/tasks
-     9 DELETE /api/ai/presets/NPC%20improv
-     9 DELETE /api/video-jobs/{}
-     9 DELETE /api/view-prefs
-     9 DELETE /api/view-prefs/hub
-     9 DELETE /api/view-prefs/nope
-     9 GET /api/ai/context-info
-     9 GET /api/ai/tasks/does-not-exist
-     9 GET /api/ai/unsloth/prefs
-     9 GET /api/ai/whisper/denoise
-     9 GET /api/ai/whisper/glossary
-     9 GET /api/ai/whisper/language
-     9 GET /api/ai/whisper/model-status
-     9 GET /api/characters/templates
-     9 GET /api/maps/docks/ai-markers/{}
-     9 GET /api/saved-views/audio
-     9 GET /api/saved-views/nope
-     9 GET /boards/case-notes/notes
-     9 GET /characters/templates/{}/export.json
-     9 GET /display/map/elsewhere
-     9 GET /display/map/elsewhere/data.json
-     9 GET /display/map/nope/data.json
-     9 GET /display/map/strictmap/data.json
-     9 GET /kind/location/download.zip
-     9 GET /map-tiles/k-1/{}/..%2Fmeta.json
-     9 GET /map-tiles/k-1/{}/9_9.webp
-     9 GET /maps/drag-cave
-     9 GET /maps/editmode-order-check
-     9 GET /maps/paint-cave
-     9 GET /maps/party-drag-cave
-     9 GET /maps/region-drag-cave
-     9 GET /maps/schematic/ai-bad/ai-build/{}
-     9 GET /maps/schematic/battle/view
-     9 GET /maps/schematic/cave-of-echoes
-     9 GET /maps/schematic/creature-token-visibility-check
-     9 GET /maps/schematic/dlg-escape-check
-     9 GET /maps/schematic/dropzone-check
-     9 GET /maps/schematic/embed-source-check
-     9 GET /maps/schematic/gallery-sch
-     9 GET /maps/schematic/hidden-test/view.json
-     9 GET /maps/schematic/no-bg
-     9 GET /maps/schematic/no-bg-live/view
-     9 GET /maps/schematic/nope/rooms.json
-     9 GET /maps/schematic/plainmap/bg.webp
-     9 GET /maps/schematic/poller-check/view
-     9 GET /maps/schematic/strictmap
-     9 GET /maps/schematic/strictmap/bg.webp
-     9 GET /maps/schematic/strictmap/view
-     9 GET /maps/schematic/tavern-map/view
-     9 GET /maps/schematic/theirs/walls.json
-     9 GET /maps/schematic/view-lock-check/view
-     9 GET /maps/schematic/with-bg
-     9 GET /maps/schematic/with-bg-live/view
-     9 GET /maps/schematic/x/view
-     9 GET /pages/sheets/{}/download
-     9 GET /pages/sheets/{}/render
-     9 GET /share/nonsense
-     9 GET /sw.js
-     9 GET /world.db
-     9 GET /world.db_thumb.webp
-     9 GET /worlds/{}/export/entities/creature.json
-     9 GET /worlds/{}/export/entities/not-a-kind.json
-     9 POST /api/ai/imagegen/player/jobs/{}/cancel
-     9 POST /api/ai/whisper/activate
-     9 POST /api/ai/whisper/pull
-     9 POST /api/maps/b-only-map-4/overlay
-     9 POST /api/maps/flood-map/overlay
-     9 POST /api/maps/no-such-map/overlay
-     9 POST /api/maps/nope/ai-markers/start
-     9 POST /api/maps/save-map/overlay
-     9 POST /api/maps/schematic/gm-access/move-token
-     9 POST /api/maps/schematic/locked-buy/buy-item
-     9 POST /api/maps/schematic/locked-move/move-token
-     9 POST /api/maps/schematic/locked-pickup/pickup-item
-     9 POST /api/maps/schematic/member-ok/move-token
-     9 POST /api/maps/schematic/removed-buy/buy-item
-     9 POST /api/maps/schematic/removed-pickup/pickup-item
-     9 POST /api/maps/schematic/unlimited-stock/buy-item
-     9 POST /api/maps/schematic/zero-stock/buy-item
-     9 POST /api/maps/shape-map/overlay
-     9 POST /api/saved-views/nope
-     9 POST /api/sessions/{}/media/image/nope/rename
-     9 POST /api/view-prefs/calendar_view
-     9 POST /api/view-prefs/not_a_section
-     9 POST /api/view-prefs/preset/nope
-     9 POST /api/view-prefs/preset/player_phone
-     9 POST /boards/far-6-1/save
-     9 POST /boards/save-5-1/save
-     9 POST /handouts/print
-     9 POST /join/presetinvite
-     9 POST /join/presetinvite2
-     9 POST /join/testinvite2fa
-     9 POST /kind/character/bulk-delete
-     9 POST /maps/avif-map/upload
-     9 POST /maps/b-only-map-2/delete
-     9 POST /maps/b-only-map-3/upload
-     9 POST /maps/b-only-map/rename
-     9 POST /maps/does-not-exist/delete
-     9 POST /maps/doomed-map/delete
-     9 POST /maps/no-such-map/upload
-     9 POST /maps/own-map/upload
-     9 POST /maps/schematic/ai-bad/ai-build/start
-     9 POST /maps/schematic/bg-avif/upload
-     9 POST /maps/schematic/del-bg/delete
-     9 POST /maps/schematic/del-embed/delete
-     9 POST /maps/schematic/del-html-schem/delete
-     9 POST /maps/schematic/dfog-10/door
-     9 POST /maps/schematic/dfog-12/door
-     9 POST /maps/schematic/dfog-14/door
-     9 POST /maps/schematic/dfog-24/fog
-     9 POST /maps/schematic/dfog-26/fog
-     9 POST /maps/schematic/dfog-38/fog
-     9 POST /maps/schematic/dfog-8/door
-     9 POST /maps/schematic/does-not-exist/embed-image
-     9 POST /maps/schematic/elements-ok/elements
-     9 POST /maps/schematic/elements-shape-2/elements
-     9 POST /maps/schematic/elements-shape/elements
-     9 POST /maps/schematic/embed-avif/embed-image
-     9 POST /maps/schematic/embed-badext/embed-image
-     9 POST /maps/schematic/embed-ok/embed-image
-     9 POST /maps/schematic/embed-oversized/embed-image
-     9 POST /maps/schematic/lights-10/light
-     9 POST /maps/schematic/lights-14/lights
-     9 POST /maps/schematic/lights-22/lights
-     9 POST /maps/schematic/lights-8/light
-     9 POST /maps/schematic/link-invalid/link-combat
-     9 POST /maps/schematic/link-ok/link-combat
-     9 POST /maps/schematic/live-bump/elements
-     9 POST /maps/schematic/live-bump/grid
-     9 POST /maps/schematic/nope/ai-build/start
-     9 POST /maps/schematic/pull-14/push-combat
-     9 POST /maps/schematic/pull-6/pull-combat
-     9 POST /maps/schematic/pull-8/pull-combat
-     9 POST /maps/schematic/pull-visibility/pull-combat
-     9 POST /maps/schematic/push-ok/push-combat
-     9 POST /maps/schematic/rd-10/rooms/detect
-     9 POST /maps/schematic/rd-12/rooms/detect
-     9 POST /maps/schematic/rd-14/rooms/detect
-     9 POST /maps/schematic/rd-16/rooms/detect
-     9 POST /maps/schematic/rd-22/rooms/detect
-     9 POST /maps/schematic/rd-24/rooms/detect
-     9 POST /maps/schematic/rd-26/rooms/detect
-     9 POST /maps/schematic/rd-28/rooms/detect
-     9 POST /maps/schematic/rd-30/rooms/detect
-     9 POST /maps/schematic/rd-32/rooms/detect
-     9 POST /maps/schematic/rd-6/rooms/detect
-     9 POST /maps/schematic/rd-8/rooms/detect
-     9 POST /maps/schematic/rooms-10/rooms
-     9 POST /maps/schematic/rooms-12/rooms
-     9 POST /maps/schematic/rooms-16/rooms
-     9 POST /maps/schematic/rooms-6/rooms
-     9 POST /maps/schematic/rooms-8/rooms
-     9 POST /maps/schematic/sced-10/elements
-     9 POST /maps/schematic/sced-14/rename
-     9 POST /maps/schematic/sced-16/rename
-     9 POST /maps/schematic/sced-30/link-combat
-     9 POST /maps/schematic/sced-32/link-combat
-     9 POST /maps/schematic/sced-34/link-combat
-     9 POST /maps/schematic/sced-42/rename
-     9 POST /maps/schematic/sced-8/elements
-     9 POST /maps/schematic/scup-10/embed-image
-     9 POST /maps/schematic/scup-4/upload
-     9 POST /maps/schematic/scup-6/upload
-     9 POST /maps/schematic/strictmap/door
-     9 POST /maps/schematic/theirs/lights
-     9 POST /maps/schematic/theirs/walls
-     9 POST /maps/schematic/walls-8/walls
-     9 POST /worlds/{}/kinds/character/delete
-     9 POST /worlds/{}/kinds/custom_none/delete
+   722 GET /static/*
+   241 GET /api/media-rename/runs/{}
+   204 GET /api/sessions/ai/audio-jobs/{}
+   180 GET /api/ai/imagegen/player/jobs/{}
+   180 POST /api/ai/imagegen/player/generate
+   180 POST /pages/sheets/new
+   179 GET /api/cockpit/player-board
+   162 POST /api/ai/attachments/upload
+   162 POST /api/parties/{}/rest/undo
+   162 POST /logout
+   162 POST /settings
+   144 GET /npc-talk
+   144 GET /pages/sheets/{}
+   144 GET /session-log
+   144 GET /worlds/{}/export
+   144 POST /api/ai/attachments/upload/chunk
+   144 POST /api/view-prefs/site
+   126 GET /api/characters/{}/hub/keepsakes
+   126 GET /characters/ai-new
+   126 GET /characters/{}/edit
+   126 GET /sessions/{}/npc-candidates
+   126 POST /api/characters/{}/roll
+   126 POST /maps/schematic/new
+   108 GET /api/ai/world-summary
+   108 GET /api/characters/{}/advance
+   108 GET /characters/new
+   108 GET /characters/{}/export.json
+   108 GET /export/book.zip
+   108 GET /sessions/{}/summary.md
+   108 POST /api/ai/entity-context
+   104 GET /api/characters/{}/sync
+    90 GET /admin/backup.zip
+    90 GET /api/characters/{}/hub/places
+    90 GET /api/characters/{}/vitals
+    90 GET /characters/{}/export.md
+    90 GET /kind/character/download-selected.zip
+    90 GET /kind/character/download.zip
+    90 GET /pages/sheets
+    90 GET /sessions/{}/transcript.md
+    90 POST /account/password
+    90 POST /api/ai/attachments/upload/complete
+    90 POST /api/import/detect
+    72 GET /api/ai/imagegen/jobs/{}
+    72 GET /api/ai/imagegen/model-templates
+    72 GET /api/characters/{}/ability-cards
+    72 GET /api/characters/{}/hub/handouts
+    72 GET /api/sessions/{}/live-audio
+    72 GET /api/sessions/{}/live-audio/download
+    72 GET /boards/nope/notes
+    72 GET /export/rules-and-notes.md
+    72 GET /image-gen
+    72 GET /maps/gw-a
+    72 GET /maps/gw-c
+    72 GET /maps/nope
+    72 POST /api/ai/attachments/audio-jobs
+    72 POST /worlds/{}/import
+    71 GET /tools/code-assist
+    54 DELETE /api/view-prefs/nosuch
+    54 GET /api/ai/attachments/audio-jobs
+    54 GET /api/ai/attachments/audio-jobs/{}
+    54 GET /api/ai/chat/jobs/{}
+    54 GET /api/ai/imagegen/jobs
+    54 GET /api/ai/imagegen/player/jobs
+    54 GET /api/ai/presets
+    54 GET /api/hover-preview/config
+    54 GET /boards/gw-bad
+    54 GET /boards/gw-bad/notes
+    54 GET /boards/gw-far
+    54 GET /boards/gw-far/notes
+    54 GET /boards/nope
+    54 GET /imagestudio
+    54 GET /maps/schematic/pv-none/view
+    54 GET /maps/schematic/pv-none/view.json
+    54 GET /pages/{}/download
+    54 GET /rules/download.md
+    54 GET /tools/code-assist/generate/{}
+    54 GET /worlds/{}/export/templates/{}.json
+    54 POST /account/2fa/backup-codes/regenerate
+    54 POST /account/2fa/disable
+    54 POST /api/maps/props/{}/update
+    54 POST /api/sessions/{}/media/upload/chunk
+    54 POST /api/sessions/{}/recap-audio/upload
+    54 POST /api/view-prefs/nosuch
+    54 POST /pages/sheets/{}/delete
+    54 POST /pages/sheets/{}/edit
+    54 POST /pages/sheets/{}/save
+    51 GET /api/characters/{}/hub/companions
+    36 DELETE /api/ai/imagegen/jobs/{}
+    36 DELETE /api/ai/imagegen/model-templates/custom/{}
+    36 DELETE /api/ai/imagegen/player/jobs/{}
+    36 GET /api/ai/models
+    36 GET /api/ai/world-context
+    36 GET /api/characters/{}/hub/sessions
+    36 GET /api/characters/{}/share
+    36 GET /api/npc-talk/{}/history
+    36 GET /api/sessions/{}/live-transcript/check
+    36 GET /characters/templates/{}/edit
+    36 GET /characters/{}/export.foundry.json
+    36 GET /characters/{}/export.ndc
+    36 GET /characters/{}/export.pdf
+    36 GET /health
+    36 GET /worlds/{}/export/entities/race.json
+    36 GET /worlds/{}/export/player-characters.json
+    36 GET /worlds/{}/export/rules.json
+    36 POST /api/ai/presets
+    36 POST /api/ai/save-note
+    36 POST /api/sessions/{}/media/upload/complete
+    36 POST /characters/templates/{}/edit
+    36 POST /dice
+    36 POST /maps/schematic/old-lair/rename
+    36 POST /maps/schematic/pull-ok/pull-combat
+    35 GET /api/ai/tasks
+    26 GET /world.db
+    18 DELETE /api/ai/presets/NPC%20improv
+    18 DELETE /api/video-jobs/{}
+    18 DELETE /api/view-prefs
+    18 DELETE /api/view-prefs/nope
+    18 GET /api/ai/context-info
+    18 GET /api/ai/tasks/does-not-exist
+    18 GET /api/ai/unsloth/prefs
+    18 GET /api/ai/whisper/denoise
+    18 GET /api/ai/whisper/glossary
+    18 GET /api/ai/whisper/language
+    18 GET /api/ai/whisper/model-status
+    18 GET /api/characters/templates
+    18 GET /api/maps/docks/ai-markers/{}
+    18 GET /api/saved-views/audio
+    18 GET /api/saved-views/nope
+    18 GET /characters/templates/{}/export.json
+    18 GET /display/map/elsewhere
+    18 GET /display/map/elsewhere/data.json
+    18 GET /display/map/nope/data.json
+    18 GET /kind/location/download.zip
+    18 GET /map-tiles/k-1/{}/..%2Fmeta.json
+    18 GET /map-tiles/k-1/{}/9_9.webp
+    18 GET /maps/drag-cave
+    18 GET /maps/editmode-order-check
+    18 GET /maps/paint-cave
+    18 GET /maps/party-drag-cave
+    18 GET /maps/region-drag-cave
+    18 GET /maps/schematic/ai-bad/ai-build/{}
+    18 GET /maps/schematic/creature-token-visibility-check
+    18 GET /maps/schematic/dlg-escape-check
+    18 GET /maps/schematic/embed-source-check
+    18 GET /maps/schematic/no-bg
+    18 GET /maps/schematic/nope/rooms.json
+    18 GET /maps/schematic/plainmap/bg.webp
+    18 GET /maps/schematic/theirs/walls.json
+    18 GET /maps/schematic/with-bg
+    18 GET /maps/schematic/x/view
+    18 GET /pages/sheets/{}/download
+    18 GET /pages/sheets/{}/render
+    18 GET /share/nonsense
+    18 GET /sw.js
+    18 GET /world.db_thumb.webp
+    18 GET /worlds/{}/export/entities/creature.json
+    18 GET /worlds/{}/export/entities/not-a-kind.json
+    18 POST /api/ai/imagegen/player/jobs/{}/cancel
+    18 POST /api/ai/whisper/activate
+    18 POST /api/ai/whisper/pull
+    18 POST /api/maps/b-only-map-4/overlay
+    18 POST /api/maps/flood-map/overlay
+    18 POST /api/maps/no-such-map/overlay
+    18 POST /api/maps/nope/ai-markers/start
+    18 POST /api/maps/save-map/overlay
+    18 POST /api/maps/schematic/locked-buy/buy-item
+    18 POST /api/maps/schematic/locked-move/move-token
+    18 POST /api/maps/schematic/locked-pickup/pickup-item
+    18 POST /api/maps/schematic/removed-buy/buy-item
+    18 POST /api/maps/schematic/removed-pickup/pickup-item
+    18 POST /api/maps/schematic/zero-stock/buy-item
+    18 POST /api/maps/shape-map/overlay
+    18 POST /api/sessions/{}/media/image/nope/rename
+    18 POST /api/view-prefs/not_a_section
+    18 POST /api/view-prefs/preset/nope
+    18 POST /api/view-prefs/preset/player_phone
+    18 POST /boards/far-6-1/save
+    18 POST /boards/save-5-1/save
+    18 POST /handouts/print
+    18 POST /join/presetinvite
+    18 POST /join/presetinvite2
+    18 POST /join/testinvite2fa
+    18 POST /maps/b-only-map-2/delete
+    18 POST /maps/b-only-map-3/upload
+    18 POST /maps/b-only-map/rename
+    18 POST /maps/does-not-exist/delete
+    18 POST /maps/no-such-map/upload
+    18 POST /maps/schematic/ai-bad/ai-build/start
+    18 POST /maps/schematic/del-bg/delete
+    18 POST /maps/schematic/del-embed/delete
+    18 POST /maps/schematic/del-html-schem/delete
+    18 POST /maps/schematic/dfog-10/door
+    18 POST /maps/schematic/dfog-12/door
+    18 POST /maps/schematic/dfog-14/door
+    18 POST /maps/schematic/dfog-24/fog
+    18 POST /maps/schematic/dfog-26/fog
+    18 POST /maps/schematic/dfog-38/fog
+    18 POST /maps/schematic/dfog-8/door
+    18 POST /maps/schematic/does-not-exist/embed-image
+    18 POST /maps/schematic/elements-ok/elements
+    18 POST /maps/schematic/elements-shape-2/elements
+    18 POST /maps/schematic/elements-shape/elements
+    18 POST /maps/schematic/embed-avif/embed-image
+    18 POST /maps/schematic/embed-badext/embed-image
+    18 POST /maps/schematic/embed-ok/embed-image
+    18 POST /maps/schematic/embed-oversized/embed-image
+    18 POST /maps/schematic/lights-10/light
+    18 POST /maps/schematic/lights-14/lights
+    18 POST /maps/schematic/lights-22/lights
+    18 POST /maps/schematic/lights-8/light
+    18 POST /maps/schematic/link-invalid/link-combat
+    18 POST /maps/schematic/link-ok/link-combat
+    18 POST /maps/schematic/live-bump/elements
+    18 POST /maps/schematic/live-bump/grid
+    18 POST /maps/schematic/nope/ai-build/start
+    18 POST /maps/schematic/pull-14/push-combat
+    18 POST /maps/schematic/pull-6/pull-combat
+    18 POST /maps/schematic/pull-8/pull-combat
+    18 POST /maps/schematic/pull-visibility/pull-combat
+    18 POST /maps/schematic/push-ok/push-combat
+    18 POST /maps/schematic/rd-10/rooms/detect
+    18 POST /maps/schematic/rd-12/rooms/detect
+    18 POST /maps/schematic/rd-14/rooms/detect
+    18 POST /maps/schematic/rd-16/rooms/detect
+    18 POST /maps/schematic/rd-22/rooms/detect
+    18 POST /maps/schematic/rd-24/rooms/detect
+    18 POST /maps/schematic/rd-26/rooms/detect
+    18 POST /maps/schematic/rd-28/rooms/detect
+    18 POST /maps/schematic/rd-30/rooms/detect
+    18 POST /maps/schematic/rd-32/rooms/detect
+    18 POST /maps/schematic/rd-6/rooms/detect
+    18 POST /maps/schematic/rd-8/rooms/detect
+    18 POST /maps/schematic/rooms-10/rooms
+    18 POST /maps/schematic/rooms-12/rooms
+    18 POST /maps/schematic/rooms-16/rooms
+    18 POST /maps/schematic/rooms-6/rooms
+    18 POST /maps/schematic/rooms-8/rooms
+    18 POST /maps/schematic/sced-10/elements
+    18 POST /maps/schematic/sced-14/rename
+    18 POST /maps/schematic/sced-16/rename
+    18 POST /maps/schematic/sced-30/link-combat
+    18 POST /maps/schematic/sced-32/link-combat
+    18 POST /maps/schematic/sced-34/link-combat
+    18 POST /maps/schematic/sced-42/rename
+    18 POST /maps/schematic/sced-8/elements
+    18 POST /maps/schematic/scup-10/embed-image
+    18 POST /maps/schematic/scup-4/upload
+    18 POST /maps/schematic/scup-6/upload
+    18 POST /maps/schematic/strictmap/door
+    18 POST /maps/schematic/theirs/lights
+    18 POST /maps/schematic/theirs/walls
+    18 POST /maps/schematic/walls-8/walls
+    18 POST /worlds/{}/kinds/character/delete
+    18 POST /worlds/{}/kinds/custom_none/delete
      3 GET /api/ai/tasks/0plUbTs1n-wUaNF2
+     3 GET /api/ai/tasks/2uRHZa0470uw9bDg
      3 GET /api/ai/tasks/4Fs0_q35QzRnsE0h
      3 GET /api/ai/tasks/9yWOoOZ8CZZWdPvH
+     3 GET /api/ai/tasks/M6hBWi5QoZjEwVDH
+     3 GET /api/ai/tasks/OpbiTZ5OSkB7FncB
+     3 GET /api/ai/tasks/TBKTFqsmj5jhl7Hz
      3 GET /api/ai/tasks/dhnYSr1vPj9Ifyky
+     3 GET /api/ai/tasks/gC00rxrSt-AtJ1_z
      3 GET /api/ai/tasks/yT0IWqD3viR-081h
      3 GET /api/ai/tasks/zS2AIDDXVHKJ6jMW
      3 POST /api/maps/schematic/gw-sc-0867cdd3ad10/pickup-item
      3 POST /api/maps/schematic/gw-sc-1bdd9614b601/pickup-item
+     3 POST /api/maps/schematic/gw-sc-590f9dd1c56a/pickup-item
+     3 POST /api/maps/schematic/gw-sc-8ccf244f022f/pickup-item
      3 POST /api/maps/schematic/gw-sc-97d176339fa3/buy-item
+     3 POST /api/maps/schematic/gw-sc-c9b7daaaf4da/pickup-item
      3 POST /api/maps/schematic/gw-sc-db3755d111cd/pickup-item
      2 GET /api/ai/tasks/-pafgDOAXCDPqit_
+     2 GET /api/ai/tasks/3eSuyJQ5naXMK2Bv
+     2 GET /api/ai/tasks/7rCSEUCp_-UCXXH8
+     2 GET /api/ai/tasks/BpkySHcUmb9yHpQL
+     2 GET /api/ai/tasks/Kbr0ke0iKF2sxTVV
+     2 GET /api/ai/tasks/NeQZ33pQGbeOFxhv
+     2 GET /api/ai/tasks/T6F216GgBIsH9WJJ
+     2 GET /api/ai/tasks/ZYcdV7Zx7Iz6lYhO
      2 GET /api/ai/tasks/b91vCvCnsvouMQs3
      2 GET /api/ai/tasks/iGNZVvy-94pecz42
      2 GET /api/ai/tasks/yHfjvxfh9AZES-x_
      2 GET /share/4PT743oWHShSQckOvKcP5lKNSRLDMrTK
+     2 GET /share/Duge86nxN1f9HuHspLMAcmcjYVnwL1KK
+     2 GET /share/G2zv6vy9fbXrx4l7zfsR9n0zpnyA7cwk
+     2 GET /share/Gb6nsiybEj2z-b-8PtDYyL7JKBmtfADO
+     2 GET /share/GgwWQqXG3wrVD4GbM_HSfQ7hYM9IVXo7
      2 GET /share/IZaeqEuhmpoa7NuCKJKCui84NepkkigZ
+     2 GET /share/KW3tIugUHblKrbFrF9Yq5ApLcpZgXh5E
      2 GET /share/MHz8IwkhKUuu9BZgSMKLhvUG3Dvndl8Z
      2 GET /share/QfeHzvYJ_WmcCz-Qu3nUVtDwdMQRshQD
+     2 GET /share/RWObJJEp7YuuyKNlycCaq0EEJRhGln2Y
+     2 GET /share/ToQmuc3ksaOT9zcZkDFvxdwTBVWuXHXH
+     2 GET /share/UYPSwRtYekS8J1oskOqJNOlsU-S3ccf4
      2 GET /share/VbK_dKKuyzMMRKQknkrf7M5UpAbU_Y9U
+     2 GET /share/Vt7fnwme5alppJ2TMqps_qADVFsX4UQI
+     2 GET /share/WHDs97RjwAoYhEwbPiZkg2K_TrPvEnMF
      2 GET /share/X4iahYDdbdsTUx50hICk8ZWZa1JLA4dv
      2 GET /share/XWtSe_sEENZqfyJc9vMc8e-v0V32oLgu
      2 GET /share/Y8K_X8SCS666zQvhz0Hk0A9f5dfqgYcV
      2 GET /share/_C-Yf65V49G0LJLf4aYT9kpsZ_7tfL2X
      2 GET /share/_qjfqSUJmTnxAYx174ByobZrh5Uy-zUf
+     2 GET /share/a9Y-EJFiVBi6JBK-kukidj1d1cW9cXgA
+     2 GET /share/aH-3pLa2E6TexDjzHw1-uCLub8RDASz7
      2 GET /share/butN82L3TWLtn5Tz_lPHKE3ptDLlxyNw
      2 GET /share/cjvlr7WHo4r0sXTxfZJYn99nbMd0WteJ
      2 GET /share/djE8VSgMITBtOCk7gbtbXoXujp8ycnH9
      2 GET /share/fuR9rZ1VAxuxIHq9py4FImei0KNYpX5O
+     2 GET /share/gMpnbMJUobPBQuy7S1h1kmpDSqlOxIDt
      2 GET /share/gj4RzpugFnA68ygEKTM9Kyd21Wp4yHkX
      2 GET /share/hmrvtA3IyESXyQo0cSBe6KIX4DscN7C_
+     2 GET /share/jCdq1F30VFlBCD0FBaVQpiPS6yt9t5kY
+     2 GET /share/lH3q-CkCcNWUZvWhqjF18huyt18drBpa
      2 GET /share/qHjnJizTHc1M5s9aijRmqmKopgbv6I7z
+     2 GET /share/qjo109iWiMSgy_BODQ0klqufle5HpPhe
+     2 GET /share/rqeOzj434upW2bIrbngsUllduAUy4sd-
      2 GET /share/s69XLumYp3FtVGZs7fsvnW8KIoGdxoF6
+     2 GET /share/tgUFqzoWKe5y50ilUHkUd0vdail29OJt
+     2 POST /api/sessions/{}/media/image/{}/remove
      1 DELETE /api/ai/tasks/0plUbTs1n-wUaNF2
+     1 DELETE /api/ai/tasks/2uRHZa0470uw9bDg
      1 DELETE /api/ai/tasks/4Fs0_q35QzRnsE0h
      1 DELETE /api/ai/tasks/9yWOoOZ8CZZWdPvH
+     1 DELETE /api/ai/tasks/BpkySHcUmb9yHpQL
+     1 DELETE /api/ai/tasks/Kbr0ke0iKF2sxTVV
+     1 DELETE /api/ai/tasks/M6hBWi5QoZjEwVDH
+     1 DELETE /api/ai/tasks/OpbiTZ5OSkB7FncB
+     1 DELETE /api/ai/tasks/T6F216GgBIsH9WJJ
+     1 DELETE /api/ai/tasks/TBKTFqsmj5jhl7Hz
+     1 DELETE /api/ai/tasks/ZYcdV7Zx7Iz6lYhO
      1 DELETE /api/ai/tasks/b91vCvCnsvouMQs3
      1 DELETE /api/ai/tasks/dhnYSr1vPj9Ifyky
+     1 DELETE /api/ai/tasks/gC00rxrSt-AtJ1_z
      1 DELETE /api/ai/tasks/iGNZVvy-94pecz42
      1 DELETE /api/ai/tasks/yHfjvxfh9AZES-x_
      1 DELETE /api/ai/tasks/yT0IWqD3viR-081h
      1 DELETE /api/ai/tasks/zS2AIDDXVHKJ6jMW
      1 GET /api/ai/tasks/0BbKRPblaqsl38a0
+     1 GET /api/ai/tasks/2frOGgaUdkIv9ZFY
      1 GET /api/ai/tasks/3yFAFbN7ZnA2wOOz
+     1 GET /api/ai/tasks/60PW-aN-ovuivMv0
      1 GET /api/ai/tasks/6ms_9ZgYVPq8GUum
+     1 GET /api/ai/tasks/7dalxzjhNcxFNuN0
      1 GET /api/ai/tasks/8APkzhyk2Y5MvzTy
      1 GET /api/ai/tasks/8hoMmByeZHtyUvLG
+     1 GET /api/ai/tasks/8jD5LX5OCkFC5r1Z
      1 GET /api/ai/tasks/8kvIpzsBQHgBppfj
+     1 GET /api/ai/tasks/95p9LK0PUr4xpMEi
+     1 GET /api/ai/tasks/C8_X4YEs-142KnMm
+     1 GET /api/ai/tasks/DN99icaceEv61YRY
      1 GET /api/ai/tasks/DU0Fqcy-t-LWxPdQ
      1 GET /api/ai/tasks/Dh04kg1uOvplDj0-
      1 GET /api/ai/tasks/EqDdUIdfHGTr2hQ7
      1 GET /api/ai/tasks/FTvNGESVdDs1CFr7
+     1 GET /api/ai/tasks/FsEYV5CBZx4GRVul
+     1 GET /api/ai/tasks/JAZmmMzuCdwDwyx-
+     1 GET /api/ai/tasks/JqUPu6D3z1SsKczu
+     1 GET /api/ai/tasks/KxuF7cdDn1hwzDu-
+     1 GET /api/ai/tasks/Lt6-IslXnk0uXqG2
+     1 GET /api/ai/tasks/OXFhUJl5zg1ALgWj
      1 GET /api/ai/tasks/P9jMwQt3gyWSoa0f
      1 GET /api/ai/tasks/PhtdUnDQDMaSn3P5
      1 GET /api/ai/tasks/RQr4LqvHBwLwtZlJ
+     1 GET /api/ai/tasks/Rr3cZYuIMZWs29XT
      1 GET /api/ai/tasks/Zm2d3lrU-tcWg04Q
      1 GET /api/ai/tasks/bm5XVH5UDyb3p2RN
+     1 GET /api/ai/tasks/elNGlHaFzZwXt6Vr
      1 GET /api/ai/tasks/ffeK1zTAmEOdnXsf
      1 GET /api/ai/tasks/j1_pWQ0HuigEMq93
+     1 GET /api/ai/tasks/kaAU3F7VdG2IwwrL
+     1 GET /api/ai/tasks/l67CYw0Hb6Fi6Cbk
+     1 GET /api/ai/tasks/lgCrxHluCidzUldi
+     1 GET /api/ai/tasks/lrcIYL7eLhhI6_pn
+     1 GET /api/ai/tasks/lw2a4e2_J9tGC4tW
      1 GET /api/ai/tasks/pw-ZPr5W1UgjF3hM
      1 GET /api/ai/tasks/qICAhZqtKw9OejES
      1 GET /api/ai/tasks/s3_7KD0QWedD5qgk
+     1 GET /api/ai/tasks/t6HMsBRqn7OvDl_g
      1 GET /api/ai/tasks/tjR93oxelatwvhXD
+     1 GET /api/ai/tasks/v5vfrPGL6jyL7Mfi
+     1 GET /api/ai/tasks/xlpPYhEpv_zOgm7_
+     1 GET /api/ai/tasks/yW9JJmUWaVo9cH3H
      1 GET /api/ai/tasks/yf_GuC1wzyL3JYec
      1 GET /api/ai/tasks/z1ML9kKkWdqhA-iT
      1 GET /api/ai/tasks/zUGAsgcJAty2iU-a
@@ -389,132 +390,265 @@
      1 POST /api/maps/schematic/gw-sc-10d1a6a29ad1/buy-item
      1 POST /api/maps/schematic/gw-sc-118edaa834b9/pickup-item
      1 POST /api/maps/schematic/gw-sc-12a6e1627bcd/buy-item
+     1 POST /api/maps/schematic/gw-sc-12d43d58a647/move-token
      1 POST /api/maps/schematic/gw-sc-149e53036757/move-token
      1 POST /api/maps/schematic/gw-sc-19df2e016159/pickup-item
      1 POST /api/maps/schematic/gw-sc-1aa8c72a6d8e/move-token
      1 POST /api/maps/schematic/gw-sc-1d56b81076b0/move-token
      1 POST /api/maps/schematic/gw-sc-1dafe956ea92/buy-item
      1 POST /api/maps/schematic/gw-sc-1fcebe0d93b0/pickup-item
+     1 POST /api/maps/schematic/gw-sc-251e0e854720/pickup-item
      1 POST /api/maps/schematic/gw-sc-25b8498167ef/buy-item
      1 POST /api/maps/schematic/gw-sc-25d49bf8b863/pickup-item
+     1 POST /api/maps/schematic/gw-sc-2637f1dd1272/move-token
+     1 POST /api/maps/schematic/gw-sc-27a163720332/buy-item
+     1 POST /api/maps/schematic/gw-sc-2b31b0f8bc42/move-token
      1 POST /api/maps/schematic/gw-sc-2b877c0649e0/buy-item
+     1 POST /api/maps/schematic/gw-sc-2ef2073c8042/pickup-item
+     1 POST /api/maps/schematic/gw-sc-2f86eed60574/move-token
+     1 POST /api/maps/schematic/gw-sc-301e05c06a0d/pickup-item
+     1 POST /api/maps/schematic/gw-sc-312a77b9be90/buy-item
      1 POST /api/maps/schematic/gw-sc-339c3f64e275/pickup-item
      1 POST /api/maps/schematic/gw-sc-34c78a4c78e5/buy-item
      1 POST /api/maps/schematic/gw-sc-37dc97e1cde3/buy-item
      1 POST /api/maps/schematic/gw-sc-3994a52bad18/buy-item
+     1 POST /api/maps/schematic/gw-sc-3db383c236f5/move-token
      1 POST /api/maps/schematic/gw-sc-4203fb64a3e2/buy-item
+     1 POST /api/maps/schematic/gw-sc-44177474c495/pickup-item
+     1 POST /api/maps/schematic/gw-sc-458cc4b579f0/pickup-item
      1 POST /api/maps/schematic/gw-sc-467795843257/move-token
+     1 POST /api/maps/schematic/gw-sc-471025a61b12/move-token
+     1 POST /api/maps/schematic/gw-sc-471ad8a75ba4/pickup-item
+     1 POST /api/maps/schematic/gw-sc-47c3635460c1/buy-item
+     1 POST /api/maps/schematic/gw-sc-4a94132ecf4d/buy-item
      1 POST /api/maps/schematic/gw-sc-4ab6cc431634/move-token
+     1 POST /api/maps/schematic/gw-sc-4bd6ba3844f9/move-token
      1 POST /api/maps/schematic/gw-sc-4dc5c95da73c/pickup-item
      1 POST /api/maps/schematic/gw-sc-506235899846/move-token
+     1 POST /api/maps/schematic/gw-sc-5176d26fc1af/move-token
+     1 POST /api/maps/schematic/gw-sc-5289d4b56c4b/buy-item
+     1 POST /api/maps/schematic/gw-sc-5516bf7e0aae/buy-item
      1 POST /api/maps/schematic/gw-sc-57796c177a70/buy-item
      1 POST /api/maps/schematic/gw-sc-58b0bb24aca8/buy-item
+     1 POST /api/maps/schematic/gw-sc-5a8cb4990743/buy-item
      1 POST /api/maps/schematic/gw-sc-5bf9211f40a8/buy-item
+     1 POST /api/maps/schematic/gw-sc-5c0847beff9d/move-token
      1 POST /api/maps/schematic/gw-sc-5d6cb9d2a0fc/pickup-item
      1 POST /api/maps/schematic/gw-sc-5df6e50ab4bf/buy-item
+     1 POST /api/maps/schematic/gw-sc-6086f9a91cea/move-token
+     1 POST /api/maps/schematic/gw-sc-623ebebc0773/buy-item
+     1 POST /api/maps/schematic/gw-sc-6398282153dc/buy-item
+     1 POST /api/maps/schematic/gw-sc-641e8928feac/move-token
      1 POST /api/maps/schematic/gw-sc-656c402a8b55/buy-item
+     1 POST /api/maps/schematic/gw-sc-665c2e103fbc/buy-item
      1 POST /api/maps/schematic/gw-sc-6663ce8ab782/move-token
+     1 POST /api/maps/schematic/gw-sc-6fff750cdd5a/move-token
+     1 POST /api/maps/schematic/gw-sc-72e6f47b2cc3/buy-item
      1 POST /api/maps/schematic/gw-sc-749e202a9aa4/pickup-item
      1 POST /api/maps/schematic/gw-sc-74c18eb5e6d8/move-token
      1 POST /api/maps/schematic/gw-sc-74ed6e14b1dc/pickup-item
+     1 POST /api/maps/schematic/gw-sc-75092447754d/pickup-item
      1 POST /api/maps/schematic/gw-sc-7529361ba6c6/move-token
      1 POST /api/maps/schematic/gw-sc-77aad01d3fe7/move-token
      1 POST /api/maps/schematic/gw-sc-7c2359436dd6/buy-item
+     1 POST /api/maps/schematic/gw-sc-7c55631108ce/move-token
      1 POST /api/maps/schematic/gw-sc-7cabdb0bd62f/move-token
+     1 POST /api/maps/schematic/gw-sc-7dad1e27eade/move-token
      1 POST /api/maps/schematic/gw-sc-80dd6f97ca9e/buy-item
+     1 POST /api/maps/schematic/gw-sc-819539822c24/pickup-item
      1 POST /api/maps/schematic/gw-sc-83406310099a/buy-item
+     1 POST /api/maps/schematic/gw-sc-844984593210/pickup-item
+     1 POST /api/maps/schematic/gw-sc-85673fbbf367/pickup-item
+     1 POST /api/maps/schematic/gw-sc-866eedddd3f4/move-token
      1 POST /api/maps/schematic/gw-sc-867fd6c147af/pickup-item
      1 POST /api/maps/schematic/gw-sc-886ea9a2a23f/buy-item
      1 POST /api/maps/schematic/gw-sc-89c8315d437c/buy-item
+     1 POST /api/maps/schematic/gw-sc-8a4a3b8f6ab5/pickup-item
+     1 POST /api/maps/schematic/gw-sc-8c116ab999df/pickup-item
      1 POST /api/maps/schematic/gw-sc-8d82e37b7242/move-token
+     1 POST /api/maps/schematic/gw-sc-9080425d5dce/buy-item
+     1 POST /api/maps/schematic/gw-sc-9126690107d7/move-token
      1 POST /api/maps/schematic/gw-sc-91d329515c32/move-token
+     1 POST /api/maps/schematic/gw-sc-96a7b4a54b0a/buy-item
+     1 POST /api/maps/schematic/gw-sc-96ec107f571e/pickup-item
+     1 POST /api/maps/schematic/gw-sc-99164f869594/buy-item
      1 POST /api/maps/schematic/gw-sc-9be75f5ee054/move-token
+     1 POST /api/maps/schematic/gw-sc-9c44f8a281dd/pickup-item
      1 POST /api/maps/schematic/gw-sc-9f07c1855871/move-token
+     1 POST /api/maps/schematic/gw-sc-a05c79452093/move-token
+     1 POST /api/maps/schematic/gw-sc-a2c50c282afb/buy-item
+     1 POST /api/maps/schematic/gw-sc-a395ec9c9fef/buy-item
+     1 POST /api/maps/schematic/gw-sc-a47eb8d86179/buy-item
+     1 POST /api/maps/schematic/gw-sc-a51f3abf02ca/move-token
      1 POST /api/maps/schematic/gw-sc-a5852aff6fa2/pickup-item
+     1 POST /api/maps/schematic/gw-sc-a5d71f6e9cbf/pickup-item
+     1 POST /api/maps/schematic/gw-sc-a8478ac67c93/move-token
+     1 POST /api/maps/schematic/gw-sc-a8596efbdec6/buy-item
      1 POST /api/maps/schematic/gw-sc-aa64384407e6/pickup-item
+     1 POST /api/maps/schematic/gw-sc-ab7948ce5e94/pickup-item
      1 POST /api/maps/schematic/gw-sc-ac4a3720c279/pickup-item
      1 POST /api/maps/schematic/gw-sc-ae0e3d8a2445/move-token
      1 POST /api/maps/schematic/gw-sc-b0bd3c75a97e/buy-item
+     1 POST /api/maps/schematic/gw-sc-b1577b7af5f0/buy-item
+     1 POST /api/maps/schematic/gw-sc-b42a0d7616ea/move-token
+     1 POST /api/maps/schematic/gw-sc-b6189ac3c66d/buy-item
      1 POST /api/maps/schematic/gw-sc-b62db0bbfaaa/buy-item
      1 POST /api/maps/schematic/gw-sc-b6ff1b7ac0c5/buy-item
      1 POST /api/maps/schematic/gw-sc-bb3a1f5add84/move-token
+     1 POST /api/maps/schematic/gw-sc-c1978188cae5/buy-item
      1 POST /api/maps/schematic/gw-sc-c879cd310c5f/buy-item
+     1 POST /api/maps/schematic/gw-sc-ca5227847a24/buy-item
+     1 POST /api/maps/schematic/gw-sc-cc564132a16d/move-token
      1 POST /api/maps/schematic/gw-sc-cd24211a8e39/move-token
      1 POST /api/maps/schematic/gw-sc-cf12144fb058/pickup-item
+     1 POST /api/maps/schematic/gw-sc-cf69bc477719/buy-item
      1 POST /api/maps/schematic/gw-sc-d3a1f0985a06/buy-item
      1 POST /api/maps/schematic/gw-sc-d5412648d2f7/pickup-item
      1 POST /api/maps/schematic/gw-sc-d9c11313ef64/pickup-item
+     1 POST /api/maps/schematic/gw-sc-dadcb801ede6/buy-item
+     1 POST /api/maps/schematic/gw-sc-dd5237bc316c/move-token
+     1 POST /api/maps/schematic/gw-sc-de85b2ef6683/buy-item
+     1 POST /api/maps/schematic/gw-sc-e3225d53f98d/move-token
+     1 POST /api/maps/schematic/gw-sc-e3c84c51910c/pickup-item
      1 POST /api/maps/schematic/gw-sc-e4467f3dfd6e/move-token
      1 POST /api/maps/schematic/gw-sc-e46c13d83f32/pickup-item
      1 POST /api/maps/schematic/gw-sc-e5d879875da4/pickup-item
      1 POST /api/maps/schematic/gw-sc-e6368d14fa8b/move-token
      1 POST /api/maps/schematic/gw-sc-e8562e9da4f4/move-token
+     1 POST /api/maps/schematic/gw-sc-e90dde728617/move-token
+     1 POST /api/maps/schematic/gw-sc-eb9c62cf8570/move-token
      1 POST /api/maps/schematic/gw-sc-ebe834962696/buy-item
+     1 POST /api/maps/schematic/gw-sc-ec7a5b90bedd/pickup-item
+     1 POST /api/maps/schematic/gw-sc-ed368cece590/buy-item
      1 POST /api/maps/schematic/gw-sc-ef6f33333c7b/move-token
      1 POST /api/maps/schematic/gw-sc-f02db3b77f7c/move-token
+     1 POST /api/maps/schematic/gw-sc-f0f022367ccd/move-token
      1 POST /api/maps/schematic/gw-sc-f3645bd8b735/move-token
+     1 POST /api/maps/schematic/gw-sc-f86fd2f7bc4d/buy-item
      1 POST /api/maps/schematic/gw-sc-fb31ed3a2d4f/buy-item
      1 POST /api/maps/schematic/gw-sc-fbd7e04cefa2/move-token
+     1 POST /api/maps/schematic/gw-sc-ffd2079295f1/move-token
      1 POST /api/sessions/{}/media/image/0bb0fa7645/remove
+     1 POST /api/sessions/{}/media/image/0bd9dfe3c0/remove
+     1 POST /api/sessions/{}/media/image/1caeb64295/remove
      1 POST /api/sessions/{}/media/image/213c77adcc/remove
      1 POST /api/sessions/{}/media/image/2c451b2589/remove
+     1 POST /api/sessions/{}/media/image/2f479be145/remove
      1 POST /api/sessions/{}/media/image/302eb9c2b1/remove
+     1 POST /api/sessions/{}/media/image/32c7a9989a/remove
+     1 POST /api/sessions/{}/media/image/342e0d8eff/remove
      1 POST /api/sessions/{}/media/image/38acc32bc0/remove
      1 POST /api/sessions/{}/media/image/3f3f60b913/remove
      1 POST /api/sessions/{}/media/image/42a005aae4/remove
+     1 POST /api/sessions/{}/media/image/4d61ac8b59/remove
+     1 POST /api/sessions/{}/media/image/506a7db917/remove
      1 POST /api/sessions/{}/media/image/55f6dc3083/remove
      1 POST /api/sessions/{}/media/image/58861f3a94/remove
      1 POST /api/sessions/{}/media/image/58d91add6c/remove
+     1 POST /api/sessions/{}/media/image/5b7263a6e5/remove
      1 POST /api/sessions/{}/media/image/6b38574d5e/remove
      1 POST /api/sessions/{}/media/image/6bf94676a0/remove
      1 POST /api/sessions/{}/media/image/6ccd1a3832/remove
+     1 POST /api/sessions/{}/media/image/75784142f5/remove
      1 POST /api/sessions/{}/media/image/764ac5d494/remove
      1 POST /api/sessions/{}/media/image/77fe632fdd/remove
+     1 POST /api/sessions/{}/media/image/7fd2b5dfd4/remove
+     1 POST /api/sessions/{}/media/image/84f752ad40/remove
+     1 POST /api/sessions/{}/media/image/9e4aebd0d8/remove
+     1 POST /api/sessions/{}/media/image/ae5d9f9317/remove
      1 POST /api/sessions/{}/media/image/bae21d2931/remove
+     1 POST /api/sessions/{}/media/image/c1894167ed/remove
      1 POST /api/sessions/{}/media/image/cb7231ce14/remove
      1 POST /api/sessions/{}/media/image/de9cde6a99/remove
+     1 POST /api/sessions/{}/media/image/eb5b8b4346/remove
+     1 POST /api/sessions/{}/media/image/eecd8cd82d/remove
+     1 POST /join/-u51gBH7sKnu
+     1 POST /join/4ELCCo5lJV4f
      1 POST /join/89Y6Rwlfhxf-
+     1 POST /join/BphBfVRE4BuZ
      1 POST /join/RTjJIm3FTkrj
      1 POST /join/Rb6Xk_Q-xb4Z
      1 POST /join/RpUjh3b8FQsP
+     1 POST /join/ZknzAK5rkC9m
+     1 POST /join/_a-x0ONDs9mu
      1 POST /join/_b8BVG6UA7hY
      1 POST /join/adE13m0SE8H0
+     1 POST /join/iM_lja3YhR30
      1 POST /join/qK_CGNxEr0et
+     1 POST /join/r1GpF24CwE2Z
      1 POST /join/sQUbe6k98Ai7
      1 POST /join/tpd4_bw2vjWQ
+     1 POST /join/yGGKTJhBdqQE
+     1 POST /join/zNKVYy0lOrNU
      1 POST /maps/gwmap-d-0bc6b93f9504/delete
      1 POST /maps/gwmap-d-0c87bd99f3e9/delete
      1 POST /maps/gwmap-d-0ec81f196d1d/delete
      1 POST /maps/gwmap-d-26d4b8d1af1e/delete
+     1 POST /maps/gwmap-d-26e5bd400441/delete
      1 POST /maps/gwmap-d-349b4865b277/delete
+     1 POST /maps/gwmap-d-5451d1ae8ac9/delete
+     1 POST /maps/gwmap-d-57218155905c/delete
      1 POST /maps/gwmap-d-5fbd87b67509/delete
+     1 POST /maps/gwmap-d-6e4c2c2982ba/delete
+     1 POST /maps/gwmap-d-70d4a5a5d958/delete
+     1 POST /maps/gwmap-d-888940221d7c/delete
+     1 POST /maps/gwmap-d-97e591f09bda/delete
      1 POST /maps/gwmap-d-afbcd54a868c/delete
      1 POST /maps/gwmap-d-b89a146d959b/delete
      1 POST /maps/gwmap-d-e500a7f4add3/delete
+     1 POST /maps/gwmap-d-e6a74ddbfdd5/delete
+     1 POST /maps/gwmap-d-f221aa93ad66/delete
      1 POST /maps/gwmap-r-028527b4c464/rename
      1 POST /maps/gwmap-r-05311047daa2/rename
+     1 POST /maps/gwmap-r-0acd014fa825/rename
+     1 POST /maps/gwmap-r-183540ae08da/rename
+     1 POST /maps/gwmap-r-1da08178012e/rename
      1 POST /maps/gwmap-r-2106023706a9/rename
      1 POST /maps/gwmap-r-24d041097d66/rename
      1 POST /maps/gwmap-r-29ceecad7913/rename
      1 POST /maps/gwmap-r-3e774c2bd941/rename
      1 POST /maps/gwmap-r-4e34dd9ed558/rename
      1 POST /maps/gwmap-r-5618a3c9ce9b/rename
+     1 POST /maps/gwmap-r-5b864dab76fe/rename
      1 POST /maps/gwmap-r-68c64d31213f/rename
+     1 POST /maps/gwmap-r-6a6c5cbfd76b/rename
      1 POST /maps/gwmap-r-6bc97c062148/rename
+     1 POST /maps/gwmap-r-6ca57e03e9df/rename
      1 POST /maps/gwmap-r-832c6226f3b9/rename
      1 POST /maps/gwmap-r-8ed1f70c0dae/rename
      1 POST /maps/gwmap-r-908338ce7932/rename
      1 POST /maps/gwmap-r-93b17521bcd0/rename
      1 POST /maps/gwmap-r-98fd3bc74b10/rename
+     1 POST /maps/gwmap-r-ad09da33ff11/rename
+     1 POST /maps/gwmap-r-aeab5e642ab2/rename
      1 POST /maps/gwmap-r-b1e55b3c22e1/rename
+     1 POST /maps/gwmap-r-b36500b2dacb/rename
+     1 POST /maps/gwmap-r-b3ee25e5a092/rename
+     1 POST /maps/gwmap-r-b543ff4f3d47/rename
+     1 POST /maps/gwmap-r-b87977692e15/rename
+     1 POST /maps/gwmap-r-ba476e5909b3/rename
+     1 POST /maps/gwmap-r-bb27fbf6d361/rename
+     1 POST /maps/gwmap-r-c4a3b26076da/rename
+     1 POST /maps/gwmap-r-c7dd38fc8681/rename
+     1 POST /maps/gwmap-r-ccc0367a14ea/rename
+     1 POST /maps/gwmap-r-d1d9ed7a8e9d/rename
      1 POST /maps/gwmap-r-e54bfd09c72f/rename
      1 POST /maps/gwmap-r-f795f218eb7a/rename
+     1 POST /maps/gwup-1431d32de384/upload
+     1 POST /maps/gwup-1e7254b5a6b3/upload
+     1 POST /maps/gwup-2b0906d9e5d1/upload
      1 POST /maps/gwup-4f33ce2221c8/upload
+     1 POST /maps/gwup-65f5f7cb86d7/upload
+     1 POST /maps/gwup-673bbfedcc45/upload
      1 POST /maps/gwup-6a28c6a23c44/upload
+     1 POST /maps/gwup-6ae99727395a/upload
      1 POST /maps/gwup-7902b4accbac/upload
      1 POST /maps/gwup-7c4244873936/upload
+     1 POST /maps/gwup-85f6c6357b46/upload
      1 POST /maps/gwup-88038bd6cf78/upload
      1 POST /maps/gwup-923000ebc5c0/upload
      1 POST /maps/gwup-a2aa2bccf5fd/upload
      1 POST /maps/gwup-b1dd6d0faa40/upload
+     1 POST /maps/gwup-c4a7694674aa/upload
+     1 POST /maps/gwup-c9addfcdb2cc/upload
      1 POST /maps/gwup-f738187c5566/upload
