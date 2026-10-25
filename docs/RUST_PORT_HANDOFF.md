@@ -80,7 +80,7 @@ Read this first, then `docs/RUST_SWITCH_OFF.md` (the phase 6 work list and what 
 ## Progress
 
 Census from the latest gateway suite (one full run, split into groups on one machine - scripts/run_group.sh):
-**395 route patterns answered only by the gateway, 443 mixed, 232 still Python-only.** Phase 6 steps:
+**403 route patterns answered only by the gateway, 447 mixed, 223 still Python-only.** Phase 6 steps:
 
 | Step | State |
 |---|---|
@@ -97,7 +97,11 @@ markdown download, Session Log list, NPC talk page, world JSON exports, characte
 player cockpit's live board, the character read APIs (vitals / sync / advance / ability cards) and .json / .md exports, the
 character creation and edit forms (with the `tpl_fields_json` filter and Jinja2's `e`), the session page's npc-candidates,
 AI attachment background jobs, the session summary / transcript downloads, the view-prefs site save (with the session
-re-sign, `auth.rs resign`), and the unknown map / board slug 404s.
+re-sign, `auth.rs resign`), the unknown map / board slug 404s, the AI character creator page, a new schematic (GET and
+POST), the hover-preview config, the world book zip, the instance backup zip, the rules-and-notes export, and the
+per-kind entity zips (`entity_markdown` shared by the single-entity download). The zip exports' parity rule (Python's
+zips are timestamp-dependent): compare the extracted entries - files byte for byte, the backup's database by its logical
+dump, the book's index.html with the owner-chosen markdown whitespace collapsed.
 
 **Already ported since the census was taken (ignore in the list)**: the above plus `/api/view-prefs/site` and the unknown
 `view-prefs` sections.
