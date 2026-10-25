@@ -80,7 +80,7 @@ Read this first, then `docs/RUST_SWITCH_OFF.md` (the phase 6 work list and what 
 ## Progress
 
 Census from the latest gateway suite (one full run, split into groups on one machine - scripts/run_group.sh):
-**375 route patterns answered only by the gateway, 435 mixed, 258 still Python-only.** Phase 6 steps:
+**395 route patterns answered only by the gateway, 443 mixed, 232 still Python-only.** Phase 6 steps:
 
 | Step | State |
 |---|---|
@@ -91,9 +91,16 @@ Census from the latest gateway suite (one full run, split into groups on one mac
 | 5. Dockerfile without Python | not started |
 
 Ported in the latest batches (details in `RUST_SWITCH_OFF.md`): settings page, session planner, character hub tabs (quests, world,
-now, schedule, log, notes), uploads access, party pages, calendar search, race/profession catalogs, account page and 2FA setup,
-name / token routes, world-context smart + player, Studio prefs, entity markdown download, Session Log list, NPC talk page, world
-JSON exports, character sheets, and the app-settings row creation (it used to send most first pages to Python).
+now, schedule, log, notes, keepsakes, places, handouts), uploads access, party pages (incl. the Rest undo), calendar search,
+race/profession catalogs, account page and 2FA setup, name / token routes, world-context smart + player, Studio prefs, entity
+markdown download, Session Log list, NPC talk page, world JSON exports, character sheets, the app-settings row creation, the
+player cockpit's live board, the character read APIs (vitals / sync / advance / ability cards) and .json / .md exports, the
+character creation and edit forms (with the `tpl_fields_json` filter and Jinja2's `e`), the session page's npc-candidates,
+AI attachment background jobs, the session summary / transcript downloads, the view-prefs site save (with the session
+re-sign, `auth.rs resign`), and the unknown map / board slug 404s.
+
+**Already ported since the census was taken (ignore in the list)**: the above plus `/api/view-prefs/site` and the unknown
+`view-prefs` sections.
 
 ## Left to port
 
