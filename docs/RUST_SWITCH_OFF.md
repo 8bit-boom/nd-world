@@ -72,6 +72,10 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The AI character creator page and a new schematic** (`GET /characters/ai-new`, pages.rs `characters_ai_new`: the world's
+  custom systems, the selected template id, the player's display name, the limit redirect; `GET /maps/schematic/new`, the
+  empty canvas form; `POST /maps/schematic/new`, edits.rs `schematic_new`: the name's slug uniquified, the canvas bounds
+  checked, the row written, the redirect - player-safe as Python's allowlist has both).
 - **Unknown map / board slugs answered** (`GET /maps/<slug>`, `/boards/<slug>`, `/boards/<slug>/notes`): a map with no
   json file (or one that does not parse) and a board with no row are the 404 Python raises, answered by the gateway itself
   instead of forwarded.
