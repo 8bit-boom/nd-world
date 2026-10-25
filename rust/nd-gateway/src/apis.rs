@@ -34,6 +34,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/entities/picker" => entities_picker(&cfg, uri, headers),
         "/api/cockpit/player-board" => cockpit_player_board(&cfg, uri, headers),
         path if id_between(path, "/sessions/", "/npc-candidates").is_some() => session_npc_candidates(&cfg, uri, headers, id_between(path, "/sessions/", "/npc-candidates")?),
+        path if id_between(path, "/sessions/", "/summary.md").is_some() => session_summary_md(&cfg, uri, headers, id_between(path, "/sessions/", "/summary.md")?),
+        path if id_between(path, "/sessions/", "/transcript.md").is_some() => session_transcript_md(&cfg, uri, headers, id_between(path, "/sessions/", "/transcript.md")?),
         path if id_between(path, "/api/ai/assist-job/", "").is_some() => assist_job(&cfg, uri, headers, id_between(path, "/api/ai/assist-job/", "")?),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path if media_run_id(path).is_some() => media_rename_run(&cfg, uri, headers, media_run_id(path)?),
@@ -48,7 +50,7 @@ pub fn is_get(path: &str) -> bool {
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
-        || id_between(path, "/sessions/", "/npc-candidates").is_some()
+        || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some()
 }
 
@@ -67,7 +69,7 @@ fn party_vitals(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option
         Ok(m) => m,
         Err(_) => return Some(crate::idpages::refusal(404)),
     };
-    if !crate::idpages::row_world_visible(&db, &p, party.get("world_id")?.as_i64()?, "parties")?.0 {
+    if !crate::idpages::row_world_visible_pub(&db, &p, party.get("world_id")?.as_i64()?, "parties")?.0 {
         return Some(crate::idpages::refusal(404));
     }
     let ids = crate::idpages::party_ids(party.get("member_pc_ids_json"))?;
@@ -1660,4 +1662,58 @@ pub(crate) fn nd_defaults() -> (Value, Value) {
     ]);
     let currency = json!([{"label": "Creds", "abbr": "CR", "value": 0}, {"label": "Tokens", "abbr": "TK", "value": 0}]);
     (stats, currency)
+}
+
+/// `_session_download_filename`: the title sanitized to Python's `isalnum` set (an ASCII title; anything beyond stays
+/// Python's, file name included), then "-<suffix>.md"
+fn session_md_name(title: Option<&str>, suffix: &str) -> Option<String> {
+    let raw = title.filter(|t| !t.is_empty()).unwrap_or("session");
+    if !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_') {
+        return None;
+    }
+    let base: String = raw.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').collect();
+    Some(format!("{}-{suffix}.md", if base.is_empty() { "session".to_string() } else { base }))
+}
+
+/// the shared shape of `session_download_summary` / `session_download_transcript` (app/routers/sessions.py): the row by
+/// id alone, read-gated by the row's own world's "sessions" section, the column's text with [gmonly] stripped for a
+/// non-GM, as a text/markdown attachment; the no-content refusals in Python's words
+fn session_md_download(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64, suffix: &str) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let gs = db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(gs) = gs else { return Some(crate::idpages::refusal(404)) };
+    let wid = gs.get("world_id")?.as_i64()?;
+    let (ok, _) = crate::idpages::row_world_visible_pub(&db, &p, wid, "sessions")?;
+    if !ok {
+        return Some(crate::idpages::refusal(404));
+    }
+    let col = if suffix == "summary" { "summary" } else { "live_transcript" };
+    let empty_msg = if suffix == "summary" { "This session has no summary yet" } else { "This session has no live transcript yet" };
+    let text = match gs.get(col) {
+        Some(Value::String(t)) if !t.is_empty() => t.clone(),
+        _ => return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, empty_msg)),
+    };
+    let body = if p.is_gm {
+        text
+    } else {
+        nd_perm::gmonly::strip_gm_only(&text, Some(p.user_id), nd_render::now_minute())?
+    };
+    let fname = session_md_name(gs.get("title").and_then(|v| v.as_str()), suffix)?;
+    let mut r = crate::edits::json_response_raw(&body, "text/markdown; charset=utf-8")?;
+    if let Ok(v) = format!("attachment; filename=\"{fname}\"").parse() {
+        r.headers_mut().insert("content-disposition", v);
+    }
+    Some(r)
+}
+
+/// `GET /sessions/<id>/summary.md`
+fn session_summary_md(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    session_md_download(cfg, uri, headers, id, "summary")
+}
+
+/// `GET /sessions/<id>/transcript.md`
+fn session_transcript_md(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    session_md_download(cfg, uri, headers, id, "transcript")
 }

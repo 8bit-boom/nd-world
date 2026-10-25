@@ -72,6 +72,9 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **Session summary / transcript downloads** (`GET /sessions/<id>/summary.md`, `/transcript.md`, apis.rs): the text with
+  [gmonly] stripped for a player, the sanitized file name, read-gated by the row's own world's sessions section; the
+  no-content 404s in Python's words; a title beyond Python's ASCII file names stays Python's.
 - **AI attachment background jobs** (edits.rs, ai.rs): `POST /api/ai/attachments/audio-jobs` (a recording stored under
   uploads/ai_attachments and a pending row, the job started right away), the chunk pair (32-hex upload ids, parts reassembled
   by .../complete), `GET .../audio-jobs/<id>` and the recent list - a GM always, a player only in a world that opened an AI

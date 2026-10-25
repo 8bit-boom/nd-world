@@ -2993,10 +2993,6 @@ async fn run_audio_job(id: i64) {
             |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?))).ok()
     }).await.ok().flatten();
     let Some((audio, delete_after, transcript, checkpoint, purpose)) = row else { return };
-    let write = |fields: Vec<(&'static str, Sql)>| {
-        let c = cfg.clone();
-        std::thread::spawn(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "audio_jobs", id, &fields); } }).join().ok();
-    };
     let audio = audio.filter(|a| !a.is_empty()).map(std::path::PathBuf::from);
     let checkpoint = checkpoint.filter(|c| !c.is_empty()).and_then(|c| serde_json::from_str::<Value>(&c).ok());
     let in_transcribe = checkpoint.as_ref().and_then(|c| c.get("phase")).and_then(|p| p.as_str()) == Some("transcribe");

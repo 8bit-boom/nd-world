@@ -515,7 +515,7 @@ fn in_list(ids: &[i64]) -> String {
 }
 
 /// `world_row_visible(request, db, world_id, section)` for a row of the active world; None for another world's row (Python's)
-pub(crate) fn row_world_visible(db: &Connection, p: &PageCtx, world_id: i64, section: &str) -> Option<(bool, Map<String, Value>)> {
+pub fn row_world_visible_pub(db: &Connection, p: &PageCtx, world_id: i64, section: &str) -> Option<(bool, Map<String, Value>)> {
     let w = row(db, "SELECT * FROM worlds WHERE id = ?1", world_id);
     if p.is_gm {
         return Some((w.is_some(), w.unwrap_or_default()));
@@ -536,7 +536,7 @@ pub(crate) fn row_world_visible(db: &Connection, p: &PageCtx, world_id: i64, sec
 fn party_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
     let Some(party) = row(db, "SELECT * FROM parties WHERE id = ?1", id) else { return Some(refusal(404)) };
     let wid = party.get("world_id")?.as_i64()?;
-    let (ok, pw) = row_world_visible(db, &p, wid, "parties")?;
+    let (ok, pw) = row_world_visible_pub(db, &p, wid, "parties")?;
     if !ok {
         return Some(refusal(404));
     }
@@ -773,7 +773,7 @@ fn cell_chips(chips: Vec<Value>) -> Value {
 fn party_roster(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
     let Some(party) = row(db, "SELECT * FROM parties WHERE id = ?1", id) else { return Some(refusal(404)) };
     let wid = party.get("world_id")?.as_i64()?;
-    let (ok, pw) = row_world_visible(db, &p, wid, "parties")?;
+    let (ok, pw) = row_world_visible_pub(db, &p, wid, "parties")?;
     if !ok {
         return Some(refusal(404));
     }
@@ -963,7 +963,7 @@ fn party_roster(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers
 fn party_summary(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
     let Some(party) = row(db, "SELECT * FROM parties WHERE id = ?1", id) else { return Some(refusal(404)) };
     let wid = party.get("world_id")?.as_i64()?;
-    let (ok, pw) = row_world_visible(db, &p, wid, "parties")?;
+    let (ok, pw) = row_world_visible_pub(db, &p, wid, "parties")?;
     if !ok {
         return Some(refusal(404));
     }
