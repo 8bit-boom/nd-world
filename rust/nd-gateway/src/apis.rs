@@ -33,6 +33,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/audio-jobs" => audio_job_list(&cfg, uri, headers),
         "/api/entities/picker" => entities_picker(&cfg, uri, headers),
         "/api/cockpit/player-board" => cockpit_player_board(&cfg, uri, headers),
+        "/api/hover-preview/config" => hover_preview_config(&cfg, uri, headers),
         path if id_between(path, "/sessions/", "/npc-candidates").is_some() => session_npc_candidates(&cfg, uri, headers, id_between(path, "/sessions/", "/npc-candidates")?),
         path if id_between(path, "/sessions/", "/summary.md").is_some() => session_summary_md(&cfg, uri, headers, id_between(path, "/sessions/", "/summary.md")?),
         path if id_between(path, "/sessions/", "/transcript.md").is_some() => session_transcript_md(&cfg, uri, headers, id_between(path, "/sessions/", "/transcript.md")?),
@@ -46,7 +47,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
+    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
@@ -1716,4 +1717,22 @@ fn session_summary_md(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> 
 /// `GET /sessions/<id>/transcript.md`
 fn session_transcript_md(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
     session_md_download(cfg, uri, headers, id, "transcript")
+}
+
+/// `GET /api/hover-preview/config` (app/main.py `hover_preview_config`): the instance-wide hover settings, fetched by
+/// base.html on every page load (signed-in; the values match the layout's own hover context)
+fn hover_preview_config(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let _p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let s = crate::layout::app_settings_row_pub(&db)?;
+    let truthy = |k: &str| crate::edits::py_truthy_pub(s.get(k));
+    let num = |k: &str, d: i64| s.get(k).and_then(|v| v.as_i64()).filter(|n| *n != 0).unwrap_or(d);
+    crate::edits::json_response(&json!({
+        "enabled": truthy("hover_preview_enabled"),
+        "delay_ms": num("hover_preview_delay_ms", 5000),
+        "hide_delay_ms": s.get("hover_preview_hide_delay_ms").and_then(|v| v.as_i64()).unwrap_or(400),
+        "width_px": num("hover_preview_width_px", 340),
+        "max_height_px": num("hover_preview_max_height_px", 420),
+    }))
 }

@@ -517,7 +517,7 @@ async fn quest_sync_task(cfg: Arc<Config>, b: Backend, wid: i64, session_id: Opt
             material = take(&t, 8000);
         }
         if let (true, Some(gs)) = (material.is_empty(), gs.as_ref()) {
-            let num = gs.get("session_num").map(|v| match v { Value::Null => "None".to_string(), other => py_str(other) }).unwrap_or_else(|| "None".into());
+            let num = gs.get("session_num").map(|v| match v { Value::Null => "None".to_string(), other => py_str(&other) }).unwrap_or_else(|| "None".into());
             material = format!("Session #{num}: {}", gs.get("title").and_then(|v| v.as_str()).unwrap_or(""));
         }
         let mut st = db.prepare("SELECT id, status, category, title, summary FROM quests WHERE world_id = ?1 ORDER BY title").map_err(|e| e.to_string())?;

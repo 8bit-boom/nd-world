@@ -4424,3 +4424,37 @@ def test_schematic_new_and_ai_new_pages_are_pythons(client, seed):
         a, b = d.post("/maps/schematic/new", data=data), _via(d, base).post("/maps/schematic/new", data=data)
         assert a.status_code == b.status_code == code, (data, a.status_code, b.status_code)
         assert b.headers.get("x-nd-served-by") != "gateway" or code != 422
+
+
+def test_hover_preview_config_is_pythons(client, seed):
+    """GET /api/hover-preview/config from the gateway: the instance-wide hover settings exactly as Python answers them -
+    every flag flipped, including the null-vs-zero distinction on the hide delay."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import AppSettings
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    served = 0
+    # (enabled, delay, hide, width, height) - None keeps the column NULL
+    for cfgrow in ((0, None, None, None, None), (1, 250, 0, 200, 100), (1, None, None, None, None)):
+        db = SessionLocal()
+        try:
+            s = db.get(AppSettings, 1)
+            s.hover_preview_enabled = cfgrow[0]
+            s.hover_preview_delay_ms = cfgrow[1]
+            s.hover_preview_hide_delay_ms = cfgrow[2]
+            s.hover_preview_width_px = cfgrow[3]
+            s.hover_preview_max_height_px = cfgrow[4]
+            db.commit()
+        finally:
+            db.close()
+        a, b = d.get("/api/hover-preview/config"), v.get("/api/hover-preview/config")
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), cfgrow
+        assert a.content == b.content, (cfgrow, a.text, b.text)
+        assert b.headers.get("x-nd-served-by") == "gateway", cfgrow
+        served += 1
+    assert served == 3
+    # the last row's state: enabled, every other column back to NULL (the defaults)
+    j = d.get("/api/hover-preview/config").json()
+    assert j == {"enabled": True, "delay_ms": 5000, "hide_delay_ms": 400, "width_px": 340, "max_height_px": 420}, j
