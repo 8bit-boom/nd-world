@@ -277,8 +277,8 @@
 2/4        POST /api/characters/{}/hub/keepsakes/{}
 2/3        POST /api/combat/{}/sync-characters
 2/24       POST /api/entities/bulk-folder
-2/1        POST /api/maps/schematic/gw-sc-b741be19751e/buy-item
-2/1        POST /api/maps/schematic/gw-sc-cddf2fdb2b05/pickup-item
+2/1        POST /api/maps/schematic/gw-sc-a47891f9dc24/pickup-item
+2/1        POST /api/maps/schematic/gw-sc-b0a1fe4d6c25/buy-item
 2/5        POST /api/media-rename/suggest
 2/9        POST /api/parties/{}/launch-combat
 2/1        POST /api/sessions/ai/summarize-from-audio
@@ -367,6 +367,7 @@
 1/6        GET /entity-templates/{}/edit
 1/7        GET /export/book.zip
 1/9        GET /kind/character
+1/2        GET /kind/item/download-selected.zip
 1/1        GET /map-tiles/k-1/{}/0_-1.webp
 1/1        GET /maps/schematic/ed-b
 1/1        GET /maps/schematic/ed-none
@@ -409,7 +410,7 @@
 1/1        POST /api/sessions/{}/ai/summarize-live-transcript
 1/4        POST /api/sessions/{}/live-transcript/clear
 1/5        POST /api/sessions/{}/media/audio/{}/rename
-1/1        POST /api/sessions/{}/media/image/06012be18e/visibility
+1/1        POST /api/sessions/{}/media/image/78cb171a75/visibility
 1/5        POST /api/sessions/{}/media/image/img1/rename
 1/2        POST /api/sessions/{}/media/image/own1/remove
 1/3        POST /api/sessions/{}/media/video/{}/rename
