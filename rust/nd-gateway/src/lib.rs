@@ -39,6 +39,7 @@ pub mod form;
 pub mod gallery;
 pub mod home;
 pub mod hub;
+pub mod importer;
 pub mod imaging;
 pub mod markup;
 pub mod layout;
@@ -259,6 +260,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/import/detect" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        // the importer's read-only sniff (app/routers/importer.py)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = importer::detect(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/rules-and-notes.md" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());

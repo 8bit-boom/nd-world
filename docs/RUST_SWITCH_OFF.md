@@ -72,6 +72,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The importer's detection** (`POST /api/import/detect`, importer.rs `detect_kind`): every sniff branch byte for byte -
+  the batch envelope and its Counter-ordered breakdown, world rules, map overlays, schematic elements (both shapes),
+  random tables (list and single), field templates (both shapes), entities and player characters (bulk and single, the
+  world's custom kinds recognized, the fuzzy PC key markers), the unknown fallback. An inner text json.loads refuses (or
+  reads differently) stays Python's own "invalid" answer, message included.
 - **The per-kind entity zips** (`GET /kind/<kind>/download.zip`, `/download-selected.zip`, apis.rs `kind_download_zip`):
   one .md per entity - the same text the single-entity download writes (`entity_markdown`, now shared by both) - the
   name sanitized with the id appended, visibility and the download toggle enforced, the picked ids honored (a hidden id

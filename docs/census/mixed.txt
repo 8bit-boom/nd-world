@@ -174,6 +174,7 @@
 4/6        POST /api/characters/{}/hub/end-turn
 4/5        POST /api/entity/{}/send-to-player
 4/5        POST /api/facts/parse-job
+4/23       POST /api/import/detect
 4/3        POST /api/media-rename/runs
 4/1        POST /api/media-rename/undo
 4/27       POST /api/quests/apply
@@ -277,8 +278,8 @@
 2/4        POST /api/characters/{}/hub/keepsakes/{}
 2/3        POST /api/combat/{}/sync-characters
 2/24       POST /api/entities/bulk-folder
-2/1        POST /api/maps/schematic/gw-sc-a47891f9dc24/pickup-item
-2/1        POST /api/maps/schematic/gw-sc-b0a1fe4d6c25/buy-item
+2/1        POST /api/maps/schematic/gw-sc-1bec9171ebf3/buy-item
+2/1        POST /api/maps/schematic/gw-sc-3bffd239cfbe/pickup-item
 2/5        POST /api/media-rename/suggest
 2/9        POST /api/parties/{}/launch-combat
 2/1        POST /api/sessions/ai/summarize-from-audio
@@ -410,7 +411,7 @@
 1/1        POST /api/sessions/{}/ai/summarize-live-transcript
 1/4        POST /api/sessions/{}/live-transcript/clear
 1/5        POST /api/sessions/{}/media/audio/{}/rename
-1/1        POST /api/sessions/{}/media/image/78cb171a75/visibility
+1/1        POST /api/sessions/{}/media/image/c5f41bc8f9/visibility
 1/5        POST /api/sessions/{}/media/image/img1/rename
 1/2        POST /api/sessions/{}/media/image/own1/remove
 1/3        POST /api/sessions/{}/media/video/{}/rename
