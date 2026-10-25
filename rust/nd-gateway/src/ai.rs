@@ -1349,7 +1349,7 @@ pub fn resume_assist_job(db: &rusqlite::Connection, id: i64, reset_attempts: boo
             let transcribing = cp.as_deref().is_some_and(|c| c.contains("\"phase\": \"transcribe\""));
             if audio.as_deref().is_some_and(|a| !a.is_empty()) && (transcript.as_deref().unwrap_or("").is_empty() || transcribing) {
                 crate::orm::update(db, "audio_jobs", id, &[("status", Sql::Text("transcribing".into()))])?;
-                start_audio_job(id)
+                start_audio_job_pub(id)
             } else {
                 start_text_recap_job(id)
             }
@@ -2969,11 +2969,11 @@ fn audio_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
 /// `POST /api/sessions/ai/audio-jobs/from-clip` and `/complete`: {job_id}, the recording transcribed and recapped here
 pub async fn audio_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
     let id = tokio::task::spawn_blocking(move || audio_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;
-    start_audio_job(id);
+    start_audio_job_pub(id);
     crate::edits::json_response(&json!({"job_id": id}))
 }
 
-fn start_audio_job(id: i64) {
+pub(crate) fn start_audio_job_pub(id: i64) {
     crate::jobs::spawn("audio_jobs", id, async move {
         run_audio_job(id).await;
         crate::jobs::Ended::Final
@@ -2987,12 +2987,16 @@ async fn run_audio_job(id: i64) {
     let Some(cfg) = crate::jobs::cfg() else { return };
     use rusqlite::types::Value as Sql;
     let c = cfg.clone();
-    let row = tokio::task::spawn_blocking(move || {
+    let row = tokio::task::spawn_blocking(move || -> Option<_> {
         let db = crate::writes::open(&c)?;
-        db.query_row("SELECT audio_path, delete_after, transcript, checkpoint_json FROM audio_jobs WHERE id = ?1", [id],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))).ok()
+        db.query_row("SELECT audio_path, delete_after, transcript, checkpoint_json, purpose FROM audio_jobs WHERE id = ?1", [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?))).ok()
     }).await.ok().flatten();
-    let Some((audio, delete_after, transcript, checkpoint)) = row else { return };
+    let Some((audio, delete_after, transcript, checkpoint, purpose)) = row else { return };
+    let write = |fields: Vec<(&'static str, Sql)>| {
+        let c = cfg.clone();
+        std::thread::spawn(move || { if let Some(db) = crate::writes::open(&c) { crate::orm::update(&db, "audio_jobs", id, &fields); } }).join().ok();
+    };
     let audio = audio.filter(|a| !a.is_empty()).map(std::path::PathBuf::from);
     let checkpoint = checkpoint.filter(|c| !c.is_empty()).and_then(|c| serde_json::from_str::<Value>(&c).ok());
     let in_transcribe = checkpoint.as_ref().and_then(|c| c.get("phase")).and_then(|p| p.as_str()) == Some("transcribe");
@@ -3038,6 +3042,12 @@ async fn run_audio_job(id: i64) {
             }
             Ok(t) => write(vec![("transcript", Sql::Text(t)), ("chunk_current", Sql::Null), ("chunk_total", Sql::Null), ("checkpoint_json", Sql::Text(String::new()))]),
         }
+    }
+    if purpose.as_deref() == Some("attachment") {
+        // purpose="attachment" only transcribes: done now, no summarization afterwards
+        write(vec![("status", Sql::Text("done".into())), ("finished_at", Sql::Text(crate::orm::now_stamp()))]);
+        remove_audio();
+        return;
     }
     text_recap_body(id).await;
     remove_audio();
