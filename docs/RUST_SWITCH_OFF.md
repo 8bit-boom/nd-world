@@ -72,6 +72,12 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The importer's execution, first branches** (`POST /api/import/execute`, importer.rs `execute_import`): `world_rules`,
+  `random_table` (one or several, the "Imported Table" default, category / description as Python's `str()` spells them),
+  and `entity_single` / `entity_bulk` (`_create_entity` with the template resolved id > slug > name, the custom fields
+  JSON-ified, Python's ValueError messages word for word, "Entity #N:" for a bulk failure) - one transaction per request,
+  Python's messages or the redirect; the remaining branches (map overlays, schematics, field templates, player
+  characters, the batch envelope) still Python's.
 - **The importer's detection** (`POST /api/import/detect`, importer.rs `detect_kind`): every sniff branch byte for byte -
   the batch envelope and its Counter-ordered breakdown, world rules, map overlays, schematic elements (both shapes),
   random tables (list and single), field templates (both shapes), entities and player characters (bulk and single, the

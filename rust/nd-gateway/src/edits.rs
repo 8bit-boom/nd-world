@@ -846,6 +846,10 @@ fn fact_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 /// `_slugify`: lowercase ASCII words joined by "-", at most 50 characters, unique over every table ("-2", "-3", ...); None for a non-ASCII
 /// name (Python lowercases first, which can turn a non-ASCII letter into an ASCII one)
+pub fn table_slug_pub(db: &Connection, name: &str) -> Option<String> {
+    table_slug(db, name)
+}
+
 fn table_slug(db: &Connection, name: &str) -> Option<String> {
     if !name.is_ascii() {
         return None;
