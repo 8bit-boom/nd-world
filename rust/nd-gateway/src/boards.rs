@@ -16,7 +16,7 @@ use crate::layout::PageCtx;
 use crate::pages::{render_with, section_ok, Pages};
 
 /// The board named by `/boards/<slug>[/rest]` of the viewer's active world, with the page context
-fn board(cfg: &Config, uri: &Uri, headers: &HeaderMap, rest: &str, check_section: bool) -> Option<(Connection, PageCtx, Map<String, Value>, String)> {
+fn board(cfg: &Config, uri: &Uri, headers: &HeaderMap, rest: &str, check_section: bool) -> Option<Result<(Connection, PageCtx, Map<String, Value>, String), ()>> {
     let tail = uri.path().strip_prefix("/boards/")?;
     let slug = tail.strip_suffix(rest)?;
     if slug.is_empty() || slug == "new" || !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
@@ -26,14 +26,18 @@ fn board(cfg: &Config, uri: &Uri, headers: &HeaderMap, rest: &str, check_section
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
     let world = p.world.clone()?;
-    let b = db.query_row("SELECT * FROM invest_boards WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    let b = db.query_row("SELECT * FROM invest_boards WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok();
+    let Some(b) = b else {
+        // Python: no board by that slug is the same 404 as no world access - answered here too
+        return Some(Err(()));
+    };
     if b.get("world_id")?.as_i64() != world.get("id")?.as_i64() {
         return None;
     }
     if check_section && !section_ok(&p, Some(&world), "boards")? {
         return None;
     }
-    Some((db, p, b, slug.to_string()))
+    Some(Ok((db, p, b, slug.to_string())))
 }
 
 fn loads(b: &Map<String, Value>, col: &str, default: &str) -> Option<Value> {
@@ -52,7 +56,10 @@ fn nodes_and_groups(b: &Map<String, Value>) -> Option<(Value, Value)> {
 
 /// `GET /boards/<slug>` (app/main.py `board_view`)
 pub fn board_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
-    let (db, mut p, b, _) = board(cfg, uri, headers, "", true)?;
+    let (db, mut p, b, _) = match board(cfg, uri, headers, "", true)? {
+        Ok(v) => v,
+        Err(()) => return Some(crate::idpages::refusal(404)),
+    };
     let wid = b.get("world_id")?.as_i64()?;
     let mut st = db.prepare("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY id").ok()?;
     let ents = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
@@ -91,7 +98,10 @@ fn truthy(v: Option<&Value>) -> Option<&Value> {
 
 /// `GET /boards/<slug>/notes` (app/main.py `board_notes`): the nodes as a reading list
 pub fn board_notes(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
-    let (_db, mut p, b, _) = board(cfg, uri, headers, "/notes", true)?;
+    let (_db, mut p, b, _) = match board(cfg, uri, headers, "/notes", true)? {
+        Ok(v) => v,
+        Err(()) => return Some(crate::idpages::refusal(404)),
+    };
     let (nodes, _) = nodes_and_groups(&b)?;
     let nodes = nodes.as_array()?.clone();
     let edges = loads(&b, "edges_json", "[]")?;

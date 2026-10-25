@@ -1100,6 +1100,11 @@ def test_map_list_the_gateway_builds_is_pythons(client, seed):
         shutil.rmtree(tiles, ignore_errors=True)
     # a map picture without a fresh small copy is Python's (it queues one), so gw-a's list card and viewer stay with Python here
     assert served >= 6, served
+    # an unknown map slug's 404 is the gateway's own
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    a, b = d.get("/maps/nope"), _via(d, base).get("/maps/nope")
+    assert (a.status_code, a.json()) == (b.status_code, b.json()) == (404, {"detail": "Not Found"})
+    assert b.headers.get("x-nd-served-by") == "gateway"
 
 
 def test_board_pages_the_gateway_builds_are_pythons(client, seed):
@@ -1137,6 +1142,12 @@ def test_board_pages_the_gateway_builds_are_pythons(client, seed):
             served[u] += _same_page(d, via, u, email)
     must = [f"/boards/{s}{r}" for s in ("gw-case", "gw-empty", "gw-legacy") for r in ("", "/notes")]  # /export stays Python's
     assert all(served[u] for u in must), served
+    # an unknown slug's 404 is the gateway's own, both pages
+    dg = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for u in ("/boards/nope", "/boards/nope/notes"):
+        a, b = dg.get(u), _via(dg, base).get(u)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()) == (404, {"detail": "Not Found"}), u
+        assert b.headers.get("x-nd-served-by") == "gateway", u
 
 
 def test_rules_page_the_gateway_builds_is_pythons(client, seed):

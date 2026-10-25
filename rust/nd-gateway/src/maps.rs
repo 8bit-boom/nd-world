@@ -146,11 +146,14 @@ pub fn map_viewer(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
         return None;
     }
     let jf = maps_dir(cfg)?.join(format!("{slug}.json"));
-    let data: Value = serde_json::from_str(&std::fs::read_to_string(&jf).ok()?).ok()?;
-    let Value::Object(data) = data else { return None };
+    // Python: a missing json, or one _map_data cannot read, is a 404 (after its auth gate) - the same answer
+    let raw = std::fs::read_to_string(&jf);
+    let data: Option<Value> = raw.ok().and_then(|t| serde_json::from_str(&t).ok());
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Some(data) = data else { return Some(crate::idpages::refusal(404)) };
+    let Value::Object(data) = data else { return Some(crate::idpages::refusal(404)) };
     let world = p.world.clone()?;
     let wid = world.get("id")?.as_i64()?;
     let owner = match data.get("world_id") {
