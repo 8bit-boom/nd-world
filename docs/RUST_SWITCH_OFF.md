@@ -72,6 +72,10 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The rules-and-notes export** (`GET /export/rules-and-notes.md`, export.rs `rules_and_notes`): the world's rules (legacy
+  anchors stripped), its note entities (full text, hidden included, subtype tags) and every entity note grouped under its
+  entity - the same markdown Python writes, byte for byte, the final rstrip included; a kind or name beyond the ASCII this
+  plain-text writer promises stays Python's.
 - **The instance backup zip** (`GET /admin/backup.zip`, export.rs `admin_backup`): a VACUUM INTO snapshot of the database
   (taken next to the database, never inside the walked uploads tree), the manifest with the table counts, every uploaded
   file and map json under its prefix. The filename and the manifest's created_at are the build moment; the parity rule
