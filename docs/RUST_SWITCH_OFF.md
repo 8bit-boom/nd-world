@@ -72,6 +72,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The instance backup zip** (`GET /admin/backup.zip`, export.rs `admin_backup`): a VACUUM INTO snapshot of the database
+  (taken next to the database, never inside the walked uploads tree), the manifest with the table counts, every uploaded
+  file and map json under its prefix. The filename and the manifest's created_at are the build moment; the parity rule
+  compares the entries (the database by its logical dump - the two VACUUM INTO snapshots can differ physically), the
+  manifest with created_at normalized.
 - **The world book zip** (`GET /export/book.zip`, export.rs `book_zip`): the standalone HTML book (the entities by kind
   with their bodies rendered and the leading h1 dropped, their images bundled by basename, the boards, the maps with their
   marker counts, the rules with the legacy anchors stripped), zipped with the stylesheet. The zips' own bytes differ from
