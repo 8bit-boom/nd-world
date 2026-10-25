@@ -72,6 +72,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **A party Rest undone** (`POST /api/parties/<id>/rest/undo`, edits.rs `party_rest_undo`): the snapshot `/rest` returned put back on
   every member - PP / MP / Shock clamped as Python's `int()` reads them and, on a custom system, the custom fields its Rest touches;
   malformed entries skipped, Python's bad-body 400s answered, a bool id or a float in the stored member list left to Python.
+- **The world book zip** (`GET /export/book.zip`, export.rs `book_zip`): the standalone HTML book (the entities by kind
+  with their bodies rendered and the leading h1 dropped, their images bundled by basename, the boards, the maps with their
+  marker counts, the rules with the legacy anchors stripped), zipped with the stylesheet. The zips' own bytes differ from
+  Python's (its timestamps are its build moment) - the parity rule compares the entries, name for name and byte for byte,
+  with the owner-chosen markdown whitespace difference collapsed for index.html (docs/RUST_PAGES.md).
 - **The hover-preview settings read** (`GET /api/hover-preview/config`, apis.rs): the instance-wide flags and delays
   exactly as Python answers them, including the null-vs-zero distinction on the hide delay.
 - **The AI character creator page and a new schematic** (`GET /characters/ai-new`, pages.rs `characters_ai_new`: the world's
