@@ -80,7 +80,8 @@ Read this first, then `docs/RUST_SWITCH_OFF.md` (the phase 6 work list and what 
 ## Progress
 
 Census from the latest gateway suite (one full run, split into groups on one machine - scripts/run_group.sh):
-**400 route patterns answered only by the gateway, 445 mixed, 224 still Python-only.** Phase 6 steps:
+(The census counts of the latest run are inflated - the gates script deleted the wrong shard logs, so several runs
+accumulated; delete tests/_data/shard*/forwarded.log before the next full run for exact numbers.) Phase 6 steps:
 
 | Step | State |
 |---|---|
@@ -102,7 +103,9 @@ POST), the hover-preview config, the world book zip, the instance backup zip, th
 per-kind entity zips (`entity_markdown` shared by the single-entity download), and the importer's execution
 (`POST /api/import/execute`: detect's own branches + map_overlay, schematic_elements, field_template, player_character
 and player_character_bulk - `_normalize_pc_data`'s fuzzy key-fold, `_resolve_sheet_template`, the upsert-by-name through
-the ported `_apply_form`; the batch envelope still Python's). The zip exports' parity rule (Python's zips are
+the ported `_apply_form`; the batch envelope still Python's), and the world JSON restore (`POST /worlds/<id>/import`: the embedded data-URI
+image written back under a fresh uploads name, the upsert by (name, kind) with every field set outright - absent key
+NULL, explicit "" empty - the redirect counting created and updated). The zip exports' parity rule (Python's zips are
 timestamp-dependent): compare the extracted entries - files byte for byte, the backup's database by its logical dump,
 the book's index.html with the owner-chosen markdown whitespace collapsed.
 
@@ -120,7 +123,10 @@ Docker Desktop is gone from this machine; the dev loop runs in **WSL (Ubuntu-24.
 - `.zcode/dev/wsl_gates.sh` - cargo test + the whole suite through the gateway (4 shards). Use script files for anything
   with `$VARS`: the Git Bash layer expands them before wsl.exe sees them.
 
-Run all WSL commands with `MSYS_NO_PATHCONV=1` (Git Bash mangles `/mnt/...` paths otherwise). The census after the
+Run all WSL commands with `MSYS_NO_PATHCONV=1` (Git Bash mangles `/mnt/...` paths otherwise). The pair and gates
+scripts pin `TZ=UTC` - both servers must share a clock because Python reads naive datetimes as local time (a mixed
+TZ showed up as data-date diffs on every entity card). Node 22 is installed (`/root/node22`, symlinked as `node`) -
+the minifier test needs ESM auto-detection; WSL's stock node 18 rejects the minified ESM in a .js file. The census after the
 latest suite: `wsl ... /root/venv/bin/python scripts/census.py --write tests/_data/shard*/forwarded.log`.
 
 **Already ported since the census was taken (ignore in the list)**: the above plus `/api/view-prefs/site` and the unknown
