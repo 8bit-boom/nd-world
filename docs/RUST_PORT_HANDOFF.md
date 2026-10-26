@@ -130,7 +130,10 @@ the minifier test needs ESM auto-detection; WSL's stock node 18 rejects the mini
 latest suite: `wsl ... /root/venv/bin/python scripts/census.py --write tests/_data/shard*/forwarded.log`.
 
 **Already ported since the census was taken (ignore in the list)**: the above plus `/api/view-prefs/site` and the unknown
-`view-prefs` sections.
+`view-prefs` sections; the hub companions and live-audio reads; `POST /worlds/<id>/import`; `POST /api/import/detect`
+and `POST /api/import/execute` (all branches but the batch envelope). Two mixed-route systematic declines are also
+closed: a tables edit with unparseable entries JSON now resets to "[]" and answers 303 as Python does (a NaN payload
+still reaches Python - its loads accepts it), and a party edit by a viewer with no edit rights answers the plain 403.
 
 ## Left to port
 

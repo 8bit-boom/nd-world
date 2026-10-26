@@ -5236,3 +5236,63 @@ def test_hub_companions_and_live_audio_are_pythons(client, seed):
         assert "GM access required" in pb.get(f"/api/sessions/{sids[3]}/live-audio").text
     finally:
         pass
+def test_tables_edit_invalid_entries_fallback_is_pythons(client, seed):
+    """POST /tables/<id>/edit with entries_json that fails to parse: Python resets the entries to \"[]\" and answers 303 -
+    the gateway now does the same (the row compared); a NaN payload (Python's loads ACCEPTS it) still reaches Python, the
+    stored text intact; a valid payload unchanged."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import RandomTable
+    from tests.test_gateway_writes import _row_by
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        t = RandomTable(world_id=w, name="Fb Table", slug="fb-table", category="general",
+                        entries_json=json.dumps([{"label": "keep"}]))
+        db.add(t)
+        db.commit()
+        tid = t.id
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    served = 0
+    # (entries_json payload, the entries the row must hold afterwards) - run on Python, reset the row, run via the gateway
+    cases = [
+        ("not json at all", "[]"),
+        ('{"a": 1', "[]"),
+        ("[1, 2,]", "[]"),
+        ("just a string", "[]"),  # bare words are not valid JSON: Python resets here too
+        ('[{"label": "ok", "weight": 2}]', '[{"label": "ok", "weight": 2}]'),
+    ]
+    for raw, expect in cases:
+        out = []
+        for side in (d, v):
+            # reset the row between the two sides
+            db = SessionLocal()
+            try:
+                db.get(RandomTable, tid).entries_json = json.dumps([{"label": "keep"}])
+                db.commit()
+            finally:
+                db.close()
+            r = side.post(f"/tables/{tid}/edit", data={"name": "Fb Table", "entries_json": raw}, follow_redirects=False)
+            row = _row_by("random_tables", "id", tid)
+            out.append((r.status_code, r.headers.get("location"), row["entries_json"], r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (raw, out)
+        assert json.loads(out[1][2]) == json.loads(expect), (raw, out[0][2], out[1][2])
+        served += out[1][3] == "gateway"
+    # a NaN payload: Python's json.loads ACCEPTS it and stores the text - the gateway forwards, Python answers
+    db = SessionLocal()
+    try:
+        db.get(RandomTable, tid).entries_json = json.dumps([{"label": "keep"}])
+        db.commit()
+    finally:
+        db.close()
+    a = d.post(f"/tables/{tid}/edit", data={"name": "Fb Table", "entries_json": '[{"w": NaN}]'}, follow_redirects=False)
+    row_a = _row_by("random_tables", "id", tid)
+    b = v.post(f"/tables/{tid}/edit", data={"name": "Fb Table", "entries_json": '[{"w": NaN}]'}, follow_redirects=False)
+    row_b = _row_by("random_tables", "id", tid)
+    assert a.status_code == b.status_code == 303 and row_a["entries_json"] == row_b["entries_json"] == '[{"w": NaN}]'
+    assert b.headers.get("x-nd-served-by") != "gateway"
+    assert served >= 3, served

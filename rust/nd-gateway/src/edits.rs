@@ -911,8 +911,15 @@ fn entries_json(f: &Form) -> Option<String> {
         None | Some("") => "[]",
         Some(v) => v,
     };
-    serde_json::from_str::<Value>(raw).ok()?;
-    Some(raw.to_string())
+    if serde_json::from_str::<Value>(raw).is_ok() {
+        return Some(raw.to_string());
+    }
+    // Python: json.loads fails -> raw_entries = "[]" (a 303 with the table's entries reset). But Python's loads ACCEPTS
+    // NaN / Infinity where serde fails - there the stored text would differ, so that case stays Python's.
+    if raw.contains("NaN") || raw.contains("Infinity") {
+        return None;
+    }
+    Some("[]".to_string())
 }
 
 fn table_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
@@ -1892,7 +1899,7 @@ fn party_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let world = p.get("world_id")?.as_i64()?;
     let mut cols: Vec<(&str, Sql)> = vec![("notes", s(&strip(f.get("notes").unwrap_or("")))), ("goals", s(&strip(f.get("goals").unwrap_or(""))))];
     match level {
-        "none" => return None,
+        "none" => return Some(crate::idpages::refusal(403)), // Python's HTTPException(403): the viewer may not edit this party at all
         "full" => {
             if !c.p.is_gm {
                 return None; // an assistant's view of hidden companions (filter_visible_entities): Python's

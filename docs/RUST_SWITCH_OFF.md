@@ -31,6 +31,10 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **Two systematic mixed-route declines closed**: a tables edit whose entries JSON fails to parse now resets the
+  entries to "[]" and answers 303 as Python does (Python's json.loads ACCEPTS NaN / Infinity where serde fails - that
+  payload still reaches Python so the stored text cannot diverge); and a party edit by a viewer with no edit rights at
+  all ("none") answers Python's plain 403 instead of forwarding.
 - **Hub companions and live-audio reads** (`GET /api/characters/<id>/hub/companions`, `GET /api/sessions/<id>/live-audio`):
   the companions bare with the kind list (the _hub_pc gate's 404s answered), the raw recording's segments with their
   total disk size (a corrupt list degrades to nothing, a mixed-type list str()'d, the record's own world's sessions
