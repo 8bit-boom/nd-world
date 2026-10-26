@@ -18,3 +18,4 @@ static/map_tiles/
 
 # Rust gateway build output
 rust/target/
+.zcode/
