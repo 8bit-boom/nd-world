@@ -2948,6 +2948,10 @@ fn form_text(f: &Form, k: &str, d: &str) -> String {
 }
 
 /// `_apply_form(pc, data, partial)`: the columns to write (`cur` = the stored row, empty for a new character)
+pub fn apply_pc_form_pub(db: &Connection, f: &Form, cur: &Map<String, Value>, partial: bool) -> Option<Vec<(&'static str, Sql)>> {
+    apply_pc_form(db, f, cur, partial)
+}
+
 fn apply_pc_form(db: &Connection, f: &Form, cur: &Map<String, Value>, partial: bool) -> Option<Vec<(&'static str, Sql)>> {
     let has = |k: &str| !partial || f.has(k);
     let text_col = |k: &str| cur.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
