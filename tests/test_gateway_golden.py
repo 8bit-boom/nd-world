@@ -5166,3 +5166,73 @@ def test_world_import_is_pythons(client, seed):
     a, b = d.post(f"/worlds/{seed.world_a.id}/import", files={"file": ("x.json", b"not json", "application/json")}, follow_redirects=False), \
         v.post(f"/worlds/{seed.world_a.id}/import", files={"file": ("x.json", b"not json", "application/json")}, follow_redirects=False)
     assert (a.status_code, a.text) == (b.status_code, b.text) == (400, '{"detail":"Invalid JSON file"}'), (a.status_code, b.status_code)
+def test_hub_companions_and_live_audio_are_pythons(client, seed):
+    """GET /api/characters/<id>/hub/companions and GET /api/sessions/<id>/live-audio from the gateway: the companions and
+    the kind list (a stranger 404 as _hub_pc 404s), the raw segments with their total disk size (a corrupt
+    live_audio_files_json degrades to nothing, as Python's does); another world's session 404."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import CharacterCompanion, GameSession, PlayerCharacter
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=w, owner_user_id=seed.player_a.id, name="Comp")
+        stranger = PlayerCharacter(world_id=w, owner_user_id=None, name="Nobody's")
+        over = PlayerCharacter(world_id=seed.world_b.id, owner_user_id=seed.player_b.id, name="Else")
+        db.add_all([pc, stranger, over])
+        db.flush()
+        db.add_all([
+            CharacterCompanion(world_id=w, character_id=pc.id, name="Whiskers", kind="familiar", hp=3, hp_max=5, notes="cat"),
+            CharacterCompanion(world_id=w, character_id=pc.id, name="Rover", kind="mount"),
+        ])
+        db.add_all([
+            GameSession(world_id=w, title="S1", session_num=1, live_audio_files_json=json.dumps(["live/1/seg0.webm", "live/1/seg1.webm"])),
+            GameSession(world_id=w, title="S2", session_num=2, live_audio_files_json="{corrupt"),
+            GameSession(world_id=w, title="S3", session_num=3, live_audio_files_json=json.dumps(["gone.webm", 42, True, None])),
+            GameSession(world_id=seed.world_b.id, title="Over", session_num=1, live_audio_files_json=json.dumps(["x.webm"])),
+        ])
+        db.commit()
+        ids = (pc.id, stranger.id, over.id)
+        sids = [s.id for s in db.query(GameSession).order_by(GameSession.id).all()]
+    finally:
+        db.close()
+    data = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (data / "live" / "1").mkdir(parents=True, exist_ok=True)
+    (data / "live" / "1" / "seg0.webm").write_bytes(b"x" * 1000)
+    (data / "live" / "1" / "seg1.webm").write_bytes(b"y" * 500)
+    try:
+        d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        g = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        pb = _signed_in(seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)
+        urls = [f"/api/characters/{i}/hub/companions" for i in ids + (999999,)] + \
+               [f"/api/sessions/{i}/live-audio" for i in sids + [999999]]
+        for c in (d, g, pb):
+            for url in urls:
+                a, b = c.get(url), _via(c, base).get(url)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (url, a.status_code, a.text[:120], b.text[:120])
+        served = sum(1 for c in (d, g) for url in urls if _via(c, base).get(url).headers.get("x-nd-served-by") == "gateway")
+        assert served >= 8, served
+        # the companions really come back newest-last with every column
+        j = d.get(f"/api/characters/{ids[0]}/hub/companions").json()
+        assert j["kinds"] == ["familiar", "hireling", "mount", "vehicle", "other"], j
+        assert [(x["name"], x["kind"]) for x in j["companions"]] == [("Whiskers", "familiar"), ("Rover", "mount")], j
+        assert j["companions"][0]["hp"] == 3 and j["companions"][0]["hp_max"] == 5 and j["companions"][0]["notes"] == "cat", j
+        # a stranger's character: the same 404
+        assert d.get(f"/api/characters/{ids[1]}/hub/companions").status_code == 404
+        assert g.get(f"/api/characters/{ids[1]}/hub/companions").status_code == 200
+        assert pb.get(f"/api/characters/{ids[2]}/hub/companions").status_code == 200
+        # live-audio (the GM's: sessions is not player-readable by default - the player's 403 above held): the segments
+        # in order with the real total, a corrupt list empty, the mixed-type list str()'d
+        j = g.get(f"/api/sessions/{sids[0]}/live-audio").json()
+        assert j == {"files": ["live/1/seg0.webm", "live/1/seg1.webm"], "count": 2, "total_bytes": 1500}, j
+        assert g.get(f"/api/sessions/{sids[1]}/live-audio").json() == {"files": [], "count": 0, "total_bytes": 0}
+        j = g.get(f"/api/sessions/{sids[2]}/live-audio").json()
+        assert j["files"] == ["gone.webm", "42", "True", "None"] and j["count"] == 4 and j["total_bytes"] == 0, j
+        # players never reach the handler at all: the auth gate 403s the path (GM access required) - answered by
+        # Python on both sides
+        assert d.get(f"/api/sessions/{sids[3]}/live-audio").status_code == 403
+        assert pb.get(f"/api/sessions/{sids[3]}/live-audio").status_code == 403
+        assert "GM access required" in pb.get(f"/api/sessions/{sids[3]}/live-audio").text
+    finally:
+        pass

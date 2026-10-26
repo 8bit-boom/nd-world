@@ -31,6 +31,19 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **Hub companions and live-audio reads** (`GET /api/characters/<id>/hub/companions`, `GET /api/sessions/<id>/live-audio`):
+  the companions bare with the kind list (the _hub_pc gate's 404s answered), the raw recording's segments with their
+  total disk size (a corrupt list degrades to nothing, a mixed-type list str()'d, the record's own world's sessions
+  level judged - players never reach the route: the auth gate 403s it on both sides). A GET slug route no longer lets
+  a POST-only ROUTES pattern on the same path shadow it (edits.rs run()).
+- **The world JSON restore** (`POST /worlds/<id>/import`, edits.rs `world_import`): a world export's entities restored -
+  the embedded data-URI image written back under a fresh uploads name (the allowed-extension floor), each entity
+  upserted by (name, kind) with every field set outright (absent key NULL, explicit "" empty), the template resolved
+  id > slug > name, the redirect counting created and updated.
+- **The importer** (`POST /api/import/detect`, `POST /api/import/execute`, importer.rs): every detection branch byte for
+  byte, and the execution's world_rules / random_table / entity_single / entity_bulk / map_overlay /
+  schematic_elements / field_template / player_character branches (Python's messages word for word, one transaction per
+  request); the batch envelope stays Python's.
 - **Authentication** (`auth` route switch): sign-in, two-step codes, trusted devices, the lockout, sign-out, the stale-session refresh
   and `auth_gate`'s refusals.
 - **Settings page** (`pages` switch): `GET /settings` (every tab) and `GET /settings/visibility-rows`. The cells that describe the

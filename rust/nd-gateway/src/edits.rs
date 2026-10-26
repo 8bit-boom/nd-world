@@ -542,6 +542,23 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     if path == "/api/ai/attachments/audio-jobs" && *method == Method::GET {
         return Some((attach_list_get as SlugHandler, String::new()));
     }
+    if path == "/api/sessions/{}/live-audio".replace("{}", "").as_str() && *method == Method::GET {
+        return Some((live_audio_get as SlugHandler, String::new()));
+    }
+    if let Some(id) = path.strip_prefix("/api/sessions/") {
+        if let Some(tail) = id.strip_suffix("/live-audio") {
+            if *method == Method::GET && !tail.is_empty() && tail.len() < 16 && tail.bytes().all(|b| b.is_ascii_digit()) && !(tail.len() > 1 && tail.starts_with('0')) {
+                return Some((live_audio_get as SlugHandler, tail.to_string()));
+            }
+        }
+    }
+    if let Some(id) = path.strip_prefix("/api/characters/") {
+        if let Some(tail) = id.strip_suffix("/hub/companions") {
+            if *method == Method::GET && !tail.is_empty() && tail.len() < 16 && tail.bytes().all(|b| b.is_ascii_digit()) && !(tail.len() > 1 && tail.starts_with('0')) {
+                return Some((companions_get as SlugHandler, tail.to_string()));
+            }
+        }
+    }
     if let Some(id) = path.strip_prefix("/api/ai/attachments/audio-jobs/") {
         if *method == Method::GET && !id.is_empty() && id.len() < 16 && id.bytes().all(|b| b.is_ascii_digit()) && !(id.len() > 1 && id.starts_with('0')) {
             return Some((attach_status_get as SlugHandler, id.to_string()));
@@ -570,14 +587,22 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
 }
 
 fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
-    let by_id = if method == Method::PUT { route_in(PUT_ROUTES, uri.path()) } else { route(uri.path()) };
-    let by_slug = if by_id.is_none() { view_route(method, uri.path()).or_else(|| if *method == Method::POST { slug_route(uri.path()) } else { None }) } else { None };
+    let mut by_id = if method == Method::PUT { route_in(PUT_ROUTES, uri.path()) } else { route(uri.path()) };
+    // a GET slug route must not be shadowed by a POST-only ROUTES pattern on the same path (route() ignores the
+    // method; every ROUTES handler declines a GET body, so preferring the slug route on GET changes nothing else)
+    let by_slug = if by_id.is_none() || *method == Method::GET { view_route(method, uri.path()).or_else(|| if *method == Method::POST { slug_route(uri.path()) } else { None }) } else { None };
+    if by_slug.is_some() {
+        by_id = None;
+    }
     if by_id.is_none() && by_slug.is_none() {
         return None;
     }
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
+    let p = match crate::layout::build(&db, cfg, method.as_str(), uri, headers, now) {
+        Some(p) => p,
+        None => return None,
+    };
     // One transaction per request, as Python's one commit: a handler that gives up part-way (returns None, and the request goes to
     // Python) must leave nothing behind, or Python would apply the same write a second time
     db.execute_batch(if *method == Method::GET { "BEGIN" } else { "BEGIN IMMEDIATE" }).ok()?;
@@ -13225,4 +13250,106 @@ fn resolve_entity_template(c: &Ctx, wid: i64, ent: &Map<String, Value>) -> Optio
         }
     }
     None
+}
+
+/// `GET /api/characters/<id>/hub/companions` (app/routers/character_hub.py `hub_companions`): the companions and the
+/// kind list (the hub_pc gate as hub.rs applies it)
+pub(crate) fn hub_companions(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    match hub_pc_row(c, ids[0])? {
+        Err(()) => Some(crate::idpages::refusal(404)),
+        Ok(_) => {
+            // hub_companions_json returns {"companions": [...]} (the panel's shape) - this route lists them bare
+            let list = hub_companions_json(c, ids[0])?.get("companions").cloned().unwrap_or(Value::Array(vec![]));
+            crate::edits::json_response(&json!({
+                "companions": list,
+                "kinds": ["familiar", "hireling", "mount", "vehicle", "other"],
+            }))
+        }
+    }
+}
+
+/// `_hub_pc` for a GET: the owning player, or a global GM looking in; anyone else - or no such row - Python's 404,
+/// answered here (Result's Err is that 404; None declines)
+fn hub_pc_row(c: &Ctx, id: i64) -> Option<Result<Map<String, Value>, ()>> {
+    let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", id) else {
+        return Some(Err(()));
+    };
+    let is_owner = pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id);
+    if !(is_owner || c.p.is_gm) {
+        return Some(Err(()));
+    }
+    let wid = pc.get("world_id")?.as_i64()?;
+    if !c.p.is_gm && c.db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, c.p.user_id], |_| Ok(())).is_err() {
+        return Some(Err(()));
+    }
+    Some(Ok(pc))
+}
+
+/// `_live_audio_files` (app/routers/sessions.py): the saved raw segment paths; an unreadable list is "nothing saved"
+fn live_audio_files(gs: &Map<String, Value>) -> Option<Vec<String>> {
+    let raw = gs.get("live_audio_files_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => {
+            let mut out = vec![];
+            for p in a {
+                match p {
+                    Value::String(t) => out.push(t.clone()),
+                    Value::Number(n) if n.as_i64().is_some() => out.push(n.as_i64().unwrap().to_string()),
+                    Value::Bool(b) => out.push(if b { "True".into() } else { "False".into() }),
+                    Value::Null => out.push("None".into()),
+                    _ => return None, // str() of a list / dict: Python's repr
+                }
+            }
+            Some(out)
+        }
+        Ok(_) => Some(vec![]),
+        Err(_) => Some(vec![]), // tolerant of corrupt JSON, as Python is
+    }
+}
+
+/// `GET /api/sessions/<id>/live-audio` (app/routers/sessions.py `api_live_audio_list`): the raw recording's segments and
+/// their total size on disk; the sessions read gate as row_world_visible applies it
+pub(crate) fn live_audio_list(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let Some(gs) = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", ids[0]) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let wid = gs.get("world_id")?.as_i64()?;
+    // _require_section's gate, judged by the membership of the RECORD'S world (not the active one): a non-member 404s,
+    // a member whose level here is not read-or-edit 403s; the role's own world must be known for the port to judge it
+    if !c.p.is_gm {
+        let role: Option<String> = c.db.query_row("SELECT role FROM world_memberships WHERE world_id = ?1 AND user_id = ?2",
+            [wid, c.p.user_id], |r| r.get(0)).ok();
+        let Some(role) = role else {
+            return Some(crate::idpages::refusal(404));
+        };
+        let role = if role == "assistant" || role == "owner" { "assistant" } else { "player" };
+        let world = c.db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
+        let level = nd_perm::sections::section_level(false, Some(role),
+            world.get("section_access_json").and_then(|v| v.as_str()),
+            world.get("custom_kinds_json").and_then(|v| v.as_str()), "sessions")?;
+        if level == "none" {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let files = live_audio_files(&gs)?;
+    let uploads = c.cfg.db_path.parent()?.join("uploads");
+    let mut total: i64 = 0;
+    for rel in &files {
+        if let Ok(md) = std::fs::metadata(uploads.join(rel)) {
+            total += md.len() as i64;
+        }
+    }
+    crate::edits::json_response(&json!({"files": files, "count": files.len(), "total_bytes": total}))
+}
+
+/// `GET /api/sessions/<id>/live-audio` / `GET /api/characters/<id>/hub/companions` through the Ctx machinery
+fn live_audio_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let id: i64 = slug.parse().ok()?;
+    live_audio_list(c, &[id])
+}
+
+/// `GET /api/characters/<id>/hub/companions` through the Ctx machinery
+fn companions_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let id: i64 = slug.parse().ok()?;
+    hub_companions(c, &[id])
 }
