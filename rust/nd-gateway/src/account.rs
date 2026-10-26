@@ -184,3 +184,107 @@ pub async fn password_change_srv(cfg: std::sync::Arc<Config>, pages: std::sync::
         _ => None,
     }
 }
+
+/// `POST /account/2fa/disable` (app/routers/account.py `account_2fa_disable`): the same counter, the password verified,
+/// then 2FA off - the secret, the backup codes and every trusted device gone (re-enabling later starts from a clean
+/// slate). A redirect when 2FA is not on; None (an unreadable form) forwards.
+pub fn twofa_disable(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap, form: &crate::form::Form) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let uid = p.user_id;
+    let user = db.query_row("SELECT * FROM users WHERE id = ?1", [uid], |r| crate::layout::row_map(r)).ok()?;
+    let stored = user.get("password_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let current = form.get("current_password").unwrap_or("");
+    if crate::edits::py_truthy_pub(user.get("totp_enabled")) {
+        if rl_lock_remaining(uid) > 0 {
+            let locked_for = rl_lock_remaining(uid);
+            let mut extra = Map::new();
+            extra.insert("status_code".into(), json!(429));
+            extra.insert("totp_error".into(), json!(format!("Too many failed attempts. Try again in {} minute(s).", locked_for / 60 + 1)));
+            return render(pages, cfg, &db, "POST", uri, headers, extra, StatusCode::TOO_MANY_REQUESTS);
+        }
+        if !crate::auth::verify_password(current, &stored) {
+            rl_record_failure(uid);
+            let mut extra = Map::new();
+            extra.insert("totp_error".into(), json!("Current password is incorrect."));
+            return render(pages, cfg, &db, "POST", uri, headers, extra, StatusCode::BAD_REQUEST);
+        }
+        rl_clear(uid);
+        crate::orm::update(&db, "users", uid, &[
+            ("totp_enabled", rusqlite::types::Value::Integer(0)),
+            ("totp_secret", rusqlite::types::Value::Null),
+            ("totp_backup_codes_json", rusqlite::types::Value::Text("[]".into())),
+        ])?;
+        db.execute("DELETE FROM trusted_devices WHERE user_id = ?1", [uid]).ok()?;
+    }
+    Some(crate::edits::redirect("/account?saved=2fa-off")?)
+}
+
+/// `POST /account/2fa/backup-codes/regenerate` (app/routers/account.py `account_2fa_regen_backup_codes`): 8 fresh codes,
+/// only their sha256 hashes stored, the plaintext shown once on the re-rendered account page
+pub fn twofa_regen(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap, form: &crate::form::Form) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let uid = p.user_id;
+    let user = db.query_row("SELECT * FROM users WHERE id = ?1", [uid], |r| crate::layout::row_map(r)).ok()?;
+    if !crate::edits::py_truthy_pub(user.get("totp_enabled")) {
+        return Some(crate::edits::redirect("/account")?);
+    }
+    let stored = user.get("password_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let current = form.get("current_password").unwrap_or("");
+    if rl_lock_remaining(uid) > 0 {
+        let locked_for = rl_lock_remaining(uid);
+        let mut extra = Map::new();
+        extra.insert("status_code".into(), json!(429));
+        extra.insert("totp_error".into(), json!(format!("Too many failed attempts. Try again in {} minute(s).", locked_for / 60 + 1)));
+        return render(pages, cfg, &db, "POST", uri, headers, extra, StatusCode::TOO_MANY_REQUESTS);
+    }
+    if !crate::auth::verify_password(current, &stored) {
+        rl_record_failure(uid);
+        let mut extra = Map::new();
+        extra.insert("totp_error".into(), json!("Current password is incorrect."));
+        return render(pages, cfg, &db, "POST", uri, headers, extra, StatusCode::BAD_REQUEST);
+    }
+    rl_clear(uid);
+    use rand::Rng;
+    let mut codes = vec![];
+    let mut hashes = vec![];
+    for _ in 0..8 {
+        let code: String = (0..10).map(|_| format!("{:x}", rand::thread_rng().gen_range(0..16))).collect();
+        hashes.push(json!(crate::auth::sha256_hex(&code))); // hash_backup_code: sha256 of the stripped, lowered code (hex is both)
+        codes.push(json!(code));
+    }
+    crate::orm::update(&db, "users", uid, &[("totp_backup_codes_json", rusqlite::types::Value::Text(nd_render::py_dumps(&Value::Array(hashes))))])?;
+    let mut extra = Map::new();
+    extra.insert("new_backup_codes".into(), Value::Array(codes));
+    render(pages, cfg, &db, "POST", uri, headers, extra, StatusCode::OK)
+}
+
+/// The async entries (parse the form, run, forward when the form itself is unreadable)
+pub async fn twofa_disable_srv(cfg: std::sync::Arc<Config>, pages: std::sync::Arc<Pages>, uri: Uri, headers: HeaderMap, body: bytes::Bytes)
+    -> Option<Response<Body>> {
+    let parsed = tokio::task::spawn_blocking(move || {
+        let form = crate::form::Form::parse(&body)?;
+        let answer = twofa_disable(&pages, &cfg, &uri, &headers, &form);
+        Some((form, answer))
+    }).await.ok().flatten();
+    match parsed {
+        Some((_, Some(resp))) => Some(resp),
+        _ => None,
+    }
+}
+
+pub async fn twofa_regen_srv(cfg: std::sync::Arc<Config>, pages: std::sync::Arc<Pages>, uri: Uri, headers: HeaderMap, body: bytes::Bytes)
+    -> Option<Response<Body>> {
+    let parsed = tokio::task::spawn_blocking(move || {
+        let form = crate::form::Form::parse(&body)?;
+        let answer = twofa_regen(&pages, &cfg, &uri, &headers, &form);
+        Some((form, answer))
+    }).await.ok().flatten();
+    match parsed {
+        Some((_, Some(resp))) => Some(resp),
+        _ => None,
+    }
+}

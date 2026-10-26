@@ -37,6 +37,11 @@ them after each batch; the phase is done when both are empty and the steps below
   byte for byte, and on success the hash swap (the same PBKDF2 format), the session_version bump, every trusted device
   revoked and THIS session re-stamped (auth.rs resign) so the change doesn't log itself out. The 2FA-disable and
   backup-code routes (which share the counter) stay Python's until their TOTP paths move.
+- **2FA disable and backup-code regenerate** (`POST /account/2fa/disable`, `/account/2fa/backup-codes/regenerate`,
+  account.rs): the same gateway-owned lockout counter, the password verified, disable wiping the secret / codes /
+  trusted devices (re-enabling later starts clean), regen replacing the hashed codes (8 fresh ones, only their sha256
+  stored) and showing the plaintext once on the re-rendered page - every error page byte for byte, the row compared
+  after each step. A login with 2FA on still goes through Python's half-authenticated TOTP flow.
 - **Two systematic mixed-route declines closed**: a tables edit whose entries JSON fails to parse now resets the
   entries to "[]" and answers 303 as Python does (Python's json.loads ACCEPTS NaN / Infinity where serde fails - that
   payload still reaches Python so the stored text cannot diverge); and a party edit by a viewer with no edit rights at

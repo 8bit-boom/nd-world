@@ -261,6 +261,24 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && matches!(req.uri().path(), "/account/2fa/disable" | "/account/2fa/backup-codes/regenerate")
+        && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let is_disable = parts.uri.path() == "/account/2fa/disable";
+        let (cfg, pages, uri, headers, b) = (app.cfg.clone(), app.pages.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        let answer = if is_disable {
+            account::twofa_disable_srv(cfg, pages, uri, headers, b).await
+        } else {
+            account::twofa_regen_srv(cfg, pages, uri, headers, b).await
+        };
+        if let Some(resp) = answer {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/account/password" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         // the password change with the gateway's own lockout counter (batch G: Python's in-memory counter is replaced)
         let (parts, body) = req.into_parts();

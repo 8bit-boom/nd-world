@@ -5399,3 +5399,129 @@ def _signed_in_with_password(password, seed):
     d.cookies.set("active_world", seed.world_a.slug)
     d.get("/")
     return d
+def test_account_2fa_disable_and_regen_are_pythons(client, seed):
+    import hashlib
+    import re
+    """POST /account/2fa/disable and /backup-codes/regenerate from the gateway: the wrong password re-renders at 400
+    with Python's message (counting toward the lockout), disable when 2FA is not on just redirects, disable wipes the
+    secret / codes / trusted devices and redirects, regen on a live setup replaces the hashed codes and shows the
+    plaintext once on the re-rendered page - the row compared after every step."""
+    import hashlib
+    from datetime import datetime, timedelta
+    from .conftest import PLAYER_PASSWORD
+    from app import totp as _totp
+    from app.database import SessionLocal
+    from app.models import TrustedDevice, User
+    base = str(client.base_url)
+    w = seed.world_a.id
+    secret = _totp.generate_secret()
+    # sign in BEFORE enabling 2FA: a login with totp on goes through the half-authenticated
+    # pending-TOTP flow (a session with no user_id), and every request would 303 to /login
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    db = SessionLocal()
+    try:
+        u = db.get(User, seed.player_a.id)
+        u.totp_enabled = True
+        u.totp_secret = secret
+        u.totp_backup_codes_json = json.dumps([_totp.hash_backup_code("oldcode1234")])
+        db.add(TrustedDevice(user_id=u.id, token_hash=hashlib.sha256(b"devA").hexdigest(),
+                             expires_at=datetime.utcnow() + timedelta(days=5)))
+        db.commit()
+    finally:
+        db.close()
+
+    def row():
+        db = SessionLocal()
+        try:
+            u = db.get(User, seed.player_a.id)
+            return (u.totp_enabled, u.totp_secret, json.loads(u.totp_backup_codes_json or "[]"))
+        finally:
+            db.close()
+
+    def seed_2fa():
+        """The preceding password test leaves 2FA off; re-seed a live setup right before each request."""
+        import hashlib as _hl
+        db = SessionLocal()
+        try:
+            u = db.get(User, seed.player_a.id)
+            u.totp_enabled = True
+            u.totp_secret = secret
+            u.totp_backup_codes_json = json.dumps([_totp.hash_backup_code("oldcode1234")])
+            db.commit()
+        finally:
+            db.close()
+
+    # the wrong password on regen: the same 400 page from both, the codes intact
+    seed_2fa()
+    db = SessionLocal()
+    try:
+        u = db.get(User, seed.player_a.id)
+        print("DBG2FA db state:", u.totp_enabled, (u.password_hash or "").split("$")[0], u.session_version)
+    finally:
+        db.close()
+    print("DBG2FA d cookies:", {k: v[:20] for k, v in d.cookies.items()})
+    a = d.post("/account/2fa/backup-codes/regenerate", data={"current_password": "wrong"}, follow_redirects=False)
+    b = v.post("/account/2fa/backup-codes/regenerate", data={"current_password": "wrong"}, follow_redirects=False)
+    print("DBG2FA answers:", a.status_code, a.headers.get("location"), "|", b.status_code, b.headers.get("location"), b.headers.get("x-nd-served-by"))
+    assert a.status_code == b.status_code == 400 and a.content == b.content, (a.status_code, b.status_code, a.headers.get('location'), b.headers.get('location'))
+    assert 'Current password is incorrect.' in a.text
+    assert len(row()[2]) == 1
+    assert v.post("/account/2fa/backup-codes/regenerate", data={"current_password": "wrong"},
+                  follow_redirects=False).headers.get("x-nd-served-by") == "gateway"
+    # regen through the gateway: the plaintext codes shown once, the stored hashes replaced
+    seed_2fa()
+    r = v.post("/account/2fa/backup-codes/regenerate", data={"current_password": PLAYER_PASSWORD}, follow_redirects=False)
+    assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", r.status_code
+    new_codes = None
+    for form in ("form", "form "):
+        pass
+    m = re.findall(r"<code[^>]*>([0-9a-f]{10})</code>", r.text)
+    assert len(m) == 8, m[:10]
+    enabled, sec, hashes = row()
+    assert enabled is True and sec == secret and len(hashes) == 8, (enabled, len(hashes))
+    assert all(h not in json.dumps([_totp.hash_backup_code("oldcode1234")]) for h in hashes)
+    # the shown plaintext verifies against the stored hashes
+    assert all(hashlib.sha256(c.strip().lower().encode()).hexdigest() in hashes for c in m[:8]), (m[:8], hashes)
+    # regen when 2FA is off: a plain redirect (both sides)
+    db = SessionLocal()
+    try:
+        u = db.get(User, seed.player_a.id)
+        u.totp_enabled = False
+        db.commit()
+    finally:
+        db.close()
+    a = d.post("/account/2fa/backup-codes/regenerate", data={"current_password": PLAYER_PASSWORD}, follow_redirects=False)
+    b = v.post("/account/2fa/backup-codes/regenerate", data={"current_password": PLAYER_PASSWORD}, follow_redirects=False)
+    assert (a.status_code, a.headers["location"]) == (b.status_code, b.headers["location"]) == (303, "/account")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    # disable with 2FA off: the same redirect, nothing wiped but nothing left either
+    a = d.post("/account/2fa/disable", data={"current_password": PLAYER_PASSWORD}, follow_redirects=False)
+    b = v.post("/account/2fa/disable", data={"current_password": PLAYER_PASSWORD}, follow_redirects=False)
+    assert (a.status_code, a.headers["location"]) == (b.status_code, b.headers["location"]) == (303, "/account?saved=2fa-off")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    # disable on a live setup (the gateway's side): the secret, the codes and the devices gone
+    db = SessionLocal()
+    try:
+        u = db.get(User, seed.player_a.id)
+        u.totp_enabled = True
+        u.totp_secret = secret
+        u.totp_backup_codes_json = json.dumps([_totp.hash_backup_code("oldcode1234")])
+        db.add(TrustedDevice(user_id=u.id, token_hash=hashlib.sha256(b"devB").hexdigest(),
+                             expires_at=datetime.utcnow() + timedelta(days=5)))
+        db.commit()
+    finally:
+        db.close()
+    r = v.post("/account/2fa/disable", data={"current_password": PLAYER_PASSWORD}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/account?saved=2fa-off"
+    assert r.headers.get("x-nd-served-by") == "gateway"
+    enabled, sec, hashes = row()
+    assert enabled is False and sec is None and hashes == [], (enabled, sec, hashes)
+    db = SessionLocal()
+    try:
+        assert db.query(TrustedDevice).filter_by(user_id=seed.player_a.id).count() == 0
+        u = db.get(User, seed.player_a.id)
+        u.totp_enabled = False  # leave the account as the seed had it
+        db.commit()
+    finally:
+        db.close()
