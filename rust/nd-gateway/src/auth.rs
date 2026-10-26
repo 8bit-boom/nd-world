@@ -22,6 +22,10 @@ const PBKDF2_ITERATIONS: u32 = 600_000;
 
 /// The PBKDF2 work factor: 600,000, or ND_PBKDF2_ITERATIONS - only for the test servers, which lower it as tests/serve.py lowers
 /// Python's (the stored hash does not record its own count)
+pub fn iterations_pub() -> u32 {
+    iterations()
+}
+
 fn iterations() -> u32 {
     static N: OnceLock<u32> = OnceLock::new();
     *N.get_or_init(|| std::env::var("ND_PBKDF2_ITERATIONS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(PBKDF2_ITERATIONS))
@@ -32,6 +36,10 @@ const TRUST_DAYS: i64 = 30;
 const SESSION_MAX_AGE: u64 = 14 * 24 * 3600;
 
 // ── passwords ────────────────────────────────────────────────────────────────
+
+pub fn pbkdf2_sha256_pub(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    pbkdf2_sha256(password, salt, iterations)
+}
 
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
     let prf = Hmac::<Sha256>::new_from_slice(password).expect("hmac key");
@@ -46,6 +54,10 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
         }
     }
     out
+}
+
+pub fn hex_pub(b: &[u8]) -> String {
+    hex(b)
 }
 
 fn hex(b: &[u8]) -> String {
@@ -589,7 +601,7 @@ mod tests {
 
 /// The session re-signed after `change`, as Starlette's SessionMiddleware sends a mutated session: the Set-Cookie
 /// line, or None when the request carries no readable session (the route is forwarded, Python answers instead).
-pub(crate) fn resign<F: FnOnce(&mut Map<String, Value>)>(cfg: &Config, headers: &HeaderMap, change: F) -> Option<String> {
+pub fn resign<F: FnOnce(&mut Map<String, Value>)>(cfg: &Config, headers: &HeaderMap, change: F) -> Option<String> {
     let secret = cfg.secret_key.as_deref()?;
     let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
     let value = crate::session::cookie(cookie, crate::session::COOKIE_NAME)?;

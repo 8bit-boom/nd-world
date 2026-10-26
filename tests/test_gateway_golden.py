@@ -5296,3 +5296,106 @@ def test_tables_edit_invalid_entries_fallback_is_pythons(client, seed):
     assert a.status_code == b.status_code == 303 and row_a["entries_json"] == row_b["entries_json"] == '[{"w": NaN}]'
     assert b.headers.get("x-nd-served-by") != "gateway"
     assert served >= 3, served
+def test_account_password_change_is_pythons(client, seed):
+    import hashlib
+    """POST /account/password from the gateway: the wrong current password re-renders the account page at 400 with
+    Python's message (and counts toward the lockout), a short new password and a confirm mismatch render 400, the
+    success swaps the hash, bumps session_version, revokes every trusted device, re-stamps THIS session (it stays
+    signed in; the other is logged out) and redirects; the lockout answers 429 with Python's message. Every error page
+    byte-for-byte Python's (the layout context included)."""
+    from .conftest import PLAYER_PASSWORD
+    from app import auth
+    from app.database import SessionLocal
+    from app.models import TrustedDevice
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add(TrustedDevice(user_id=seed.player_a.id, token_hash=hashlib.sha256(b"dev1").hexdigest(), expires_at=__import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(days=5)))
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def state():
+        db = SessionLocal()
+        try:
+            u = db.query(__import__("app.models", fromlist=["User"]).User).filter_by(id=seed.player_a.id).first()
+            devs = db.query(TrustedDevice).filter_by(user_id=seed.player_a.id).count()
+            return u.password_hash.split("$")[0], u.session_version, devs
+        finally:
+            db.close()
+
+    def same_page(a, b):
+        assert a.status_code == b.status_code, (a.status_code, b.status_code, a.text[:150], b.text[:150])
+        assert a.content == b.content, (a.status_code, a.text[:200], b.text[:200])
+
+    # error paths (the row must not change)
+    h0, sv0, dv0 = state()
+    for form, status in (({"current_password": "wrong", "new_password": "longenough1", "confirm_password": "longenough1"}, 400),
+                         ({"current_password": PLAYER_PASSWORD, "new_password": "short", "confirm_password": "short"}, 400),
+                         ({"current_password": PLAYER_PASSWORD, "new_password": "longenough1", "confirm_password": "different1"}, 400)):
+        a = d.post("/account/password", data=form, follow_redirects=False)
+        b = v.post("/account/password", data=form, follow_redirects=False)
+        assert a.status_code == b.status_code == status, (form, a.status_code, b.status_code)
+        same_page(a, b)
+    h1, sv1, dv1 = state()
+    assert h1 == h0 and sv1 == sv0 and dv1 == dv0, (h0, h1)
+    served = sum(1 for _ in (1,) if v.post("/account/password", data={"current_password": "wrong", "new_password": "longenough1", "confirm_password": "longenough1"}, follow_redirects=False).headers.get("x-nd-served-by") == "gateway")
+    assert served == 1
+
+    # success through the gateway: the hash changes, the version bumps, the devices are gone, THIS session stays
+    r = v.post("/account/password", data={"current_password": PLAYER_PASSWORD, "new_password": "brand-new-pw-1", "confirm_password": "brand-new-pw-1"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/account?saved=password", (r.status_code, r.headers.get("location"))
+    assert r.headers.get("x-nd-served-by") == "gateway"
+    h2, sv2, dv2 = state()
+    assert h2 != h0 and sv2 == sv0 + 1 and dv2 == 0, (h0, h2, sv0, sv2, dv2)
+    # THIS session re-stamped: a browser keeps the new cookie (the test's cookie copy shadows by domain, so replay
+    # the Set-Cookie explicitly)
+    new_session = r.headers["set-cookie"].split(";")[0]
+    fresh = httpx.Client(base_url=base, timeout=60)
+    fresh.cookies.set("session", new_session.split("=", 1)[1])
+    fresh.cookies.set("active_world", seed.world_a.slug)
+    page = fresh.get("/account")
+    assert page.status_code == 200 and page.headers.get("x-nd-served-by") == "gateway", (page.status_code, page.headers.get("x-nd-served-by"))
+    assert "brand-new-pw-1" not in page.text  # (a sanity no-op: the page is the account page, not an error)
+    fresh.close()
+    # the new password verifies
+    db = SessionLocal()
+    try:
+        u = db.query(__import__("app.models", fromlist=["User"]).User).filter_by(id=seed.player_a.id).first()
+        assert auth.verify_password("brand-new-pw-1", u.password_hash)
+    finally:
+        db.close()
+    # the direct client's old session was logged out (its session_version is stale) - Python 303s to the login
+    a = d.get("/account", follow_redirects=False)
+    assert a.status_code == 303 and "/login" in a.headers.get("location", ""), (a.status_code, a.headers.get("location"))
+    # a trusted device added after the change survives a wrong-password attempt but not another change
+    d2 = _signed_in_with_password("brand-new-pw-1", seed)
+    db = SessionLocal()
+    try:
+        db.add(TrustedDevice(user_id=seed.player_a.id, token_hash=hashlib.sha256(b"dev2").hexdigest(), expires_at=__import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(days=5)))
+        db.commit()
+    finally:
+        db.close()
+    a = d2.post("/account/password", data={"current_password": "brand-new-pw-1", "new_password": "another-pw-12", "confirm_password": "another-pw-12"}, follow_redirects=False)
+    assert a.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.query(TrustedDevice).filter_by(user_id=seed.player_a.id).count() == 0
+    finally:
+        db.close()
+    # restore the original password for later tests
+    v2 = _signed_in_with_password("another-pw-12", seed)
+    r = v2.post("/account/password", data={"current_password": "another-pw-12", "new_password": PLAYER_PASSWORD, "confirm_password": PLAYER_PASSWORD}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def _signed_in_with_password(password, seed):
+    import httpx
+    d = httpx.Client(base_url=DIRECT, timeout=60)
+    assert d.post("/login", data={"email": seed.player_a.email, "password": password, "next": "/"}, follow_redirects=False).status_code == 303
+    d.cookies.set("active_world", seed.world_a.slug)
+    d.get("/")
+    return d

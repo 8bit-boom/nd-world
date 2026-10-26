@@ -31,6 +31,12 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **The password change** (`POST /account/password`, account.rs `password_change`): the failed-attempt lockout with the
+  GATEWAY'S OWN counter (the in-memory Python counter it replaces at the switch - 8 wrong current passwords in 5 minutes
+  lock the change for 5), the current-password check, the length and confirm errors rendering the account page at 400
+  byte for byte, and on success the hash swap (the same PBKDF2 format), the session_version bump, every trusted device
+  revoked and THIS session re-stamped (auth.rs resign) so the change doesn't log itself out. The 2FA-disable and
+  backup-code routes (which share the counter) stay Python's until their TOTP paths move.
 - **Two systematic mixed-route declines closed**: a tables edit whose entries JSON fails to parse now resets the
   entries to "[]" and answers 303 as Python does (Python's json.loads ACCEPTS NaN / Infinity where serde fails - that
   payload still reaches Python so the stored text cannot diverge); and a party edit by a viewer with no edit rights at

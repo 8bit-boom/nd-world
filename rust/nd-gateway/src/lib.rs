@@ -261,6 +261,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/account/password" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        // the password change with the gateway's own lockout counter (batch G: Python's in-memory counter is replaced)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        match account::password_change_srv(app.cfg.clone(), app.pages.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            Some(resp) => return resp,
+            None => return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await,
+        }
+    }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/import/execute" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 4 << 20).await else {
