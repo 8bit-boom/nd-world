@@ -173,6 +173,11 @@ read the gateway's stderr.
 ### Must move only at the switch (Python keeps state in memory)
 
 - `POST /settings/system*`: Python caches the LLM override and Ollama tuning; they move with the gateway owning those caches.
+  DONE since that was written: `POST /settings/system` itself (settings_system.rs — URL validation, the number fields'
+  parse/bounds messages, use_mmap / gpu_preset fallbacks, the API-key leave/clear/replace rules, the server-env sanitizer
+  and the ollama.env writer, 400 re-renders through the shared page_context), `POST /settings/system/model-override` and
+  `/delete` (settings_overrides.rs). Still Python's: the Studio-key sub-route (its save verifies the key against Studio's
+  API live).
 - Any route whose Python handler uses an in-process cache (see `tests/inprocess_only.txt` for the caches tests know about).
 
 Done since that list was written: `POST /settings` and `/settings/resources` (edits.rs — the display / hover form and the

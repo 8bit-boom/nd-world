@@ -36,8 +36,10 @@ them after each batch; the phase is done when both are empty and the steps below
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level
   Ollama env (tuning.rs's SERVER_ENV_SPEC sanitizer, verbatim, plus the deterministic env-file writer — written after
   the DB save, an unwritable dir surfacing as a 200 page warning as Python's does). Errors re-render settings.html at
-  400 through the shared page_context. The model-override / Studio-key sub-routes stay Python's (the key verify calls
-  Studio; the override routes are small focused posts).
+  400 through the shared page_context. The model-override save / delete (`settings_overrides.rs`) are ported too —
+  the options from the filled fields only (int-kind fields stored as Python ints), the entry kept only when something
+  is actually set, the delete dropping the model's entry. The Studio-key sub-route stays Python's (its verify calls
+  Studio's API).
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

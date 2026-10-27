@@ -5604,9 +5604,8 @@ def test_settings_system_save_is_pythons(client, seed):
     FIELDS = ("ollama_model", "ollama_url", "llm_url", "llm_model", "llm_api_key", "llm_api_key_clear",
               "swarmui_external_url", "android_emulator_url", "editor_external_url", "dreamlands_enabled",
               "king_in_yellow_enabled", "ollama_keep_alive", "ollama_use_mmap", "ollama_gpu_preset",
-              "ollama_srv_flash_attention", "ollama_srv_num_parallel", "ollama_srv_context_length",
-              "ollama_srv_keep_alive", "ollama_srv_hsa_override_gfx_version",
               "ollama_temperature", "ollama_top_k", "session_media_max", "max_upload_mb")
+    # the ollama_srv_* values never touch app_settings — they land in the generated ollama.env file
 
     def run(side, data):
         r = side.post("/settings/system", data=data, follow_redirects=False)
@@ -5644,7 +5643,7 @@ def test_settings_system_save_is_pythons(client, seed):
         # the server env sanitizer's allowlist
         (base_form(ollama_srv_flash_attention="bogus"), "OLLAMA_FLASH_ATTENTION must be one of"),
         (base_form(ollama_srv_num_parallel="99"), "OLLAMA_NUM_PARALLEL must be between 0 and 32"),
-        (base_form(ollama_srv_hsa_override_gfx_version="bad value!"), "OLLAMA_... contains characters that aren't allowed"),
+        (base_form(ollama_srv_hsa_override_gfx="bad value!"), "HSA_OVERRIDE_GFX_VERSION contains characters that aren&#39;t allowed"),
     ]
     for form, expect in cases:
         out = []
@@ -5654,8 +5653,6 @@ def test_settings_system_save_is_pythons(client, seed):
                 s = db.get(AppSettings, 1)
                 s.ollama_model, s.ollama_url, s.llm_url, s.llm_model = "old", "http://old", "http://old", "oldm"
                 s.llm_api_key = "oldkey"
-                s.ollama_srv_flash_attention, s.ollama_srv_num_parallel, s.ollama_srv_context_length = None, None, None
-                s.ollama_srv_hsa_override_gfx_version = None
                 s.dreamlands_enabled, s.king_in_yellow_enabled = False, False
                 db.commit()
             finally:
@@ -5668,12 +5665,12 @@ def test_settings_system_save_is_pythons(client, seed):
         if isinstance(expect, dict):
             for k, want in expect.items():
                 assert out[1][2].get(k) == want, (k, out[1][2].get(k), want)
+            served += out[1][3] == "gateway"
         elif isinstance(expect, str):
-            assert expect.split("OLLAMA_...")[0] in out[0][1], (expect, out[0][1][:150])
-            assert expect.split("OLLAMA_...")[0] in out[1][1], (expect, out[1][1][:150])
-        served += out[1][3] == "gateway"
-        served += out[1][3] == "gateway"
-    assert served >= 8, served
+            assert expect in out[0][1], (expect, out[0][1][:150])
+            assert expect in out[1][1], (expect, out[1][1][:150])
+            served += out[1][3] == "gateway"
+    assert served >= 4, served
     # the key rules: a blank submit leaves the saved key, the clear checkbox erases it
     db = SessionLocal()
     try:
@@ -5698,3 +5695,68 @@ def test_settings_system_save_is_pythons(client, seed):
         out.append(run(side, base_form(llm_api_key_clear="1")))
     assert out[0][2]["llm_api_key"] == out[1][2]["llm_api_key"] == "", (out[0][2]["llm_api_key"], out[1][2]["llm_api_key"])
     assert out[1][3] == "gateway"
+def test_model_override_routes_are_pythons(client, seed):
+    """POST /settings/system/model-override and /delete from the gateway: an empty model name 400s with Python's
+    message, a filled override writes the entry (options from the filled fields only, keep_alive truncated to 32,
+    thinking stored only when checked), an all-empty form leaves no phantom entry, delete drops the entry - the
+    column compared after every save."""
+    from app.database import SessionLocal
+    from app.models import AppSettings
+    from tests.test_gateway_writes import _row_by
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def run(side, url, data):
+        r = side.post(url, data=data, follow_redirects=False)
+        row = _row_by("app_settings", "id", 1)
+        body = r.text if r.status_code != 303 else r.headers.get("location")
+        return r.status_code, body, (row["ollama_model_overrides_json"] if row else None), r.headers.get("x-nd-served-by")
+
+    def reset():
+        db = SessionLocal()
+        try:
+            db.get(AppSettings, 1).ollama_model_overrides_json = "{}"
+            db.commit()
+        finally:
+            db.close()
+
+    served = 0
+    cases = [
+        ("/settings/system/model-override", {"model": ""},
+         400, "Pick a model to override first", None),
+        ("/settings/system/model-override", {"model": "llama3", "temperature": "0.5", "top_k": "30", "keep_alive": "10m", "thinking": "1"},
+         303, None, {"llama3": {"options": {"temperature": 0.5, "top_k": 30}, "keep_alive": "10m", "thinking": True}}),
+        ("/settings/system/model-override", {"model": "gemma4", "num_predict": "-2", "seed": "42"},
+         303, None, {"gemma4": {"options": {"num_predict": -2, "seed": 42}, "keep_alive": ""}}),
+        # an out-of-bounds field: the first failure is the message
+        ("/settings/system/model-override", {"model": "llama3", "temperature": "3"}, 400, "Temperature must be at most 2", None),
+        ("/settings/system/model-override", {"model": "llama3", "seed": "x"}, 400, "Seed must be a whole number", None),
+        # an all-empty override: no phantom entry
+        ("/settings/system/model-override", {"model": "ghost"}, 303, None, {}),
+        ("/settings/system/model-override/delete", {"model": "nope"}, 303, None, {}),
+    ]
+    for url, form, status, message, expect in cases:
+        out = []
+        for side in (d, v):
+            reset()
+            out.append(run(side, url, form))
+        assert out[0][0] == out[1][0] == status, (form, out[0][0], out[1][0])
+        if message is not None:
+            assert message in out[0][1], (form, out[0][1][:150])
+            assert message in out[1][1], (form, out[1][1][:150])
+        if expect is not None:
+            got = json.loads(out[1][2] or "{}")
+            assert got == expect, (got, expect)
+        served += out[1][3] == "gateway"
+    # the happy path again on both sides, then delete through the gateway
+    for side in (d, v):
+        reset()
+    a = d.post("/settings/system/model-override", data={"model": "keepme", "temperature": "0.9"}, follow_redirects=False)
+    b = v.post("/settings/system/model-override", data={"model": "keepme", "temperature": "0.9"}, follow_redirects=False)
+    assert a.status_code == b.status_code == 303
+    b2 = v.post("/settings/system/model-override/delete", data={"model": "keepme"}, follow_redirects=False)
+    assert b2.status_code == 303 and b2.headers.get("x-nd-served-by") == "gateway"
+    got = json.loads(_row_by("app_settings", "id", 1)["ollama_model_overrides_json"])
+    assert "keepme" not in got, got
+    assert served >= 4, served

@@ -3,6 +3,7 @@ before it was fixed): hostile/odd Studio responses, status honesty, the player r
 key field, the committed smoke-script key, compose defaults, and the STT duration cap."""
 import asyncio
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -376,15 +377,23 @@ def test_the_console_url_must_be_http_or_https(client, seed):
 def test_no_studio_api_key_is_committed():
     pat = re.compile(r"sk-unsloth-[0-9a-f]{16,}")
     hits = []
-    for p in ROOT.rglob("*"):
-        if p.is_dir() or ".git" in p.parts or "__pycache__" in p.parts or "_data" in p.parts or ("rust" in p.parts and "target" in p.parts) or p.suffix in (".png", ".webp", ".db", ".pyc") or p.name == ".test_durations":
+    # os.walk, not Path.rglob: rglob stats every entry to decide recursion, and a
+    # broken reparse point (the fan tests' fake hwmon `device` link, made under WSL)
+    # raises OSError on Windows even before the loop body's own OSError guard runs
+    for dirpath, dirs, names in os.walk(ROOT):
+        parts = Path(dirpath).parts
+        if ".git" in parts or "__pycache__" in parts or "_data" in parts or ("rust" in parts and "target" in parts):
+            dirs[:] = []
             continue
-        try:
-            text = p.read_text(errors="ignore")
-        except OSError:
-            continue
-        if pat.search(text):
-            hits.append(str(p.relative_to(ROOT)))
+        for name in names:
+            if Path(name).suffix in (".png", ".webp", ".db", ".pyc") or name == ".test_durations":
+                continue
+            try:
+                text = (Path(dirpath) / name).read_text(errors="ignore")
+            except OSError:
+                continue
+            if pat.search(text):
+                hits.append(str((Path(dirpath) / name).relative_to(ROOT)))
     assert not hits, hits
 
 

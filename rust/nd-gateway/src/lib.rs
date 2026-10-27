@@ -40,6 +40,8 @@ pub mod gallery;
 pub mod home;
 pub mod hub;
 pub mod importer;
+pub mod settings_overrides;
+pub mod studio_key;
 pub mod settings_system;
 pub mod startup;
 pub mod imaging;
@@ -291,6 +293,36 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             Some(resp) => return resp,
             None => return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await,
         }
+    }
+    if req.method() == axum::http::Method::POST && matches!(req.uri().path(), "/settings/system/model-override" | "/settings/system/model-override/delete")
+        && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let is_delete = parts.uri.path().ends_with("/delete");
+        let (cfg, pages, uri, headers, b) = (app.cfg.clone(), app.pages.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        let answer = if is_delete {
+            settings_overrides::delete_srv(cfg, pages, uri, headers, b).await
+        } else {
+            settings_overrides::save_srv(cfg, pages, uri, headers, b).await
+        };
+        if let Some(resp) = answer {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/settings/system/studio-key"
+        && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        // the Studio-key save: it talks to Studio live (one GET), so it runs outside spawn_blocking
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = studio_key::studio_key_srv(app.cfg.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/account/password" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         // the password change with the gateway's own lockout counter (batch G: Python's in-memory counter is replaced)
