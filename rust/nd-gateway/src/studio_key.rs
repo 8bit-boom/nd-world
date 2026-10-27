@@ -333,6 +333,7 @@ pub async fn studio_key_srv(cfg: Arc<Config>, body: Bytes) -> Option<Response<Bo
             .ok()
             .flatten()?
         }
+        saved_after = String::new();
         let eff = effective_key("");
         if !eff.is_empty() {
             let url = effective_url(&saved_url, &eff);
