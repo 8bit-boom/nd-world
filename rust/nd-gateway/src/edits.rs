@@ -13380,7 +13380,8 @@ fn settings_resources_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> 
         if t.is_empty() || t == "auto" {
             return Some(None);
         }
-        let v: f64 = if float { t.parse().ok() } else { t.parse::<i64>().map(|i| i as f64) }.ok()?;
+        let parsed: Option<f64> = if float { t.parse().ok() } else { t.parse::<i64>().ok().map(|i| i as f64) };
+        let v: f64 = parsed?;
         if v <= 0.0 {
             return Some(None);
         }
