@@ -53,7 +53,12 @@ them after each batch; the phase is done when both are empty and the steps below
   After the boot, the sweep marks every job still mid-flight interrupted across the five engines — each engine's own
   fields (audio_jobs carries chunk progress and a finished_at stamp; the others their own note, no finished_at
   column). Python's resume_interrupted_jobs re-runs them through its engines; the gateway's own audio runner resumes
-  its audio jobs the same way.
+  its audio jobs the same way. The gateway also owns two of the boot loops: `db_upkeep.start` (startup.rs `db_upkeep`:
+  PRAGMA optimize an hour after boot and daily, the incremental-auto-vacuum switch at a quarter free pages, up to
+  25 000 pages released daily) and `_backups.start` (startup.rs `backups`: when ND_BACKUP_DIR is configured,
+  a world-<stamp>.db VACUUM INTO snapshot per ND_BACKUP_INTERVAL_SECONDS — at least 60s, wait-first — keeping
+  ND_BACKUP_KEEP, pruned by name newest-first). `_diagnostics.start` stays with Python (its watchdog watches
+  Python's own event loop); `_fan_control.start` is already the gateway's (fans.rs).
 - **The password change** (`POST /account/password`, account.rs `password_change`): the failed-attempt lockout with the
   GATEWAY'S OWN counter (the in-memory Python counter it replaces at the switch - 8 wrong current passwords in 5 minutes
   lock the change for 5), the current-password check, the length and confirm errors rendering the account page at 400

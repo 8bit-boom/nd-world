@@ -272,3 +272,89 @@ pub fn sweep_interrupted(cfg: &Config) {
         eprintln!("nd-gateway: marked {rows_len} interrupted {table} job(s)");
     }
 }
+
+/// `db_upkeep.start` (app/db_upkeep.py): PRAGMA optimize once a day (an hour after boot), plus a one-way switch to
+/// incremental auto-vacuum when more than a quarter of the file is free pages, releasing up to 25 000 pages a day.
+pub fn db_upkeep(cfg: &Config) {
+    let cfg = cfg.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60 * 60)); // FIRST_DELAY: not while the server boots
+        loop {
+            if let Ok(con) = rusqlite::Connection::open(&cfg.db_path) {
+                let _ = con.busy_timeout(std::time::Duration::from_secs(30));
+                let _ = con.execute_batch("PRAGMA optimize");
+                let pages: i64 = con.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(1).max(1);
+                let free: i64 = con.query_row("PRAGMA freelist_count", [], |r| r.get(0)).unwrap_or(0);
+                let mode: i64 = con.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap_or(0);
+                if mode == 2 {
+                    if free > 0 {
+                        let _ = con.execute_batch(&format!("PRAGMA incremental_vacuum({})", free.min(25000)));
+                    }
+                } else if (free as f64 / pages as f64) > 0.25 {
+                    let _ = con.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;");
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
+        }
+    });
+}
+
+/// `_backups.start` (app/backups.py): when ND_BACKUP_DIR is configured, snapshot the database once per interval
+/// (ND_BACKUP_INTERVAL_SECONDS, at least 60) via VACUUM INTO, keeping ND_BACKUP_KEEP snapshots. A no-op when
+/// unconfigured — an unconfigured deployment must not grow surprise writes.
+pub fn backups(cfg: &Config) {
+    let dir = match std::env::var("ND_BACKUP_DIR") {
+        Ok(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+        _ => return,
+    };
+    let interval: u64 = std::env::var("ND_BACKUP_INTERVAL_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(86400).max(60);
+    let keep: usize = std::env::var("ND_BACKUP_KEEP").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    let cfg = cfg.clone();
+    std::thread::spawn(move || {
+        // wait-first: the DB was fine a moment ago; the first snapshot matters after a full interval of use
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+        loop {
+            let _ = run_backup_once(&cfg, &dir, keep);
+            std::thread::sleep(std::time::Duration::from_secs(interval));
+        }
+    });
+}
+
+/// `create_snapshot` + `run_backup_once`: VACUUM INTO a `world-<stamp>.db` snapshot (a same-second collision gets
+/// a -2 suffix), then prune to the newest `keep`
+fn run_backup_once(cfg: &Config, dir: &std::path::Path, keep: usize) -> Option<std::path::PathBuf> {
+    let _ = std::fs::create_dir_all(dir);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    let secs = now.as_secs();
+    let (y, m, d) = civil_from_days(secs.div_euclid(86400) as i64);
+    let rem = secs.rem_euclid(86400);
+    let stamp = format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem % 3600 / 60, rem % 60);
+    let mut candidate = dir.join(format!("world-{stamp}.db"));
+    let mut n = 1;
+    while candidate.exists() {
+        candidate = dir.join(format!("world-{stamp}-{n}.db"));
+        n += 1;
+    }
+    let raw = rusqlite::Connection::open(&cfg.db_path).ok()?;
+    let result = raw.execute("VACUUM INTO ?1", [candidate.to_string_lossy().to_string()]);
+    let _ = raw.close();
+    result.ok()?;
+    prune_snapshots(dir, keep);
+    Some(candidate)
+}
+
+/// `prune_snapshots`: keep the newest `keep` world-*.db snapshots (name-sorted, newest first)
+fn prune_snapshots(dir: &std::path::Path, keep: usize) {
+    let mut snaps: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.starts_with("world-") && n.ends_with(".db")))
+            .collect(),
+        Err(_) => return,
+    };
+    let mut names: Vec<String> = snaps.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string)).collect();
+    names.sort();
+    names.reverse();
+    for name in names.iter().skip(keep.max(0)) {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+}
