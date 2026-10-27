@@ -5525,3 +5525,67 @@ def test_account_2fa_disable_and_regen_are_pythons(client, seed):
         db.commit()
     finally:
         db.close()
+def test_settings_saves_are_pythons(client, seed):
+    """POST /settings and /settings/resources from the gateway: the columns written exactly as Python writes them -
+    format validation falls back to avif, the hover numerics are clamped (not rejected), the checkbox is presence-keyed,
+    resources' blank/auto/out-of-range fall back to automatic - the rows compared after every save; an out-of-form-value
+    float still clamps. (Python's in-memory side effects - its worker pools, its preview-format cache, the queued
+    thumbnail remake - are process-internal and move at the switch.)"""
+    from app.database import SessionLocal
+    from app.models import AppSettings
+    from tests.test_gateway_writes import _row_by
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def run(side, url, data):
+        r = side.post(url, data=data, follow_redirects=False)
+        row = _row_by("app_settings", "id", 1)
+        keep = {k: row[k] for k in ("static_format", "animated_format", "preview_format", "hover_preview_enabled",
+                                    "hover_preview_delay_ms", "hover_preview_hide_delay_ms", "hover_preview_width_px",
+                                    "hover_preview_max_height_px", "res_image_workers", "res_render_slots", "res_memory_mb")}
+        return r.status_code, r.headers.get("location"), keep, r.headers.get("x-nd-served-by")
+
+    def reset():
+        db = SessionLocal()
+        try:
+            s = db.get(AppSettings, 1)
+            s.static_format, s.animated_format, s.preview_format = "webp", "webp", "webp"
+            s.hover_preview_enabled, s.hover_preview_delay_ms = False, 5000
+            s.hover_preview_hide_delay_ms, s.hover_preview_width_px, s.hover_preview_max_height_px = 400, 340, 420
+            s.res_image_workers, s.res_render_slots, s.res_memory_mb = None, None, None
+            db.commit()
+        finally:
+            db.close()
+
+    served = 0
+    cases = [
+        ("/settings", {"static_format": "none", "animated_format": "bogus", "preview_format": "original",
+                       "hover_preview_enabled": "1", "hover_preview_delay_seconds": "2", "hover_preview_hide_delay_seconds": "1",
+                       "hover_preview_width_px": "500", "hover_preview_max_height_px": "600"},
+         {"static_format": "none", "animated_format": "avif", "preview_format": "original", "hover_preview_enabled": 1,
+          "hover_preview_delay_ms": 2000, "hover_preview_hide_delay_ms": 1000, "hover_preview_width_px": 500,
+          "hover_preview_max_height_px": 600}),
+        ("/settings", {"hover_preview_delay_seconds": "0.1", "hover_preview_hide_delay_seconds": "99",
+                       "hover_preview_width_px": "1", "hover_preview_max_height_px": "99999"},
+         {"hover_preview_enabled": 0, "hover_preview_delay_ms": 500, "hover_preview_hide_delay_ms": 10000,
+          "hover_preview_width_px": 220, "hover_preview_max_height_px": 1000}),
+        ("/settings/resources", {"res_image_workers": "6", "res_render_slots": "4", "res_memory_gb": "2.5"},
+         {"res_image_workers": 6, "res_render_slots": 4, "res_memory_mb": 2560}),
+        ("/settings/resources", {"res_image_workers": "", "res_render_slots": "auto", "res_memory_gb": "99999"},
+         {"res_image_workers": None, "res_render_slots": None, "res_memory_mb": 1048576}),  # clamped to the 1024 GB bound
+        ("/settings/resources", {"res_image_workers": "99", "res_render_slots": "0.5", "res_memory_gb": "abc"},
+         {"res_image_workers": 32, "res_render_slots": None, "res_memory_mb": None}),  # 99 -> 32; int("0.5") fails -> auto
+    ]
+    for url, data, expect in cases:
+        out = []
+        for side in (d, v):
+            reset()
+            out.append(run(side, url, data))
+        assert out[0][:3] == out[1][:3], (url, data, out[0], out[1])
+        for k, want in expect.items():
+            assert out[1][2][k] == want, (url, data, k, out[1][2][k], want)
+        served += out[1][3] == "gateway"
+    assert served >= 4, served
+    # a missing row: both servers would fail the same way (the app always has one; skip)
+    # an odd float that Python's float() accepts and serde would too is covered by "2.5" above

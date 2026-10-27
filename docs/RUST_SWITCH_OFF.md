@@ -31,6 +31,11 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
+  validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
+  resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The
+  routes' database writes are byte for byte Python's; Python's in-memory side effects (its worker pools, its
+  preview-format cache, the queued thumbnail remake) are process-internal and move at the switch.
 - **The database boot** (startup.rs, batch H step 4): a gateway-only container's first boot creates the database —
   the post-migration schema (dumped from a fresh Python boot into app_data.json's "schema_sql" by
   scripts/gen_rust_data.py: create_all + _migrate against a temp database, 245 CREATE statements, FTS5 shadows

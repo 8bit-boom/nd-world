@@ -171,6 +171,8 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 const ROUTES: &[(&str, Handler)] = &[
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
     ("/maps/schematic/new", schematic_new),
+    ("/settings/resources", settings_resources_save),
+    ("/settings", settings_save),
     ("/api/ai/attachments/audio-jobs/{}", attach_audio_job_status),
     ("/quests/new", quest_create),
     ("/quests/{}/edit", quest_edit),
@@ -13359,4 +13361,83 @@ fn live_audio_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 fn companions_get(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let id: i64 = slug.parse().ok()?;
     hub_companions(c, &[id])
+}
+
+// ── Settings saves (batch G, docs/RUST_SWITCH_OFF.md step 4's last write routes) ──────────────────────────────
+// Python's side effects on its own caches (`workers.apply`, `_imaging.set_preview_format`,
+// `_remake_thumbnails`, `ai.set_llm_override`) are process-internal: in mixed operation Python keeps
+// serving on its cached values until its next boot/save, which is exactly the switch trade-off the plan
+// documents for these routes. The DATABASE writes — what both servers read back — are byte-for-byte.
+
+/// `POST /settings/resources` (app/main.py `settings_resources_save`): blank or "auto" = automatic; the
+/// numeric fields are clamped to their bounds, out-of-range or non-numeric values fall back to automatic.
+/// GM-only via the auth gate.
+fn settings_resources_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let num = |raw: &str, lo: f64, hi: f64, float: bool| -> Option<Option<Sql>> {
+        // Python's num(): a parse failure is "automatic" for that one field, not a rejection
+        let t = strip(raw);
+        if t.is_empty() || t == "auto" {
+            return Some(None);
+        }
+        let v: f64 = if float { t.parse().ok() } else { t.parse::<i64>().map(|i| i as f64) }.ok()?;
+        if v <= 0.0 {
+            return Some(None);
+        }
+        Some(Some(if float {
+            Sql::Real(v.min(hi).max(lo))
+        } else {
+            Sql::Integer((v.min(hi).max(lo)) as i64)
+        }))
+    };
+    let iw = num(strip(f.get("res_image_workers").unwrap_or("")).as_str(), 1.0, 32.0, false)?;
+    let rs = num(strip(f.get("res_render_slots").unwrap_or("")).as_str(), 1.0, 16.0, false)?;
+    let gb_raw = strip(f.get("res_memory_gb").unwrap_or("")).as_str().to_string();
+    let gb = num(&gb_raw, 0.5, 1024.0, true)?;
+    let mem = match gb {
+        Some(Sql::Real(g)) => Some(Sql::Integer((g * 1024.0) as i64)),
+        _ => None,
+    };
+    let id: i64 = c.db.query_row("SELECT id FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok()?;
+    let mut set: Vec<(&str, Sql)> = vec![("res_image_workers", iw.unwrap_or(Sql::Null)), ("res_render_slots", rs.unwrap_or(Sql::Null))];
+    set.push(("res_memory_mb", mem.unwrap_or(Sql::Null)));
+    crate::orm::update(&c.db, "app_settings", id, &set)?;
+    crate::edits::redirect("/settings?tab=system")
+}
+
+/// the settings form's fields with Python's clamps: `Optional[str] = Form(None)` means a checkbox
+/// (enabled iff the key is present), the numerics are clamped rather than rejected
+fn hover_settings(f: &crate::form::Form) -> Option<Vec<(&'static str, Sql)>> {
+    let fmt = |v: Option<&str>, allowed: [&str; 3]| -> String {
+        let t = v.unwrap_or("avif");
+        if allowed.contains(&t) { t.to_string() } else { "avif".to_string() }
+    };
+    let preview = f.get("preview_format").unwrap_or("avif");
+    let preview = matches!(preview, "avif" | "webp" | "original").then(|| preview).unwrap_or("avif");
+    let fnum = |v: Option<&str>, d: f64| -> f64 { v.and_then(|t| t.trim().parse().ok()).unwrap_or(d) };
+    let delay = (fnum(f.get("hover_preview_delay_seconds"), 5.0).max(0.5).min(30.0) * 1000.0) as i64;
+    let hide = (fnum(f.get("hover_preview_hide_delay_seconds"), 0.4).max(0.0).min(10.0) * 1000.0) as i64;
+    let width = fnum(f.get("hover_preview_width_px"), 340.0).max(220.0).min(800.0) as i64;
+    let height = fnum(f.get("hover_preview_max_height_px"), 420.0).max(150.0).min(1000.0) as i64;
+    Some(vec![
+        ("static_format", Sql::Text(fmt(f.get("static_format"), ["none", "avif", "webp"]))),
+        ("animated_format", Sql::Text(fmt(f.get("animated_format"), ["none", "avif", "webp"]))),
+        ("preview_format", Sql::Text(preview.to_string())),
+        ("hover_preview_enabled", Sql::Integer(f.has("hover_preview_enabled") as i64)),
+        ("hover_preview_delay_ms", Sql::Integer(delay)),
+        ("hover_preview_hide_delay_ms", Sql::Integer(hide)),
+        ("hover_preview_width_px", Sql::Integer(width)),
+        ("hover_preview_max_height_px", Sql::Integer(height)),
+    ])
+}
+
+/// `POST /settings` (app/main.py `settings_save`): the display / hover form. Python additionally refreshes its
+/// in-memory preview-format cache and queues a thumbnail remake — process-internal work that a gateway-only
+/// deployment replaces (thumbnails remake at boot / via thumb_migrate).
+fn settings_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let id: i64 = c.db.query_row("SELECT id FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok()?;
+    let set = hover_settings(&f)?;
+    crate::orm::update(&c.db, "app_settings", id, &set)?;
+    crate::edits::redirect("/settings")
 }
