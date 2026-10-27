@@ -172,10 +172,12 @@ read the gateway's stderr.
 
 ### Must move only at the switch (Python keeps state in memory)
 
-- `POST /settings`, `/settings/system*`, `/settings/resources`: Python caches resource sizing, LLM overrides and Ollama tuning.
-- `POST /account/password`, `/account/2fa/disable`, `/account/2fa/backup-codes/regenerate`: Python counts failed password attempts
-  in memory (`_failed_password_changes`, lockout after 5); give the gateway its own counter and move them together.
+- `POST /settings/system*`: Python caches the LLM override and Ollama tuning; they move with the gateway owning those caches.
 - Any route whose Python handler uses an in-process cache (see `tests/inprocess_only.txt` for the caches tests know about).
+
+Done since that list was written: `POST /settings` and `/settings/resources` (edits.rs — the display / hover form and the
+resource sizing, byte for byte), and the password / 2FA account-security routes (the gateway's own lockout counter replaced
+Python's in-memory one).
 
 ### Phase 6 steps 4-5 (partly done)
 
