@@ -176,8 +176,9 @@ read the gateway's stderr.
   DONE since that was written: `POST /settings/system` itself (settings_system.rs — URL validation, the number fields'
   parse/bounds messages, use_mmap / gpu_preset fallbacks, the API-key leave/clear/replace rules, the server-env sanitizer
   and the ollama.env writer, 400 re-renders through the shared page_context), `POST /settings/system/model-override` and
-  `/delete` (settings_overrides.rs). Still Python's: the Studio-key sub-route (its save verifies the key against Studio's
-  API live).
+  `/delete` (settings_overrides.rs), and the Studio-key save (`studio_key.rs` — the paste cleaner, the live verify GET
+  against the configured Studio, the clear; only the auth-failure timestamp banner stays Python's, and it is in-memory
+  state that dies with the switch anyway).
 - Any route whose Python handler uses an in-process cache (see `tests/inprocess_only.txt` for the caches tests know about).
 
 Done since that list was written: `POST /settings` and `/settings/resources` (edits.rs — the display / hover form and the

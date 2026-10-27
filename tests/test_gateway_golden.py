@@ -5760,3 +5760,141 @@ def test_model_override_routes_are_pythons(client, seed):
     got = json.loads(_row_by("app_settings", "id", 1)["ollama_model_overrides_json"])
     assert "keepme" not in got, got
     assert served >= 4, served
+
+
+class _FakeStudio:
+    """A stand-in Unsloth Studio: /api/hub/cached-gguf answers 200 only for
+    'Bearer good-key-1234', 401 (FastAPI's {"detail": ...}) for anything else."""
+
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.headers.get("Authorization", "") == "Bearer good-key-1234":
+                    body = b'{"models": []}'
+                    code = 200
+                else:
+                    body = b'{"detail": "Not authenticated"}'
+                    code = 401
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        self.t = threading.Thread(target=self.srv.serve_forever, daemon=True)
+        self.t.start()
+
+    def url(self):
+        return f"http://127.0.0.1:{self.port}"
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def test_studio_key_route_is_pythons(client, seed):
+    """POST /settings/system/studio-key from the gateway: the paste cleaner (Bearer prefix, quotes,
+    the two 400s), a 401 is verified away without replacing the saved key, a good key is saved and
+    confirmed, an unreachable Studio still saves with 'couldn't confirm', clear removes it - the
+    llm_api_key column and the whole answer compared (the unreachable case by prefix: the exception
+    text is the client library's)."""
+    from tests.test_gateway_writes import _row_by
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    studio = _FakeStudio()
+
+    def run(side, payload):
+        r = side.post("/settings/system/studio-key", json=payload, follow_redirects=False)
+        row = _row_by("app_settings", "id", 1)
+        return (r.status_code, r.json() if r.status_code != 500 else r.text,
+                (row["llm_api_key"] if row else None), r.headers.get("x-nd-served-by"))
+
+    def set_llm_url(side, url):
+        r = side.post("/settings/system", data={"ollama_model": "", "ollama_url": "", "llm_url": url,
+                                                "llm_model": "", "llm_api_key": ""}, follow_redirects=False)
+        assert r.status_code == 303, (r.status_code, r.text[:200])
+
+    served = 0
+    try:
+        # the effective URL must be the fake Studio on both sides BEFORE any key case:
+        # Python's verify reads its in-memory override (refreshed by this save), the
+        # gateway reads the row - set it through the real save route, not a DB write
+        set_llm_url(d, studio.url())
+        set_llm_url(v, studio.url())
+
+        # the cleaner's 400s (state-independent)
+        for payload in ({}, {"api_key": ""}, {"api_key": "two keys here"}):
+            out = []
+            for side in (d, v):
+                out.append(run(side, payload))
+            assert out[0][0] == out[1][0] == 400, (payload, out[0][:2], out[1][:2])
+            assert out[0][1] == out[1][1], (payload, out[0][1], out[1][1])
+            served += out[1][3] == "gateway"
+
+        # the cleaner strips a Bearer prefix and matching quotes before the verify: a quoted
+        # good key is saved as the bare key
+        for raw in ("good-key-1234", "Bearer good-key-1234", '"good-key-1234"', " good-key-1234 "):
+            out = []
+            for side in (d, v):
+                out.append(run(side, {"api_key": raw}))
+            assert out[0][0] == out[1][0] == 200 and out[0][1] == out[1][1], (raw, out[0][:2], out[1][:2])
+            assert out[0][1]["ok"] is True and out[0][1]["saved"] is True, (raw, out[0][1])
+            assert out[0][1]["message"] == "Studio accepted the key."
+            assert out[0][2] == out[1][2] == "good-key-1234", (raw, out[0][2], out[1][2])
+            assert out[0][1]["in_use"] == "settings" and out[0][1]["saved_hint"] == "…1234", out[0][1]
+            served += out[1][3] == "gateway"
+
+        # a 401: verified away, the saved key unchanged, the message names it
+        out = []
+        for side in (d, v):
+            out.append(run(side, {"api_key": "bad-key-9999"}))
+        assert out[0][0] == out[1][0] == 200 and out[0][1] == out[1][1], (out[0][:2], out[1][:2])
+        assert out[0][1]["ok"] is False and out[0][1]["saved"] is False and out[0][1]["status"] == 401
+        assert "the key you pasted was not saved (the saved key is unchanged)" in out[0][1]["message"], out[0][1]
+        assert out[0][2] == out[1][2] == "good-key-1234", (out[0][2], out[1][2])
+        served += out[1][3] == "gateway"
+
+        # an unreachable Studio: the key is still saved, "couldn't confirm" (prefix only: the
+        # exception text is the HTTP client library's)
+        set_llm_url(d, "http://127.0.0.1:1")
+        set_llm_url(v, "http://127.0.0.1:1")
+        out = []
+        for side in (d, v):
+            out.append(run(side, {"api_key": "unreach-key-5678"}))
+        assert out[0][0] == out[1][0] == 200, (out[0][0], out[1][0])
+        for st, body, key, _served in out:
+            assert body["ok"] is False and body["saved"] is True and body["status"] == 503, body
+            assert body["message"].startswith("Saved, but couldn't confirm it: Unsloth Studio unreachable at http://127.0.0.1:1"), body
+            assert body["unreachable"] is True, body
+        assert out[0][2] == out[1][2] == "unreach-key-5678", (out[0][2], out[1][2])
+        assert out[0][1]["saved_hint"] == out[1][1]["saved_hint"] == "…5678"
+        served += out[1][3] == "gateway"
+
+        # back to the fake Studio for the clear case
+        set_llm_url(d, studio.url())
+        set_llm_url(v, studio.url())
+
+        # clear: the saved key removed, no environment key behind it
+        out = []
+        for side in (d, v):
+            out.append(run(side, {"clear": True}))
+        assert out[0][0] == out[1][0] == 200 and out[0][1] == out[1][1], (out[0][:2], out[1][:2])
+        assert out[0][1] == {"ok": False, "message": "The saved key was removed.", "saved": False,
+                             "in_use": "none", "saved_hint": "", "env_hint": "",
+                             "explain": "No Studio API key is set."}, out[0][1]
+        assert out[0][2] == out[1][2] == ""
+        served += out[1][3] == "gateway"
+    finally:
+        studio.close()
+    assert served >= 6, served

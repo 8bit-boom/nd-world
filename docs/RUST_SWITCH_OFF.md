@@ -38,8 +38,10 @@ them after each batch; the phase is done when both are empty and the steps below
   the DB save, an unwritable dir surfacing as a 200 page warning as Python's does). Errors re-render settings.html at
   400 through the shared page_context. The model-override save / delete (`settings_overrides.rs`) are ported too —
   the options from the filled fields only (int-kind fields stored as Python ints), the entry kept only when something
-  is actually set, the delete dropping the model's entry. The Studio-key sub-route stays Python's (its verify calls
-  Studio's API).
+  is actually set, the delete dropping the model's entry. The Studio-key save (`studio_key.rs`) is ported too — the
+  paste cleaner (Bearer prefix / quotes / the two 400s), the live verify against `{llm_url}/api/hub/cached-gguf`
+  (a 401 is not saved and says the saved key is unchanged; an unreachable Studio saves anyway with "couldn't
+  confirm"), the clear, and `_key_explanation`.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The
