@@ -55,6 +55,11 @@ them after each batch; the phase is done when both are empty and the steps below
   `str()` of item fields ("None" for null, numbers' spelling, containers their repr), xp's delta through int_field,
   level-up's not-ready 400 (a custom system, level 20+, xp short), "Unknown action" 400s, and the currency purse's
   str()-keyed coin match with `int(_num(value))`. Declines trace their route and body under `ND_DECLINE_TRACE=1`.
+- **The party stash** (`POST /api/parties/{}/loot`, edits.rs): `load_loot` is Python's lenient normaliser
+  (bad JSON an empty stash, non-dicts dropped, a legacy item's `lid` derived as sha1 of "pos|name", qty
+  `int(x or 1)` with the fallback, ints-only `claimed_by`), `_loot_int`'s strings through int() and its
+  "must be a whole number" / "out of range" 400s, the 409 for a gone `lid`, "Invalid loot item", "Item name
+  is required", "notes must be text", the member / own-character refusals and the action list 400.
 - **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
   port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
   gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
@@ -67,6 +72,11 @@ them after each batch; the phase is done when both are empty and the steps below
   `str()` of item fields ("None" for null, numbers' spelling, containers their repr), xp's delta through int_field,
   level-up's not-ready 400 (a custom system, level 20+, xp short), "Unknown action" 400s, and the currency purse's
   str()-keyed coin match with `int(_num(value))`. Declines trace their route and body under `ND_DECLINE_TRACE=1`.
+- **The party stash** (`POST /api/parties/{}/loot`, edits.rs): `load_loot` is Python's lenient normaliser
+  (bad JSON an empty stash, non-dicts dropped, a legacy item's `lid` derived as sha1 of "pos|name", qty
+  `int(x or 1)` with the fallback, ints-only `claimed_by`), `_loot_int`'s strings through int() and its
+  "must be a whole number" / "out of range" 400s, the 409 for a gone `lid`, "Invalid loot item", "Item name
+  is required", "notes must be text", the member / own-character refusals and the action list 400.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

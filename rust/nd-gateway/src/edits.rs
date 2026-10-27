@@ -2037,44 +2037,83 @@ const LOOT_QTY_MAX: i64 = 9999;
 
 /// `load_loot` for a stash that is already clean (every item an object with its own string `lid`, text name / notes, an int qty and int
 /// claims); None for anything `load_loot` would repair (derived lids, str() of other values): Python's
+/// `load_loot` (app/party_refs.py): bad JSON an empty stash, non-dict entries dropped, every item a
+/// stable `lid` (a legacy item's is sha1 of "pos|name", derived not random), int qty >= 1, an int
+/// `claimed_by` list, name / notes through str() with the falsy defaults. Never declines.
 pub(crate) fn load_loot(p: &Map<String, Value>) -> Option<Vec<Map<String, Value>>> {
     let raw = p.get("loot_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
-    let Value::Array(items) = serde_json::from_str::<Value>(raw).ok()? else { return None };
+    let items = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Array(a)) => a,
+        _ => vec![], // json.loads' ValueError, and every non-list it does parse
+    };
     let mut seen: Vec<String> = vec![];
     let mut out = vec![];
-    for it in items {
-        let Value::Object(mut m) = it else { return None };
-        let lid = m.get("lid")?.as_str().filter(|l| !l.is_empty() && !seen.iter().any(|x| x == l))?.to_string();
-        seen.push(lid.clone());
-        let name = match m.get("name") {
-            None | Some(Value::Null) => "Item".to_string(),
-            Some(Value::String(n)) if n.is_empty() => "Item".to_string(),
-            Some(Value::String(n)) => take_chars(n, LOOT_NAME_MAX),
-            _ => return None,
+    for (pos, it) in items.into_iter().enumerate() {
+        let Some(mut m) = (match it {
+            Value::Object(m) => Some(m),
+            _ => None, // not a dict: dropped
+        }) else {
+            continue;
         };
+        let raw_name = m.get("name").cloned().unwrap_or(Value::Null);
+        let lid = match m.get("lid") {
+            Some(Value::String(l)) if !l.is_empty() && !seen.iter().any(|x| x == l) => l.clone(),
+            _ => {
+                // sha1(f"{pos}|{item.get('name')}")[:8], re-hashed on a collision — the raw name as
+                // Python's f-string str()s it
+                let basis = format!("{}|{}", pos, py_str_val(&raw_name)
+                    .or_else(|| match raw_name { Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(&raw_name)), _ => None })
+                    .unwrap_or_else(|| "None".into()));
+                let mut lid = sha1_hex(&basis);
+                while seen.iter().any(|x| *x == lid) {
+                    lid = sha1_hex(&lid);
+                }
+                lid
+            }
+        };
+        seen.push(lid.clone());
+        // str(name or "Item")[:max]: a falsy name is "Item", str() of a number its spelling
+        let name_val = if py_truthy(Some(&raw_name)) { raw_name.clone() } else { json!("Item") };
+        let name = py_str_val(&name_val)
+            .or_else(|| match name_val { Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(&name_val)), _ => None })?;
+        let name: String = name.chars().take(LOOT_NAME_MAX as usize).collect();
+        // max(1, int(qty or 1)): falsy is 1; int() of a float truncs, of bad text falls back to 1
         let qty = match m.get("qty") {
             None | Some(Value::Null) => 1,
-            Some(Value::Number(n)) => n.as_i64()?.max(1),
-            _ => return None,
-        };
-        let notes = match m.get("notes") {
-            None | Some(Value::Null) => String::new(),
-            Some(Value::String(n)) => take_chars(n, LOOT_NOTES_MAX),
-            _ => return None,
-        };
-        let claimed: Vec<i64> = match m.get("claimed_by") {
-            None | Some(Value::Null) => vec![],
-            Some(Value::Array(a)) => a.iter().map(|x| x.as_i64()).collect::<Option<_>>()?,
-            _ => return None,
+            Some(v) if !py_truthy(Some(v)) => 1,
+            Some(Value::Bool(x)) => *x as i64,
+            Some(Value::Number(n)) => match n.as_i64() {
+                Some(i) => i,
+                None => n.as_f64().filter(|f| f.is_finite() && f.abs() < 9e15).map(|f| f.trunc() as i64).unwrap_or(1),
+            },
+            Some(Value::String(t)) => match py_int_str(t) { PyIntStr::Ok(i) => i, _ => 1 },
+            Some(_) => 1,
+        }
+        .max(1);
+        let notes_val = if py_truthy(m.get("notes")) { m.get("notes").cloned().unwrap() } else { json!("") };
+        let notes = py_str_val(&notes_val)
+            .or_else(|| match notes_val { Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(&notes_val)), _ => None })?;
+        let notes: String = notes.chars().take(LOOT_NOTES_MAX as usize).collect();
+        // [i for i in claimed_by or [] if isinstance(i, int)] — a bool counts (json true stays true)
+        let claimed: Vec<Value> = match m.get("claimed_by") {
+            Some(Value::Array(a)) => a.iter().filter(|x| x.is_i64() || x.is_boolean()).cloned().collect(),
+            _ => vec![],
         };
         m.insert("lid".into(), json!(lid));
         m.insert("name".into(), json!(name));
         m.insert("qty".into(), json!(qty));
         m.insert("notes".into(), json!(notes));
-        m.insert("claimed_by".into(), json!(claimed));
+        m.insert("claimed_by".into(), Value::Array(claimed));
         out.push(m);
     }
     Some(out)
+}
+
+/// sha1(text).hexdigest()[:8]
+fn sha1_hex(text: &str) -> String {
+    use sha1::Digest;
+    let digest = sha1::Sha1::digest(text.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect::<String>().chars().take(8).collect()
 }
 
 /// `_loot_int` for a JSON int (strings, floats and bools are int()'s: Python's; out of range is the 400: Python's)
@@ -2094,7 +2133,11 @@ fn loot_int_r(b: &Map<String, Value>, key: &str, default: Option<Value>, lo: Opt
         None | Some(Value::Null) | Some(Value::Bool(_)) => return bad(format!("{key} must be a whole number")),
         Some(Value::Number(n)) => n.as_i64().ok_or(None)?,
         Some(Value::Array(_)) | Some(Value::Object(_)) => return bad(format!("{key} must be a whole number")),
-        Some(Value::String(_)) => return Err(None),
+        Some(Value::String(t)) => match py_int_str(&t) {
+            PyIntStr::Ok(i) => i,
+            PyIntStr::Invalid => return bad(format!("{key} must be a whole number")),
+            PyIntStr::Forward => return Err(None),
+        },
     };
     if lo.map_or(false, |l| v < l) || hi.map_or(false, |h| v > h) {
         return bad(format!("{key} is out of range"));
@@ -2197,46 +2240,62 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     let mut loot = load_loot(&p)?;
     let members = int_list(p.get("member_pc_ids_json"))?;
-    let index = |loot: &[Map<String, Value>]| -> Option<usize> {
+    let index = |loot: &[Map<String, Value>]| -> Result<usize, Response<Body>> {
         match b.get("lid") {
             Some(Value::Null) | None => {
-                let i = loot_int(&b, "index", Some(-1), None, None)?;
-                (0..loot.len() as i64).contains(&i).then_some(i as usize)
+                let gone = crate::ai_more::detail(StatusCode::BAD_REQUEST, "Invalid loot item");
+                match loot_int_r(&b, "index", Some(json!(-1)), None, None) {
+                    Ok(i) if (0..loot.len() as i64).contains(&i) => Ok(i as usize),
+                    Ok(_) => Err(gone),
+                    Err(r) => Err(r.unwrap_or(gone)),
+                }
             }
-            Some(lid) => loot.iter().position(|it| it.get("lid") == Some(lid)), // gone: the 409, Python's
+            Some(lid) => loot.iter().position(|it| it.get("lid") == Some(lid)).ok_or_else(|| {
+                crate::ai_more::detail(StatusCode::CONFLICT, "That loot item no longer exists \u{2014} it was removed or given away. Refresh the page.")
+            }),
         }
     };
     match b.get("action").and_then(|v| v.as_str()) {
         Some("add") => {
-            let name = strip(b.get("name")?.as_str()?);
-            if name.is_empty() {
-                return None;
-            }
-            let notes = json_str(&b, "notes", Some(""))?;
-            let qty = loot_int(&b, "qty", Some(1), Some(1), Some(LOOT_QTY_MAX))?;
+            let name = match b.get("name") {
+                Some(Value::String(t)) if !strip(t).is_empty() => t.clone(),
+                _ => return Some(detail400("Item name is required")),
+            };
+            let notes = match b.get("notes") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(t)) => t.clone(),
+                Some(_) => return Some(detail400("notes must be text")),
+            };
+            let qty = match loot_int_r(&b, "qty", Some(json!(1)), Some(1), Some(LOOT_QTY_MAX)) {
+                Ok(q) => q,
+                Err(r) => return r,
+            };
             let lid = format!("{:08x}", rand::random::<u32>());
             let mut m = Map::new();
             m.insert("lid".into(), json!(lid));
-            m.insert("name".into(), json!(take_chars(&name, LOOT_NAME_MAX)));
+            m.insert("name".into(), json!(take_chars(&strip(&name), LOOT_NAME_MAX)));
             m.insert("qty".into(), json!(qty));
-            m.insert("notes".into(), json!(take_chars(&strip(notes), LOOT_NOTES_MAX)));
+            m.insert("notes".into(), json!(take_chars(&strip(&notes), LOOT_NOTES_MAX)));
             m.insert("claimed_by".into(), json!([]));
             loot.push(m);
         }
         Some("remove") => {
-            let i = index(&loot)?;
+            let i = index(&loot).ok()?;
             loot.remove(i);
         }
         Some(a @ ("claim" | "unclaim")) => {
-            let i = index(&loot)?;
-            let pc = loot_int(&b, "pc_id", None, None, None)?;
+            let i = index(&loot).ok()?;
+            let pc = match loot_int_r(&b, "pc_id", None, None, None) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
             if !members.contains(&pc) {
-                return None;
+                return Some(detail400("That character is not in this party"));
             }
             if level != "full" {
                 let owner: Option<i64> = c.db.query_row("SELECT owner_user_id FROM player_characters WHERE id = ?1", [pc], |r| r.get(0)).ok().flatten();
                 if owner != Some(c.p.user_id) {
-                    return None;
+                    return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "You can only do that for your own character."));
                 }
             }
             let claimed = loot[i].get_mut("claimed_by")?.as_array_mut()?;
@@ -2250,15 +2309,18 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             }
         }
         Some("give") => {
-            let i = index(&loot)?;
-            let pc_id = loot_int(&b, "pc_id", None, None, None)?;
+            let i = index(&loot).ok()?;
+            let pc_id = match loot_int_r(&b, "pc_id", None, None, None) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
             if !members.contains(&pc_id) {
-                return None;
+                return Some(detail400("That character is not in this party"));
             }
             if level != "full" {
                 let owner: Option<i64> = c.db.query_row("SELECT owner_user_id FROM player_characters WHERE id = ?1", [pc_id], |r| r.get(0)).ok().flatten();
                 if owner != Some(c.p.user_id) {
-                    return None;
+                    return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "You can only do that for your own character."));
                 }
             }
             let have = loot[i].get("qty")?.as_i64()?;
@@ -2279,9 +2341,6 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             };
             let name = loot[i].get("name")?.as_str()?.to_string();
             let notes = loot[i].get("notes").cloned().unwrap_or(json!(""));
-            if !name.is_ascii() {
-                return None; // str.lower() beyond ASCII: Python's
-            }
             let raw = pc.get("equipment_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
             let mut gear = match serde_json::from_str::<Value>(raw).ok()? {
                 Value::Array(a) => a,
@@ -2292,10 +2351,10 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
                 let Some(m) = g.as_object() else { continue };
                 let gname = match m.get("name") {
                     None => String::new(),
-                    Some(Value::String(s)) if s.is_ascii() => s.clone(),
-                    _ => return None, // str() of another value, or lower() beyond ASCII: Python's
+                    Some(Value::String(s)) => s.clone(),
+                    Some(v) => py_str_val(v)?, // str() of another value: Python's
                 };
-                if strip(&gname).to_ascii_lowercase() == name.to_ascii_lowercase() {
+                if strip(&gname).to_lowercase() == name.to_lowercase() {
                     hit = Some(k);
                     break;
                 }
@@ -2335,7 +2394,7 @@ fn party_loot(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
                 loot[i].insert("qty".into(), json!(have - n));
             }
         }
-        _ => return None, // bad actions: answered by loot_refusal
+        _ => return Some(detail400("action must be add, remove, claim, unclaim or give")),
     }
     let list = Value::Array(loot.into_iter().map(Value::Object).collect());
     orm::update(&c.db, "parties", ids[0], &[("loot_json", s(&nd_render::py_dumps(&list)))])?;
