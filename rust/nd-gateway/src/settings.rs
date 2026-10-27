@@ -298,13 +298,11 @@ fn now() -> Option<u64> {
 }
 
 /// `GET /settings`
-pub fn settings_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
-    let db = crate::writes::open(cfg)?;
-    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now()?)?;
+pub fn page_context(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &HeaderMap, tab: &str) -> Option<crate::layout::PageCtx> {
+    let mut p = crate::layout::build(db, cfg, method, uri, headers, now()?)?;
     if !p.is_gm {
         return None;
     }
-    let tab = crate::pages::query_param(uri, "tab").unwrap_or_else(|| "options".into());
     let st = db.query_row("SELECT * FROM app_settings ORDER BY id LIMIT 1", [], |r| crate::layout::row_map(r)).ok()?;
     let world = p.world.clone();
     let wid = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
@@ -358,7 +356,7 @@ pub fn settings_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let (diag_status, diag_events, diag_dumps) = diagnostics(cfg);
     let build = env("ND_BUILD");
     let build: String = nd_render::text::py_strip(&build).chars().take(7).collect();
-    let active = if ["options", "system", "visibility", "navigation", "diagnostics"].contains(&tab.as_str()) { tab.as_str() } else { "options" };
+    let active = if ["options", "system", "visibility", "navigation", "diagnostics"].contains(&tab) { tab } else { "options" };
     let strip_slash = |k: &str| env(k).trim_end_matches('/').to_string();
     let c = &mut p.ctx;
     c.insert("resources".into(), resources(&st));
@@ -407,6 +405,12 @@ pub fn settings_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     c.insert("diag_events".into(), diag_events);
     c.insert("diag_dumps".into(), diag_dumps);
     c.insert("settings".into(), Value::Object(st));
+    Some(p)
+}
+
+pub fn settings_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let p = page_context(&db, cfg, "GET", uri, headers, &crate::pages::query_param(uri, "tab").unwrap_or_else(|| "options".into()))?;
     crate::pages::render_with(pages, "settings.html", p.ctx, headers)
 }
 

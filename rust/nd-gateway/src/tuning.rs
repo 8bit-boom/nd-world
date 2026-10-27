@@ -344,3 +344,125 @@ mod tests {
         assert_eq!(r["unsloth"]["quant"], "a 4-bit quant (e.g. UD-IQ4_NL / Q4_K_M)");
     }
 }
+
+pub fn gpu_preset_keys() -> Vec<&'static str> {
+    GPU_PRESETS.iter().map(|(k, _, _)| *k).collect()
+}
+
+// ── the server-env spec and its sanitizer (app/ollama_tuning.py's SERVER_ENV_SPEC / sanitize_server_env) ─────
+
+pub struct ServerEnvField {
+    pub env_key: &'static str,
+    pub suffix: &'static str,
+    pub kind: &'static str,
+    /// a "choice" field's allowed values; an "int" field's (lo, hi) as text; empty for duration / token
+    pub spec: &'static [&'static str],
+}
+
+/// SERVER_ENV_SPEC, verbatim
+pub const SERVER_ENV_SPEC: &[ServerEnvField] = &[
+    ServerEnvField { env_key: "OLLAMA_FLASH_ATTENTION", suffix: "flash_attention", kind: "choice", spec: &["1", "0"] },
+    ServerEnvField { env_key: "OLLAMA_KV_CACHE_TYPE", suffix: "kv_cache_type", kind: "choice", spec: &["f16", "q8_0", "q4_0"] },
+    ServerEnvField { env_key: "OLLAMA_NUM_PARALLEL", suffix: "num_parallel", kind: "int", spec: &["0", "32"] },
+    ServerEnvField { env_key: "OLLAMA_MAX_LOADED_MODELS", suffix: "max_loaded_models", kind: "int", spec: &["0", "16"] },
+    ServerEnvField { env_key: "OLLAMA_MAX_QUEUE", suffix: "max_queue", kind: "int", spec: &["1", "4096"] },
+    ServerEnvField { env_key: "OLLAMA_KEEP_ALIVE", suffix: "keep_alive", kind: "duration", spec: &[] },
+    ServerEnvField { env_key: "OLLAMA_CONTEXT_LENGTH", suffix: "context_length", kind: "int", spec: &["256", "1048576"] },
+    ServerEnvField { env_key: "OLLAMA_LOAD_TIMEOUT", suffix: "load_timeout", kind: "duration", spec: &[] },
+    ServerEnvField { env_key: "OLLAMA_GPU_OVERHEAD", suffix: "gpu_overhead", kind: "int", spec: &["0", "137438953472"] },
+    ServerEnvField { env_key: "OLLAMA_SCHED_SPREAD", suffix: "sched_spread", kind: "choice", spec: &["1", "0"] },
+    ServerEnvField { env_key: "OLLAMA_DEBUG", suffix: "debug", kind: "choice", spec: &["1", "2"] },
+    ServerEnvField { env_key: "OLLAMA_IGPU_ENABLE", suffix: "igpu_enable", kind: "choice", spec: &["1", "0"] },
+    ServerEnvField { env_key: "OLLAMA_VULKAN", suffix: "vulkan", kind: "choice", spec: &["1", "0"] },
+    ServerEnvField { env_key: "HSA_OVERRIDE_GFX_VERSION", suffix: "hsa_override_gfx", kind: "token", spec: &[] },
+    ServerEnvField { env_key: "ROCR_VISIBLE_DEVICES", suffix: "rocr_visible", kind: "token", spec: &[] },
+    ServerEnvField { env_key: "CUDA_VISIBLE_DEVICES", suffix: "cuda_visible", kind: "token", spec: &[] },
+];
+
+pub const ENV_FILENAME: &str = "ollama.env";
+
+/// `_SAFE_VALUE`
+fn srv_safe_value(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || ".,:+/-_".contains(c))
+}
+
+/// `_DURATION`
+fn srv_duration(v: &str) -> bool {
+    let body = v.strip_prefix('-').unwrap_or(v);
+    let (num, unit) = body.split_at(body.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(body.len()));
+    let ok_num = !num.is_empty() && num.parse::<f64>().is_ok();
+    matches!((ok_num, unit), (true, "") | (true, "ns") | (true, "us") | (true, "ms") | (true, "s") | (true, "m") | (true, "h"))
+}
+
+/// `sanitize_server_env`: `raw` is the form's ollama_srv_* values keyed by env var name → (clean, errors), Python's
+/// messages verbatim. A key not in the spec is dropped silently (the allowlist is a security boundary).
+pub fn sanitize_server_env(raw: &Value) -> (Value, Vec<String>) {
+    let mut clean = serde_json::Map::new();
+    let mut errors = vec![];
+    for f in SERVER_ENV_SPEC {
+        let Some(value) = raw.get(f.env_key) else { continue };
+        let value = match value {
+            Value::String(t) => t.trim().to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => continue,
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let mut stored: Option<String> = None;
+        match f.kind {
+            "choice" => {
+                if !f.spec.contains(&value.as_str()) {
+                    errors.push(format!("{} must be one of: {}", f.env_key, f.spec.join(", ")));
+                    continue;
+                }
+            }
+            "int" => {
+                let (lo, hi) = (f.spec[0].parse::<i64>().unwrap_or(0), f.spec[1].parse::<i64>().unwrap_or(i64::MAX));
+                match value.parse::<i64>() {
+                    Err(_) => {
+                        errors.push(format!("{} must be a whole number", f.env_key));
+                        continue;
+                    }
+                    Ok(parsed) if !(lo <= parsed && parsed <= hi) => {
+                        errors.push(format!("{} must be between {} and {}", f.env_key, lo, hi));
+                        continue;
+                    }
+                    Ok(parsed) => stored = Some(parsed.to_string()),
+                }
+            }
+            "duration" => {
+                if !srv_duration(&value) {
+                    errors.push(format!("{} must be a duration like '30m', '5h', '-1', or '0'", f.env_key));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        if !srv_safe_value(&value) {
+            errors.push(format!("{} contains characters that aren't allowed", f.env_key));
+            continue;
+        }
+        clean.insert(f.env_key.into(), json!(stored.unwrap_or(value)));
+    }
+    (Value::Object(clean), errors)
+}
+
+/// `render_env_file`: deterministic SERVER_ENV_KEYS order
+pub fn render_env_file(values: &Value) -> String {
+    let keys = ["OLLAMA_FLASH_ATTENTION", "OLLAMA_KV_CACHE_TYPE", "OLLAMA_NUM_PARALLEL", "OLLAMA_MAX_LOADED_MODELS", "OLLAMA_MAX_QUEUE",
+        "OLLAMA_KEEP_ALIVE", "OLLAMA_CONTEXT_LENGTH", "OLLAMA_LOAD_TIMEOUT", "OLLAMA_GPU_OVERHEAD", "OLLAMA_SCHED_SPREAD",
+        "OLLAMA_DEBUG", "OLLAMA_IGPU_ENABLE", "OLLAMA_VULKAN", "HSA_OVERRIDE_GFX_VERSION", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"];
+    let mut lines = vec![
+        "# Generated by nd-world (Settings > System > Ollama server tuning).".to_string(),
+        "# Do not edit by hand -- it is overwritten on every save.".to_string(),
+        "# Sourced by the \"ollama\" service at container start; see docker-compose.yml.".to_string(),
+    ];
+    for key in keys {
+        if let Some(v) = values.get(key).and_then(|v| v.as_str()) {
+            lines.push(format!("{key}={v}"));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+

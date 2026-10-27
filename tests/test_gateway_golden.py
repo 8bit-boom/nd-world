@@ -5589,3 +5589,112 @@ def test_settings_saves_are_pythons(client, seed):
     assert served >= 4, served
     # a missing row: both servers would fail the same way (the app always has one; skip)
     # an odd float that Python's float() accepts and serde would too is covered by "2.5" above
+def test_settings_system_save_is_pythons(client, seed):
+    """POST /settings/system from the gateway: the URL validation (400 with Python's message), the optional-number
+    fields' parse failures and bounds (the first failure is the message), the upload limits, the use_mmap / gpu_preset
+    fallbacks, the checkbox toggles, the API-key leave / clear / replace rules, the server-env sanitizer's allowlist -
+    the columns compared after every save; a Studio-key or model-override POST is not this route."""
+    from app.database import SessionLocal
+    from app.models import AppSettings
+    from tests.test_gateway_writes import _row_by
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    FIELDS = ("ollama_model", "ollama_url", "llm_url", "llm_model", "llm_api_key", "llm_api_key_clear",
+              "swarmui_external_url", "android_emulator_url", "editor_external_url", "dreamlands_enabled",
+              "king_in_yellow_enabled", "ollama_keep_alive", "ollama_use_mmap", "ollama_gpu_preset",
+              "ollama_srv_flash_attention", "ollama_srv_num_parallel", "ollama_srv_context_length",
+              "ollama_srv_keep_alive", "ollama_srv_hsa_override_gfx_version",
+              "ollama_temperature", "ollama_top_k", "session_media_max", "max_upload_mb")
+
+    def run(side, data):
+        r = side.post("/settings/system", data=data, follow_redirects=False)
+        row = _row_by("app_settings", "id", 1)
+        keep = {k: row[k] for k in FIELDS if k in row} if row else {}
+        body = r.text if r.status_code != 303 else r.headers.get("location")
+        return r.status_code, body, keep, r.headers.get("x-nd-served-by")
+
+    def base_form(**kw):
+        f = {"ollama_model": "llama3", "ollama_url": "http://ollama:11434/", "llm_url": "https://api.unsloth.dev/v1",
+             "llm_model": "nd-test/model", "llm_api_key": "", "ollama_keep_alive": "5m",
+             "swarmui_external_url": "", "android_emulator_url": "", "editor_external_url": "",
+             "ollama_srv_flash_attention": "1", "ollama_srv_num_parallel": "2", "ollama_srv_context_length": "8192"}
+        f.update(kw)
+        return f
+
+    served = 0
+    cases = [
+        # the happy path: everything written, the trailing slash stripped off the URLs
+        (base_form(ollama_url="http://ollama:11434/", dreamlands_enabled="1", ollama_temperature="0.7",
+                   ollama_top_k="40", session_media_max="12", max_upload_mb="50", llm_api_key="sk-test-123"),
+         {"ollama_url": "http://ollama:11434", "dreamlands_enabled": 1, "ollama_temperature": 0.7, "ollama_top_k": 40,
+          "session_media_max": 12, "max_upload_mb": 50, "llm_api_key": "sk-test-123"}),
+        # URL validation: the message names the field
+        (base_form(ollama_url="ollama:11434"), "Ollama URL must start with http:// or https://"),
+        (base_form(llm_url="ftp://x"), "Unsloth URL must start with http:// or https://"),
+        # number bounds: the first failure is the message
+        (base_form(ollama_temperature="2.5"), "Temperature must be at most 2"),
+        (base_form(ollama_top_k="-3"), "Top K must be at least 0"),
+        (base_form(ollama_num_ctx="0.5"), "Context length must be a whole number"),
+        (base_form(session_media_max="99"), "Pictures, videos and audio per session must be at most 50"),
+        (base_form(max_upload_mb="x"), "General upload limit (MB) must be a whole number"),
+        # use_mmap / gpu_preset fallbacks
+        (base_form(ollama_use_mmap="yes", ollama_gpu_preset="bogus"), None),
+        # the server env sanitizer's allowlist
+        (base_form(ollama_srv_flash_attention="bogus"), "OLLAMA_FLASH_ATTENTION must be one of"),
+        (base_form(ollama_srv_num_parallel="99"), "OLLAMA_NUM_PARALLEL must be between 0 and 32"),
+        (base_form(ollama_srv_hsa_override_gfx_version="bad value!"), "OLLAMA_... contains characters that aren't allowed"),
+    ]
+    for form, expect in cases:
+        out = []
+        for side in (d, v):
+            db = SessionLocal()
+            try:
+                s = db.get(AppSettings, 1)
+                s.ollama_model, s.ollama_url, s.llm_url, s.llm_model = "old", "http://old", "http://old", "oldm"
+                s.llm_api_key = "oldkey"
+                s.ollama_srv_flash_attention, s.ollama_srv_num_parallel, s.ollama_srv_context_length = None, None, None
+                s.ollama_srv_hsa_override_gfx_version = None
+                s.dreamlands_enabled, s.king_in_yellow_enabled = False, False
+                db.commit()
+            finally:
+                db.close()
+            out.append(run(side, form))
+        # the status and the row state must match; the 400 pages' HTML bytes may differ (the gateway's
+        # page context is the refactored one), so compare the message text instead
+        assert out[0][0] == out[1][0], (form, out[0][0], out[1][0])
+        assert out[0][2] == out[1][2], (form, out[0][2], out[1][2])
+        if isinstance(expect, dict):
+            for k, want in expect.items():
+                assert out[1][2].get(k) == want, (k, out[1][2].get(k), want)
+        elif isinstance(expect, str):
+            assert expect.split("OLLAMA_...")[0] in out[0][1], (expect, out[0][1][:150])
+            assert expect.split("OLLAMA_...")[0] in out[1][1], (expect, out[1][1][:150])
+        served += out[1][3] == "gateway"
+        served += out[1][3] == "gateway"
+    assert served >= 8, served
+    # the key rules: a blank submit leaves the saved key, the clear checkbox erases it
+    db = SessionLocal()
+    try:
+        s = db.get(AppSettings, 1)
+        s.llm_api_key = "savedkey"
+        db.commit()
+    finally:
+        db.close()
+    out = []
+    for side in (d, v):
+        db = SessionLocal()
+        try:
+            s = db.get(AppSettings, 1)
+            s.llm_api_key = "savedkey"
+            db.commit()
+        finally:
+            db.close()
+        out.append(run(side, base_form(llm_api_key="")))
+    assert out[0][2]["llm_api_key"] == out[1][2]["llm_api_key"] == "savedkey", (out[0][2]["llm_api_key"], out[1][2]["llm_api_key"])
+    out = []
+    for side in (d, v):
+        out.append(run(side, base_form(llm_api_key_clear="1")))
+    assert out[0][2]["llm_api_key"] == out[1][2]["llm_api_key"] == "", (out[0][2]["llm_api_key"], out[1][2]["llm_api_key"])
+    assert out[1][3] == "gateway"

@@ -31,6 +31,13 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
+  URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
+  the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level
+  Ollama env (tuning.rs's SERVER_ENV_SPEC sanitizer, verbatim, plus the deterministic env-file writer — written after
+  the DB save, an unwritable dir surfacing as a 200 page warning as Python's does). Errors re-render settings.html at
+  400 through the shared page_context. The model-override / Studio-key sub-routes stay Python's (the key verify calls
+  Studio; the override routes are small focused posts).
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

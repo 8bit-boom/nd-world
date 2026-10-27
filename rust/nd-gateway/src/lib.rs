@@ -40,6 +40,7 @@ pub mod gallery;
 pub mod home;
 pub mod hub;
 pub mod importer;
+pub mod settings_system;
 pub mod startup;
 pub mod imaging;
 pub mod markup;
@@ -279,6 +280,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/settings/system" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
+        // the big System-tab save (settings_system.rs): validation errors re-render the page at 400
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        match settings_system::settings_system_save_srv(app.cfg.clone(), app.pages.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            Some(resp) => return resp,
+            None => return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await,
+        }
     }
     if req.method() == axum::http::Method::POST && req.uri().path() == "/account/password" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         // the password change with the gateway's own lockout counter (batch G: Python's in-memory counter is replaced)
