@@ -4669,3 +4669,156 @@ def test_party_rest_undo_is_pythons(client, seed):
     assert out[0][:3] == out[1][:3], out
     assert out[1][0] == 200 and out[0][2] == 9, out
     assert served >= 10, served
+
+
+def test_sheet_int_coercions_are_pythons(client, seed):
+    """The quick-edit routes' value parsing is int_field (app/pc_stats.py): ints and int-strings
+    (underscores, surrounding whitespace, a sign) are Python's int(); a float number truncates;
+    a bool says '{key} must be a number'; anything else says '{key} must be a whole number' -
+    both as a 400 {"detail": ...}; a Unicode-digit string (Python reads it) and a value beyond
+    i64 go to Python (the gateway declines them). The row, the log and the answer compared."""
+    from app.database import SessionLocal
+    from app.models import CharacterPref
+    base = str(client.base_url)
+    w, o = seed.world_a.id, seed.player_a.id
+    calls = [
+        ("hp-async", {"value": "7"}), ("hp-async", {"value": "  -3 "}), ("hp-async", {"value": "+1_0"}),
+        ("hp-async", {"value": 2.7}), ("hp-async", {"value": -0.9}), ("hp-async", {"value": True}),
+        ("hp-async", {"value": "x"}), ("hp-async", {"value": [1]}), ("hp-async", {"value": None}),
+        ("hp-async", {"value": "1__2"}), ("hp-async", {"action": "delta", "value": "1_0"}),
+        ("shock", {"value": "3"}), ("shock", {"value": False}), ("shock", {"value": "sp"}),
+        ("pp", {"value": 1.2}), ("mp", {"value": "2_0"}),
+        ("carry-limit", {"value": "40"}), ("carry-limit", {"value": True}), ("carry-limit", {"value": "9" * 25}),
+        ("currency", {"abbr": "gp", "value": "3.7"}), ("currency", {"abbr": "gp", "value": 1.9}),
+        ("xp", {"delta": True}), ("xp", {"delta": "١٢٣"}),
+        ("equipment", {"action": "qty", "index": 0, "delta": "3"}), ("equipment", {"action": "qty", "index": 0, "delta": True}),
+        ("ability-use", {"index": 0, "spend": "2", "pp": "1"}), ("advance", {"value": "5"}),
+    ]
+    served = 0
+    for email, pw, world in _people(seed):
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for path, body in calls:
+            ids = [_pc(world_id=w, owner_user_id=o, name="C", level=2, xp=100, equipment_json='[{"name":"Rope","qty":2}]') for _ in range(2)]
+            before = [_row("player_characters", i) for i in ids]
+            ra = d.post(f"/api/characters/{ids[0]}/{path}", json=body)
+            rb = via.post(f"/api/characters/{ids[1]}/{path}", json=body)
+            _same_answer(ra, rb)
+            _same_rows(_row("player_characters", ids[0]), _row("player_characters", ids[1]), before[0], before[1])
+            assert _logs(ids[0]) == _logs(ids[1]), (path, body, _logs(ids[0]), _logs(ids[1]))
+            served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 20, served
+
+
+def test_character_roll_is_pythons(client, seed):
+    """POST /api/characters/{}/roll from the gateway: the stat branch (Stat + d10, adv/dis, the PP/MP
+    boost spent and logged) and the pool branch (the template system's dice spec, the override, the
+    Stamina spend with its tally and into/every side effects). The dice are random, so each side's
+    answer is checked against ITS OWN roll's arithmetic and the two shapes compared; the 400s are
+    deterministic and compared whole."""
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    from sqlalchemy import text
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fields = json.dumps([
+        {"id": "kind", "type": "select", "label": "Kind", "options": ["Mortal (1)", "God (2)"]},
+        {"id": "stamina", "type": "resource", "label": "Stamina"},
+        {"id": "strain", "type": "number", "label": "Strain", "options": [0, 1, 2, 3]},
+    ])
+    system = json.dumps({"dice": {"threshold": 6, "explode": True,
+                                  "pools": [{"id": "normal", "label": "Standard action", "dice": 2,
+                                             "override": {"field": "kind", "equals": "Mortal", "dice": 1}},
+                                            {"id": "domain", "label": "Domain", "dice": 3}],
+                                  "spend": {"field": "stamina", "label": "Stamina", "per": 1,
+                                            "tally": "staminaSpent", "into": "strain", "every": 3}}})
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(name="PoolSys", slug="poolsys", sheet_mode="custom", fields_json=fields, system_json=system)
+        db.add(tpl)
+        db.commit()
+        tpl_id = tpl.id
+    finally:
+        db.close()
+
+    nd_stats = json.dumps([{"id": "int", "value": 2}, {"id": "str", "value": 3}])
+    pool_cf = json.dumps({"kind": "Mortal (1)", "stamina_current": 5, "staminaSpent": 1, "strain": "1"})
+
+    def shape_stat(j, value=2, boost=0, mode="normal"):
+        die, rolls = j["die"], j["rolls"]
+        kept = max(rolls) if mode == "adv" else min(rolls) if mode == "dis" else rolls[0]
+        return (j["kind"], j["total"] == value + die + boost, len(rolls), 1 <= die <= 10, die == kept, j["mode"],
+                j["crit"] == (die == 10), j["fail"] == (die == 1), j["notation"], [p["term"] for p in j["roll"]["breakdown"]],
+                j["roll"]["label"], j["spent"] and (j["spent"]["pool"], j["spent"]["amount"], j["spent"]["current"], j["spent"]["max"]))
+
+    def shape_pool(j, n, base, spend, mod, need):
+        return (j["kind"], j["n"], j["base"], j["spend"], j["mod"], j["need"],
+                j["successes"] == sum(1 for d in j["dice"] if d["ok"]), len(j["dice"]) >= n,
+                (j["ok"] == (j["successes"] >= need)) if need else j["ok"] is None, j["roll"]["notation"].split(" · ")[0], j["label"], j["spend_label"],
+                [p["term"] for p in j["roll"]["breakdown"]])
+
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    served = 0
+    cases = [
+        ("stat", {"kind": "stat", "stat": "int"}, "stat", dict(value=2)),
+        ("stat", {"kind": "stat", "stat": "INT", "mode": "adv", "boost": 2}, "stat", dict(value=2, boost=2, mode="adv")),
+        ("stat", {"kind": "stat", "stat": "cha", "boost": 1}, "stat", dict(value=0, boost=1)),
+        ("stat", {"kind": "stat", "stat": "nope"}, 400, "Unknown stat"),
+        ("stat", {"kind": "pool", "pool": "normal"}, 400, "This system has no dice-pool rules"),
+        ("pool", {"kind": "pool", "pool": "normal"}, "pool", dict(n=1, base=1, spend=0, mod=0, need=0)),
+        ("pool", {"kind": "pool", "pool": "domain", "spend": 2, "mod": 1, "need": 2}, "pool", dict(n=6, base=3, spend=2, mod=1, need=2)),
+        ("pool", {"kind": "pool", "pool": "nope"}, 400, "Unknown pool"),
+        ("pool", {"kind": "pool", "pool": "normal", "spend": 9}, 400, "Not enough Stamina to spend 9"),
+        ("pool", {"kind": "stat", "stat": "int"}, 400, "This character's system rolls a dice pool, not Stat + d10"),
+        (None, {"kind": "x"}, 400, "kind must be stat or pool"),
+    ]
+    for tpl_arg, body, expect_kind, expect in cases:
+        out = []
+        for side in (True, False):
+            if tpl_arg == "stat":
+                pid = _pc(world_id=w, owner_user_id=seed.gm.id, name="Roller", level=2, stats_json=nd_stats, mp_current=3)
+            elif tpl_arg == "pool":
+                pid = _pc(world_id=w, owner_user_id=seed.gm.id, name="Pooly", sheet_template_id=tpl_id,
+                          custom_fields_json=pool_cf, stats_json="[]")
+            else:  # tpl_arg None: kind check happens before the template read
+                pid = _pc(world_id=w, owner_user_id=seed.gm.id, name="Any", stats_json=nd_stats)
+            before = _row("player_characters", pid)
+            c = gm if side else _via(gm, base)
+            r = c.post(f"/api/characters/{pid}/roll", json=body)
+            row = _row("player_characters", pid)
+            logs = _logs(pid)
+            entry = (r.status_code, None, row, logs, r.headers.get("x-nd-served-by"))
+            if r.status_code == 200:
+                j = r.json()
+                if expect_kind in ("stat", "stat_on_nd"):
+                    assert j["kind"] == "stat", (body, j)
+                    entry = (r.status_code, shape_stat(j, **(expect or {})), row, logs, entry[4])
+                else:
+                    assert j["kind"] == "pool", (body, j)
+                    entry = (r.status_code, shape_pool(j, **expect), row, logs, entry[4])
+            elif r.status_code == 400:
+                entry = (r.status_code, r.json().get("detail"), row, logs, entry[4])
+            out.append(entry)
+        assert out[0][0] == out[1][0] and out[0][1] == out[1][1], (body, out[0][:2], out[1][:2])
+        if out[0][0] == 400:
+            assert out[0][1] == expect, (body, out[0][1], expect)
+        if out[0][0] == 200 and expect_kind == "stat":
+            # the boost's spend: the column and the log, on both sides
+            boost = body.get("boost") or 0
+            col = "mp_current" if body.get("stat", "").lower() in ("wil", "int", "cha", "itu") else "pp_current"
+            want = (before[col] or 0) - boost
+            assert out[0][2][col] == out[1][2][col] == want, (body, out[0][2][col], out[1][2][col], want)
+            if boost:
+                assert "boosted a" in out[1][3][-1]["text"], out[1][3][-1]
+        if out[0][0] == 200 and expect_kind == "pool" and body.get("spend"):
+            cf = json.loads(out[1][2]["custom_fields_json"])
+            assert cf["stamina_current"] == 5 - body["spend"] and cf["staminaSpent"] == 1 + body["spend"], cf
+            assert "dice pool" in out[1][3][-1]["text"], out[1][3][-1]
+        served += out[1][4] == "gateway"
+    db = SessionLocal()
+    try:
+        db.execute(text("DELETE FROM sheet_templates WHERE id = :t"), {"t": tpl_id})
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 8, served

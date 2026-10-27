@@ -163,7 +163,7 @@ Already ported since the census was taken (ignore in the list): `/pages/sheets*`
 
 Busiest in `docs/census/mixed.txt` (`python/gateway` counts). Typical remaining cases are refusals (404/403/400 with Python's
 message), pydantic coercions, and data the port declines on. Top: `POST /api/characters/{}/equipment|feats|hp-async|conditions|currency`
-(remaining: odd stored data, coercions), `POST /api/parties/{}/loot`, `GET /sessions/{}`, `POST /tables/{}/edit`, `GET /entity/{}`,
+(the coercions are now `body_int_py`'s int_field-exact parsing), `POST /api/characters/{}/roll` (ported), `POST /api/parties/{}/loot`, `GET /sessions/{}`, `POST /tables/{}/edit`, `GET /entity/{}`,
 `POST /api/entity/{}/markup`, `GET /`, `POST /api/cockpit/workspace`, `GET /calendar`, `POST /api/display/show`,
 `POST /characters/new`, `POST /parties/{}/edit`, `POST /quests/{}/edit`, `POST /calendar/config`, `POST /characters/{}/owner|edit`,
 `GET /api/schedule/state`, `POST /worlds/{}/edit`, `POST /new`, `POST /api/calendar/events`, `POST /entity/{}/edit`, ...

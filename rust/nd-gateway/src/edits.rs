@@ -235,6 +235,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/{}/ability-ready", pc_ability_ready),
     ("/api/characters/{}/equipment", pc_equipment),
     ("/api/characters/{}/carry-limit", pc_carry_limit),
+    ("/api/characters/{}/roll", pc_roll),
     ("/characters/new", pc_new),
     ("/characters/{}/edit", pc_edit),
     ("/characters/{}/owner", pc_owner),
@@ -614,6 +615,10 @@ fn run(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8
         (_, Some((h, slug))) => h(&mut ctx, &slug),
         _ => None,
     };
+    if answer.is_none() && std::env::var_os("ND_DECLINE_TRACE").is_some() {
+        // why did this route decline? the body is usually the answer (docs/RUST_PORT_HANDOFF.md)
+        eprintln!("DECLINE {} {} body={}", method.as_str(), uri.path(), String::from_utf8_lossy(body));
+    }
     if answer.is_some() && ctx.db.execute_batch("COMMIT").is_ok() {
         ctx.apply_removals();
         return answer;
@@ -2675,11 +2680,77 @@ pub(crate) fn pc_maxima(db: &Connection, pc: &Map<String, Value>) -> Option<(i64
 }
 
 /// `int_field(body, key)` for a JSON int (floats, numeric text and bools are int()'s: Python's)
-fn body_int(b: &Map<String, Value>, key: &str) -> Option<i64> {
+/// body_int for the quick-edit routes: int_field's coercion, its 400s answered (see body_int_py)
+macro_rules! body_int {
+    ($b:expr, $k:expr) => {
+        match body_int_py(&$b, $k) {
+            Ok(v) => v,
+            Err(Some(m)) => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, m)),
+            Err(None) => return None,
+        }
+    };
+}
+
+/// What Python's int() does with a string: Ok — the value; Invalid — Python raises
+/// (a 400 "must be a whole number"); Forward — Python accepts it but this parser
+/// cannot do it exactly (Unicode digits, a value beyond i64): decline.
+enum PyIntStr {
+    Ok(i64),
+    Invalid,
+    Forward,
+}
+
+/// Python's int() on a string: surrounding Unicode whitespace stripped (str.isspace, so \x1c-\x1f too),
+/// an optional sign, digits with underscores BETWEEN digits, nothing else. Non-ASCII digits
+/// (Python reads Unicode decimals) and overflow are Forward.
+fn py_int_str(s: &str) -> PyIntStr {
+    let t: String = s.trim_matches(|c: char| crate::markup::py_space(c)).to_string();
+    let rest = t.strip_prefix('+').or_else(|| t.strip_prefix('-')).unwrap_or(&t);
+    let neg = t.starts_with('-');
+    let b = rest.as_bytes();
+    if b.is_empty() {
+        return PyIntStr::Invalid;
+    }
+    for (i, &ch) in b.iter().enumerate() {
+        if ch == b'_' {
+            let prev_digit = i > 0 && b[i - 1].is_ascii_digit();
+            let next_digit = i + 1 < b.len() && b[i + 1].is_ascii_digit();
+            if !prev_digit || !next_digit {
+                return PyIntStr::Invalid;
+            }
+        } else if !ch.is_ascii_digit() {
+            return PyIntStr::Forward;
+        }
+    }
+    let digits: String = rest.chars().filter(|c| *c != '_').collect();
+    match digits.parse::<i64>() {
+        Ok(v) => PyIntStr::Ok(if neg { -v } else { v }),
+        Err(_) => PyIntStr::Forward,
+    }
+}
+
+/// int_field (app/pc_stats.py): the quick-edit routes' `int(body[key], default 0)` with the bool check.
+/// Ok: the value. Err(Some(msg)): Python's 400 {"detail": msg}. Err(None): a value this parser cannot do
+/// exactly (a float beyond i64, Unicode digits) — decline, Python answers.
+fn body_int_py(b: &Map<String, Value>, key: &str) -> Result<i64, Option<String>> {
     match b.get(key) {
-        None => Some(0),
-        Some(Value::Number(n)) => n.as_i64().filter(|v| v.abs() < 1 << 53),
-        _ => None,
+        None => Ok(0),
+        Some(Value::Bool(_)) => Err(Some(format!("{key} must be a number"))),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i)
+            } else if let Some(f) = n.as_f64().filter(|f| f.is_finite() && f.abs() < 9.2e18) {
+                Ok(f.trunc() as i64)
+            } else {
+                Err(None)
+            }
+        }
+        Some(Value::String(sv)) => match py_int_str(sv) {
+            PyIntStr::Ok(v) => Ok(v),
+            PyIntStr::Invalid => Err(Some(format!("{key} must be a whole number"))),
+            PyIntStr::Forward => Err(None),
+        },
+        Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => Err(Some(format!("{key} must be a whole number"))),
     }
 }
 
@@ -2717,6 +2788,326 @@ fn log_num(c: &Ctx, pc: &Map<String, Value>, op: &str, label: &str, before: i64,
     Some(())
 }
 
+/// `POST /api/characters/{}/roll` (app/routers/characters.py `character_roll`): the sheet's two dice
+/// engines — a N&D Stat + d10 (+ PP / MP boost) check, or the template system's success pool with a
+/// spent track. Random numbers differ per side, so the parity test compares shapes and totals'
+/// derivation, not the dice (as with /api/dice/roll).
+fn pc_roll(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if let Some(r) = pc_gate(c, ids[0], true) {
+        return Some(r);
+    }
+    let b = c.json()?;
+    let pc = managed_pc(c, ids[0])?;
+    let wid = pc.get("world_id")?.as_i64()?;
+    let world = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", wid)?;
+    let kind = match b.get("kind") {
+        None | Some(Value::Null) => "stat",
+        Some(Value::String(k)) => k.as_str(),
+        Some(_) => "other",
+    };
+    if kind == "stat" {
+        let (.., native) = pc_maxima(&c.db, &pc)?;
+        if !native {
+            return Some(detail400("This character's system rolls a dice pool, not Stat + d10"));
+        }
+        let stat = match b.get("stat") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(t)) => t.clone(),
+            Some(Value::Bool(x)) => {
+                if *x { "True".into() } else { "False".into() }
+            }
+            Some(Value::Number(n)) => py_num_repr(n)?,
+            Some(_) => return None,
+        }
+        .to_lowercase();
+        let pool = match stat.as_str() {
+            "str" | "dex" | "bod" | "per" => "pp",
+            "wil" | "int" | "cha" | "itu" => "mp",
+            _ => return Some(detail400("Unknown stat")),
+        };
+        let stats = stat_values(&pc)?;
+        let value = stats.iter().find(|(id, _)| *id == stat).map_or(0, |(_, v)| *v);
+        let boost = body_int!(b, "boost").clamp(0, 2);
+        let mode = match b.get("mode") {
+            Some(Value::String(m)) if m == "adv" || m == "dis" => m.as_str(),
+            _ => "normal",
+        };
+        let col = format!("{pool}_current");
+        let have = col_int(&pc, &col);
+        if boost > have {
+            return Some(detail400(&format!("Not enough {} to spend {boost}", pool.to_uppercase())));
+        }
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let n = if mode == "normal" { 1 } else { 2 };
+        let rolls: Vec<i64> = (0..n).map(|_| rng.gen_range(1..=10)).collect();
+        let die = if mode == "adv" { *rolls.iter().max()? } else if mode == "dis" { *rolls.iter().min()? } else { rolls[0] };
+        let total = value + die + boost;
+        let (crit, fail) = (die == 10, die == 1);
+        let label_stat = match stat.as_str() {
+            "str" => "Strength", "dex" => "Dexterity", "bod" => "Body", "per" => "Perception",
+            "wil" => "Willpower", "int" => "Intellect", "cha" => "Charisma", _ => "Intuition",
+        };
+        if boost > 0 {
+            orm::update(&c.db, "player_characters", ids[0], &[(&col, Sql::Integer(have - boost))])?;
+            char_log(c, &pc, "resource", &format!("{} {} \u{2192} {} (boosted a {} roll)", pool.to_uppercase(), have, have - boost, label_stat),
+                &json!({"op": pool, "value": have}))?;
+        }
+        let term = if mode == "adv" { "2d10 keep higher" } else if mode == "dis" { "2d10 keep lower" } else { "1d10" };
+        let mut parts = vec![
+            json!({"term": term, "rolls": rolls, "sum": die}),
+            json!({"term": format!("+{value} {}", stat.to_uppercase()), "sum": value}),
+        ];
+        if boost > 0 {
+            parts.push(json!({"term": format!("+{boost} {}", pool.to_uppercase()), "sum": boost}));
+        }
+        let parts = Value::Array(parts);
+        let notation = format!("{}+{value}{}", if mode == "adv" { "2d10kh1" } else if mode == "dis" { "2d10kl1" } else { "1d10" }, if boost > 0 { format!("+{boost}") } else { String::new() });
+        let (logged, shared) = save_roll(c, &world, &notation, &parts, total, &format!("{label_stat} check \u{2014} {}", pc.get("name").and_then(|v| v.as_str()).unwrap_or("")))?;
+        let (.., pp_max, mp_max, _) = pc_maxima(&c.db, &pc)?;
+        let spent = if boost > 0 {
+            json!({"pool": pool, "amount": boost, "current": have - boost, "max": if pool == "pp" { pp_max } else { mp_max }})
+        } else {
+            Value::Null
+        };
+        orm::touch(&c.db, wid)?;
+        return json_response(&json!({"kind": "stat", "total": total, "die": die, "rolls": rolls, "mode": mode, "crit": crit,
+            "fail": fail, "shared": shared, "notation": notation, "roll": logged, "spent": spent}));
+    }
+    if kind != "pool" {
+        return Some(detail400("kind must be stat or pool"));
+    }
+    let tpl = crate::sheets::pc_template(&c.db, &pc).flatten();
+    let dice_spec = match &tpl {
+        Some(t) => match t.spec.get("dice") {
+            Some(Value::Object(d)) if d.get("pools").and_then(|p| p.as_array()).is_some_and(|p| !p.is_empty()) => d.clone(),
+            _ => return Some(detail400("This system has no dice-pool rules")),
+        },
+        None => return Some(detail400("This system has no dice-pool rules")),
+    };
+    let cf = crate::sheets::custom_fields(&pc)?;
+    // pool_dice: the first pool with this id, its dice or its override's when the character's field matches
+    let pool_id = match b.get("pool") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Number(n)) => py_num_repr(n)?,
+        Some(Value::Bool(x)) => {
+            if *x { "True".into() } else { "False".into() }
+        }
+        Some(_) => return None,
+    };
+    let pools = dice_spec.get("pools")?.as_array()?;
+    let pool = pools.iter().filter_map(|p| p.as_object()).find(|p| p.get("id").and_then(|v| v.as_str()) == Some(pool_id.as_str()))?;
+    let mut base = match pool.get("dice") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => 1,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    }
+    .max(1);
+    if let Some(Value::Object(ov)) = pool.get("override") {
+        let field = ov.get("field").and_then(|v| v.as_str()).unwrap_or("");
+        let have = match cf.get(field) {
+            None => String::new(),
+            Some(v) => py_str_val(v)?,
+        };
+        let want = match ov.get("equals") {
+            None => String::new(),
+            Some(Value::String(t)) => t.clone(),
+            Some(Value::Number(n)) => py_num_repr(n)?,
+            Some(Value::Bool(x)) => {
+                if *x { "True".into() } else { "False".into() }
+            }
+            Some(_) => return None,
+        };
+        let head = have.split(" (").next().unwrap_or("");
+        if nd_render::text::py_strip(head).to_lowercase() == want.to_lowercase() {
+            base = match ov.get("dice") {
+                None | Some(Value::Null) | Some(Value::Bool(false)) => base,
+                Some(Value::Number(n)) => n.as_i64()?,
+                _ => return None,
+            }
+            .max(1);
+        }
+    }
+    let label = pool.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let spend_spec = dice_spec.get("spend").filter(|v| !v.is_null());
+    let spend = if spend_spec.is_some() { body_int!(b, "spend").clamp(0, 10) } else { 0 };
+    let m0d = body_int!(b, "mod").clamp(-3, 3);
+    let need = body_int!(b, "need").clamp(0, 6);
+    let mut before = Map::new();
+    let mut after = Map::new();
+    let mut cf_new = cf.clone();
+    if spend > 0 {
+        let fid = spend_spec?.get("field").and_then(|v| v.as_str())?.to_string();
+        let t = tpl.as_ref()?;
+        let tracks = t.tracks(&cf, false)?;
+        let have = match tracks.iter().find(|tr| tr.get("id").and_then(|v| v.as_str()) == Some(fid.as_str())) {
+            None => 0,
+            Some(tr) => match tr.get("current") {
+                Some(Value::Number(n)) => n.as_f64()?.trunc() as i64,
+                Some(Value::String(t)) => match py_int_str(t) { PyIntStr::Ok(v) => v, _ => return None },
+                _ => return None,
+            },
+        };
+        let slabel = spend_spec?.get("label").and_then(|v| v.as_str())?.to_string();
+        if spend > have {
+            return Some(detail400(&format!("Not enough {slabel} to spend {spend}")));
+        }
+        let cur_key = format!("{fid}_current");
+        before.insert(cur_key.clone(), cf.get(&cur_key).cloned().unwrap_or(json!(have)));
+        cf_new.insert(cur_key.clone(), json!(have - spend));
+        after.insert(cur_key.clone(), json!(have - spend));
+        if let Some(tally) = spend_spec?.get("tally").and_then(|v| v.as_str()) {
+            let tally = tally.to_string();
+            let spent_before = match cf.get(&tally) {
+                None => 0,
+                Some(v) => py_num_i(v, 0)?,
+            };
+            before.insert(tally.clone(), cf.get(&tally).cloned().unwrap_or(json!(spent_before)));
+            cf_new.insert(tally.clone(), json!(spent_before + spend));
+            after.insert(tally.clone(), json!(spent_before + spend));
+            let into = spend_spec?.get("into").and_then(|v| v.as_str()).map(str::to_string);
+            let every = match spend_spec?.get("every") {
+                None | Some(Value::Null) | Some(Value::Bool(false)) => 0,
+                Some(Value::Number(n)) => n.as_f64()?.trunc() as i64,
+                Some(Value::String(t)) => match py_int_str(t) { PyIntStr::Ok(v) => v, _ => return None },
+                Some(_) => return None,
+            };
+            if let (Some(into), ev) = (into, every.max(0)) {
+                if ev > 0 {
+                    let fld = t.fields.iter().find(|f| f.get("id").and_then(|v| v.as_str()) == Some(into.as_str()))?.clone();
+                    // top = max([int(_num(o, 0)) for o in options or []] or [3])
+                    let mut nums: Vec<i64> = fld.get("options").and_then(|o| o.as_array()).map(|a| a.iter().map(|o| py_num_i(o, 0)).collect::<Option<Vec<_>>>()).unwrap_or(None).unwrap_or_default();
+                    let top = nums.pop().map(|m| nums.into_iter().chain([m]).max()).unwrap_or(Some(3)).unwrap_or(3);
+                    // cur = int(_num(cf.get(into), _num(fld.default_value, 0)))
+                    let default = py_num_i(fld.get("default_value").unwrap_or(&Value::Null), 0)?;
+                    let cur = match cf.get(&into) {
+                        None => default,
+                        Some(v) => py_num_i(v, default)?,
+                    };
+                    let want = top.min(cur.max((spent_before + spend).div_euclid(ev)));
+                    if want != cur {
+                        before.insert(into.clone(), cf.get(&into).cloned().unwrap_or(json!(cur.to_string())));
+                        cf_new.insert(into.clone(), json!(want.to_string()));
+                        after.insert(into.clone(), json!(want.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    let per = match spend_spec {
+        Some(sp) => match sp.get("per") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => 1,
+            Some(Value::Number(n)) => n.as_f64()?.trunc() as i64,
+            Some(Value::String(t)) => match py_int_str(t) { PyIntStr::Ok(v) => v, _ => return None },
+            Some(_) => return None,
+        },
+        None => 0,
+    };
+    let dice_n = (base + spend * per + m0d).clamp(1, 20);
+    let threshold = match dice_spec.get("threshold") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => 6,
+        Some(Value::Number(n)) => n.as_f64()?.trunc() as i64,
+        Some(Value::String(t)) => match py_int_str(t) { PyIntStr::Ok(v) => v, _ => return None },
+        Some(_) => return None,
+    };
+    let explode = match dice_spec.get("explode") {
+        None => true,
+        Some(v) => py_truthy(Some(v)),
+    };
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut dice_out: Vec<Value> = vec![];
+    let mut extra = 0i64;
+    let mut pending = dice_n;
+    while pending > 0 {
+        pending -= 1;
+        let v: i64 = rng.gen_range(1..=10);
+        let extra_die = dice_out.len() as i64 >= dice_n;
+        dice_out.push(json!({"v": v, "ok": v >= threshold, "extra": extra_die}));
+        if explode && v == 10 && extra < 40 {
+            extra += 1;
+            pending += 1;
+        }
+    }
+    let successes = dice_out.iter().filter(|d| d.get("ok").and_then(|o| o.as_bool()).unwrap_or(false)).count() as i64;
+    let ok = if need > 0 { json!(successes >= need) } else { Value::Null };
+    if !before.is_empty() {
+        orm::update(&c.db, "player_characters", ids[0], &[("custom_fields_json", s(&nd_render::py_dumps(&Value::Object(cf_new))))])?;
+        char_log(c, &pc, "resource", &format!("{} \u{2212}{spend} (dice pool)", spend_spec?.get("label").and_then(|v| v.as_str()).unwrap_or("")),
+            &json!({"op": "cf", "values": before}))?;
+    }
+    let parts = json!([{"term": if explode { format!("{dice_n}d10 pool (6+ succeeds, 10 explodes)") } else { format!("{dice_n}d10 pool") },
+        "rolls": dice_out.iter().map(|d| d.get("v").cloned().unwrap_or(Value::Null)).collect::<Vec<_>>(), "sum": successes}]);
+    let notation = format!("{dice_n}d10 \u{00b7} {threshold}+ \u{00b7} {successes} success{}", if successes != 1 { "es" } else { "" });
+    let (logged, shared) = save_roll(c, &world, &notation, &parts, successes, &format!("{label} \u{2014} {}", pc.get("name").and_then(|v| v.as_str()).unwrap_or("")))?;
+    orm::touch(&c.db, wid)?;
+    json_response(&json!({"kind": "pool", "dice": dice_out, "n": dice_n, "base": base, "spend": spend, "mod": m0d, "successes": successes,
+        "need": need, "ok": ok, "shared": shared, "roll": logged, "fields": after, "label": label,
+        "spend_label": spend_spec.and_then(|sp| sp.get("label").cloned()).unwrap_or(json!(""))}))
+}
+
+/// Python's str() of a JSON number (int: bare; float: repr) - None when the repr would differ
+fn py_num_repr(n: &serde_json::Number) -> Option<String> {
+    if let Some(i) = n.as_i64() {
+        return Some(i.to_string());
+    }
+    let f = n.as_f64()?;
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e15 {
+        Some(format!("{}", f as i64))
+    } else {
+        None
+    }
+}
+
+/// Python's str() of a JSON value as pool_dice / the override read use it
+fn py_str_val(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => Some("None".into()),
+        Value::String(t) => Some(t.clone()),
+        Value::Bool(x) => Some(if *x { "True".into() } else { "False".into() }),
+        Value::Number(n) => py_num_repr(n),
+        _ => None,
+    }
+}
+
+/// `int(_num(v, default))` — float() failing reads the default; a value this
+/// float() port cannot do exactly (underscores, inf) is None: decline
+fn py_num_i(v: &Value, default: i64) -> Option<i64> {
+    match py_float(Some(v)) {
+        Err(_) => None,
+        Ok(None) => Some(default),
+        Ok(Some(f)) if f.is_finite() && f.abs() < 9e15 => Some(f.trunc() as i64),
+        Ok(Some(_)) => None,
+    }
+}
+
+fn detail400(msg: &str) -> Response<Body> {
+    crate::ai_more::detail(StatusCode::BAD_REQUEST, msg.to_string())
+}
+
+/// `_roll_log` + dice._save_roll: into the shared dice log when this viewer may read the dice
+/// section; (the roll's response dict or None, shared?)
+fn save_roll(c: &Ctx, world: &Map<String, Value>, notation: &str, breakdown: &Value, total: i64, label: &str) -> Option<(Value, bool)> {
+    if !crate::pages::section_ok(&c.p, Some(world), "dice")? {
+        return Some((Value::Null, false));
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let notation: String = notation.trim().chars().take(120).collect();
+    // Python's ch.isprintable(): not a control and not a separator (a plain space stays)
+    let label: String = label.chars().filter(|ch: &char| *ch == ' ' || (!ch.is_control() && !ch.is_whitespace())).collect::<String>().trim().to_string();
+    let label: String = label.chars().take(80).collect();
+    let user_name: Option<String> = c.db.query_row("SELECT display_name FROM users WHERE id = ?1", [c.p.user_id], |r| r.get(0)).ok()?;
+    let user_name = user_name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Someone".into());
+    let (stored, iso) = crate::writes::timestamps(std::time::SystemTime::now());
+    c.db.execute("INSERT INTO dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![wid, c.p.user_id, user_name, notation, label, nd_render::py_dumps(breakdown), total, stored]).ok()?;
+    let roll_id = c.db.last_insert_rowid();
+    orm::signal(&c.db, wid, "dice")?;
+    Some((json!({"id": roll_id, "user_name": user_name, "notation": notation, "label": label, "breakdown": breakdown,
+        "total": total, "created_at": format!("{iso}Z")}), true))
+}
+
 fn pc_hp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     if let Some(r) = pc_gate(c, ids[0], true) {
         return Some(r);
@@ -2724,7 +3115,7 @@ fn pc_hp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
     let action = b.get("action").cloned().unwrap_or(json!("set"));
-    let val = body_int(&b, "value")?;
+    let val = body_int!(b, "value");
     let before = col_int(&pc, "current_hp");
     let (max_hp, ..) = pc_maxima(&c.db, &pc)?;
     let temp = col_int(&pc, "temp_hp");
@@ -2773,7 +3164,7 @@ fn pc_pool(c: &mut Ctx, id: i64, col: &str, op: &str, label: &str, which: usize,
     let b = c.json()?;
     let pc = managed_pc(c, id)?;
     let action = b.get("action").cloned().unwrap_or(json!("set"));
-    let val = body_int(&b, "value")?;
+    let val = body_int!(b, "value");
     let before = col_int(&pc, col);
     let m = pc_maxima(&c.db, &pc)?;
     let max = [m.0, m.1, m.2, m.3][which];
@@ -2955,7 +3346,7 @@ fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         Some(Value::Number(n)) => n.as_f64().filter(|f| f.abs() < 1e15)?.trunc() as i64,
         _ => return None,
     };
-    let val = body_int(&b, "value")?;
+    let val = body_int!(b, "value");
     let after = if b.get("action").and_then(|v| v.as_str()) == Some("delta") { (before + val).max(0) } else { val.max(0) };
     coin.insert("value".into(), json!(after));
     orm::update(&c.db, "player_characters", ids[0], &[("currency_json", s(&nd_render::py_dumps(&coins)))])?;
@@ -3564,7 +3955,7 @@ fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
                     PyNum::F(f) if f.is_finite() && f.abs() < 1e15 => f.trunc() as i64,
                     _ => return None,
                 };
-                let delta = body_int(&b, "delta")?;
+                let delta = body_int!(b, "delta");
                 it.insert("qty".into(), json!((q + delta).min(9999).max(0)));
             } else {
                 // max(0, min(9999, float)): the int bound itself when it wins or ties (min / max return their first argument then)
@@ -3609,7 +4000,7 @@ fn pc_carry_limit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
-    let val = body_int(&b, "value")?.clamp(0, 99999);
+    let val = body_int!(b, "value").clamp(0, 99999);
     let existing: Option<i64> = c.db.query_row("SELECT id FROM character_prefs WHERE character_id = ?1 LIMIT 1", [ids[0]], |r| r.get(0)).ok();
     let mut data = if existing.is_some() { pc_prefs(&c.db, ids[0])? } else { Map::new() };
     if val == 0 {
@@ -7396,14 +7787,26 @@ fn entity_markup(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     } else if action == "replace" {
         crate::markup::replace(&source, &text, &before, &after, &replacement)
     } else if action == "restore" {
-        if source == expected { Ok(previous.clone()) } else { Err(()) }
+        if source == expected { Ok(previous.clone()) } else { Err(crate::markup::MkErr::Refuse("This was edited since - open the editor to change it back.".into())) }
     } else if let Some(pct) = action.strip_prefix("imgsize:").filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
         let pct = if pct.len() > 9 { 300 } else { pct.parse().ok()? };
         crate::markup::resize_image(&source, index, &snippet, pct)
     } else {
         crate::markup::wrap(&source, &text, &before, &after, &action)
     };
-    let out = out.ok()?; // a refusal: Python's 422 with its message
+    // a refusal is Python's MarkupError: a 422 {"error": message}; Forward declines to Python
+    let out = match out {
+        Ok(out) => out,
+        Err(crate::markup::MkErr::Forward) => return None,
+        Err(crate::markup::MkErr::Refuse(msg)) => {
+            return Response::builder()
+                .status(StatusCode::UNPROCESSABLE_ENTITY)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-nd-served-by", "gateway")
+                .body(Body::from(nd_render::py_dumps_compact(&json!({"error": msg}))))
+                .ok();
+        }
+    };
     match note {
         Some(nid) => orm::update(&c.db, "entity_notes", nid, &[("content", s(&out))])?,
         None => orm::update(&c.db, "entities", ids[0], &[(if field == "body" { "body" } else { "summary" }, s(&out))])?,
@@ -8056,7 +8459,7 @@ fn pc_ability_use(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let cols = [("pp", "pp_current"), ("mp", "mp_current"), ("shock", "shock_current"), ("hp", "current_hp")];
     let mut spend = vec![];
     for (k, _) in cols {
-        spend.push(body_int(&b, k)?.clamp(0, 10));
+        spend.push(body_int!(b, k).clamp(0, 10));
     }
     let mut before = Map::new();
     let mut set: Vec<(&str, Sql)> = vec![];
@@ -8266,7 +8669,7 @@ fn pc_advance(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let (spent, text) = match b.get("kind").and_then(|k| k.as_str()) {
         Some("spent") => {
             let xp = pc.get("xp").and_then(|v| v.as_i64()).unwrap_or(0);
-            let value = body_int(&b, "value")?.min(xp).max(0);
+            let value = body_int!(b, "value").min(xp).max(0);
             set_pc_pref(c, &pc, "xp_spent", (value != 0).then(|| json!(value)))?;
             let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
             return json_response(&adv_options(c, &pc)?);
@@ -8531,7 +8934,7 @@ fn pc_resource(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         None => fid.clone(),
     };
     let label = sheet_short_label(&label_src)?;
-    let val = body_int(&b, "value")?;
+    let val = body_int!(b, "value");
     let delta = b.get("action").map_or(false, |a| a.as_str() == Some("delta"));
     if !delta && b.get("action").is_some_and(|a| !a.is_string()) {
         return None;

@@ -42,6 +42,21 @@ them after each batch; the phase is done when both are empty and the steps below
   paste cleaner (Bearer prefix / quotes / the two 400s), the live verify against `{llm_url}/api/hub/cached-gguf`
   (a 401 is not saved and says the saved key is unchanged; an unreachable Studio saves anyway with "couldn't
   confirm"), the clear, and `_key_explanation`.
+- **The character roll route** (`POST /api/characters/{}/roll`, edits.rs `pc_roll`): both dice engines — the N&D
+  Stat + d10 check with the PP / MP boost spent and logged, and the template system's success pool with the
+  `override`, the Stamina spend and its tally / into-every side effects. The dice are random; the answers are
+  compared by their own arithmetic in the parity test.
+- **The quick-edit number parsing** (`body_int_py`, edits.rs): `int_field`'s coercion exactly - int-strings
+  (underscores, whitespace, sign), float truncation, the bool / junk 400s with Python's messages; Unicode-digit
+  strings and values beyond i64 still forward. Covers hp-async, shock/pp/mp, carry-limit, currency, xp, equipment
+  deltas, ability-use, advance, resource.
+- **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
+  port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
+  gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
+- **The quick-edit number parsing** (`body_int_py`, edits.rs): `int_field`'s coercion exactly - int-strings
+  (underscores, whitespace, sign), float truncation, the bool / junk 400s with Python's messages; Unicode-digit
+  strings and values beyond i64 still forward. Covers hp-async, shock/pp/mp, carry-limit, currency, xp, equipment
+  deltas, ability-use, advance, resource.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

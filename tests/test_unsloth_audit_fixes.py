@@ -382,7 +382,8 @@ def test_no_studio_api_key_is_committed():
     # raises OSError on Windows even before the loop body's own OSError guard runs
     for dirpath, dirs, names in os.walk(ROOT):
         parts = Path(dirpath).parts
-        if ".git" in parts or "__pycache__" in parts or "_data" in parts or ("rust" in parts and "target" in parts):
+        # .zcode is the gitignored agent-workspace dir (scratch probes, dev scripts)
+        if ".git" in parts or "__pycache__" in parts or "_data" in parts or ".zcode" in parts or ("rust" in parts and "target" in parts):
             dirs[:] = []
             continue
         for name in names:

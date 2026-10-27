@@ -404,7 +404,20 @@ def apply_once(gpu_temp, cfg=None, root=None):
 
 
 def gpu_temperature():
-    """The hottest GPU's die temperature in C, or None when it cannot be read."""
+    """The hottest GPU's die temperature in C, or None when it cannot be read.
+
+    A `gpu_temp` file directly inside HWMON_ROOT (one number per line, like
+    nvidia-smi's output) overrides the real GPU: the parity tests pin the
+    temperature this way, because a real GPU's reading drifts between the two
+    sides' runs and the follow curve would legitimately differ. The file never
+    exists under /sys/class/hwmon, so production always reads the GPU."""
+    try:
+        pinned = Path(HWMON_ROOT) / "gpu_temp"
+        if pinned.exists():
+            temps = [float(line) for line in pinned.read_text().split() if line]
+            return max((t for t in temps if t == t), default=None)
+    except (OSError, ValueError):
+        return None
     from . import system_stats
     g = system_stats.gpu_stats()
     temps = [d.get("temp_c") for d in g.get("devices", []) if isinstance(d.get("temp_c"), (int, float))] if g.get("available") else []

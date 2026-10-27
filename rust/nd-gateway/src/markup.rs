@@ -1,12 +1,22 @@
 //! `app/markup_locator.py`: find text selected on a rendered page inside the markdown it came from, and wrap / unwrap / replace /
-//! resize there. Offsets are code points, as in Python. Every refusal (Python's `MarkupError`, a 422 with its message) is `Err(())`: the
-//! gateway then hands the request to Python, which gives the message. Text whose regex classes (`\w`, `\s`) the two engines might read
-//! differently is refused up front (`plain`) for the same reason.
+//! resize there. Offsets are code points, as in Python. A refusal is Python's `MarkupError` verbatim (`MkErr::Refuse`, a 422 with its
+//! message) or an internal guard the gateway keeps declining on (`MkErr::Forward`). Text whose regex classes (`\w`, `\s`) the two engines
+//! might read differently is refused up front (`plain`) for the same reason.
 use fancy_regex::Regex as FRegex;
 use regex::Regex;
 use std::sync::OnceLock;
 
-type R<T> = Result<T, ()>;
+/// Why a markup edit did not happen: Python's MarkupError text, or an internal guard (decline, forward)
+pub enum MkErr {
+    Forward,
+    Refuse(String),
+}
+
+fn refuse(msg: &str) -> MkErr {
+    MkErr::Refuse(msg.to_string())
+}
+
+type R<T> = Result<T, MkErr>;
 
 const TAG: &str = r"\[/?(?:u|spoiler|gmonly|mark|color|read|for|reveal)(?:=[^\]\n]{0,20})?\]";
 
@@ -120,7 +130,7 @@ fn project(source: &str) -> R<(Vec<char>, Vec<usize>)> {
         }
     };
     for m in mask_re().find_iter(source) {
-        let m = m.map_err(|_| ())?;
+        let m = m.map_err(|_| MkErr::Forward)?;
         mark(m.start(), m.end());
     }
     for rx in [line_start_re(), table_rule_re()] {
@@ -180,11 +190,14 @@ fn lstrip(v: &[char]) -> &[char] {
 /// `locate`: one (start, end) source range per line the selection covers
 pub fn locate(source: &str, selected: &str, before: &str, after: &str) -> R<Vec<(usize, usize)>> {
     if source.is_empty() {
-        return Err(());
+        return Err(refuse("There is no text to mark."));
     }
     let sel: Vec<char> = norm(selected).chars().collect();
-    if sel.is_empty() || sel.len() > 4000 {
-        return Err(());
+    if sel.is_empty() {
+        return Err(refuse("Select some text first."));
+    }
+    if sel.len() > 4000 {
+        return Err(refuse("That is a lot of text - select a smaller part."));
     }
     let (text, idx) = project(source)?;
     let mut hits = vec![];
@@ -194,7 +207,7 @@ pub fn locate(source: &str, selected: &str, before: &str, after: &str) -> R<Vec<
         at = find_from(&text, &sel, h + 1);
     }
     if hits.is_empty() {
-        return Err(());
+        return Err(refuse("Could not find that text in the source - it may come from a template, a link or generated text. Select plain text inside one paragraph, or use the editor."));
     }
     if hits.len() > 1 {
         let b: Vec<char> = norm(before).chars().collect();
@@ -217,7 +230,7 @@ pub fn locate(source: &str, selected: &str, before: &str, after: &str) -> R<Vec<
             .collect();
         scored.sort_by(|p, q| q.cmp(p));
         if scored[0].0 == 0 || (scored.len() > 1 && scored[0].0 == scored[1].0) {
-            return Err(());
+            return Err(refuse("That text appears more than once - select a little more around it so it is clear which one."));
         }
         hits = vec![scored[0].1];
     }
@@ -274,12 +287,12 @@ fn marks_in(cs: &Chars, rx: &Rx, lo: usize, hi: usize) -> R<Vec<(usize, usize)>>
     loop {
         let m = match rx {
             Rx::Plain(r) => r.find_at(hay, pos).map(|m| (m.start(), m.end())),
-            Rx::Fancy(r) => r.find_from_pos(hay, pos).map_err(|_| ())?.map(|m| (m.start(), m.end())),
+            Rx::Fancy(r) => r.find_from_pos(hay, pos).map_err(|_| MkErr::Forward)?.map(|m| (m.start(), m.end())),
         };
         let Some((a, z)) = m else { break };
         out.push((cs.ci(a), cs.ci(z)));
         if z == a {
-            return Err(());
+            return Err(MkErr::Forward);
         }
         pos = z;
     }
@@ -306,7 +319,7 @@ pub fn widen(source: &str, mut s: usize, mut e: usize) -> R<(usize, usize)> {
             }
             if last % 2 == 0 {
                 if last + 1 >= marks.len() {
-                    return Err(());
+                    return Err(refuse("That selection cuts across bold / italic / code - extend it over the whole formatted part, or use the editor."));
                 }
                 e = marks[last + 1].1;
             }
@@ -319,13 +332,15 @@ pub fn widen(source: &str, mut s: usize, mut e: usize) -> R<(usize, usize)> {
         let (lo, hi) = paragraph(&src, s, e);
         let n = marks_in(&cs, rx, lo, hi)?.iter().filter(|(a, _)| s <= *a && *a < e).count();
         if n % 2 == 1 {
-            return Err(());
+            return Err(refuse("That selection cuts across bold / italic / code - extend it over the whole formatted part, or use the editor."));
         }
     }
     let seg = cs.slice(s, e);
     for tag in ["u", "spoiler", "gmonly", "mark", "read"] {
         if tag_count(seg, &format!(r"\[{tag}(?:=[^\]\n]{{0,20}})?\]")) != tag_count(seg, &format!(r"\[/{tag}\]")) {
-            return Err(());
+            return Err(refuse(&format!(
+                "That selection cuts across a [{tag}] part - extend it over the whole part, or use the editor."
+            )));
         }
     }
     Ok((s, e))
@@ -357,18 +372,20 @@ pub fn wrap(source: &str, selected: &str, before: &str, after: &str, action: &st
     let for_re = FOR.get_or_init(|| Regex::new(r"^for:(\d{1,9}(?:,\d{1,9}){0,19})$").unwrap());
     let reveal_re = REVEAL.get_or_init(|| Regex::new(r"^reveal:(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?)$").unwrap());
     if !action.is_ascii() || action.contains('\n') {
-        return Err(()); // Python's `$` before a final newline, Unicode digits: Python's
+        return Err(MkErr::Forward); // Python's `$` before a final newline, Unicode digits: decline
     }
     let (open, close) = if let Some(color) = action.strip_prefix("color:") {
         let ok = color.len() == 7 && color.starts_with('#') && color[1..].bytes().all(|b| b.is_ascii_hexdigit());
         if !ok {
-            return Err(());
+            return Err(refuse("That colour is not allowed."));
         }
         (format!("[color={color}]"), "[/color]".to_string())
     } else if let Some(c) = for_re.captures(action) {
         (format!("[for={}]", &c[1]), "[/for]".to_string())
     } else if let Some(c) = reveal_re.captures(action) {
-        nd_perm::gmonly::parse_reveal_at(&c[1]).ok_or(())?;
+        if nd_perm::gmonly::parse_reveal_at(&c[1]).is_none() {
+            return Err(refuse("That date is not valid."));
+        }
         (format!("[reveal={}]", &c[1]), "[/reveal]".to_string())
     } else {
         let (o, z) = match action {
@@ -380,7 +397,7 @@ pub fn wrap(source: &str, selected: &str, before: &str, after: &str, action: &st
             "bold" => ("**", "**"),
             "italic" => ("*", "*"),
             "strike" => ("~~", "~~"),
-            _ => return Err(()),
+            _ => return Err(refuse("Unknown action.")),
         };
         (o.to_string(), z.to_string())
     };
@@ -390,18 +407,21 @@ pub fn wrap(source: &str, selected: &str, before: &str, after: &str, action: &st
     if !kind.is_empty() {
         for &(s, e) in &ranges {
             if tag_count(cs.slice(s, e), &format!(r"\[{kind}[=\]]")) > 0 || inside_re(source, s, &format!(r"\[{kind}=[^\]\n]*\]"), kind) {
-                return Err(());
+                return Err(refuse(&format!(
+                    "That already has a {} part - take it off first, or use the editor.",
+                    if kind == "for" { "player-only" } else { "reveal-later" }
+                )));
             }
         }
     }
     if (action == "gmonly" || action == "spoiler") && ranges.iter().all(|&(s, _)| inside(source, s, action)) {
-        return Err(());
+        return Err(refuse("That is already marked."));
     }
     let mut out: Vec<char> = source.chars().collect();
     for &(s, e) in ranges.iter().rev() {
         let mut seg: String = out[s..e].iter().collect();
         if action == "gmonly" || action == "spoiler" {
-            seg = Regex::new(&format!(r"(?i)\[/?{action}\]")).map_err(|_| ())?.replace_all(&seg, "").into_owned();
+            seg = Regex::new(&format!(r"(?i)\[/?{action}\]")).map_err(|_| MkErr::Forward)?.replace_all(&seg, "").into_owned();
         }
         out = splice(&out, s, e, &format!("{open}{seg}{close}"));
     }
@@ -411,36 +431,39 @@ pub fn wrap(source: &str, selected: &str, before: &str, after: &str, action: &st
 /// `unwrap`: the n-th [tag]...[/tag] block's text without the tags
 pub fn unwrap(source: &str, tag: &str, n: i64, snippet: &str) -> R<String> {
     if !["gmonly", "spoiler", "mark", "read", "for", "reveal"].contains(&tag) {
-        return Err(());
+        return Err(refuse("Unknown action."));
     }
     let open = if tag == "for" || tag == "reveal" { format!(r"\[{tag}=[^\]\n]*\]") } else { format!(r"\[{tag}\]") };
-    let re = Regex::new(&format!(r"(?is){open}(.*?)\[/{tag}\]")).map_err(|_| ())?;
+    let re = Regex::new(&format!(r"(?is){open}(.*?)\[/{tag}\]")).map_err(|_| MkErr::Forward)?;
     let blocks: Vec<regex::Captures> = re.captures_iter(source).collect();
     if n < 0 || n as usize >= blocks.len() {
-        return Err(());
+        return Err(refuse("Could not find that block any more - reload the page."));
     }
     let m = &blocks[n as usize];
-    let inner = m.get(1).ok_or(())?.as_str();
+    let inner = m.get(1).ok_or(MkErr::Forward)?.as_str();
     if !snippet.is_empty() {
         let want: Vec<char> = norm(snippet).chars().take(30).collect();
         let (shown, _) = project(inner)?;
         if !want.is_empty() && find_from(&shown, &want, 0).is_none() {
-            return Err(());
+            return Err(refuse("The text changed since this page was loaded - reload it."));
         }
     }
-    let all = m.get(0).ok_or(())?;
+    let all = m.get(0).ok_or(MkErr::Forward)?;
     Ok(format!("{}{}{}", &source[..all.start()], inner, &source[all.end()..]))
 }
 
 /// `replace`: one line's selection swapped for `replacement`
 pub fn replace(source: &str, selected: &str, before: &str, after: &str, replacement: &str) -> R<String> {
     let replacement = strip_py(replacement);
-    if replacement.is_empty() || replacement.chars().count() > 6000 {
-        return Err(());
+    if replacement.is_empty() {
+        return Err(refuse("There is no replacement text."));
+    }
+    if replacement.chars().count() > 6000 {
+        return Err(refuse("The replacement is too long."));
     }
     let ranges = locate(source, selected, before, after)?;
     if ranges.len() != 1 {
-        return Err(());
+        return Err(refuse("Select text inside one paragraph or list item to replace it - or use the editor."));
     }
     let (s, e) = widen(source, ranges[0].0, ranges[0].1)?;
     let src: Vec<char> = source.chars().collect();
@@ -454,19 +477,19 @@ pub fn resize_image(source: &str, n: i64, url: &str, pct: i64) -> R<String> {
     let pct = pct.clamp(10, 300);
     let refs: Vec<regex::Captures> = re.captures_iter(source).filter(|c| !matches!(c.get(3).map(|m| m.as_str()), Some("audio") | Some("video"))).collect();
     if n < 0 || n as usize >= refs.len() {
-        return Err(());
+        return Err(refuse("Could not find that picture in the text - use the editor."));
     }
     let m = &refs[n as usize];
     let found = &m[2];
     if !url.is_empty() && !(url == found || url.ends_with(found) || found.ends_with(url) || url.contains(found)) {
-        return Err(());
+        return Err(refuse("Could not tell which picture that is - use the editor."));
     }
     let title = if pct == 100 { String::new() } else { format!(r#" "size:{pct}""#) };
     if let Some(t) = m.get(3) {
         if !t.as_str().starts_with("size:") && !t.as_str().is_empty() {
-            return Err(());
+            return Err(refuse("This picture has its own caption - resize it in the editor."));
         }
     }
-    let all = m.get(0).ok_or(())?;
+    let all = m.get(0).ok_or(MkErr::Forward)?;
     Ok(format!("{}![{}]({found}{title}){}", &source[..all.start()], &m[1], &source[all.end()..]))
 }

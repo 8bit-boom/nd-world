@@ -441,8 +441,16 @@ fn apply_once(dir: &Path, temp: Option<f64>) -> Option<i64> {
     Some(target)
 }
 
-/// `gpu_temperature`: the hottest GPU's die temperature, or None
+/// `gpu_temperature`: the hottest GPU's die temperature, or None. A `gpu_temp`
+/// file directly inside the hwmon root (one number per line) overrides the real
+/// GPU — the parity tests pin the temperature this way (app/fan_control.py
+/// gpu_temperature's same seam; the file never exists under /sys/class/hwmon).
 fn gpu_temperature() -> Option<f64> {
+    let pinned = std::path::Path::new(&root()).join("gpu_temp");
+    if pinned.exists() {
+        let text = std::fs::read_to_string(pinned).ok()?;
+        return text.split_whitespace().filter_map(|l| l.parse::<f64>().ok()).filter(|f| f.is_finite()).fold(None, |m: Option<f64>, t| Some(m.map_or(t, |m| m.max(t))));
+    }
     let out = std::process::Command::new("nvidia-smi").args(["--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"])
         .stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())?;
     String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse::<f64>().ok()).filter(|f| f.is_finite()).fold(None, |m: Option<f64>, t| Some(m.map_or(t, |m| m.max(t))))

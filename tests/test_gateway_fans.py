@@ -28,6 +28,9 @@ def _tree():
     os.symlink("../devices/it87.2656", d / "device")
     (root / "hwmon0").mkdir()
     (root / "hwmon0" / "name").write_text("k10temp\n")
+    # pin the follow curve's temperature: a real GPU's reading drifts between the two
+    # sides' runs under shard load and the applied duty would legitimately differ
+    (root / "gpu_temp").write_text("40\n")
 
 
 def _chip():
@@ -39,6 +42,21 @@ def _reset_files():
     from app.database import DB_PATH
     for f in ("fan_control.json", "fan_control_orig.json"):
         Path(DB_PATH).with_name(f).unlink(missing_ok=True)
+
+
+def _chip_settled(tries=3):
+    """The chip's state once it has stopped changing: the follow loop (5 s ticks) and the
+    OTHER server's leftover loop (both share FAN_HWMON_ROOT) may still write between a POST
+    and the read, so a settled read is the only one the two runs can compare under load."""
+    import time
+    chip = _chip()
+    for _ in range(tries):
+        time.sleep(5.3)
+        again = _chip()
+        if again == chip:
+            return again
+        chip = again
+    return chip
 
 
 def _strip(v):
@@ -60,16 +78,21 @@ def test_fan_control_is_pythons(client, seed):
              ("POST", {"fan": FAN, "percent": 70}), ("GET", None), ("POST", {"follow_gpu": False}), ("GET", None),
              ("CHECK", {"fan": FAN}), ("CHECK", {"fan": "pwm2-less"}), ("CHECK", {}), ("GET", None)]
     runs = []
+    first_follow = next(i for i, (m, b) in enumerate(steps) if b and "follow_gpu" in b)
+    follow_off = next(i for i, (m, b) in enumerate(steps) if b == {"follow_gpu": False})
     for side in (gm, _via(gm, base)):
         _tree()
         _reset_files()
         out = []
-        for method, body in steps:
+        for i, (method, body) in enumerate(steps):
             if method == "GET":
                 r = side.get("/api/system/fans")
             else:
                 r = side.post("/api/system/fans/check" if method == "CHECK" else "/api/system/fans", json=body)
-            out.append((method, body, r.status_code, _strip(r.json()), _chip(), r.headers.get("cache-control")))
+            # the follow window (first follow-on through the follow-off GET) is where the
+            # 5 s loops write; read the chip only once it has settled
+            chip = _chip_settled() if first_follow <= i <= follow_off + 1 else _chip()
+            out.append((method, body, r.status_code, _strip(r.json()), chip, r.headers.get("cache-control")))
         runs.append((out, r.headers.get("x-nd-served-by")))
     (a, _), (b, served) = runs
     for x, y in zip(a, b):
