@@ -3209,11 +3209,7 @@ fn pc_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     let b = c.json()?;
     let pc = managed_pc(c, ids[0])?;
-    let delta = match b.get("delta") {
-        None => 0,
-        Some(Value::Number(n)) => n.as_i64().filter(|v| v.abs() < 1 << 40)?,
-        _ => return None,
-    };
+    let delta = body_int!(b, "delta");
     let level = pc.get("level")?.as_i64().filter(|l| *l >= 1)?;
     let before = col_int(&pc, "xp");
     let xp = (before + delta).max(0);
@@ -3316,16 +3312,19 @@ fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let pc = managed_pc(c, ids[0])?;
     let raw = pc.get("currency_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let mut coins = if raw == "[]" { json!([]) } else { canonical_json(raw)? };
+    // str(body.get("abbr") or "").strip().lower(): falsy values (null, false, 0, "", []) all become ""
     let key = match b.get("abbr") {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
-        Some(Value::String(v)) if v.is_ascii() => strip(v).to_ascii_lowercase(),
-        _ => return None,
+        None => String::new(),
+        Some(v) if !py_truthy(Some(v)) => String::new(),
+        Some(v) => match py_str_val(v) {
+            Some(t) => strip(&t).to_lowercase(),
+            None => return None,
+        },
     };
     let text_of = |m: &Map<String, Value>, k: &str| -> Option<String> {
         match m.get(k) {
-            None | Some(Value::Null) => Some(String::new()),
-            Some(Value::String(v)) if v.is_ascii() => Some(v.clone()),
-            _ => None,
+            None => Some(String::new()),
+            Some(v) => py_str_val(v),
         }
     };
     let mut hit = None;
@@ -3341,11 +3340,7 @@ fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No such currency on this character"));
     };
     let coin = coins.as_array_mut()?.get_mut(i)?.as_object_mut()?;
-    let before = match coin.get("value") {
-        None | Some(Value::Null) => 0,
-        Some(Value::Number(n)) => n.as_f64().filter(|f| f.abs() < 1e15)?.trunc() as i64,
-        _ => return None,
-    };
+    let before = py_num_i(coin.get("value").unwrap_or(&Value::Null), 0)?;
     let val = body_int!(b, "value");
     let after = if b.get("action").and_then(|v| v.as_str()) == Some("delta") { (before + val).max(0) } else { val.max(0) };
     coin.insert("value".into(), json!(after));
@@ -3625,9 +3620,13 @@ fn pc_level_up(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     let pc = managed_pc(c, id)?;
     let level = pc.get("level")?.as_i64()?;
     let (.., native) = pc_maxima(&c.db, &pc)?;
-    // _levelup_ready (a level outside 1..19 or a level Python's list indexing reads its own way: Python's)
-    if !(1..20).contains(&level) || !native || col_int(&pc, "xp") < XP_THRESHOLDS[level.min(19) as usize] {
-        return None;
+    // _levelup_ready: every False is the same 400 (a level outside 1..19 whose index Python reads
+    // its own way is still Python's — only 1..20 is answered here)
+    if (1..20).contains(&level) && (!native || col_int(&pc, "xp") < XP_THRESHOLDS[level as usize]) {
+        return Some(detail400(&format!("Not enough XP to reach level {} yet.", level + 1)));
+    }
+    if level >= 20 {
+        return Some(detail400(&format!("Not enough XP to reach level {} yet.", level + 1)));
     }
     orm::update(&c.db, "player_characters", id, &[("level", Sql::Integer(level + 1))])?;
     log_num(c, &pc, "level", "Level", level, level + 1)?;
@@ -3635,12 +3634,15 @@ fn pc_level_up(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     json_response(&json!({"level": level + 1, "name": pc.get("name").cloned().unwrap_or(Value::Null)}))
 }
 
-/// `str(item.get(k, ""))` for text (`str()` of anything else - "None", "5" - is Python's)
+/// `str(item.get(k, ""))`: a missing key is "", anything present goes through Python's str() —
+/// null is "None", numbers their spelling, containers their repr
 fn item_text(item: &Map<String, Value>, k: &str) -> Option<String> {
     match item.get(k) {
         None => Some(String::new()),
-        Some(Value::String(v)) => Some(v.clone()),
-        _ => None,
+        Some(v) => py_str_val(v).or_else(|| match v {
+            Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(v)),
+            _ => None,
+        }),
     }
 }
 
@@ -3654,9 +3656,20 @@ fn pc_list(pc: &Map<String, Value>, k: &str) -> Option<Vec<Value>> {
 }
 
 /// A JSON list index Python's `isinstance(index, int)` accepts (bools are ints there: Python's)
-fn list_index(b: &Map<String, Value>, len: usize) -> Option<usize> {
-    let i = b.get("index")?.as_i64()?;
-    (0..len as i64).contains(&i).then_some(i as usize)
+/// Python's `index = body.get("index")`: isinstance(index, int) — a bool counts as 0/1, a float or
+/// text does not — then the range check; every failure is the same 400 {"detail": "Invalid index"}
+fn list_index(b: &Map<String, Value>, len: usize) -> Result<usize, Response<Body>> {
+    let bad = crate::ai_more::detail(StatusCode::BAD_REQUEST, "Invalid index");
+    let i = match b.get("index") {
+        Some(Value::Bool(x)) => *x as i64,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64().unwrap(),
+        _ => return Err(bad),
+    };
+    if (0..len as i64).contains(&i) {
+        Ok(i as usize)
+    } else {
+        Err(bad)
+    }
 }
 
 fn pc_feats(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
@@ -3691,10 +3704,10 @@ fn pc_feats(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             feats.push(Value::Object(e));
         }
         Some("remove") => {
-            let i = list_index(&b, feats.len())?;
+            let i = match list_index(&b, feats.len()) { Ok(i) => i, Err(r) => return Some(r) };
             feats.remove(i);
         }
-        _ => return None,
+        _ => return Some(detail400("Unknown action")),
     }
     let list = Value::Array(feats);
     orm::update(&c.db, "player_characters", ids[0], &[("feats_json", s(&nd_render::py_dumps(&list)))])?;
@@ -3736,12 +3749,20 @@ impl PyNum {
     }
 }
 
-/// `_num(v, default)` = float(v), or the default for None / a missing key; None for what float() reads its own way (text, bools)
+/// `_num(v, default)` = float(v), or the default whenever float() raises (None, a bool is 1.0/0.0,
+/// numeric text, a list / dict); None only for what this float() cannot do exactly (underscore /
+/// non-ASCII text, and infinities parse the same so they pass through)
 fn py_num(v: Option<&Value>, default: PyNum) -> Option<PyNum> {
     match v {
         None | Some(Value::Null) => Some(default),
         Some(Value::Number(n)) => Some(PyNum::F(n.as_f64()?)),
-        _ => None,
+        Some(Value::Bool(x)) => Some(PyNum::F(if *x { 1.0 } else { 0.0 })),
+        Some(Value::String(t)) => match py_float(Some(&Value::String(t.clone()))) {
+            Err(_) => None,
+            Ok(None) => Some(default),
+            Ok(Some(f)) => Some(PyNum::F(f)),
+        },
+        Some(Value::Array(_)) | Some(Value::Object(_)) => Some(default),
     }
 }
 
@@ -3858,15 +3879,15 @@ fn pc_gate(c: &Ctx, id: i64, body_first: bool) -> Option<Response<Body>> {
 
 /// Python's refusal for a bad `index` (missing, not an int, out of range, or not an object when `need_obj`); None to decline on a
 /// bool, which Python takes as an int
+/// True when Python's index check would refuse: isinstance(index, int) — a bool counts as 0/1 —
+/// in range, and (for qty / weight) pointing at a dict. Every failure is the same 400.
 fn bad_index(b: &Map<String, Value>, list: &[Value], need_obj: bool) -> Option<bool> {
-    match b.get("index") {
-        Some(Value::Bool(_)) => None,
-        Some(Value::Number(n)) if n.is_i64() => {
-            let i = n.as_i64()?;
-            Some(!(0..list.len() as i64).contains(&i) || (need_obj && !list[i as usize].is_object()))
-        }
-        _ => Some(true),
-    }
+    let i = match b.get("index") {
+        Some(Value::Bool(x)) => *x as i64,
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        _ => return Some(true),
+    };
+    Some(!(0..list.len() as i64).contains(&i) || (need_obj && !list[i as usize].is_object()))
 }
 
 /// The 400s of the equipment / feats lists (`name_msg` for an empty name to add; `qty` and `weight` only when `qty_actions`); Some(None)
@@ -3943,12 +3964,15 @@ fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             added_name = Some(raw_name);
         }
         Some("remove") => {
-            let i = list_index(&b, eq.len())?;
+            let i = match list_index(&b, eq.len()) { Ok(i) => i, Err(r) => return Some(r) };
             eq.remove(i);
         }
         Some(a @ ("qty" | "weight")) => {
-            let i = list_index(&b, eq.len())?;
-            let it = eq.get_mut(i)?.as_object_mut()?;
+            let i = match list_index(&b, eq.len()) { Ok(i) => i, Err(r) => return Some(r) };
+            let it = match eq.get_mut(i).and_then(|v| v.as_object_mut()) {
+                Some(m) => m,
+                None => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Invalid index")),
+            };
             if a == "qty" {
                 let q = match py_num(it.get("qty"), PyNum::I(1))? {
                     PyNum::I(v) => v,
@@ -3969,7 +3993,7 @@ fn pc_equipment(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
                 it.insert("weight".into(), v.json());
             }
         }
-        _ => return None,
+        _ => return Some(detail400("Unknown action")),
     }
     let list = Value::Array(eq.clone());
     let after = nd_render::py_dumps(&list);

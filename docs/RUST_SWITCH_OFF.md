@@ -50,6 +50,11 @@ them after each batch; the phase is done when both are empty and the steps below
   (underscores, whitespace, sign), float truncation, the bool / junk 400s with Python's messages; Unicode-digit
   strings and values beyond i64 still forward. Covers hp-async, shock/pp/mp, carry-limit, currency, xp, equipment
   deltas, ability-use, advance, resource.
+- **The list-route coercions** (edits.rs): `_num` = float() exactly (bools are 1.0/0.0, numeric text, containers
+  the default), the list index check isinstance-int (a bool counts; every failure the same "Invalid index" 400),
+  `str()` of item fields ("None" for null, numbers' spelling, containers their repr), xp's delta through int_field,
+  level-up's not-ready 400 (a custom system, level 20+, xp short), "Unknown action" 400s, and the currency purse's
+  str()-keyed coin match with `int(_num(value))`. Declines trace their route and body under `ND_DECLINE_TRACE=1`.
 - **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
   port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
   gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
@@ -57,6 +62,11 @@ them after each batch; the phase is done when both are empty and the steps below
   (underscores, whitespace, sign), float truncation, the bool / junk 400s with Python's messages; Unicode-digit
   strings and values beyond i64 still forward. Covers hp-async, shock/pp/mp, carry-limit, currency, xp, equipment
   deltas, ability-use, advance, resource.
+- **The list-route coercions** (edits.rs): `_num` = float() exactly (bools are 1.0/0.0, numeric text, containers
+  the default), the list index check isinstance-int (a bool counts; every failure the same "Invalid index" 400),
+  `str()` of item fields ("None" for null, numbers' spelling, containers their repr), xp's delta through int_field,
+  level-up's not-ready 400 (a custom system, level 20+, xp short), "Unknown action" 400s, and the currency purse's
+  str()-keyed coin match with `int(_num(value))`. Declines trace their route and body under `ND_DECLINE_TRACE=1`.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The
