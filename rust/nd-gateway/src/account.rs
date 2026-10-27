@@ -56,6 +56,10 @@ fn rl_clear(uid: i64) {
 }
 
 /// `auth.hash_password`: "{salt_hex}${digest_hex}", a fresh random 16-byte salt
+pub fn hash_password_pub(password: &str) -> String {
+    hash_password(password)
+}
+
 fn hash_password(password: &str) -> String {
     use rand::Rng;
     let salt: [u8; 16] = rand::random();

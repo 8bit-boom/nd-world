@@ -40,6 +40,7 @@ pub mod gallery;
 pub mod home;
 pub mod hub;
 pub mod importer;
+pub mod startup;
 pub mod imaging;
 pub mod markup;
 pub mod layout;

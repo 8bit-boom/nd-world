@@ -112,6 +112,56 @@ def advance_feats() -> list:
     return out
 
 
+def schema_sql() -> list:
+    """The app's post-migration SQLite schema from a fresh temp database: create_all + _migrate, then the ordered
+    CREATE statements out of sqlite_master. The Rust seeder runs these when the database file doesn't exist yet, so a
+    gateway-only container boots a working database. Dumped, never retyped."""
+    import tempfile
+    from sqlalchemy import create_engine, text
+    from app import database
+    tmp = Path(tempfile.mkdtemp()) / "dump.db"
+    real_engine = database.engine
+    try:
+        database.engine = create_engine(f"sqlite:///{tmp}")
+        database.Base.metadata.create_all(bind=database.engine)
+        database._migrate()
+        with database.engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid")).fetchall()
+        # sqlite_master.sql IS the CREATE statement (the "type" column is a label, not SQL); a trailing
+        # semicolon is appended because sqlite_master omits it. FTS5's shadow tables (entity_fts_data &
+        # friends) are created by the VIRTUAL TABLE statement itself — dumping them would fail the replay.
+        fts_shadows = ("_data", "_idx", "_content", "_docsize", "_config")
+        stmts = [r[2].strip().rstrip(";") + ";" for r in rows
+                 if r[2].strip().upper().startswith(("CREATE", "INSERT"))
+                 and not (r[0] == "table" and any(r[1].endswith(s) for s in fts_shadows))]
+        database.engine.dispose()
+        return stmts
+    finally:
+        database.engine = real_engine
+        import gc
+        gc.collect()  # drop the temp engine's pooled connections before unlinking (Windows)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(str(tmp) + suffix).unlink()
+            except OSError:
+                pass  # a pooled connection may outlive the dump on Windows; the temp dir gets cleaned up anyway
+
+
+def seed_data() -> dict:
+    """The seeder's field blobs (database.py's _ND_DEFAULT_FIELDS and friends), as json.dumps spells them - the Rust
+    seeder inserts these rows exactly as Python's _seed does, without retyping hundreds of field definitions."""
+    from app import database
+    return {
+        "schema_sql": schema_sql(),
+        "seed_nd_default_fields": json.dumps(database._ND_DEFAULT_FIELDS),
+        "seed_asterion_fields": json.dumps(database._ASTERION_FIELDS),
+        "seed_hitm_fields": json.dumps(database._HITM_FIELDS),
+        "seed_npc_details_fields": json.dumps(database._NPC_DETAILS_FIELDS),
+        "seed_stat_block_fields": json.dumps(database._STAT_BLOCK_FIELDS),
+    }
+
+
 def make() -> dict:
     from app import calendar_config, combat_rules, constants, game_catalog, nav_menus, sheet_systems, view_prefs
     from app.routers import quests
@@ -180,6 +230,7 @@ def make() -> dict:
         # the MCP server's tool list and initialize answer (rust/nd-gateway/src/mcp.rs)
         "mcp": mcp_data(),
         "combat_player_rules_json": json.dumps({k: {"label": v["label"], "turns": v["turns"], "hp_label": v["hp_label"]} for k, v in combat_rules.RULESETS.items()}),
+        **seed_data(),
     }
 
 

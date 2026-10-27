@@ -31,6 +31,13 @@ them after each batch; the phase is done when both are empty and the steps below
 
 ### Done so far
 
+- **The database boot** (startup.rs, batch H step 4): a gateway-only container's first boot creates the database —
+  the post-migration schema (dumped from a fresh Python boot into app_data.json's "schema_sql" by
+  scripts/gen_rust_data.py: create_all + _migrate against a temp database, 245 CREATE statements, FTS5 shadows
+  skipped) plus database.py's _seed rows (world 1, the bundled HTML schematics, the built-in sheet / entity templates
+  with their field blobs from the dumped seed data, the starter tables, the GM account from GM_EMAIL / GM_PASSWORD —
+  an existing non-GM row with that email left alone, as Python's seeder logs). Idempotent: a database anyone already
+  made is left untouched. The Rust binary carries the dumped schema (include_str), so no Python is needed at boot.
 - **The password change** (`POST /account/password`, account.rs `password_change`): the failed-attempt lockout with the
   GATEWAY'S OWN counter (the in-memory Python counter it replaces at the switch - 8 wrong current passwords in 5 minutes
   lock the change for 5), the current-password check, the length and confirm errors rendering the account page at 400

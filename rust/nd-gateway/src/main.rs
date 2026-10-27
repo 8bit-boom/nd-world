@@ -19,6 +19,9 @@ async fn main() {
         }
     };
     eprintln!("nd-gateway: {} -> {} (static: {})", cfg.listen, cfg.upstream, cfg.static_dir.display());
+    // boot a fresh database (schema snapshot + seed rows) when the volume has none — in the Python-free
+    // image this is the only boot that will ever happen
+    nd_gateway::startup::init_db(&cfg);
     let ai_jobs = cfg.rust_routes.iter().any(|r| r == "ai");
     let fans = cfg.rust_routes.iter().any(|r| r == "fans").then(|| cfg.clone());
     let app = router(cfg).into_make_service_with_connect_info::<SocketAddr>();
