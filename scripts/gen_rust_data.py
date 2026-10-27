@@ -131,10 +131,16 @@ def schema_sql() -> list:
         # sqlite_master.sql IS the CREATE statement (the "type" column is a label, not SQL); a trailing
         # semicolon is appended because sqlite_master omits it. FTS5's shadow tables (entity_fts_data &
         # friends) are created by the VIRTUAL TABLE statement itself — dumping them would fail the replay.
+        # The row order varies between runs (SQLAlchemy's metadata hash order), so sort: tables, then
+        # indexes, then triggers/views, each by name — a replay needs tables before their indexes anyway.
         fts_shadows = ("_data", "_idx", "_content", "_docsize", "_config")
-        stmts = [r[2].strip().rstrip(";") + ";" for r in rows
-                 if r[2].strip().upper().startswith(("CREATE", "INSERT"))
-                 and not (r[0] == "table" and any(r[1].endswith(s) for s in fts_shadows))]
+        rank = {"table": 0, "index": 1, "trigger": 2, "view": 3}
+        stmts = sorted(
+            (r for r in rows
+             if r[2].strip().upper().startswith("CREATE")
+             and not (r[0] == "table" and any(r[1].endswith(sw) for sw in fts_shadows))),
+            key=lambda r: (rank.get(r[0], 9), r[1]))
+        stmts = [r[2].strip().rstrip(";") + ";" for r in stmts]
         database.engine.dispose()
         return stmts
     finally:
