@@ -60,6 +60,10 @@ them after each batch; the phase is done when both are empty and the steps below
   `int(x or 1)` with the fallback, ints-only `claimed_by`), `_loot_int`'s strings through int() and its
   "must be a whole number" / "out of range" 400s, the 409 for a gone `lid`, "Invalid loot item", "Item name
   is required", "notes must be text", the member / own-character refusals and the action list 400.
+- **Condition labels** (`clean_condition`, edits.rs): Python's isprintable() as a table of the
+  separator / format blocks, whitespace-collapsed, cut at 40 then stripped; the case-insensitive
+  de-dup lowercases the Unicode way. Only a name of unassigned codepoints (undetectable without
+  Unicode tables) would diverge.
 - **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
   port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
   gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
@@ -77,6 +81,10 @@ them after each batch; the phase is done when both are empty and the steps below
   `int(x or 1)` with the fallback, ints-only `claimed_by`), `_loot_int`'s strings through int() and its
   "must be a whole number" / "out of range" 400s, the 409 for a gone `lid`, "Invalid loot item", "Item name
   is required", "notes must be text", the member / own-character refusals and the action list 400.
+- **Condition labels** (`clean_condition`, edits.rs): Python's isprintable() as a table of the
+  separator / format blocks, whitespace-collapsed, cut at 40 then stripped; the case-insensitive
+  de-dup lowercases the Unicode way. Only a name of unassigned codepoints (undetectable without
+  Unicode tables) would diverge.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

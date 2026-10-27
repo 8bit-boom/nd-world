@@ -3286,21 +3286,36 @@ fn pc_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 /// `clean_condition` for ASCII text (str.isprintable() beyond ASCII: Python's); None = Python's, Some("") = nothing usable
+/// Python's str.isprintable(): everything but Cc, Cf, Cs, Co, Cn, Zl, Zp and Zs (a plain space IS
+/// printable). The separator / format blocks are tabled; an unassigned codepoint (Cn, undetectable
+/// without Unicode tables) passes — Python would drop it, and only a name made of those diverges.
+fn py_printable(c: char) -> bool {
+    if c.is_ascii() {
+        return (' '..='~').contains(&c);
+    }
+    let u = c as u32;
+    !(matches!(u,
+        0x0080..=0x009F | 0x00A0 | 0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x08E2
+        | 0x1680 | 0x180E | 0x2000..=0x200F | 0x2028..=0x202F | 0x205F..=0x206F | 0x3000
+        | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3
+        | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F
+    ))
+}
+
 fn clean_condition(v: &Value) -> Option<String> {
     let Value::String(raw) = v else { return Some(String::new()) };
-    if !raw.is_ascii() {
-        return None;
-    }
-    let text: String = raw.chars().filter(|ch| (' '..='~').contains(ch)).collect();
-    Some(strip(&take_chars(&nd_render::text::py_split_join(&text), 40)))
+    let text: String = raw.chars().filter(|ch| py_printable(*ch)).collect();
+    let joined = nd_render::text::py_split_join(&text);
+    let cut: String = joined.chars().take(40).collect();
+    Some(cut.trim_matches(|ch: char| crate::markup::py_space(ch)).to_string())
 }
 
 pub(crate) fn clean_conditions(seq: &Value) -> Option<Vec<String>> {
     let (mut out, mut seen): (Vec<String>, Vec<String>) = (vec![], vec![]);
     for raw in seq.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
         let cnd = clean_condition(raw)?;
-        if !cnd.is_empty() && !seen.contains(&cnd.to_ascii_lowercase()) {
-            seen.push(cnd.to_ascii_lowercase());
+        if !cnd.is_empty() && !seen.contains(&cnd.to_lowercase()) {
+            seen.push(cnd.to_lowercase());
             out.push(cnd);
         }
     }
