@@ -177,10 +177,14 @@ read the gateway's stderr.
   in memory (`_failed_password_changes`, lockout after 5); give the gateway its own counter and move them together.
 - Any route whose Python handler uses an in-process cache (see `tests/inprocess_only.txt` for the caches tests know about).
 
-### Phase 6 steps 4-5 (not started)
+### Phase 6 steps 4-5 (partly done)
 
-- **Startup work**: `app/database.py` `_migrate`, `_heal_table`, seeding (default world, templates, app settings), FTS table upkeep;
-  the 2FA / session secret handling.
+- **Startup work**: the database boot is DONE (startup.rs, see RUST_SWITCH_OFF.md). Still Python's at `_startup_tasks`
+  (app/main.py 390): static-thumbnail warming, db_upkeep (daily PRAGMA optimize), `_load_preview_format` /
+  `_remake_thumbnails` / `_seed_bundled_maps`, `_refresh_settings_overrides` / `_sync_ollama_server_env`, the five job
+  engines' `sweep_interrupted_*` / `resume_interrupted_*`, `_backups.start`, `_fan_control.start`, `_diagnostics.start`.
+  These run in exactly one process by design (RUST_MIGRATION_STATE.md) and only matter for the Python-free image —
+  port them when the route census is empty, not before.
 - **Background loops** Python runs: job sweeps, the watchdog, scheduled backups, anything started in `app/main.py`'s lifespan.
 - **Libraries without a Rust twin**: reportlab (PDF export), the PDF/HTML sheet readers behind the AI drafters - may stay in a small
   sidecar per the plan.
