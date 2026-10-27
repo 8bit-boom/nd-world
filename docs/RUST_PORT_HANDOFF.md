@@ -107,7 +107,10 @@ the ported `_apply_form`; the batch envelope still Python's), and the world JSON
 image written back under a fresh uploads name, the upsert by (name, kind) with every field set outright - absent key
 NULL, explicit "" empty - the redirect counting created and updated). The zip exports' parity rule (Python's zips are
 timestamp-dependent): compare the extracted entries - files byte for byte, the backup's database by its logical dump,
-the book's index.html with the owner-chosen markdown whitespace collapsed.
+the book's index.html with the owner-chosen markdown whitespace collapsed. The account-security routes are the first
+switch-off moves: the password change and 2FA disable / backup-code regenerate run on the gateway's own lockout
+counter (Python's in-memory one is replaced), and the database boot (startup.rs) lets a gateway-only container create
+the database from the dumped schema snapshot plus _seed rows.
 
 ## The dev environment: WSL, not Docker
 
