@@ -50,6 +50,10 @@ them after each batch; the phase is done when both are empty and the steps below
   with their field blobs from the dumped seed data, the starter tables, the GM account from GM_EMAIL / GM_PASSWORD —
   an existing non-GM row with that email left alone, as Python's seeder logs). Idempotent: a database anyone already
   made is left untouched. The Rust binary carries the dumped schema (include_str), so no Python is needed at boot.
+  After the boot, the sweep marks every job still mid-flight interrupted across the five engines — each engine's own
+  fields (audio_jobs carries chunk progress and a finished_at stamp; the others their own note, no finished_at
+  column). Python's resume_interrupted_jobs re-runs them through its engines; the gateway's own audio runner resumes
+  its audio jobs the same way.
 - **The password change** (`POST /account/password`, account.rs `password_change`): the failed-attempt lockout with the
   GATEWAY'S OWN counter (the in-memory Python counter it replaces at the switch - 8 wrong current passwords in 5 minutes
   lock the change for 5), the current-password check, the length and confirm errors rendering the account page at 400

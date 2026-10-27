@@ -22,6 +22,8 @@ async fn main() {
     // boot a fresh database (schema snapshot + seed rows) when the volume has none — in the Python-free
     // image this is the only boot that will ever happen
     nd_gateway::startup::init_db(&cfg);
+    // the boot sweep: any job mid-flight when the last process stopped is marked interrupted (idempotent)
+    nd_gateway::startup::sweep_interrupted(&cfg);
     let ai_jobs = cfg.rust_routes.iter().any(|r| r == "ai");
     let fans = cfg.rust_routes.iter().any(|r| r == "fans").then(|| cfg.clone());
     let app = router(cfg).into_make_service_with_connect_info::<SocketAddr>();

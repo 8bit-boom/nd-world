@@ -192,3 +192,83 @@ pub fn init_db(cfg: &Config) {
     }
     eprintln!("nd-gateway: booted a fresh database (schema + seed rows) at {}", cfg.db_path.display());
 }
+
+/// The boot sweeps (each engine's `sweep_interrupted_jobs`): any job still mid-flight when the process last stopped
+/// uncleanly has no background task in THIS one, so it's marked "interrupted" — the same status a clean shutdown
+/// leaves a paused job in. Python's resume_interrupted_jobs re-runs them through its engines; the gateway's own audio
+/// runner resumes its audio jobs the same way below.
+/// the civil date of a days-since-epoch count (Howard Hinnant's civil_from_days)
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+pub fn sweep_interrupted(cfg: &Config) {
+    let Some(db) = crate::writes::open(cfg) else { return };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| {
+        let secs = d.as_secs();
+        let days = secs.div_euclid(86400) as i64;
+        let rem = secs.rem_euclid(86400);
+        let (y, m, d) = civil_from_days(days);
+        Some(format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}.000000", rem / 3600, rem % 3600 / 60, rem % 60))
+    });
+    let Some(stamp) = now else { return };
+    let note = |cur: Option<i64>, total: Option<i64>| -> String {
+        match (cur, total) {
+            (Some(c), Some(t)) if c > 0 && t > 0 => format!(
+                "Paused by a server restart at part {c} of {t} — the work so far is saved; it will resume automatically, or use ▶ Resume."),
+            _ => "Paused by a server restart — the work so far is saved; it will resume automatically, or use ▶ Resume.".to_string(),
+        }
+    };
+    // (table, in-progress statuses, note text, with_chunks) — each engine's own sweep fields: audio_jobs carries
+    // chunk progress and a finished_at stamp; the others have their own note and no finished_at column
+    let engines: [(&str, &[&str], &str, bool); 5] = [
+        ("audio_jobs", &["pending", "transcribing", "summarizing"],
+         "", true),
+        ("image_jobs", &["pending", "generating"],
+         "Paused by a server restart — it will restart automatically from the same request.", false),
+        ("chat_jobs", &["pending", "generating"],
+         "Paused by a server restart — it will restart automatically from the same request.", false),
+        ("video_jobs", &["pending", "generating", "fetching"],
+         "Paused by a server restart — it will restart automatically from the same request.", false),
+        ("media_rename_runs", &["running"],
+         "Paused by a server restart — it will resume automatically from the same items.", false),
+    ];
+    for (table, statuses, plain_note, has_chunks) in engines {
+        let in_list: Vec<String> = statuses.iter().map(|s| format!("'{s}'")).collect();
+        let sql = if has_chunks {
+            format!("SELECT id, chunk_current, chunk_total FROM {table} WHERE status IN ({})", in_list.join(", "))
+        } else {
+            format!("SELECT id, NULL, NULL FROM {table} WHERE status IN ({})", in_list.join(", "))
+        };
+        let Ok(mut st) = db.prepare(&sql) else { continue };
+        let rows: Vec<(i64, Option<i64>, Option<i64>)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();
+        drop(st);
+        let rows_len = rows.len();
+        if rows_len == 0 {
+            continue;
+        }
+        for (id, cur, total) in rows {
+            let error_text = if has_chunks { note(cur, total) } else { plain_note.to_string() };
+            let mut set = vec![
+                ("status", Sql::Text("interrupted".into())),
+                ("error", Sql::Text(error_text)),
+            ];
+            if has_chunks {
+                set.push(("finished_at", Sql::Text(stamp.clone())));
+            }
+            crate::orm::update(&db, table, id, &set);
+        }
+        eprintln!("nd-gateway: marked {rows_len} interrupted {table} job(s)");
+    }
+}
