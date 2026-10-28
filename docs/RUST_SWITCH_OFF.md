@@ -81,6 +81,11 @@ them after each batch; the phase is done when both are empty and the steps below
   Unicode digits decline too), and `linked_entities_json` / `entries_json` decided by json.loads:
   what it reads (bare NaN / Infinity, re-parsed with the tokens nulled) is stored verbatim, what it
   raises on becomes `[]` — Python's own fallback, never a decline.
+- **The party roster** (`POST /parties/{}/edit`, edits.rs): `member_pc_ids` / `member_entity_ids`
+  through int()'s whitespace and sign (junk the "Member ids must be numbers" 400), and the companions
+  filtered through `_visible_entity_ids` — a GM every existing one in the world, anyone else only
+  `visible_to_players` / shared-with-them, with the GM's hidden companions carried over untouched for
+  a non-GM save. A forged hidden id from another world drops out instead of forwarding.
 - **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
   agenda, event-jump/search and every write route create the world's calendar on first use with
   Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.
@@ -128,6 +133,11 @@ them after each batch; the phase is done when both are empty and the steps below
   Unicode digits decline too), and `linked_entities_json` / `entries_json` decided by json.loads:
   what it reads (bare NaN / Infinity, re-parsed with the tokens nulled) is stored verbatim, what it
   raises on becomes `[]` — Python's own fallback, never a decline.
+- **The party roster** (`POST /parties/{}/edit`, edits.rs): `member_pc_ids` / `member_entity_ids`
+  through int()'s whitespace and sign (junk the "Member ids must be numbers" 400), and the companions
+  filtered through `_visible_entity_ids` — a GM every existing one in the world, anyone else only
+  `visible_to_players` / shared-with-them, with the GM's hidden companions carried over untouched for
+  a non-GM save. A forged hidden id from another world drops out instead of forwarding.
 - **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
   agenda, event-jump/search and every write route create the world's calendar on first use with
   Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.

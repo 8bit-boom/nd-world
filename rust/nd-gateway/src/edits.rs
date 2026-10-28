@@ -1959,19 +1959,63 @@ fn party_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     match level {
         "none" => return Some(crate::idpages::refusal(403)), // Python's HTTPException(403): the viewer may not edit this party at all
         "full" => {
-            if !c.p.is_gm {
-                return None; // an assistant's view of hidden companions (filter_visible_entities): Python's
-            }
             let old = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let name = strip(f.get("name").unwrap_or(&old));
             cols.push(("name", s(if name.is_empty() { &old } else { &name })));
-            let pcs: Vec<i64> = f.all("member_pc_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
-            let ents: Vec<i64> = f.all("member_entity_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
+            // [int(v) for v in getlist(...)] — int()'s whitespace / sign; junk is the
+            // 400 "Member ids must be numbers"
+            let mut member_ids = |name: &str| -> Result<Vec<i64>, Response<Body>> {
+                let mut out = vec![];
+                for v in f.all(name) {
+                    match py_int_str(v) {
+                        PyIntStr::Ok(i) => out.push(i),
+                        PyIntStr::Invalid => {
+                            return Err(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Member ids must be numbers"))
+                        }
+                        PyIntStr::Forward => {
+                            return Err(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Member ids must be numbers"))
+                        }
+                    }
+                }
+                Ok(out)
+            };
+            let pcs = match member_ids("member_pc_ids") { Ok(v) => v, Err(r) => return Some(r) };
+            let mut ents = match member_ids("member_entity_ids") { Ok(v) => v, Err(r) => return Some(r) };
             let in_world = |table: &str, id: i64| -> bool {
                 c.db.query_row(&format!("SELECT world_id FROM {table} WHERE id = ?1"), [id], |r| r.get::<_, Option<i64>>(0)).ok().flatten() == Some(world)
             };
             let pcs: Vec<i64> = pcs.into_iter().filter(|i| in_world("player_characters", *i)).collect();
-            let ents: Vec<i64> = ents.into_iter().filter(|i| in_world("entities", *i)).collect();
+            let uid = c.p.user_id;
+            // _visible_entity_ids: of these ids, the ones in this world the viewer may know exist —
+            // a GM every existing one, anyone else only visible_to_players or shared with them
+            let seen_of = |ids: &[i64]| -> Option<Vec<i64>> {
+                if ids.is_empty() {
+                    return Some(vec![]);
+                }
+                let marks = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let vis = if c.p.is_gm { "" } else {
+                    " AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?))"
+                };
+                let mut stmt = c.db.prepare(&format!("SELECT id FROM entities WHERE id IN ({marks}) AND world_id = ?{vis}")).ok()?;
+                let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = ids.iter().map(|i| Box::new(*i) as _).collect();
+                params.push(Box::new(world));
+                if !c.p.is_gm {
+                    params.push(Box::new(uid));
+                }
+                let rows: Vec<i64> = stmt.query_map(rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())), |r| r.get(0)).ok()?.filter_map(Result::ok).collect();
+                Some(rows)
+            };
+            let mut ents: Vec<i64> = {
+                let keep = seen_of(&ents)?;
+                ents.into_iter().filter(|i| keep.contains(i)).collect()
+            };
+            if !c.p.is_gm {
+                // the assistant's editor only listed the companions they may see; the hidden ones the
+                // GM added are carried over untouched
+                let old_ids: Vec<i64> = stored_list(&p, "member_entity_ids_json")?.iter().map(|v| v.as_i64()).collect::<Option<_>>()?;
+                let seen_old = seen_of(&old_ids)?;
+                ents.extend(old_ids.into_iter().filter(|i| !seen_old.contains(i)));
+            }
             cols.push(("member_pc_ids_json", s(&ints_json(&pcs))));
             cols.push(("member_entity_ids_json", s(&ints_json(&ents))));
         }
