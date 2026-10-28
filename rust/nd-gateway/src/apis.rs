@@ -19,6 +19,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/view-prefs" => view_prefs(&cfg, uri, headers),
         "/api/dice/history" => dice_history(&cfg, uri, headers),
         "/api/display/state" => display_state(&cfg, uri, headers),
+        "/rules/download.md" => rules_download(&cfg, uri, headers),
+        path if id_between(path, "/pages/", "/download").is_some() => pages_download(&cfg, uri, headers, id_between(path, "/pages/", "/download")?),
         path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
         path if id_between(path, "/entity/", "/download.md").is_some() => entity_download(&cfg, uri, headers, id_between(path, "/entity/", "/download.md")?),
         path if id_between(path, "/api/characters/", "/vitals").is_some() => pc_vitals(&cfg, uri, headers, id_between(path, "/api/characters/", "/vitals")?),
@@ -51,7 +53,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state")
+    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md")
+        || id_between(path, "/pages/", "/download").is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
@@ -1841,4 +1844,76 @@ pub(crate) fn kind_download_zip(cfg: &Config, uri: &Uri, headers: &HeaderMap, ki
         .header("x-nd-served-by", "gateway")
         .body(Body::from(buf.into_inner()))
         .ok()
+}
+
+/// `GET /rules/download.md` (app/main.py `rules_download`): the world's rules as a .md attachment. A
+/// non-GM needs the section readable AND the world's players_can_download_rules flag, and gets the
+/// text without the :::gm blocks (the page strips them; the download must not carry them around that).
+fn rules_download(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.clone() else { return Some(crate::idpages::refusal(403)) };
+    if !p.is_gm {
+        if !crate::pages::section_ok(&p, Some(&w), "rules")? {
+            return Some(crate::idpages::refusal(403));
+        }
+        if !crate::edits::py_truthy_pub(w.get("players_can_download_rules")) {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let mut text = crate::retrieval::world_rules_markdown(&w);
+    if !p.is_gm {
+        text = crate::retrieval::strip_gm_directives(&text);
+    }
+    let fname = match w.get("slug").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => format!("{s}-rules.md"),
+        _ => "core-rules.md".to_string(),
+    };
+    Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{fname}\""))
+        .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap())
+}
+
+/// `GET /pages/{doc_id}/download` (app/routers/pages.py `pages_download`): the page's file with
+/// Content-Disposition: attachment — the same file the viewer renders, same visibility gate.
+fn pages_download(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.clone() else { return Some(crate::idpages::refusal(404)) };
+    if !crate::pages::section_ok(&p, Some(&w), "pages")? {
+        return Some(crate::idpages::refusal(404));
+    }
+    let Some(doc) = rows_of(&db, "SELECT * FROM page_docs WHERE id = ?1", &[&id])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    if doc.get("world_id").and_then(|v| v.as_i64()) != w.get("id").and_then(|v| v.as_i64()) {
+        return Some(crate::idpages::refusal(404));
+    }
+    if !p.is_gm && !crate::edits::py_truthy_pub(doc.get("visible_to_players")) {
+        return Some(crate::idpages::refusal(404));
+    }
+    let file_url = doc.get("file_url").and_then(|v| v.as_str()).unwrap_or("");
+    let rest = file_url.strip_prefix("/uploads/")?;
+    if rest.is_empty() || rest.split('/').any(|seg| seg == "." || seg == "..") {
+        return Some(crate::idpages::refusal(404));
+    }
+    let root = std::path::Path::new(&cfg.accel_root).join("uploads").canonicalize().ok()?;
+    let path = root.join(rest).canonicalize().ok()?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Some(crate::idpages::refusal(404));
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    let fname: String = (doc.get("name").and_then(|v| v.as_str()).unwrap_or("page")).chars()
+        .filter(|c| c.is_alphanumeric() || " -_".contains(*c)).collect();
+    let fname = if fname.is_empty() { "page".to_string() } else { fname };
+    let ext = path.extension().and_then(|v| v.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| ".html".to_string());
+    // Starlette's FileResponse: a filename urllib.parse.quote would change (a space, non-ASCII) is
+    // written in the RFC 5987 form, a plain one quoted
+    let full = format!("{fname}{ext}");
+    let enc: String = full.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'~' => format!("{}", b as char),
+        _ => format!("%{b:02X}"),
+    }).collect();
+    let disposition = if enc == full { format!("attachment; filename=\"{full}\"") } else { format!("attachment; filename*=utf-8''{enc}") };
+    Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(axum::http::header::CONTENT_DISPOSITION, disposition)
+        .header("x-nd-served-by", "gateway").body(Body::from(bytes)).unwrap())
 }

@@ -486,7 +486,7 @@ pub fn world_rules_markdown(world: &Map<String, Value>) -> String {
 }
 
 /// `rules_render.strip_gm_directives`: every :::gm block dropped, the other blocks' own text kept
-fn strip_gm_directives(md: &str) -> String {
+pub(crate) fn strip_gm_directives(md: &str) -> String {
     let (mut skeleton, blocks) = nd_render::rules::extract_blocks(md);
     for b in &blocks {
         let repl = if b.kind == "callout" && b.btype == "gm" { "" } else { b.text.as_str() };

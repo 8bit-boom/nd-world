@@ -86,6 +86,11 @@ them after each batch; the phase is done when both are empty and the steps below
   filtered through `_visible_entity_ids` — a GM every existing one in the world, anyone else only
   `visible_to_players` / shared-with-them, with the GM's hidden companions carried over untouched for
   a non-GM save. A forged hidden id from another world drops out instead of forwarding.
+- **The file downloads** (`GET /rules/download.md`, `GET /pages/<id>/download`, apis.rs): the rules as a
+  .md attachment (a non-GM needs the section readable AND the world's download flag, and gets the text
+  without the :::gm blocks; the filename from the world's slug), and a page's file with the same
+  visibility gate, the traversal-checked /uploads/ path, Starlette's Content-Disposition spelling
+  (RFC 5987 when quote() would change the name) and its text/html charset.
 - **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
   agenda, event-jump/search and every write route create the world's calendar on first use with
   Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.
@@ -138,6 +143,11 @@ them after each batch; the phase is done when both are empty and the steps below
   filtered through `_visible_entity_ids` — a GM every existing one in the world, anyone else only
   `visible_to_players` / shared-with-them, with the GM's hidden companions carried over untouched for
   a non-GM save. A forged hidden id from another world drops out instead of forwarding.
+- **The file downloads** (`GET /rules/download.md`, `GET /pages/<id>/download`, apis.rs): the rules as a
+  .md attachment (a non-GM needs the section readable AND the world's download flag, and gets the text
+  without the :::gm blocks; the filename from the world's slug), and a page's file with the same
+  visibility gate, the traversal-checked /uploads/ path, Starlette's Content-Disposition spelling
+  (RFC 5987 when quote() would change the name) and its text/html charset.
 - **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
   agenda, event-jump/search and every write route create the world's calendar on first use with
   Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.

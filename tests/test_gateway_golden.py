@@ -5919,3 +5919,91 @@ def test_studio_key_route_is_pythons(client, seed):
     finally:
         studio.close()
     assert served >= 6, served
+
+
+def test_downloads_rules_and_page_are_pythons(client, seed):
+    """GET /rules/download.md and GET /pages/<id>/download from the gateway: the GM always gets the
+    world's rules (a non-GM only with the section readable AND the world's download flag, without the
+    :::gm blocks), and a page's file with Content-Disposition under the same visibility gate (a hidden
+    page is a 404 for a player, an unknown one a 404 for anyone)."""
+    import html as _html
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import PageDoc, World
+    from pathlib import Path
+    import os
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ.get("ND_TEST_DATA_DIR", "tests/_data")) / "uploads"
+    up.mkdir(parents=True, exist_ok=True)
+    f = up / "probe-doc.html"
+    f.write_text("<p>Probe &amp; page</p>", encoding="utf-8")
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.rules_md = "Intro\n\n## Combat\n\nRoll **d20**.\n\n:::gm\nSecret twist.\n:::\n\n## Gear\n\nKnives.\n"
+        wa.players_can_download_rules = True
+        wa.section_access_json = json.dumps({"rules": {"player": "read"}, "pages": {"player": "read"}})
+        doc = PageDoc(world_id=w, name="Probe Doc", file_url=f"/uploads/{f.name}", visible_to_players=True)
+        hid = PageDoc(world_id=w, name="Hidden", file_url=f"/uploads/{f.name}", visible_to_players=False)
+        db.add_all([doc, hid])
+        db.commit()
+        did, hid_id = doc.id, hid.id
+    finally:
+        db.close()
+
+    def shape_rules(r):
+        return (r.status_code, r.headers.get("content-type"), r.headers.get("content-disposition"),
+                [line for line in r.text.splitlines() if line], ":::gm" not in r.text)
+
+    served = 0
+    people = ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug),
+              (seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug))
+    urls = ["/rules/download.md", f"/pages/{did}/download", f"/pages/{hid_id}/download", "/pages/999999/download"]
+    for email, pw, world in people:
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for u in urls:
+            a, b = d.get(u), via.get(u)
+            assert a.status_code == b.status_code, (email, u, a.status_code, b.status_code, a.text[:80], b.text[:80])
+            if a.status_code == 200:
+                if "download.md" in u:
+                    assert shape_rules(a) == shape_rules(b), (email, u, shape_rules(a), shape_rules(b))
+                else:
+                    assert b.content == a.content and b.headers.get("content-type") == a.headers.get("content-type")
+                    assert a.headers.get("content-disposition") == b.headers.get("content-disposition"), (u, a.headers.get("content-disposition"))
+            else:
+                assert b.json() == a.json(), (email, u, a.text[:80], b.text[:80])  # a refusal is Python's {"detail": ...}
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, u, a.status_code)  # every answer here is the gateway's
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    db = SessionLocal()
+    try:
+        d2 = db.query(World).filter(World.id == w).first()
+        d2.players_can_download_rules = False
+        db.commit()
+    finally:
+        db.close()
+    # the flag off: the GM still downloads, the player is refused
+    out = []
+    for email, pw, world in people:
+        c = _signed_in(email, pw, world)
+        a, b = c.get("/rules/download.md"), _via(c, base).get("/rules/download.md")
+        assert a.status_code == b.status_code, (email, a.status_code, b.status_code)
+        if a.status_code == 200:
+            assert shape_rules(a) == shape_rules(b), (email, shape_rules(a), shape_rules(b))
+        else:
+            assert b.json() == a.json(), (email, a.text[:80], b.text[:80])
+        assert b.headers.get("x-nd-served-by") == "gateway", (email, a.status_code)
+        out.append(a.status_code)
+    assert out[0] == 200 and out[1] == 403, out
+    db = SessionLocal()
+    try:
+        from app.models import PageDoc as PD
+        for pid in (did, hid_id):
+            x = db.get(PD, pid)
+            if x:
+                db.delete(x)
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 8, served
