@@ -170,9 +170,12 @@ the hidden-companion carry), the calendar row's creation on first use, the dice 
 form's JSON fields through json.loads' fallback, and the quest/tables int() form fields with the links/entries
 json.loads fallback. What still forwards on those routes is the parity tests' odd-stored-data variants, which Python
 itself answers with a 500 (junk `equipment_json` etc.) — the decline is correct, and at the switch those become the
-gateway's own 500. The python_only tail (216 routes, ~345 requests) is the AI imagegen / attachments / tools-page
-family and the file downloads (`/pages/{}/download`, `/rules/download.md`) — file-serving routes with visibility
-gates, a contained next batch.
+gateway's own 500. The python_only tail (214 routes, ~339 requests) after the player imagegen and the file
+downloads landed: the AI attachments upload family (needs `_extract_document_text`'s PDF/HTML readers — a
+sidecar per the libraries note below, or a Rust PDF crate), the imagegen model-templates / tools / imagestudio
+pages, the maps pages that wait on Python's thumbnail queue (`_remake_thumbnails`' fresh small copy — the
+startup-warming batch), the schematic buy/pickup-item and props update (small form posts), and the worlds
+export family (zips the gateway already builds for other routes — same `kind_download_zip` machinery).
 To find why a route declines, run the gateway with `ND_DECLINE_TRACE=1` (edits.rs run() prints `DECLINE METHOD
 path body=...` per decline) and read the gateway's stderr; the census
 (`scripts/census.py --write tests/_data/shard*/forwarded.log`) re-ranks the rest after a full gateway suite.
