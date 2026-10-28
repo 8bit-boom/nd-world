@@ -76,6 +76,11 @@ them after each batch; the phase is done when both are empty and the steps below
   iterates characters (nothing is a dict), a number / bool is Python's 500 (declined); `str(v or "")`
   fields (containers their repr); `quest_id` by isinstance-int (a bool is quest 1/0);
   `assigned_party_id` refuses bools FIRST (None) and must be a party of the world.
+- **Quest forms and the tables edit** (`edits.rs`): `parent_id` / `assigned_party_id` /
+  `game_session_id` / `party_id` through int()'s whitespace and sign (junk is Python's 500 — decline;
+  Unicode digits decline too), and `linked_entities_json` / `entries_json` decided by json.loads:
+  what it reads (bare NaN / Infinity, re-parsed with the tokens nulled) is stored verbatim, what it
+  raises on becomes `[]` — Python's own fallback, never a decline.
 - **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
   agenda, event-jump/search and every write route create the world's calendar on first use with
   Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.
@@ -118,6 +123,11 @@ them after each batch; the phase is done when both are empty and the steps below
   iterates characters (nothing is a dict), a number / bool is Python's 500 (declined); `str(v or "")`
   fields (containers their repr); `quest_id` by isinstance-int (a bool is quest 1/0);
   `assigned_party_id` refuses bools FIRST (None) and must be a party of the world.
+- **Quest forms and the tables edit** (`edits.rs`): `parent_id` / `assigned_party_id` /
+  `game_session_id` / `party_id` through int()'s whitespace and sign (junk is Python's 500 — decline;
+  Unicode digits decline too), and `linked_entities_json` / `entries_json` decided by json.loads:
+  what it reads (bare NaN / Infinity, re-parsed with the tokens nulled) is stored verbatim, what it
+  raises on becomes `[]` — Python's own fallback, never a decline.
 - **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
   agenda, event-jump/search and every write route create the world's calendar on first use with
   Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.

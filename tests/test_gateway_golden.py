@@ -5259,8 +5259,8 @@ def test_hub_companions_and_live_audio_are_pythons(client, seed):
         pass
 def test_tables_edit_invalid_entries_fallback_is_pythons(client, seed):
     """POST /tables/<id>/edit with entries_json that fails to parse: Python resets the entries to \"[]\" and answers 303 -
-    the gateway now does the same (the row compared); a NaN payload (Python's loads ACCEPTS it) still reaches Python, the
-    stored text intact; a valid payload unchanged."""
+    the gateway now does the same (the row compared); a NaN payload (Python's loads ACCEPTS it) is answered by the
+    gateway too, the stored text verbatim; a valid payload unchanged."""
     from .conftest import PLAYER_PASSWORD
     from app.database import SessionLocal
     from app.models import RandomTable
@@ -5315,7 +5315,7 @@ def test_tables_edit_invalid_entries_fallback_is_pythons(client, seed):
     b = v.post(f"/tables/{tid}/edit", data={"name": "Fb Table", "entries_json": '[{"w": NaN}]'}, follow_redirects=False)
     row_b = _row_by("random_tables", "id", tid)
     assert a.status_code == b.status_code == 303 and row_a["entries_json"] == row_b["entries_json"] == '[{"w": NaN}]'
-    assert b.headers.get("x-nd-served-by") != "gateway"
+    assert b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 3, served
 def test_account_password_change_is_pythons(client, seed):
     import hashlib

@@ -673,11 +673,16 @@ fn field_or(f: &Form, name: &str, default: &str, fallback: &str) -> String {
     if v.is_empty() { fallback.to_string() } else { v }
 }
 
-/// `int(form[name]) if form.get(name) else None` (Err: a value Python's int() would read differently - Python's call)
+/// `int(form[name]) if form.get(name) else None` with int()'s whitespace and sign accepted; a junk
+/// value is Python's uncaught ValueError (a 500 — decline, Err); Unicode digits Python accepts are
+/// also decline (Forward)
 fn opt_int_field(f: &Form, name: &str) -> Result<Option<i64>, ()> {
     match f.get(name) {
         None | Some("") => Ok(None),
-        Some(v) => py_int(v).map(Some).ok_or(()),
+        Some(v) => match py_int_str(v) {
+            PyIntStr::Ok(i) => Ok(Some(i)),
+            PyIntStr::Invalid | PyIntStr::Forward => Err(()),
+        },
     }
 }
 
@@ -687,7 +692,14 @@ fn links_json(f: &Form) -> Option<String> {
         None | Some("") => "[]",
         Some(v) => v,
     };
-    serde_json::from_str::<Value>(raw).ok()?;
+    // json.loads decides: what it reads (bare NaN / Infinity) is stored verbatim, what it raises on
+    // becomes "[]" — Python's own fallback, never a decline
+    if serde_json::from_str::<Value>(raw).is_err() {
+        let stripped = raw.replace("NaN", "null").replace("Infinity", "null");
+        if serde_json::from_str::<Value>(stripped.as_str()).is_err() {
+            return Some("[]".to_string());
+        }
+    }
     Some(raw.to_string())
 }
 
@@ -925,10 +937,15 @@ fn entries_json(f: &Form) -> Option<String> {
     if serde_json::from_str::<Value>(raw).is_ok() {
         return Some(raw.to_string());
     }
-    // Python: json.loads fails -> raw_entries = "[]" (a 303 with the table's entries reset). But Python's loads ACCEPTS
-    // NaN / Infinity where serde fails - there the stored text would differ, so that case stays Python's.
-    if raw.contains("NaN") || raw.contains("Infinity") {
-        return None;
+    // Python: json.loads raises -> raw_entries = "[]" (a 303 with the entries reset); what it READS
+    // (bare NaN / Infinity, detected by re-parsing with the tokens nulled) is stored verbatim, as
+    // Python stores the raw text
+    let python_ok = {
+        let stripped = raw.replace("NaN", "null").replace("Infinity", "null");
+        serde_json::from_str::<Value>(stripped.as_str()).is_ok()
+    };
+    if python_ok {
+        return Some(raw.to_string());
     }
     Some("[]".to_string())
 }
