@@ -162,10 +162,17 @@ Already ported since the census was taken (ignore in the list): `/pages/sheets*`
 ### Mixed routes (gateway answers the common case; Python still answers the rest)
 
 Busiest in `docs/census/mixed.txt` (`python/gateway` counts). Typical remaining cases are refusals (404/403/400 with Python's
-message), pydantic coercions, and data the port declines on. The big ones are ported through (markup, the
-character quick edits' int_field coercions, the party stash, the character roll, the display stage, the calendar
-events, the quest suggestions); their remaining forwards are the parity tests' odd-stored-data variants, which
-Python itself answers with a 500 — the decline is correct, and at the switch those become the gateway's own 500.
+message), pydantic coercions, and data the port declines on. Ported through since that list was written: the read-view
+markup refusals (422s verbatim), the character quick edits' int_field coercions and their 400s, the party stash
+(`load_loot` + `_loot_int`), the character roll (both dice engines), the display stage's refusals, the calendar events
+(`_safe_int`, str() fields), the quest suggestions, the party roster's visibility filter (`_visible_entity_ids` with
+the hidden-companion carry), the calendar row's creation on first use, the dice label's isprintable, the character
+form's JSON fields through json.loads' fallback, and the quest/tables int() form fields with the links/entries
+json.loads fallback. What still forwards on those routes is the parity tests' odd-stored-data variants, which Python
+itself answers with a 500 (junk `equipment_json` etc.) — the decline is correct, and at the switch those become the
+gateway's own 500. The python_only tail (216 routes, ~345 requests) is the AI imagegen / attachments / tools-page
+family and the file downloads (`/pages/{}/download`, `/rules/download.md`) — file-serving routes with visibility
+gates, a contained next batch.
 To find why a route declines, run the gateway with `ND_DECLINE_TRACE=1` (edits.rs run() prints `DECLINE METHOD
 path body=...` per decline) and read the gateway's stderr; the census
 (`scripts/census.py --write tests/_data/shard*/forwarded.log`) re-ranks the rest after a full gateway suite.
