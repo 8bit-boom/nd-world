@@ -15,7 +15,6 @@
      3 GET /api/ai/imagegen/jobs
      3 GET /api/ai/imagegen/player/jobs
      3 GET /api/ai/presets
-     3 GET /api/ai/tasks/J1JCP8WTfGVd5yab
      3 GET /api/sessions/{}/live-audio/download
      3 GET /boards/gw-bad
      3 GET /boards/gw-bad/notes
@@ -29,8 +28,8 @@
      3 GET /tools/code-assist/generate/{}
      3 GET /worlds/{}/export/templates/{}.json
      3 POST /api/maps/props/{}/update
-     3 POST /api/maps/schematic/gw-sc-23f6e153341f/pickup-item
-     3 POST /api/maps/schematic/gw-sc-8186854e79f8/buy-item
+     3 POST /api/maps/schematic/gw-sc-1697ad517c4f/buy-item
+     3 POST /api/maps/schematic/gw-sc-bf6d0b6fe7d4/pickup-item
      3 POST /api/sessions/{}/media/upload/chunk
      3 POST /api/sessions/{}/recap-audio/upload
      2 DELETE /api/ai/imagegen/jobs/{}
@@ -38,6 +37,7 @@
      2 DELETE /api/ai/imagegen/player/jobs/{}
      2 GET /api/ai/models
      2 GET /api/ai/tasks
+     2 GET /api/ai/tasks/Djh74A57Lk-EeAKi
      2 GET /api/ai/world-context
      2 GET /api/characters/{}/hub/sessions
      2 GET /api/characters/{}/share
@@ -48,8 +48,8 @@
      2 GET /characters/{}/export.ndc
      2 GET /characters/{}/export.pdf
      2 GET /health
-     2 GET /share/VNCJNaS2aylWH---iAgIkm_Y4vCKshlu
-     2 GET /share/zIE99oie7k7_oGYm8qk7GxbfkqxKVYCp
+     2 GET /share/6NdkNWxKhAfv8MHRcM40d8Y3x7ddO9-t
+     2 GET /share/GJHo9vORxEY3je9ehOp573azn361407c
      2 GET /world.db
      2 GET /worlds/{}/export/player-characters.json
      2 GET /worlds/{}/export/rules.json
@@ -61,14 +61,14 @@
      2 POST /maps/schematic/old-lair/rename
      2 POST /maps/schematic/pull-ok/pull-combat
      1 DELETE /api/ai/presets/NPC%20improv
-     1 DELETE /api/ai/tasks/J1JCP8WTfGVd5yab
+     1 DELETE /api/ai/tasks/Djh74A57Lk-EeAKi
      1 DELETE /api/video-jobs/{}
      1 DELETE /api/view-prefs
      1 GET /api/ai/context-info
-     1 GET /api/ai/tasks/13ha3nizHm0nYT5V
-     1 GET /api/ai/tasks/4GfPV746ulnrSyvB
-     1 GET /api/ai/tasks/I7ZxE6HXzN59UO00
+     1 GET /api/ai/tasks/H5rWWd1l8e-ZD3ZA
+     1 GET /api/ai/tasks/TwghDh6A0Ss106kP
      1 GET /api/ai/tasks/does-not-exist
+     1 GET /api/ai/tasks/l7J3-WO7gSveG1i5
      1 GET /api/ai/unsloth/prefs
      1 GET /api/ai/whisper/denoise
      1 GET /api/ai/whisper/glossary
@@ -110,14 +110,14 @@
      1 POST /api/maps/no-such-map/overlay
      1 POST /api/maps/nope/ai-markers/start
      1 POST /api/maps/save-map/overlay
-     1 POST /api/maps/schematic/gw-sc-0bd49485bde5/move-token
-     1 POST /api/maps/schematic/gw-sc-21c6a4d89d3f/buy-item
-     1 POST /api/maps/schematic/gw-sc-4ddf3c78cfa8/pickup-item
-     1 POST /api/maps/schematic/gw-sc-5c40af97d303/buy-item
-     1 POST /api/maps/schematic/gw-sc-5f53fc2a8395/move-token
-     1 POST /api/maps/schematic/gw-sc-7d84c9179c6d/move-token
-     1 POST /api/maps/schematic/gw-sc-b4c7deeb41f0/pickup-item
-     1 POST /api/maps/schematic/gw-sc-d2dde7e72e39/buy-item
+     1 POST /api/maps/schematic/gw-sc-462221c88ed5/move-token
+     1 POST /api/maps/schematic/gw-sc-48d4902d4375/move-token
+     1 POST /api/maps/schematic/gw-sc-91015d5c9092/buy-item
+     1 POST /api/maps/schematic/gw-sc-a059e4493471/buy-item
+     1 POST /api/maps/schematic/gw-sc-b15430193d7c/move-token
+     1 POST /api/maps/schematic/gw-sc-b7d386e8270a/pickup-item
+     1 POST /api/maps/schematic/gw-sc-e6966f75502a/buy-item
+     1 POST /api/maps/schematic/gw-sc-f10f6b76bf9a/pickup-item
      1 POST /api/maps/schematic/locked-buy/buy-item
      1 POST /api/maps/schematic/locked-move/move-token
      1 POST /api/maps/schematic/locked-pickup/pickup-item
@@ -125,8 +125,8 @@
      1 POST /api/maps/schematic/removed-pickup/pickup-item
      1 POST /api/maps/schematic/zero-stock/buy-item
      1 POST /api/maps/shape-map/overlay
-     1 POST /api/sessions/{}/media/image/528e2a4b8b/remove
-     1 POST /api/sessions/{}/media/image/c8fc889b36/remove
+     1 POST /api/sessions/{}/media/image/712c1b6fdd/remove
+     1 POST /api/sessions/{}/media/image/9b8091b07d/remove
      1 POST /api/sessions/{}/media/image/nope/rename
      1 POST /api/view-prefs/No-Such
      1 POST /api/view-prefs/preset/nope
@@ -134,7 +134,7 @@
      1 POST /boards/far-6-1/save
      1 POST /boards/save-5-1/save
      1 POST /handouts/print
-     1 POST /join/Fy8hUDTO5qED
+     1 POST /join/Z5Vd102HjIbX
      1 POST /join/presetinvite
      1 POST /join/presetinvite2
      1 POST /join/testinvite2fa
@@ -142,10 +142,10 @@
      1 POST /maps/b-only-map-3/upload
      1 POST /maps/b-only-map/rename
      1 POST /maps/does-not-exist/delete
-     1 POST /maps/gwmap-d-595fb8adf4c0/delete
-     1 POST /maps/gwmap-r-197e883e2bdb/rename
-     1 POST /maps/gwmap-r-3efa2d8cf3cb/rename
-     1 POST /maps/gwup-10f76b067558/upload
+     1 POST /maps/gwmap-d-6baba5e077c2/delete
+     1 POST /maps/gwmap-r-6111c95a8fce/rename
+     1 POST /maps/gwmap-r-e628b08c1b89/rename
+     1 POST /maps/gwup-4a3f29b40073/upload
      1 POST /maps/no-such-map/upload
      1 POST /maps/schematic/ai-bad/ai-build/start
      1 POST /maps/schematic/del-bg/delete

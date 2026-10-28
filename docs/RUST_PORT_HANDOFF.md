@@ -162,13 +162,13 @@ Already ported since the census was taken (ignore in the list): `/pages/sheets*`
 ### Mixed routes (gateway answers the common case; Python still answers the rest)
 
 Busiest in `docs/census/mixed.txt` (`python/gateway` counts). Typical remaining cases are refusals (404/403/400 with Python's
-message), pydantic coercions, and data the port declines on. Top: `POST /api/characters/{}/equipment|feats|hp-async|conditions|currency`
-(the coercions are now `body_int_py`'s int_field-exact parsing), `POST /api/characters/{}/roll` (ported), `POST /api/parties/{}/loot`, `GET /sessions/{}`, `POST /tables/{}/edit`, `GET /entity/{}`,
-`POST /api/entity/{}/markup`, `GET /`, `POST /api/cockpit/workspace`, `GET /calendar`, `POST /api/display/show`,
-`POST /characters/new`, `POST /parties/{}/edit`, `POST /quests/{}/edit`, `POST /calendar/config`, `POST /characters/{}/owner|edit`,
-`GET /api/schedule/state`, `POST /worlds/{}/edit`, `POST /new`, `POST /api/calendar/events`, `POST /entity/{}/edit`, ...
-To find why a route declines, add temporary `eprintln!` markers at its `?` returns (and in `layout::build`), run the one test, and
-read the gateway's stderr.
+message), pydantic coercions, and data the port declines on. The big ones are ported through (markup, the
+character quick edits' int_field coercions, the party stash, the character roll, the display stage, the calendar
+events, the quest suggestions); their remaining forwards are the parity tests' odd-stored-data variants, which
+Python itself answers with a 500 — the decline is correct, and at the switch those become the gateway's own 500.
+To find why a route declines, run the gateway with `ND_DECLINE_TRACE=1` (edits.rs run() prints `DECLINE METHOD
+path body=...` per decline) and read the gateway's stderr; the census
+(`scripts/census.py --write tests/_data/shard*/forwarded.log`) re-ranks the rest after a full gateway suite.
 
 ### Must move only at the switch (Python keeps state in memory)
 
