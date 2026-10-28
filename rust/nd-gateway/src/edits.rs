@@ -1049,11 +1049,21 @@ fn table_roll(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 /// `_safe_int(value, default)` for a JSON value: whole numbers and missing / null only (anything else - a float, text, a bool - is
 /// read by Python's int() in its own way: Python's call)
+/// `_safe_int(value, default)` = int(value) with the fallback on anything int() raises on (junk
+/// text, containers); a bool is 1/0, a float truncs, int()-readable text parses, Unicode digits are
+/// Python's (decline)
 fn safe_int_json(v: Option<&Value>, default: i64) -> Option<i64> {
     match v {
         None | Some(Value::Null) => Some(default),
         Some(Value::Number(n)) if n.is_i64() => n.as_i64(),
-        _ => None,
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite() && f.abs() < 9e15).map(|f| f.trunc() as i64),
+        Some(Value::Bool(x)) => Some(*x as i64),
+        Some(Value::String(t)) => match py_int_str(t) {
+            PyIntStr::Ok(i) => Some(i),
+            PyIntStr::Invalid => Some(default),
+            PyIntStr::Forward => None,
+        },
+        Some(_) => Some(default),
     }
 }
 
@@ -1068,7 +1078,8 @@ fn opt_int_json(v: Option<&Value>) -> Result<Option<i64>, ()> {
         Some(Value::String(t)) if t.is_empty() => Ok(None),
         Some(Value::String(t)) => py_int(t).map(Some).ok_or(()),
         Some(Value::Bool(false)) => Ok(None),
-        _ => Err(()),
+        Some(Value::Bool(true)) => Ok(Some(1)),
+        Some(_) => Err(()),
     }
 }
 
@@ -1077,8 +1088,20 @@ fn json_text<'a>(b: &'a Map<String, Value>, k: &str, default: &'a str) -> Option
     match b.get(k) {
         None => Some(default),
         Some(Value::String(t)) => Some(t),
-        Some(_) => None,
+        Some(_) => None, // str() of another value: a leaked borrowed default is impossible — callers use json_text_val
     }
+}
+
+/// `str(body.get(k, default))` owned: numbers their spelling, containers their repr, null "None"
+fn json_text_val(b: &Map<String, Value>, k: &str, default: &str) -> Option<String> {
+    Some(match b.get(k) {
+        None => default.to_string(),
+        Some(v) => py_str_val(v)
+            .or_else(|| match v {
+                Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(v)),
+                _ => None,
+            })?,
+    })
 }
 
 /// `_can_manage_calendar`: calendar edit rights, GM or assistant
@@ -1094,9 +1117,16 @@ fn calendar_event_add(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     let (_, days, _) = crate::calendar::for_write(&c.db, wid)?;
     let day = crate::calendar::clamp_day(&days, safe_int_json(body.get("day"), 1)?);
-    let title = strip(json_text(&body, "title", "")?);
+    let title = strip(&json_text_val(&body, "title", "")?);
     let title = if title.is_empty() { "Event".to_string() } else { title };
-    let id_of = |k: &str| -> Option<Sql> { Some(opt_int_json(body.get(k)).ok()?.map_or(Sql::Null, Sql::Integer)) };
+    // int(body[k]) if body.get(k) else None: a bool is 1/0, int()-readable text parses, junk text is
+    // an uncaught ValueError (a 500: Python's — decline)
+    let id_of = |k: &str| -> Option<Sql> {
+        match opt_int_json(body.get(k)) {
+            Ok(v) => Some(v.map_or(Sql::Null, Sql::Integer)),
+            Err(()) => None,
+        }
+    };
     let owner = if c.p.is_gm || c.is_assistant() { Sql::Null } else { Sql::Integer(c.p.user_id) };
     let id = orm::insert(
         &c.db,
@@ -1105,12 +1135,12 @@ fn calendar_event_add(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
             ("world_id", Sql::Integer(wid)),
             ("day", Sql::Integer(day)),
             ("title", s(&title)),
-            ("notes", s(json_text(&body, "notes", "")?)),
+            ("notes", s(&json_text_val(&body, "notes", "")?)),
             ("entity_id", id_of("entity_id")?),
             ("session_id", id_of("session_id")?),
             ("character_id", id_of("character_id")?),
             ("party_id", id_of("party_id")?),
-            ("color", s(json_text(&body, "color", "#4488ff")?)),
+            ("color", s(&json_text_val(&body, "color", "#4488ff")?)),
             ("created_by_user_id", owner),
         ],
     )?;
