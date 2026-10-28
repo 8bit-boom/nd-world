@@ -3111,6 +3111,110 @@ fn imagegen_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) 
         ("status", Sql::Text("pending".into()))])
 }
 
+/// app/imagegen_templates.py `suggest_template` over the exported TEMPLATES table: the first entry
+/// whose `match` keyword is in the (lowercased) model name and none of whose `exclude` keywords is.
+pub(crate) fn suggest_template(model: &str) -> Option<Value> {
+    let name = model.to_lowercase();
+    let templates = nd_render::app::data()["imagegen_templates"].as_array()?;
+    templates.iter().find(|t| {
+        let hit = |k: &str| name.contains(&k.to_lowercase());
+        !(t.get("exclude").and_then(|v| v.as_array()).map_or(false, |a| a.iter().any(|x| x.as_str().is_some_and(hit))))
+            && t.get("match").and_then(|v| v.as_array()).map_or(false, |a| a.iter().any(|x| x.as_str().is_some_and(hit)))
+    }).cloned()
+}
+
+/// `POST /api/ai/imagegen/player/generate` (app/routers/ai.py `api_imagegen_player_generate`): the
+/// player-facing image job — the world's opt-in flag, the 20 s LLM cooldown (per-process state, so a
+/// 429 keeps Python's until the switch), the prompt / negative caps, the per-player and per-world job
+/// caps, the fixed portrait params and the template suggestion, then the same image_jobs row.
+pub async fn imagegen_player_generate(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let plan = tokio::task::spawn_blocking(move || imagegen_player_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    match plan {
+        Ok(id) => {
+            start_image_job(id);
+            crate::edits::json_response(&json!({"job_id": id}))
+        }
+        Err(resp) => Some(resp),
+    }
+}
+
+fn imagegen_player_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Result<i64, Response<Body>>> {
+    use crate::ai_more::detail;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let world = p.world.clone()?;
+    let wid = world.get("id")?.as_i64()?;
+    if !p.is_gm && !crate::edits::py_truthy_pub(world.get("players_can_use_image_gen")) {
+        return Some(Err(detail(axum::http::StatusCode::FORBIDDEN, "Forbidden")));
+    }
+    let Some(Value::Object(b)) = serde_json::from_slice::<Value>(body).ok() else {
+        return Some(Err(detail(axum::http::StatusCode::UNPROCESSABLE_ENTITY, "body must be JSON")));
+    };
+    // PlayerImagegenBody: prompt: str (required), negative: str = ""
+    let prompt = match b.get("prompt") {
+        Some(Value::String(t)) => t.clone(),
+        _ => return Some(Err(detail(axum::http::StatusCode::UNPROCESSABLE_ENTITY, "body must be JSON"))),
+    };
+    let negative = match b.get("negative") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        _ => return Some(Err(detail(axum::http::StatusCode::UNPROCESSABLE_ENTITY, "body must be JSON"))),
+    };
+    // deps.check_llm_cooldown: per-process monotonic state. This route answers here now, so the
+    // gateway's own map IS the state (Python's map never sees these calls)
+    if !p.is_gm {
+        static COOLDOWNS: std::sync::Mutex<Option<std::collections::HashMap<i64, std::time::Instant>>> = std::sync::Mutex::new(None);
+        let mut map = COOLDOWNS.lock().ok()?;
+        let map = map.get_or_insert_with(std::collections::HashMap::new);
+        let now = std::time::Instant::now();
+        let blocked = map.get(&p.user_id).is_some_and(|t| now.duration_since(*t).as_secs_f64() < 20.0);
+        map.insert(p.user_id, now);
+        if blocked {
+            return Some(Err(detail(axum::http::StatusCode::TOO_MANY_REQUESTS, "Please wait a few seconds before asking again.")));
+        }
+    }
+    let prompt: String = crate::edits::py_strip_pub(&prompt).chars().take(800).collect();
+    if prompt.is_empty() {
+        return Some(Err(detail(axum::http::StatusCode::BAD_REQUEST, "Prompt is required")));
+    }
+    let negative: String = crate::edits::py_strip_pub(&negative).chars().take(400).collect();
+    let owner = p.user_id;
+    let player_jobs: i64 = db.query_row("SELECT count(*) FROM image_jobs WHERE world_id = ?1 AND created_by_user_id IS ?2", rusqlite::params![wid, i64::try_from(owner).ok()], |r| r.get(0)).ok()?;
+    if player_jobs >= 30 {
+        return Some(Err(detail(axum::http::StatusCode::BAD_REQUEST, "You already have the maximum of 30 generated images — delete an old one first.")));
+    }
+    let world_jobs: i64 = db.query_row("SELECT count(*) FROM image_jobs WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    if world_jobs >= 300 {
+        return Some(Err(detail(axum::http::StatusCode::BAD_REQUEST, "This world already has the maximum of 300 generated images.")));
+    }
+    // the fixed portrait params, then _imagegen_params' own field walk (its model default resolved to
+    // the surface default), then the suggested template's settings
+    let mut body_fixed = serde_json::Map::new();
+    body_fixed.insert("prompt".into(), json!(prompt));
+    body_fixed.insert("negative".into(), json!(negative));
+    for (k, v) in [("width", json!(512)), ("height", json!(768)), ("steps", json!(30)), ("cfg", json!(7.0)), ("seed", json!(-1)),
+                   ("sampler", json!("euler")), ("scheduler", json!("normal")), ("batch_size", json!(1))] {
+        body_fixed.insert(k.into(), v);
+    }
+    let mut params = imagegen_params(cfg, &nd_render::py_dumps(&Value::Object(body_fixed)).as_bytes())?;
+    if params["model"].as_str().is_none() {
+        return None;
+    }
+    if let Some(t) = suggest_template(params["model"].as_str()?) {
+        for k in ["steps", "cfg", "sampler", "scheduler"] {
+            if let Some(v) = t.get(k) {
+                params.insert(k.into(), v.clone());
+            }
+        }
+    }
+    use rusqlite::types::Value as Sql;
+    let id = crate::orm::insert(&db, "image_jobs", &[("world_id", Sql::Integer(wid)), ("prompt", Sql::Text(prompt)),
+        ("params_json", Sql::Text(nd_render::py_dumps(&Value::Object(params)))), ("created_by_user_id", Sql::Integer(p.user_id)),
+        ("status", Sql::Text("pending".into()))])?;
+    Some(Ok(id))
+}
+
 /// `POST /api/ai/imagegen/jobs` on Studio: {job_id}, the job run here
 pub async fn imagegen_job_create(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
     let id = tokio::task::spawn_blocking(move || imagegen_job_plan(&cfg, &uri, &headers, &body)).await.ok()??;

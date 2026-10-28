@@ -208,6 +208,9 @@ def make() -> dict:
         "retrieval_stopwords": sorted(__import__("app.retrieval", fromlist=["_STOPWORDS"])._STOPWORDS),
         # the built-in sheet systems (Hunt in the Moonlight, Asterion, N&D): their vital / XP fields, conditions, Rest rules, dice
         "builtin_systems": json.loads(json.dumps(sheet_systems.BUILTIN_SYSTEMS)),
+        # app/imagegen_templates.py's table: suggest_template's match / exclude keywords and the
+        # per-family steps / cfg / sampler / scheduler the player imagegen route applies
+        "imagegen_templates": json.loads(json.dumps(__import__("app.imagegen_templates", fromlist=["TEMPLATES"]).TEMPLATES)),
         # app/ai_assist.py's free-text operations: each one's system prompt (the structured ones - suggest, table_entries - stay Python's)
         "assist_systems": assist_systems(),
         # app/ai.py's recap-family prompt texts the gateway's jobs build their system prompts from

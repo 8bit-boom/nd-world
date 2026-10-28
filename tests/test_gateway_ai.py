@@ -2351,3 +2351,153 @@ def test_hardware_panel_is_pythons(client, seed, studio):
             assert b[2] == "gateway"
     _settings(gm, llm_url=studio.url, llm_model="studio", ollama_vram_override_mb="")
     assert get(player, "/api/ai/hardware")[0] == get(_via(player, base), "/api/ai/hardware")[0]
+
+
+def test_player_imagegen_generate_is_pythons(client, seed, studio):
+    """POST /api/ai/imagegen/player/generate from the gateway: the world's opt-in flag (403 without
+    it), the required prompt (400), the fixed portrait params in the row (client-sent size / steps
+    ignored), the per-player and per-world caps (400 with Python's messages), the same image_jobs row
+    and generation (the fake Studio's files under uploads/ai-images) — and the 20 s player cooldown,
+    each server keeping its own map (the first call 200, an immediate second 429)."""
+    import os
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import ImageJob, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    # the imagegen backend is the Studio key: the same settings the GM's own imagegen test rides on
+    _settings(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), llm_url=studio.url, llm_model="studio", llm_api_key="sk-test")
+    # a DEDICATED player: this test fills cooldown maps (its own on each server), and the entries
+    # must not collide with the shared seed players the later tests in the shard generate as
+    from app import auth as _auth
+    from app.models import User as _U, WorldMembership as _WM
+    db = SessionLocal()
+    try:
+        igu = _U(email="imgen@test.local", password_hash=_auth.hash_password(PLAYER_PASSWORD), display_name="Img", is_gm=False)
+        db.add(igu)
+        db.commit()
+        db.refresh(igu)
+        db.add(_WM(world_id=w, user_id=igu.id))
+        db.commit()
+        igu_id = igu.id
+    finally:
+        db.close()
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.players_can_use_image_gen = True
+        db.commit()
+    finally:
+        db.close()
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    pl = _signed_in("imgen@test.local", PLAYER_PASSWORD, seed.world_a.slug)
+    # the flag off is a 403 on both sides
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.players_can_use_image_gen = False
+        db.commit()
+    finally:
+        db.close()
+    a, b = pl.post("/api/ai/imagegen/player/generate", json={"prompt": "a hero"}), _via(pl, base).post("/api/ai/imagegen/player/generate", json={"prompt": "a hero"})
+    assert a.status_code == b.status_code == 403, (a.status_code, b.status_code)
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.players_can_use_image_gen = True
+        db.commit()
+    finally:
+        db.close()
+
+    def run(side):
+        studio.requests.clear()
+        studio.image_refusals = 0
+        studio.image_reply = (200, {"images": [{"url": "/gallery/one.png"}]})
+        r = side.post("/api/ai/imagegen/player/generate", json={"prompt": "a hero", "width": 4096, "steps": 999})
+        end = time.time() + 20
+        row, files, reqs = None, [], []
+        s = SessionLocal()
+        try:
+            while time.time() < end:
+                s.expire_all()
+                newest = s.query(ImageJob).filter(ImageJob.world_id == w).order_by(ImageJob.id.desc()).first()
+                if newest and newest.status not in ("pending", "generating"):
+                    row = {"status": newest.status, "error": newest.error, "prompt": newest.prompt,
+                           "params": json.loads(newest.params_json), "owner": newest.created_by_user_id}
+                    urls = json.loads(newest.result_urls_json or "[]")
+                    files = [(uploads / u[len("/uploads/"):]).is_file() for u in urls]
+                    break
+                time.sleep(0.1)
+        finally:
+            s.close()
+        reqs = [q["body"] for q in studio.requests]
+        return r.status_code, (r.json() if r.status_code == 200 else r.json()["detail"]), row, files, reqs, r.headers.get("x-nd-served-by")
+
+    out = []
+    for side in (pl, _via(pl, base)):
+        out.append(run(side))
+    # the direct side's cooldown map already has the player (its first call above was 200 through
+    # the flag check... no: that first call was refused 403 before the cooldown). Compare shapes.
+    for k, (a, b) in enumerate(zip(out[0], out[1])):
+        if k in (2, 3, 4):  # row / files / Studio requests compared exactly
+            assert a == b, (k, a, b)
+    assert out[0][0] == out[1][0] == 200, (out[0][:2], out[1][:2])
+    assert out[1][2]["status"] == "done" and out[1][2]["prompt"] == "a hero", out[1][2]
+    assert out[1][2]["params"]["width"] == 512 and out[1][2]["params"]["height"] == 768
+    assert out[1][2]["params"]["steps"] == 30 and out[1][2]["params"]["batch_size"] == 1
+    assert out[1][2]["owner"] == igu_id
+    assert out[1][3] == [True] and out[1][4], out[1][3:]
+    assert out[1][5] == "gateway", out[1][5]
+    # an empty prompt is Python's 400 — after the 20 s cooldown (the check runs first)
+    time.sleep(21)
+    a = pl.post("/api/ai/imagegen/player/generate", json={"prompt": "   "})
+    b = _via(pl, base).post("/api/ai/imagegen/player/generate", json={"prompt": "   "})
+    assert a.status_code == b.status_code == 400 and a.json()["detail"] == b.json()["detail"], (a.text, b.text)
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    # the caps: 30 jobs for this player (the rest deleted first; the cooldown refreshed above)
+    s = SessionLocal()
+    try:
+        s.query(ImageJob).filter(ImageJob.world_id == w).delete(synchronize_session=False)
+        s.commit()
+        for i in range(30):
+            s.add(ImageJob(world_id=w, prompt="p", params_json="{}", created_by_user_id=igu_id, status="done"))
+        s.commit()
+    finally:
+        s.close()
+    time.sleep(21)  # the cooldown refreshed at the empty-prompt case
+    a = pl.post("/api/ai/imagegen/player/generate", json={"prompt": "one too many"})
+    b = _via(pl, base).post("/api/ai/imagegen/player/generate", json={"prompt": "one too many"})
+    assert a.status_code == b.status_code == 400 and a.json()["detail"] == b.json()["detail"], (a.text, b.text)
+    assert "maximum of 30" in b.json()["detail"] and b.headers.get("x-nd-served-by") == "gateway"
+    # the cooldown: the gateway's map has this player now (the 400 above came after the check), so an
+    # immediate retry is its 429 — Python's own map was updated by ITS call too. Both 429.
+    time.sleep(0.2)
+    b = _via(pl, base).post("/api/ai/imagegen/player/generate", json={"prompt": "again"})
+    assert b.status_code == 429 and b.headers.get("x-nd-served-by") == "gateway", (b.status_code, b.text[:80])
+    assert "wait" in b.json()["detail"]
+    # and the direct side is its own map's 429 as well
+    a = pl.post("/api/ai/imagegen/player/generate", json={"prompt": "again"})
+    assert a.status_code == 429, a.status_code
+    # the per-world cap
+    s = SessionLocal()
+    try:
+        s.query(ImageJob).filter(ImageJob.world_id == w).delete(synchronize_session=False)
+        s.commit()
+        s.add(ImageJob(world_id=w, prompt="p", params_json="{}", created_by_user_id=seed.gm.id, status="done"))
+        for i in range(299):
+            s.add(ImageJob(world_id=w, prompt="p", params_json="{}", created_by_user_id=seed.player_b.id, status="done"))
+        s.commit()
+    finally:
+        s.close()
+    time.sleep(21)  # the player cooldown expires
+    a = pl.post("/api/ai/imagegen/player/generate", json={"prompt": "world cap"})
+    b = _via(pl, base).post("/api/ai/imagegen/player/generate", json={"prompt": "world cap"})
+    assert a.status_code == b.status_code == 400 and "maximum of 300" in b.json()["detail"], (a.text, b.text)
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    s = SessionLocal()
+    try:
+        s.query(ImageJob).filter(ImageJob.world_id == w).delete(synchronize_session=False)
+        s.commit()
+    finally:
+        s.close()

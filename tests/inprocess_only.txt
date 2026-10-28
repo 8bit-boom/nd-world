@@ -500,3 +500,13 @@ tests/test_audio_jobs.py::test_cancel_requires_gm
 tests/test_audio_jobs.py::test_delete_route_rejects_in_progress_job
 tests/test_diagnostics.py::test_events_route_serves_full_journal
 tests/test_gallery.py::test_spotlight_cache_serves_a_hit_within_ttl_and_invalidates_on_write
+# the cooldown is per-process state each of these fills (the gateway keeps its own map now that it
+# answers the route); a generate here lands within 20 s of another test's, which only passed when
+# the route was Python's and its slow runner spaced them out
+tests/test_player_image_gen.py::test_player_cannot_see_another_players_job_in_the_same_world
+tests/test_player_image_gen.py::test_player_cannot_cancel_or_delete_another_players_job
+tests/test_player_image_gen.py::test_player_own_job_list_excludes_others
+tests/test_player_image_gen.py::test_gm_sees_every_players_job_with_owner_field
+tests/test_player_image_gen.py::test_set_portrait_rejects_url_not_in_that_jobs_results
+tests/test_player_image_gen.py::test_set_portrait_rejects_someone_elses_job
+tests/test_player_image_gen.py::test_set_portrait_requires_owning_the_character
