@@ -10910,9 +10910,15 @@ fn sc_pickup(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let token = b.get("token_id").filter(|v| py_truthy(Some(v)))?.as_str()?.to_string();
     let wid = sc.get("world_id")?.as_i64()?;
     let pc = sc_active_pc(c, wid, &elements)??;
-    let el = sc_find(&mut elements, &token, Some("item"))?;
-    if sc_closed(el) {
-        return None;
+    let el = match sc_find(&mut elements, &token, Some("item")) {
+        Some(e) => e,
+        None => return Some(crate::idpages::refusal(404)),
+    };
+    if el.get("visible_to_players").map(|v| crate::edits::py_truthy_pub(Some(v))).unwrap_or(true) == false {
+        return Some(crate::idpages::refusal(403));
+    }
+    if py_truthy(el.get("locked")) {
+        return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "This item is locked"));
     }
     let qty = match el.get("qty") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => 1,
@@ -10926,7 +10932,10 @@ fn sc_pickup(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         Some(Value::String(t)) => t.clone(),
         _ => return None,
     };
-    let eq = sc_merge_item(&pc, &name, qty)?;
+    let eq = match sc_merge_item(&pc, &name, qty) {
+        Some(t) => t,
+        None => { eprintln!("PU: merge declined name={name}"); return None; }
+    };
     elements.retain(|e| e.get("id").and_then(|i| i.as_str()) != Some(token.as_str()));
     orm::update(&c.db, "player_characters", pc.get("id")?.as_i64()?, &[("equipment_json", s(&eq))])?;
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("elements_json", s(&nd_render::py_dumps(&Value::Array(elements))))])?;
@@ -10951,27 +10960,49 @@ fn sc_buy(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let stock_id = b.get("stock_id").filter(|v| py_truthy(Some(v)))?.as_str()?.to_string();
     let wid = sc.get("world_id")?.as_i64()?;
     let pc = sc_active_pc(c, wid, &elements)??;
-    let el = sc_find(&mut elements, &token, Some("merchant"))?;
-    if sc_closed(el) {
-        return None;
+    let el = match sc_find(&mut elements, &token, Some("merchant")) {
+        Some(e) => e,
+        None => return Some(crate::idpages::refusal(404)),
+    };
+    if el.get("visible_to_players").map(|v| crate::edits::py_truthy_pub(Some(v))).unwrap_or(true) == false {
+        return Some(crate::idpages::refusal(403));
+    }
+    if py_truthy(el.get("locked")) {
+        return Some(crate::ai_more::detail(StatusCode::FORBIDDEN, "This merchant is locked"));
     }
     let inv = match el.get_mut("inventory") {
         Some(Value::Array(a)) => a,
-        _ => return None, // no stock (Python's 404), or one Python iterates its own way
+        _ => return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "That item is out of stock")),
     };
     if !inv.iter().all(|r| r.is_object()) {
         return None;
     }
-    let stock = inv.iter_mut().find(|r| r.get("id").and_then(|i| i.as_str()) == Some(stock_id.as_str()))?.as_object_mut()?;
+    let stock = match inv.iter_mut().find(|r| r.get("id").and_then(|i| i.as_str()) == Some(stock_id.as_str())) {
+        Some(Value::Object(o)) => o,
+        _ => return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "That item is out of stock")),
+    };
     let qty = match stock.get("qty") {
         None => -1,
         Some(Value::Number(n)) if n.is_i64() => n.as_i64()?,
+        Some(Value::Bool(false)) | Some(Value::Null) => -1, // qty or -1: falsy is -1, "endless"
         _ => return None,
     };
     if qty != -1 && qty <= 0 {
-        return None;
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "That item is out of stock"));
     }
-    let price = py_float_or0(stock.get("price"))?;
+    // float(stock.get("price") or 0): a numeric text float() reads ("3"), 0 for falsy; text float()
+    // raises on is Python's 500 (decline)
+    let price = match stock.get("price") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => 0.0,
+        Some(Value::String(t)) if t.is_empty() => 0.0,
+        Some(v) => match py_float(Some(v)) {
+            Err(_) => return None,
+            Ok(None) => return None,
+            Ok(Some(f)) if f.is_finite() => f,
+            Ok(Some(_)) => return None,
+        },
+        Some(_) => return None,
+    };
     let abbr_raw = match stock.get("currency_abbr") {
         None | Some(Value::Null) => "CR".to_string(),
         Some(Value::String(t)) if t.is_empty() => "CR".to_string(),
@@ -10999,10 +11030,12 @@ fn sc_buy(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             break;
         }
     }
-    let entry = currency.get_mut(idx?)?.as_object_mut()?;
+    let Some(entry) = currency.get_mut(idx?)?.as_object_mut() else {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, format!("Your character doesn't have {abbr_raw}")));
+    };
     let have = py_float_or0(entry.get("value"))?;
     if have < price {
-        return None;
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Insufficient funds"));
     }
     let left = have - price;
     entry.insert("value".into(), Value::Number(serde_json::Number::from_f64(left)?));
@@ -14095,3 +14128,4 @@ fn settings_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     crate::orm::update(&c.db, "app_settings", id, &set)?;
     crate::edits::redirect("/settings")
 }
+
