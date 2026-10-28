@@ -21,6 +21,10 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/display/state" => display_state(&cfg, uri, headers),
         "/rules/download.md" => rules_download(&cfg, uri, headers),
         path if id_between(path, "/pages/", "/download").is_some() => pages_download(&cfg, uri, headers, id_between(path, "/pages/", "/download")?),
+        path if tpl_export_path(path).is_some() => {
+            let (wid, tid) = tpl_export_path(path)?;
+            sheet_template_json(&cfg, uri, headers, wid, tid)
+        }
         path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
         path if id_between(path, "/entity/", "/download.md").is_some() => entity_download(&cfg, uri, headers, id_between(path, "/entity/", "/download.md")?),
         path if id_between(path, "/api/characters/", "/vitals").is_some() => pc_vitals(&cfg, uri, headers, id_between(path, "/api/characters/", "/vitals")?),
@@ -54,7 +58,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 
 pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md")
-        || id_between(path, "/pages/", "/download").is_some()
+        || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
@@ -314,6 +318,18 @@ fn player_image_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64
     crate::edits::json_response(&out)
 }
 
+
+/// `/worlds/{wid}/export/templates/{tid}.json`
+fn tpl_export_path(path: &str) -> Option<(i64, i64)> {
+    let rest = path.strip_prefix("/worlds/")?;
+    let (wid, rest) = rest.split_once("/export/templates/")?;
+    let tid = rest.strip_suffix(".json")?;
+    let num = |s: &str| !s.is_empty() && s.len() < 16 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'));
+    if !num(wid) || !num(tid) {
+        return None;
+    }
+    Some((wid.parse().ok()?, tid.parse().ok()?))
+}
 
 fn pack_world(path: &str) -> Option<i64> {
     let d = path.strip_prefix("/api/worlds/")?.strip_suffix("/content-pack")?;
@@ -1916,4 +1932,33 @@ fn pages_download(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Opti
     Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(axum::http::header::CONTENT_DISPOSITION, disposition)
         .header("x-nd-served-by", "gateway").body(Body::from(bytes)).unwrap())
+}
+
+/// `GET /worlds/{world_id}/export/templates/{template_id}.json` (app/routers/export.py): one sheet
+/// template as a json.dumps(indent=2) attachment — name, description, sheet_mode, the parsed fields.
+fn sheet_template_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64, tid: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let Some(w) = rows_of(&db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let Some(t) = rows_of(&db, "SELECT * FROM sheet_templates WHERE id = ?1 AND world_id = ?2", &[&tid, &wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let fields: Value = serde_json::from_str(t.get("fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]"))
+        .unwrap_or_else(|_| json!([]));
+    // json.dumps(payload, ensure_ascii=False, indent=2): 2-space indent, ", " / ": " separators
+    let payload = json!({
+        "name": t.get("name").cloned().unwrap_or(Value::Null),
+        "description": t.get("description").cloned().unwrap_or(Value::Null),
+        "sheet_mode": t.get("sheet_mode").cloned().unwrap_or(Value::Null),
+        "fields": fields,
+    });
+    let body = nd_render::py_dumps_indent_as(&payload, 2, false); // ensure_ascii=False
+    let tid_v = t.get("id").and_then(|v| v.as_i64())?;
+    let slug = t.get("slug").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+        .unwrap_or_else(|| format!("template-{tid_v}"));
+    let wslug = w.get("slug").and_then(|v| v.as_str()).unwrap_or("world");
+    Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{wslug}-sheet-template-{slug}.json\""))
+        .header("x-nd-served-by", "gateway").body(Body::from(body)).unwrap())
 }

@@ -5973,7 +5973,8 @@ def test_downloads_rules_and_page_are_pythons(client, seed):
                     assert b.content == a.content and b.headers.get("content-type") == a.headers.get("content-type")
                     assert a.headers.get("content-disposition") == b.headers.get("content-disposition"), (u, a.headers.get("content-disposition"))
             else:
-                assert b.json() == a.json(), (email, u, a.text[:80], b.text[:80])  # a refusal is Python's {"detail": ...}
+                # a refusal is Python's {"detail": ...}; the non-numeric-id case is its 422 (no json body check needed — bytes may gzip)
+                assert a.status_code == b.status_code and a.text == b.text, (email, u, a.text[:80], b.text[:80])
             assert b.headers.get("x-nd-served-by") == "gateway", (email, u, a.status_code)  # every answer here is the gateway's
             served += b.headers.get("x-nd-served-by") == "gateway"
     db = SessionLocal()
@@ -6001,6 +6002,63 @@ def test_downloads_rules_and_page_are_pythons(client, seed):
         from app.models import PageDoc as PD
         for pid in (did, hid_id):
             x = db.get(PD, pid)
+            if x:
+                db.delete(x)
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 8, served
+
+
+def test_sheet_template_json_export_is_pythons(client, seed):
+    """GET /worlds/<id>/export/templates/<tid>.json from the gateway: the same bytes (json.dumps'
+    indent-2 spelling, the unicode as-is), the same attachment filename, a wrong-world / unknown
+    template / unknown world the same 404."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    fields = [{"id": "health", "label": "Hëalth ✓", "type": "number", "section": "Resources", "default_value": "5"},
+              {"id": "notes", "type": "text"}]
+    db = SessionLocal()
+    try:
+        t = SheetTemplate(world_id=w, name="Exp T", slug="exp-t", description="d", sheet_mode="custom",
+                          fields_json=json.dumps(fields))
+        nt = SheetTemplate(world_id=w, name="No Slug", slug="", fields_json=json.dumps([]))
+        db.add_all([t, nt])
+        db.commit()
+        tid, nid = t.id, nt.id
+    finally:
+        db.close()
+    served = 0
+    people = ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug))
+    urls = [f"/worlds/{w}/export/templates/{tid}.json", f"/worlds/{w}/export/templates/{nid}.json",
+            f"/worlds/{seed.world_b.id}/export/templates/{tid}.json", f"/worlds/{w}/export/templates/999999.json"]
+    # a non-numeric id is Python's own 422 (the path param's int parse) — the gateway forwards it
+    py_only = ["/worlds/{}/export/templates/x.json"]
+    for email, pw, world in people:
+        d = _signed_in(email, pw, world)
+        via = _via(d, base)
+        for u in urls:
+            a, b = d.get(u), via.get(u)
+            assert a.status_code == b.status_code, (email, u, a.status_code, b.status_code)
+            if a.status_code == 200:
+                assert b.content == a.content, (u, a.text[:120], b.text[:120])
+                assert b.headers.get("content-disposition") == a.headers.get("content-disposition"), u
+                assert b.headers.get("content-type") == a.headers.get("content-type"), u
+            else:
+                # a refusal is Python's {"detail": ...}; the non-numeric-id case is its own 422
+                assert a.text == b.text, (email, u, a.text[:80], b.text[:80])
+            if u in py_only:
+                assert b.headers.get("x-nd-served-by") != "gateway", (email, u)
+                continue
+            assert b.headers.get("x-nd-served-by") == "gateway", (email, u, a.status_code)
+            served += 1
+    db = SessionLocal()
+    try:
+        for tid2 in (tid, nid):
+            x = db.get(SheetTemplate, tid2)
             if x:
                 db.delete(x)
         db.commit()
