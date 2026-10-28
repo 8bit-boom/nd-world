@@ -349,6 +349,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/parties/{}/edit", party_edit),
     ("/parties/{}/delete", party_delete),
     ("/api/parties/{}/location", party_location),
+    ("/api/maps/props/{}/update", props_update),
+    ("/api/maps/props/{}/delete", props_delete),
     ("/api/parties/{}/loot", party_loot),
     ("/api/parties/{}/rest", party_rest),
     ("/api/parties/{}/rest/undo", party_rest_undo),
@@ -14129,3 +14131,127 @@ fn settings_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     crate::edits::redirect("/settings")
 }
 
+
+// ── the prop library (app/routers/map_props.py) ──
+
+/// `_cells(value, fallback)`: a footprint in squares — finite, clamped to 0.25..=40, quarter-square steps
+fn prop_cells(b: &Map<String, Value>, k: &str, fallback: f64) -> Option<f64> {
+    let v = match b.get(k) {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => return Some(fallback),
+        Some(Value::Number(n)) => n.as_f64()?,
+        Some(Value::String(t)) if t.is_empty() => return Some(fallback),
+        Some(v) => match py_float(Some(v)) {
+            Err(_) => return Some(fallback),
+            Ok(None) => return Some(fallback),
+            Ok(Some(f)) => f,
+        },
+        _ => return Some(fallback),
+    };
+    if !v.is_finite() {
+        return Some(fallback);
+    }
+    Some((v * 4.0).round() / 4.0).map(|v| v.clamp(0.25, 40.0))
+}
+
+/// `_clean_name`: str(value or ""), whitespace-collapsed, capped at 128, "Object" when nothing is left
+fn prop_clean_name(v: Option<&Value>, fallback: &str) -> String {
+    let raw = match v {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
+        Some(v) => py_str_val(v).or_else(|| match v {
+            Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(v)),
+            _ => None,
+        }).unwrap_or_default(),
+    };
+    let joined = nd_render::text::py_split_join(&raw);
+    let cut: String = joined.chars().take(128).collect();
+    if cut.is_empty() { fallback.to_string() } else { cut }
+}
+
+/// `POST /api/maps/props/{prop_id}/update` (app/routers/map_props.py `props_update`): name / tags /
+/// cells_w / cells_h from the JSON body, each only when present in it.
+fn props_update(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let p = row(&c.db, "SELECT * FROM map_props WHERE id = ?1", ids[0])?;
+    if p.get("world_id")?.as_i64() != c.world_id() {
+        return Some(crate::idpages::refusal(404));
+    }
+    if !c.can_edit_section("maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let body: Map<String, Value> = if c.body.is_empty() {
+        Map::new()
+    } else {
+        match serde_json::from_slice::<Value>(c.body) {
+            Ok(Value::Object(o)) => o,
+            Ok(_) => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "JSON object required")),
+            Err(_) => Map::new(), // parse_json raises -> body = {}
+        }
+    };
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if body.contains_key("name") {
+        set.push(("name", s(&prop_clean_name(body.get("name"), &p.get("name").and_then(|v| v.as_str()).unwrap_or("Object").to_string()))));
+    }
+    if body.contains_key("tags") {
+        // " ".join(str(v or "").split())[:256]
+        let raw = match body.get("tags") {
+            Some(v) if py_truthy(Some(v)) => py_str_val(v).or_else(|| match v {
+                Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(v)),
+                _ => None,
+            })?,
+            _ => String::new(),
+        };
+        let joined = nd_render::text::py_split_join(&raw);
+        let cut: String = joined.chars().take(256).collect();
+        set.push(("tags", s(&cut)));
+    }
+    for (k, col) in [("cells_w", "cells_w"), ("cells_h", "cells_h")] {
+        if body.contains_key(k) {
+            let fallback = p.get(col).and_then(|v| v.as_f64()).unwrap_or(1.0);
+            let v = prop_cells(&body, k, fallback)?;
+            set.push((col, Sql::Real(v)));
+        }
+    }
+    orm::update(&c.db, "map_props", ids[0], &set)?;
+    let p = row(&c.db, "SELECT * FROM map_props WHERE id = ?1", ids[0])?;
+    json_response(&json!({
+        "id": p.get("id").cloned().unwrap_or(Value::Null),
+        "name": p.get("name").cloned().unwrap_or(Value::Null),
+        "tags": p.get("tags").cloned().unwrap_or(json!("")),
+        "url": p.get("file_url").cloned().unwrap_or(Value::Null),
+        "kind": p.get("kind").cloned().unwrap_or(Value::Null),
+        "px_w": p.get("px_w").cloned().unwrap_or(Value::Null),
+        "px_h": p.get("px_h").cloned().unwrap_or(Value::Null),
+        "cells_w": p.get("cells_w").cloned().unwrap_or(Value::Null),
+        "cells_h": p.get("cells_h").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+/// `POST /api/maps/props/{prop_id}/delete`: the row goes, the file only when no map and no other
+/// library entry still references it
+fn props_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let p = row(&c.db, "SELECT * FROM map_props WHERE id = ?1", ids[0])?;
+    if p.get("world_id")?.as_i64() != c.world_id() {
+        return Some(crate::idpages::refusal(404));
+    }
+    if !c.can_edit_section("maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let url = p.get("file_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    c.db.execute("DELETE FROM map_props WHERE id = ?1", [ids[0]]).ok()?;
+    let in_map: i64 = c.db.query_row("SELECT count(*) FROM schematics WHERE world_id = ?1 AND elements_json LIKE ?2", rusqlite::params![c.world_id()?, format!("%{url}%")], |r| r.get(0)).unwrap_or(0);
+    let others: i64 = c.db.query_row("SELECT count(*) FROM map_props WHERE file_url = ?1", [&url], |r| r.get(0)).unwrap_or(0);
+    let kept = in_map > 0 || others > 0;
+    if !kept && url.starts_with("/uploads/props/") {
+        // delete_prop_file is a no-op for a file that is already gone; a missing folder is too
+        let rest = url.trim_start_matches("/uploads/props/");
+        if !rest.is_empty() && !rest.split('/').any(|seg| seg == "." || seg == "..") {
+            if let Ok(root) = std::path::Path::new(&c.cfg.accel_root).join("uploads").join("props").canonicalize() {
+                if let Ok(path) = root.join(rest).canonicalize() {
+                    if path.starts_with(&root) {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+        }
+    }
+    json_response(&json!({"ok": true, "file_kept": kept}))
+}

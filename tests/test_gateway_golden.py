@@ -6065,3 +6065,151 @@ def test_sheet_template_json_export_is_pythons(client, seed):
     finally:
         db.close()
     assert served >= 8, served
+
+
+def test_map_prop_update_and_delete_are_pythons(client, seed):
+    """POST /api/maps/props/<id>/update and /delete from the gateway: the clamped footprint
+    (1e9 -> 40, "x" -> the stored value, NaN/Infinity text -> the stored value), the cleaned name and
+    tags, world-scoped 404s, the delete keeping the file while a map references it (and removing it
+    otherwise), the whole row compared after every write."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import MapProp
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ["ND_TEST_DATA_DIR"]) / "uploads" / "props"
+    up.mkdir(parents=True, exist_ok=True)
+    f1, f2 = up / "prop-a.webp", up / "prop-b.webp"
+    f1.write_bytes(b"a"); f2.write_bytes(b"b")
+    db = SessionLocal()
+    try:
+        p1 = MapProp(world_id=w, name="Bed", file_url="/uploads/props/prop-a.webp", tags="old", px_w=10, px_h=8, cells_w=1.0, cells_h=1.0)
+        p2 = MapProp(world_id=w, name="Barrel", file_url="/uploads/props/prop-b.webp")
+        db.add_all([p1, p2])
+        db.commit()
+        i1, i2 = p1.id, p2.id
+    finally:
+        db.close()
+
+    from tests.test_gateway_writes import _row_by
+
+    def row(i):
+        r = _row_by("map_props", "id", i)
+        return {k: r[k] for k in ("name", "tags", "cells_w", "cells_h", "px_w", "px_h")} if r else None
+
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    served = 0
+    updates = [
+        ({"name": "  Four   poster  bed ", "cells_w": 1e9, "cells_h": "x", "tags": "bed  furniture"},
+         {"name": "Four poster bed", "tags": "bed furniture", "cells_w": 40.0, "cells_h": 1.0}),
+        ({"name": "Ünï name ✓", "cells_w": 0.1, "cells_h": 2.63},
+         {"name": "Ünï name ✓", "cells_w": 0.25, "cells_h": 2.5}),
+        ({"tags": 0}, {"tags": ""}),
+        ({}, {"name": "Ünï name ✓", "tags": "", "cells_w": 0.25, "cells_h": 2.5}),
+    ]
+    for body, _expect in updates:
+        out = []
+        for side in (d, v):
+            db = SessionLocal()
+            try:
+                x = db.get(MapProp, i1)
+                x.name, x.tags, x.cells_w, x.cells_h = "Bed", "old", 1.0, 1.0
+                db.commit()
+            finally:
+                db.close()
+            r = side.post(f"/api/maps/props/{i1}/update", json=body)
+            out.append((r.status_code, r.json() if r.status_code == 200 else r.text[:80], row(i1), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (body, out[0], out[1])
+        served += out[1][3] == "gateway"
+    # NaN / Infinity text: parse_json reads them, _cells' float() sees non-finite -> the stored value
+    for body in ('{"cells_w": NaN, "cells_h": Infinity}',):
+        out = []
+        for side in (d, v):
+            db = SessionLocal()
+            try:
+                x = db.get(MapProp, i1)
+                x.name, x.tags, x.cells_w, x.cells_h = "Bed", "old", 1.0, 1.0
+                db.commit()
+            finally:
+                db.close()
+            r = side.post(f"/api/maps/props/{i1}/update", content=body.encode(), headers={"content-type": "application/json"})
+            out.append((r.status_code, r.json() if r.status_code == 200 else r.text[:80], row(i1), r.headers.get("x-nd-served-by")))
+        assert out[0][:3] == out[1][:3], (out[0], out[1])
+        served += out[1][3] == "gateway"
+    # a non-object body is the 400
+    for raw in (b"[1]",):
+        a, b = d.post(f"/api/maps/props/{i1}/update", content=raw, headers={"content-type": "application/json"}), \
+               v.post(f"/api/maps/props/{i1}/update", content=raw, headers={"content-type": "application/json"})
+        assert a.status_code == b.status_code == 400 and a.json()["detail"] == b.json()["detail"], (a.text, b.text)
+        assert b.headers.get("x-nd-served-by") == "gateway"
+    # a row of ANOTHER world is a 404
+    from app.models import MapProp as _MP
+    db = SessionLocal()
+    try:
+        foreign = _MP(world_id=seed.world_b.id, name="Far", file_url="/uploads/props/far.webp")
+        db.add(foreign)
+        db.commit()
+        fid = foreign.id
+    finally:
+        db.close()
+    a, b = d.post(f"/api/maps/props/{fid}/update", json={"name": "mine"}), v.post(f"/api/maps/props/{fid}/update", json={"name": "mine"})
+    assert a.status_code == b.status_code == 404 and a.text == b.text, (a.status_code, b.status_code)
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    # delete: the file kept while a map references the url; the row re-created per side (the DB is shared)
+    db = SessionLocal()
+    try:
+        from app.models import Schematic
+        db.add(Schematic(world_id=w, name="Uses", slug="uses-prop", elements_json=json.dumps([{"kind": "image", "url": "/uploads/props/prop-a.webp"}])))
+        db.commit()
+    finally:
+        db.close()
+    out = []
+    for side in (d, v):
+        db = SessionLocal()
+        try:
+            db.add(MapProp(world_id=w, name="Bed", file_url="/uploads/props/prop-a.webp"))
+            db.commit()
+            from sqlalchemy import text as _t
+            nid = db.execute(_t("SELECT max(id) FROM map_props WHERE world_id = :w"), {"w": w}).scalar()
+        finally:
+            db.close()
+        r = side.post(f"/api/maps/props/{nid}/delete")
+        out.append((r.status_code, r.json(), f1.is_file(), r.headers.get("x-nd-served-by")))
+    assert out[0][:3] == out[1][:3] == (200, {"ok": True, "file_kept": True}, True), out
+    assert out[1][3] == "gateway"
+    # the file removed when nothing references it (the original i2 row must go first: its url would
+    # otherwise be "still used by" the library itself)
+    db = SessionLocal()
+    try:
+        db.delete(db.get(MapProp, i2))
+        db.commit()
+    finally:
+        db.close()
+    out = []
+    for side in (d, v):
+        db = SessionLocal()
+        try:
+            db.add(MapProp(world_id=w, name="Barrel", file_url="/uploads/props/prop-b.webp"))
+            db.commit()
+            from sqlalchemy import text as _t
+            nid = db.execute(_t("SELECT max(id) FROM map_props WHERE world_id = :w"), {"w": w}).scalar()
+        finally:
+            db.close()
+        r = side.post(f"/api/maps/props/{nid}/delete")
+        out.append((r.status_code, r.json(), f2.is_file(), r.headers.get("x-nd-served-by")))
+    assert out[0][:3] == out[1][:3] == (200, {"ok": True, "file_kept": False}, False), out
+    assert out[1][3] == "gateway"
+    f1.unlink(missing_ok=True)
+    f2.unlink(missing_ok=True)
+    db = SessionLocal()
+    try:
+        from app.models import Schematic
+        x = db.query(Schematic).filter(Schematic.slug == "uses-prop").first()
+        if x:
+            db.delete(x)
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 5, served
