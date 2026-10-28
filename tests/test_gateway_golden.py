@@ -326,10 +326,27 @@ def test_the_display_stream_and_stage_from_the_gateway_are_pythons(client, seed)
     assert len([f for f in frames(got_py) if f.startswith("event: state")]) == 5
     st = r3.json()
     assert [x["url"] for x in st["recent"]] == ["/uploads/gallery/a.png", "/uploads/gallery/b.png"] and st["current"]["title"] == "again"
-    # refusals and text cards stay Python's
-    for body in ({"kind": "image", "url": "javascript:x"}, {"kind": "text", "text": "hi"}, {"kind": "map", "slug": "nope"}, {"kind": "combat", "combat_id": True}):
+    # the refusals are answered by the gateway with Python's answers; each stage is per-process,
+    # so a 200 answer is compared by the item's content, not its id / seq (the two sides' stages
+    # have seen different writes)
+    served = 0
+    for body in ({"kind": "image", "url": "javascript:x"}, {"kind": "text", "text": "hi"}, {"kind": "map", "slug": "nope"}, {"kind": "combat", "combat_id": True}, {"kind": "entity", "entity_id": 999999}):
+        ra = d.post("/api/display/show", json=body)
+        rb = via.post("/api/display/show", json=body)
+        assert ra.status_code == rb.status_code, (body, ra.status_code, rb.status_code, ra.text[:100], rb.text[:100])
+        if rb.status_code == 200:
+            strip_ids = lambda st: {k: v for k, v in st["current"].items() if k not in ("id", "ts")}
+            assert strip_ids(rb.json()) == strip_ids(ra.json()), body
+        else:
+            assert rb.json() == {"detail": ra.json()["detail"]}, (body, ra.text, rb.text)
+        served += rb.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 4, served
+    # the entity text card (no image, or mode=text) is still Python's
+    from .test_gateway_writes import _add as _gw_add
+    eid = _gw_add("Entity", world_id=seed.world_a.id, kind="character", name="NoPic")
+    for body in ({"kind": "entity", "entity_id": eid}, {"kind": "entity", "entity_id": eid, "mode": "text"}):
         r = via.post("/api/display/show", json=body)
-        assert r.headers.get("x-nd-served-by") is None, body
+        assert r.headers.get("x-nd-served-by") is None, (body, r.text[:100])
 
 
 def test_the_live_stream_is_refused_through_the_gateway_as_python_refuses_it(client, seed):

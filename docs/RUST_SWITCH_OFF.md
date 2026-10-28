@@ -67,6 +67,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Calendar events** (`POST /api/calendar/events`, edits.rs): `_safe_int` (int() with the fallback),
   the linked ids through int() (a bool 1/0, int()-readable text; junk is Python's uncaught 500 —
   declined), and str() titles / notes / colors (numbers their spelling, containers their repr).
+- **The second-screen stage** (`POST /api/display/show`, edits.rs `stage_item`): every refusal is
+  Python's answer verbatim (the 404 messages, "That image address is not allowed", "Nothing to
+  show", the kind list); a bool combat_id / entity_id is isinstance-int; the text card is rendered
+  here (`render_md`, the 20,000 cap). The entity text card still forwards (its gmonly strip is
+  Python's). Each side's stage is per-process, so the parity test compares item content.
 - **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
   port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
   gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
@@ -91,6 +96,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Calendar events** (`POST /api/calendar/events`, edits.rs): `_safe_int` (int() with the fallback),
   the linked ids through int() (a bool 1/0, int()-readable text; junk is Python's uncaught 500 —
   declined), and str() titles / notes / colors (numbers their spelling, containers their repr).
+- **The second-screen stage** (`POST /api/display/show`, edits.rs `stage_item`): every refusal is
+  Python's answer verbatim (the 404 messages, "That image address is not allowed", "Nothing to
+  show", the kind list); a bool combat_id / entity_id is isinstance-int; the text card is rendered
+  here (`render_md`, the 20,000 cap). The entity text card still forwards (its gmonly strip is
+  Python's). Each side's stage is per-process, so the parity test compares item content.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

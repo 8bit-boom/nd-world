@@ -9919,50 +9919,72 @@ fn stage_text(v: Option<&Value>, cap: usize) -> String {
 }
 
 /// `_build_item`; None for a text card (rendered with markdown2: Python's) and every refusal
-fn stage_item(c: &Ctx, wid: i64, b: &Map<String, Value>) -> Option<Value> {
+/// `_build_item`: Ok(item); Err(Some(response)) is Python's error answer; Err(None) declines (a value
+/// this port would read differently)
+fn stage_item(c: &Ctx, wid: i64, b: &Map<String, Value>) -> Result<Value, Option<Response<Body>>> {
+    use crate::ai_more::detail;
     let plain_id = |k: &str| match b.get(k) {
         Some(Value::Number(n)) => n.as_i64(),
-        _ => None, // a bool is an int to isinstance(): Python's
+        Some(Value::Bool(x)) => Some(*x as i64), // a bool is an int to isinstance(): Python's
+        _ => None,
     };
-    match b.get("kind").and_then(|k| k.as_str())? {
-        "combat" => {
-            let id = plain_id("combat_id")?;
-            let cs = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", id)?;
-            if cs.get("world_id")?.as_i64() != Some(wid) || py_truthy(cs.get("is_template")) {
-                return None;
+    let not_found = |m: &str| Err(Some(detail(StatusCode::NOT_FOUND, m.to_string())));
+    let bad_request = |m: &str| Err(Some(detail(StatusCode::BAD_REQUEST, m.to_string())));
+    match b.get("kind").and_then(|k| k.as_str()) {
+        Some("combat") => {
+            let Some(id) = plain_id("combat_id") else { return not_found("Encounter not found") };
+            let Some(cs) = row(&c.db, "SELECT * FROM combat_sessions WHERE id = ?1", id) else { return not_found("Encounter not found") };
+            if cs.get("world_id").and_then(|v| v.as_i64()) != Some(wid) || py_truthy(cs.get("is_template")) {
+                return not_found("Encounter not found");
             }
-            Some(json!({"kind": "map", "url": format!("/display/combat/{id}"), "title": stage_text(cs.get("name"), 200), "source": {"type": "combat", "id": id}}))
+            Ok(json!({"kind": "map", "url": format!("/display/combat/{id}"), "title": stage_text(cs.get("name"), 200), "source": {"type": "combat", "id": id}}))
         }
-        "map" => {
-            let slug = b.get("slug")?.as_str()?;
-            let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
-            if sc.get("world_id")?.as_i64() != Some(wid) || (py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file"))) {
-                return None;
+        Some("map") => {
+            let Some(slug) = b.get("slug").and_then(|v| v.as_str()) else { return not_found("Map not found") };
+            let Some(sc) = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok() else { return not_found("Map not found") };
+            if sc.get("world_id").and_then(|v| v.as_i64()) != Some(wid) || (py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file"))) {
+                return not_found("Map not found");
             }
-            let sl = sc.get("slug")?.as_str()?;
-            Some(json!({"kind": "map", "url": format!("/display/map/{sl}"), "title": stage_text(sc.get("name"), 200), "source": {"type": "map", "slug": sl}}))
+            let Some(sl) = sc.get("slug").and_then(|v| v.as_str()) else { return Err(None) };
+            Ok(json!({"kind": "map", "url": format!("/display/map/{sl}"), "title": stage_text(sc.get("name"), 200), "source": {"type": "map", "slug": sl}}))
         }
-        "entity" => {
-            let id = plain_id("entity_id")?;
-            let e = row(&c.db, "SELECT * FROM entities WHERE id = ?1", id)?;
-            if e.get("world_id")?.as_i64() != Some(wid) {
-                return None;
+        Some("entity") => {
+            let Some(id) = plain_id("entity_id") else { return not_found("Entity not found") };
+            let Some(e) = row(&c.db, "SELECT * FROM entities WHERE id = ?1", id) else { return not_found("Entity not found") };
+            if e.get("world_id").and_then(|v| v.as_i64()) != Some(wid) {
+                return not_found("Entity not found");
             }
             let image = safe_image_url(Some(&json!(e.get("image_url").and_then(|v| v.as_str()).unwrap_or(""))));
             if b.get("mode").and_then(|m| m.as_str()) == Some("text") || image.is_empty() {
-                return None; // the text card: Python's
+                return Err(None); // the text card: Python's
             }
-            Some(json!({"kind": "image", "url": image, "title": stage_text(e.get("name"), 200),
-                        "caption": stage_text(Some(&json!(e.get("summary").and_then(|v| v.as_str()).unwrap_or(""))), 600), "source": {"type": "entity", "id": id}}))
+            Ok(json!({"kind": "image", "url": image, "title": stage_text(e.get("name"), 200),
+                      "caption": stage_text(Some(&json!(e.get("summary").and_then(|v| v.as_str()).unwrap_or(""))), 600), "source": {"type": "entity", "id": id}}))
         }
-        "image" => {
+        Some("image") => {
             let url = safe_image_url(b.get("url"));
             if url.is_empty() {
-                return None;
+                return bad_request("That image address is not allowed");
             }
-            Some(json!({"kind": "image", "url": url, "title": stage_text(b.get("title"), 200), "caption": stage_text(b.get("caption"), 600), "source": {"type": "image"}}))
+            Ok(json!({"kind": "image", "url": url, "title": stage_text(b.get("title"), 200), "caption": stage_text(b.get("caption"), 600), "source": {"type": "image"}}))
         }
-        _ => None,
+        Some("text") => {
+            // _text(value, cap): "" for anything but a string
+            let text = match b.get("text") {
+                Some(Value::String(t)) => t.trim().chars().take(20000).collect::<String>(),
+                _ => String::new(),
+            };
+            if text.is_empty() {
+                return bad_request("Nothing to show");
+            }
+            let title = match b.get("title") {
+                Some(Value::String(t)) => t.trim().chars().take(200).collect::<String>(),
+                _ => String::new(),
+            };
+            Ok(json!({"kind": "text", "title": title, "html": nd_render::md::render_md(&text), "source": {"type": "text"}}))
+        }
+        Some(_) => bad_request("kind must be image, text, entity, map or combat"),
+        None => bad_request("kind must be image, text, entity, map or combat"),
     }
 }
 
@@ -9972,7 +9994,11 @@ fn display_show(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     let wid = c.world_id()?;
     let b = c.json()?;
-    let item = stage_item(c, wid, &b)?;
+    let item = match stage_item(c, wid, &b) {
+        Ok(item) => item,
+        Err(Some(resp)) => return Some(resp),
+        Err(None) => return None,
+    };
     let st = stage_update(c, wid, |st| {
         let seq = st.get("seq")?.as_i64()? + 1;
         st.insert("seq".into(), json!(seq));
