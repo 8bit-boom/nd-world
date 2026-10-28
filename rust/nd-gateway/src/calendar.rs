@@ -24,6 +24,11 @@ const PHASES: [&str; 8] =
 const DEFAULT_MONTH_NAMES: [&str; 12] =
     ["Frostwake", "Thawmoon", "Greentide", "Sunhigh", "Longlight", "Harvestfall", "Amberfall", "Duskmere", "Stormtide", "Coldreach", "Deepwinter", "Yearsend"];
 
+/// `_default_config()` (app/routers/calendar.py): the stored shape a first visit creates
+fn default_config() -> Value {
+    json!({"era_name": "Year 1", "current_day": 1, "months": default_months(), "days_per_week": 7, "moons": []})
+}
+
 fn default_months() -> Vec<Value> {
     DEFAULT_MONTH_NAMES.iter().map(|n| json!({"name": n, "days": 30})).collect()
 }
@@ -254,8 +259,21 @@ struct Cal {
     current_day: i64,
 }
 
+/// `_get_or_create_calendar`: the row is created on first use (Python commits it at once; this
+/// INSERT joins the caller's transaction — the write routes run in one, and the page handlers open
+/// a write connection)
+pub fn get_or_create(db: &rusqlite::Connection, wid: i64) -> Option<()> {
+    let exists: Option<i64> = db.query_row("SELECT id FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)).ok();
+    if exists.is_none() {
+        crate::orm::insert(db, "world_calendars", &[
+            ("world_id", rusqlite::types::Value::Integer(wid)),
+            ("config_json", rusqlite::types::Value::Text(nd_render::py_dumps(&default_config()))),
+        ])?;
+    }
+    Some(())
+}
+
 fn load(db: &rusqlite::Connection, wid: i64) -> Option<Cal> {
-    // no calendar row yet: Python creates one on this visit
     let raw: Option<String> = db.query_row("SELECT config_json FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)).ok()?;
     let raw = raw.filter(|s| !s.is_empty()).unwrap_or_else(|| "{}".into());
     let parsed: Value = serde_json::from_str(&raw).ok()?;
@@ -353,6 +371,7 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     if plans > 0 {
         return None;
     }
+    get_or_create(&db, wid)?;
     let Cal { config, months_v, months, current_day } = load(&db, wid)?;
     let c = config.as_object()?;
     let (cur_year, cur_idx, cur_dom) = resolve_date(&months, current_day);
@@ -683,6 +702,7 @@ pub fn calendar_config(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
 /// A world's calendar for a write: (the stored config as Python reads it - `json.loads(...) or _default_config()`, month lengths,
 /// current day clamped). None: no calendar row yet, or a config this port is not sure of (Python's)
 pub fn for_write(db: &rusqlite::Connection, wid: i64) -> Option<(Value, Vec<i64>, i64)> {
+    get_or_create(db, wid)?;
     let Cal { config, months, current_day, .. } = load(db, wid)?;
     Some((config, months.iter().map(|m| m.days).collect(), current_day))
 }
@@ -745,7 +765,8 @@ pub fn search_api(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
         return Some(crate::idpages::refusal(403));
     }
     let wid = world.get("id")?.as_i64()?;
-    let cal = load(&db, wid)?; // no calendar row yet: Python makes one
+    get_or_create(&db, wid)?;
+    let cal = load(&db, wid)?;
     let q = |k: &str| crate::pages::query_param(uri, k);
     let text: String = nd_render::text::py_strip(&q("q").unwrap_or_default()).chars().take(100).collect();
     if text.is_empty() {

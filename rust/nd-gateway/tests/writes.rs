@@ -148,7 +148,6 @@ async fn whatever_python_would_refuse_reaches_python_unchanged_and_stores_nothin
         ("notation not a string", good.clone(), "{\"notation\": 6}"),
         ("label not a string", good.clone(), "{\"notation\": \"d6\", \"label\": null}"),
         ("missing notation", good.clone(), "{}"),
-        ("unicode label", good.clone(), "{\"notation\": \"d6\", \"label\": \"caf\\u00e9\"}"),
         ("tab in notation", good.clone(), "{\"notation\": \"d6\\t+1\"}"),
     ];
     for (what, c, body) in cases {
@@ -157,12 +156,16 @@ async fn whatever_python_would_refuse_reaches_python_unchanged_and_stores_nothin
         assert_eq!(resp.headers()["x-python-saw-body"].to_str().unwrap(), body.len().to_string(), "{what}: the body arrives intact");
     }
     assert_eq!(count(&r), 0, "nothing was stored");
+    // a printable-Unicode label is answered here now (stored like any roll)
+    let resp = post(&r, &good, "", "", "{\"notation\": \"d6\", \"label\": \"caf\u{e9}\"}").await;
+    assert_eq!(resp.status(), 200, "a printable label is the gateway's");
+    assert_eq!(count(&r), 1);
     // not JSON content-type, and a body over the limit, are python's too
     let resp = reqwest::Client::new().post(format!("{}/api/dice/roll", r.base)).header("cookie", &good).body("{\"notation\": \"d6\"}").send().await.unwrap();
     assert_eq!(resp.status(), 418);
     let big = format!("{{\"notation\": \"d6\", \"label\": \"{}\"}}", "x".repeat(20_000));
     assert_eq!(post(&r, &good, "", "", &big).await.status(), 418);
-    assert_eq!(count(&r), 0);
+    assert_eq!(count(&r), 1, "only the café roll was stored; the forwards stored nothing");
 }
 
 #[tokio::test]

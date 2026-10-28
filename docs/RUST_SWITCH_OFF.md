@@ -76,6 +76,15 @@ them after each batch; the phase is done when both are empty and the steps below
   iterates characters (nothing is a dict), a number / bool is Python's 500 (declined); `str(v or "")`
   fields (containers their repr); `quest_id` by isinstance-int (a bool is quest 1/0);
   `assigned_party_id` refuses bools FIRST (None) and must be a party of the world.
+- **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
+  agenda, event-jump/search and every write route create the world's calendar on first use with
+  Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.
+- **The dice roll's label** accepts any printable-Unicode text (`_clean_label`'s isprintable); only a
+  control / separator character is still Python's. The notation keeps its ASCII gate (junk parses fail
+  with Python's own 400 either way).
+- **The character form's JSON fields** (`apply_pc_form`): json.loads decides — what it reads (bare
+  NaN / Infinity included, detected by re-parsing with the tokens nulled) is stored verbatim, what it
+  raises on becomes `[]` / `{}` — never a decline (`level=x` is Python's own 500 and stays one).
 - **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
   port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
   gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
@@ -109,6 +118,15 @@ them after each batch; the phase is done when both are empty and the steps below
   iterates characters (nothing is a dict), a number / bool is Python's 500 (declined); `str(v or "")`
   fields (containers their repr); `quest_id` by isinstance-int (a bool is quest 1/0);
   `assigned_party_id` refuses bools FIRST (None) and must be a party of the world.
+- **The calendar row exists before Python does** (`calendar.rs` `get_or_create`): the month page, the
+  agenda, event-jump/search and every write route create the world's calendar on first use with
+  Python's `_default_config()` bytes, so a fresh world no longer forwards its first /calendar visit.
+- **The dice roll's label** accepts any printable-Unicode text (`_clean_label`'s isprintable); only a
+  control / separator character is still Python's. The notation keeps its ASCII gate (junk parses fail
+  with Python's own 400 either way).
+- **The character form's JSON fields** (`apply_pc_form`): json.loads decides — what it reads (bare
+  NaN / Infinity included, detected by re-parsing with the tokens nulled) is stored verbatim, what it
+  raises on becomes `[]` / `{}` — never a decline (`level=x` is Python's own 500 and stays one).
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The

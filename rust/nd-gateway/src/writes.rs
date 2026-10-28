@@ -188,6 +188,12 @@ fn ascii_printable(s: &str) -> bool {
     s.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
+/// Python's str.isprintable() for the label: any printable Unicode is kept by
+/// _clean_label, so only controls / separators make it Python's
+fn label_printable(s: &str) -> bool {
+    s.chars().all(crate::edits::py_printable)
+}
+
 pub fn open(cfg: &Config) -> Option<Connection> {
     let db = Connection::open_with_flags(&cfg.db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
     db.busy_timeout(std::time::Duration::from_millis(30_000)).ok()?;
@@ -208,8 +214,11 @@ fn dice_roll_blocking(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8])
         None => "",
         Some(v) => v.as_str()?,
     };
-    if !ascii_printable(notation) || !ascii_printable(label) {
-        return None; // Unicode whitespace / printability rules are Python's
+    if !ascii_printable(notation) {
+        return None; // a notation with non-ASCII fails Python's parse with its own message
+    }
+    if !label_printable(label) {
+        return None; // a control / separator character in the label: Python's _clean_label
     }
     let now = SystemTime::now();
     let db = open(cfg)?;

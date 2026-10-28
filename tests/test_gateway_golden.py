@@ -149,8 +149,12 @@ def test_a_roll_the_gateway_writes_is_the_roll_python_would_have_written(client,
             assert [set(t) for t in ja["breakdown"]] == [set(t) for t in jb["breakdown"]]
             assert jb["total"] == sum(t["sum"] for t in jb["breakdown"])
             assert len(ja["created_at"]) in (20, 27) and len(jb["created_at"]) in (20, 27) and jb["created_at"].endswith("Z")
-            ascii_only = all(all(" " <= ch <= "~" for ch in str(body.get(k) or "")) for k in ("notation", "label"))
-            assert (b.headers.get("x-nd-served-by") == "gateway") == ascii_only, ("who wrote it", email, body)    # non-ASCII text is left to Python
+            if a.status_code == 200:
+                # every roll Python accepts, the gateway answers too — a printable-Unicode
+                # label included (stored and echoed byte-identically)
+                assert b.headers.get("x-nd-served-by") == "gateway", ("who wrote it", email, body)
+            else:
+                assert b.headers.get("x-nd-served-by") is None, ("who wrote it", email, body)  # refusals are Python's
             assert a.headers.get("content-type") == b.headers.get("content-type")
     # what was stored reads back the same through Python's own history route, whoever wrote it
     hist = people[0][1].get("/api/dice/history")

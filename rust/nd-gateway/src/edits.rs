@@ -398,8 +398,12 @@ fn picture_route(path: &str) -> Option<(Handler, Vec<i64>)> {
 
 pub fn handles_upload(method: &Method, path: &str, headers: &HeaderMap) -> bool {
     let big = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok()).map_or(true, |n| n > MAX_BODY);
+    // a multipart picture form goes through the upload path at any size: a small body with a file
+    // part is not a plain form (c.form() refuses it), and the streamed path answers it as Python's
+    // read_form does
+    let multipart = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map_or(false, |v| v.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("multipart/form-data"));
     method == Method::POST && (route_in(UPLOAD_ROUTES, path).is_some() || map_upload_slug(path).is_some() || sc_upload_route(path).is_some()
-        || (big && picture_route(path).is_some()))
+        || ((big || multipart) && picture_route(path).is_some()))
 }
 
 pub async fn serve_upload(cfg: Arc<Config>, proxy: &Proxy, req: Request<Body>, peer: Option<std::net::SocketAddr>) -> Response<Body> {
@@ -3319,7 +3323,7 @@ fn pc_xp(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 /// Python's str.isprintable(): everything but Cc, Cf, Cs, Co, Cn, Zl, Zp and Zs (a plain space IS
 /// printable). The separator / format blocks are tabled; an unassigned codepoint (Cn, undetectable
 /// without Unicode tables) passes — Python would drop it, and only a name made of those diverges.
-fn py_printable(c: char) -> bool {
+pub(crate) fn py_printable(c: char) -> bool {
     if c.is_ascii() {
         return (' '..='~').contains(&c);
     }
@@ -3536,7 +3540,18 @@ fn apply_pc_form(db: &Connection, f: &Form, cur: &Map<String, Value>, partial: b
                        ("equipment_json", "[]"), ("feats_json", "[]"), ("attacks_json", "[]"), ("cyberware_json", "[]"), ("conditions_json", "[]")] {
         if has(k) {
             let raw = f.get(k).filter(|v| !v.is_empty()).unwrap_or(empty);
-            serde_json::from_str::<Value>(raw).ok()?; // what serde refuses, json.loads may take (NaN, ...): Python's
+            // json.loads decides: what it reads (bare NaN / Infinity included) is stored verbatim,
+            // what it raises on becomes the default — never a decline
+            if serde_json::from_str::<Value>(raw).is_err() {
+                let python_ok = {
+                    let stripped = raw.replace("NaN", "null").replace("Infinity", "null");
+                    serde_json::from_str::<Value>(stripped.as_str()).is_ok()
+                };
+                if !python_ok {
+                    cols.push((k, s(empty)));
+                    continue;
+                }
+            }
             cols.push((k, s(raw)));
         }
     }
