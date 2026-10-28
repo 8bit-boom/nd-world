@@ -5102,17 +5102,30 @@ fn quests_apply(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     const STATUSES: [&str; 4] = ["active", "complete", "failed", "secret"];
     const CATEGORIES: [&str; 3] = ["main", "side", "personal"];
+    // `(body.get(k) or [])[:12]`: falsy or missing is empty; a string iterates its CHARACTERS (all
+    // skipped — nothing is a dict), a dict its keys (likewise); a number / bool is a TypeError (a
+    // 500: Python's — decline)
     let list = |k: &str| -> Option<Vec<Value>> {
         match b.get(k) {
-            Some(v) if py_truthy(Some(v)) => v.as_array().cloned(),
+            Some(Value::Array(a)) => Some(a.clone()),
+            Some(Value::String(_)) | Some(Value::Object(_)) => Some(vec![]),
+            Some(Value::Number(_)) | Some(Value::Bool(_)) => None,
             _ => Some(vec![]),
         }
     };
+    // str(v or ""): a falsy value is "", a truthy one str()'d (numbers their spelling, containers
+    // their repr, True "True")
     let text = |m: &Map<String, Value>, k: &str| -> Option<String> {
-        match m.get(k) {
-            Some(Value::String(x)) => Some(x.clone()),
-            Some(v) if py_truthy(Some(v)) => None, // str() of other values: Python's
-            _ => Some(String::new()),
+        let v = match m.get(k) {
+            Some(v) if py_truthy(Some(v)) => v.clone(),
+            _ => return Some(String::new()),
+        };
+        match py_str_val(&v) {
+            Some(t) => Some(t),
+            None => match v {
+                Value::Array(_) | Value::Object(_) => Some(crate::ai::py_repr(&v)),
+                _ => None,
+            },
         }
     };
     let pick = |v: Option<&Value>, from: &[&str], d: &str| -> String {
@@ -5122,10 +5135,12 @@ fn quests_apply(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let mut updated = 0;
     for u in list("quest_updates")?.iter().take(24) {
         let Some(u) = u.as_object() else { continue };
-        if u.get("quest_id").is_some_and(|v| v.is_boolean()) {
-            return None; // True is quest 1 to Python's isinstance(x, int) and dict lookup
-        }
-        let Some(qid) = u.get("quest_id").and_then(|v| v.as_i64()) else { continue };
+        // isinstance(quest_id, int): a bool is 1/0 (True == 1 in the dict lookup); anything else skipped
+        let qid = match u.get("quest_id") {
+            Some(Value::Bool(x)) => *x as i64,
+            Some(Value::Number(n)) => n.as_i64().unwrap_or(0),
+            _ => continue,
+        };
         let Some(q) = row(&c.db, "SELECT * FROM quests WHERE id = ?1", qid) else { continue };
         if q.get("world_id")?.as_i64() != Some(wid) {
             continue;
@@ -5154,7 +5169,12 @@ fn quests_apply(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         if title.is_empty() {
             continue;
         }
-        let party = n.get("assigned_party_id").filter(|v| !v.is_boolean()).and_then(|v| v.as_i64()).filter(|p| parties.contains(p));
+        // isinstance(party_id, bool) is excluded FIRST, then isinstance(int), then it must be a
+        // party of this world — a bool lands on None either way
+        let party = match n.get("assigned_party_id") {
+            Some(Value::Number(n)) => n.as_i64().filter(|p| parties.contains(p)),
+            _ => None,
+        };
         orm::insert(
             &c.db,
             "quests",

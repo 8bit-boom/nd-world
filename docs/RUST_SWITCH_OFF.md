@@ -72,6 +72,10 @@ them after each batch; the phase is done when both are empty and the steps below
   show", the kind list); a bool combat_id / entity_id is isinstance-int; the text card is rendered
   here (`render_md`, the 20,000 cap). The entity text card still forwards (its gmonly strip is
   Python's). Each side's stage is per-process, so the parity test compares item content.
+- **Quest suggestions applied** (`POST /api/quests/apply`, edits.rs): `(x or [])[:12]` over a string
+  iterates characters (nothing is a dict), a number / bool is Python's 500 (declined); `str(v or "")`
+  fields (containers their repr); `quest_id` by isinstance-int (a bool is quest 1/0);
+  `assigned_party_id` refuses bools FIRST (None) and must be a party of the world.
 - **The read-view markup route** (`POST /api/entity/{}/markup`, edits.rs + markup.rs): the locators are a full
   port and Python's `MarkupError` texts are answered verbatim as 422s (`MkErr::Refuse`); only the internals the
   gateway keeps declining on (a regex backtracking differently) still forward (`MkErr::Forward`).
@@ -101,6 +105,10 @@ them after each batch; the phase is done when both are empty and the steps below
   show", the kind list); a bool combat_id / entity_id is isinstance-int; the text card is rendered
   here (`render_md`, the 20,000 cap). The entity text card still forwards (its gmonly strip is
   Python's). Each side's stage is per-process, so the parity test compares item content.
+- **Quest suggestions applied** (`POST /api/quests/apply`, edits.rs): `(x or [])[:12]` over a string
+  iterates characters (nothing is a dict), a number / bool is Python's 500 (declined); `str(v or "")`
+  fields (containers their repr); `quest_id` by isinstance-int (a bool is quest 1/0);
+  `assigned_party_id` refuses bools FIRST (None) and must be a party of the world.
 - **The settings saves** (`POST /settings`, `/settings/resources`, edits.rs): the display / hover form (format
   validation falls back to avif, the hover numerics clamped rather than rejected, the checkbox presence-keyed) and the
   resource sizing (blank / "auto" / a failed parse = automatic per field, the values clamped to their bounds). The
