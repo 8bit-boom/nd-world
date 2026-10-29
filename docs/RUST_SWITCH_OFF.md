@@ -72,6 +72,9 @@ them after each batch; the phase is done when both are empty and the steps below
   segment is saved (sent with the file helper: type, ETag, `Content-Disposition`), the access gate shared with the segment list
   (`session_view_gate`); several segments need ffmpeg's concat, Range / conditional requests, and any Studio probe stay Python's. The
   transcript check answers the "no Studio key" case only.
+- **Session media chunked upload** (edits.rs `sm_chunk`, `sm_complete`): the parts stashed under `<uploads>/session_media/_chunks` and put together
+  into a picture or an audio clip through the same code as the one-request upload (`sm_ingest`); the chunk folder removed after. Videos
+  (ffmpeg), a missing part and anything over a cap stay Python's.
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.

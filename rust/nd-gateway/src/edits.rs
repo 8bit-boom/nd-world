@@ -293,6 +293,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/media/audio/{}/remove", sm_audio_remove),
     ("/api/sessions/{}/media/video/{}/remove", sm_video_item_remove),
     ("/audio/upload/complete", audio_complete),
+    ("/api/sessions/{}/media/upload/complete", sm_complete),
     ("/images/albums/upload/complete", gallery_complete),
     ("/pages/upload/complete", pages_complete),
     ("/folders/rename", folder_rename),
@@ -390,6 +391,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/images/albums/upload/chunk", gallery_chunk),
     ("/images/albums/{}/upload", gallery_upload),
     ("/api/sessions/{}/media/upload", sm_upload),
+    ("/api/sessions/{}/media/upload/chunk", sm_chunk),
     ("/api/sessions/{}/recap-audio/upload", sm_recap_audio_upload),
     ("/api/upload-image", toolbar_image),
     ("/api/upload-media", toolbar_media),
@@ -6178,6 +6180,11 @@ fn one_file<'a>(c: &'a Ctx, field: &str) -> Option<&'a crate::uploads::FileRef> 
 /// `save_upload_chunk`: one part of a large file, stashed under <uploads>/<folder>/_chunks/<upload_id>/<index>.part
 fn save_chunk(c: &mut Ctx, lib: &Lib, folder: &str, cap: i64) -> Option<Response<Body>> {
     lib_editor(c, lib)?;
+    save_chunk_in(c, folder, cap)
+}
+
+/// The chunk store itself, once the caller is judged allowed
+fn save_chunk_in(c: &mut Ctx, folder: &str, cap: i64) -> Option<Response<Body>> {
     let f = c.form()?;
     let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
     let index = form_int_required(&f, "chunk_index")?;
@@ -8586,13 +8593,25 @@ fn share_revoke(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
 /// goes through ffmpeg, is Python's
 fn sm_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let gs = sm_session(c, ids[0])?;
-    let wid = gs.get("world_id")?.as_i64()?;
     let (f, pick) = form_and_file(c, "file")?;
     let pick = pick?;
     let filename = pick.filename(c)?.to_string();
     if filename.is_empty() {
         return None;
     }
+    sm_ingest(c, ids, gs, &f, &filename, SmSource::Pick(pick))
+}
+
+/// Where a session-media file comes from: the request's own file part, or the parts of a chunked upload
+enum SmSource {
+    Pick(FilePick),
+    Chunks(Vec<std::path::PathBuf>, u64),
+}
+
+/// The tail of `media_upload` / `media_upload_complete`: decide the kind, check the room, write the file, add the item
+fn sm_ingest(c: &mut Ctx, ids: &[i64], gs: Map<String, Value>, f: &Form, filename: &str, source: SmSource) -> Option<Response<Body>> {
+    let wid = gs.get("world_id")?.as_i64()?;
+    let filename = filename.to_string();
     let ext = py_suffix_lower(&filename)?;
     let mut candidates = vec![];
     if IMAGE_EXTS.contains(&ext.as_str()) {
@@ -8621,7 +8640,11 @@ fn sm_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         }
         upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?
     };
-    if pick.len(c)? as i64 > cap {
+    let size = match &source {
+        SmSource::Pick(pick) => pick.len(c)? as i64,
+        SmSource::Chunks(_, size) => *size as i64,
+    };
+    if size > cap {
         return None;
     }
     let folder = if kind == "image" { "gallery" } else { "audio" };
@@ -8629,7 +8652,10 @@ fn sm_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(unique_upload_filename(&filename, &ext)?);
     c.created.push(dest.clone());
-    pick.write_to(c, &dest)?;
+    match &source {
+        SmSource::Pick(pick) => pick.write_to(c, &dest)?,
+        SmSource::Chunks(parts, _) => reassemble(parts, &dest)?,
+    }
     let label = strip(f.get("name").unwrap_or(""));
     let (stem, _) = py_path_parts(&filename)?;
     let visible = ["1", "true", "on", "yes"].contains(&strip(f.get("visible_to_players").unwrap_or("")).to_lowercase().as_str());
@@ -8664,6 +8690,29 @@ fn sm_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     out.insert("kind".into(), json!(kind));
     out.insert("item".into(), item);
     json_response(&Value::Object(out))
+}
+
+/// `media_upload_chunk`: one part of a large file, stashed under <uploads>/session_media/_chunks
+fn sm_chunk(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    sm_session(c, ids[0])?;
+    let gallery = gallery_cap(c)?;
+    let video = upload_cap(c, "max_video_mb", "MAX_VIDEO_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024)?;
+    let audio = upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?;
+    let cap = (128 * 1024 * 1024).min(gallery.max(video).max(audio));
+    save_chunk_in(c, "session_media", cap)
+}
+
+/// `media_upload_complete`: the chunks put together and added as `media_upload` would add the file
+fn sm_complete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let filename = f.get("filename").filter(|v| !v.is_empty())?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let (dir, parts, size) = chunk_parts(c, "session_media", &id, total)?;
+    let answer = sm_ingest(c, ids, gs, &f, &filename, SmSource::Chunks(parts, size))?;
+    c.removals.push(dir);
+    Some(answer)
 }
 
 // ── ability cards (characters.py `_ability_cards`, app/feat_use.py) ──

@@ -7467,3 +7467,69 @@ def test_live_audio_download_and_transcript_check_are_pythons(client, seed):
     finally:
         for f in (up / "gw-live").glob("*"):
             f.unlink()
+
+
+def test_session_media_chunked_upload_is_pythons(client, seed):
+    """POST /api/sessions/<id>/media/upload/chunk + /complete: a picture and an audio file sent in parts, the item and panel as Python builds them,
+    the chunk folder gone afterwards; a missing part, a bad id and a player are Python's."""
+    import io
+    import os
+    import re
+    import uuid
+    from pathlib import Path
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import GameSession
+    base = str(client.base_url)
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (200, 10, 10)).save(buf, "PNG")
+    png = buf.getvalue()
+    audio = b"ID3" + bytes(range(256)) * 20
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        gss = [GameSession(world_id=w, session_num=950 + i, title=f"gw-chunk-{i}") for i in range(4)]
+        db.add_all(gss)
+        db.commit()
+        ids = [g.id for g in gss]
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+
+    def norm(v):
+        v = {k: x for k, x in v.items() if k != "library"} if isinstance(v, dict) else v  # the library lists the world's other clips, which differ by run order
+        s = json.dumps(v, sort_keys=True)
+        s = re.sub(r"[0-9a-f]{32}", "H", s)
+        s = re.sub(r"/uploads/(gallery|audio)/[^\"]+", r"/uploads/\1/F", s)
+        s = re.sub(r'"uid": "[0-9a-f]+"', '"uid": "U"', s)
+        s = re.sub(r'"(id|clip_id)": \d+', r'"\1": N', s)
+        s = re.sub(r"session-?\d+|gw-chunk-\d", "S", s)
+        return s
+
+    def flow(client_, sid, name, data, kind=""):
+        upload_id = uuid.uuid4().hex
+        half = len(data) // 2
+        outs = []
+        for i, part in enumerate((data[:half], data[half:])):
+            r = client_.post(f"/api/sessions/{sid}/media/upload/chunk", data={"upload_id": upload_id, "chunk_index": str(i)}, files={"file": (name, part, "application/octet-stream")})
+            outs.append((r.status_code, r.json(), r.headers.get("x-nd-served-by")))
+        r = client_.post(f"/api/sessions/{sid}/media/upload/complete", data={"upload_id": upload_id, "filename": name, "total_chunks": "2", "name": "Chunky", "visible_to_players": "1", "kind": kind})
+        outs.append((r.status_code, r.json(), r.headers.get("x-nd-served-by")))
+        return upload_id, outs
+    for (name, data, kind), (sa, sb) in zip((("pic.png", png, ""), ("tune.mp3", audio, "audio")), ((ids[0], ids[1]), (ids[2], ids[3]))):
+        ua, oa = flow(d, sa, name, data, kind)
+        ub, ob = flow(via, sb, name, data, kind)
+        assert [(s, norm(j)) for s, j, _ in oa] == [(s, norm(j)) for s, j, _ in ob], name
+        assert all(h == "gateway" for _, _, h in ob), (name, ob)
+        assert not (up / "session_media" / "_chunks" / ua).exists() and not (up / "session_media" / "_chunks" / ub).exists()
+    # a missing part, a malformed id and a missing session are Python's
+    uid = uuid.uuid4().hex
+    for c_ in (d, via):
+        r = c_.post(f"/api/sessions/{ids[0]}/media/upload/complete", data={"upload_id": uid, "filename": "x.png", "total_chunks": "3"})
+        assert r.status_code == 400, r.text
+        r = c_.post(f"/api/sessions/{ids[0]}/media/upload/chunk", data={"upload_id": "bad", "chunk_index": "0"}, files={"file": ("x", b"1", "application/octet-stream")})
+        assert r.status_code == 400
+        r = c_.post("/api/sessions/999999/media/upload/chunk", data={"upload_id": uid, "chunk_index": "0"}, files={"file": ("x", b"1", "application/octet-stream")})
+        assert r.status_code == 404
