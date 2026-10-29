@@ -167,15 +167,32 @@ markup refusals (422s verbatim), the character quick edits' int_field coercions 
 (`load_loot` + `_loot_int`), the character roll (both dice engines), the display stage's refusals, the calendar events
 (`_safe_int`, str() fields), the quest suggestions, the party roster's visibility filter (`_visible_entity_ids` with
 the hidden-companion carry), the calendar row's creation on first use, the dice label's isprintable, the character
-form's JSON fields through json.loads' fallback, and the quest/tables int() form fields with the links/entries
-json.loads fallback. What still forwards on those routes is the parity tests' odd-stored-data variants, which Python
+form's JSON fields through json.loads' fallback, the quest/tables int() form fields with the links/entries
+json.loads fallback, the schematic item pickup / merchant buy answers (hidden / locked / unknown-token 403s and 404s,
+out-of-stock, insufficient funds and no-currency 400s, float() prices — the races-test losers stay Python's), and the
+prop library's update / delete (`_cells` clamps, the cleaned name/tags, the file kept while a map uses it).
+What still forwards on those routes is the parity tests' odd-stored-data variants, which Python
 itself answers with a 500 (junk `equipment_json` etc.) — the decline is correct, and at the switch those become the
-gateway's own 500. The python_only tail (214 routes, ~339 requests) after the player imagegen and the file
-downloads landed: the AI attachments upload family (needs `_extract_document_text`'s PDF/HTML readers — a
-sidecar per the libraries note below, or a Rust PDF crate), the imagegen model-templates / tools / imagestudio
-pages, the maps pages that wait on Python's thumbnail queue (`_remake_thumbnails`' fresh small copy — the
-startup-warming batch), the schematic buy/pickup-item and props update (small form posts), and the worlds
-export family (zips the gateway already builds for other routes — same `kind_download_zip` machinery).
+gateway's own 500.
+
+**The python_only tail after the latest batches (191 routes, ~279 requests)**, what landed most recently and what is
+left. Landed: `POST /api/ai/imagegen/player/generate` (the opt-in flag, the fixed portrait params, the 30/300 caps,
+`suggest_template` over the exported imagegen_templates table, the 20 s cooldown as the gateway's own map),
+`GET /api/ai/imagegen/jobs` + `/jobs/{id}` + `/model-templates` (the exported built-ins plus the world's custom
+PromptPresets), `GET /rules/download.md` and `GET /pages/<id>/download` (visibility gates, Starlette's
+Content-Disposition spelling), `GET /worlds/<id>/export/rules.json` and `/player-characters.json`, the sheet-template
+JSON export, `POST /api/sessions/<id>/recap-audio/upload` (the extension allowlist, the caps, the clip created and
+attached), and `POST /api/ai/entity-context` (the ask-ai gate, `entity_gate`, gmonly stripped, the ported
+`best_matching_excerpt` at 4000 chars). Still Python's, in batch order:
+1. `POST /api/maps/props/upload` and the maps pages (`GET /maps/<slug>`) that wait on Python's thumbnail queue
+   (`_remake_thumbnails`' fresh small copy — the startup-warming batch moves with it).
+2. The AI attachments upload family (`/api/ai/attachments/upload|chunk|complete|audio-jobs*`) — needs
+   `_extract_document_text`'s PDF/HTML readers, the documented sidecar candidate.
+3. The dev-tools pages (`/tools/code-assist*`, `/imagestudio`, `/image-gen`) — small page renders.
+
+**Build caveat learned the hard way**: after Windows-side source edits the 9p mount can make cargo skip recompilation
+entirely ("Finished in 0.2s" with none of the new code). Use `.zcode/dev/force_build.sh` (touches sources, waits, builds,
+verifies with `strings`) whenever a test passes but behaves like the old binary.
 To find why a route declines, run the gateway with `ND_DECLINE_TRACE=1` (edits.rs run() prints `DECLINE METHOD
 path body=...` per decline) and read the gateway's stderr; the census
 (`scripts/census.py --write tests/_data/shard*/forwarded.log`) re-ranks the rest after a full gateway suite.
@@ -189,6 +206,10 @@ path body=...` per decline) and read the gateway's stderr; the census
   `/delete` (settings_overrides.rs), and the Studio-key save (`studio_key.rs` — the paste cleaner, the live verify GET
   against the configured Studio, the clear; only the auth-failure timestamp banner stays Python's, and it is in-memory
   state that dies with the switch anyway).
+- The player imagegen's 20 s cooldown: the route answers on the gateway now, so the gateway keeps its OWN cooldown map
+  (`ai.rs`'s Mutex + HashMap) — Python's map never sees these calls, and both implementations 429 with the same message
+  (the parity test proves each side's map behaves identically). The seven player-imagegen tests that generate rapidly as
+  one user moved to `tests/inprocess_only.txt` for the same reason.
 - Any route whose Python handler uses an in-process cache (see `tests/inprocess_only.txt` for the caches tests know about).
 
 Done since that list was written: `POST /settings` and `/settings/resources` (edits.rs — the display / hover form and the
