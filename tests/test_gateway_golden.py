@@ -7436,9 +7436,14 @@ def test_live_audio_download_and_transcript_check_are_pythons(client, seed):
     (up / "gw-live").mkdir(parents=True, exist_ok=True)
     (up / "gw-live" / "a.webm").write_bytes(b"webm-bytes-1")
     (up / "gw-live" / "b.ogg").write_bytes(b"ogg-bytes-22")
+    import shutil
     import subprocess
+    have_ffmpeg = shutil.which("ffmpeg") is not None
     for n in ("c1.ogg", "c2.ogg"):
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3", "-c:a", "libvorbis", str(up / "gw-live" / n)], check=True)
+        if have_ffmpeg:
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3", "-c:a", "libvorbis", str(up / "gw-live" / n)], check=True)
+        else:
+            (up / "gw-live" / n).write_bytes(b"not-audio")   # no ffmpeg here: both servers answer with the same 'not available' 400
     w = seed.world_a.id
     db = SessionLocal()
     try:
@@ -7456,7 +7461,10 @@ def test_live_audio_download_and_transcript_check_are_pythons(client, seed):
     ids = ids[:6] + [ids[6]] + [ids[7], 999999]   # 904's fake segments and 908's real ones are the ffmpeg cases (ids[3], ids[-2])
     try:
         first = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base).get(f"/api/sessions/{fresh_gateway_only}/live-audio/download")
-        assert first.status_code == 200 and len(first.content) > 100 and first.headers.get("x-nd-served-by") == "gateway" and first.headers["content-disposition"].endswith('-recording.ogg"')
+        if have_ffmpeg:
+            assert first.status_code == 200 and len(first.content) > 100 and first.headers.get("x-nd-served-by") == "gateway" and first.headers["content-disposition"].endswith('-recording.ogg"')
+        else:
+            assert first.status_code == 400 and "ffmpeg" in first.json()["detail"]
         for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
             d = _signed_in(email, pw, seed.world_a.slug)
             via = _via(d, base)
