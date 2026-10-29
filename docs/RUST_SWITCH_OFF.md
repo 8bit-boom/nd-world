@@ -59,7 +59,7 @@ them after each batch; the phase is done when both are empty and the steps below
   world is still Python's.
 - **Join page** (`GET /join/<code>`, share.rs `join_form`): the sign-up form for a good invite and the reason for a bad one (invalid, revoked,
   expired, used up). A signed-in browser with a good link is redeemed by Python; the POST (accounts, passwords, 2FA) stays Python's.
-- **Schema heal on boot** (startup.rs `heal_schema`): for a database that already exists, the gateway now does the additive part of Python's
+- **Schema heal on boot** (startup.rs `heal_schema`, only with `ND_PYTHON_FREE=1` - next to a Python app both would run DDL against the file at boot and race; found when an aborted test run left a table-less shard database): for a database that already exists, the gateway now does the additive part of Python's
   `create_all` / `_heal_table_from_model` from the dumped schema: missing tables, missing columns (nullable, with the model's plain default as
   `_columns_from_model` renders it), missing indexes and triggers; one transaction, logged, rolled back whole on any error. Not repeated: the
   NOT NULL rebuilds and `_migrate`'s one-time data fixes - run the last Python release once before the switch so those are done. A unit test

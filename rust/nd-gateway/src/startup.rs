@@ -258,6 +258,11 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
 
 pub fn init_db(cfg: &Config) {
     if !needs_boot(cfg) {
+        // the additive schema heal is for a container with no Python in it (ND_PYTHON_FREE=1): next to a Python app both would run DDL against
+        // the same file at boot, and Python's own create_all / _migrate already does this work
+        if !matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on") {
+            return;
+        }
         if let Some(db) = crate::writes::open(cfg) {
             match db.execute_batch("BEGIN").map_err(|e| e.to_string()).and_then(|_| heal_schema(&db)) {
                 Ok(done) => {
