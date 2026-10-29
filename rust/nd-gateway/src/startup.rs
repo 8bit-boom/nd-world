@@ -169,8 +169,109 @@ fn row_exists(db: &rusqlite::Connection, table: &str, col: &str, val: &str) -> b
 
 /// The boot: outside a transaction on purpose (SQLite's transactional DDL makes each statement safe, and a mixed
 /// schema+data transaction over 250 statements is where the failure modes live). Runs once per process.
+/// The top-level comma-separated pieces of a CREATE TABLE body (commas inside VARCHAR(256) and the like stay put)
+fn split_top(body: &str) -> Vec<String> {
+    let (mut out, mut depth, mut cur) = (vec![], 0i32, String::new());
+    for ch in body.chars() {
+        match ch {
+            '(' => { depth += 1; cur.push(ch) }
+            ')' => { depth -= 1; cur.push(ch) }
+            ',' if depth == 0 => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out.into_iter().map(|s| s.trim().to_string()).collect()
+}
+
+/// `DEFAULT <literal>` for a model column that has a plain default (Python's `_render_default`): none for a callable (`__utcnow__`)
+fn default_clause(table: &str, col: &str) -> String {
+    match data().get("column_defaults").and_then(|d| d.get(table)).and_then(|t| t.get(col)).and_then(|c| c.get("default")) {
+        Some(Value::Bool(b)) => format!(" DEFAULT {}", *b as i64),
+        Some(Value::Number(n)) => format!(" DEFAULT {n}"),
+        Some(Value::String(s)) if s != "__utcnow__" => format!(" DEFAULT '{}'", s.replace('\'', "''")),
+        _ => String::new(),
+    }
+}
+
+/// What `create_all` + `_migrate` + `_heal_table_from_model` do to a database that is already there, for the additive part: a table the
+/// schema snapshot has and the file lacks is created, a column it lacks is added (nullable, with the model's plain default, as
+/// `_columns_from_model` renders it), and the indexes / triggers it lacks are created. Rebuilds of tables whose NOT NULL flags drifted and
+/// the one-time data fixes of `_migrate` are not repeated here: they ran when the Python release that preceded the switch last booted.
+/// Returns what it changed (for the log).
+pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, String> {
+    let stmts = data().get("schema_sql").and_then(|v| v.as_array()).ok_or("schema_sql missing")?;
+    let have = |kind: &str, name: &str| -> bool {
+        db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2", [kind, name], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
+    };
+    let mut done = vec![];
+    for st in stmts.iter().filter_map(|s| s.as_str()) {
+        let head: Vec<&str> = st.split_whitespace().take(5).collect();
+        let upper: Vec<String> = head.iter().map(|w| w.to_ascii_uppercase()).collect();
+        let name_at = |i: usize| head.get(i).map(|n| n.trim_matches(|c| c == '"' || c == '`' || c == '(').to_string()).unwrap_or_default();
+        if upper.starts_with(&["CREATE".into(), "TABLE".into()]) {
+            let table = name_at(2);
+            if !have("table", &table) {
+                db.execute_batch(st).map_err(|e| format!("create table {table}: {e}"))?;
+                done.push(format!("created table {table}"));
+                continue;
+            }
+            let (Some(open), Some(close)) = (st.find('('), st.rfind(')')) else { continue };
+            let existing: Vec<String> = {
+                let mut q = db.prepare(&format!("PRAGMA table_info({table})")).map_err(|e| e.to_string())?;
+                let rows = q.query_map([], |r| r.get::<_, String>(1)).map_err(|e| e.to_string())?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            for item in split_top(&st[open + 1..close]) {
+                let first = item.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+                if matches!(first.as_str(), "PRIMARY" | "FOREIGN" | "UNIQUE" | "CHECK" | "CONSTRAINT" | "") {
+                    continue;
+                }
+                let col = item.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '"' || c == '`').to_string();
+                if existing.iter().any(|c| *c == col) || item.to_ascii_uppercase().contains("PRIMARY KEY") {
+                    continue;
+                }
+                let ty = item[item.find(char::is_whitespace).unwrap_or(item.len())..].trim();
+                let ty = ty.replace(" NOT NULL", "").replace("NOT NULL", "");
+                db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {}{}", ty.trim(), default_clause(&table, &col)))
+                    .map_err(|e| format!("add column {table}.{col}: {e}"))?;
+                done.push(format!("added column {table}.{col}"));
+            }
+        } else if upper.first().map(String::as_str) == Some("CREATE") && (upper.get(1).map(String::as_str) == Some("INDEX") || (upper.get(1).map(String::as_str) == Some("UNIQUE") && upper.get(2).map(String::as_str) == Some("INDEX"))) {
+            let name = name_at(if upper[1] == "INDEX" { 2 } else { 3 });
+            if !have("index", &name) {
+                db.execute_batch(st).map_err(|e| format!("create index {name}: {e}"))?;
+                done.push(format!("created index {name}"));
+            }
+        } else if upper.starts_with(&["CREATE".into(), "TRIGGER".into()]) {
+            let name = name_at(2);
+            if !have("trigger", &name) {
+                db.execute_batch(st).map_err(|e| format!("create trigger {name}: {e}"))?;
+                done.push(format!("created trigger {name}"));
+            }
+        }
+    }
+    Ok(done)
+}
+
 pub fn init_db(cfg: &Config) {
     if !needs_boot(cfg) {
+        if let Some(db) = crate::writes::open(cfg) {
+            match db.execute_batch("BEGIN").map_err(|e| e.to_string()).and_then(|_| heal_schema(&db)) {
+                Ok(done) => {
+                    let _ = db.execute_batch("COMMIT");
+                    if !done.is_empty() {
+                        eprintln!("nd-gateway: database heal: {}", done.join(", "));
+                    }
+                }
+                Err(e) => {
+                    let _ = db.execute_batch("ROLLBACK");
+                    eprintln!("nd-gateway: database heal failed ({e}); left as it was");
+                }
+            }
+        }
         return;
     }
     // the file may not exist yet (writes::open won't create it — neither does Python's engine on connect, its
@@ -356,5 +457,25 @@ fn prune_snapshots(dir: &std::path::Path, keep: usize) {
     names.reverse();
     for name in names.iter().skip(keep.max(0)) {
         let _ = std::fs::remove_file(dir.join(name));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heal_adds_what_is_missing_and_leaves_the_rest() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        // an old database: app_settings without the newer columns, no api_tokens table at all
+        db.execute_batch("CREATE TABLE app_settings (id INTEGER NOT NULL, static_format VARCHAR(16), PRIMARY KEY (id)); INSERT INTO app_settings (id, static_format) VALUES (1, 'webp');").unwrap();
+        let done = heal_schema(&db).unwrap();
+        assert!(done.iter().any(|d| d == "created table api_tokens"), "{done:?}");
+        assert!(done.iter().any(|d| d == "added column app_settings.hover_preview_delay_ms"), "{done:?}");
+        // the row survives and an added column takes the model's plain default
+        let (fmt, delay): (String, i64) = db.query_row("SELECT static_format, hover_preview_delay_ms FROM app_settings WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((fmt.as_str(), delay), ("webp", 5000));
+        // a second pass has nothing left to do
+        assert!(heal_schema(&db).unwrap().is_empty());
     }
 }
