@@ -8432,12 +8432,10 @@ fn share_revoke_all(c: &Ctx, id: i64) -> Option<()> {
 
 fn share_make(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
     let id = share_target(c, id)?;
-    // `request.base_url`: Python sees http and the client's Host; a forwarded scheme (behind TLS) is Python's to read
-    if c.headers.contains_key("x-forwarded-proto") || c.headers.contains_key("forwarded") {
-        return None;
-    }
-    let host = c.headers.get(header::HOST)?.to_str().ok()?.to_string();
-    if host.is_empty() || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b)) {
+    // `request.base_url` as uvicorn reads it (the Host as sent, the scheme from a trusted proxy's X-Forwarded-Proto)
+    let base = crate::auth::base_url(c.cfg, c.headers)?;
+    let host_ok = c.headers.get(header::HOST).and_then(|h| h.to_str().ok()).is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b)));
+    if !host_ok {
         return None;
     }
     let world: i64 = c.db.query_row("SELECT world_id FROM player_characters WHERE id = ?1", [id], |r| r.get(0)).ok()?;
@@ -8448,7 +8446,7 @@ fn share_make(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
     rand::thread_rng().fill_bytes(&mut raw);
     let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
     orm::insert(&c.db, "character_shares", &[("world_id", Sql::Integer(world)), ("character_id", Sql::Integer(id)), ("token", s(&token))])?;
-    json_response(&json!({"active": true, "url": format!("http://{host}/share/{token}")}))
+    json_response(&json!({"active": true, "url": format!("{}/share/{token}", base.trim_end_matches('/'))}))
 }
 
 fn share_revoke(c: &mut Ctx, id: &str) -> Option<Response<Body>> {

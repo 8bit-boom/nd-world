@@ -6744,3 +6744,62 @@ def test_npc_history_is_pythons(client, seed):
         assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), eid
         assert n0 - n1 in (0, 1)
         assert count() == n1
+
+
+def test_hub_sessions_and_share_state_are_pythons(client, seed):
+    """GET /api/characters/<id>/hub/sessions (the Session Log as the players get it: recap marker, what there is to hear and see, the
+    section closed to players) and GET /api/characters/<id>/share (none / a live link / a revoked one), for the owner, a GM and someone
+    else (404)."""
+    from app.database import SessionLocal
+    from app.models import AudioClip, CharacterShare, Fact, GameSession, PlayerCharacter, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        clip = AudioClip(world_id=w, name="Theme", file_url="/uploads/t.mp3", visible_to_players=True)
+        pc = PlayerCharacter(world_id=w, name="Vex", owner_user_id=seed.player_a.id)
+        bare = PlayerCharacter(world_id=w, name="Bare", owner_user_id=seed.player_a.id)
+        other = PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)
+        db.add_all([clip, pc, bare, other])
+        db.flush()
+        s1 = GameSession(world_id=w, session_num=1, title="One", session_date="2031-05-04", player_summary="Recap", player_summary_published=True,
+                         recap_audio_json=json.dumps([clip.id]),
+                         recap_media_json=json.dumps([{"uid": "u1", "kind": "image", "url": "/uploads/p.png", "visible": True, "caption": "Map"}, {"uid": "u2", "kind": "image", "url": "/uploads/q.png", "visible": True}]))
+        s2 = GameSession(world_id=w, session_num=2, title="")
+        db.add_all([s1, s2])
+        db.flush()
+        db.add(Fact(world_id=w, content="f", game_session_id=s2.id))
+        db.add_all([CharacterShare(world_id=w, character_id=bare.id, token="oldtoken", revoked=True), CharacterShare(world_id=w, character_id=pc.id, token="livetoken1"),
+                    CharacterShare(world_id=w, character_id=pc.id, token="livetoken2")])
+        db.commit()
+        ids = (pc.id, bare.id, other.id, 999999)
+    finally:
+        db.close()
+    for closed in (False, True):
+        if closed:
+            db = SessionLocal()
+            try:
+                db.get(World, w).section_access_json = json.dumps({"session_log": {"player": "none"}})
+                db.commit()
+            finally:
+                db.close()
+        for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for pid in ids:
+                for tail in ("hub/sessions", "share"):
+                    url = f"/api/characters/{pid}/{tail}"
+                    same_host = {"host": "nd.example.com"}  # the link carries the Host as sent
+                    ra, rb = d.get(url, headers=same_host), _via(d, base).get(url, headers=same_host)
+                    assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
+                    assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, url, closed)
+    # a forwarded scheme: the gateway hands Python the header only when it trusts its proxy (ND_GATEWAY_TRUST_PROXY); otherwise Python
+    # would have seen plain http, which is what the link then carries
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    url = f"/api/characters/{ids[0]}/share"
+    hdr = {"x-forwarded-proto": "https", "host": "nd.example.com"}
+    rb = _via(d, base).get(url, headers=hdr)
+    assert rb.headers.get("x-nd-served-by") == "gateway"
+    trusting = os.environ.get("ND_GATEWAY_TRUST_PROXY", "0") in ("1", "true", "yes")
+    ra = d.get(url, headers=hdr if trusting else {"host": "nd.example.com"})
+    assert (ra.status_code, ra.json()) == (rb.status_code, rb.json())

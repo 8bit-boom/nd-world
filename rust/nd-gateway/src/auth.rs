@@ -366,10 +366,10 @@ fn twofa_page(pages: &Pages, cfg: &Config, db: &rusqlite::Connection, uri: &Uri,
 }
 
 /// `request.base_url` as uvicorn reads it from the browser's request (scheme from a trusted proxy's X-Forwarded-Proto, else http)
-fn base_url(cfg: &Config, headers: &HeaderMap) -> Option<String> {
+pub(crate) fn base_url(cfg: &Config, headers: &HeaderMap) -> Option<String> {
     let host = headers.get(header::HOST)?.to_str().ok()?;
     let scheme = if cfg.trust_proxy {
-        headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).map(|s| s.split(',').next().unwrap_or("").trim().to_string())
+        headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()).unwrap_or_else(|| "http".into())
     } else {
         "http".into()

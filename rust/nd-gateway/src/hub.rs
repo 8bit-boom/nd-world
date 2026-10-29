@@ -19,7 +19,7 @@ fn route(path: &str) -> Option<(&str, i64)> {
     if id.is_empty() || id.len() > 15 || !id.bytes().all(|b| b.is_ascii_digit()) || (id.len() > 1 && id.starts_with('0')) {
         return None;
     }
-    matches!(tab, "quests" | "world" | "now" | "schedule" | "log" | "notes" | "keepsakes" | "places" | "handouts").then(|| Some((tab, id.parse().ok()?)))?
+    matches!(tab, "quests" | "world" | "now" | "schedule" | "log" | "notes" | "keepsakes" | "places" | "handouts" | "sessions").then(|| Some((tab, id.parse().ok()?)))?
 }
 
 pub fn serves(path: &str) -> bool {
@@ -78,6 +78,7 @@ pub fn get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body
         "schedule" => schedule_tab(&db, &pc, &world, p.user_id)?,
         "log" => change_log(&db, &pc, is_owner)?,
         "notes" => notes_tab(&db, &pc, &world, p.user_id)?,
+        "sessions" => sessions_tab(&db, &pc, &world)?,
         "keepsakes" => keepsakes_tab(&db, &pc, &world, p.user_id, p.is_gm, is_owner)?,
         "places" => places_tab(&db, &pc, &world)?,
         "handouts" => handouts_tab(&db, &pc, is_owner)?,
@@ -124,6 +125,35 @@ fn change_log(db: &Connection, pc: &Map<String, Value>, is_owner: bool) -> Optio
                         "can_undo": can_undo}));
     }
     Some(json!({"can_edit": is_owner, "entries": out}))
+}
+
+/// `hub_sessions`: the world's Session Log as the PLAYERS get it - newest 40, what each has to hear or see (names only)
+fn sessions_tab(db: &Connection, pc: &Map<String, Value>, world: &Map<String, Value>) -> Option<Value> {
+    if player_level(world, "session_log")? == "none" {
+        return Some(json!({"enabled": false, "sessions": []}));
+    }
+    let wid = int(pc, "world_id")?;
+    let rows_ = rows(db, "SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 40", &[&wid])?;
+    let mut with_facts: Vec<i64> = vec![];
+    if !rows_.is_empty() {
+        let list = rows_.iter().filter_map(|r| int(r, "id")).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let mut st = db.prepare(&format!("SELECT DISTINCT game_session_id FROM facts WHERE world_id = ?1 AND game_session_id IN ({list})")).ok()?;
+        with_facts = st.query_map([wid], |r| r.get::<_, Option<i64>>(0)).ok()?.filter_map(|r| r.ok().flatten()).collect();
+    }
+    let mut out = vec![];
+    for gs in &rows_ {
+        let gid = int(gs, "id")?;
+        let media = crate::edits::viewer_media(db, gs, false)?;
+        let published = crate::edits::py_truthy_pub(gs.get("player_summary_published")) && !nd_render::text::py_strip(&text(gs, "player_summary")).is_empty();
+        let recap = if published { "published" } else if with_facts.contains(&gid) { "auto" } else { "" };
+        let title = match text(gs, "title") { t if t.is_empty() => "Session".to_string(), t => t };
+        let names = |k: &str, f: &dyn Fn(&Value) -> Value| -> Option<Vec<Value>> { Some(media.get(k)?.as_array()?.iter().map(f).collect()) };
+        out.push(json!({"id": gid, "num": gs.get("session_num"), "title": title, "date": text(gs, "session_date"), "recap": recap,
+            "href": with_world(&format!("/session-log/{gid}"), world),
+            "audio": names("audio", &|c| c.get("name").cloned().unwrap_or(Value::Null))?, "videos": names("videos", &|v| v.get("name").cloned().unwrap_or(Value::Null))?,
+            "images": names("images", &|i| match i.get("caption").and_then(|c| c.as_str()) { Some(c) if !c.is_empty() => json!(c), _ => json!("Picture") })?}));
+    }
+    Some(json!({"enabled": true, "sessions": out}))
 }
 
 /// `_excerpt(text)`: tags out, markdown stripped, 280 characters at most (279 and an ellipsis)

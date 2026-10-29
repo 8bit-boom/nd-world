@@ -337,6 +337,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Small JSON routes** (misc_apis.rs): `GET /health` (ND_BUILD), the Ollama presets (`GET/POST /api/ai/presets`, `DELETE
   /api/ai/presets/<label>`; ai_models.json byte for byte, options clamped as `_clamp_options` does, `num_ctx` capped by
   MAX_AUTO_NUM_CTX) and `GET /api/ai/world-summary` (the viewer's own audience tier).
+- **Hub Sessions tab and share state** (`GET /api/characters/<id>/hub/sessions`, `GET /api/characters/<id>/share`): the share
+  link now builds `request.base_url` the way uvicorn reads it (the Host as sent; the scheme from X-Forwarded-Proto when the gateway
+  trusts its proxy), so the make-link route no longer declines behind TLS. Media items stored without a `uid` still decline (Python
+  invents random ones).
+- **NPC conversation history** (`GET` / `DELETE /api/npc-talk/<id>/history`).
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from
