@@ -6279,3 +6279,78 @@ def test_imagegen_gets_are_pythons(client, seed):
     finally:
         db.close()
     assert served >= 4, served
+
+
+def test_world_json_exports_are_pythons(client, seed):
+    """GET /worlds/<id>/export/rules.json and /player-characters.json from the gateway: the same
+    indent-2 bytes (unicode raw), the same attachment filenames, a missing world the same 404, a
+    world with no custom rules Python's 404 with its message; the pc rows' JSON fields loads'd with
+    junk kept as text and a pc of another world absent."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.rules_md = "Intro ✓\n\n## Combat\n\nRoll **d20**.\n"
+        db.add_all([
+            PlayerCharacter(world_id=w, name="Zed", level=3, xp=100, stats_json=json.dumps([{"id": "str", "value": 2}]),
+                            currency_json=json.dumps([{"abbr": "CR", "value": 5}]), equipment_json="{bad"),
+            PlayerCharacter(world_id=w, name="Amy", level=1),
+            PlayerCharacter(world_id=seed.world_b.id, name="Faraway", level=2),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    empty = db.query(World).filter(World.id == seed.world_b.id).first()
+    b_slug, w_slug = empty.slug, db.query(World).filter(World.id == w).first().slug
+    db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    served = 0
+    urls = [f"/worlds/{w}/export/rules.json", f"/worlds/{w}/export/player-characters.json",
+            f"/worlds/{w}/export/rules.json", "/worlds/999999/export/player-characters.json",
+            f"/worlds/{seed.world_b.id}/export/rules.json"]
+    for u in urls:
+        a, b = d.get(u), v.get(u)
+        assert a.status_code == b.status_code, (u, a.status_code, b.status_code, a.text[:80], b.text[:80])
+        if a.status_code == 200:
+            assert b.content == a.content, (u, a.text[:160], b.text[:160])
+            assert b.headers.get("content-disposition") == a.headers.get("content-disposition"), u
+        else:
+            assert a.text == b.text, (u, a.text[:80], b.text[:80])
+        assert b.headers.get("x-nd-served-by") == "gateway", (u, a.status_code)
+        served += 1
+    # the pcs export's content shape: name order, the loads'd fields, junk as text, no other world's pc
+    b = v.get(f"/worlds/{w}/export/player-characters.json")
+    data = b.json()
+    assert [p["name"] for p in data] == ["Amy", "Zed"], data
+    zed = data[1]
+    assert zed["stats"] == [{"id": "str", "value": 2}] and zed["currency"] == [{"abbr": "CR", "value": 5}]
+    assert zed["equipment"] == "{bad" and zed["skills"] == [] and zed["custom_fields"] == {}
+    assert zed["level"] == 3 and zed["player_name"] == ""  # the column's default
+    # the filenames
+    b = v.get(f"/worlds/{w}/export/rules.json")
+    assert f'filename="{w_slug}-rules.json"' in b.headers.get("content-disposition", ""), b.headers.get("content-disposition")
+    b = v.get(f"/worlds/{w}/export/player-characters.json")
+    assert f'filename="{w_slug}-player-characters.json"' in b.headers.get("content-disposition", "")
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.rules_md = ""
+        db.commit()
+    finally:
+        db.close()
+    a, b = d.get(f"/worlds/{w}/export/rules.json"), v.get(f"/worlds/{w}/export/rules.json")
+    assert a.status_code == b.status_code == 404 and a.json() == b.json() == {"detail": "This world has no custom rules set"}, (a.text, b.text)
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    db = SessionLocal()
+    try:
+        from app.models import PlayerCharacter as _PC
+        db.query(_PC).filter(_PC.world_id.in_([w, seed.world_b.id])).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 5, served

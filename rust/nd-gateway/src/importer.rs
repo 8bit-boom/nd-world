@@ -13,10 +13,10 @@ const SCHEMATIC_ELEMENT_TYPES: [&str; 11] = ["rect", "circle", "line", "arrow", 
 const FIELD_TYPES: [&str; 7] = ["text", "number", "textarea", "select", "list", "resource", "table"];
 
 /// the canonical PC field names (characters.py's own lists): the scalar columns, the friendlier aliases and the encoded ones
-const PC_SCALAR_FIELDS: [&str; 21] = ["player_name", "race", "race_id", "char_class", "profession_id", "level", "xp", "backstory", "notes",
+pub(crate) const PC_SCALAR_FIELDS: [&str; 21] = ["player_name", "race", "race_id", "char_class", "profession_id", "level", "xp", "backstory", "notes",
     "max_hp", "current_hp", "shock_max", "shock_current", "pp_current", "mp_current", "minor_edge", "major_edge", "minor_edge_count",
     "major_edge_count", "sheet_template_id", "portrait_url"];
-const PC_JSON_ALIASES: [(&str, &str); 9] = [("stats", "stats_json"), ("skills", "skills_json"), ("currency", "currency_json"),
+pub(crate) const PC_JSON_ALIASES: [(&str, &str); 9] = [("stats", "stats_json"), ("skills", "skills_json"), ("currency", "currency_json"),
     ("equipment", "equipment_json"), ("feats", "feats_json"), ("attacks", "attacks_json"), ("cyberware", "cyberware_json"),
     ("conditions", "conditions_json"), ("custom_fields", "custom_fields_json")];
 

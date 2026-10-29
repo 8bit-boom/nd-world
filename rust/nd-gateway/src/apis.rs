@@ -28,6 +28,10 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
             let (wid, tid) = tpl_export_path(path)?;
             sheet_template_json(&cfg, uri, headers, wid, tid)
         }
+        path if export_json_path(path).is_some() => {
+            let (wid, what) = export_json_path(path)?;
+            if what == "rules.json" { export_rules_json(&cfg, uri, headers, wid) } else { export_pcs_json(&cfg, uri, headers, wid) }
+        }
         path if id_between(path, "/api/entity/", "/preview").is_some() => entity_preview(&cfg, uri, headers, id_between(path, "/api/entity/", "/preview")?),
         path if id_between(path, "/entity/", "/download.md").is_some() => entity_download(&cfg, uri, headers, id_between(path, "/entity/", "/download.md")?),
         path if id_between(path, "/api/characters/", "/vitals").is_some() => pc_vitals(&cfg, uri, headers, id_between(path, "/api/characters/", "/vitals")?),
@@ -61,7 +65,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 
 pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates")
-        || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some()
+        || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || id_between(path, "/api/ai/imagegen/jobs/", "").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
@@ -322,6 +326,22 @@ fn player_image_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64
     crate::edits::json_response(&out)
 }
 
+
+/// `/worlds/{wid}/export/{rules|player-characters}.json`
+fn export_json_path(path: &str) -> Option<(i64, &'static str)> {
+    let rest = path.strip_prefix("/worlds/")?;
+    let (wid, tail) = rest.split_once("/export/")?;
+    let what = match tail {
+        "rules.json" => "rules.json",
+        "player-characters.json" => "player-characters.json",
+        _ => return None,
+    };
+    let num = |s: &str| !s.is_empty() && s.len() < 16 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'));
+    if !num(wid) {
+        return None;
+    }
+    Some((wid.parse().ok()?, what))
+}
 
 /// `/worlds/{wid}/export/templates/{tid}.json`
 fn tpl_export_path(path: &str) -> Option<(i64, i64)> {
@@ -2056,4 +2076,62 @@ fn imagegen_model_templates(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opt
         "templates": nd_render::app::data()["imagegen_templates"].clone(),
         "custom": custom,
     }))
+}
+
+/// `_json_download`: json.dumps(payload, ensure_ascii=False, indent=2) as an attachment
+fn json_download(payload: &Value, filename: &str) -> Response<Body> {
+    Response::builder().header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(nd_render::py_dumps_indent_as(payload, 2, false))).unwrap()
+}
+
+/// `GET /worlds/{world_id}/export/rules.json` (app/routers/export.py `export_rules`): the world's
+/// rules as {name, rules_md}; a world with no custom rules is Python's 404 with its message.
+fn export_rules_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let Some(w) = rows_of(&db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let rules_md = w.get("rules_md").and_then(|v| v.as_str()).unwrap_or("");
+    if rules_md.trim().is_empty() {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "This world has no custom rules set"));
+    }
+    let wname = w.get("name").and_then(|v| v.as_str()).unwrap_or("World");
+    let wslug = w.get("slug").and_then(|v| v.as_str()).unwrap_or("world");
+    Some(json_download(&json!({"name": format!("{wname} Rules"), "rules_md": rules_md}), &format!("{wslug}-rules.json")))
+}
+
+/// `GET /worlds/{world_id}/export/player-characters.json`: every pc of the world, name-ordered, as
+/// `_pc_to_export_dict` builds them — the scalar columns, then each JSON field json.loads'd (its
+/// raw text when loads raises; falsy -> [] or {} for custom_fields).
+fn export_pcs_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64) -> Option<Response<Body>> {
+    use crate::importer::{PC_JSON_ALIASES, PC_SCALAR_FIELDS};
+    let db = crate::writes::open(cfg)?;
+    let Some(w) = rows_of(&db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let rows = rows_of(&db, "SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name", &[&wid])?;
+    let mut out = vec![];
+    for pc in &rows {
+        let mut d = serde_json::Map::new();
+        d.insert("name".into(), pc.get("name").cloned().unwrap_or(Value::Null));
+        for field in PC_SCALAR_FIELDS {
+            d.insert(field.to_string(), pc.get(field).cloned().unwrap_or(Value::Null));
+        }
+        for (alias, json_field) in PC_JSON_ALIASES {
+            let raw = pc.get(json_field).and_then(|v| v.as_str()).filter(|t| !t.is_empty());
+            let parsed = match raw {
+                None => Some(if *json_field != *"custom_fields_json" { json!([]) } else { json!({}) }),
+                Some(t) => serde_json::from_str::<Value>(t).ok(),
+            };
+            match parsed {
+                Some(v) => d.insert(alias.to_string(), v),
+                None => d.insert(alias.to_string(), pc.get(json_field).cloned().unwrap_or(Value::Null)),
+            };
+        }
+        out.push(Value::Object(d));
+    }
+    let wslug = w.get("slug").and_then(|v| v.as_str()).unwrap_or("world");
+    Some(json_download(&Value::Array(out), &format!("{wslug}-player-characters.json")))
 }
