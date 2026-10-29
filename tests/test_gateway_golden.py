@@ -7867,7 +7867,7 @@ def test_small_json_reads_are_pythons(client, seed):
         db.commit()
     finally:
         db.close()
-    urls = ["/api/quests/board", "/api/combat/recent", "/api/audio/clips", "/api/world-players", "/api/tables/options", "/api/video-jobs"]
+    urls = ["/api/quests/board", "/api/combat/recent", "/api/audio/clips", "/api/world-players", "/api/tables/options", "/api/video-jobs", "/api/characters/catalog", "/api/characters/templates"]
     gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     for who, tag in ((gm, "gm"), (pl, "player")):
@@ -7875,7 +7875,7 @@ def test_small_json_reads_are_pythons(client, seed):
         for url in urls:
             a, b = who.get(url), via.get(url)
             assert (a.status_code, a.content) == (b.status_code, b.content), (tag, url)
-            if tag == "gm":
+            if tag == "gm" or url.startswith("/api/characters/"):
                 assert b.headers.get("x-nd-served-by") == "gateway", url
     # no active world: the cookie names nothing
     nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)

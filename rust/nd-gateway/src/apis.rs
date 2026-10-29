@@ -27,6 +27,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/api/sessions/", "/live-transcript/check").is_some() => live_transcript_check(&cfg, uri, headers, id_between(path, "/api/sessions/", "/live-transcript/check")?),
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
+        "/api/characters/catalog" => characters_catalog(&cfg, uri, headers),
+        "/api/characters/templates" => characters_templates(&cfg, uri, headers),
         "/api/combat/recent" => combat_recent(&cfg, uri, headers),
         "/api/audio/clips" => audio_clips(&cfg, uri, headers),
         "/api/world-players" => world_players(&cfg, uri, headers),
@@ -86,7 +88,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2704,6 +2706,43 @@ fn video_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
         out.push(d);
     }
     crate::edits::json_response(&json!({"jobs": out}))
+}
+
+/// `GET /api/characters/catalog`: the creation wizard's catalog, as FastAPI writes `catalog_payload()` (kept as text in app_data.json)
+fn characters_catalog(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, _p) = page(cfg, uri, headers)?;
+    crate::edits::json_response_raw(nd_render::app::data().get("catalog_payload_json")?.as_str()?, "application/json")
+}
+
+/// `GET /api/characters/templates`: the sheet templates the active world can use (its own and the global ones), built-ins first
+fn characters_templates(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let rows = match world_id_of(&p) {
+        Some(w) => rows_of(&db, "SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name", &[&w])?,
+        None => rows_of(&db, "SELECT * FROM sheet_templates WHERE world_id IS NULL ORDER BY is_builtin DESC, name", &[])?,
+    };
+    let mut out = vec![];
+    for t in rows {
+        let loads = |raw: Option<&Value>, default: &str| -> Option<Value> {
+            let text = raw.and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(default);
+            if text.contains("NaN") || text.contains("Infinity") || !crate::edits::plain_numbers(text.as_bytes()) {
+                return None;
+            }
+            serde_json::from_str(text).ok()
+        };
+        let fields = loads(t.get("fields_json"), "[]")?;
+        // system_spec_public: the template's own stored spec, {} when absent / unreadable / not an object
+        let system = match t.get("system_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            None => json!({}),
+            Some(raw) => match crate::map_layout::py_loads(raw) { Ok(Value::Object(o)) => Value::Object(o), _ => json!({}) },
+        };
+        let builtin = crate::edits::py_truthy_pub(t.get("is_builtin"));
+        let digest = builtin.then(|| t.get("slug").and_then(|v| v.as_str())).flatten().filter(|s| !s.contains('/') && !s.contains('\\') && !s.contains(".."))
+            .and_then(|s| nd_render::app::data()["system_digests"].get(s).and_then(|v| v.as_str())).map_or(false, |d| !d.is_empty());
+        let own = !nd_render::text::py_strip(t.get("rules_md").and_then(|v| v.as_str()).unwrap_or("")).is_empty();
+        out.push(json!({"id": t.get("id"), "name": t.get("name"), "is_builtin": match t.get("is_builtin") { Some(Value::Null) | None => Value::Null, _ => json!(builtin) }, "sheet_mode": t.get("sheet_mode"), "fields": fields, "system": system, "has_rules": digest || own}));
+    }
+    crate::edits::json_response(&Value::Array(out))
 }
 
 /// `GET /api/ai/imagegen/model-templates` (app/routers/ai.py): the exported built-ins plus this

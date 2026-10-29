@@ -233,6 +233,8 @@ def make() -> dict:
         # the bundled core rules (retrieval.world_rules_markdown for a world with no rules of its own)
         "core_rules_md": (ROOT / "app" / "core_rules.md").read_text(encoding="utf-8", errors="ignore") if (ROOT / "app" / "core_rules.md").exists() else "",
         # the character sheet's equipment and feat pickers (game_catalog.catalog_payload)
+        # GET /api/characters/catalog as FastAPI writes it (compact, keys in Python's order - kept as text because sort_keys would reorder them here)
+        "catalog_payload_json": json.dumps(game_catalog.catalog_payload(), ensure_ascii=False, separators=(",", ":")),
         "catalog_equipment": game_catalog.catalog_payload()["equipment"], "catalog_feats": game_catalog.catalog_payload()["feats"],
         # the tracker pages' rules_json, exactly as json.dumps spells it (the GM's whole table; a player's three keys of it)
         "combat_rules_json": json.dumps(combat_rules.RULESETS),
