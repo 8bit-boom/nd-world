@@ -96,6 +96,13 @@ fn usable_ram_gb(cgroup_root: &Path) -> f64 {
     ram
 }
 
+/// (memory budget in GB, tile workers) for `workers.tiling_fits`, from the saved res_* settings and the machine
+pub(crate) fn tile_budget(db: &Connection) -> (f64, i64) {
+    let st = db.query_row("SELECT * FROM app_settings ORDER BY id LIMIT 1", [], |r| crate::layout::row_map(r)).unwrap_or_default();
+    let v = resources(&st);
+    (v["memory_budget_gb"].as_f64().unwrap_or(0.0), v["tile_workers"].as_i64().unwrap_or(1))
+}
+
 /// workers.summary() with the saved res_* settings as the overrides (workers.apply is fed from the same columns)
 fn resources(st: &Map<String, Value>) -> Value {
     let root = Path::new("/sys/fs/cgroup");

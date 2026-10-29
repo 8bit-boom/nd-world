@@ -6,6 +6,7 @@
 pub mod boards;
 pub mod calendar;
 pub mod misc_apis;
+pub mod tiles;
 pub mod share;
 pub mod devtools;
 pub mod charsheets;
@@ -148,6 +149,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if path == "/sw.js" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (method, headers) = (req.method().clone(), req.headers().clone());
         if let Some(resp) = static_files::serve_sw(&app.cfg, &method, &headers).await {
+            return resp;
+        }
+    }
+    if path.starts_with("/map-tiles/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (method, uri, headers) = (req.method().clone(), req.uri().clone(), req.headers().clone());
+        if let Some(resp) = tiles::serve_tile(&app.cfg, &method, &uri, &headers).await {
             return resp;
         }
     }

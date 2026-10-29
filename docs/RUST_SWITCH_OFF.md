@@ -78,6 +78,12 @@ them after each batch; the phase is done when both are empty and the steps below
 - **AI attachment uploads** (`POST /api/ai/attachments/upload`, `/chunk`, `/complete`; edits.rs `attach_*`): a picture, a text / markdown document
   (read as `read_text(errors="replace")` does, newlines translated) and audio when no Studio key is set (text ""), through the Ask-AI gate;
   the chunk store is `<uploads>/ai_attachments/_chunks`. A PDF (pypdf) and audio with a Studio key (transcription inline) stay Python's.
+- **Map tiles** (tiles.rs): `GET /map-tiles/<key>/<z>/<x>_<y>.webp` (signed-in viewers; static/map_tiles first, then the data dir's; Python's
+  immutable cache header, 404 for anything else) and the pyramid cut itself. The first view of a map whose picture is a PNG / JPEG / WebP and
+  fits the memory budget (`workers.tiling_fits`, from the saved res_* settings and the machine) queues a background cut (Lanczos3 levels, lossy
+  WebP quality 82, `meta.json` last, older pyramids of the slug removed) and shows the single picture until it is done; a map that is AVIF /
+  GIF / animated is still cut by Python. The map viewer page creates the map's overlay row itself on first sight. Tiles are not byte-identical
+  to Pillow's (another resampler / encoder) but sit on the same grid.
 - **Character owner refusals** (`POST /characters/<id>/owner`, edits.rs `pc_owner`): Python judges the character's own world (not the active one) and
   its refusals are answered word for word - 404 missing character, 403 for a non-GM, 400 "Invalid player", 404 "Player not found", 400 not invited,
   and the two "already owns" texts (limit of one with the character's name, a higher limit with the count).

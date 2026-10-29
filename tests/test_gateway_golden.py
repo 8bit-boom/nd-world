@@ -7782,3 +7782,53 @@ def test_ai_attachment_upload_family_is_pythons(client, seed):
             db.commit()
         finally:
             db.close()
+
+
+def test_map_tiles_are_cut_and_served_by_the_gateway(client, seed):
+    """The first view of a map starts the gateway's own cut of its tile pyramid; the finished pyramid's tiles are served as Python serves them,
+    line up (transparent above the map, the red quarter where the picture has it), and the viewer page matches Python's once the tiles exist."""
+    import io
+    import os
+    import time
+    from pathlib import Path
+    from PIL import Image
+    base = str(client.base_url)
+    data_dir = Path(os.environ["DB_PATH"]).parent
+    (data_dir / "maps").mkdir(exist_ok=True)
+    (data_dir / "uploads" / "maps").mkdir(parents=True, exist_ok=True)
+    slug = "gw-tile-map"
+    (data_dir / "maps" / f"{slug}.json").write_text(json.dumps({"name": "Tile Map", "world_id": seed.world_a.id, "width": 600, "height": 400, "markers": []}))
+    im = Image.new("RGB", (600, 400), "white")
+    im.paste((255, 0, 0), (0, 0, 300, 200))
+    im.save(data_dir / "uploads" / "maps" / f"{slug}.png")
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    first = via.get(f"/maps/{slug}")
+    assert first.status_code == 200 and first.headers.get("x-nd-served-by") == "gateway"
+    tiles_root = data_dir / "map_tiles"
+    meta = None
+    for _ in range(100):
+        found = [p for p in tiles_root.glob(f"{slug}-*/meta.json")] if tiles_root.exists() else []
+        if found:
+            meta = json.loads(found[0].read_text())
+            break
+        time.sleep(0.2)
+    assert meta and meta["zmin"] == -2 and meta["native"] == 0 and meta["tiles"] > 0, meta
+    key = meta["key"]
+    urls = [f"/map-tiles/{key}/0/0_-2.webp", f"/map-tiles/{key}/0/1_-1.webp", f"/map-tiles/{key}/-2/0_-1.webp", f"/map-tiles/{key}/0/9_9.webp", f"/map-tiles/{key}/0/..%2Fmeta.json",
+            f"/map-tiles/{key}.part/0/0_-1.webp", "/map-tiles/nope-key/0/0_-1.webp", f"/map-tiles/{key}/x/0_-1.webp", f"/map-tiles/{key}/0/0_-1.png"]
+    for url in urls:
+        a, b = d.get(url), via.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        assert {k: a.headers.get(k) for k in ("content-type", "cache-control")} == {k: b.headers.get(k) for k in ("content-type", "cache-control")}, url
+    ok = via.get(urls[0])
+    assert ok.status_code == 200 and ok.headers.get("x-nd-served-by") == "gateway"
+    t = Image.open(io.BytesIO(ok.content)).convert("RGBA")
+    assert t.getpixel((5, 5))[3] == 0                      # above the map: transparent
+    r, g, bl, al = t.getpixel((5, 120))
+    assert r > 200 and g < 60 and bl < 60 and al == 255    # the red quarter
+    a, b = d.get(f"/maps/{slug}"), via.get(f"/maps/{slug}")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    assert b.headers.get("x-nd-served-by") == "gateway" and f'"key": "{key}"' in b.text
+    for f in (data_dir / "maps" / f"{slug}.json", data_dir / "uploads" / "maps" / f"{slug}.png"):
+        f.unlink(missing_ok=True)

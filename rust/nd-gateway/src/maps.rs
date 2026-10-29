@@ -105,38 +105,18 @@ pub fn maps_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
     render_with(pages, "maps.html", p.ctx, headers)
 }
 
-/// The finished tile pyramid of a map picture (`map_tiles.meta_for` when one exists): Some(meta), or None when there is none yet -
-/// Python then queues one to be cut, so the page is Python's
-fn tiles_meta(cfg: &Config, slug: &str, image_url: &str) -> Option<Value> {
+/// `map_tiles.meta_for`: the finished pyramid's meta; none yet means a cut is queued here and the page shows the single picture (Null); a
+/// picture this port cannot cut (AVIF ...) is Python's
+fn tiles_meta(cfg: &Config, slug: &str, image_url: &str, map_w: i64, map_h: i64) -> Option<Value> {
     let src = match image_url.strip_prefix("/static/") {
         Some(rest) => cfg.static_dir.join(rest),
         None => cfg.db_path.parent()?.join("uploads").join(image_url.strip_prefix("/uploads/")?),
     };
-    let size = std::fs::metadata(&src).ok()?.len();
-    let mut head = vec![0u8; 65536];
-    let mut f = std::fs::File::open(&src).ok()?;
-    let mut n = 0;
-    loop {
-        let k = std::io::Read::read(&mut f, &mut head[n..]).ok()?;
-        if k == 0 {
-            break;
-        }
-        n += k;
-        if n == head.len() {
-            break;
-        }
+    match crate::tiles::meta_for(cfg, slug, &src, map_w, map_h) {
+        crate::tiles::Meta::Ready(m) => Some(m),
+        crate::tiles::Meta::None => Some(Value::Null),
+        crate::tiles::Meta::Decline => None,
     }
-    let mut crc = flate2::Crc::new();
-    crc.update(&head[..n]);
-    let key = format!("{slug}-{size:x}{:08x}", crc.sum());
-    for base in [cfg.static_dir.join("map_tiles"), cfg.db_path.parent()?.join("map_tiles")] {
-        let meta = base.join(&key).join("meta.json");
-        if meta.is_file() {
-            // a meta.json Python cannot read gives no tiles there; here the page is simply Python's
-            return serde_json::from_str(&std::fs::read_to_string(meta).ok()?).ok();
-        }
-    }
-    None
 }
 
 /// `GET /maps/<slug>` (app/main.py `map_viewer`)
@@ -165,10 +145,17 @@ pub fn map_viewer(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     }
     let image_url = map_image(cfg, slug)?;
     let tiles = match &image_url {
-        Some(u) => tiles_meta(cfg, slug, u)?,
+        Some(u) => {
+            let dim = |k: &str| data.get(k).and_then(|v| v.as_f64()).map_or(0, |f| f as i64);
+            tiles_meta(cfg, slug, u, dim("width").max(1), dim("height").max(1))?
+        }
         None => Value::Null,
     };
     // the map's overlay row: a map seen for the first time gets one from Python
+    if db.query_row("SELECT 1 FROM map_overlays WHERE slug = ?1", [slug], |_| Ok(())).is_err() {
+        use rusqlite::types::Value as Sql;
+        crate::orm::insert(&db, "map_overlays", &[("slug", Sql::Text(slug.into())), ("custom_markers_json", Sql::Text("[]".into())), ("custom_regions_json", Sql::Text("[]".into()))])?;
+    }
     let overlay = db.query_row("SELECT * FROM map_overlays WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
     // {lowercased name: id} of the entities the viewer may see
     let vis = if p.is_gm { "" } else { " AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))" };
