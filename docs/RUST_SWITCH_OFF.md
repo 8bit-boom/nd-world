@@ -64,6 +64,14 @@ them after each batch; the phase is done when both are empty and the steps below
   `_columns_from_model` renders it), missing indexes and triggers; one transaction, logged, rolled back whole on any error. Not repeated: the
   NOT NULL rebuilds and `_migrate`'s one-time data fixes - run the last Python release once before the switch so those are done. A unit test
   covers an old `app_settings` and a missing table, and a second pass changes nothing.
+- **The Python-free image** (`Dockerfile.gateway`, startup.rs `seed_bundled_maps`, config.rs): a multi-stage build - ffmpeg, the musl gateway, and a
+  throw-away Python stage that makes the static files' thumbnails / AVIF maps / tile pyramids / minified + compressed copies as the normal image
+  does - into a `debian:stable-slim` image with ca-certificates, `ND_PYTHON_FREE=1` and every Rust route on. The gateway copies the bundled maps
+  (`ND_BUNDLED_MAPS_DIR`) into the data folder on every start (never overwriting), boots / heals the database, and without a `SECRET_KEY`
+  makes a random per-process one with Python's warning. Smoke-tested without Docker (no daemon here): `ND_PYTHON_FREE=1 ND_UPSTREAM=127.0.0.1:1`
+  boots a fresh database, signs the seeded GM in and serves `/`, `/maps`, `/characters`, `/calendar`, `/sessions`, `/settings`. A crawl of the
+  app's 179 parameterless GET routes against it lists the routes that still answer 502 (no Python): the AI back-end status routes, and
+  a set of small reads (`/api/tables/options`, `/api/quests/board`, ...) that the next batches port.
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything

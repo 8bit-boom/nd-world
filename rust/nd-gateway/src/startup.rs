@@ -256,7 +256,28 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
     Ok(done)
 }
 
+/// `_seed_bundled_maps` (app/main.py): copy any bundled map (app/maps/*.json) into the data folder's maps directory when it isn't there yet -
+/// never overwrites, so it is safe on every start. The bundle's folder is ND_BUNDLED_MAPS_DIR (default /app/app/maps).
+pub fn seed_bundled_maps(cfg: &Config) {
+    let src = std::env::var("ND_BUNDLED_MAPS_DIR").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/app/app/maps".into());
+    let Ok(rd) = std::fs::read_dir(&src) else { return };
+    let Some(dest_dir) = cfg.db_path.parent().map(|p| p.join("maps")) else { return };
+    let _ = std::fs::create_dir_all(&dest_dir);
+    for e in rd.flatten() {
+        let path = e.path();
+        if path.extension().map_or(false, |x| x == "json") && path.is_file() {
+            if let Some(name) = path.file_name() {
+                let dest = dest_dir.join(name);
+                if !dest.exists() {
+                    let _ = std::fs::copy(&path, &dest);
+                }
+            }
+        }
+    }
+}
+
 pub fn init_db(cfg: &Config) {
+    seed_bundled_maps(cfg);
     if !needs_boot(cfg) {
         // the additive schema heal is for a container with no Python in it (ND_PYTHON_FREE=1): next to a Python app both would run DDL against
         // the same file at boot, and Python's own create_all / _migrate already does this work

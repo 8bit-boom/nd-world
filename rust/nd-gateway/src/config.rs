@@ -38,7 +38,20 @@ impl Config {
             templates_dir: PathBuf::from(get("ND_TEMPLATES_DIR", "/app/app/templates")),
             rust_routes: get("ND_RUST_ROUTES", "login").split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect(),
             db_path: PathBuf::from(get("DB_PATH", "/data/world.db")),
-            secret_key: std::env::var("SECRET_KEY").ok().filter(|v| !v.is_empty()),
+            secret_key: std::env::var("SECRET_KEY").ok().filter(|v| !v.is_empty()).or_else(python_free_key),
         }
     }
+}
+
+/// With no Python app to sign sessions, a missing SECRET_KEY gets the same fallback app/main.py has: a random key for this process only
+/// (every session ends at the next restart), with the same warning. Next to Python the gateway keeps reading what Python signs, so none is made.
+fn python_free_key() -> Option<String> {
+    if !matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on") {
+        return None;
+    }
+    use rand::RngCore;
+    let mut raw = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut raw);
+    eprintln!("nd-gateway: SECRET_KEY is not set - falling back to a random per-process key. Every logged-in session will be invalidated on the next restart. Set SECRET_KEY in the environment.");
+    Some(raw.iter().map(|b| format!("{b:02x}")).collect())
 }

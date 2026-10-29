@@ -1,0 +1,59 @@
+# The Python-free image (docs/RUST_SWITCH_OFF.md): the Rust gateway answers every route itself - no Python, no uvicorn, no second process.
+# The gateway boots the database on a fresh volume (startup.rs), heals an existing one (ND_PYTHON_FREE=1) and runs the job sweeps, backups and fan
+# control itself. What still needs Python in the build only (a throw-away stage): the static files' thumbnails, AVIF maps, tile pyramids, minified
+# and pre-compressed copies, which are made exactly as for the normal image and copied over.
+#
+# Not served here (no Python to forward to; they answer 502): the PDF text reader behind AI attachments, the character .pdf export, videos' ffmpeg
+# conversions, /api/ai/models and a few refusals - the list is in docs/RUST_PORT_HANDOFF.md. Use the normal Dockerfile until that list is acceptable.
+FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
+
+FROM rust:1-slim AS gateway
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends gcc musl-tools && rm -rf /var/lib/apt/lists/*
+ENV CC_x86_64_unknown_linux_musl=musl-gcc CC_aarch64_unknown_linux_musl=musl-gcc
+RUN rustup target add "$(uname -m)-unknown-linux-musl"
+COPY rust/Cargo.toml rust/Cargo.lock ./
+COPY rust/nd-gateway/Cargo.toml nd-gateway/Cargo.toml
+COPY rust/nd-render/Cargo.toml nd-render/Cargo.toml
+COPY rust/nd-perm/Cargo.toml nd-perm/Cargo.toml
+RUN mkdir -p nd-gateway/src nd-render/src nd-perm/src && echo "fn main() {}" > nd-gateway/src/main.rs && touch nd-gateway/src/lib.rs nd-render/src/lib.rs nd-perm/src/lib.rs \
+    && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway; \
+    rm -rf nd-gateway/src nd-render/src nd-perm/src
+COPY rust/nd-gateway/src nd-gateway/src
+COPY rust/nd-render/src nd-render/src
+COPY rust/nd-render/data nd-render/data
+COPY rust/nd-perm/src nd-perm/src
+RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs nd-render/src/lib.rs nd-perm/src/lib.rs \
+    && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway \
+    && cp "target/$(uname -m)-unknown-linux-musl/release/nd-gateway" /nd-gateway
+
+# the build-time pictures and compressed static files (needs Python and Pillow; none of it reaches the final image)
+FROM python:3.13-slim AS assets
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ ./app/
+COPY static/ ./static/
+RUN python -m app.static_thumbs --avif-maps && python -m app.map_tiles && python -m app.precompress --minify
+
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
+COPY --from=gateway /nd-gateway /usr/local/bin/nd-gateway
+WORKDIR /app
+COPY --from=assets /app/static ./static
+COPY --from=assets /app/app/templates ./app/templates
+COPY --from=assets /app/app/maps ./app/maps
+
+ARG GIT_SHA=""
+ENV ND_BUILD=${GIT_SHA} \
+    ND_PYTHON_FREE=1 \
+    DB_PATH=/data/world.db \
+    ND_STATIC_DIR=/app/static \
+    ND_TEMPLATES_DIR=/app/app/templates \
+    ND_BUNDLED_MAPS_DIR=/app/app/maps \
+    ND_GATEWAY_LISTEN=0.0.0.0:8000 \
+    ND_RUST_ROUTES=login,dice_roll,live,pages,writes,ai,mcp,fans,auth
+VOLUME ["/data"]
+EXPOSE 8000
+CMD ["/usr/local/bin/nd-gateway"]
