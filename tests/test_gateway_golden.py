@@ -7353,3 +7353,71 @@ def test_join_form_is_pythons(client, seed):
         assert b.headers.get("x-nd-served-by") == "gateway", code
     a, b = gm.get("/join/gwj-good"), via.get("/join/gwj-good")
     assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location"))
+
+
+def test_chat_job_reads_player_image_jobs_and_template_delete_are_pythons(client, seed):
+    """GET /api/ai/chat/jobs[/<id>], GET /api/ai/imagegen/player/jobs (player's own / GM's all with owners), DELETE /api/ai/chat/jobs/<id>,
+    DELETE /api/ai/imagegen/model-templates/custom/<id>."""
+    from app.database import SessionLocal
+    from app.models import ChatJob, ImageJob, PromptPreset, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w, wb = seed.world_a.id, seed.world_b.id
+    db = SessionLocal()
+    try:
+        db.get(World, w).players_can_use_image_gen = True
+        cj = [ChatJob(world_id=w, prompt="p1", status=s, result="r", model=m, messages_json="[]") for s, m in (("done", "m1"), ("failed", ""), ("pending", "m3"))]
+        other = ChatJob(world_id=wb, prompt="theirs", status="done", messages_json="[]")
+        ij = [ImageJob(world_id=w, prompt="mine", status="done", created_by_user_id=seed.player_a.id, result_urls_json='["/uploads/a.png"]'),
+              ImageJob(world_id=w, prompt="gm's", status="done", created_by_user_id=seed.gm.id), ImageJob(world_id=w, prompt="nobody's", status="failed", error="boom"),
+              ImageJob(world_id=w, prompt="b's", status="done", created_by_user_id=seed.player_b.id)]
+        tpl = [PromptPreset(world_id=w, scope="image_template", label="T1", text="x", params_json="{}"), PromptPreset(world_id=w, scope="image", label="notatpl", text="x"),
+               PromptPreset(world_id=wb, scope="image_template", label="Bs", text="x", params_json="{}"), PromptPreset(world_id=w, scope="image_template", label="T2", text="x", params_json="{}")]
+        db.add_all(cj + [other] + ij + tpl)
+        db.commit()
+        cids, oid = [c.id for c in cj], other.id
+        tids = [t.id for t in tpl]
+    finally:
+        db.close()
+
+    def exists(model, i):
+        db = SessionLocal()
+        try:
+            return db.get(model, i) is not None
+        finally:
+            db.close()
+    try:
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            via = _via(d, base)
+            urls = ["/api/ai/chat/jobs", "/api/ai/imagegen/player/jobs"] + [f"/api/ai/chat/jobs/{i}" for i in cids + [oid, 999999]]
+            for url in urls:
+                a, b = d.get(url), via.get(url)
+                assert (a.status_code, a.content) == (b.status_code, b.content), (email, url)
+                if email == seed.gm.email or "player" in url:
+                    assert b.headers.get("x-nd-served-by") == "gateway", (email, url)
+        gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        via = _via(gm, base)
+        for i in cids + [oid, 999999]:
+            a_exists_before = exists(ChatJob, i)
+            r = via.delete(f"/api/ai/chat/jobs/{i}")
+            ref = r.status_code, r.content
+            if a_exists_before and i not in (cids[2], oid):
+                assert not exists(ChatJob, i) and r.status_code == 200 and r.json() == {"ok": True}, i
+            else:
+                assert exists(ChatJob, i) == a_exists_before, i
+                assert r.status_code in (400, 404), ref
+        for i in tids + [999999]:
+            r = via.delete(f"/api/ai/imagegen/model-templates/custom/{i}")
+            assert r.status_code in (200, 404), (i, r.status_code)
+            if i in (tids[0], tids[3]):
+                assert r.json() == {"deleted": i} and r.headers.get("x-nd-served-by") == "gateway"
+            else:
+                assert r.status_code == 404
+    finally:
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_can_use_image_gen = False
+            db.commit()
+        finally:
+            db.close()

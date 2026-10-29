@@ -642,6 +642,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
+    if req.method() == axum::http::Method::DELETE && (req.uri().path().starts_with("/api/ai/chat/jobs/") || req.uri().path().starts_with("/api/ai/imagegen/model-templates/custom/")) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || apis::delete(&cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::DELETE && req.uri().path().starts_with("/api/video-jobs/") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         if let Some(resp) = ai::video_job_delete(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;

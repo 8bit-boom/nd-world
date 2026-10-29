@@ -23,6 +23,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/rules/download.md" => rules_download(&cfg, uri, headers),
         path if id_between(path, "/pages/", "/download").is_some() => pages_download(&cfg, uri, headers, id_between(path, "/pages/", "/download")?),
         "/api/ai/imagegen/jobs" => imagegen_jobs_list(&cfg, uri, headers),
+        "/api/ai/imagegen/player/jobs" => player_image_jobs_list(&cfg, uri, headers),
+        "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
+        path if trailing_id(path, "/api/ai/chat/jobs/").is_some() => chat_job_status(&cfg, uri, headers, trailing_id(path, "/api/ai/chat/jobs/")?),
         "/api/ai/imagegen/model-templates" => imagegen_model_templates(&cfg, uri, headers),
         path if id_between(path, "/api/ai/imagegen/jobs/", "").is_some() => imagegen_job_status_gm(&cfg, uri, headers, id_between(path, "/api/ai/imagegen/jobs/", "")?),
         path if tpl_export_path(path).is_some() => {
@@ -76,6 +79,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
+        || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2377,6 +2381,104 @@ fn imagegen_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Re
         out.push(image_job_dict(j)?);
     }
     crate::edits::json_response(&Value::Array(out))
+}
+
+fn chat_job_dict(j: &Map<String, Value>) -> Option<Value> {
+    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
+    Some(json!({"id": v("id"), "prompt": v("prompt"), "status": v("status"), "error": v("error"), "result": v("result"),
+        "model": if crate::edits::py_truthy_pub(j.get("model")) { v("model") } else { json!("") },
+        "created_at": dt_iso(j, "created_at")?, "updated_at": dt_iso(j, "updated_at")?}))
+}
+
+/// `GET /api/ai/chat/jobs/<id>` (`api_chat_job_status`): the GM's background chat job in the active world
+fn chat_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let Some(j) = rows_of(&db, "SELECT * FROM chat_jobs WHERE id = ?1 AND world_id = ?2", &[&id, &wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    crate::edits::json_response(&chat_job_dict(&j)?)
+}
+
+/// `GET /api/ai/chat/jobs`: the world's newest 20
+fn chat_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+    let mut out = vec![];
+    for j in rows_of(&db, "SELECT * FROM chat_jobs WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 20", &[&wid])? {
+        out.push(chat_job_dict(&j)?);
+    }
+    crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/ai/imagegen/player/jobs`: a player's own jobs, the GM's view of everyone's with the owner's name
+fn player_image_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let w = p.world.as_ref();
+    if !p.is_gm && !w.map(|w| crate::edits::py_truthy_pub(w.get("players_can_use_image_gen"))).unwrap_or(false) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w?.get("id")?.as_i64()?;
+    let rows = if p.is_gm {
+        rows_of(&db, "SELECT * FROM image_jobs WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 50", &[&wid])?
+    } else {
+        rows_of(&db, "SELECT * FROM image_jobs WHERE world_id = ?1 AND created_by_user_id = ?2 ORDER BY created_at DESC, id DESC LIMIT 50", &[&wid, &p.user_id])?
+    };
+    let mut out = vec![];
+    for j in &rows {
+        let mut d = image_job_dict(j)?;
+        if p.is_gm {
+            let owner = match j.get("created_by_user_id").and_then(|v| v.as_i64()) {
+                Some(uid) => match rows_of(&db, "SELECT display_name, email FROM users WHERE id = ?1", &[&uid])?.into_iter().next() {
+                    Some(u) => [u.get("display_name"), u.get("email")].into_iter().flatten().find(|v| crate::edits::py_truthy_pub(Some(v))).cloned(),
+                    None => None,
+                },
+                None => None,
+            };
+            d.as_object_mut()?.insert("owner".into(), owner.unwrap_or_else(|| json!("GM")));
+        }
+        out.push(d);
+    }
+    crate::edits::json_response(&Value::Array(out))
+}
+
+/// DELETE routes: `/api/ai/chat/jobs/<id>` (a finished job's row) and `/api/ai/imagegen/model-templates/custom/<id>` (one of the world's own
+/// templates). Anything else, or a case Python judges otherwise, is Python's.
+pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "DELETE", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let path = uri.path();
+    if let Some(id) = trailing_id(path, "/api/ai/chat/jobs/") {
+        let wid = p.world.as_ref()?.get("id")?.as_i64()?;
+        let Some(j) = rows_of(&db, "SELECT status FROM chat_jobs WHERE id = ?1 AND world_id = ?2", &[&id, &wid])?.into_iter().next() else {
+            return Some(crate::idpages::refusal(404));
+        };
+        if matches!(j.get("status").and_then(|v| v.as_str()), Some("pending" | "generating")) {
+            return None; // IN_PROGRESS_STATUSES: Python's 400 / the running task
+        }
+        db.execute("DELETE FROM chat_jobs WHERE id = ?1", [id]).ok()?;
+        return crate::edits::json_response(&json!({"ok": true}));
+    }
+    let id = trailing_id(path, "/api/ai/imagegen/model-templates/custom/")?;
+    let Some(row) = rows_of(&db, "SELECT scope, world_id FROM prompt_presets WHERE id = ?1", &[&id])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let world_id = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    if row.get("scope").and_then(|v| v.as_str()) != Some("image_template") || world_id.is_some_and(|w| row.get("world_id").and_then(|v| v.as_i64()) != Some(w)) {
+        return Some(crate::idpages::refusal(404));
+    }
+    db.execute("DELETE FROM prompt_presets WHERE id = ?1", [id]).ok()?;
+    crate::edits::json_response(&json!({"deleted": id}))
 }
 
 /// `GET /api/ai/imagegen/model-templates` (app/routers/ai.py): the exported built-ins plus this

@@ -64,6 +64,10 @@ them after each batch; the phase is done when both are empty and the steps below
   `_columns_from_model` renders it), missing indexes and triggers; one transaction, logged, rolled back whole on any error. Not repeated: the
   NOT NULL rebuilds and `_migrate`'s one-time data fixes - run the last Python release once before the switch so those are done. A unit test
   covers an old `app_settings` and a missing table, and a second pass changes nothing.
+- **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
+  (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
+  /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything
+  still running stay Python's.
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.
