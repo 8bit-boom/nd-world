@@ -21,6 +21,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/display/state" => display_state(&cfg, uri, headers),
         "/rules/download.md" => rules_download(&cfg, uri, headers),
         path if id_between(path, "/pages/", "/download").is_some() => pages_download(&cfg, uri, headers, id_between(path, "/pages/", "/download")?),
+        "/api/ai/imagegen/jobs" => imagegen_jobs_list(&cfg, uri, headers),
+        "/api/ai/imagegen/model-templates" => imagegen_model_templates(&cfg, uri, headers),
+        path if id_between(path, "/api/ai/imagegen/jobs/", "").is_some() => imagegen_job_status_gm(&cfg, uri, headers, id_between(path, "/api/ai/imagegen/jobs/", "")?),
         path if tpl_export_path(path).is_some() => {
             let (wid, tid) = tpl_export_path(path)?;
             sheet_template_json(&cfg, uri, headers, wid, tid)
@@ -57,9 +60,10 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md")
+    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates")
         || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
+        || id_between(path, "/api/ai/imagegen/jobs/", "").is_some()
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
@@ -1961,4 +1965,95 @@ fn sheet_template_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64, t
     Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "application/json")
         .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{wslug}-sheet-template-{slug}.json\""))
         .header("x-nd-served-by", "gateway").body(Body::from(body)).unwrap())
+}
+
+/// `_image_job_to_dict` (app/routers/ai.py): result_urls_json json.loads'd with no fallback —
+/// unreadable text is Python's own 500 (decline)
+fn image_job_dict(j: &Map<String, Value>) -> Option<Value> {
+    let urls = match j.get("result_urls_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+        Some(t) => serde_json::from_str::<Value>(t).ok()?,
+        None => json!([]),
+    };
+    let iso = |k: &str| match j.get(k).and_then(|v| v.get("__dt__").or(Some(v))).and_then(|v| v.as_str()).and_then(nd_render::pyvalue::PyDateTime::parse) {
+        Some(d) => json!(d.isoformat()),
+        None => Value::Null,
+    };
+    Some(json!({
+        "id": j.get("id").cloned().unwrap_or(Value::Null),
+        "prompt": j.get("prompt").cloned().unwrap_or(Value::Null),
+        "status": j.get("status").cloned().unwrap_or(Value::Null),
+        "error": j.get("error").cloned().unwrap_or(Value::Null),
+        "urls": urls,
+        "created_at": iso("created_at"),
+        "updated_at": iso("updated_at"),
+    }))
+}
+
+/// `GET /api/ai/imagegen/jobs/{job_id}` (GM's own status; the player one below it)
+fn imagegen_job_status_gm(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    let Some(j) = rows_of(&db, "SELECT * FROM image_jobs WHERE id = ?1 AND world_id = ?2", &[&id, &wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    crate::edits::json_response(&image_job_dict(&j)?)
+}
+
+/// `GET /api/ai/imagegen/jobs`: the world's newest 20
+fn imagegen_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let w = p.world.as_ref()?;
+    let wid = w.get("id")?.as_i64()?;
+    let rows = rows_of(&db, "SELECT * FROM image_jobs WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 20", &[&wid])?;
+    let mut out = vec![];
+    for j in &rows {
+        out.push(image_job_dict(j)?);
+    }
+    crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/ai/imagegen/model-templates` (app/routers/ai.py): the exported built-ins plus this
+/// world's custom PromptPresets (scope='image_template') in the same shape, label-ordered
+fn imagegen_model_templates(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let mut custom = vec![];
+    if let Some(wid) = wid {
+        let rows = rows_of(&db, "SELECT * FROM prompt_presets WHERE scope = 'image_template' AND world_id = ?1 ORDER BY label", &[&wid])?;
+        for preset in rows {
+            let params: Map<String, Value> = match preset.get("params_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+                Some(t) => serde_json::from_str(t).unwrap_or_default(),
+                None => Map::new(),
+            };
+            let get = |k: &str| params.get(k).cloned().unwrap_or(Value::Null);
+            let falsy_or_absent = |k: &str| !params.get(k).map(|v| crate::edits::py_truthy_pub(Some(v))).unwrap_or(false);
+            custom.push(json!({
+                "id": format!("custom-{}", preset.get("id").and_then(|v| v.as_i64()).unwrap_or(0)),
+                "label": preset.get("label").cloned().unwrap_or(Value::Null),
+                "match": if falsy_or_absent("match") { json!([]) } else { get("match") },
+                "exclude": if falsy_or_absent("exclude") { json!([]) } else { get("exclude") },
+                "prefix": if falsy_or_absent("prefix") { json!("") } else { get("prefix") },
+                "suffix": if falsy_or_absent("suffix") { json!("") } else { get("suffix") },
+                "example_prompt": preset.get("text").cloned().unwrap_or(json!("")),
+                // preset.negative or "" — the preset's own column, like text
+                "negative": if preset.get("negative").map(|v| crate::edits::py_truthy_pub(Some(v))).unwrap_or(false) {
+                    preset.get("negative").cloned().unwrap_or(json!(""))
+                } else {
+                    json!("")
+                },
+                "steps": get("steps"),
+                "cfg": get("cfg"),
+                "sampler": if falsy_or_absent("sampler") { json!("") } else { get("sampler") },
+                "scheduler": if falsy_or_absent("scheduler") { json!("") } else { get("scheduler") },
+                "note": if falsy_or_absent("note") { json!("Your template.") } else { get("note") },
+                "guide": if falsy_or_absent("guide") { json!("") } else { get("guide") },
+                "custom": true,
+            }));
+        }
+    }
+    crate::edits::json_response(&json!({
+        "templates": nd_render::app::data()["imagegen_templates"].clone(),
+        "custom": custom,
+    }))
 }

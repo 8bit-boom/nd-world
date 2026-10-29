@@ -6213,3 +6213,69 @@ def test_map_prop_update_and_delete_are_pythons(client, seed):
     finally:
         db.close()
     assert served >= 5, served
+
+
+def test_imagegen_gets_are_pythons(client, seed):
+    """GET /api/ai/imagegen/model-templates, /jobs and /jobs/<id> from the gateway: the exported
+    built-ins byte-identically, a saved custom template in the list (the params_json fields, the
+    falsy ones defaulted), the world's newest-20 job list and one job's dict with the same
+    created_at / updated_at spellings; a wrong-world job is a 404."""
+    base = str(client.base_url)
+    w = seed.world_a.id
+    # the Studio backend settings: the same ones the GM imagegen test rides on
+    from app.database import SessionLocal
+    from app.models import ImageJob, PromptPreset
+    import time
+    db = SessionLocal()
+    try:
+        db.add(PromptPreset(world_id=w, label="Z custom", scope="image_template",
+                            text="masterpiece, 1girl", negative="worst quality",
+                            params_json=json.dumps({"match": ["anima"], "steps": 12, "cfg": 1.0, "note": "my note"})))
+        db.add_all([
+            ImageJob(world_id=w, prompt="a dragon", params_json="{}", status="done",
+                     result_urls_json=json.dumps(["/uploads/ai-images/x.png"])),
+            ImageJob(world_id=seed.world_b.id, prompt="far", params_json="{}", status="done"),
+        ])
+        db.commit()
+        mine = db.query(ImageJob).filter(ImageJob.world_id == w).first()
+        far = db.query(ImageJob).filter(ImageJob.world_id == seed.world_b.id).first()
+        mine_id, far_id = mine.id, far.id
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    served = 0
+    # model-templates: built-ins + the custom row
+    a, b = d.get("/api/ai/imagegen/model-templates"), v.get("/api/ai/imagegen/model-templates")
+    assert a.status_code == b.status_code == 200 and a.json() == b.json(), (a.text[:120], b.text[:120])
+    custom = b.json()["custom"]
+    assert len(custom) == 1 and custom[0]["id"].startswith("custom-"), custom
+    assert custom[0]["match"] == ["anima"] and custom[0]["steps"] == 12 and custom[0]["cfg"] == 1.0
+    assert custom[0]["note"] == "my note" and custom[0]["example_prompt"] == "masterpiece, 1girl"
+    assert custom[0]["prefix"] == "" and custom[0]["custom"] is True
+    assert len(b.json()["templates"]) >= 18
+    served += b.headers.get("x-nd-served-by") == "gateway"
+    # the job list: only this world's
+    a, b = d.get("/api/ai/imagegen/jobs"), v.get("/api/ai/imagegen/jobs")
+    assert a.status_code == b.status_code == 200 and a.json() == b.json(), (a.text[:160], b.text[:160])
+    assert [j["id"] for j in b.json()] == [mine_id], (mine_id, b.text[:120])
+    served += b.headers.get("x-nd-served-by") == "gateway"
+    # one job: this world's served, another world's the same 404, unknown the same 404
+    for jid, code in ((mine_id, 200), (far_id, 404), (999999, 404)):
+        a, b = d.get(f"/api/ai/imagegen/jobs/{jid}"), v.get(f"/api/ai/imagegen/jobs/{jid}")
+        assert a.status_code == b.status_code == code, (jid, a.status_code, b.status_code)
+        if code == 200:
+            assert a.json() == b.json(), (a.text[:120], b.text[:120])
+            assert b.json()["urls"] == ["/uploads/ai-images/x.png"], b.text[:120]
+        else:
+            assert a.json() == b.json(), (jid, a.text, b.text)
+        assert b.headers.get("x-nd-served-by") == "gateway", (jid, a.status_code)
+        served += 1
+    db = SessionLocal()
+    try:
+        db.query(ImageJob).filter(ImageJob.world_id.in_([w, seed.world_b.id])).delete(synchronize_session=False)
+        db.query(PromptPreset).filter(PromptPreset.scope == "image_template").delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 4, served

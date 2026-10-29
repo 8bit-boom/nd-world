@@ -21,7 +21,6 @@
 16/48      POST /entity/{}/notes/{}/edit
 15/97      GET /calendar
 15/8       POST /api/characters/{}/hub/keepsakes
-15/3       POST /api/characters/{}/portrait-from-url
 15/2       POST /api/media-rename/apply
 14/113     GET /entity/{}
 14/31      POST /api/entity/{}/rename
@@ -39,6 +38,7 @@
 13/157     POST /mcp
 12/11      GET /export
 12/26      POST /api/calendar/events
+12/3       POST /api/characters/{}/portrait-from-url
 12/37      POST /api/sessions/{}/media/attach
 12/1       POST /audio/{}/play-for-players
 12/9       POST /entity/{}/notes/import
@@ -214,7 +214,6 @@
 3/10       POST /api/characters/{}/hub/rest/undo
 3/8        POST /api/characters/{}/share
 3/1        POST /api/knowledge/relations/bulk
-3/1        POST /api/maps/props/{}/delete
 3/24       POST /api/parties/{}/rest/undo
 3/17       POST /api/saved-views/images
 3/2        POST /api/sessions/ai/condense-recap
@@ -407,7 +406,7 @@
 1/1        POST /api/sessions/{}/ai/summarize-live-transcript
 1/4        POST /api/sessions/{}/live-transcript/clear
 1/5        POST /api/sessions/{}/media/audio/{}/rename
-1/1        POST /api/sessions/{}/media/image/7dc95abd01/visibility
+1/1        POST /api/sessions/{}/media/image/0b72ce389e/visibility
 1/5        POST /api/sessions/{}/media/image/img1/rename
 1/2        POST /api/sessions/{}/media/image/own1/remove
 1/3        POST /api/sessions/{}/media/video/{}/rename
