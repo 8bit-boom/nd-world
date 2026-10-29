@@ -6870,3 +6870,63 @@ def test_world_context_and_save_note_are_pythons(client, seed):
             db.commit()
         finally:
             db.close()
+
+
+def test_map_editor_refusals_are_pythons(client, seed):
+    """The map editor's write routes answered by the gateway with Python's refusals: another world's map (404, for the GM too on the
+    walls / fog / door / light / rooms family; any world for the slug-only routes), a bad body, the field errors (walls / lights not a
+    list, fog flags and numbers, door and light ids, rooms' validation messages, elements not objects, an invalid or unknown combat),
+    the blank rename, a missing map - same status and message, nothing written."""
+    from app.database import SessionLocal
+    from app.models import Schematic
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        mine = Schematic(world_id=seed.world_a.id, slug="gw-ref-mine", name="Mine", grid_type="none", walls_json=json.dumps([{"id": "d1", "kind": "door", "state": "closed", "pts": [[0, 0], [10, 0]]}]),
+                         lights_json=json.dumps([{"id": "l1", "x": 5, "y": 5, "range": 3, "on": True}]))
+        theirs = Schematic(world_id=seed.world_b.id, slug="gw-ref-theirs", name="Theirs")
+        db.add_all([mine, theirs])
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(gm, base)
+
+    def state():
+        db = SessionLocal()
+        try:
+            return [(s.slug, s.name, s.walls_json, s.lights_json, s.fog_json, s.rooms_json, s.elements_json, s.combat_session_id) for s in db.query(Schematic).order_by(Schematic.id)]
+        finally:
+            db.close()
+
+    json_cases = [("walls", {"walls": "nope"}), ("walls", [1]), ("walls", b"{bad"), ("lights", {"lights": "x"}), ("lights", {}), ("fog", {"enabled": "yes"}), ("fog", [] ),
+                  ("fog", {"strict": 1}), ("fog", {"darkness": "dark"}), ("fog", {"personal": True}), ("fog", {"range": "far", "darkness": "x"}), ("door", {"wall_id": 5}),
+                  ("door", {"wall_id": "nosuch"}), ("door", {}), ("light", {"id": "nope"}), ("light", {"id": 5}), ("rooms", {"cell": 4}), ("rooms", [1]), ("rooms", "x"),
+                  ("rooms", {"cell": 50, "cols": 0, "rows": 3}), ("rooms", {"cell": 50, "cols": 4, "rows": 3, "cells": "x"}), ("rooms", {"cell": 50, "cols": 4, "rows": 3, "cells": [1]}),
+                  ("rooms", {"cell": 50, "cols": 4, "rows": 3, "cells": [1, "a"]}), ("rooms", {"cell": 50, "cols": 4, "rows": 3, "cells": [1, 13]}),
+                  ("rooms", {"cell": 50, "cols": 4, "rows": 3, "cells": [1, 5]}), ("rooms/detect", {}), ("elements", {"elements": "x"}), ("elements", {"elements": ["a"]}),
+                  ("elements", {"elements": None})]
+    for slug in ("gw-ref-mine", "gw-ref-theirs", "gw-ref-none"):
+        for route, body in json_cases:
+            path = f"/maps/schematic/{slug}/{route}"
+            kw = {"content": body, "headers": {"content-type": "application/json"}} if isinstance(body, bytes) else {"json": body}
+            before = state()
+            a = gm.post(path, **kw)
+            after_a = state()
+            via_resp = via.post(path, **kw)
+            assert via_resp.headers.get("x-nd-served-by") == "gateway", (path, body)
+            assert (a.status_code, a.json()) == (via_resp.status_code, via_resp.json()), (path, body)
+            assert state() == after_a == before or a.status_code == 200, (path, body)
+    for slug in ("gw-ref-mine", "gw-ref-theirs", "gw-ref-none"):
+        for route, form in (("link-combat", {"combat_session_id": "abc"}), ("link-combat", {"combat_session_id": "1_0"}), ("link-combat", {"combat_session_id": "99999"}),
+                            ("rename", {"name": "   "}), ("unlink-combat", {})):
+            path = f"/maps/schematic/{slug}/{route}"
+            before = state()
+            a = gm.post(path, data=form, follow_redirects=False)
+            after_a = state()
+            b = via.post(path, data=form, follow_redirects=False)
+            assert b.headers.get("x-nd-served-by") == "gateway", (path, form)
+            assert a.status_code == b.status_code, (path, form)
+            if a.status_code >= 400:
+                assert a.json() == b.json(), (path, form)
+            assert state() == after_a, (path, form)

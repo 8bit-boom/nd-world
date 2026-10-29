@@ -77,6 +77,14 @@ impl Ctx<'_> {
         }
     }
 
+    /// `json.loads(body)` of any shape (plain numbers only)
+    pub fn json_value(&self) -> Option<Value> {
+        if !plain_numbers(self.body) {
+            return None;
+        }
+        serde_json::from_slice::<Value>(self.body).ok()
+    }
+
     /// A scratch file name in the uploads folder (removed by the caller)
     pub fn uploads_scratch(&self) -> Option<std::path::PathBuf> {
         let dir = self.cfg.db_path.parent()?.join("uploads").join("_gateway");
@@ -4018,10 +4026,15 @@ fn json_body_refusal(body: &[u8]) -> Option<Option<Response<Body>>> {
 
 /// `json_body_refusal` with a route's own two messages
 fn json_body_refusal_as(body: &[u8], invalid: &str, not_object: &str) -> Option<Option<Response<Body>>> {
+    json_parse_refusal(body, invalid, Some(not_object))
+}
+
+/// The 400 for a body json.loads cannot read; with `not_object` also for a body that is not an object (None = any JSON will do)
+fn json_parse_refusal(body: &[u8], invalid: &str, not_object: Option<&str>) -> Option<Option<Response<Body>>> {
     let detail = crate::ai_more::detail;
     match serde_json::from_slice::<Value>(body) {
         Ok(Value::Object(_)) => Some(None),
-        Ok(_) => Some(Some(detail(StatusCode::BAD_REQUEST, not_object))),
+        Ok(_) => Some(not_object.map(|m| detail(StatusCode::BAD_REQUEST, m))),
         Err(e) => {
             // json.loads(bytes) reads UTF-16 / 32 by a BOM or NUL bytes up front; anything else is UTF-8, and bytes that are not is its error
             let head = &body[..body.len().min(4)];
@@ -10155,6 +10168,35 @@ fn sc_for_player(c: &Ctx, slug: &str) -> Option<(Map<String, Value>, Vec<Value>)
 }
 
 /// `map_walls._map_for_edit`: the active world's schematic (not an uploaded HTML map), when the viewer may edit Maps
+/// `map_walls._map_for_edit` with its refusals: the map to edit (Ok), or Python's answer (Err: no world 404 "No world selected", a map of
+/// another world / none / an HTML map 404, no edit right 403); None when it must be Python's
+fn sc_gate(c: &Ctx, slug: &str) -> Option<Result<Map<String, Value>, Response<Body>>> {
+    let detail = crate::ai_more::detail;
+    let Some(wid) = c.world_id() else { return Some(Err(detail(StatusCode::NOT_FOUND, "No world selected"))) };
+    let Ok(sc) = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)) else {
+        return Some(Err(crate::idpages::refusal(404)));
+    };
+    if sc.get("world_id")?.as_i64() != Some(wid) || (py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file"))) {
+        return Some(Err(crate::idpages::refusal(404)));
+    }
+    if !c.can_edit_section("maps")? {
+        return Some(Err(crate::idpages::refusal(403)));
+    }
+    Some(Ok(sc))
+}
+
+/// Python's 400 for a body `_json_body_raw` cannot read; Ok(the parsed body), Err(its refusal); None to decline
+fn sc_body(c: &Ctx) -> Option<Result<Value, Response<Body>>> {
+    match json_parse_refusal(c.body, "Invalid JSON", None)? {
+        Some(r) => Some(Err(r)),
+        None => Some(Ok(c.json_value()?)),
+    }
+}
+
+fn bad400(m: &str) -> Response<Body> {
+    crate::ai_more::detail(StatusCode::BAD_REQUEST, m.to_string())
+}
+
 fn sc_for_edit(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
     let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
     if sc.get("world_id")?.as_i64() != c.world_id() || (py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file"))) {
@@ -10346,9 +10388,10 @@ pub(crate) fn clean_walls(data: &[Value], sc: &Map<String, Value>) -> Option<(Ve
 }
 
 fn sc_walls(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
-    let body = c.json()?;
-    let (walls, warnings) = clean_walls(body.get("walls")?.as_array()?, &sc)?;
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
+    let Some(list) = body.get("walls").and_then(|w| w.as_array()) else { return Some(bad400("walls must be a list")) };
+    let (walls, warnings) = clean_walls(list, &sc)?;
     let v = Value::Array(walls);
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("walls_json", s(&nd_render::py_dumps(&v)))])?;
     orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
@@ -10362,16 +10405,29 @@ fn sc_for_manager(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
         return None;
     }
     let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
-    (sc.get("world_id")?.as_i64() == c.world_id()).then_some(sc)
+    // Python looks the map up by its slug alone: a GM may write to any world's map; an assistant stays with the world they are in
+    (c.p.is_gm || sc.get("world_id")?.as_i64() == c.world_id()).then_some(sc)
+}
+
+/// The slug-only routes' first refusal: a GM / assistant naming a map that does not exist gets Python's 404
+fn sc_missing_404(c: &Ctx, slug: &str) -> Option<Response<Body>> {
+    if !(c.p.is_gm || c.is_assistant()) {
+        return None;
+    }
+    let found = c.db.query_row("SELECT 1 FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |_| Ok(())).is_ok();
+    (!found).then(|| crate::idpages::refusal(404))
 }
 
 fn sc_elements(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
     let sc = sc_for_manager(c, slug)?;
     let body = c.json()?;
     let elements = match body.get("elements") {
         None => vec![],
         Some(Value::Array(a)) if a.iter().all(|e| e.is_object()) => a.clone(),
-        _ => return None,
+        _ => return Some(bad400("elements must be a list of objects")),
     };
     let text = nd_render::py_dumps(&Value::Array(elements));
     if text.contains("NaN") || text.contains("Infinity") {
@@ -10383,6 +10439,9 @@ fn sc_elements(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 }
 
 fn sc_grid(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
     let sc = sc_for_manager(c, slug)?;
     let body = c.json()?;
     let grid = body.get("grid_type").and_then(|v| v.as_str()).filter(|g| ["none", "hex", "square"].contains(g)).unwrap_or("none");
@@ -10402,20 +10461,38 @@ fn sc_grid(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 fn sc_link_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let f = c.form()?;
     let raw = f.get("combat_session_id").unwrap_or("");
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
     let sc = sc_for_manager(c, slug)?;
-    let t = raw.trim_matches(|ch: char| ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r');
+    let t = strip(raw);
     if !t.is_empty() {
-        if t.len() > 15 || !t.bytes().all(|b| b.is_ascii_digit()) || t != strip(raw) {
-            return None; // int()'s other spellings: Python's
+        if !t.is_ascii() {
+            return None; // other scripts' digits: int() reads them its own way
         }
-        let cs_id: i64 = t.parse().ok()?;
-        let found: i64 = c.db.query_row("SELECT id FROM combat_sessions WHERE id = ?1 AND world_id = ?2", [cs_id, sc.get("world_id")?.as_i64()?], |r| r.get(0)).ok()?;
+        // int(text): an optional sign, then digits with single underscores between them; anything else (ASCII) is its ValueError
+        let digits = t.strip_prefix(['+', '-']).unwrap_or(&t);
+        let grammar = !digits.is_empty() && !digits.starts_with('_') && !digits.ends_with('_') && !digits.contains("__") && digits.bytes().all(|b| b.is_ascii_digit() || b == b'_');
+        if !grammar {
+            return Some(bad400("Invalid combat session"));
+        }
+        if t.len() > 15 {
+            return None;
+        }
+        let n: i64 = digits.replace('_', "").parse().ok()?;
+        let cs_id = if t.starts_with('-') { -n } else { n };
+        let Ok(found) = c.db.query_row("SELECT id FROM combat_sessions WHERE id = ?1 AND world_id = ?2", [cs_id, sc.get("world_id")?.as_i64()?], |r| r.get::<_, i64>(0)) else {
+            return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Combat session not found in this world"));
+        };
         orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Integer(found))])?;
     }
     redirect(&format!("/maps/schematic/{slug}"))
 }
 
 fn sc_unlink_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
     let sc = sc_for_manager(c, slug)?;
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("combat_session_id", Sql::Null)])?;
     redirect(&format!("/maps/schematic/{slug}"))
@@ -10544,9 +10621,12 @@ fn sc_push_combat(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 fn sc_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let f = c.form()?;
     let name = strip(f.get("name")?);
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
     let sc = sc_for_manager(c, slug)?;
     if name.is_empty() {
-        return None;
+        return Some(bad400("Name can't be blank"));
     }
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("name", s(&name))])?;
     redirect(&format!("/maps/schematic/{slug}"))
@@ -10554,6 +10634,9 @@ fn sc_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 
 /// `schematic_delete` of a drawn schematic (an uploaded HTML one's file: Python's): the row, its background picture and its embedded images
 fn sc_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    if let Some(r) = sc_missing_404(c, slug) {
+        return Some(r);
+    }
     let sc = sc_for_manager(c, slug)?;
     if py_truthy(sc.get("is_html")) && py_truthy(sc.get("html_file")) {
         return None;
@@ -10692,13 +10775,12 @@ pub(crate) fn clean_rooms(d: &Map<String, Value>) -> Option<Value> {
 /// `rooms_detect`: the enclosed rooms of the stored walls as room-tool state (nothing stored); a map without a square grid and the
 /// detector's refusals are Python's
 fn sc_rooms_detect(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
     let cfg = sc_load(&sc, "grid_config_json", false)?;
     let grid = sc.get("grid_type").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("none");
-    let cell = wall_num(cfg.get("cell_size")).filter(|c| *c > 0.0)?;
-    if grid != "square" {
-        return None;
-    }
+    let Some(cell) = wall_num(cfg.get("cell_size")).filter(|c| *c > 0.0).filter(|_| grid == "square") else {
+        return Some(bad400("Finding rooms needs a square grid: switch the map to a square grid first."));
+    };
     let off = |k: &str| -> Option<f64> {
         match cfg.get(k) {
             v if !py_truthy(v) => Some(0.0),
@@ -10719,18 +10801,66 @@ fn sc_rooms_detect(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     }
 }
 
+/// The ValueErrors `map_rooms.clean_rooms` raises, in its order: Some(Some(message)) = Python's 400, Some(None) = no refusal, None = unsure
+fn rooms_refusal(d: &Map<String, Value>) -> Option<Option<String>> {
+    if d.is_empty() {
+        return Some(None);
+    }
+    let cell_ok = wall_num(d.get("cell")).is_some_and(|c| (8.0..=400.0).contains(&c));
+    if !cell_ok {
+        return Some(Some("cell must be a size between 8 and 400 px".into()));
+    }
+    let (cols, rows) = (room_int(d.get("cols")).ok()?, room_int(d.get("rows")).ok()?);
+    let (Some(cols), Some(rows)) = (cols, rows) else {
+        return Some(Some("the room grid must be at most 400 squares a side and 40000 squares in all".into()));
+    };
+    if !((1..=400).contains(&cols) && (1..=400).contains(&rows)) || cols * rows > 40000 {
+        return Some(Some("the room grid must be at most 400 squares a side and 40000 squares in all".into()));
+    }
+    let raw = match d.get("cells") {
+        Some(Value::Array(a)) if a.len() % 2 == 0 => a,
+        _ => return Some(Some("cells must be a list of [id, run, ...] pairs".into())),
+    };
+    let mut total: i64 = 0;
+    for pair in raw.chunks(2) {
+        let (sid, n) = (room_int(pair.first()).ok()?, room_int(pair.get(1)).ok()?);
+        let (Some(sid), Some(n)) = (sid, n) else { return Some(Some("cells must hold whole numbers".into())) };
+        if n < 1 || sid < 0 {
+            return Some(Some("cells must hold whole numbers".into()));
+        }
+        total = total.checked_add(n)?;
+        if total > cols * rows {
+            return Some(Some("cells hold more squares than the grid has".into()));
+        }
+    }
+    if total != cols * rows {
+        return Some(Some("cells hold fewer squares than the grid has".into()));
+    }
+    Some(None)
+}
+
 fn sc_rooms(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
-    let body = c.json()?;
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
+    let body = match body {
+        Value::Null => Map::new(),
+        Value::Array(a) if a.is_empty() => Map::new(),
+        Value::Object(o) => o,
+        _ => return Some(bad400("rooms must be an object")),
+    };
+    if let Some(msg) = rooms_refusal(&body)? {
+        return Some(bad400(&msg));
+    }
     let state = clean_rooms(&body)?;
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("rooms_json", s(&nd_render::py_dumps(&state)))])?;
     json_response(&json!({"rooms": state, "warnings": []}))
 }
 
 fn sc_lights(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
-    let body = c.json()?;
-    let (lights, warnings) = clean_lights(body.get("lights")?.as_array()?, &sc)?;
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
+    let Some(list) = body.get("lights").and_then(|w| w.as_array()) else { return Some(bad400("lights must be a list")) };
+    let (lights, warnings) = clean_lights(list, &sc)?;
     let v = Value::Array(lights);
     orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("lights_json", s(&nd_render::py_dumps(&v)))])?;
     orm::touch(&c.db, sc.get("world_id")?.as_i64()?)?;
@@ -10738,12 +10868,14 @@ fn sc_lights(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 }
 
 fn sc_light(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
-    let body = c.json()?;
-    let id = body.get("id")?.as_str()?.to_string();
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
+    let Some(id) = body.get("id").and_then(|v| v.as_str()).map(str::to_string) else { return Some(bad400("id required")) };
+    let Value::Object(body) = body else { return None };
     let Value::Array(stored) = sc_load(&sc, "lights_json", true)? else { return None };
     let (mut lights, _) = clean_lights(&stored, &sc)?;
-    let l = lights.iter_mut().find(|l| l["id"] == json!(id))?.as_object_mut()?;
+    let Some(l) = lights.iter_mut().find(|l| l["id"] == json!(id)) else { return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No such light")) };
+    let l = l.as_object_mut()?;
     let on = match body.get("on") {
         Some(Value::Bool(b)) => *b,
         _ => !l["on"].as_bool()?,
@@ -10755,13 +10887,15 @@ fn sc_light(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 }
 
 fn sc_fog(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
-    let body = c.json()?;
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
+    let Value::Object(body) = body else { return Some(bad400("JSON object required")) };
     let cur = clean_fog(sc_load(&sc, "fog_json", false)?.as_object()?)?;
     let mut new = cur.clone();
     for key in ["enabled", "strict"] {
         if let Some(v) = body.get(key) {
-            new.insert(key.into(), json!(v.as_bool()?));
+            let Some(b) = v.as_bool() else { return Some(bad400(&format!("{key} must be true or false"))) };
+            new.insert(key.into(), json!(b));
         }
     }
     if body.contains_key("range") {
@@ -10772,7 +10906,7 @@ fn sc_fog(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     for key in ["darkness", "personal"] {
         if let Some(v) = body.get(key) {
             if !v.is_number() {
-                return None;
+                return Some(bad400(&format!("{key} must be a number")));
             }
             new.insert(key.into(), v.clone());
         }
@@ -10788,9 +10922,10 @@ fn sc_fog(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 }
 
 fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let sc = sc_for_edit(c, slug)?;
-    let body = c.json()?;
-    let wid = body.get("wall_id")?.as_str()?.to_string();
+    let sc = match sc_gate(c, slug)? { Ok(sc) => sc, Err(r) => return Some(r) };
+    let body = match sc_body(c)? { Ok(b) => b, Err(r) => return Some(r) };
+    let Some(wid) = body.get("wall_id").and_then(|v| v.as_str()).map(str::to_string) else { return Some(bad400("wall_id required")) };
+    let Value::Object(body) = body else { return None };
     let want = body.get("state").and_then(|v| v.as_str()).filter(|v| *v == "open" || *v == "closed").map(str::to_string);
     let Value::Array(mut walls) = sc_load(&sc, "walls_json", true)? else { return None };
     for w in walls.iter_mut() {
@@ -10803,7 +10938,7 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             return json_response(&json!({"wall_id": wid, "state": state}));
         }
     }
-    None
+    Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No such door"))
 }
 
 /// The viewer's characters in the map's world, oldest first
