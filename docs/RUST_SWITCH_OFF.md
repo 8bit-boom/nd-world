@@ -70,7 +70,7 @@ them after each batch; the phase is done when both are empty and the steps below
   still running stay Python's.
 - **Live recording reads** (apis.rs `live_audio_download`, `live_transcript_check`): the raw recording as a download when 0 (Python's 400) or 1
   segment is saved (sent with the file helper: type, ETag, `Content-Disposition`), the access gate shared with the segment list
-  (`session_view_gate`); several segments need ffmpeg's concat, Range / conditional requests, and any Studio probe stay Python's. The
+  (`session_view_gate`); several segments are stitched by the gateway's own ffmpeg (concat demuxer, `-c copy`, a `.part` file renamed on success, the cached `recording.<ext>` reused while newer than every segment, Python's 400 text on failure); Range / conditional requests and any Studio probe stay Python's. The
   transcript check answers the "no Studio key" case only.
 - **Session media chunked upload** (edits.rs `sm_chunk`, `sm_complete`): the parts stashed under `<uploads>/session_media/_chunks` and put together
   into a picture or an audio clip through the same code as the one-request upload (`sm_ingest`); the chunk folder removed after. Videos

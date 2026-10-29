@@ -7436,19 +7436,27 @@ def test_live_audio_download_and_transcript_check_are_pythons(client, seed):
     (up / "gw-live").mkdir(parents=True, exist_ok=True)
     (up / "gw-live" / "a.webm").write_bytes(b"webm-bytes-1")
     (up / "gw-live" / "b.ogg").write_bytes(b"ogg-bytes-22")
+    import subprocess
+    for n in ("c1.ogg", "c2.ogg"):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3", "-c:a", "libvorbis", str(up / "gw-live" / n)], check=True)
     w = seed.world_a.id
     db = SessionLocal()
     try:
         mk = lambda n, files: GameSession(world_id=w, session_num=n, title=f"gw-live-{n}", live_audio_files_json=json.dumps(files) if files is not None else "")
         gss = [mk(901, None), mk(902, ["gw-live/a.webm"]), mk(903, ["gw-live/b.ogg"]), mk(904, ["gw-live/a.webm", "gw-live/b.ogg"]), mk(905, ["gw-live/missing.webm"]), mk(906, ["../x.webm"]),
-               GameSession(world_id=seed.world_b.id, session_num=907, title="gw-live-b", live_audio_files_json=json.dumps(["gw-live/a.webm"]))]
+               GameSession(world_id=seed.world_b.id, session_num=907, title="gw-live-b", live_audio_files_json=json.dumps(["gw-live/a.webm"])),
+               mk(908, ["gw-live/c1.ogg", "gw-live/c2.ogg"]), mk(909, ["gw-live/c1.ogg", "gw-live/c2.ogg"])]
         db.add_all(gss)
         db.commit()
         ids = [g.id for g in gss] + [999999]
     finally:
         db.close()
     keep = ("content-type", "content-disposition")
+    fresh_gateway_only = ids[8]   # nobody has built this one's recording yet: the gateway's ffmpeg does
+    ids = ids[:6] + [ids[6]] + [ids[7], 999999]   # 904's fake segments and 908's real ones are the ffmpeg cases (ids[3], ids[-2])
     try:
+        first = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base).get(f"/api/sessions/{fresh_gateway_only}/live-audio/download")
+        assert first.status_code == 200 and len(first.content) > 100 and first.headers.get("x-nd-served-by") == "gateway" and first.headers["content-disposition"].endswith('-recording.ogg"')
         for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
             d = _signed_in(email, pw, seed.world_a.slug)
             via = _via(d, base)
@@ -7456,8 +7464,14 @@ def test_live_audio_download_and_transcript_check_are_pythons(client, seed):
                 for tail in ("live-audio/download", "live-transcript/check"):
                     url = f"/api/sessions/{sid}/{tail}"
                     a, b = d.get(url), via.get(url)
-                    if sid == ids[3] and tail.startswith("live-audio"):
-                        assert a.status_code == b.status_code and (b.headers.get("x-nd-served-by") is None or a.status_code >= 400), (email, url)  # ffmpeg's own message varies run to run
+                    if sid in (ids[3], ids[-2]) and tail.startswith("live-audio"):
+                        # ffmpeg's own words (addresses, temp names) vary run to run: the status, the shape of the answer and the 400's lead-in agree
+                        assert a.status_code == b.status_code, (email, url, a.text[:200], b.text[:200])
+                        if a.status_code == 200:
+                            assert b.headers.get("x-nd-served-by") == "gateway" or email != seed.gm.email, (email, url)
+                            assert len(b.content) > 0 and a.headers.get("content-type") == b.headers.get("content-type") and a.headers.get("content-disposition") == b.headers.get("content-disposition")
+                        elif a.status_code == 400:
+                            assert a.json()["detail"][:24] == b.json()["detail"][:24], (a.text[:80], b.text[:80])
                         continue
                     assert (a.status_code, a.content) == (b.status_code, b.content), (email, url)
                     if a.status_code == 200 and tail.startswith("live-audio"):

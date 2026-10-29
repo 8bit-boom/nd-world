@@ -760,6 +760,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         match tokio::task::spawn_blocking(move || apis::live_audio_download(&cfg, &uri, &headers)).await {
             Ok(Some(apis::LiveDownload::Answer(r))) => return r,
+            Ok(Some(apis::LiveDownload::Concat(segs, out, name))) => {
+                if let Err(msg) = apis::concat_live_segments(&segs, &out).await {
+                    return ai_more::detail(axum::http::StatusCode::BAD_REQUEST, msg);
+                }
+                let extra = files::Extra {
+                    content_type: None,
+                    headers: vec![(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"").parse().unwrap()), (axum::http::HeaderName::from_static("x-nd-served-by"), axum::http::HeaderValue::from_static("gateway"))],
+                };
+                if let Some(r) = files::send(req.method(), req.headers(), &out, extra).await {
+                    return r;
+                }
+            }
             Ok(Some(apis::LiveDownload::File(path, name))) => {
                 let extra = files::Extra {
                     content_type: None,

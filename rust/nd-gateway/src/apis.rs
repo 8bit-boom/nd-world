@@ -2486,6 +2486,45 @@ pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
 pub enum LiveDownload {
     Answer(Response<Body>),
     File(std::path::PathBuf, String),
+    /// several segments to stitch with ffmpeg into the output file, then send under the name
+    Concat(Vec<std::path::PathBuf>, std::path::PathBuf, String),
+}
+
+/// `_ffmpeg_concat_quote`
+fn concat_quote(p: &std::path::Path) -> String {
+    format!("file '{}'", p.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// `_concat_live_segments`: ffmpeg's concat demuxer with -c copy to a .part file renamed into place on success; Err = Python's 400 text
+pub async fn concat_live_segments(segs: &[std::path::PathBuf], out: &std::path::Path) -> Result<(), String> {
+    let dir = out.parent().ok_or("bad path")?;
+    tokio::fs::create_dir_all(dir).await.map_err(|e| e.to_string())?;
+    let list = dir.join(format!("tmp{:08x}.txt", rand::random::<u32>()));
+    let text = segs.iter().map(|p| concat_quote(p)).collect::<Vec<_>>().join("\n") + "\n";
+    tokio::fs::write(&list, text).await.map_err(|e| e.to_string())?;
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("recording");
+    let ext = out.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    let tmp_out = out.with_file_name(format!("{stem}.part{ext}"));
+    let run = tokio::process::Command::new("ffmpeg").args(["-y", "-f", "concat", "-safe", "0", "-i"]).arg(&list).args(["-c", "copy"]).arg(&tmp_out)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).output().await;
+    let result = match run {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err("ffmpeg is not available on the server \u{2014} cannot assemble the recording.".to_string()),
+        Err(e) => Err(e.to_string()),
+        Ok(o) => {
+            let size = tokio::fs::metadata(&tmp_out).await.map(|m| m.len()).unwrap_or(0);
+            if !o.status.success() || size == 0 {
+                let err = String::from_utf8_lossy(&o.stderr).to_string();
+                let chars: Vec<char> = err.chars().collect();
+                let tail: String = chars[chars.len().saturating_sub(300)..].iter().collect();
+                Err(format!("ffmpeg concat failed (rc={}): {tail}", o.status.code().unwrap_or(-1)))
+            } else {
+                tokio::fs::rename(&tmp_out, out).await.map_err(|e| e.to_string())
+            }
+        }
+    };
+    let _ = tokio::fs::remove_file(&list).await;
+    let _ = tokio::fs::remove_file(&tmp_out).await;
+    result
 }
 
 /// `api_live_audio_download` for the cases that need no ffmpeg: the access decision, "nothing saved" (400) and a single segment (served as it is).
@@ -2520,7 +2559,14 @@ pub fn live_audio_download(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
             let ext = segs[0].extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| ".webm".into());
             Some(LiveDownload::File(segs.remove(0), format!("session-{sid}-recording{ext}")))
         }
-        _ => None,
+        _ => {
+            let ext = segs[0].extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| ".webm".into());
+            let out = uploads.join("live").join(sid.to_string()).join(format!("recording{ext}"));
+            let newest = segs.iter().filter_map(|s| s.metadata().ok()?.modified().ok()).max()?;
+            let name = format!("session-{sid}-recording{ext}");
+            let fresh = out.metadata().ok().filter(|m| m.is_file() && m.len() > 0 && m.modified().map_or(false, |t| t >= newest)).is_some();
+            Some(if fresh { LiveDownload::File(out, name) } else { LiveDownload::Concat(segs, out, name) })
+        }
     }
 }
 
