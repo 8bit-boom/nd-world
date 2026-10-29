@@ -7571,3 +7571,55 @@ def test_character_owner_refusals_are_pythons(client, seed):
         a, b = p.post(f"/characters/{pid}/owner", data={"owner_user_id": "1"}), pv.post(f"/characters/{pid}/owner", data={"owner_user_id": "1"})
         assert (a.status_code, a.content) == (b.status_code, b.content), pid
     assert via.post(f"/characters/{ids['free']}/owner", data={"owner_user_id": "abc"}).headers.get("x-nd-served-by") == "gateway"
+
+
+def test_table_edit_and_delete_refusals_are_pythons(client, seed):
+    """POST /tables/<id>/edit and /delete: a missing table (404), a built-in one (403 on delete), someone else's table (403), a GM reaching another
+    world's table, and the edit that does work (the row afterwards)."""
+    from app.database import SessionLocal
+    from app.models import RandomTable
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        mk = lambda name, wid, **kw: RandomTable(world_id=wid, name=name, slug=f"gw-tb-{name}", category="c", description="", entries_json="[]", is_builtin=False, **kw)
+        rows = {"mine": mk("mine", seed.world_a.id, created_by_user_id=seed.player_a.id), "gms": mk("gms", seed.world_a.id), "far": mk("far", seed.world_b.id),
+                "mine2": mk("mine2", seed.world_a.id, created_by_user_id=seed.player_a.id), "gms2": mk("gms2", seed.world_a.id), "far2": mk("far2", seed.world_b.id)}
+        db.add_all(rows.values())
+        db.commit()
+        ids = {k: v.id for k, v in rows.items()}
+        builtin = db.query(RandomTable).filter(RandomTable.is_builtin.is_(True)).first()
+        ids["builtin"] = builtin.id if builtin else None
+    finally:
+        db.close()
+    ids["missing"] = 999999
+
+    def snap(i):
+        db = SessionLocal()
+        try:
+            t = db.get(RandomTable, i)
+            return None if t is None else (t.name, t.category, t.description, t.entries_json)
+        finally:
+            db.close()
+    form = {"name": " Renamed ", "category": "", "description": "d", "entries_json": '[{"label":"a"}]'}
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        d.follow_redirects = False
+        via = _via(d, base)
+        via.follow_redirects = False
+        pairs = [("mine", "mine2"), ("gms", "gms2"), ("far", "far2"), ("builtin", "builtin"), ("missing", "missing")]
+        for ka, kb in pairs:
+            if ids[ka] is None:
+                continue
+            for method, tail, data in (("POST", "edit", form), ("POST", "delete", None)):
+                if tail == "delete" and ka == "builtin":
+                    pass
+                ra, rb = d.request(method, f"/tables/{ids[ka]}/{tail}", data=data), via.request(method, f"/tables/{ids[kb]}/{tail}", data=data)
+                assert (ra.status_code, ra.headers.get("location", "").replace(str(ids[ka]), "N"), ra.content if ra.status_code >= 400 else b"") == \
+                    (rb.status_code, rb.headers.get("location", "").replace(str(ids[kb]), "N"), rb.content if rb.status_code >= 400 else b""), (email, ka, tail)
+                if ka != "builtin":
+                    assert (snap(ids[ka]) is None) == (snap(ids[kb]) is None), (email, ka, tail)
+                    if snap(ids[ka]) and ka != kb:
+                        assert snap(ids[ka])[1:] == snap(ids[kb])[1:], (email, ka, tail)
+                if email == seed.gm.email and ka in ("missing", "far"):
+                    assert rb.headers.get("x-nd-served-by") == "gateway", (ka, tail)

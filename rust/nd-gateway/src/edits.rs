@@ -992,21 +992,34 @@ fn table_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     redirect(&format!("/tables/{id}/edit"))
 }
 
-/// The table by id when it is global or of the viewer's active world and they may edit it (`_can_edit_table_row`)
-fn editable_table(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
-    let t = row(&c.db, "SELECT * FROM random_tables WHERE id = ?1", id)?;
+/// The table by id and the viewer's right to edit it (`_can_edit_table_row`, judged by the table's own world): Ok(table), or Err(Python's
+/// 404 / 403 answer). A GM edits any world's table; anyone else only a global one or the active world's (their role elsewhere is not known here).
+fn editable_table(c: &Ctx, id: i64, builtin_delete: bool) -> Option<Result<Map<String, Value>, Response<Body>>> {
+    let Some(t) = row(&c.db, "SELECT * FROM random_tables WHERE id = ?1", id) else {
+        return Some(Err(crate::idpages::refusal(404)));
+    };
+    if builtin_delete && t.get("is_builtin").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
+        return Some(Err(crate::ai_more::detail(StatusCode::FORBIDDEN, "Cannot delete built-in tables")));
+    }
     match t.get("world_id").and_then(|v| v.as_i64()) {
         None => {}
-        Some(w) if Some(w) == c.world_id() => {}
+        Some(w) if Some(w) == c.world_id() || c.p.is_gm => {}
         Some(_) => return None,
     }
-    crate::pages::can_edit_table_row(&c.db, &c.p, &t)?.then_some(t)
+    if crate::pages::can_edit_table_row(&c.db, &c.p, &t)? {
+        Some(Ok(t))
+    } else {
+        Some(Err(crate::idpages::refusal(403)))
+    }
 }
 
 fn table_update(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
     let f = c.form()?;
-    let t = editable_table(c, id)?;
+    let t = match editable_table(c, id, false)? {
+        Ok(t) => t,
+        Err(r) => return Some(r),
+    };
     let mut set: Vec<(&str, Sql)> = vec![];
     let name;
     if t.get("is_builtin").and_then(|v| v.as_i64()).unwrap_or(0) == 0 {
@@ -1023,9 +1036,8 @@ fn table_update(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn table_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
-    let t = editable_table(c, id)?;
-    if t.get("is_builtin").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
-        return None;
+    if let Err(r) = editable_table(c, id, true)? {
+        return Some(r);
     }
     c.db.execute("DELETE FROM random_tables WHERE id = ?1", [id]).ok()?;
     redirect("/tables")
