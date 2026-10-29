@@ -7279,3 +7279,44 @@ def test_sheet_template_forms_are_pythons(client, seed):
     for method, url in (("POST", "/characters/templates/new"), ("GET", "/characters/templates/1/edit"), ("POST", "/characters/templates/1/delete")):
         ra, rb = p.request(method, url, data={"name": "x"}), pv.request(method, url, data={"name": "x"})
         assert (ra.status_code, ra.content) == (rb.status_code, rb.content), (method, url)
+
+
+def test_board_save_and_delete_refusals_are_pythons(client, seed):
+    """POST /boards/<slug>/save and /delete: a GM reaching another world's board, a missing board, a player without edit rights, a bad body."""
+    from app.database import SessionLocal
+    from app.models import InvestBoard
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        for slug, wid in (("gw-bd-a", seed.world_a.id), ("gw-bd-b", seed.world_b.id), ("gw-bd-a2", seed.world_a.id), ("gw-bd-b2", seed.world_b.id)):
+            db.add(InvestBoard(world_id=wid, name=slug, slug=slug, description=""))
+        db.commit()
+    finally:
+        db.close()
+
+    def board(slug):
+        db = SessionLocal()
+        try:
+            b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
+            return None if b is None else (b.nodes_json, b.edges_json)
+        finally:
+            db.close()
+    body = json.dumps({"nodes": [{"id": "n1", "title": "T"}], "edges": [], "groups": []})
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        via = _via(d, base)
+        d.follow_redirects = via.follow_redirects = False
+        for slug in ("gw-bd-a", "gw-bd-b", "nope-board"):
+            for payload in (body, "{oops", "[]"):
+                ra = d.post(f"/boards/{slug}/save", content=payload, headers={"content-type": "application/json"})
+                after_python = board(slug)
+                rb = via.post(f"/boards/{slug}/save", content=payload, headers={"content-type": "application/json"})
+                assert (ra.status_code, ra.content) == (rb.status_code, rb.content), (email, slug, payload)
+                assert board(slug) == after_python, (email, slug, payload)  # the same payload leaves the same row
+        for sa, sb in (("gw-bd-a", "gw-bd-a2"), ("gw-bd-b", "gw-bd-b2"), ("nope-board", "nope-board")):
+            ra, rb = d.post(f"/boards/{sa}/delete"), via.post(f"/boards/{sb}/delete")
+            assert (ra.status_code, ra.headers.get("location"), ra.content if ra.status_code >= 400 else b"") == (rb.status_code, rb.headers.get("location"), rb.content if rb.status_code >= 400 else b""), (email, sa)
+            assert (board(sa) is None) == (board(sb) is None), (email, sa)
+        if email == seed.gm.email:
+            assert via.post("/boards/nope-board/save", content=body, headers={"content-type": "application/json"}).headers.get("x-nd-served-by") == "gateway"

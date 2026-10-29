@@ -1284,18 +1284,30 @@ fn board_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     redirect(&format!("/boards/{slug}"))
 }
 
-/// The board by slug, of the viewer's active world, with board edit rights there
-fn editable_board(c: &Ctx, slug: &str) -> Option<Map<String, Value>> {
-    let b = c.db.query_row("SELECT * FROM invest_boards WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
-    if b.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_section("boards")? {
+/// The board by slug with the viewer's edit rights over it: Ok(board), or Err(answer) for Python's 404 / 403 (None: Python decides).
+/// A GM edits any world's board; anyone else only the active world's, where the section must be open to them at the edit tier.
+fn editable_board(c: &Ctx, slug: &str) -> Option<Result<Map<String, Value>, Response<Body>>> {
+    let Ok(b) = c.db.query_row("SELECT * FROM invest_boards WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)) else {
+        return Some(Err(crate::idpages::refusal(404)));
+    };
+    if c.p.is_gm {
+        return Some(Ok(b));
+    }
+    if b.get("world_id")?.as_i64() != c.world_id() {
         return None;
     }
-    Some(b)
+    if !c.can_edit_section("boards")? {
+        return Some(Err(crate::idpages::refusal(403)));
+    }
+    Some(Ok(b))
 }
 
 fn board_save(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let b = match editable_board(c, slug)? {
+        Ok(b) => b,
+        Err(r) => return Some(r),
+    };
     let body = c.json()?;
-    let b = editable_board(c, slug)?;
     let pick = |k: &str| body.get(k).cloned().unwrap_or(json!([]));
     let mut nodes = Map::new();
     nodes.insert("nodes".into(), pick("nodes"));
@@ -1310,7 +1322,10 @@ fn board_save(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 }
 
 fn board_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let b = editable_board(c, slug)?;
+    let b = match editable_board(c, slug)? {
+        Ok(b) => b,
+        Err(r) => return Some(r),
+    };
     c.db.execute("DELETE FROM invest_boards WHERE id = ?1", [b.get("id")?.as_i64()?]).ok()?;
     redirect("/boards")
 }

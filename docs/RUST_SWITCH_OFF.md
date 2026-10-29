@@ -54,6 +54,9 @@ them after each batch; the phase is done when both are empty and the steps below
   `.pdf` stays Python's (reportlab).
 - **Saved views list, video job delete** (`GET /api/saved-views/<section>` in apis.rs; `DELETE /api/video-jobs/<id>` in ai.rs): the named views by
   name with Python's `clean`; the finished job's row removed (an unknown or running job is Python's 400 word for word).
+- **Board save / delete refusals** (edits.rs `editable_board`): Python looks the board up by slug alone and checks edit rights in the board's own
+  world, so a GM reaches any world's board; a missing board is its 404, a player without the edit tier its 403. A player outside the board's
+  world is still Python's.
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.
