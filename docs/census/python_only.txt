@@ -3,17 +3,13 @@
      6 GET /api/ai/world-summary
      6 POST /api/ai/entity-context
      5 POST /api/ai/attachments/upload/complete
-     4 GET /api/ai/imagegen/jobs/{}
-     4 GET /api/ai/imagegen/model-templates
      4 GET /image-gen
      4 GET /maps/gw-a
      4 GET /maps/gw-c
      4 GET /static/*
      4 GET /tools/code-assist
      3 GET /api/ai/chat/jobs/{}
-     3 GET /api/ai/imagegen/jobs
      3 GET /api/ai/presets
-     3 GET /api/ai/tasks/CQ9hdCa_61gpdtdT
      3 GET /api/sessions/{}/live-audio/download
      3 GET /boards/gw-bad
      3 GET /boards/gw-bad/notes
@@ -29,6 +25,7 @@
      2 DELETE /api/ai/imagegen/model-templates/custom/{}
      2 GET /api/ai/models
      2 GET /api/ai/tasks
+     2 GET /api/ai/tasks/FYv6KC1mCF7jS1wT
      2 GET /api/ai/world-context
      2 GET /api/characters/{}/hub/sessions
      2 GET /api/characters/{}/share
@@ -39,8 +36,8 @@
      2 GET /characters/{}/export.ndc
      2 GET /characters/{}/export.pdf
      2 GET /health
-     2 GET /share/baRkT8oSosNGDct4vvroIlHDUZuBQenH
-     2 GET /share/xs4IU-snwPy48gFO79EOmKv7N5lBOqUM
+     2 GET /share/atYmRJ6q-nGhNkDI9P8zy-dwN3VefKSF
+     2 GET /share/bJH6bgZimSe1JRu7lq-YXSZvwQqQTuBU
      2 GET /world.db
      2 GET /worlds/{}/export/player-characters.json
      2 GET /worlds/{}/export/rules.json
@@ -52,14 +49,14 @@
      2 POST /maps/schematic/old-lair/rename
      2 POST /maps/schematic/pull-ok/pull-combat
      1 DELETE /api/ai/presets/NPC%20improv
-     1 DELETE /api/ai/tasks/CQ9hdCa_61gpdtdT
+     1 DELETE /api/ai/tasks/FYv6KC1mCF7jS1wT
      1 DELETE /api/video-jobs/{}
      1 DELETE /api/view-prefs
      1 GET /api/ai/context-info
-     1 GET /api/ai/tasks/M82eUTclLe4W-BCX
+     1 GET /api/ai/tasks/Bf6QH6t1PyU6vod6
      1 GET /api/ai/tasks/does-not-exist
-     1 GET /api/ai/tasks/i55nPtR1DPCgjn97
-     1 GET /api/ai/tasks/wfCb-yXFDrldzgtW
+     1 GET /api/ai/tasks/m-MDzLRF5WIHw8YB
+     1 GET /api/ai/tasks/zjRp7J_WjNyY_K2y
      1 GET /api/ai/unsloth/prefs
      1 GET /api/ai/whisper/denoise
      1 GET /api/ai/whisper/glossary
@@ -100,15 +97,15 @@
      1 POST /api/maps/no-such-map/overlay
      1 POST /api/maps/nope/ai-markers/start
      1 POST /api/maps/save-map/overlay
-     1 POST /api/maps/schematic/gw-sc-88f26089db6b/move-token
-     1 POST /api/maps/schematic/gw-sc-8b10b079a353/move-token
-     1 POST /api/maps/schematic/gw-sc-8cee1c353630/move-token
+     1 POST /api/maps/schematic/gw-sc-4eeb056bd316/move-token
+     1 POST /api/maps/schematic/gw-sc-eb323e3e5df7/move-token
+     1 POST /api/maps/schematic/gw-sc-f2167b981454/move-token
      1 POST /api/maps/schematic/locked-move/move-token
      1 POST /api/maps/schematic/removed-buy/buy-item
      1 POST /api/maps/schematic/removed-pickup/pickup-item
      1 POST /api/maps/shape-map/overlay
-     1 POST /api/sessions/{}/media/image/0b72ce389e/remove
-     1 POST /api/sessions/{}/media/image/ecb9d601cb/remove
+     1 POST /api/sessions/{}/media/image/6f7752f240/remove
+     1 POST /api/sessions/{}/media/image/e0b9a9d21c/remove
      1 POST /api/sessions/{}/media/image/nope/rename
      1 POST /api/view-prefs/No-Such
      1 POST /api/view-prefs/preset/nope
@@ -116,7 +113,7 @@
      1 POST /boards/far-6-1/save
      1 POST /boards/save-5-1/save
      1 POST /handouts/print
-     1 POST /join/c6_LeayelK7K
+     1 POST /join/-7BULEp6IRDQ
      1 POST /join/presetinvite
      1 POST /join/presetinvite2
      1 POST /join/testinvite2fa
@@ -124,10 +121,10 @@
      1 POST /maps/b-only-map-3/upload
      1 POST /maps/b-only-map/rename
      1 POST /maps/does-not-exist/delete
-     1 POST /maps/gwmap-d-9189120bc3a2/delete
-     1 POST /maps/gwmap-r-6a17618a5615/rename
-     1 POST /maps/gwmap-r-70761bf0f257/rename
-     1 POST /maps/gwup-9075e86c721a/upload
+     1 POST /maps/gwmap-d-b8822a2a486f/delete
+     1 POST /maps/gwmap-r-6a3a941cd4a3/rename
+     1 POST /maps/gwmap-r-b05680d2a336/rename
+     1 POST /maps/gwup-aed0b5e9a552/upload
      1 POST /maps/no-such-map/upload
      1 POST /maps/schematic/ai-bad/ai-build/start
      1 POST /maps/schematic/del-bg/delete
