@@ -14231,7 +14231,7 @@ fn hub_pc_row(c: &Ctx, id: i64) -> Option<Result<Map<String, Value>, ()>> {
 }
 
 /// `_live_audio_files` (app/routers/sessions.py): the saved raw segment paths; an unreadable list is "nothing saved"
-fn live_audio_files(gs: &Map<String, Value>) -> Option<Vec<String>> {
+pub(crate) fn live_audio_files(gs: &Map<String, Value>) -> Option<Vec<String>> {
     let raw = gs.get("live_audio_files_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     match serde_json::from_str::<Value>(raw) {
         Ok(Value::Array(a)) => {
@@ -14252,6 +14252,27 @@ fn live_audio_files(gs: &Map<String, Value>) -> Option<Vec<String>> {
     }
 }
 
+/// `_require_view_section` for a session's world (app/routers/sessions.py): Some(None) = allowed, Some(Some(answer)) = Python's 404 / 403,
+/// None = this port cannot judge it. Judged by the membership of the RECORD'S world (not the active one): a non-member 404s, a member whose
+/// level on the sessions section is "none" 403s.
+pub(crate) fn session_view_gate(db: &Connection, p: &crate::layout::PageCtx, wid: i64) -> Option<Option<Response<Body>>> {
+    if p.is_gm {
+        return Some(None);
+    }
+    let role: Option<String> = db.query_row("SELECT role FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [wid, p.user_id], |r| r.get(0)).ok();
+    let Some(role) = role else {
+        return Some(Some(crate::idpages::refusal(404)));
+    };
+    let role = if role == "assistant" || role == "owner" { "assistant" } else { "player" };
+    let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
+    let level = nd_perm::sections::section_level(false, Some(role), world.get("section_access_json").and_then(|v| v.as_str()),
+        world.get("custom_kinds_json").and_then(|v| v.as_str()), "sessions")?;
+    if level == "none" {
+        return Some(Some(crate::idpages::refusal(403)));
+    }
+    Some(None)
+}
+
 /// `GET /api/sessions/<id>/live-audio` (app/routers/sessions.py `api_live_audio_list`): the raw recording's segments and
 /// their total size on disk; the sessions read gate as row_world_visible applies it
 pub(crate) fn live_audio_list(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
@@ -14259,22 +14280,8 @@ pub(crate) fn live_audio_list(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>
         return Some(crate::idpages::refusal(404));
     };
     let wid = gs.get("world_id")?.as_i64()?;
-    // _require_section's gate, judged by the membership of the RECORD'S world (not the active one): a non-member 404s,
-    // a member whose level here is not read-or-edit 403s; the role's own world must be known for the port to judge it
-    if !c.p.is_gm {
-        let role: Option<String> = c.db.query_row("SELECT role FROM world_memberships WHERE world_id = ?1 AND user_id = ?2",
-            [wid, c.p.user_id], |r| r.get(0)).ok();
-        let Some(role) = role else {
-            return Some(crate::idpages::refusal(404));
-        };
-        let role = if role == "assistant" || role == "owner" { "assistant" } else { "player" };
-        let world = c.db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
-        let level = nd_perm::sections::section_level(false, Some(role),
-            world.get("section_access_json").and_then(|v| v.as_str()),
-            world.get("custom_kinds_json").and_then(|v| v.as_str()), "sessions")?;
-        if level == "none" {
-            return Some(crate::idpages::refusal(403));
-        }
+    if let Some(r) = session_view_gate(&c.db, &c.p, wid)? {
+        return Some(r);
     }
     let files = live_audio_files(&gs)?;
     let uploads = c.cfg.db_path.parent()?.join("uploads");

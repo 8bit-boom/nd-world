@@ -756,6 +756,22 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/api/sessions/") && req.uri().path().ends_with("/live-audio/download") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        match tokio::task::spawn_blocking(move || apis::live_audio_download(&cfg, &uri, &headers)).await {
+            Ok(Some(apis::LiveDownload::Answer(r))) => return r,
+            Ok(Some(apis::LiveDownload::File(path, name))) => {
+                let extra = files::Extra {
+                    content_type: None,
+                    headers: vec![(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"").parse().unwrap()), (axum::http::HeaderName::from_static("x-nd-served-by"), axum::http::HeaderValue::from_static("gateway"))],
+                };
+                if let Some(r) = files::send(req.method(), req.headers(), &path, extra).await {
+                    return r;
+                }
+            }
+            _ => {}
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/join/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || share::join_form(&pages, &cfg, &uri, &headers)).await {

@@ -24,6 +24,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/pages/", "/download").is_some() => pages_download(&cfg, uri, headers, id_between(path, "/pages/", "/download")?),
         "/api/ai/imagegen/jobs" => imagegen_jobs_list(&cfg, uri, headers),
         "/api/ai/imagegen/player/jobs" => player_image_jobs_list(&cfg, uri, headers),
+        path if id_between(path, "/api/sessions/", "/live-transcript/check").is_some() => live_transcript_check(&cfg, uri, headers, id_between(path, "/api/sessions/", "/live-transcript/check")?),
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         path if trailing_id(path, "/api/ai/chat/jobs/").is_some() => chat_job_status(&cfg, uri, headers, trailing_id(path, "/api/ai/chat/jobs/")?),
         "/api/ai/imagegen/model-templates" => imagegen_model_templates(&cfg, uri, headers),
@@ -79,7 +80,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2479,6 +2480,67 @@ pub fn delete(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
     }
     db.execute("DELETE FROM prompt_presets WHERE id = ?1", [id]).ok()?;
     crate::edits::json_response(&json!({"deleted": id}))
+}
+
+/// What `GET /api/sessions/<id>/live-audio/download` comes to: an answer, or the one saved segment to send as a download
+pub enum LiveDownload {
+    Answer(Response<Body>),
+    File(std::path::PathBuf, String),
+}
+
+/// `api_live_audio_download` for the cases that need no ffmpeg: the access decision, "nothing saved" (400) and a single segment (served as it is).
+/// Several segments are concatenated by Python; Range / conditional requests are Python's too.
+pub fn live_audio_download(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<LiveDownload> {
+    use axum::http::header;
+    if [header::RANGE, header::IF_NONE_MATCH, header::IF_MODIFIED_SINCE, header::IF_MATCH, header::IF_UNMODIFIED_SINCE, header::IF_RANGE].iter().any(|h| headers.contains_key(h)) {
+        return None;
+    }
+    let sid = id_between(uri.path(), "/api/sessions/", "/live-audio/download")?;
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(gs) = rows_of(&db, "SELECT * FROM game_sessions WHERE id = ?1", &[&sid])?.into_iter().next() else {
+        return Some(LiveDownload::Answer(crate::idpages::refusal(404)));
+    };
+    if let Some(r) = crate::edits::session_view_gate(&db, &p, gs.get("world_id")?.as_i64()?)? {
+        return Some(LiveDownload::Answer(r));
+    }
+    let uploads = cfg.db_path.parent()?.join("uploads");
+    let mut segs = vec![];
+    for rel in crate::edits::live_audio_files(&gs)? {
+        if rel.starts_with('/') || rel.contains("..") || rel.contains('\\') || rel.is_empty() {
+            return None;
+        }
+        let path = uploads.join(&rel);
+        if path.is_file() {
+            segs.push(path);
+        }
+    }
+    match segs.len() {
+        0 => Some(LiveDownload::Answer(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No raw audio saved for this session."))),
+        1 => {
+            let ext = segs[0].extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| ".webm".into());
+            Some(LiveDownload::File(segs.remove(0), format!("session-{sid}-recording{ext}")))
+        }
+        _ => None,
+    }
+}
+
+/// `GET /api/sessions/<id>/live-transcript/check`: only the "no Studio API key" answer (a GM); a key means a probe call to Studio, which is Python's
+fn live_transcript_check(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let exists = db.query_row("SELECT 1 FROM game_sessions WHERE id = ?1", [id], |_| Ok(())).is_ok();
+    if !exists {
+        return Some(crate::idpages::refusal(404));
+    }
+    if !p.is_gm {
+        return None;
+    }
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    if key.is_some() {
+        return None;
+    }
+    crate::edits::json_response(&json!({"ok": false, "backend": "unsloth", "model": crate::stt::stt_model(cfg),
+        "message": "Speech-to-text runs on Unsloth Studio, but no Studio API key is set (Settings \u{2192} System)."}))
 }
 
 /// `GET /api/ai/imagegen/model-templates` (app/routers/ai.py): the exported built-ins plus this

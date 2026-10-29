@@ -7421,3 +7421,49 @@ def test_chat_job_reads_player_image_jobs_and_template_delete_are_pythons(client
             db.commit()
         finally:
             db.close()
+
+
+def test_live_audio_download_and_transcript_check_are_pythons(client, seed):
+    """GET /api/sessions/<id>/live-audio/download (nothing saved: 400, one segment: the file as a download, several: Python's concat, a stranger: 404/403)
+    and GET .../live-transcript/check (no Studio key)."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import GameSession
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (up / "gw-live").mkdir(parents=True, exist_ok=True)
+    (up / "gw-live" / "a.webm").write_bytes(b"webm-bytes-1")
+    (up / "gw-live" / "b.ogg").write_bytes(b"ogg-bytes-22")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        mk = lambda n, files: GameSession(world_id=w, session_num=n, title=f"gw-live-{n}", live_audio_files_json=json.dumps(files) if files is not None else "")
+        gss = [mk(901, None), mk(902, ["gw-live/a.webm"]), mk(903, ["gw-live/b.ogg"]), mk(904, ["gw-live/a.webm", "gw-live/b.ogg"]), mk(905, ["gw-live/missing.webm"]), mk(906, ["../x.webm"]),
+               GameSession(world_id=seed.world_b.id, session_num=907, title="gw-live-b", live_audio_files_json=json.dumps(["gw-live/a.webm"]))]
+        db.add_all(gss)
+        db.commit()
+        ids = [g.id for g in gss] + [999999]
+    finally:
+        db.close()
+    keep = ("content-type", "content-disposition")
+    try:
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            via = _via(d, base)
+            for sid in ids:
+                for tail in ("live-audio/download", "live-transcript/check"):
+                    url = f"/api/sessions/{sid}/{tail}"
+                    a, b = d.get(url), via.get(url)
+                    if sid == ids[3] and tail.startswith("live-audio"):
+                        assert a.status_code == b.status_code and (b.headers.get("x-nd-served-by") is None or a.status_code >= 400), (email, url)  # ffmpeg's own message varies run to run
+                        continue
+                    assert (a.status_code, a.content) == (b.status_code, b.content), (email, url)
+                    if a.status_code == 200 and tail.startswith("live-audio"):
+                        assert {k: a.headers.get(k) for k in keep} == {k: b.headers.get(k) for k in keep}, (email, url)
+                    if email == seed.gm.email and sid in (ids[0], ids[1], ids[2], ids[4], 999999) and "download" in tail:
+                        assert b.headers.get("x-nd-served-by") == "gateway", url
+    finally:
+        for f in (up / "gw-live").glob("*"):
+            f.unlink()
