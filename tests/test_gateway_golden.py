@@ -7172,3 +7172,42 @@ def test_saved_views_list_is_pythons(client, seed):
     assert (r.status_code, r.content) == (r2.status_code, r2.content)
     for v in d.get("/api/saved-views/images").json()["views"]:
         d.delete(f"/api/saved-views/images/{v['id']}")
+
+
+def test_video_job_delete_is_pythons(client, seed):
+    """DELETE /api/video-jobs/<id>: a finished / failed job goes (the row is gone for both), one in progress or missing is Python's 400, a player's 403."""
+    from app.database import SessionLocal
+    from app.models import VideoJob
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+
+    def make(status):
+        db = SessionLocal()
+        try:
+            j = VideoJob(world_id=w, prompt="p", status=status)
+            db.add(j)
+            db.commit()
+            return j.id
+        finally:
+            db.close()
+
+    def gone(jid):
+        db = SessionLocal()
+        try:
+            return db.get(VideoJob, jid) is None
+        finally:
+            db.close()
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        via = _via(d, base)
+        for status in ("done", "failed", "cancelled", "pending", "generating", "fetching"):
+            ja, jb = make(status), make(status)
+            a, b = d.delete(f"/api/video-jobs/{ja}"), via.delete(f"/api/video-jobs/{jb}")
+            assert (a.status_code, a.content) == (b.status_code, b.content), (email, status)
+            assert gone(ja) == gone(jb), (email, status)
+            if email == seed.gm.email:
+                assert b.headers.get("x-nd-served-by") == "gateway", status
+        for url in ("/api/video-jobs/999999", "/api/video-jobs/abc", "/api/video-jobs/007"):
+            a, b = d.delete(url), via.delete(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (email, url)

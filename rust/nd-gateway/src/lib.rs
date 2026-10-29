@@ -642,6 +642,11 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
+    if req.method() == axum::http::Method::DELETE && req.uri().path().starts_with("/api/video-jobs/") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        if let Some(resp) = ai::video_job_delete(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::POST && req.uri().path().ends_with("/cancel") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let resp = if req.uri().path().starts_with("/api/audio-jobs/") {
             ai::audio_job_cancel(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await

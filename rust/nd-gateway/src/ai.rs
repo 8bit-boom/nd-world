@@ -3784,6 +3784,29 @@ pub async fn video_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
     }).await.ok()?
 }
 
+/// `DELETE /api/video-jobs/<id>`: a finished job's row (its clip stays); a missing or still-running job is Python's 400
+pub async fn video_job_delete(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let d = uri.path().strip_prefix("/api/video-jobs/")?;
+    if d.is_empty() || d.len() > 15 || !d.bytes().all(|b| b.is_ascii_digit()) || (d.len() > 1 && d.starts_with('0')) {
+        return None;
+    }
+    let id: i64 = d.parse().ok()?;
+    tokio::task::spawn_blocking(move || -> Option<Response<Body>> {
+        let db = crate::writes::open(&cfg)?;
+        assist_caller(&db, &cfg, &uri, &headers)?;
+        let status: Option<Option<String>> = db.query_row("SELECT status FROM video_jobs WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)).ok();
+        let busy = match &status {
+            None => true,
+            Some(s) => matches!(s.as_deref(), Some("pending" | "generating" | "fetching")),
+        };
+        if busy {
+            return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Job is in progress \u{2014} cancel it first"));
+        }
+        db.execute("DELETE FROM video_jobs WHERE id = ?1", [id]).ok()?;
+        crate::edits::json_response(&json!({"ok": true}))
+    }).await.ok()?
+}
+
 // ── the blocking recap / facts routes (app/routers/sessions.py, app/routers/facts.py): answered here, inline or as a background task ──
 
 /// What one of these routes will do once planned (permissions and body read): its answer comes from `answer_sync`
