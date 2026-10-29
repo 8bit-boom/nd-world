@@ -3708,14 +3708,13 @@ fn pc_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn pc_owner(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let f = c.form()?;
+    let Some(pc) = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0]) else {
+        return Some(crate::idpages::refusal(404));
+    };
     if !c.p.is_gm {
-        return None;
+        return Some(crate::idpages::refusal(403));
     }
-    let pc = row(&c.db, "SELECT * FROM player_characters WHERE id = ?1", ids[0])?;
     let world = pc.get("world_id")?.as_i64()?;
-    if Some(world) != c.world_id() {
-        return None;
-    }
     let raw = opt(&f, "owner_user_id", "");
     if !raw.is_ascii() {
         return None;
@@ -3725,19 +3724,33 @@ fn pc_owner(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     if want.is_empty() {
         cols.push(("owner_user_id", Sql::Null));
     } else {
-        let uid = py_int(&want).filter(|_| !want.starts_with('-'))?;
-        let target: (i64, Option<String>, Option<String>) = c
-            .db
-            .query_row("SELECT id, display_name, email FROM users WHERE id = ?1 AND is_gm = 0", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .ok()?;
+        if !want.bytes().all(|b| b.is_ascii_digit()) {
+            return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Invalid player"));
+        }
+        let uid = py_int(&want).filter(|_| want.len() < 16)?; // beyond SQLite's integers Python's query raises (its 500)
+        let Ok(target) = c.db.query_row::<(i64, Option<String>, Option<String>), _, _>("SELECT id, display_name, email FROM users WHERE id = ?1 AND is_gm = 0", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) else {
+            return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Player not found"));
+        };
         let member: i64 = c.db.query_row("SELECT COUNT(*) FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [world, uid], |r| r.get(0)).ok()?;
-        let others: i64 = c
-            .db
-            .query_row("SELECT COUNT(*) FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 AND id != ?3", [world, uid, ids[0]], |r| r.get(0))
-            .ok()?;
+        if member == 0 {
+            return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "That player isn't invited to this world"));
+        }
+        let others: Vec<String> = {
+            let mut st = c.db.prepare("SELECT name FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 AND id != ?3 ORDER BY id").ok()?;
+            let rows = st.query_map([world, uid, ids[0]], |r| r.get::<_, Option<String>>(0)).ok()?;
+            let mut names = vec![];
+            for r in rows {
+                match r.ok()? { Some(n) => names.push(n), None => return None }
+            }
+            names
+        };
         let limit = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", world)?.get("max_characters_per_player").and_then(|v| v.as_i64()).filter(|v| *v != 0).unwrap_or(1).max(1);
-        if member == 0 || others >= limit {
-            return None; // the 400s: Python's
+        if others.len() as i64 >= limit {
+            let who = match target.1.clone().filter(|v| !v.is_empty()) { Some(n) => n, None => target.2.clone()? };
+            if limit <= 1 {
+                return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, format!("{who} already owns \"{}\" in this world \u{2014} unassign that one first.", others[0])));
+            }
+            return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, format!("{who} already owns {} characters in this world \u{2014} the limit is {limit}. Unassign one first, or raise the limit in the world's settings.", others.len())));
         }
         cols.push(("owner_user_id", Sql::Integer(target.0)));
         if pc.get("player_name").and_then(|v| v.as_str()).unwrap_or("").is_empty() {

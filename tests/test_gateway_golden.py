@@ -7533,3 +7533,41 @@ def test_session_media_chunked_upload_is_pythons(client, seed):
         assert r.status_code == 400
         r = c_.post("/api/sessions/999999/media/upload/chunk", data={"upload_id": uid, "chunk_index": "0"}, files={"file": ("x", b"1", "application/octet-stream")})
         assert r.status_code == 404
+
+
+def test_character_owner_refusals_are_pythons(client, seed):
+    """POST /characters/<id>/owner: bad / unknown / non-member / at-the-limit players, a character of another world, a missing one, a player's 403."""
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, WorldMembership
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w, wb = seed.world_a.id, seed.world_b.id
+    db = SessionLocal()
+    try:
+        mine = PlayerCharacter(world_id=w, name="Owned By A", owner_user_id=seed.player_a.id)
+        free = PlayerCharacter(world_id=w, name="Free One")
+        far = PlayerCharacter(world_id=wb, name="Far Away")
+        db.add_all([mine, free, far])
+        db.commit()
+        ids = {"free": free.id, "mine": mine.id, "far": far.id, "missing": 999999}
+        member_b = db.query(WorldMembership).filter(WorldMembership.world_id == wb, WorldMembership.user_id == seed.player_b.id).first() is not None
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    gm.follow_redirects = False
+    via = _via(gm, base)
+    via.follow_redirects = False
+    forms = [{"owner_user_id": "abc"}, {"owner_user_id": "999999"}, {"owner_user_id": "-3"}, {"owner_user_id": str(seed.gm.id)}, {"owner_user_id": str(seed.player_a.id)},
+             {"owner_user_id": str(seed.player_b.id)}, {"owner_user_id": " " + str(seed.player_b.id) + " "}, {"owner_user_id": "99999999999999999999"}, {"owner_user_id": ""}, {}]
+    for key, pid in ids.items():
+        for form in forms:
+            a, b = gm.post(f"/characters/{pid}/owner", data=form), via.post(f"/characters/{pid}/owner", data=form)
+            assert (a.status_code, a.headers.get("location"), a.content if a.status_code >= 400 else b"") == (b.status_code, b.headers.get("location"), b.content if b.status_code >= 400 else b""), (key, form)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    p.follow_redirects = False
+    pv = _via(p, base)
+    pv.follow_redirects = False
+    for pid in (ids["free"], 999999):
+        a, b = p.post(f"/characters/{pid}/owner", data={"owner_user_id": "1"}), pv.post(f"/characters/{pid}/owner", data={"owner_user_id": "1"})
+        assert (a.status_code, a.content) == (b.status_code, b.content), pid
+    assert via.post(f"/characters/{ids['free']}/owner", data={"owner_user_id": "abc"}).headers.get("x-nd-served-by") == "gateway"

@@ -75,6 +75,9 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Session media chunked upload** (edits.rs `sm_chunk`, `sm_complete`): the parts stashed under `<uploads>/session_media/_chunks` and put together
   into a picture or an audio clip through the same code as the one-request upload (`sm_ingest`); the chunk folder removed after. Videos
   (ffmpeg), a missing part and anything over a cap stay Python's.
+- **Character owner refusals** (`POST /characters/<id>/owner`, edits.rs `pc_owner`): Python judges the character's own world (not the active one) and
+  its refusals are answered word for word - 404 missing character, 403 for a non-GM, 400 "Invalid player", 404 "Player not found", 400 not invited,
+  and the two "already owns" texts (limit of one with the character's name, a higher limit with the count).
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.
