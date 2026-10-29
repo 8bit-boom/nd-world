@@ -40,6 +40,9 @@ them after each batch; the phase is done when both are empty and the steps below
   until the settings-overrides sync is owned by the gateway.
 - **Dice page form** (`POST /dice`, writes.rs `dice_form_blocking`): shares `store_roll` with `POST /api/dice/roll`; a stored roll answers with
   the 303 back to `/dice`, a notation Python rejects (its `?error=` redirect) or a non-form body is Python's.
+- **Service worker** (`GET /sw.js`, static_files.rs `serve_sw`): static/sw.js with Python's headers (`Service-Worker-Allowed`, `no-cache`,
+  `text/javascript; charset=utf-8`, Starlette's ETag, gzip as the middleware does it). Conditional and Range requests are Python's
+  (its FileResponse ignores `If-None-Match`). `/world.db` was a probe of a route that does not exist (Python's 404).
 - **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
   URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level

@@ -4,7 +4,7 @@
 //! for the cases this module is sure about.
 use crate::{files, Config};
 use axum::body::Body;
-use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode, Uri};
 use percent_encoding::percent_decode_str;
 use std::path::{Component, Path, PathBuf};
 
@@ -101,6 +101,11 @@ pub async fn serve(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap
     let gzip = text_like(&real) && accept.iter().any(|a| a == "gzip");
     let extra = files::Extra { content_type: None, headers: vec![(header::CACHE_CONTROL, HeaderValue::from_static(IMMUTABLE))] };
     let resp = files::send(method, headers, &real, extra).await?;
+    gzip_if(resp, method, gzip).await
+}
+
+/// The text answer gzipped as Python's GZipMiddleware does it (a 200 only)
+async fn gzip_if(resp: Response<Body>, method: &Method, gzip: bool) -> Option<Response<Body>> {
     if !gzip || resp.status() != StatusCode::OK {
         return Some(resp);
     }
@@ -114,4 +119,29 @@ pub async fn serve(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap
     parts.headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
     let body = if *method == Method::HEAD { Body::empty() } else { Body::from(out) };
     Some(Response::from_parts(parts, body))
+}
+
+/// `GET /sw.js` (app/main.py `service_worker`): static/sw.js from the site root, never cached, allowed to control "/"
+pub async fn serve_sw(cfg: &Config, method: &Method, headers: &HeaderMap) -> Option<Response<Body>> {
+    // a conditional or ranged request: Python's FileResponse has its own answer for those
+    if method != Method::GET || [header::RANGE, header::IF_NONE_MATCH, header::IF_MODIFIED_SINCE, header::IF_MATCH, header::IF_UNMODIFIED_SINCE, header::IF_RANGE].iter().any(|h| headers.contains_key(h)) {
+        return None;
+    }
+    let root = tokio::fs::canonicalize(&cfg.static_dir).await.ok()?;
+    let real = tokio::fs::canonicalize(root.join("sw.js")).await.ok()?;
+    if !real.starts_with(&root) {
+        return None;
+    }
+    let extra = files::Extra {
+        content_type: Some("text/javascript".into()),
+        headers: vec![
+            (HeaderName::from_static("service-worker-allowed"), HeaderValue::from_static("/")),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+            (HeaderName::from_static("x-nd-served-by"), HeaderValue::from_static("gateway")),
+        ],
+    };
+    let resp = files::send(method, headers, &real, extra).await?;
+    let size = tokio::fs::metadata(&real).await.ok()?.len();
+    let gzip = size >= 500 && accepted(headers).iter().any(|a| a == "gzip");
+    gzip_if(resp, method, gzip).await
 }

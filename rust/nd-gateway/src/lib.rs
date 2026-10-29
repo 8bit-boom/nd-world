@@ -144,6 +144,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             .body(Body::from(format!("{{\"gateway\":\"ok\",\"upstream\":{up}}}")))
             .unwrap();
     }
+    if path == "/sw.js" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (method, headers) = (req.method().clone(), req.headers().clone());
+        if let Some(resp) = static_files::serve_sw(&app.cfg, &method, &headers).await {
+            return resp;
+        }
+    }
     if path.starts_with("/static/") {
         let (method, uri, headers) = (req.method().clone(), req.uri().clone(), req.headers().clone());
         if let Some(resp) = static_files::serve(&app.cfg, &method, &uri, &headers).await {

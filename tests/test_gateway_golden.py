@@ -6990,3 +6990,23 @@ def test_the_dice_page_form_is_pythons(client, seed):
         assert rows and all(r.user_name and r.breakdown for r in rows)
     finally:
         db.close()
+
+
+def test_service_worker_is_pythons(client, seed):
+    """GET /sw.js: headers and bytes as Python sends them (plain, gzip, conditional); other methods and Range stay Python's."""
+    base = str(client.base_url)
+    d, g = httpx.Client(base_url=DIRECT, timeout=30), httpx.Client(base_url=base, timeout=30)
+    keep = ("content-type", "cache-control", "service-worker-allowed", "etag", "last-modified", "content-encoding", "vary")
+    for hdrs in ({"accept-encoding": "identity"}, {"accept-encoding": "gzip"}, {"accept-encoding": "gzip, br"}, {}):
+        a, b = d.get("/sw.js", headers=hdrs), g.get("/sw.js", headers=hdrs)
+        assert b.headers.get("x-nd-served-by") == "gateway", hdrs
+        assert (a.status_code, a.content) == (b.status_code, b.content), hdrs
+        assert {k: a.headers.get(k) for k in keep} == {k: b.headers.get(k) for k in keep}, hdrs
+    etag = d.get("/sw.js").headers["etag"]
+    a, b = d.get("/sw.js", headers={"if-none-match": etag}), g.get("/sw.js", headers={"if-none-match": etag})
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    for method in ("HEAD", "POST"):
+        a, b = d.request(method, "/sw.js"), g.request(method, "/sw.js")
+        assert (a.status_code, a.content) == (b.status_code, b.content), method
+    a, b = d.get("/sw.js", headers={"range": "bytes=0-9"}), g.get("/sw.js", headers={"range": "bytes=0-9"})
+    assert (a.status_code, a.content) == (b.status_code, b.content)
