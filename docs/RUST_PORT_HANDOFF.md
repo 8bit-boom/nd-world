@@ -140,24 +140,21 @@ still reaches Python - its loads accepts it), and a party edit by a viewer with 
 
 ## Left to port
 
-### Python-only routes (busiest first; full list `docs/census/python_only.txt`)
+### Python-only routes (state at the end of the last batches; the census in `docs/census/python_only.txt` was regenerated from a full gateway suite)
 
-Already ported since the census was taken (ignore in the list): `/pages/sheets*`, `/npc-talk`, `/session-log`, `/worlds/{}/export`,
-`GET /api/media-rename/runs/{}`, `GET /api/sessions/ai/audio-jobs/{}`, `GET /api/ai/imagegen/player/jobs/{}`, `POST /logout`.
+Most of the older list is done (attachments upload family for pictures / text / key-less audio, map tiles and the map viewer, the exports
+`.foundry.json` / `.ndc`, sheet-template forms, share page, join page, live recording downloads, session media chunked upload, ...; see the
+"Done so far" entries in RUST_SWITCH_OFF.md). What the census still shows is mostly refusals of routes that are otherwise ported (the parity
+tests' odd inputs) plus real gaps:
 
-- AI attachments: `POST /api/ai/attachments/upload`, `/upload/chunk`, `/upload/complete`, `/api/ai/attachments/audio-jobs*`
-- Image generation for players: `POST /api/ai/imagegen/player/generate`, `/api/ai/imagegen/jobs/{}`, `/model-templates`, `GET /image-gen`
-- `GET /api/cockpit/player-board`
-- `POST /api/parties/{}/rest/undo`
-- `POST /api/view-prefs/site`, `DELETE /api/view-prefs/<unknown>` (404 answer)
-- Character pages and APIs: `GET /characters/new`, `/characters/ai-new`, `/characters/{}/edit`, `/characters/{}/export.json|.md`,
-  `GET /api/characters/{}/advance`, `/ability-cards`, `/sync`, `/vitals`, `POST /api/characters/{}/roll`,
-  hub tabs `keepsakes`, `places`, `handouts`
-- Sessions: `GET /sessions/{}/npc-candidates`, `/summary.md`, `/transcript.md`, `/api/sessions/{}/live-audio`, `/live-audio/download`
-- Exports / backups: `GET /export/book.zip`, `/export/rules-and-notes.md`, `/admin/backup.zip`, `/kind/<kind>/download.zip`, `/download-selected.zip`
-- Import: `POST /api/import/detect`, `POST /api/import/execute` (large), `POST /worlds/{}/import`
-- Maps: `POST /maps/schematic/new`, `GET /maps/<slug>` (incl. unknown slugs -> 404)
-- `GET /api/ai/world-summary`, `POST /api/ai/entity-context`, `GET /tools/code-assist`, `GET /boards/<unknown>/notes`
+- PDF text extraction for AI attachments (`pypdf`) and `GET /characters/{}/export.pdf` (reportlab): the documented sidecar candidates.
+- Audio attachments / live-transcript checks with a Studio key set (a call to Studio with fallbacks and snapshots).
+- Videos (ffmpeg conversion) in the session media panel and the video library uploads.
+- `GET /api/ai/models`, `GET /api/ai/context-info` (Python's in-memory model catalogue / Ollama options; they move with the settings-override sync).
+- `/api/ai/whisper/*` are probes of routes that do not exist (Python's 404 / 405).
+- Deleting an image generation job (`DELETE /api/ai/imagegen/jobs/{}` and the player one): removes the job's pictures unless starred.
+- Maps whose picture is AVIF / GIF / animated: the pyramid is cut by Python (the image crate has no AVIF decoder here).
+- The mixed-route long tail below.
 
 ### Mixed routes (gateway answers the common case; Python still answers the rest)
 
