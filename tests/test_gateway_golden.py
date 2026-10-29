@@ -7320,3 +7320,36 @@ def test_board_save_and_delete_refusals_are_pythons(client, seed):
             assert (board(sa) is None) == (board(sb) is None), (email, sa)
         if email == seed.gm.email:
             assert via.post("/boards/nope-board/save", content=body, headers={"content-type": "application/json"}).headers.get("x-nd-served-by") == "gateway"
+
+
+def test_join_form_is_pythons(client, seed):
+    """GET /join/<code>: a good link, revoked, expired, used up, unknown; a signed-in browser (a good link is redeemed by Python)."""
+    from datetime import datetime, timedelta
+    from app.database import SessionLocal
+    from app.models import InviteCode
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        db.add_all([InviteCode(code="gwj-good", world_id=w), InviteCode(code="gwj-future", world_id=w, expires_at=datetime.utcnow() + timedelta(days=2), max_uses=5, uses_count=1),
+                    InviteCode(code="gwj-revoked", world_id=w, revoked=True), InviteCode(code="gwj-expired", world_id=w, expires_at=datetime.utcnow() - timedelta(days=1)),
+                    InviteCode(code="gwj-used", world_id=w, max_uses=2, uses_count=2), InviteCode(code="gwj-<&>", world_id=seed.world_b.id)])
+        db.commit()
+    finally:
+        db.close()
+    d, g = httpx.Client(base_url=DIRECT, timeout=30, follow_redirects=False), httpx.Client(base_url=base, timeout=30, follow_redirects=False)
+    served = {"gwj-good", "gwj-future", "gwj-revoked", "gwj-expired", "gwj-used", "nosuchcode", "gwj-%3C%26%3E"}
+    for code in sorted(served) + ["a%2Fb", "x" * 80]:
+        a, b = d.get(f"/join/{code}"), g.get(f"/join/{code}")
+        assert (a.status_code, a.content) == (b.status_code, b.content), code
+        if code in served:
+            assert b.headers.get("x-nd-served-by") == "gateway", code
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(gm, base)
+    gm.follow_redirects = via.follow_redirects = False
+    for code in ("gwj-revoked", "nosuchcode"):
+        a, b = gm.get(f"/join/{code}"), via.get(f"/join/{code}")
+        assert (a.status_code, a.content) == (b.status_code, b.content), code
+        assert b.headers.get("x-nd-served-by") == "gateway", code
+    a, b = gm.get("/join/gwj-good"), via.get("/join/gwj-good")
+    assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location"))

@@ -57,6 +57,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Board save / delete refusals** (edits.rs `editable_board`): Python looks the board up by slug alone and checks edit rights in the board's own
   world, so a GM reaches any world's board; a missing board is its 404, a player without the edit tier its 403. A player outside the board's
   world is still Python's.
+- **Join page** (`GET /join/<code>`, share.rs `join_form`): the sign-up form for a good invite and the reason for a bad one (invalid, revoked,
+  expired, used up). A signed-in browser with a good link is redeemed by Python; the POST (accounts, passwords, 2FA) stays Python's.
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.

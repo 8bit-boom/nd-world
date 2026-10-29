@@ -91,7 +91,7 @@ impl Pages {
         self.routes.iter().any(|r| r == name)
     }
 
-    fn session(&self, headers: &HeaderMap) -> Option<serde_json::Value> {
+    pub(crate) fn session(&self, headers: &HeaderMap) -> Option<serde_json::Value> {
         let secret = self.secret.as_deref()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("");

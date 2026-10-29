@@ -750,6 +750,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/join/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || share::join_form(&pages, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/share/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || share::share_page(&pages, &cfg, &uri, &headers)).await {

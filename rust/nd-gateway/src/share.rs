@@ -131,3 +131,71 @@ pub fn share_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     h.insert("referrer-policy", "no-referrer".parse().ok()?);
     Some(resp)
 }
+
+/// `_invite_error(invite)` for a row: the message, or "" when the link is good (None: stored values Python would compare its own way)
+fn invite_error(invite: Option<&Map<String, Value>>) -> Option<&'static str> {
+    let Some(i) = invite else { return Some("This invite link is invalid.") };
+    if py_truthy_pub(i.get("revoked")) {
+        return Some("This invite link has been revoked.");
+    }
+    let expires = match i.get("expires_at") {
+        Some(Value::Object(o)) => o.get("__dt__").and_then(|v| v.as_str()).map(str::to_string),
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    if let Some(exp) = expires {
+        let stamp = match exp.len() {
+            19 => format!("{exp}.000000"),
+            26 => exp.clone(),
+            _ => return None,
+        };
+        if stamp < crate::orm::now_stamp() {
+            return Some("This invite link has expired.");
+        }
+    } else if !matches!(i.get("expires_at"), None | Some(Value::Null)) {
+        return None;
+    }
+    if let Some(max) = i.get("max_uses").and_then(|v| v.as_i64()) {
+        if col_int(i, "uses_count") >= max {
+            return Some("This invite link has already been used up.");
+        }
+    } else if !matches!(i.get("max_uses"), None | Some(Value::Null)) {
+        return None;
+    }
+    Some("")
+}
+
+/// `GET /join/<code>` (app/routers/auth.py `join_form`): the sign-up form for a good link, the reason for a bad one. A signed-in browser with
+/// a good link is redeemed straight away - Python's.
+pub fn join_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let code = uri.path().strip_prefix("/join/")?;
+    let code = percent_encoding::percent_decode_str(code).decode_utf8().ok()?.to_string();
+    if code.is_empty() || code.contains('/') {
+        return None;
+    }
+    let db = crate::writes::open(cfg)?;
+    let invite: Option<Map<String, Value>> = db.query_row("SELECT * FROM invite_codes WHERE code = ?1 LIMIT 1", [&code], |r| crate::layout::row_map(r)).ok();
+    let error = invite_error(invite.as_ref())?;
+    let signed_in = match pages.session(headers)?.get("user_id") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::Number(n)) => n.as_f64().map_or(true, |f| f != 0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(_) => true,
+    };
+    if signed_in && error.is_empty() {
+        return None;
+    }
+    let world = match &invite {
+        Some(i) => match db.query_row("SELECT * FROM worlds WHERE id = ?1", [i.get("world_id")?.as_i64()?], |r| crate::layout::row_map(r)) {
+            Ok(w) => Value::Object(w),
+            Err(_) => Value::Null,
+        },
+        None => Value::Null,
+    };
+    let mut ctx = Map::new();
+    ctx.insert("code".into(), json!(code));
+    ctx.insert("world".into(), world);
+    ctx.insert("error".into(), if error.is_empty() { Value::Null } else { json!(error) });
+    ctx.insert("form_error".into(), Value::Null);
+    crate::pages::render_with(pages, "auth/join.html", ctx, headers)
+}
