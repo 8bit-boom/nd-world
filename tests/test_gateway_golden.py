@@ -1638,7 +1638,7 @@ def test_strict_map_masked_picture_is_pythons(client, seed):
                 db.commit()
             finally:
                 db.close()
-            pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+            pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
             side = pl if who == "direct" else _via(pl, base)
             r = side.get(f"/maps/schematic/{slug}/bg.webp")
             assert r.status_code == 200 and r.headers["content-type"] == "image/webp", (who, r.status_code)
@@ -4140,7 +4140,7 @@ def test_npc_candidates_are_pythons(client, seed):
     finally:
         db.close()
     d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     # the route is GM-only (Python's player allowlist does not carry it: both sides answer the same 403 page for a player)
     for c, is_gm in ((d, True), (pl, False)):
         for i in ids:
@@ -4269,7 +4269,7 @@ def test_attachment_audio_jobs_are_pythons(client, seed):
         db.close()
     wav = b"RIFF....WAVE junk " * 64
     gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     # the player's world has neither AI surface: Python's 403 on every route, gateway-declined (403s are forwarded)
     for url in ("/api/ai/attachments/audio-jobs", f"/api/ai/attachments/audio-jobs/{ids[0]}"):
         a, b = pl.get(url), _via(pl, base).get(url)
@@ -4350,7 +4350,7 @@ def test_session_md_downloads_are_pythons(client, seed):
     finally:
         db.close()
     d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     pb = _signed_in(seed.player_b.email, PLAYER_PASSWORD, seed.world_b.slug)
     served = 0
     for who, c in (("gm", d), ("player", pl), ("stranger", pb)):
@@ -4405,7 +4405,7 @@ def test_schematic_new_and_ai_new_pages_are_pythons(client, seed):
     finally:
         db.close()
     d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     served = 0
     for who, c in (("gm", d), ("player", pl)):
         served += _same_page(c, _via(c, base), "/maps/schematic/new", who)
@@ -4547,7 +4547,7 @@ def test_export_book_zip_is_pythons(client, seed):
             assert term in index, (term, index[:300])
         assert "2 markers" in index and "exp-pic.png" in index and "anchor" not in index, index[:300]
         # a player refused exactly as Python refuses (the auth gate), and a world-less GM redirected
-        pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
         a2, b2 = pl.get("/export/book.zip"), _via(pl, base).get("/export/book.zip")
         assert (a2.status_code, a2.text) == (b2.status_code, b2.text) and a2.status_code == 403, a2.status_code
     finally:
@@ -4620,7 +4620,7 @@ def test_admin_backup_zip_is_pythons(client, seed):
             else:
                 assert za.read(n) == zb.read(n), n
         # a player refused exactly as Python refuses
-        pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
         a2, b2 = pl.get("/admin/backup.zip"), _via(pl, base).get("/admin/backup.zip")
         assert (a2.status_code, a2.text) == (b2.status_code, b2.text) and a2.status_code == 403, a2.status_code
     finally:
@@ -4670,7 +4670,7 @@ def test_export_rules_and_notes_is_pythons(client, seed):
     assert "## Entity notes\n\n### Blade (Item)\n\nSharp.\n\n  Kept oiled.\n" in t, t
     assert t.endswith("Kept oiled.\n"), t[-60:]  # the final rstrip takes the last note's trailing spaces
     # a player refused exactly as Python refuses
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     a2, b2 = pl.get("/export/rules-and-notes.md"), _via(pl, base).get("/export/rules-and-notes.md")
     assert (a2.status_code, a2.text) == (b2.status_code, b2.text) and a2.status_code == 403, a2.status_code
 def test_kind_download_zips_are_pythons(client, seed):
@@ -4727,7 +4727,7 @@ def test_kind_download_zips_are_pythons(client, seed):
         za2 = zipfile.ZipFile(io.BytesIO(d.get(f"/kind/item/download-selected.zip?id={ids['Blade <sharp>']}").content))
         assert sorted(za2.namelist()) == [f"Blade sharp-{ids['Blade <sharp>']}.md"], za2.namelist()
         # a player in a world without the download toggle: refused exactly as Python refuses
-        pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
         a, b = pl.get("/kind/item/download.zip"), _via(pl, base).get("/kind/item/download.zip")
         assert (a.status_code, a.text) == (b.status_code, b.text) and a.status_code == 403
         # with the toggle on: the visible entities only, [gmonly] stripped
@@ -4824,7 +4824,7 @@ def test_import_detect_is_pythons(client, seed):
     assert (a.status_code, a.json()) == (b.status_code, b.json()) and a.json()["kind"] == "invalid"
     # a player without import rights: refused exactly as Python refuses
     from .conftest import PLAYER_PASSWORD
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     a2, b2 = pl.post("/api/import/detect", json=payloads[0]), _via(pl, base).post("/api/import/detect", json=payloads[0])
     assert (a2.status_code, a2.text) == (b2.status_code, b2.text), (a2.status_code, b2.status_code)
 def test_import_execute_is_pythons(client, seed):
@@ -4934,7 +4934,7 @@ def test_import_execute_is_pythons(client, seed):
     row = _newest("entity_templates")
     assert row["name"].startswith("Tpl ") and json.loads(row["fields_json"]) == [{"id": "a", "label": "A", "type": "text"}], row
     # a player without import rights: refused exactly as Python refuses
-    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
     a2 = pl.post("/api/import/execute", json={"json_text": json.dumps({"rules_md": "# x"})})
     b2 = _via(pl, base).post("/api/import/execute", json={"json_text": json.dumps({"rules_md": "# x"})})
     assert (a2.status_code, a2.text) == (b2.status_code, b2.text), (a2.status_code, b2.status_code)
@@ -5089,7 +5089,7 @@ def test_import_execute_more_kinds_are_pythons(client, seed):
             else:
                 assert r1[0] == r2[0] == 400 and r1[1]["detail"] == r2[1]["detail"] and expect in r1[1]["detail"], (payload, r1, r2)
         # a player without import rights, one more time on a write branch
-        pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
         a2 = pl.post("/api/import/execute", json={"json_text": json.dumps(first), "kind": "map_overlay", "params": {"map_slug": slug}})
         b2 = _via(pl, base).post("/api/import/execute", json={"json_text": json.dumps(first), "kind": "map_overlay", "params": {"map_slug": slug}})
         assert (a2.status_code, a2.text) == (b2.status_code, b2.text) and a2.status_code == 403, a2.status_code
@@ -6423,3 +6423,72 @@ def test_recap_audio_upload_is_pythons(client, seed):
     finally:
         db.close()
     assert served >= 2, served
+
+
+from .conftest import PLAYER_PASSWORD as _PP  # the module may not import it at the top
+
+def test_entity_context_is_pythons(client, seed):
+    """POST /api/ai/entity-context from the gateway: the ask-ai gate (403 with both toggles off),
+    a hidden entity a 404 for a player (shared or GM-ok), an empty query an empty context, and the
+    per-question excerpt - gmonly text stripped from a player's body, kept for the GM. The excerpt's
+    content is the ported best_matching_excerpt's, compared against Python's answer."""
+    base = str(client.base_url)
+    w = seed.world_a.id
+    from app.database import SessionLocal
+    from app.models import Entity, World
+    db = SessionLocal()
+    try:
+        wa = db.query(World).filter(World.id == w).first()
+        wa.players_can_ask_ai = True
+        db.add(Entity(world_id=w, kind="npc", name="Ctx NPC", visible_to_players=True,
+                      body="Front matter.\n\n## Combat\n\nThe creature fights with claws and [gmonly]a hidden weakness[/gmonly] fire.\n\n## Lore\n\nIt came from the sea long ago.\n"))
+        db.commit()
+    finally:
+        db.close()
+    npc_id = db.query(__import__("app.models", fromlist=["Entity"]).Entity).filter_by(name="Ctx NPC").first().id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, _PP, seed.world_a.slug)
+    served = 0
+    # the excerpt compared whole (the ported locator must agree byte for byte)
+    def run_all(query):
+        out = []
+        for side in (d, pl):
+            for via in (False, True):
+                c = _via(side, base) if via else side
+                r = c.post("/api/ai/entity-context", json={"entity_id": npc_id, "query": query})
+                out.append((r.status_code, r.json().get("context"), r.headers.get("x-nd-served-by")))
+        # GM and player differ by the gmonly text, but each side's pair must agree
+        assert out[0][:2] == out[1][:2], (query, out[0], out[1])
+        assert out[2][:2] == out[3][:2], (query, out[2], out[3])
+        return out
+    combat = run_all("What does it do in combat?")
+    served += combat[1][2] == "gateway" and combat[3][2] == "gateway"
+    assert "hidden weakness" not in combat[3][1], combat[3][1][:160]
+    assert "hidden weakness" in combat[1][1], combat[1][1][:160]
+    # an empty query: an empty context
+    empty = run_all("")
+    served += empty[1][2] == "gateway" and empty[3][2] == "gateway"
+    assert empty[0][1] == "" and empty[3][1] == "", (empty[0][1][:80], empty[3][1][:80])
+    # a hidden entity is a 404 for the player, fine for the GM; unknown 404s
+    db2 = SessionLocal()
+    hid = db2.query(__import__("app.models", fromlist=["Entity"]).Entity).filter_by(name="Ctx NPC").first()
+    hid.visible_to_players = False
+    db2.commit()
+    db2.close()
+    for query in ("combat",):
+        for who in (d, pl):
+            a = who.post("/api/ai/entity-context", json={"entity_id": npc_id, "query": query})
+            b = _via(who, base).post("/api/ai/entity-context", json={"entity_id": npc_id, "query": query})
+            assert a.status_code == b.status_code, (who, a.status_code, b.status_code)
+            if a.status_code == 200:
+                assert a.json() == b.json()
+            else:
+                assert a.json() == b.json() == {"detail": "Not Found"}, (a.text, b.text)
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    db2 = SessionLocal()
+    x = db2.query(__import__("app.models", fromlist=["Entity"]).Entity).filter_by(name="Ctx NPC").first()
+    if x:
+        db2.delete(x)
+    db2.commit()
+    db2.close()
+    assert served >= 4, served

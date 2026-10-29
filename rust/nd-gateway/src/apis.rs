@@ -625,7 +625,7 @@ fn entity_preview(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Opti
 }
 
 /// `_entity_view_gate`: the entity and its world when the viewer may see it, else Python's 404 (Err); None when Python reads it its own way
-fn entity_gate(db: &rusqlite::Connection, p: &crate::layout::PageCtx, id: i64) -> Option<Result<(Map<String, Value>, Map<String, Value>), Response<Body>>> {
+pub(crate) fn entity_gate(db: &rusqlite::Connection, p: &crate::layout::PageCtx, id: i64) -> Option<Result<(Map<String, Value>, Map<String, Value>), Response<Body>>> {
     let Some(e) = rows_of(db, "SELECT * FROM entities WHERE id = ?1", &[&id])?.into_iter().next() else { return Some(Err(crate::idpages::refusal(404))) };
     let wid = e.get("world_id").and_then(|v| v.as_i64())?;
     let Some(w) = rows_of(db, "SELECT * FROM worlds WHERE id = ?1", &[&wid])?.into_iter().next() else { return Some(Err(crate::idpages::refusal(404))) };

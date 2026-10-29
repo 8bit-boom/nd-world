@@ -4799,3 +4799,53 @@ fn entity_schema(kinds: &[String]) -> Value {
         "summary": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "string"}, "folder": {"type": "string"},
         "visible_to_players": {"type": "boolean"}}, "required": ["kind", "name"]})
 }
+
+/// `POST /api/ai/entity-context` (app/routers/ai.py `ai_entity_context`): the per-question relevant
+/// excerpt of ONE entity's own body, for the detail page's Ask AI panel. The ask-ai gate, then the
+/// same entity view gate the page itself has (a player gets 404 for anything invisible), the body
+/// [gmonly]-stripped for a non-GM, and `best_matching_excerpt` over it (4000 chars).
+pub async fn entity_context(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let out = tokio::task::spawn_blocking(move || entity_context_plan(&cfg, &uri, &headers, &body)).await.ok()??;
+    match out {
+        Ok(v) => crate::edits::json_response(&v),
+        Err(r) => Some(r),
+    }
+}
+
+fn entity_context_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Result<Value, Response<Body>>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    eprintln!("EC: layout is_gm={} world={:?}", p.is_gm, p.world.as_ref().map(|w| w.get("slug").cloned()));
+    if !p.is_gm {
+        let w = p.world.as_ref()?;
+        let on = |k: &str| crate::edits::py_truthy_pub(w.get(k));
+        if !(on("players_can_ask_ai") || on("players_can_use_ai_chat")) {
+            return None; // the 403 is Python's
+        }
+    }
+    let Value::Object(b) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let id = b.get("entity_id").and_then(|v| v.as_i64())?;
+    let (gate, _w) = match crate::apis::entity_gate(&db, &p, id)? {
+        Ok(x) => x,
+        Err(r) => return Some(Err(r)),
+    };
+    let query = match b.get("query") {
+        Some(Value::String(t)) => crate::edits::py_strip_pub(t),
+        _ => String::new(),
+    };
+    if query.is_empty() {
+        return Some(Ok(json!({"context": ""})));
+    }
+    let raw = if p.is_gm {
+        gate.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    } else {
+        let text = gate.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        nd_perm::gmonly::strip_gm_only(&text, Some(p.user_id), nd_render::now_minute())?
+    };
+    if raw.is_empty() {
+        return Some(Ok(json!({"context": ""})));
+    }
+    let excerpt = crate::retrieval::best_matching_excerpt(&raw, &query, 4000)?;
+    Some(Ok(json!({"context": excerpt})))
+}

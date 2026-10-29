@@ -232,7 +232,7 @@ fn select_sections_capped(full: &[Section], words: &[String], budget: usize, max
 }
 
 /// `best_matching_excerpt(body, query, budget, 3)`
-fn best_matching_excerpt(body: &str, query: &str, budget: usize) -> Option<String> {
+pub(crate) fn best_matching_excerpt(body: &str, query: &str, budget: usize) -> Option<String> {
     let body = py_strip(body);
     if body.is_empty() || clen(body) <= budget {
         return Some(body.to_string());
