@@ -7723,3 +7723,62 @@ def test_quest_edit_delete_status_refusals_are_pythons(client, seed):
                 assert (snap(ids[ka]) is None) == (snap(ids[kb]) is None), (email, ka, path)
                 if email == seed.gm.email and ka in ("far", "missing"):
                     assert rb.headers.get("x-nd-served-by") == "gateway", (ka, path)
+
+
+def test_ai_attachment_upload_family_is_pythons(client, seed):
+    """POST /api/ai/attachments/upload (+ /chunk, /complete): a picture, text with CRLF / bad bytes, markdown, audio (no Studio key), a PDF and a bad type
+    (Python's), and who may (a GM; a player only when the world allows AI)."""
+    import re
+    import uuid
+    from app.database import SessionLocal
+    from app.models import World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    files = {"pic.png": b"\x89PNG-fake", "notes.txt": b"line one\r\nline two\rthree \xff\xfe end\n", "sheet.md": "# Tést\n".encode(), "memo.mp3": b"ID3" + bytes(64),
+             "doc.pdf": b"%PDF-1.4 nope", "bad.exe": b"MZ", "empty.txt": b""}
+
+    def norm(r):
+        s = r.text if r.status_code >= 400 else json.dumps(r.json(), sort_keys=True)
+        return r.status_code, re.sub(r"/uploads/ai_attachments/[^\"]+", "/uploads/ai_attachments/F", s)
+
+    def run(who_a, who_b, tag):
+        for name, data in files.items():
+            ra = who_a.post("/api/ai/attachments/upload", files={"file": (name, data, "application/octet-stream")})
+            rb = who_b.post("/api/ai/attachments/upload", files={"file": (name, data, "application/octet-stream")})
+            assert norm(ra) == norm(rb), (tag, name, ra.text[:200], rb.text[:200])
+            if ra.status_code == 200 and name != "doc.pdf" and tag == "gm":
+                assert rb.headers.get("x-nd-served-by") == "gateway", (tag, name)
+        for name in ("memo.mp3", "notes.txt"):
+            outs = []
+            for who in (who_a, who_b):
+                uid = uuid.uuid4().hex
+                data = files[name] * 20
+                half = len(data) // 2
+                for i, part in enumerate((data[:half], data[half:])):
+                    r = who.post("/api/ai/attachments/upload/chunk", data={"upload_id": uid, "chunk_index": str(i)}, files={"file": (name, part, "application/octet-stream")})
+                    assert r.status_code in (200, 403), r.text
+                r = who.post("/api/ai/attachments/upload/complete", data={"upload_id": uid, "filename": name, "total_chunks": "2"})
+                outs.append(norm(r))
+            assert outs[0] == outs[1], (tag, name, outs)
+        r = who_b.post("/api/ai/attachments/upload", data={"x": "1"})
+        r2 = who_a.post("/api/ai/attachments/upload", data={"x": "1"})
+        assert (r.status_code, r.text) == (r2.status_code, r2.text)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    run(gm, _via(gm, base), "gm")
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    run(pl, _via(pl, base), "player-closed")
+    db = SessionLocal()
+    try:
+        db.get(World, seed.world_a.id).players_can_ask_ai = True
+        db.commit()
+    finally:
+        db.close()
+    try:
+        run(pl, _via(pl, base), "player-open")
+    finally:
+        db = SessionLocal()
+        try:
+            db.get(World, seed.world_a.id).players_can_ask_ai = False
+            db.commit()
+        finally:
+            db.close()

@@ -178,6 +178,7 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 /// (pattern with `{}` for an integer id, handler)
 const ROUTES: &[(&str, Handler)] = &[
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
+    ("/api/ai/attachments/upload/complete", attach_complete),
     ("/maps/schematic/new", schematic_new),
     ("/settings/resources", settings_resources_save),
     ("/settings", settings_save),
@@ -401,6 +402,8 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/import", world_import),
     ("/api/ai/attachments/audio-jobs", attach_audio_job_create),
     ("/api/ai/attachments/audio-jobs/chunk", attach_audio_job_chunk),
+    ("/api/ai/attachments/upload", attach_upload),
+    ("/api/ai/attachments/upload/chunk", attach_chunk),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -13881,6 +13884,98 @@ fn attach_job_dict(j: &Map<String, Value>) -> Value {
         "created_at": crate::edits::py_isoformat_pub(j.get("created_at")),
         "updated_at": crate::edits::py_isoformat_pub(j.get("updated_at")),
     })
+}
+
+const ATTACH_IMAGE_EXTS: [&str; 5] = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+const ATTACH_DOC_EXTS: [&str; 4] = [".txt", ".md", ".markdown", ".pdf"];
+
+/// `_attachment_kind(ext)`
+fn attachment_kind(ext: &str) -> Option<&'static str> {
+    if ATTACH_IMAGE_EXTS.contains(&ext) { Some("image") } else if ATTACH_DOC_EXTS.contains(&ext) { Some("document") } else if ATTACH_AUDIO_EXTS.contains(&ext) { Some("audio") } else { None }
+}
+
+/// `_effective_ai_attachment_bytes(db, kind)`: audio the saved/env audio cap, anything else MAX_AI_ATTACHMENT_BYTES (25 MB)
+fn attach_cap(c: &Ctx, kind: &str) -> Option<i64> {
+    if kind == "audio" { attach_audio_cap(c) } else { env_bytes("MAX_AI_ATTACHMENT_BYTES", 25 * 1024 * 1024) }
+}
+
+/// Whether a Studio API key is set (Settings, else the environment): with one, audio is transcribed by Studio - Python's
+fn studio_key_set(c: &Ctx) -> bool {
+    let saved: Option<String> = c.db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten();
+    saved.filter(|k| !k.is_empty()).is_some() || std::env::var("UNSLOTH_API_KEY").map_or(false, |k| !k.is_empty())
+}
+
+/// `_finish_attachment_upload`: what the picker gets back. A PDF (pypdf) and an audio file with a Studio key (transcription) are Python's.
+fn attach_finish(c: &Ctx, dest: &std::path::Path, ext: &str, kind: &str, original: &str) -> Option<Response<Body>> {
+    let text = match kind {
+        "document" => {
+            if ext == ".pdf" {
+                return None;
+            }
+            // read_text(encoding="utf-8", errors="replace") in text mode: newlines translated to \n
+            String::from_utf8_lossy(&std::fs::read(dest).ok()?).replace("\r\n", "\n").replace('\r', "\n")
+        }
+        "audio" => {
+            if studio_key_set(c) {
+                return None;
+            }
+            String::new()
+        }
+        _ => String::new(),
+    };
+    let url = format!("/uploads/ai_attachments/{}", dest.file_name()?.to_string_lossy());
+    json_response(&json!({"kind": kind, "url": url, "name": original, "text": text}))
+}
+
+/// `POST /api/ai/attachments/upload`
+fn attach_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    require_ask_ai(c)?;
+    let (name, len) = { let part = one_file(c, "file")?; (part.filename.clone(), part.len as i64) };
+    if name.is_empty() {
+        return None; // the 400 "No file uploaded": Python's
+    }
+    let ext = py_suffix_lower(&name)?;
+    let kind = attachment_kind(&ext)?; // the 400 with the allowed list: Python's
+    if len > attach_cap(c, kind)? {
+        return None;
+    }
+    let target = uploads_root(c)?.join("ai_attachments");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(unique_upload_filename(&name, &ext)?);
+    c.created.push(dest.clone());
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    attach_finish(c, &dest, &ext, kind, &name)
+}
+
+/// `POST /api/ai/attachments/upload/chunk`
+fn attach_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    require_ask_ai(c)?;
+    let cap = attach_audio_cap(c)?;
+    save_chunk_in(c, "ai_attachments", cap)
+}
+
+/// `POST /api/ai/attachments/upload/complete`
+fn attach_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    require_ask_ai(c)?;
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let name = f.get("filename").filter(|v| !v.is_empty())?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let ext = py_suffix_lower(&name)?;
+    let kind = attachment_kind(&ext)?;
+    let (dir, parts, size) = chunk_parts(c, "ai_attachments", &id, total)?;
+    if size as i64 > attach_cap(c, kind)? {
+        return None;
+    }
+    let target = uploads_root(c)?.join("ai_attachments");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(unique_upload_filename(&name, &ext)?);
+    c.created.push(dest.clone());
+    reassemble(&parts, &dest)?;
+    let answer = attach_finish(c, &dest, &ext, kind, &name)?;
+    c.removals.push(dir);
+    Some(answer)
 }
 
 /// `POST /api/ai/attachments/audio-jobs` (app/routers/ai.py `ai_attachment_audio_job_create`): store the recording and
