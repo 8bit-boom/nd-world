@@ -18,6 +18,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/me" => me(&cfg, uri, headers),
         "/api/view-prefs" => view_prefs(&cfg, uri, headers),
         "/api/dice/history" => dice_history(&cfg, uri, headers),
+        path if saved_views_section(path).is_some() => saved_views_list(&cfg, uri, headers, saved_views_section(path)?),
         "/api/display/state" => display_state(&cfg, uri, headers),
         "/rules/download.md" => rules_download(&cfg, uri, headers),
         path if id_between(path, "/pages/", "/download").is_some() => pages_download(&cfg, uri, headers, id_between(path, "/pages/", "/download")?),
@@ -74,7 +75,7 @@ pub fn is_get(path: &str) -> bool {
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
-        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some()
+        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -554,6 +555,26 @@ fn dice_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response
             "created_at": iso_of(r.get("created_at")).map(|t| format!("{t}Z"))}));
     }
     crate::edits::json_response(&json!({"rolls": rolls}))
+}
+
+/// the section of `/api/saved-views/<section>` (lower-case letters and underscores, as the access rule reads it)
+fn saved_views_section(path: &str) -> Option<&str> {
+    let s = path.strip_prefix("/api/saved-views/")?;
+    (!s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')).then_some(s)
+}
+
+/// `saved_views_list`: the person's named views of one page, by name
+fn saved_views_list(cfg: &Config, uri: &Uri, headers: &HeaderMap, section: &str) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if nd_render::app::data().get("view_sections")?.get(section).is_none() {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Unknown section"));
+    }
+    let mut views = vec![];
+    for r in rows_of(&db, "SELECT id, name, prefs_json FROM saved_views WHERE user_id = ?1 AND section = ?2 ORDER BY name", &[&p.user_id, &section])? {
+        let state: Value = serde_json::from_str(r.get("prefs_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}")).ok()?;
+        views.push(json!({"id": r.get("id"), "name": r.get("name"), "state": nd_render::app::clean(section, &state)?}));
+    }
+    crate::edits::json_response(&json!({"views": views}))
 }
 
 /// `display_state`: the second screen's stage (shared_state "stage:<world>"), GM only

@@ -7153,3 +7153,22 @@ def test_character_ndc_export_is_pythons(client, seed):
                     assert b.headers.get("x-nd-served-by") == "gateway", (email, key)
     finally:
         (up / "gw-ndc-portrait.png").unlink(missing_ok=True)
+
+
+def test_saved_views_list_is_pythons(client, seed):
+    """GET /api/saved-views/<section>: none, several (by name), a section that is unknown, and anonymous."""
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    for i, name in enumerate(("zeta", "Alpha", "mid  dle")):
+        assert d.post("/api/saved-views/images", json={"name": name, "state": {"mode": "list", "size": 3 - i}}).status_code == 200
+    for sec in ("images", "audio", "nosuch", "x" * 40, "Bad"):
+        a, b = d.get(f"/api/saved-views/{sec}"), via.get(f"/api/saved-views/{sec}")
+        assert (a.status_code, a.content) == (b.status_code, b.content), sec
+        if sec in ("images", "audio", "nosuch"):
+            assert b.headers.get("x-nd-served-by") == "gateway", sec
+    anon = httpx.Client(base_url=base, timeout=30, follow_redirects=False)
+    r, r2 = httpx.get(DIRECT + "/api/saved-views/images", follow_redirects=False), anon.get("/api/saved-views/images")
+    assert (r.status_code, r.content) == (r2.status_code, r2.content)
+    for v in d.get("/api/saved-views/images").json()["views"]:
+        d.delete(f"/api/saved-views/images/{v['id']}")
