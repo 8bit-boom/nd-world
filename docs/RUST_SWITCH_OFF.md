@@ -80,6 +80,8 @@ them after each batch; the phase is done when both are empty and the steps below
   and the two "already owns" texts (limit of one with the character's name, a higher limit with the count).
 - **Table edit / delete refusals** (edits.rs `editable_table`): a missing table is 404, a built-in one's delete the 403 "Cannot delete built-in
   tables", a table the viewer may not edit 403; a GM reaches any world's table (Python judges the table's own world).
+- **Entity note toggle / edit / delete** (edits.rs `entity_note`): Python looks at the note and its entity id only (no world), so the gateway does too:
+  a note of another entity or a missing one is the 404; delete always redirects.
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.

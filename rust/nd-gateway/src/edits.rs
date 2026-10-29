@@ -1539,21 +1539,25 @@ fn note_add(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 /// The note, when it belongs to the entity (of the active world)
-fn entity_note(c: &Ctx, entity_id: i64, note_id: i64) -> Option<Map<String, Value>> {
-    world_entity(c, entity_id)?;
-    let n = row(&c.db, "SELECT * FROM entity_notes WHERE id = ?1", note_id)?;
-    (n.get("entity_id")?.as_i64() == Some(entity_id)).then_some(n)
+/// The note by id when it belongs to the entity in the path (Python looks at no world here): Ok(note) or Err(its 404)
+fn entity_note(c: &Ctx, entity_id: i64, note_id: i64) -> Result<Map<String, Value>, Response<Body>> {
+    match row(&c.db, "SELECT * FROM entity_notes WHERE id = ?1", note_id) {
+        Some(n) if n.get("entity_id").and_then(|v| v.as_i64()) == Some(entity_id) => Ok(n),
+        _ => Err(crate::idpages::refusal(404)),
+    }
 }
 
 fn note_toggle(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
-    let n = entity_note(c, ids[0], ids[1])?;
-    let shown = n.get("visible_to_players").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    let n = match entity_note(c, ids[0], ids[1]) {
+        Ok(n) => n,
+        Err(r) => return Some(r),
+    };
+    let shown = py_truthy(n.get("visible_to_players"));
     orm::update(&c.db, "entity_notes", ids[1], &[("visible_to_players", Sql::Integer(!shown as i64))])?;
     redirect(&format!("/entity/{}", ids[0]))
 }
 
 fn note_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
-    world_entity(c, ids[0])?;
     if let Some(n) = row(&c.db, "SELECT * FROM entity_notes WHERE id = ?1", ids[1]) {
         if n.get("entity_id")?.as_i64() == Some(ids[0]) {
             c.db.execute("DELETE FROM entity_notes WHERE id = ?1", [ids[1]]).ok()?;
@@ -1564,8 +1568,10 @@ fn note_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn note_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let f = c.form()?;
-    entity_note(c, ids[0], ids[1])?;
     let content = strip(&required(&f, "content")?);
+    if let Err(r) = entity_note(c, ids[0], ids[1]) {
+        return Some(r);
+    }
     let mut set: Vec<(&str, Sql)> = vec![];
     if !content.is_empty() {
         set.push(("content", s(&content)));

@@ -7623,3 +7623,48 @@ def test_table_edit_and_delete_refusals_are_pythons(client, seed):
                         assert snap(ids[ka])[1:] == snap(ids[kb])[1:], (email, ka, tail)
                 if email == seed.gm.email and ka in ("missing", "far"):
                     assert rb.headers.get("x-nd-served-by") == "gateway", (ka, tail)
+
+
+def test_entity_note_routes_are_pythons(client, seed):
+    """POST /entity/<e>/notes/<n>/toggle | delete | edit: a note of that entity, of another entity, a missing one, and an entity of another world."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        e1 = Entity(world_id=seed.world_a.id, kind="note", name="gw-note-e1")
+        e2 = Entity(world_id=seed.world_b.id, kind="note", name="gw-note-e2")
+        db.add_all([e1, e2])
+        db.flush()
+        mk = lambda e, vis=False: EntityNote(entity_id=e.id, content="c", visible_to_players=vis)
+        notes = {k: mk(e) for k, e in (("a1", e1), ("a2", e1), ("a3", e1), ("b1", e2), ("b2", e2), ("b3", e2))}
+        db.add_all(notes.values())
+        db.commit()
+        ids = {k: n.id for k, n in notes.items()}
+        eid1, eid2 = e1.id, e2.id
+    finally:
+        db.close()
+
+    def state(i):
+        db = SessionLocal()
+        try:
+            n = db.get(EntityNote, i)
+            return None if n is None else (n.content, bool(n.visible_to_players))
+        finally:
+            db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    d.follow_redirects = False
+    via = _via(d, base)
+    via.follow_redirects = False
+    # (python note, gateway note, entity) - each pair is two equal notes
+    for (na, nb), eid in ((("a1", "a2"), eid1), (("b1", "b2"), eid2)):
+        for tail, data in (("toggle", None), ("edit", {"content": " new ", "visible": "1"}), ("edit", {"content": "  "}), ("delete", None)):
+            ra, rb = d.post(f"/entity/{eid}/notes/{ids[na]}/{tail}", data=data), via.post(f"/entity/{eid}/notes/{ids[nb]}/{tail}", data=data)
+            assert (ra.status_code, ra.headers.get("location"), ra.content if ra.status_code >= 400 else b"") == (rb.status_code, rb.headers.get("location"), rb.content if rb.status_code >= 400 else b""), (na, tail)
+            assert state(ids[na]) == state(ids[nb]), (na, tail)
+            assert rb.headers.get("x-nd-served-by") == "gateway", (na, tail)
+    for tail, data in (("toggle", None), ("edit", {"content": "x"}), ("delete", None)):
+        for eid, nid in ((eid1, ids["b3"]), (eid1, 999999), (eid2, ids["a3"])):
+            ra, rb = d.post(f"/entity/{eid}/notes/{nid}/{tail}", data=data), via.post(f"/entity/{eid}/notes/{nid}/{tail}", data=data)
+            assert (ra.status_code, ra.headers.get("location"), ra.content if ra.status_code >= 400 else b"") == (rb.status_code, rb.headers.get("location"), rb.content if rb.status_code >= 400 else b""), (eid, nid, tail)
+            assert rb.headers.get("x-nd-served-by") == "gateway", (eid, nid, tail)
