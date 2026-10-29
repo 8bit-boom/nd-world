@@ -26,6 +26,12 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/imagegen/player/jobs" => player_image_jobs_list(&cfg, uri, headers),
         path if id_between(path, "/api/sessions/", "/live-transcript/check").is_some() => live_transcript_check(&cfg, uri, headers, id_between(path, "/api/sessions/", "/live-transcript/check")?),
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
+        "/api/quests/board" => quests_board(&cfg, uri, headers),
+        "/api/combat/recent" => combat_recent(&cfg, uri, headers),
+        "/api/audio/clips" => audio_clips(&cfg, uri, headers),
+        "/api/world-players" => world_players(&cfg, uri, headers),
+        "/api/tables/options" => tables_options(&cfg, uri, headers),
+        "/api/video-jobs" => video_jobs_list(&cfg, uri, headers),
         path if trailing_id(path, "/api/ai/chat/jobs/").is_some() => chat_job_status(&cfg, uri, headers, trailing_id(path, "/api/ai/chat/jobs/")?),
         "/api/ai/imagegen/model-templates" => imagegen_model_templates(&cfg, uri, headers),
         path if id_between(path, "/api/ai/imagegen/jobs/", "").is_some() => imagegen_job_status_gm(&cfg, uri, headers, id_between(path, "/api/ai/imagegen/jobs/", "")?),
@@ -80,7 +86,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2587,6 +2593,117 @@ fn live_transcript_check(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) 
     }
     crate::edits::json_response(&json!({"ok": false, "backend": "unsloth", "model": crate::stt::stt_model(cfg),
         "message": "Speech-to-text runs on Unsloth Studio, but no Studio API key is set (Settings \u{2192} System)."}))
+}
+
+fn world_id_of(p: &crate::layout::PageCtx) -> Option<i64> {
+    p.world.as_ref()?.get("id")?.as_i64()
+}
+
+/// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
+fn quests_board(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world")) };
+    let names: Map<String, Value> = rows_of(&db, "SELECT id, name FROM parties WHERE world_id = ?1", &[&wid])?.into_iter()
+        .filter_map(|r| Some((r.get("id")?.as_i64()?.to_string(), r.get("name").cloned().unwrap_or(Value::Null)))).collect();
+    let mut out = vec![];
+    for q in rows_of(&db, "SELECT * FROM quests WHERE world_id = ?1 AND status = 'active' AND parent_id IS NULL ORDER BY category, title LIMIT 12", &[&wid])? {
+        let party = q.get("assigned_party_id").and_then(|v| v.as_i64());
+        out.push(json!({"id": q.get("id"), "title": q.get("title"),
+            "category": if crate::edits::py_truthy_pub(q.get("category")) { q.get("category").cloned().unwrap_or(Value::Null) } else { json!("main") },
+            "summary": if crate::edits::py_truthy_pub(q.get("summary")) { q.get("summary").cloned().unwrap_or(Value::Null) } else { json!("") },
+            "party_id": q.get("assigned_party_id"), "party": party.and_then(|id| names.get(&id.to_string()).cloned()).unwrap_or(Value::Null)}));
+    }
+    crate::edits::json_response(&json!({"quests": out}))
+}
+
+/// `GET /api/combat/recent`: the ten newest combats for the cockpit picker (400 without a world)
+fn combat_recent(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(wid) = world_id_of(&p) else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world")) };
+    let mut out = vec![];
+    for cs in rows_of(&db, "SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS NOT 1 ORDER BY (finished_at IS NOT NULL), created_at DESC, id DESC LIMIT 10", &[&wid])? {
+        let round = match cs.get("round_num") { v if crate::edits::py_truthy_pub(v) => v.cloned().unwrap_or(json!(1)), _ => json!(1) };
+        out.push(json!({"id": cs.get("id"), "name": cs.get("name"), "round_num": round, "running": cs.get("finished_at").map_or(true, |v| v.is_null())}));
+    }
+    crate::edits::json_response(&json!({"combats": out}))
+}
+
+/// `GET /api/audio/clips`: every clip of the active world by name (a GM or assistant; 404 without a world)
+fn audio_clips(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let mut out = vec![];
+    for c in rows_of(&db, "SELECT * FROM audio_clips WHERE world_id = ?1 ORDER BY name", &[&wid])? {
+        out.push(json!({"id": c.get("id"), "name": c.get("name"), "description": if crate::edits::py_truthy_pub(c.get("description")) { c.get("description").cloned().unwrap_or(Value::Null) } else { json!("") }, "album_id": c.get("album_id")}));
+    }
+    crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/world-players`: the non-GM members of the active world (GM; 404 without a world)
+fn world_players(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let mut out = vec![];
+    for u in rows_of(&db, "SELECT users.id, users.display_name, users.is_gm FROM users JOIN world_memberships ON world_memberships.user_id = users.id WHERE world_memberships.world_id = ?1 ORDER BY users.display_name", &[&wid])? {
+        if !crate::edits::py_truthy_pub(u.get("is_gm")) {
+            out.push(json!({"id": u.get("id"), "name": u.get("display_name")}));
+        }
+    }
+    crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/tables/options`: the world's (and the global) roll tables with entry counts (400 without a world)
+fn tables_options(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(wid) = world_id_of(&p) else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world")) };
+    let mut out = vec![];
+    for t in rows_of(&db, "SELECT * FROM random_tables WHERE world_id = ?1 OR world_id IS NULL ORDER BY name LIMIT 60", &[&wid])? {
+        let raw = t.get("entries_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+        let n = match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Array(a)) => a.len(),
+            Ok(Value::Object(o)) => o.len(),
+            Ok(Value::String(s)) => s.chars().count(),
+            Ok(_) => return None,
+            Err(_) if raw.contains("NaN") || raw.contains("Infinity") => return None,
+            Err(_) => 0,
+        };
+        out.push(json!({"id": t.get("id"), "name": t.get("name"), "entries": n}));
+    }
+    crate::edits::json_response(&json!({"tables": out}))
+}
+
+/// `GET /api/video-jobs`: the world's twenty newest video jobs (a GM or assistant; 404 without a world)
+fn video_jobs_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !(p.is_gm || p.role.as_deref() == Some("assistant")) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let mut out = vec![];
+    for j in rows_of(&db, "SELECT * FROM video_jobs WHERE world_id = ?1 ORDER BY id DESC LIMIT 20", &[&wid])? {
+        let txt = |k: &str| if crate::edits::py_truthy_pub(j.get(k)) { j.get(k).cloned().unwrap_or(Value::Null) } else { json!("") };
+        let mut d = json!({"id": j.get("id"), "prompt": txt("prompt"),
+            "status": if crate::edits::py_truthy_pub(j.get("status")) { j.get("status").cloned().unwrap_or(Value::Null) } else { json!("pending") },
+            "error": txt("error"), "studio_video_id": txt("studio_video_id"), "clip_id": j.get("clip_id"), "created_at": dt_iso(&j, "created_at")?});
+        if let Some(cid) = j.get("clip_id").and_then(|v| v.as_i64()).filter(|c| *c != 0) {
+            if let Some(clip) = rows_of(&db, "SELECT file_url, name FROM video_clips WHERE id = ?1", &[&cid])?.into_iter().next() {
+                let o = d.as_object_mut()?;
+                o.insert("clip_url".into(), clip.get("file_url").cloned().unwrap_or(Value::Null));
+                o.insert("clip_name".into(), clip.get("name").cloned().unwrap_or(Value::Null));
+            }
+        }
+        out.push(d);
+    }
+    crate::edits::json_response(&json!({"jobs": out}))
 }
 
 /// `GET /api/ai/imagegen/model-templates` (app/routers/ai.py): the exported built-ins plus this

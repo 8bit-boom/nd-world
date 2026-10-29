@@ -7840,3 +7840,51 @@ def test_map_tiles_are_cut_and_served_by_the_gateway(client, seed):
     assert b.headers.get("x-nd-served-by") == "gateway" and f'"key": "{key}"' in b.text
     for f in (data_dir / "maps" / f"{slug}.json", data_dir / "uploads" / "maps" / f"{slug}.png"):
         f.unlink(missing_ok=True)
+
+
+def test_small_json_reads_are_pythons(client, seed):
+    """GET /api/quests/board, /api/combat/recent, /api/audio/clips, /api/world-players, /api/tables/options, /api/video-jobs: with data, for the GM, a
+    player (refused), without a world cookie, and signed out."""
+    from app.database import SessionLocal
+    from app.models import AudioClip, CombatSession, Party, Quest, RandomTable, VideoClip, VideoJob, WorldMembership
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        party = Party(world_id=w, name="Crew")
+        db.add(party)
+        db.flush()
+        clip = VideoClip(world_id=w, name="Clip V", file_url="/uploads/video/v.mp4")
+        db.add(clip)
+        db.flush()
+        db.add_all([Quest(world_id=w, title="B quest", status="active", category="side", summary="s", assigned_party_id=party.id), Quest(world_id=w, title="A quest", status="active", category=""),
+                    Quest(world_id=w, title="Done", status="done"), Quest(world_id=w, title="Child", status="active", parent_id=1),
+                    CombatSession(world_id=w, name="Fight 1", round_num=0), CombatSession(world_id=w, name="Template", is_template=True),
+                    AudioClip(world_id=w, name="Zed", file_url="/uploads/audio/z.mp3", description="d", album_id=None), AudioClip(world_id=w, name="Abe", file_url="/uploads/audio/a.mp3"),
+                    RandomTable(world_id=w, name="Loot", slug="gw-sj-loot", entries_json='[{"label":"a"},{"label":"b"}]'), RandomTable(world_id=None, name="Global", slug="gw-sj-global", entries_json="bad"),
+                    VideoJob(world_id=w, prompt="a dragon", status="done", clip_id=clip.id), VideoJob(world_id=w, prompt="", status="failed", error="boom"), VideoJob(world_id=w, prompt="x", status=None)])
+        db.commit()
+    finally:
+        db.close()
+    urls = ["/api/quests/board", "/api/combat/recent", "/api/audio/clips", "/api/world-players", "/api/tables/options", "/api/video-jobs"]
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for who, tag in ((gm, "gm"), (pl, "player")):
+        via = _via(who, base)
+        for url in urls:
+            a, b = who.get(url), via.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (tag, url)
+            if tag == "gm":
+                assert b.headers.get("x-nd-served-by") == "gateway", url
+    # no active world: the cookie names nothing
+    nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nogm.cookies.set("active_world", "no-such-world")
+    via = _via(nogm, base)
+    for url in urls:
+        a, b = nogm.get(url), via.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), ("no world", url)
+    anon = httpx.Client(base_url=base, timeout=30, follow_redirects=False)
+    for url in urls:
+        a, b = httpx.get(DIRECT + url, follow_redirects=False), anon.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), ("anon", url)
