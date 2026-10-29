@@ -7053,3 +7053,103 @@ def test_share_page_is_pythons(client, seed):
         assert {k: a.headers.get(k) for k in keep} == {k: b.headers.get(k) for k in keep}, key
         if key in ("native", "bare", "custom", "revoked", "unknown", "long"):
             assert b.headers.get("x-nd-served-by") == "gateway", key
+
+
+def test_character_foundry_export_is_pythons(client, seed):
+    """GET /characters/<id>/export.foundry.json: a native sheet (stats, currency, equipment, feats), an empty one, a custom-template sheet, odd
+    stored values, and who may download (owner, GM, someone else, no such character)."""
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, SheetTemplate
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(world_id=w, name="Fate <Lite>", slug="gw-foundry-fate", sheet_mode="custom", fields_json=json.dumps([
+            {"id": "hp", "label": "Stress", "type": "resource", "default_value": "3/3", "section": "Vitals"}, {"id": "aspect", "label": "High & Concept", "type": "text", "section": "Core"},
+            {"id": "skill", "label": "Great Skill", "type": "number"}]))
+        db.add(tpl)
+        db.flush()
+        rich = PlayerCharacter(world_id=w, name="Vex", race="Elf", char_class="Rogue", level=3, xp=40, current_hp=7, max_hp=12, shock_current=2, shock_max=5, owner_user_id=seed.player_a.id,
+                               backstory="Born <here> & \"there\"\nsecond line", notes="it's a note",
+                               stats_json=json.dumps([{"id": "str", "label": "Strength", "value": 12}, {"id": "dex", "value": "14"}, "junk", {"id": "cha", "label": "", "value": 3}]),
+                               currency_json=json.dumps([{"abbr": "CR", "value": 50}, {"label": "Silver", "value": "7"}, {"abbr": "", "label": "", "value": 0}, {"value": 1}]),
+                               equipment_json=json.dumps([{"name": "Dagger <sharp>", "qty": 2, "weight": 1.5, "equipped": True, "notes": "a & b"}, {"name": "Rope"}, "bad"]),
+                               feats_json=json.dumps([{"name": "Sneak", "type": "Skill", "notes": "quiet"}, {"name": "Dodge", "source": "Race"}, {"name": "Plain"}, {"name": "Desc", "description": "d"}]))
+        empty = PlayerCharacter(world_id=w, name="", owner_user_id=seed.player_a.id)
+        custom = PlayerCharacter(world_id=w, name="Fatey", sheet_template_id=tpl.id, owner_user_id=seed.player_a.id, backstory="b", notes="n",
+                                 custom_fields_json=json.dumps({"hp_current": 2, "hp_max": 4, "aspect": "Hero <1>", "skill": 3}))
+        odd = PlayerCharacter(world_id=w, name="Odd", owner_user_id=seed.player_a.id, equipment_json=json.dumps([{"name": "Gem", "qty": None}]))
+        weird = PlayerCharacter(world_id=w, name="Weird", owner_user_id=seed.player_a.id, equipment_json=json.dumps([{"name": "Orb", "qty": 3, "weight": 2.0}]),
+                                feats_json=json.dumps([{"name": None}]))
+        spec = PlayerCharacter(world_id=w, name="Vex <b>", owner_user_id=seed.player_a.id)
+        mine_b = PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)
+        db.add_all([rich, empty, custom, odd, weird, spec, mine_b])
+        db.commit()
+        ids = {"rich": rich.id, "empty": empty.id, "custom": custom.id, "odd": odd.id, "weird": weird.id, "spec": spec.id, "other": mine_b.id, "missing": 999999}
+    finally:
+        db.close()
+    keep = ("content-type", "content-disposition")
+    for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        via = _via(d, base)
+        for key, pid in ids.items():
+            url = f"/characters/{pid}/export.foundry.json"
+            a, b = d.get(url), via.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (email, key)
+            assert {k: a.headers.get(k) for k in keep} == {k: b.headers.get(k) for k in keep}, (email, key)
+            if key in ("rich", "empty", "custom", "missing") and (email == seed.gm.email or key in ("rich", "empty", "custom")):
+                assert b.headers.get("x-nd-served-by") == "gateway", (email, key)
+
+
+def test_character_ndc_export_is_pythons(client, seed):
+    """GET /characters/<id>/export.ndc: catalog ids in their buckets, custom entries, feats by id / name, credits, a banshee's ectoplasm, a portrait,
+    a custom-template sheet's 400, and who may download."""
+    import os
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter, SheetTemplate
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    up = Path(os.environ["DB_PATH"]).parent / "uploads"
+    up.mkdir(exist_ok=True)
+    (up / "gw-ndc-portrait.png").write_bytes(b"\x89PNG-fake-bytes")
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(world_id=w, name="Fate", slug="gw-ndc-fate", sheet_mode="custom", fields_json="[]")
+        db.add(tpl)
+        db.flush()
+        rich = PlayerCharacter(world_id=w, name="Vex Ndc", race="Elf", char_class="Rogue", race_id="below_elves", profession_id="charlatan", level=3, xp=40, current_hp=7, max_hp=12,
+                               shock_current=2, shock_max=5, pp_current=3, mp_current=4, temp_hp=2, owner_user_id=seed.player_a.id, backstory="Born here", notes="a note",
+                               portrait_url="/uploads/gw-ndc-portrait.png", major_edge_count=1, minor_edge_count=2,
+                               stats_json=json.dumps([{"id": "str", "value": 12}, {"id": "dex", "value": "14"}, {"id": "wil", "value": 9.7}, {"id": "bod"}]),
+                               currency_json=json.dumps([{"abbr": "eur", "value": 5}, {"abbr": "cr", "value": "250"}, {"abbr": "CR", "value": 1}]),
+                               equipment_json=json.dumps([{"id": "flamethrower"}, {"id": "exoskeleton", "category": "armor"}, {"id": "fluk23"}, {"id": "unknown_thing"},
+                                                          {"id": "alpha_arms", "category": "weapons"}, {"name": "Lucky coin", "notes": "heads"}, {"name": "Rope"}, {"name": ""}]),
+                               feats_json=json.dumps([{"id": "feat_a", "name": "A"}, {"name": "Sneak", "notes": "quiet"}, {"name": "Dodge", "description": "d"}, {"name": "Sneak", "notes": "again"}, {"name": ""}]))
+        banshee = PlayerCharacter(world_id=w, name="Banshee", race_id="banshee", owner_user_id=seed.player_a.id,
+                                  stats_json=json.dumps([{"id": "str", "value": 3}, {"id": "wil", "value": 4}, {"id": "int", "value": 5}]))
+        empty = PlayerCharacter(world_id=w, name="", owner_user_id=seed.player_a.id)
+        custom = PlayerCharacter(world_id=w, name="Fatey", sheet_template_id=tpl.id, owner_user_id=seed.player_a.id)
+        odd = PlayerCharacter(world_id=w, name="Odd", owner_user_id=seed.player_a.id, stats_json=json.dumps([{"id": "str", "value": "x"}]))
+        other = PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)
+        db.add_all([rich, banshee, empty, custom, odd, other])
+        db.commit()
+        ids = {"rich": rich.id, "banshee": banshee.id, "empty": empty.id, "custom": custom.id, "odd": odd.id, "other": other.id, "missing": 999999}
+    finally:
+        db.close()
+    keep = ("content-type", "content-disposition")
+    try:
+        for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            via = _via(d, base)
+            for key, pid in ids.items():
+                url = f"/characters/{pid}/export.ndc"
+                a, b = d.get(url), via.get(url)
+                assert (a.status_code, a.content) == (b.status_code, b.content), (email, key)
+                assert {k: a.headers.get(k) for k in keep} == {k: b.headers.get(k) for k in keep}, (email, key)
+                if key in ("rich", "banshee", "empty", "custom", "missing") and (email == seed.gm.email or key in ("rich", "banshee", "empty", "custom")):
+                    assert b.headers.get("x-nd-served-by") == "gateway", (email, key)
+    finally:
+        (up / "gw-ndc-portrait.png").unlink(missing_ok=True)

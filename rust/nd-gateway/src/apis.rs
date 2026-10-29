@@ -40,6 +40,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/api/characters/", "/ability-cards").is_some() => pc_ability_cards(&cfg, uri, headers, id_between(path, "/api/characters/", "/ability-cards")?),
         path if id_between(path, "/characters/", "/export.json").is_some() => pc_export_json(&cfg, uri, headers, id_between(path, "/characters/", "/export.json")?),
         path if id_between(path, "/characters/", "/export.md").is_some() => pc_export_md(&cfg, uri, headers, id_between(path, "/characters/", "/export.md")?),
+        path if id_between(path, "/characters/", "/export.ndc").is_some() => pc_export_ndc(&cfg, uri, headers, id_between(path, "/characters/", "/export.ndc")?),
+        path if id_between(path, "/characters/", "/export.foundry.json").is_some() => pc_export_foundry(&cfg, uri, headers, id_between(path, "/characters/", "/export.foundry.json")?),
         path if path.starts_with("/worlds/switch/") => world_switch(&cfg, uri, headers),
         path if session_media_id(path).is_some() => session_media(&cfg, uri, headers, session_media_id(path)?),
         path if pack_world(path).is_some() => content_pack(&cfg, uri, headers, pack_world(path)?),
@@ -72,7 +74,7 @@ pub fn is_get(path: &str) -> bool {
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
-        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some()
+        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -1287,6 +1289,329 @@ fn pc_export_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Opti
     Some(r)
 }
 
+/// `html.escape(s)` (quotes included)
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#x27;")
+}
+
+/// `str(v)` for a JSON string / int / plain float; anything else (None, bool, list, exponent forms) is Python's own text
+fn py_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) if n.is_i64() => Some(n.as_i64()?.to_string()),
+        Value::Number(n) => {
+            let f = n.as_f64()?;
+            if !f.is_finite() || f.abs() >= 1e16 || (f != 0.0 && f.abs() < 1e-4) {
+                return None;
+            }
+            Some(if f == f.trunc() { format!("{f:.1}") } else { format!("{f}") })
+        }
+        _ => None,
+    }
+}
+
+/// `x.get(k, default)` as text for the export HTML: a missing key is the default
+fn get_text(o: &Map<String, Value>, k: &str, default: &str) -> Option<String> {
+    match o.get(k) {
+        None => Some(default.to_string()),
+        Some(v) => py_text(v),
+    }
+}
+
+/// `a or b` over two keys, both text
+fn first_truthy<'a>(o: &'a Map<String, Value>, keys: &[&str]) -> Option<Option<&'a Value>> {
+    for k in keys {
+        let v = o.get(*k);
+        if crate::edits::py_truthy_pub(v) {
+            return Some(v);
+        }
+    }
+    Some(None)
+}
+
+/// `GET /characters/<id>/export.foundry.json` (app/routers/characters.py `character_export_foundry`): a Foundry JournalEntry
+fn pc_export_foundry(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let col = |k: &str| -> Option<String> {
+        match pc.get(k) { None | Some(Value::Null) => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None }
+    };
+    let name = col("name")?;
+    let title = if name.is_empty() { "Character".to_string() } else { name.clone() };
+    let (backstory, notes) = (col("backstory")?, col("notes")?);
+    let tpl = crate::sheets::pc_template(&db, &pc)?;
+    let doc = if let Some(t) = tpl.as_ref().filter(|t| t.custom()) {
+        let mut body = vec![format!("<h1>{}</h1>", html_escape(&title))];
+        for (section, pairs) in pc_export_sections(&db, &pc)? {
+            body.push(format!("<h2>{}</h2><ul>{}</ul>", html_escape(&section),
+                pairs.iter().map(|(l, v)| format!("<li><strong>{}:</strong> {}</li>", html_escape(l), html_escape(v))).collect::<String>()));
+        }
+        if !backstory.is_empty() {
+            body.push(format!("<h2>Background</h2><p>{}</p>", html_escape(&backstory)));
+        }
+        if !notes.is_empty() {
+            body.push(format!("<h2>Notes</h2><p>{}</p>", html_escape(&notes)));
+        }
+        let slug = match t.row.get("slug") { Some(Value::String(s)) => s.clone(), _ => return None };
+        json!({"name": title, "folder": null,
+            "pages": [{"name": "Character Sheet", "type": "text", "text": {"format": 1, "content": body.concat()}, "sort": 0}],
+            "flags": {"nd-world": {"source": "nd-world", "character_id": id, "system": slug}}})
+    } else {
+        let d = crate::edits::derived(&pc)?;
+        let level = pc.get("level").and_then(|v| v.as_i64())?;
+        let hp = pc.get("current_hp").and_then(|v| v.as_i64())?;
+        let (hp_max, shock_max, shock_cur) = (d.get("hp_max")?.as_i64()?, d.get("shock_max")?.as_i64()?, d.get("shock_current")?.as_i64()?);
+        let mut currency = vec![];
+        for c in d.get("currency")?.as_array()? {
+            let c = c.as_object()?;
+            let label = match first_truthy(c, &["abbr", "label"])? {
+                Some(Value::String(s)) => s.clone(),
+                Some(_) => return None,
+                None => match c.get("label") { None => String::new(), Some(Value::String(s)) => s.clone(), _ => return None },
+            };
+            currency.push(format!("{} {}", get_text(c, "value", "0")?, html_escape(&label)));
+        }
+        let mut stat_rows = String::new();
+        for s in d.get("stats")?.as_array()? {
+            let Some(s) = s.as_object() else { continue };
+            let label = match first_truthy(s, &["label"])? {
+                Some(Value::String(l)) => l.clone(),
+                Some(_) => return None,
+                None => match s.get("id") { None => String::new(), Some(Value::String(i)) => i.clone(), _ => return None },
+            };
+            stat_rows.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", html_escape(&label), html_escape(&get_text(s, "value", "")?)));
+        }
+        let mut sheet = format!("<h1>{}</h1><p><em>{} {}{}</em></p><p>HP: {hp}/{hp_max}{}</p><p>Currency: {}</p>",
+            html_escape(&title), html_escape(&col("race")?), html_escape(&col("char_class")?),
+            if level != 0 { format!(" — Level {level}") } else { String::new() },
+            if shock_max != 0 { format!("  |  Shock: {shock_cur}/{shock_max}") } else { String::new() },
+            if currency.is_empty() { "—".to_string() } else { currency.join(", ") });
+        if !stat_rows.is_empty() {
+            sheet.push_str(&format!("<table><tbody>{stat_rows}</tbody></table>"));
+        }
+        if !backstory.is_empty() {
+            sheet.push_str(&format!("<h2>Background</h2><p>{}</p>", html_escape(&backstory)));
+        }
+        if !notes.is_empty() {
+            sheet.push_str(&format!("<h2>Notes</h2><p>{}</p>", html_escape(&notes)));
+        }
+        let equipment = d.get("equipment")?.as_array()?;
+        let equipment_html = if !equipment.is_empty() {
+            let mut rows = String::new();
+            for it in equipment {
+                let Some(it) = it.as_object() else { continue };
+                rows.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    html_escape(&get_text_str(it, "name")?), get_text(it, "qty", "1")?, get_text(it, "weight", "0")?,
+                    if crate::edits::py_truthy_pub(it.get("equipped")) { "yes" } else { "" }, html_escape(&get_text_str(it, "notes")?)));
+            }
+            format!("<table><thead><tr><th>Item</th><th>Qty</th><th>Wt</th><th>Eq</th><th>Notes</th></tr></thead><tbody>{rows}</tbody></table>")
+        } else {
+            "<p><em>No equipment.</em></p>".to_string()
+        };
+        let feats = d.get("feats")?.as_array()?;
+        let feats_html = if !feats.is_empty() {
+            let mut items = String::new();
+            for f in feats {
+                let Some(f) = f.as_object() else { continue };
+                let kind = match first_truthy(f, &["type", "source"])? { Some(Value::String(s)) => Some(s.clone()), Some(_) => return None, None => None };
+                let desc = match first_truthy(f, &["notes", "description"])? { Some(Value::String(s)) => Some(s.clone()), Some(_) => return None, None => None };
+                items.push_str(&format!("<li><strong>{}</strong>{}{}</li>", html_escape(&get_text_str(f, "name")?),
+                    kind.map(|k| format!(" ({})", html_escape(&k))).unwrap_or_default(), desc.map(|k| format!(" — {}", html_escape(&k))).unwrap_or_default()));
+            }
+            format!("<ul>{items}</ul>")
+        } else {
+            "<p><em>No feats.</em></p>".to_string()
+        };
+        json!({"name": title, "folder": null,
+            "pages": [{"name": "Character Sheet", "type": "text", "text": {"format": 1, "content": sheet}, "sort": 0},
+                      {"name": "Equipment", "type": "text", "text": {"format": 1, "content": equipment_html}, "sort": 100},
+                      {"name": "Feats", "type": "text", "text": {"format": 1, "content": feats_html}, "sort": 200}],
+            "flags": {"nd-world": {"source": "nd-world", "character_id": id}}})
+    };
+    let fname = export_name(pc.get("name").and_then(|v| v.as_str()))?;
+    let body = nd_render::py_dumps_indent_as(&json!([doc]), 2, false);
+    let mut r = crate::edits::json_response_raw(&body, "application/json")?;
+    if let Ok(v) = format!("attachment; filename=\"{fname}.foundry.json\"").parse() {
+        r.headers_mut().insert("content-disposition", v);
+    }
+    Some(r)
+}
+
+/// `x.get(k, '')` that must be a string (html.escape of anything else raises in Python)
+fn get_text_str(o: &Map<String, Value>, k: &str) -> Option<String> {
+    match o.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None }
+}
+
+/// `int(v)` for a stored stat / currency value: a JSON int, a float (truncated) or plain numeric text; anything else is Python's
+fn py_int_value(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) if n.is_i64() => n.as_i64(),
+        Value::Number(n) => {
+            let f = n.as_f64()?;
+            (f.is_finite() && f.abs() < 9e15).then(|| f.trunc() as i64)
+        }
+        Value::String(s) => nd_render::text::py_strip(s).parse::<i64>().ok().filter(|_| s.is_ascii()),
+        _ => None,
+    }
+}
+
+/// `GET /characters/<id>/export.ndc` (app/routers/characters.py `character_export_ndc`): the character in the Android app's / editor's format
+fn pc_export_ndc(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(crate::idpages::refusal(403));
+    }
+    if !crate::edits::pc_maxima(&db, &pc)?.4 {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "The .ndc format is the Neon & Dragons app's — a character on a custom sheet (Hunt in the Moonlight, Asterion, …) can't be exported to it. Use the JSON, Markdown, PDF or Foundry export instead."));
+    }
+    let list = |k: &str| -> Option<Vec<Value>> {
+        match py_json_strict(pc.get(k).and_then(|v| v.as_str()), "[]")? { Value::Array(a) => Some(a), _ => None }
+    };
+    let (stats, feats, equipment, currency) = (list("stats_json")?, list("feats_json")?, list("equipment_json")?, list("currency_json")?);
+    let d = crate::edits::derived(&pc)?;
+    let dint = |k: &str| d.get(k).and_then(|v| v.as_i64());
+    let mut stat_val: Vec<(String, i64)> = vec![];
+    for s in &stats {
+        let s = s.as_object()?;
+        let id = match s.get("id")? { Value::String(x) => x.clone(), _ => return None };
+        let v = match s.get("value") { None => 0, Some(v) => py_int_value(v)? };
+        stat_val.retain(|(k, _)| *k != id);
+        stat_val.push((id, v));
+    }
+    let sv = |k: &str| stat_val.iter().find(|(id, _)| id == k).map_or(0, |(_, v)| *v);
+    let mut selected = vec![];
+    let mut custom_feats = Map::new();
+    for f in &feats {
+        let f = f.as_object()?;
+        if crate::edits::py_truthy_pub(f.get("id")) {
+            selected.push(f.get("id")?.clone());
+        } else {
+            let name = match f.get("name") { v if !crate::edits::py_truthy_pub(v) => String::new(), Some(Value::String(s)) => s.clone(), _ => return None };
+            if !name.is_empty() {
+                let note = match first_truthy(f, &["notes", "description"])? { Some(v) => v.clone(), None => json!("") };
+                custom_feats.insert(name, note);
+            }
+        }
+    }
+    let data = nd_render::app::data();
+    let mut category_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for it in data.get("catalog_equipment")?.as_array()? {
+        category_of.insert(it.get("id")?.as_str()?.to_string(), it.get("category")?.as_str()?.to_string());
+    }
+    let bucket_names = ["weapons", "armor", "augments", "bio_augments", "drones", "vehicles", "bases", "husks", "inventory"];
+    let mut buckets: Vec<(&str, Vec<Value>)> = bucket_names.iter().map(|b| (*b, vec![])).collect();
+    let mut custom_equipment = Map::new();
+    for e in &equipment {
+        let e = e.as_object()?;
+        let eid = e.get("id");
+        if crate::edits::py_truthy_pub(eid) {
+            let Some(Value::String(eid_s)) = eid else { return None };
+            let cat = match first_truthy(e, &["category"])? {
+                Some(Value::String(c)) => c.clone(),
+                Some(_) => return None,
+                None => category_of.get(eid_s).cloned().unwrap_or_default(),
+            };
+            let target = if bucket_names.contains(&cat.as_str()) { cat.as_str() } else { "inventory" };
+            buckets.iter_mut().find(|b| b.0 == target)?.1.push(eid?.clone());
+        } else {
+            let name = match e.get("name") { v if !crate::edits::py_truthy_pub(v) => String::new(), Some(Value::String(s)) => s.clone(), _ => return None };
+            if !name.is_empty() {
+                let note = match first_truthy(e, &["notes"])? { Some(Value::String(s)) => json!(s), Some(_) => return None, None => json!("") };
+                custom_equipment.insert(name, note);
+            }
+        }
+    }
+    let bucket = |n: &str| Value::Array(buckets.iter().find(|b| b.0 == n).map(|b| b.1.clone()).unwrap_or_default());
+    let mut credits = 0;
+    for c in &currency {
+        let c = c.as_object()?;
+        let abbr = match c.get("abbr") { v if !crate::edits::py_truthy_pub(v) => String::new(), Some(Value::String(s)) if s.is_ascii() => s.to_ascii_uppercase(), _ => return None };
+        if abbr == "CR" {
+            credits = match c.get("value") { None => 0, Some(v) => py_int_value(v)? };
+            break;
+        }
+    }
+    let mut portrait = String::new();
+    if let Some(Value::String(url)) = pc.get("portrait_url") {
+        if url.starts_with("/uploads/") {
+            if !url.is_ascii() || url.contains('\\') {
+                return None;
+            }
+            let leaf = url.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+            let path = cfg.db_path.parent()?.join("uploads").join(leaf);
+            if path.exists() {
+                use base64::Engine;
+                portrait = base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path).ok()?);
+            }
+        }
+    }
+    let mut notes = Map::new();
+    let text_col = |k: &str| -> Option<String> { match pc.get(k) { None | Some(Value::Null) => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None } };
+    if !text_col("backstory")?.is_empty() {
+        notes.insert("Backstory".into(), json!(text_col("backstory")?));
+    }
+    if !text_col("notes")?.is_empty() {
+        notes.insert("Session Notes".into(), json!(text_col("notes")?));
+    }
+    let race_id = text_col("race_id")?;
+    let (phys, ment) = (dint("phys")?, dint("ment")?);
+    let ecto = if race_id == "banshee" { phys + ment } else { 0 };
+    let n = |k: &str| crate::edits::col_int(&pc, k);
+    let empty_obj = || json!({});
+    let empty_arr = || json!([]);
+    let mut doc = Map::new();
+    macro_rules! put {
+        ($($k:literal : $v:expr),* $(,)?) => { $( doc.insert($k.to_string(), json!($v)); )* };
+    }
+    put!{
+        "id": 0, "name": text_col("name")?, "raceId": race_id, "raceName": text_col("race")?, "baseRaceId": "", "baseRaceName": "",
+        "professionId": text_col("profession_id")?, "professionName": text_col("char_class")?,
+        "strength": sv("str"), "dexterity": sv("dex"), "body": sv("bod"), "perception": sv("per"),
+        "willpower": sv("wil"), "intellect": sv("int"), "charisma": sv("cha"), "intuition": sv("itu"),
+        "strengthBonus": 0, "dexterityBonus": 0, "bodyBonus": 0, "perceptionBonus": 0,
+        "willpowerBonus": 0, "intellectBonus": 0, "charismaBonus": 0, "intuitionBonus": 0,
+        "maxHealth": dint("hp_max")?, "currentHealth": n("current_hp"), "temporaryHP": n("temp_hp"), "healthBonus": 0,
+        "maxShock": dint("shock_max")?, "currentShock": dint("shock_current")?, "temporaryShock": 0, "shockBonus": 0,
+        "cyberAdaptivity": dint("ca_derived")?, "speed": dint("speed_derived")?,
+        "physicalPoints": phys, "currentPP": dint("pp_current")?, "ppBonus": 0,
+        "mentalPoints": ment, "currentMP": dint("mp_current")?, "mpBonus": 0,
+        "speedBonus": 0, "caBonus": 0, "maxEctoplasm": ecto, "currentEctoplasm": ecto,
+        "selectedFeats": selected.clone(), "creationFeats": selected, "customFeats": custom_feats,
+        "psyPowerSelections": empty_obj(), "jackOfTradeSelections": empty_obj(), "linguistLanguages": empty_arr(), "masterLinguistLanguages": empty_arr(),
+        "infectedVirus": "", "jackOfAllTradesSelections": empty_arr(), "statPickerSelections": empty_obj(),
+        "equippedWeapons": bucket("weapons"), "customWeapons": empty_obj(), "weaponFeats": empty_obj(), "activeWeapons": bucket("weapons"),
+        "equippedArmor": bucket("armor"), "armorFeats": empty_obj(), "activeArmor": bucket("armor"),
+        "installedAugments": bucket("augments"), "customAugments": empty_obj(), "augmentFeats": empty_obj(), "activeAugments": bucket("augments"),
+        "installedBioAugments": bucket("bio_augments"), "customBioAugments": empty_obj(), "bioAugmentFeats": empty_obj(), "activeBioAugments": bucket("bio_augments"),
+        "ownedDrones": bucket("drones"), "droneFeats": empty_obj(), "ownedVehicles": bucket("vehicles"), "vehicleFeats": empty_obj(),
+        "inventory": bucket("inventory"), "customEquipment": custom_equipment, "ownedBases": bucket("bases"), "customBases": empty_obj(),
+        "ownedHusks": bucket("husks"), "equippedHuskId": "", "huskCurrentHealth": 0, "huskCurrentPP": 0,
+        "craftedItems": empty_arr(), "credits": credits,
+        "yellowSat": 0, "transcendPts": 0, "transcendencePts": 0, "heartPres": 0, "dragonBlood": "", "dragonbloodedStatGroup": "",
+        "fleshGraftPts": 0, "flashGraftsPts": 0, "crimsonBoost1": "", "crimsonBoost2": "", "crimsonPenalty": "", "mentalCond": "", "ahCharges": 0,
+        "currentXP": n("xp"), "xpSpent": 0, "majorEdges": n("major_edge_count"), "minorEdges": n("minor_edge_count"),
+        "portraitBase64": portrait, "notes": notes,
+        "featSpecialAttrValues": empty_obj(), "professionSpecialAttrValues": empty_obj(), "raceSpecialAttrValues": empty_obj(),
+    }
+    let fname = export_name(pc.get("name").and_then(|v| v.as_str()))?;
+    let body = nd_render::py_dumps_indent_as(&json!([Value::Object(doc)]), 2, false);
+    let mut r = crate::edits::json_response_raw(&body, "application/json")?;
+    if let Ok(v) = format!("attachment; filename=\"{fname}.ndc\"").parse() {
+        r.headers_mut().insert("content-disposition", v);
+    }
+    Some(r)
+}
+
 /// `_group_by_section`: template fields by their `section`, first-seen order
 pub(crate) fn group_by_section(fields: &[Value]) -> Option<Vec<(String, Vec<&Map<String, Value>>)>> {
     let mut out: Vec<(String, Vec<&Map<String, Value>>)> = vec![];
@@ -1382,7 +1707,7 @@ fn field_value_lines(field: &Map<String, Value>, cf: &Map<String, Value>) -> Opt
 }
 
 /// `_pc_export_sections`: the flat (name, [(label, value)]) summary the .md export renders
-fn pc_export_sections(db: &rusqlite::Connection, pc: &Map<String, Value>) -> Option<Vec<(String, Vec<(String, String)>)>> {
+pub(crate) fn pc_export_sections(db: &rusqlite::Connection, pc: &Map<String, Value>) -> Option<Vec<(String, Vec<(String, String)>)>> {
     let chosen_tpl = match pc.get("sheet_template_id").and_then(|v| v.as_i64()).filter(|t| *t != 0) {
         Some(tid) => db.query_row("SELECT * FROM sheet_templates WHERE id = ?1", [tid], |r| crate::layout::row_map(r)).ok(),
         None => None,

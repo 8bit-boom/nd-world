@@ -47,6 +47,11 @@ them after each batch; the phase is done when both are empty and the steps below
   native sheet (stats, HP / Shock) and a custom template (resource vitals, roster groups, via the roster helpers), conditions / feats /
   gear with Python's caps, and the three privacy headers. The 404 is Python's. Stored values Python would print in its own form (a
   float or non-string `qty`, a non-string name or rank, NaN JSON) are Python's.
+- **Character exports** (`.foundry.json`, `.ndc`; apis.rs `pc_export_foundry`, `pc_export_ndc`): the Foundry journal for a native sheet (stats table,
+  currency, equipment, feats) and a custom template (the shared export sections); the app/editor `.ndc` with the catalog ids sorted into their
+  buckets (`catalog_equipment` from app_data.json), custom feats / items, credits, the banshee's ectoplasm and the portrait read from uploads.
+  The custom-sheet 400 is Python's. Values Python would print in its own form (None, bools, exponent floats, non-string names) are Python's.
+  `.pdf` stays Python's (reportlab).
 - **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
   URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level
