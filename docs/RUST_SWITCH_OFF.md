@@ -334,6 +334,9 @@ them after each batch; the phase is done when both are empty and the steps below
   `difflib` is CPython's SequenceMatcher (autojunk included), checked against 48 Python-made diffs. The assist job run now rejects
   empty input before asking for a backend, as `run_assist` does. Image Studio with the Studio key set and no SwarmUI address stays
   Python's (its redirect raises there).
+- **Small JSON routes** (misc_apis.rs): `GET /health` (ND_BUILD), the Ollama presets (`GET/POST /api/ai/presets`, `DELETE
+  /api/ai/presets/<label>`; ai_models.json byte for byte, options clamped as `_clamp_options` does, `num_ctx` capped by
+  MAX_AUTO_NUM_CTX) and `GET /api/ai/world-summary` (the viewer's own audience tier).
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from

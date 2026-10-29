@@ -6599,3 +6599,85 @@ def test_code_assist_generate_and_status_are_pythons(client, seed):
         a, b = gm.get(url), via.get(url)
         assert b.headers.get("x-nd-served-by") == "gateway", key
         assert (a.status_code, a.json()) == (b.status_code, b.json()), key
+
+
+def test_health_presets_and_world_summary_are_pythons(client, seed):
+    """GET /health, the Ollama presets (list / save / delete - ai_models.json byte for byte, the options clamped as Python clamps them),
+    and GET /api/ai/world-summary for each audience tier (no job, pending, failed, done, the other tier's job left out, closed to players)."""
+    import os
+    from datetime import datetime
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AudioJob, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    path = Path(os.environ["DB_PATH"]).parent / "ai_models.json"
+    original = path.read_bytes() if path.exists() else None
+    anon = httpx.Client(base_url=base, timeout=30)
+    a, b = httpx.get(str(client.base_url) + "/health"), anon.get("/health")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(gm, base)
+    try:
+        for start in (None, b'{"custom": [], "hidden": [], "presets": [{"label": "Old", "model": "m"}, {"label": "Keep"}]}'):
+            def reset():
+                if start is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(start)
+            steps = [("GET", "/api/ai/presets", None),
+                     ("POST", "/api/ai/presets", {"label": "  Fast  ", "model": " m ", "system_extra": "be brief", "options": {
+                         "temperature": 1, "top_k": 5.9, "num_ctx": 99999999, "seed": -4, "use_mmap": 0, "bogus": 1, "top_p": 2, "mirostat": True, "num_gpu": None, "min_p": [1]}}),
+                     ("POST", "/api/ai/presets", {"label": "Old"}), ("POST", "/api/ai/presets", {"label": "   "}), ("POST", "/api/ai/presets", {"model": "x"}),
+                     ("DELETE", "/api/ai/presets/Old", None), ("DELETE", "/api/ai/presets/nope", None), ("DELETE", "/api/ai/presets/caf%C3%A9", None)]
+            for method, url, body in steps:
+                reset()
+                ra = gm.request(method, url, json=body) if body is not None else gm.request(method, url)
+                after_a = path.read_bytes() if path.exists() else None
+                reset()
+                rb = via.request(method, url, json=body) if body is not None else via.request(method, url)
+                after_b = path.read_bytes() if path.exists() else None
+                served = rb.headers.get("x-nd-served-by") == "gateway"
+                if body is None or "label" in body:
+                    assert served, (method, url, body)
+                if served:
+                    assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (method, url, body)
+                    assert after_a == after_b, (method, url, body)
+    finally:
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(original)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([AudioJob(world_id=w, purpose="world_summary", filename="s", status="done", recap="GM digest", audience="gm", finished_at=datetime(2031, 1, 2, 3, 4, 5),
+                             transcript="", audio_path="", delete_after=False),
+                    AudioJob(world_id=w, purpose="world_summary", filename="s", status="done", recap="Players digest", audience="players", finished_at=datetime(2031, 1, 2, 3, 4, 6),
+                             transcript="", audio_path="", delete_after=False)])
+        db.commit()
+    finally:
+        db.close()
+    def state(status, audience, error=""):
+        db = SessionLocal()
+        try:
+            db.add(AudioJob(world_id=w, purpose="world_summary", filename="s", status=status, error=error, recap="", audience=audience, transcript="", audio_path="", delete_after=False))
+            db.commit()
+        finally:
+            db.close()
+    for step in (None, ("pending", "gm"), ("error", "gm", ""), ("error", "gm", "boom"), ("pending", "players")):
+        if step:
+            state(*step)
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            for allowed in (False, True):
+                db = SessionLocal()
+                try:
+                    db.get(World, w).players_can_view_world_summary = allowed
+                    db.commit()
+                finally:
+                    db.close()
+                ra, rb = d.get("/api/ai/world-summary"), _via(d, base).get("/api/ai/world-summary")
+                assert rb.headers.get("x-nd-served-by") == "gateway", (email, step)
+                assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, step, allowed)
