@@ -32,6 +32,7 @@ pub fn serves(method: &Method, path: &str) -> bool {
         "/health" | "/api/ai/world-summary" | "/api/ai/world-context" => *method == Method::GET,
         "/api/ai/save-note" => *method == Method::POST,
         "/api/ai/presets" => *method == Method::GET || *method == Method::POST,
+        "/api/ai/unsloth/prefs" => *method == Method::GET,
         _ => *method == Method::DELETE && path.strip_prefix("/api/ai/presets/").is_some_and(|l| !l.is_empty() && !l.contains('/')),
     }
 }
@@ -158,6 +159,18 @@ pub fn handle(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, bod
         return None;
     }
     let mut data = load_data(cfg)?;
+    if path == "/api/ai/unsloth/prefs" {
+        // the TTS / STT values stored beside the database: `value or default` (a stored non-string that is truthy comes back as it is)
+        let get = |k: &str, default: &str| match data.get(k) {
+            Some(v) if crate::edits::py_truthy_pub(Some(v)) => v.clone(),
+            _ => json!(default),
+        };
+        return crate::edits::json_response(&json!({
+            "tts_model": get("tts_model", "unsloth/orpheus-3b"), "tts_voice": get("tts_voice", ""),
+            "tts_instructions": get("tts_instructions", ""), "tts_language": get("tts_language", ""),
+            "stt_model": get("stt_model", "small"), "studio_console_url": get("studio_console_url", ""),
+        }));
+    }
     match *method {
         Method::GET => crate::edits::json_response(&json!({"presets": presets(&data)?})),
         Method::POST => {

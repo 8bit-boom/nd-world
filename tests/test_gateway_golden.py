@@ -6930,3 +6930,35 @@ def test_map_editor_refusals_are_pythons(client, seed):
             if a.status_code >= 400:
                 assert a.json() == b.json(), (path, form)
             assert state() == after_a, (path, form)
+
+
+def test_unsloth_prefs_get_is_pythons(client, seed):
+    """GET /api/ai/unsloth/prefs: the defaults for a missing / empty / odd file, stored values (a truthy number as it is), closed to players."""
+    import os
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    path = Path(os.environ["DB_PATH"]).parent / "ai_models.json"
+    original = path.read_bytes() if path.exists() else None
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(gm, base)
+    try:
+        for start in (None, b"", b"not json", b'{"tts_model": "m", "tts_voice": "v", "stt_model": 5, "tts_language": 0, "studio_console_url": "http://x/"}',
+                      b'{"tts_instructions": "gruff \\u00e9", "stt_model": ""}', b"[1]"):
+            if start is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(start)
+            a, b = gm.get("/api/ai/unsloth/prefs"), via.get("/api/ai/unsloth/prefs")
+            assert (a.status_code, a.content) == (b.status_code, b.content), start
+            if start != b"[1]":
+                assert b.headers.get("x-nd-served-by") == "gateway", start
+    finally:
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(original)
+    anon = httpx.Client(base_url=base, timeout=30, follow_redirects=False)
+    d = httpx.Client(base_url=DIRECT, timeout=30, follow_redirects=False)
+    ra, rb = d.get("/api/ai/unsloth/prefs"), anon.get("/api/ai/unsloth/prefs")
+    assert (ra.status_code, ra.content) == (rb.status_code, rb.content)

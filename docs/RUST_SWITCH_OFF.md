@@ -35,6 +35,9 @@ them after each batch; the phase is done when both are empty and the steps below
   lights / rooms / rooms-detect family stays strictly active-world scoped for everyone, while the slug-only schematic routes
   (elements, grid, rename, delete, link / unlink combat) let a GM reach any world. The 400 / 404 bodies are Python's, including
   `int()`'s spelling of the combat session id (sign, single underscores); NaN / odd-encoding bodies still decline.
+- **Unsloth prefs** (`GET /api/ai/unsloth/prefs`, misc_apis.rs): the TTS / STT values from `ai_models.json` with Python's `value or default`
+  rule, GM only. `GET /api/ai/context-info` stays Python's: it reads Python's in-memory Ollama options, which the gateway cannot see
+  until the settings-overrides sync is owned by the gateway.
 - **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
   URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level
