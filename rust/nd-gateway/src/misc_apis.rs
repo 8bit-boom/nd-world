@@ -9,7 +9,16 @@ use serde_json::{json, Map, Value};
 
 use crate::config::Config;
 
+/// `/api/npc-talk/<id>/history`: the id (plain digits)
+fn npc_history_id(path: &str) -> Option<i64> {
+    let d = path.strip_prefix("/api/npc-talk/")?.strip_suffix("/history")?;
+    (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
+}
+
 pub fn serves(method: &Method, path: &str) -> bool {
+    if npc_history_id(path).is_some() {
+        return *method == Method::GET || *method == Method::DELETE;
+    }
     match path {
         "/health" | "/api/ai/world-summary" => *method == Method::GET,
         "/api/ai/presets" => *method == Method::GET || *method == Method::POST,
@@ -119,6 +128,9 @@ pub fn handle(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, bod
     if path == "/api/ai/world-summary" {
         return world_summary(cfg, uri, headers);
     }
+    if let Some(eid) = npc_history_id(path) {
+        return npc_history(cfg, method, uri, headers, eid);
+    }
     // the presets: the GM's (the auth gate refuses anyone else before this)
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
@@ -210,4 +222,53 @@ fn world_summary(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respons
         return crate::edits::json_response(&json!({"recap": "", "error": if e.is_empty() { "generation failed".to_string() } else { e }}));
     }
     crate::edits::json_response(&json!({"recap": text("recap"), "generated_at": crate::edits::py_isoformat_pub(job.get("finished_at"))}))
+}
+
+/// `GET` / `DELETE /api/npc-talk/<id>/history` (app/routers/npc_talk.py): the caller's saved conversation with one NPC, or its removal
+fn npc_history(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, eid: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
+    // _require_ask_ai_access: a GM always, a player only in a world that lets players ask the AI
+    let world = p.world.clone();
+    if !p.is_gm {
+        let on = |k: &str| world.as_ref().is_some_and(|w| crate::edits::py_truthy_pub(w.get(k)));
+        if !(on("players_can_ask_ai") || on("players_can_use_ai_chat")) {
+            return Some(crate::idpages::refusal(403));
+        }
+    }
+    let Some(world) = world else { return Some(crate::idpages::refusal(404)) };
+    let wid = world.get("id")?.as_i64()?;
+    // _npc_or_404: an entity this viewer may see, of a kind that can talk
+    let vis = if p.is_gm { String::new() } else {
+        format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let npc = db.query_row(&format!("SELECT kind FROM entities WHERE id = ?1 AND world_id = ?2{vis}"), rusqlite::params![eid, wid], |r| r.get::<_, Option<String>>(0)).ok();
+    let Some(kind) = npc else { return Some(crate::idpages::refusal(404)) };
+    let kind = kind?;
+    if !["character", "creature", "organization"].contains(&kind.as_str()) {
+        if !kind.is_ascii() {
+            return None; // str.capitalize-free here, but the message carries the kind as stored
+        }
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, format!("A {kind} can't hold an in-character conversation \u{2014} Talk to NPCs covers characters, creatures, and organizations.")));
+    }
+    let row: Option<(i64, Option<String>)> = db.query_row("SELECT id, messages_json FROM chat_sessions WHERE world_id = ?1 AND user_id = ?2 AND surface = 'npc' AND entity_id = ?3 LIMIT 1",
+        rusqlite::params![wid, p.user_id, eid], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+    if *method == Method::DELETE {
+        if let Some((id, _)) = row {
+            db.execute("DELETE FROM chat_sessions WHERE id = ?1", [id]).ok()?;
+        }
+        return crate::edits::json_response(&json!({"ok": true}));
+    }
+    let messages = match row {
+        None => json!([]),
+        Some((_, raw)) => {
+            let raw = raw.filter(|s| !s.is_empty()).unwrap_or_else(|| "[]".into());
+            if !crate::edits::plain_numbers(raw.as_bytes()) {
+                return None;
+            }
+            serde_json::from_str::<Value>(&raw).ok()?
+        }
+    };
+    crate::edits::json_response(&json!({"entity_id": eid, "messages": messages}))
 }

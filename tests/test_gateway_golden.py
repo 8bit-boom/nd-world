@@ -6681,3 +6681,66 @@ def test_health_presets_and_world_summary_are_pythons(client, seed):
                 ra, rb = d.get("/api/ai/world-summary"), _via(d, base).get("/api/ai/world-summary")
                 assert rb.headers.get("x-nd-served-by") == "gateway", (email, step)
                 assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, step, allowed)
+
+
+def test_npc_history_is_pythons(client, seed):
+    """GET / DELETE /api/npc-talk/<id>/history from the gateway: the caller's saved conversation (none, an empty one, a real one with
+    non-ASCII text), its removal, a hidden NPC (404), an item (400 with its message), a world that closes the AI to players (403)."""
+    from app.database import SessionLocal
+    from app.models import ChatSession, Entity, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        npc = Entity(world_id=w, kind="character", name="Mo")
+        hidden = Entity(world_id=w, kind="character", name="Spy", visible_to_players=False)
+        item = Entity(world_id=w, kind="item", name="Blade")
+        db.add_all([npc, hidden, item])
+        db.get(World, w).players_can_ask_ai = True
+        db.flush()
+        db.add(ChatSession(world_id=w, user_id=seed.player_a.id, surface="npc", entity_id=npc.id, title="Mo",
+                           messages_json=json.dumps([{"role": "user", "content": "Héllo"}, {"role": "assistant", "content": "x" * 3}])))
+        db.add(ChatSession(world_id=w, user_id=seed.gm.id, surface="npc", entity_id=npc.id, title="Mo", messages_json=""))
+        db.commit()
+        ids = (npc.id, hidden.id, item.id, 999999)
+    finally:
+        db.close()
+
+    def count():
+        db = SessionLocal()
+        try:
+            return db.query(ChatSession).count()
+        finally:
+            db.close()
+
+    for allowed in (True, False):
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_can_ask_ai = allowed
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.player_a.email, PLAYER_PASSWORD), (seed.gm.email, GM_PASSWORD), (seed.player_b.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug if email != seed.player_b.email else seed.world_b.slug)
+            for eid in ids:
+                url = f"/api/npc-talk/{eid}/history"
+                ra, rb = d.get(url), _via(d, base).get(url)
+                assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
+                assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, url, allowed)
+    db = SessionLocal()
+    try:
+        db.get(World, w).players_can_ask_ai = True
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for eid in (ids[2], ids[1], ids[0], ids[0]):
+        n0 = count()
+        ra = d.delete(f"/api/npc-talk/{eid}/history")
+        n1 = count()
+        rb = _via(d, base).delete(f"/api/npc-talk/{eid}/history")
+        assert rb.headers.get("x-nd-served-by") == "gateway", eid
+        assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), eid
+        assert n0 - n1 in (0, 1)
+        assert count() == n1
