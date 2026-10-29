@@ -379,6 +379,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/images/albums/upload/chunk", gallery_chunk),
     ("/images/albums/{}/upload", gallery_upload),
     ("/api/sessions/{}/media/upload", sm_upload),
+    ("/api/sessions/{}/recap-audio/upload", sm_recap_audio_upload),
     ("/api/upload-image", toolbar_image),
     ("/api/upload-media", toolbar_media),
     ("/api/characters/upload-image", toolbar_pc_image),
@@ -14254,4 +14255,58 @@ fn props_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         }
     }
     json_response(&json!({"ok": true, "file_kept": kept}))
+}
+
+/// `POST /api/sessions/{session_id}/recap-audio/upload` (app/routers/session_audio.py
+/// `recap_audio_upload`): a new audio file into the library, attached to the session's recap — the
+/// extension allowlist (400 with the message), require_room, the 300-per-world cap, the settings
+/// audio cap, the clip's capped name / description / transcript, then `_attach` + the panel + clip.
+fn sm_recap_audio_upload(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let gs = sm_session(c, ids[0])?;
+    let wid = gs.get("world_id")?.as_i64()?;
+    let (f, pick) = form_and_file(c, "file")?;
+    let Some(pick) = pick else {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "No file uploaded"));
+    };
+    let filename = pick.filename(c)?.to_string();
+    if filename.is_empty() {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "No file uploaded"));
+    }
+    let ext = py_suffix_lower(&filename)?;
+    if !AUDIO_EXTS.contains(&ext.as_str()) {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Unsupported file type ".to_string() + &format!("{ext:?}") + " — allowed: .mp3, .oga, .ogg, .opus, .wav, .webm, .aac, .flac, .m4a"));
+    }
+    if (sm_clip_ids(&gs)?.len() + sm_items(&gs)?.len()) as i64 >= sm_limit(c)? {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "This session media panel is full"));
+    }
+    let n: i64 = c.db.query_row("SELECT COUNT(*) FROM audio_clips WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    if n >= 300 {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "This world already has the maximum of 300 audio clips."));
+    }
+    let cap = upload_cap(c, "max_audio_mb", "MAX_AUDIO_UPLOAD_BYTES", 1024 * 1024 * 1024)?;
+    if pick.len(c)? as i64 > cap {
+        return None; // copy_upload_bounded's 413: Python's
+    }
+    let dir = uploads_root(c)?.join("audio");
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    pick.write_to(c, &dest)?;
+    let label = strip(f.get("name").unwrap_or(""));
+    let (stem, _) = py_path_parts(&filename)?;
+    let visible = ["1", "true", "on", "yes"].contains(&strip(f.get("visible_to_players").unwrap_or("")).to_lowercase().as_str());
+    let lyrics_raw = f.get("lyrics").unwrap_or("");
+    let transcript: String = strip(lyrics_raw).chars().take(20000).collect();
+    let title = gs.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let name = [take_chars(&label, 256), take_chars(&stem, 256)].into_iter().find(|n| !n.is_empty()).unwrap_or_else(|| "Recap audio".into());
+    let desc = take_chars(&format!("Recap audio for {title}"), 512);
+    let url = format!("/uploads/audio/{}", dest.file_name()?.to_string_lossy());
+    let cid = orm::insert(&c.db, "audio_clips", &[("world_id", Sql::Integer(wid)), ("name", s(&name)), ("description", s(&desc)),
+        ("file_url", s(&url)), ("visible_to_players", Sql::Integer(visible as i64)), ("transcript", s(&transcript))])?;
+    let clip = row(&c.db, "SELECT * FROM audio_clips WHERE id = ?1", cid)?;
+    let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", ids[0])?;
+    sm_attach_audio(c, &gs, &clip, None)?;
+    let Value::Object(mut out) = sm_panel_value(c, ids[0])? else { return None };
+    out.insert("clip".into(), sm_audio_dict(&clip));
+    json_response(&Value::Object(out))
 }

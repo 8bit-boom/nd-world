@@ -6354,3 +6354,72 @@ def test_world_json_exports_are_pythons(client, seed):
     finally:
         db.close()
     assert served >= 5, served
+
+
+def test_recap_audio_upload_is_pythons(client, seed):
+    """POST /api/sessions/<id>/recap-audio/upload from the gateway: the clip created and attached
+    (name / description / transcript / visibility, the file under uploads/audio), the unsupported
+    extension the 400 with Python's message, a missing file refused the same way on both sides - the
+    panel and clip compared."""
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    from app.models import GameSession
+    try:
+        gs = GameSession(world_id=w, title="Recap Up")
+        db.add(gs)
+        db.commit()
+        sid = gs.id
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def panel_state(r):
+        j = r.json()
+        clip = j.get("clip") or {}
+        audio = j.get("audio") or []
+        attached = [c["id"] for c in audio if isinstance(c, dict)]
+        return (r.status_code, clip.get("name"), clip.get("description"), clip.get("visible_to_players"),
+                clip.get("transcript"), bool(clip.get("file_url")), attached)
+
+    out = []
+    for side in (d, v):
+        body = (f'--XB\r\nContent-Disposition: form-data; name="name"\r\n\r\nFolk song\r\n'
+                f'--XB\r\nContent-Disposition: form-data; name="lyrics"\r\n\r\nVerse one\r\n'
+                f'--XB\r\nContent-Disposition: form-data; name="visible_to_players"\r\n\r\ntrue\r\n'
+                f'--XB\r\nContent-Disposition: form-data; name="file"; filename="song.mp3"\r\n'
+                f'Content-Type: audio/mpeg\r\n\r\nID3data\r\n--XB--\r\n').encode()
+        r = side.post(f"/api/sessions/{sid}/recap-audio/upload", content=body,
+                      headers={"content-type": "multipart/form-data; boundary=XB"})
+        out.append((panel_state(r), r.headers.get("x-nd-served-by")))
+    assert out[0][0] == out[1][0], (out[0][0], out[1][0])
+    assert out[0][0][3] is True and out[0][0][4] == "Verse one", out[0][0]
+    assert out[0][0][5], out[0][0]  # the file_url present
+    assert out[1][1] == "gateway", out[1][1]
+    served = out[1][1] == "gateway"
+    # the unsupported extension
+    out = []
+    for side in (d, v):
+        body = (f'--XB\r\nContent-Disposition: form-data; name="file"; filename="x.exe"\r\n'
+                f'Content-Type: application/octet-stream\r\n\r\nMZ\r\n--XB--\r\n').encode()
+        r = side.post(f"/api/sessions/{sid}/recap-audio/upload", content=body,
+                      headers={"content-type": "multipart/form-data; boundary=XB"})
+        out.append((r.status_code, "Unsupported" in r.text, r.headers.get("x-nd-served-by")))
+    assert out[0][0] == out[1][0] == 400 and out[0][1] and out[1][1], out
+    assert out[1][2] == "gateway", out[1][2]
+    served += 1
+    # a missing file refused on both sides (status may differ: FastAPI's 422 vs the handler's 400)
+    a, b = d.post(f"/api/sessions/{sid}/recap-audio/upload", data={}), v.post(f"/api/sessions/{sid}/recap-audio/upload", data={})
+    assert a.status_code == b.status_code, (a.status_code, b.status_code)
+    assert (b.headers.get("x-nd-served-by") == "gateway") or (b.headers.get("x-nd-served-by") is None and a.status_code == 422)
+    db = SessionLocal()
+    from app.models import GameSession as _GS
+    try:
+        x = db.get(_GS, sid)
+        if x:
+            db.delete(x)
+        db.commit()
+    finally:
+        db.close()
+    assert served >= 2, served
