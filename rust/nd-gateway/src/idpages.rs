@@ -21,6 +21,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/tables/", "/edit", table_edit),
     ("/handout/", "", handout),
     ("/entity-templates/", "/edit", entity_template_edit),
+    ("/characters/templates/", "/edit", sheet_template_edit),
     ("/display/combat/", "", display_combat),
     ("/worlds/", "/kinds/edit", kinds_edit),
     ("/worlds/", "/rules/edit", rules_edit),
@@ -105,6 +106,21 @@ fn entity_template_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64,
     p.ctx.insert("tpl".into(), Value::Object(t));
     p.ctx.insert("fields".into(), fields);
     render_with(pages, "entity_template_form.html", p.ctx, headers)
+}
+
+/// `GET /characters/templates/<id>/edit` (app/routers/characters.py `template_edit_form`)
+fn sheet_template_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let t = row(db, "SELECT * FROM sheet_templates WHERE id = ?1", id)?;
+    let fields = json_or_empty_list(t.get("fields_json"))?;
+    // system_spec_public: the template's own stored spec, {} when absent / unreadable / not an object
+    let system = match t.get("system_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        None => json!({}),
+        Some(raw) => match crate::map_layout::py_loads(raw) { Ok(Value::Object(o)) => Value::Object(o), _ => json!({}) },
+    };
+    p.ctx.insert("tpl".into(), Value::Object(t));
+    p.ctx.insert("fields".into(), fields);
+    p.ctx.insert("system".into(), system);
+    render_with(pages, "characters/template_form.html", p.ctx, headers)
 }
 
 /// `GET /display/combat/<id>` (app/routers/display.py `display_combat_page`): the fight's turn order on the table's TV, GM only

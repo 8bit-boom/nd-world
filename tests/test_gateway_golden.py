@@ -7211,3 +7211,71 @@ def test_video_job_delete_is_pythons(client, seed):
         for url in ("/api/video-jobs/999999", "/api/video-jobs/abc", "/api/video-jobs/007"):
             a, b = d.delete(url), via.delete(url)
             assert (a.status_code, a.content) == (b.status_code, b.content), (email, url)
+
+
+def test_sheet_template_forms_are_pythons(client, seed):
+    """POST /characters/templates/new | <id>/edit | <id>/delete and GET <id>/edit: the stored row (name, slug, mode, fields, cleaned system spec, rules),
+    the redirects, a built-in, a missing id, odd JSON, and a player's refusal."""
+    import re
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(d, base)
+    d.follow_redirects = via.follow_redirects = False
+    fields = json.dumps([{"id": "hp", "label": "Stress", "type": "resource", "default_value": "3/3", "section": "Vitals", "vital": "hp"}, {"id": "xp", "label": "XP", "type": "number", "xp": True},
+                         {"id": "name", "label": "Name", "type": "text"}])
+    system = json.dumps({"conditions": ["Hurt", "  Dazed ", ""], "rest": {"short": [["full", "hp"]], "long": [["bogus"]]}, "roster": [["Core", ["hp", "nope"]]]})
+    forms = [{"name": "My <Tpl> One", "description": " desc ", "sheet_mode": "custom", "fields_json": fields, "system_json": system, "rules_md": "  rules \n"},
+             {"name": "", "fields_json": "[]"}, {"name": "Bad Json", "fields_json": "{oops", "system_json": "{bad"}, {"name": "Obj", "fields_json": '{"a": 1}', "system_json": "[1]"},
+             {"name": "Same Name"}, {"name": "Same Name"}, {"name": "Wide " + "x" * 80, "fields_json": fields, "rules_md": "r" * 20100}, {"name": "café", "fields_json": "[]"}]
+
+    def row_of(tid):
+        db = SessionLocal()
+        try:
+            t = db.get(SheetTemplate, tid)
+            return None if t is None else {k: getattr(t, k) for k in ("world_id", "name", "description", "is_builtin", "sheet_mode", "fields_json", "system_json", "rules_md")} | {"slug": re.sub(r"-\d+$", "", t.slug)}
+        finally:
+            db.close()
+    made = []
+    for form in forms:
+        ra, rb = d.post("/characters/templates/new", data=form), via.post("/characters/templates/new", data=form)
+        ia, ib = (int(x.headers["location"].split("/")[3]) for x in (ra, rb))
+        assert (ra.status_code, rb.status_code) == (303, 303), form
+        assert ra.headers["location"].replace(str(ia), "N") == rb.headers["location"].replace(str(ib), "N"), form
+        assert row_of(ia) == row_of(ib), form
+        made.append((ia, ib))
+        if form["name"] != "café":
+            assert rb.headers.get("x-nd-served-by") == "gateway", form
+    for (ia, ib) in made[:4]:
+        for upd in ({"name": " Renamed ", "description": "d2", "sheet_mode": "nd", "fields_json": fields, "system_json": system, "rules_md": "new"}, {"name": "   ", "fields_json": "bad"}, {}):
+            ra, rb = d.post(f"/characters/templates/{ia}/edit", data=upd), via.post(f"/characters/templates/{ib}/edit", data=upd)
+            assert (ra.status_code, ra.headers.get("location", "").replace(str(ia), "N")) == (rb.status_code, rb.headers.get("location", "").replace(str(ib), "N")), upd
+            assert row_of(ia) == row_of(ib), upd
+        pa, pb = d.get(f"/characters/templates/{ia}/edit"), via.get(f"/characters/templates/{ib}/edit")
+        assert pa.status_code == pb.status_code == 200
+        norm = lambda r, i: r.text.replace(f"/{i}/", "/N/")
+        assert norm(pa, ia) == norm(pb, ib)
+        assert pb.headers.get("x-nd-served-by") == "gateway"
+    builtin = None
+    db = SessionLocal()
+    try:
+        b = db.query(SheetTemplate).filter(SheetTemplate.is_builtin.is_(True)).first()
+        builtin = b.id if b else None
+    finally:
+        db.close()
+    for tid in ([builtin] if builtin else []) + [999999]:
+        for method, url, data in (("GET", f"/characters/templates/{tid}/edit", None), ("POST", f"/characters/templates/{tid}/edit", {"name": "x", "fields_json": "[]"}), ("POST", f"/characters/templates/{tid}/delete", None)):
+            ra, rb = d.request(method, url, data=data), via.request(method, url, data=data)
+            assert (ra.status_code, ra.content if ra.status_code >= 400 else ra.headers.get("location")) == (rb.status_code, rb.content if rb.status_code >= 400 else rb.headers.get("location")), (method, url)
+    for (ia, ib) in made:
+        ra, rb = d.post(f"/characters/templates/{ia}/delete"), via.post(f"/characters/templates/{ib}/delete")
+        assert (ra.status_code, ra.headers.get("location")) == (rb.status_code, rb.headers.get("location"))
+        assert row_of(ia) is None and row_of(ib) is None
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    p.follow_redirects = pv.follow_redirects = False
+    for method, url in (("POST", "/characters/templates/new"), ("GET", "/characters/templates/1/edit"), ("POST", "/characters/templates/1/delete")):
+        ra, rb = p.request(method, url, data={"name": "x"}), pv.request(method, url, data={"name": "x"})
+        assert (ra.status_code, ra.content) == (rb.status_code, rb.content), (method, url)

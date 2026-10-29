@@ -52,6 +52,11 @@ them after each batch; the phase is done when both are empty and the steps below
   buckets (`catalog_equipment` from app_data.json), custom feats / items, credits, the banshee's ectoplasm and the portrait read from uploads.
   The custom-sheet 400 is Python's. Values Python would print in its own form (None, bools, exponent floats, non-string names) are Python's.
   `.pdf` stays Python's (reportlab).
+- **Saved views list, video job delete** (`GET /api/saved-views/<section>` in apis.rs; `DELETE /api/video-jobs/<id>` in ai.rs): the named views by
+  name with Python's `clean`; the finished job's row removed (an unknown or running job is Python's 400 word for word).
+- **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
+  the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
+  `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.
 - **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
   URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level

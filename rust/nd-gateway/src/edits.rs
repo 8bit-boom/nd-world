@@ -296,6 +296,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/images/albums/upload/complete", gallery_complete),
     ("/pages/upload/complete", pages_complete),
     ("/folders/rename", folder_rename),
+    ("/characters/templates/new", sheet_template_new),
+    ("/characters/templates/{}/edit", sheet_template_edit),
+    ("/characters/templates/{}/delete", sheet_template_delete),
     ("/entity-templates/new", entity_template_new),
     ("/entity-templates/{}/edit", entity_template_edit),
     ("/entity-templates/{}/delete", entity_template_delete),
@@ -6707,6 +6710,102 @@ fn entity_template_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     orm::bulk_update(&c.db, "entities", &[("template_id", Sql::Null)], "template_id = ?", &[Sql::Integer(ids[0])])?;
     c.db.execute("DELETE FROM entity_templates WHERE id = ?1", [ids[0]]).ok()?;
     redirect("/entity-templates")
+}
+
+/// `_system_from_form(form, fields_raw)`: (system_json text, rules_md) cleaned against the submitted fields
+fn sheet_system_from_form(f: &Form, fields_raw: &str) -> Option<(String, String)> {
+    let loads = |t: &str| -> Option<Option<Value>> {
+        if t.contains("NaN") || t.contains("Infinity") || !plain_numbers(t.as_bytes()) {
+            return None;
+        }
+        Some(serde_json::from_str::<Value>(t).ok())
+    };
+    let fields = match loads(fields_raw)? { Some(Value::Array(a)) => a, _ => vec![] };
+    let raw = match f.get("system_json").filter(|v| !v.is_empty()) {
+        None => json!({}),
+        Some(t) => loads(t)?.unwrap_or_else(|| json!({})),
+    };
+    let (spec, _) = crate::template_draft::clean_system_spec(&raw, &fields);
+    let rules: String = strip(f.get("rules_md").unwrap_or("")).chars().take(20000).collect();
+    Some((nd_render::py_dumps(&spec), rules))
+}
+
+/// The submitted `fields_json` as the sheet-template routes keep it: the text when it parses, "[]" when it does not (None: JSON the two
+/// readers might take differently)
+fn sheet_fields_raw(f: &Form) -> Option<String> {
+    let raw = f.get("fields_json").filter(|v| !v.is_empty()).unwrap_or("[]");
+    if raw.contains("NaN") || raw.contains("Infinity") || !plain_numbers(raw.as_bytes()) {
+        return None;
+    }
+    Some(if serde_json::from_str::<Value>(raw).is_ok() { raw.to_string() } else { "[]".to_string() })
+}
+
+/// `POST /characters/templates/new` (app/routers/characters.py `template_create`)
+fn sheet_template_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let name = strip(f.get("name").unwrap_or(""));
+    let name = if name.is_empty() { "Unnamed Template".to_string() } else { name };
+    if !name.is_ascii() {
+        return None; // str.lower() beyond ASCII: Python's
+    }
+    let desc = strip(f.get("description").unwrap_or(""));
+    let mode = if f.get("sheet_mode").unwrap_or("nd") == "custom" { "custom" } else { "nd" };
+    let raw = sheet_fields_raw(&f)?;
+    let base: String = name.to_lowercase().replace(' ', "-").chars().take(50).collect();
+    let (mut slug, mut n) = (base.clone(), 1);
+    while c.db.query_row("SELECT COUNT(*) FROM sheet_templates WHERE slug = ?1", [&slug], |r| r.get::<_, i64>(0)).ok()? > 0 {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    let (system, rules) = sheet_system_from_form(&f, &raw)?;
+    let id = orm::insert(
+        &c.db,
+        "sheet_templates",
+        &[
+            ("world_id", c.p.world.as_ref().and_then(|w| w.get("id")?.as_i64()).map_or(Sql::Null, Sql::Integer)),
+            ("name", s(&name)),
+            ("slug", s(&slug)),
+            ("description", s(&desc)),
+            ("is_builtin", Sql::Integer(0)),
+            ("sheet_mode", s(mode)),
+            ("fields_json", s(&raw)),
+            ("system_json", s(&system)),
+            ("rules_md", s(&rules)),
+        ],
+    )?;
+    redirect(&format!("/characters/templates/{id}/edit"))
+}
+
+/// `POST /characters/templates/<id>/edit` (`template_update`)
+fn sheet_template_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let tpl = row(&c.db, "SELECT * FROM sheet_templates WHERE id = ?1", ids[0])?;
+    let mut set: Vec<(&str, Sql)> = vec![];
+    if !py_truthy(tpl.get("is_builtin")) {
+        let old = tpl.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = strip(f.get("name").unwrap_or(&old));
+        set.push(("name", s(if name.is_empty() { &old } else { &name })));
+        set.push(("description", s(&strip(f.get("description").unwrap_or("")))));
+        set.push(("sheet_mode", s(if f.get("sheet_mode").unwrap_or("nd") == "custom" { "custom" } else { "nd" })));
+    }
+    let raw = sheet_fields_raw(&f)?;
+    let (system, rules) = sheet_system_from_form(&f, &raw)?;
+    set.push(("fields_json", s(&raw)));
+    set.push(("system_json", s(&system)));
+    set.push(("rules_md", s(&rules)));
+    set.push(("updated_at", s(&orm::now_stamp())));
+    orm::update(&c.db, "sheet_templates", ids[0], &set)?;
+    redirect(&format!("/characters/templates/{}/edit?saved=1", ids[0]))
+}
+
+/// `POST /characters/templates/<id>/delete` (`template_delete`); a built-in's 403 is Python's
+fn sheet_template_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let tpl = row(&c.db, "SELECT * FROM sheet_templates WHERE id = ?1", ids[0])?;
+    if py_truthy(tpl.get("is_builtin")) {
+        return None;
+    }
+    c.db.execute("DELETE FROM sheet_templates WHERE id = ?1", [ids[0]]).ok()?;
+    redirect("/characters/templates")
 }
 
 fn entity_set_image(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
