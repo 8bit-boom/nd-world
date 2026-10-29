@@ -2519,12 +2519,12 @@ fn managed_pc(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
     (c.p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(c.p.user_id)).then_some(pc)
 }
 
-fn col_int(m: &Map<String, Value>, k: &str) -> i64 {
+pub(crate) fn col_int(m: &Map<String, Value>, k: &str) -> i64 {
     m.get(k).and_then(|v| v.as_i64()).unwrap_or(0)
 }
 
 /// `stat_values(pc)`; None for stats Python reads its own way (text values, unhashable ids, JSON serde does not take)
-fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
+pub(crate) fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
     let raw = pc.get("stats_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let stats = match serde_json::from_str::<Value>(raw) {
         Ok(v) => v,

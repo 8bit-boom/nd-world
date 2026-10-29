@@ -43,6 +43,10 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Service worker** (`GET /sw.js`, static_files.rs `serve_sw`): static/sw.js with Python's headers (`Service-Worker-Allowed`, `no-cache`,
   `text/javascript; charset=utf-8`, Starlette's ETag, gzip as the middleware does it). Conditional and Range requests are Python's
   (its FileResponse ignores `If-None-Match`). `/world.db` was a probe of a route that does not exist (Python's 404).
+- **Character share page** (`GET /share/<token>`, share.rs): the token lookup (`revoked IS NOT 1`, first 64 characters), `public_view` for a
+  native sheet (stats, HP / Shock) and a custom template (resource vitals, roster groups, via the roster helpers), conditions / feats /
+  gear with Python's caps, and the three privacy headers. The 404 is Python's. Stored values Python would print in its own form (a
+  float or non-string `qty`, a non-string name or rank, NaN JSON) are Python's.
 - **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
   URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level

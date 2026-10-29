@@ -6,6 +6,7 @@
 pub mod boards;
 pub mod calendar;
 pub mod misc_apis;
+pub mod share;
 pub mod devtools;
 pub mod charsheets;
 pub mod export;
@@ -741,6 +742,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = if uri.path() == "/cockpit" { pages::cockpit } else { pages::player_cockpit };
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/share/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || share::share_page(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }

@@ -7010,3 +7010,46 @@ def test_service_worker_is_pythons(client, seed):
         assert (a.status_code, a.content) == (b.status_code, b.content), method
     a, b = d.get("/sw.js", headers={"range": "bytes=0-9"}), g.get("/sw.js", headers={"range": "bytes=0-9"})
     assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_share_page_is_pythons(client, seed):
+    """GET /share/<token>: a native sheet (stats, vitals, conditions, feats, gear), a custom-template sheet (resources, roster groups), odd stored
+    JSON, and the 404 for an unknown / revoked / over-long token - with the privacy headers."""
+    from app.database import SessionLocal
+    from app.models import CharacterShare, PlayerCharacter, SheetTemplate
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        tpl = SheetTemplate(world_id=w, name="Fate Lite", slug="gw-share-fate", sheet_mode="custom", fields_json=json.dumps([
+            {"id": "hp", "label": "Stress", "type": "resource", "default_value": "3/3"}, {"id": "aspect", "label": "High Concept", "type": "text"},
+            {"id": "skill", "label": "Great Skill", "type": "number"}]))
+        db.add(tpl)
+        db.flush()
+        native = PlayerCharacter(world_id=w, name="Vex <b>", race="Elf", char_class="Rogue", level=3, current_hp=7, max_hp=12, shock_current=2, shock_max=5,
+                                 stats_json=json.dumps([{"id": "str", "value": 12}, {"id": "dex", "value": "14.7"}, {"id": "cha", "value": None}]),
+                                 conditions_json=json.dumps(["Prone", 5, "x" * 60] + ["c"] * 14),
+                                 feats_json=json.dumps([{"name": "Sneak", "rank": "II"}, {"name": ""}, {"name": "Dodge"}, "bad", {"name": "L" * 100, "rank": "r" * 30}]),
+                                 equipment_json=json.dumps([{"name": "Dagger", "qty": 2, "equipped": True}, {"name": "Rope"}, {"name": "Coin", "qty": "50"}, {"name": "Lamp", "qty": 1}]))
+        bare = PlayerCharacter(world_id=w, name="Bare")
+        custom = PlayerCharacter(world_id=w, name="Fatey", sheet_template_id=tpl.id, custom_fields_json=json.dumps({"hp_current": 2, "hp_max": 4, "aspect": "Hero", "skill": 3}))
+        oddjson = PlayerCharacter(world_id=w, name="Odd", conditions_json="not json", feats_json='{"a": 1}', equipment_json="[1, null]", stats_json="[]")
+        floaty = PlayerCharacter(world_id=w, name="Floaty", equipment_json=json.dumps([{"name": "Gem", "qty": 1.5}]))
+        db.add_all([native, bare, custom, oddjson, floaty])
+        db.flush()
+        tokens = {}
+        for key, pc in (("native", native), ("bare", bare), ("custom", custom), ("odd", oddjson), ("floaty", floaty)):
+            tokens[key] = f"gwshare-{key}-token"
+            db.add(CharacterShare(world_id=w, character_id=pc.id, token=tokens[key]))
+        db.add(CharacterShare(world_id=w, character_id=native.id, token="gwshare-revoked", revoked=True))
+        db.commit()
+    finally:
+        db.close()
+    d, g = httpx.Client(base_url=DIRECT, timeout=30), httpx.Client(base_url=base, timeout=30)
+    keep = ("content-type", "cache-control", "x-robots-tag", "referrer-policy")
+    for key, tok in list(tokens.items()) + [("revoked", "gwshare-revoked"), ("unknown", "nope"), ("long", "z" * 100), ("pct", "gw%20share"), ("slash", "a%2Fb")]:
+        a, b = d.get(f"/share/{tok}"), g.get(f"/share/{tok}")
+        assert (a.status_code, a.content) == (b.status_code, b.content), key
+        assert {k: a.headers.get(k) for k in keep} == {k: b.headers.get(k) for k in keep}, key
+        if key in ("native", "bare", "custom", "revoked", "unknown", "long"):
+            assert b.headers.get("x-nd-served-by") == "gateway", key
