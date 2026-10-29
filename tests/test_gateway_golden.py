@@ -6962,3 +6962,31 @@ def test_unsloth_prefs_get_is_pythons(client, seed):
     d = httpx.Client(base_url=DIRECT, timeout=30, follow_redirects=False)
     ra, rb = d.get("/api/ai/unsloth/prefs"), anon.get("/api/ai/unsloth/prefs")
     assert (ra.status_code, ra.content) == (rb.status_code, rb.content)
+
+
+def test_the_dice_page_form_is_pythons(client, seed):
+    """POST /dice: a stored roll redirects to /dice with the same row Python stores; a bad notation / no world is Python's redirect or error."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import DiceRoll
+    base = str(client.base_url)
+    for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), (seed.gm.email, GM_PASSWORD, None)):
+        d = httpx.Client(base_url=DIRECT, timeout=60, follow_redirects=False)
+        assert d.post("/login", data={"email": email, "password": pw, "next": "/"}).status_code == 303
+        if world:
+            d.cookies.set("active_world", world)
+        else:
+            d.cookies.delete("active_world")
+        via = _via(d, base)
+        via.follow_redirects = False
+        for form in ({"notation": "2d6+3"}, {"notation": "  d20  "}, {"notation": "banana"}, {"notation": ""}, {}, {"notation": "51d6"}, {"notation": "d6", "x": "y"}, {"notation": "d6+é"}):
+            a, b = d.post("/dice", data=form), via.post("/dice", data=form)
+            assert (a.status_code, a.headers.get("location"), a.content) == (b.status_code, b.headers.get("location"), b.content), (email, world, form)
+            if a.status_code == 303 and a.headers["location"] == "/dice":
+                assert b.headers.get("x-nd-served-by") == "gateway", (email, world, form)
+    db = SessionLocal()
+    try:
+        rows = db.query(DiceRoll).filter(DiceRoll.notation.in_(["2d6+3", "d20"])).all()
+        assert rows and all(r.user_name and r.breakdown for r in rows)
+    finally:
+        db.close()

@@ -167,6 +167,18 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && req.uri().path() == "/api/dice/roll" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
         return writes::dice_roll(app.cfg.clone(), &app.proxy, req, peer).await;
     }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/dice" && app.cfg.rust_routes.iter().any(|r| r == "dice_roll") {
+        // the dice page's form (app/routers/dice.py `dice_roll_form`): a roll that is stored answers with the redirect
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (cfg, uri, headers, b) = (app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || writes::dice_form_blocking(&cfg, &uri, &headers, &b)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if app.cfg.rust_routes.iter().any(|r| r == "writes") && edits::handles_upload(req.method(), req.uri().path(), req.headers()) {
         return edits::serve_upload(app.cfg.clone(), &app.proxy, req, peer).await;
     }
@@ -273,7 +285,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && matches!(req.uri().path(), "/account/2fa/disable" | "/account/2fa/backup-codes/regenerate")
         && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         let (parts, body) = req.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         let is_disable = parts.uri.path() == "/account/2fa/disable";
@@ -302,7 +314,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && matches!(req.uri().path(), "/settings/system/model-override" | "/settings/system/model-override/delete")
         && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         let (parts, body) = req.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         let is_delete = parts.uri.path().ends_with("/delete");
@@ -332,7 +344,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && req.uri().path() == "/account/password" && app.cfg.rust_routes.iter().any(|r| r == "writes") {
         // the password change with the gateway's own lockout counter (batch G: Python's in-memory counter is replaced)
         let (parts, body) = req.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         match account::password_change_srv(app.cfg.clone(), app.pages.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
@@ -575,7 +587,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         && app.cfg.rust_routes.iter().any(|r| r == "auth") {
         // signing in and out (app/routers/auth.py)
         let (parts, body) = req.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         if let Some(resp) = auth::route(app.pages.clone(), app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone(), peer).await {
@@ -587,7 +599,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         && (req.method() == axum::http::Method::POST || (req.method() == axum::http::Method::GET && req.uri().path() == "/api/system/fans")) {
         // fan control (app/fan_control.py): the gateway owns the fan headers (Python's loop stands down with ND_FANS_OWNER=gateway)
         let (parts, body) = req.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         if let Some(resp) = fans::route(app.cfg.clone(), parts.method.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {

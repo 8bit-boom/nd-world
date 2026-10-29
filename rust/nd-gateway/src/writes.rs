@@ -214,6 +214,28 @@ fn dice_roll_blocking(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8])
         None => "",
         Some(v) => v.as_str()?,
     };
+    let (id, iso, user_name, notation_stored, label_stored, rolled) = store_roll(cfg, uri, headers, notation, label)?;
+    // compact spelling (the stored text uses json.dumps' ", " / ": "; terms and numbers contain neither), keys in Python's order
+    let breakdown = rolled.breakdown_json.replace(", ", ",").replace(": ", ":");
+    // key order and compact spelling as FastAPI's JSONResponse writes it
+    let answer = format!(
+        "{{\"id\":{id},\"user_name\":{},\"notation\":{},\"label\":{},\"breakdown\":{},\"total\":{},\"created_at\":\"{iso}Z\"}}",
+        serde_json::to_string(&user_name).ok()?,
+        serde_json::to_string(&notation_stored).ok()?,
+        serde_json::to_string(&label_stored).ok()?,
+        breakdown,
+        rolled.total
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(answer))
+        .ok()
+}
+
+/// Rolls `notation` for the signed-in user and stores it in the world's log (the JSON route and the dice page's form share this)
+fn store_roll(cfg: &Config, uri: &Uri, headers: &HeaderMap, notation: &str, label: &str) -> Option<(i64, String, String, String, String, Rolled)> {
     if !ascii_printable(notation) {
         return None; // a notation with non-ASCII fails Python's parse with its own message
     }
@@ -239,24 +261,18 @@ fn dice_roll_blocking(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8])
     // live.signal(world, "dice"): open dice pages fetch the log once (app/shared_state.py)
     tx.execute("INSERT INTO shared_state (key, n) VALUES (?1, 1) ON CONFLICT(key) DO UPDATE SET n = n + 1", params![format!("sig:{}:dice", actor.world_id)]).ok()?;
     tx.commit().ok()?;
+    Some((id, iso, user_name, notation_stored, label_stored, rolled))
+}
 
-    // compact spelling (the stored text uses json.dumps' ", " / ": "; terms and numbers contain neither), keys in Python's order
-    let breakdown = rolled.breakdown_json.replace(", ", ",").replace(": ", ":");
-    // key order and compact spelling as FastAPI's JSONResponse writes it
-    let answer = format!(
-        "{{\"id\":{id},\"user_name\":{},\"notation\":{},\"label\":{},\"breakdown\":{},\"total\":{},\"created_at\":\"{iso}Z\"}}",
-        serde_json::to_string(&user_name).ok()?,
-        serde_json::to_string(&notation_stored).ok()?,
-        serde_json::to_string(&label_stored).ok()?,
-        breakdown,
-        rolled.total
-    );
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header("x-nd-served-by", "gateway")
-        .body(Body::from(answer))
-        .ok()
+/// `POST /dice` (the page's form): a stored roll answers with the redirect back to the page; a notation Python rejects is Python's
+pub fn dice_form_blocking(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    if crate::form::content_type(headers) != "application/x-www-form-urlencoded" {
+        return None;
+    }
+    let f = crate::form::Form::parse(body)?;
+    let notation = f.get("notation").unwrap_or("");
+    store_roll(cfg, uri, headers, notation, "")?;
+    crate::edits::redirect("/dice")
 }
 
 /// Entry point from the gateway: reads the (small) body, tries to answer, and otherwise forwards the request - body included - to Python.

@@ -38,6 +38,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Unsloth prefs** (`GET /api/ai/unsloth/prefs`, misc_apis.rs): the TTS / STT values from `ai_models.json` with Python's `value or default`
   rule, GM only. `GET /api/ai/context-info` stays Python's: it reads Python's in-memory Ollama options, which the gateway cannot see
   until the settings-overrides sync is owned by the gateway.
+- **Dice page form** (`POST /dice`, writes.rs `dice_form_blocking`): shares `store_roll` with `POST /api/dice/roll`; a stored roll answers with
+  the 303 back to `/dice`, a notation Python rejects (its `?error=` redirect) or a non-form body is Python's.
 - **The System-tab save** (`POST /settings/system`, settings_system.rs `settings_system_save`): the Ollama / Unsloth
   URLs and models, the per-request generation tuning (every field's parse failure and bounds are Python's messages),
   the upload limits, the two world-feature toggles, the API-key leave / clear / replace rules, and the server-level
