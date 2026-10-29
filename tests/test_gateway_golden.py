@@ -6803,3 +6803,70 @@ def test_hub_sessions_and_share_state_are_pythons(client, seed):
     trusting = os.environ.get("ND_GATEWAY_TRUST_PROXY", "0") in ("1", "true", "yes")
     ra = d.get(url, headers=hdr if trusting else {"host": "nd.example.com"})
     assert (ra.status_code, ra.json()) == (rb.status_code, rb.json())
+
+
+def test_world_context_and_save_note_are_pythons(client, seed):
+    """GET /api/ai/world-context (people, places, lore documents in full, items and feats by name - unfiltered for the GM, as a player
+    sees it for an assistant) and POST /api/ai/save-note (the entity written, the 400 without a world, a subtype cut at 64)."""
+    from app.database import SessionLocal
+    from app.models import Entity, World, WorldMembership
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="character", name="Zed", subtype="Fixer", summary="Knows [gmonly]the mayor[/gmonly] well"),
+                    Entity(world_id=w, kind="character", name="Amy"), Entity(world_id=w, kind="location", name="Alley", summary="Dark"),
+                    Entity(world_id=w, kind="creature", name="Wolf", visible_to_players=False, summary="secret"),
+                    Entity(world_id=w, kind="note", name="Lore one", subtype="tale", summary="S", body="Body [gmonly]hidden[/gmonly] " + "x" * 6000),
+                    Entity(world_id=w, kind="note", name="Hidden note", body="no", visible_to_players=False),
+                    Entity(world_id=w, kind="feat", name="Tough", subtype="combat"), Entity(world_id=w, kind="feat", name="Lucky")]
+                   + [Entity(world_id=w, kind="item", name=f"Item {i:02d}", subtype="gear" if i % 3 else None) for i in range(40)])
+        db.get(World, w).description = "A neon é world"
+        db.commit()
+        pa = db.query(WorldMembership).filter(WorldMembership.world_id == w, WorldMembership.user_id == seed.player_a.id).first()
+        pa.role = "assistant"
+        db.commit()
+    finally:
+        db.close()
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        ra, rb = d.get("/api/ai/world-context"), _via(d, base).get("/api/ai/world-context")
+        assert rb.headers.get("x-nd-served-by") == "gateway", email
+        assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), email
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(gm, base)
+
+    def notes():
+        db = SessionLocal()
+        try:
+            return [(e.kind, e.subtype, e.name, e.body, e.summary, e.visible_to_players, e.world_id)
+                    for e in db.query(Entity).filter(Entity.world_id == w, Entity.name.like("Saved%")).order_by(Entity.id)]
+        finally:
+            db.close()
+
+    for body in ({"title": "Saved one", "content": "Hello é " + "w" * 200}, {"title": "Saved two", "content": "x", "subtype": "  tale  "},
+                 {"title": "Saved three", "content": "y", "subtype": "t" * 80}, {"title": "Saved four", "content": ""}):
+        before = len(notes())
+        ra = gm.post("/api/ai/save-note", json=body)
+        a_rows = notes()
+        db = SessionLocal()
+        try:
+            for e in db.query(Entity).filter(Entity.world_id == w, Entity.name.like("Saved%")).all():
+                db.delete(e)
+            db.commit()
+        finally:
+            db.close()
+        rb = via.post("/api/ai/save-note", json=body)
+        assert rb.headers.get("x-nd-served-by") == "gateway", body
+        assert ra.status_code == rb.status_code == 200
+        assert ra.json()["name"] == rb.json()["name"]
+        assert notes() == a_rows, body
+        assert len(a_rows) == before + 1
+        db = SessionLocal()
+        try:
+            for e in db.query(Entity).filter(Entity.world_id == w, Entity.name.like("Saved%")).all():
+                db.delete(e)
+            db.commit()
+        finally:
+            db.close()

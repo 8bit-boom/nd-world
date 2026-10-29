@@ -29,7 +29,8 @@ pub fn serves(method: &Method, path: &str) -> bool {
         return *method == Method::GET || *method == Method::DELETE;
     }
     match path {
-        "/health" | "/api/ai/world-summary" => *method == Method::GET,
+        "/health" | "/api/ai/world-summary" | "/api/ai/world-context" => *method == Method::GET,
+        "/api/ai/save-note" => *method == Method::POST,
         "/api/ai/presets" => *method == Method::GET || *method == Method::POST,
         _ => *method == Method::DELETE && path.strip_prefix("/api/ai/presets/").is_some_and(|l| !l.is_empty() && !l.contains('/')),
     }
@@ -136,6 +137,12 @@ pub fn handle(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, bod
     }
     if path == "/api/ai/world-summary" {
         return world_summary(cfg, uri, headers);
+    }
+    if path == "/api/ai/world-context" {
+        return world_context(cfg, uri, headers);
+    }
+    if path == "/api/ai/save-note" {
+        return save_note(cfg, uri, headers, body);
     }
     if let Some(id) = character_tail(path, "/share") {
         return share_state(cfg, uri, headers, id);
@@ -308,4 +315,128 @@ fn share_state(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<
             crate::edits::json_response(&json!({"active": true, "url": format!("{}/share/{tok}", base.trim_end_matches('/'))}))
         }
     }
+}
+
+/// `GET /api/ai/world-context` (app/main.py `ai_world_context`): the world as plain text for the AI chat - people, places, lore documents in
+/// full, items and feats by name - through the caller's own visibility (an assistant sees what players see)
+fn world_context(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let Some(world) = p.world.clone() else { return crate::edits::json_response(&json!({"context": "", "world_name": ""})) };
+    let wid = world.get("id")?.as_i64()?;
+    let text = |m: &Map<String, Value>, k: &str| -> Option<Option<String>> {
+        match m.get(k) {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::String(s)) => Some(Some(s.clone())),
+            _ => None,
+        }
+    };
+    let strip = |s: Option<String>| -> Option<Option<String>> {
+        match s {
+            Some(s) if !p.is_gm && !s.is_empty() => Some(Some(nd_perm::gmonly::strip_gm_only(&s, None, nd_render::now_minute())?)),
+            other => Some(other),
+        }
+    };
+    let vis = if p.is_gm { String::new() } else {
+        format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
+    };
+    let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    let name = text(&world, "name")?.unwrap_or_else(|| "None".into());
+    let mut lines: Vec<String> = vec![format!("# {name}"), text(&world, "description")?.unwrap_or_default(), String::new()];
+    for kind in ["character", "location", "organization", "creature", "event"] {
+        let ents = rows(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = ?2{vis} ORDER BY name"), &[&wid, &kind])?;
+        if ents.is_empty() {
+            continue;
+        }
+        lines.push(format!("## {}S ({})", kind.to_uppercase(), ents.len()));
+        for e in &ents {
+            let summary = strip(text(e, "summary")?)?;
+            let mut line = format!("- **{}**", text(e, "name")?.unwrap_or_else(|| "None".into()));
+            if let Some(sub) = text(e, "subtype")?.filter(|s| !s.is_empty()) {
+                line.push_str(&format!(" [{sub}]"));
+            }
+            if let Some(s) = summary.filter(|s| !s.is_empty()) {
+                line.push_str(&format!(": {s}"));
+            }
+            lines.push(line);
+        }
+        lines.push(String::new());
+    }
+    let notes = rows(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = 'note'{vis} ORDER BY name"), &[&wid])?;
+    if !notes.is_empty() {
+        lines.push("## LORE DOCUMENTS (full text)".into());
+        for e in &notes {
+            let mut head = format!("\n### {}", text(e, "name")?.unwrap_or_else(|| "None".into()));
+            if let Some(sub) = text(e, "subtype")?.filter(|s| !s.is_empty()) {
+                head.push_str(&format!(" [{sub}]"));
+            }
+            lines.push(head);
+            let summary = strip(text(e, "summary")?)?;
+            let body = strip(text(e, "body")?)?;
+            if let Some(s) = summary.filter(|s| !s.is_empty()) {
+                lines.push(s);
+            }
+            if let Some(b) = body.filter(|s| !s.is_empty()) {
+                lines.push(b.chars().take(5000).collect());
+            }
+        }
+        lines.push(String::new());
+    }
+    for kind in ["item", "feat"] {
+        let ents = rows(&format!("SELECT name, subtype FROM entities WHERE world_id = ?1 AND kind = ?2{vis} ORDER BY subtype, name"), &[&wid, &kind])?;
+        if ents.is_empty() {
+            continue;
+        }
+        lines.push(format!("## {}S ({} total)", kind.to_uppercase(), ents.len()));
+        let mut by_sub: Vec<(String, Vec<String>)> = vec![];
+        for e in &ents {
+            let sub = text(e, "subtype")?.filter(|s| !s.is_empty()).unwrap_or_else(|| "other".into());
+            let n = text(e, "name")?.unwrap_or_else(|| "None".into());
+            match by_sub.iter_mut().find(|(k, _)| *k == sub) {
+                Some((_, v)) => v.push(n),
+                None => by_sub.push((sub, vec![n])),
+            }
+        }
+        for (sub, names) in by_sub {
+            let mut snippet = names.iter().take(25).cloned().collect::<Vec<_>>().join(", ");
+            if names.len() > 25 {
+                snippet.push_str(&format!(" \u{2026} +{} more", names.len() - 25));
+            }
+            lines.push(format!("  [{sub}]: {snippet}"));
+        }
+        lines.push(String::new());
+    }
+    crate::edits::json_response(&json!({"context": lines.join("\n"), "world_name": name}))
+}
+
+/// `POST /api/ai/save-note` (app/main.py `ai_save_note`): a note entity from an AI answer
+fn save_note(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if crate::form::content_type(headers) != "application/json" {
+        return None;
+    }
+    let b = match serde_json::from_slice::<Value>(body).ok()? {
+        Value::Object(o) if crate::edits::plain_numbers(body) => o,
+        _ => return None,
+    };
+    let (Some(Value::String(title)), Some(Value::String(content))) = (b.get("title"), b.get("content")) else { return None };
+    let subtype = match b.get("subtype") {
+        None => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let Some(world) = p.world.clone() else { return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "No active world")) };
+    let sub: String = nd_render::text::py_strip(&subtype).chars().take(64).collect();
+    use rusqlite::types::Value as Sql;
+    let id = crate::orm::insert(&db, "entities", &[("world_id", Sql::Integer(world.get("id")?.as_i64()?)), ("kind", Sql::Text("note".into())),
+        ("subtype", if sub.is_empty() { Sql::Null } else { Sql::Text(sub) }), ("name", Sql::Text(title.clone())), ("body", Sql::Text(content.clone())),
+        ("summary", Sql::Text(content.chars().take(120).collect()))])?;
+    crate::edits::json_response(&json!({"id": id, "name": title}))
 }
