@@ -1319,6 +1319,24 @@ pub async fn ai_assist_job(cfg: std::sync::Arc<Config>, uri: Uri, headers: Heade
     crate::edits::json_response(&json!({"job_id": id}))
 }
 
+/// `create_assist_job(world_id, op=..., surface=..., content=..., meta=..., instruction=..., model=..., think=...)` for a caller that is not
+/// the interactive assist route (Code Assist): the row, no RAG; the caller starts it with `start_assist_job_pub`
+pub(crate) fn insert_assist_job(db: &rusqlite::Connection, world_id: i64, user_id: i64, op: &str, surface: &str, content: &str, meta: &str, instruction: &str, model: &str, think: bool) -> Option<i64> {
+    use rusqlite::types::Value as Sql;
+    let instruction = crate::edits::py_strip_pub(instruction);
+    let params = json!({"op": op, "surface": surface, "meta": meta, "instruction": instruction, "lang": ""});
+    let opt = |t: &str| if t.is_empty() { Sql::Null } else { Sql::Text(t.to_string()) };
+    crate::orm::insert(db, "audio_jobs", &[("world_id", Sql::Integer(world_id)), ("purpose", Sql::Text("ai_assist".into())),
+        ("filename", Sql::Text(format!("AI assist · {surface}"))), ("status", Sql::Text("pending".into())), ("created_by_user_id", Sql::Integer(user_id)),
+        ("model", opt(model)), ("think", Sql::Integer(think as i64)), ("extra_instructions", opt(&instruction)), ("use_rag", Sql::Integer(0)),
+        ("assist_params_json", Sql::Text(nd_render::py_dumps(&params))), ("transcript", Sql::Text(content.to_string())), ("audio_path", Sql::Text(String::new())),
+        ("delete_after", Sql::Integer(0))])
+}
+
+pub(crate) fn start_assist_job_pub(id: i64) {
+    start_assist_job(id)
+}
+
 fn start_assist_job(id: i64) {
     crate::jobs::spawn("audio_jobs", id, async move {
         run_assist_job(id).await;
@@ -1377,7 +1395,6 @@ async fn run_assist_job(id: i64) {
         let op = pg("op");
         let set = |fields: &[(&str, rusqlite::types::Value)]| crate::orm::update(&db, "audio_jobs", id, fields);
         set(&[("status", rusqlite::types::Value::Text("summarizing".into()))]);
-        let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
         let transcript = transcript.unwrap_or_default();
         let (system, user) = match assist_prompt(&op, &transcript, &pg("meta"), &pg("instruction"), &pg("lang")) {
             Ok((system, user)) => {
@@ -1392,6 +1409,8 @@ async fn run_assist_job(id: i64) {
             }
             Err(m) => return Some(Err(format!("ValueError: {}", m.unwrap_or_else(|| format!("Unknown AI assist operation: '{op}'"))))),
         };
+        // run_assist checks its input before it ever asks a backend
+        let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
         let model = if model.is_empty() { backend.model.clone() } else { model };
         let extra = assist_options(&backend, think);
         Some(Ok((Assist { backend, op, model, system, user, think, extra }, String::new())))

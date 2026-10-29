@@ -328,6 +328,12 @@ them after each batch; the phase is done when both are empty and the steps below
   than streamed.
 - **Character sheets** (`/pages/sheets*`, charsheets.rs): list, page, sandboxed render and download, new / save / edit / delete,
   refusals included.
+- **Tool pages and Code Assist** (`GET /image-gen`, `/imagestudio`, `/tools/code-assist`, devtools.rs; `POST /tools/code-assist/generate`
+  and `GET /tools/code-assist/generate/<id>`): the source file picker (app/ and static/, pruned and capped as Python's walk), the path
+  sandbox with its 400 / 404 messages, the job created on the AI assist engine, and the status route's unified diff - nd-render's
+  `difflib` is CPython's SequenceMatcher (autojunk included), checked against 48 Python-made diffs. The assist job run now rejects
+  empty input before asking for a backend, as `run_assist` does. Image Studio with the Studio key set and no SwarmUI address stays
+  Python's (its redirect raises there).
 - **Character hub log and notes tabs** (`GET /api/characters/<id>/hub/log`, `/hub/notes`, hub.rs): the change log with what can still
   be undone, the GM's private notes as excerpts with the thread link, the journal with its session labels.
 - **Account page** (`GET /account`, account.rs) with its layout panel (the presets in Python's key order, from

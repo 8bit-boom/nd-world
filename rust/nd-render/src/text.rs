@@ -51,6 +51,31 @@ pub fn py_splitlines(s: &str) -> Vec<&str> {
     out
 }
 
+/// `str.splitlines(keepends=True)`
+pub fn py_splitlines_keepends(s: &str) -> Vec<&str> {
+    let mut out = vec![];
+    let mut start = 0;
+    let b: Vec<(usize, char)> = s.char_indices().collect();
+    let mut i = 0;
+    while i < b.len() {
+        let (pos, c) = b[i];
+        if matches!(c, '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{1c}' | '\u{1d}' | '\u{1e}' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+            let mut next = pos + c.len_utf8();
+            if c == '\r' && i + 1 < b.len() && b[i + 1].1 == '\n' {
+                next += 1;
+                i += 1;
+            }
+            out.push(&s[start..next]);
+            start = next;
+        }
+        i += 1;
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    }
+    out
+}
+
 fn m(re: &Regex, s: &str) -> bool {
     re.is_match(s).unwrap_or(false)
 }

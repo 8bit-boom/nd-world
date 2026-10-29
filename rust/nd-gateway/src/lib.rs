@@ -5,6 +5,7 @@
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
 pub mod calendar;
+pub mod devtools;
 pub mod charsheets;
 pub mod export;
 pub mod account;
@@ -197,12 +198,15 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/session-log" | "/npc-talk" | "/account" | "/races" | "/professions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config" | "/characters/new" | "/characters/ai-new" | "/maps/schematic/new") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/sessions" | "/session-log" | "/image-gen" | "/imagestudio" | "/tools/code-assist" | "/npc-talk" | "/account" | "/races" | "/professions" | "/quests" | "/parties" | "/characters" | "/ai" | "/ai-chat" | "/import" | "/facts" | "/tables" | "/combat" | "/calendar" | "/facts/fragment" | "/calendar/agenda" | "/calendar/year" | "/calendar/config" | "/characters/new" | "/characters/ai-new" | "/maps/schematic/new") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = match uri.path() {
             "/sessions" => pages::sessions_list,
             "/account" => crate::account::page,
             "/session-log" => pages::session_log_list,
+            "/image-gen" => devtools::image_gen,
+            "/imagestudio" => devtools::imagestudio,
+            "/tools/code-assist" => devtools::code_assist,
             "/npc-talk" => pages::npc_talk_page,
             "/races" => crate::catalog::races,
             "/professions" => crate::catalog::professions,
@@ -495,6 +499,23 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/tools/code-assist/generate" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        // Code Assist: a coding model drafts a change to one of the app's own files (the job engine is the AI assist job's)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = devtools::code_assist_generate(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/tools/code-assist/generate/") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || devtools::code_assist_status(&cfg, &uri, &headers)).await {
+            return resp;
+        }
     }
     if charsheets::serves(req.method(), req.uri().path()) && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // player-fillable character sheets (app/routers/character_sheets.py)

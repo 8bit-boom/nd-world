@@ -3,6 +3,7 @@
 use minijinja::{escape_formatter, value::ValueKind, Environment, Error, ErrorKind, State, Value};
 use minijinja::{AutoEscape, Output};
 pub mod app;
+pub mod difflib;
 pub mod pyvalue;
 pub mod rules;
 pub mod md;

@@ -4,6 +4,7 @@
     ND_TEST_BASE_URL=http://127.0.0.1:8952 ND_GOLDEN_DIRECT_URL=http://127.0.0.1:8951 python -m pytest tests/test_gateway_golden.py"""
 import importlib.util
 import json
+from pathlib import Path
 import os
 from pathlib import Path
 
@@ -6492,3 +6493,109 @@ def test_entity_context_is_pythons(client, seed):
     db2.commit()
     db2.close()
     assert served >= 4, served
+
+
+def test_tool_pages_are_pythons(client, seed):
+    """GET /image-gen, /imagestudio and /tools/code-assist from the gateway: the player image page for the GM and a player (own
+    characters only, the opt-in flag, 403 otherwise), Image Studio with a saved SwarmUI address (and the section closed to a player),
+    and Code Assist's source file list for a GM, with a player's 403 until the section is opened."""
+    from app.database import SessionLocal, get_app_settings
+    from app.models import PlayerCharacter, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([PlayerCharacter(world_id=w, name="Zed", owner_user_id=seed.player_a.id), PlayerCharacter(world_id=w, name="Amy", owner_user_id=seed.player_a.id),
+                    PlayerCharacter(world_id=w, name="Other", owner_user_id=seed.player_b.id)])
+        get_app_settings(db).swarmui_external_url = "http://swarm.lan:7801/"
+        db.get(World, w).players_can_use_image_gen = False
+        db.commit()
+    finally:
+        db.close()
+    served = 0
+    for allowed in (False, True):
+        db = SessionLocal()
+        try:
+            wa = db.get(World, w)
+            wa.players_can_use_image_gen = allowed
+            wa.section_access_json = json.dumps({"code_assist": {"player": "read"}, "imagestudio": {"player": "read"}} if allowed else {})
+            db.commit()
+        finally:
+            db.close()
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            via = _via(d, base)
+            for url in ("/image-gen", "/imagestudio", "/tools/code-assist"):
+                r = via.get(url, follow_redirects=False)
+                assert r.headers.get("x-nd-served-by") == "gateway", (email, url, allowed, r.status_code)
+                if r.status_code == 200:
+                    served += _same_page(d, via, url, email)
+                else:
+                    a = d.get(url, follow_redirects=False)
+                    assert (a.status_code, a.content) == (r.status_code, r.content), (email, url)
+    assert served >= 6
+
+
+def test_code_assist_generate_and_status_are_pythons(client, seed):
+    """POST /tools/code-assist/generate and GET /tools/code-assist/generate/<id> from the gateway: the refusals (no instruction, a bad
+    path, a type not allowed, a missing file, an unreadable or too large one), the job row created for a real file (and what the
+    unconfigured AI makes of it), and the status route over pending / failed / done jobs - the unified diff against what was sent,
+    the truncation warning, a job of another world or kind."""
+    import time
+    from app.database import SessionLocal
+    from app.models import AudioJob
+    base = str(client.base_url)
+    w, w2 = seed.world_a.id, seed.world_b.id
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    via = _via(gm, base)
+    big = next((p for p in sorted((Path(__file__).parent.parent / "static").rglob("*.js")) if p.stat().st_size > 80_000), None)
+    cases = [{"file": "app/main.py"}, {"file": "app/main.py", "instruction": "   "}, {"file": "../etc/passwd", "instruction": "x"},
+             {"file": "app/../app/main.py", "instruction": "x"}, {"file": "app/main.bin", "instruction": "x"}, {"file": "app/nosuch.py", "instruction": "x"},
+             {"file": "tests/conftest.py", "instruction": "x"}, {"file": "/app/__init__.py", "instruction": "x"}]
+    if big:
+        cases.append({"file": "static/" + big.relative_to(Path(__file__).parent.parent / "static").as_posix(), "instruction": "x"})
+    for form in cases:
+        a, b = gm.post("/tools/code-assist/generate", data=form), via.post("/tools/code-assist/generate", data=form)
+        served = b.headers.get("x-nd-served-by") == "gateway"
+        if "instruction" in form or "file" not in form:
+            assert served or a.status_code == 422, form
+        if a.status_code >= 400 and served:
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), form
+    rows = []
+    for who in (gm, via):
+        r = who.post("/tools/code-assist/generate", data={"file": "app/__init__.py", "instruction": "  add a docstring  ", "model": " m ", "think": "true"})
+        assert r.status_code == 200, r.text
+        rows.append(r.json()["job_id"])
+    time.sleep(3)
+    db = SessionLocal()
+    try:
+        ja, jb = (db.get(AudioJob, i) for i in rows)
+        for col in ("world_id", "purpose", "filename", "created_by_user_id", "model", "think", "extra_instructions", "use_rag", "assist_params_json",
+                    "transcript", "audio_path", "delete_after"):
+            assert getattr(ja, col) == getattr(jb, col), col
+        assert (ja.status, ja.error) == (jb.status, jb.error)
+        seeded = {}
+        for key, status, result, original, other_world in (
+                ("done", "done", {"text": "line one\nline TWO\nline three\nextra\n", "model": "coder"}, "line one\nline two\nline three\n", False),
+                ("short", "done", {"text": "a\n"}, "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n", False),
+                ("failed", "error", {}, "x", False), ("pending", "pending", {}, "x", False), ("other", "done", {"text": "t"}, "x", True)):
+            j = AudioJob(world_id=w2 if other_world else w, purpose="ai_assist", filename="AI assist · code_assist", status=status, error="boom" if status == "error" else "",
+                         model="m", transcript=original, audio_path="", delete_after=False, result_json=json.dumps(result),
+                         assist_params_json=json.dumps({"op": "code_edit", "surface": "code_assist", "meta": "File: app/x.py", "instruction": "i", "lang": ""}))
+            db.add(j)
+            db.flush()
+            seeded[key] = j.id
+        wrong_op = AudioJob(world_id=w, purpose="ai_assist", filename="f", status="done", transcript="", audio_path="", delete_after=False,
+                            assist_params_json=json.dumps({"op": "rewrite"}))
+        db.add(wrong_op)
+        db.flush()
+        seeded["wrong"] = wrong_op.id
+        db.commit()
+    finally:
+        db.close()
+    for key, jid in list(seeded.items()) + [("missing", 999999)]:
+        url = f"/tools/code-assist/generate/{jid}"
+        a, b = gm.get(url), via.get(url)
+        assert b.headers.get("x-nd-served-by") == "gateway", key
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), key
