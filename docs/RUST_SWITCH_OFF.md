@@ -82,6 +82,8 @@ them after each batch; the phase is done when both are empty and the steps below
   tables", a table the viewer may not edit 403; a GM reaches any world's table (Python judges the table's own world).
 - **Entity note toggle / edit / delete** (edits.rs `entity_note`): Python looks at the note and its entity id only (no world), so the gateway does too:
   a note of another entity or a missing one is the 404; delete always redirects.
+- **Quest edit / delete / status refusals** (edits.rs `editable_quest`): 404 for a missing quest, 403 when the viewer may not edit it; a GM reaches any
+  world's quest (Python judges the quest's own world).
 - **Sheet template forms** (`POST /characters/templates/new | <id>/edit | <id>/delete`, `GET <id>/edit`; edits.rs `sheet_template_*`, idpages.rs):
   the stored row as Python writes it (slug from the lower-cased name, bad `fields_json` kept as `[]`, `system_json` through
   `clean_system_spec`, rules capped at 20000). Non-ASCII names, odd JSON and built-ins (403) are Python's.

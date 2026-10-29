@@ -725,13 +725,17 @@ fn row(db: &Connection, sql: &str, id: i64) -> Option<Map<String, Value>> {
 
 // ── quests (app/routers/quests.py) ───────────────────────────────────────────
 
-/// The quest by id, if it belongs to the viewer's active world and they may edit it
-fn editable_quest(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
-    let q = row(&c.db, "SELECT * FROM quests WHERE id = ?1", id)?;
-    if q.get("world_id")?.as_i64() != c.world_id() {
+/// The quest by id and the viewer's right to edit it (`world_can_edit_row` on the quest's own world): Ok(quest), or Err(Python's 404 / 403).
+/// A GM edits any world's quest; anyone else only the active world's.
+fn editable_quest(c: &Ctx, id: i64) -> Option<Result<Map<String, Value>, Response<Body>>> {
+    let Some(q) = row(&c.db, "SELECT * FROM quests WHERE id = ?1", id) else {
+        return Some(Err(crate::idpages::refusal(404)));
+    };
+    if !c.p.is_gm && q.get("world_id")?.as_i64() != c.world_id() {
         return None;
     }
-    c.can_edit_row("quests", q.get("created_by_user_id").and_then(|v| v.as_i64()))?.then_some(q)
+    let allowed = if c.p.is_gm { true } else { c.can_edit_row("quests", q.get("created_by_user_id").and_then(|v| v.as_i64()))? };
+    Some(if allowed { Ok(q) } else { Err(crate::idpages::refusal(403)) })
 }
 
 fn quest_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
@@ -765,7 +769,10 @@ fn quest_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 fn quest_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
     let f = c.form()?;
-    let q = editable_quest(c, id)?;
+    let q = match editable_quest(c, id)? {
+        Ok(q) => q,
+        Err(r) => return Some(r),
+    };
     let old_title = q.get("title")?.as_str()?.to_string();
     let title = field_or(&f, "title", &old_title, &old_title);
     let parent = match f.get("parent_id") {
@@ -794,7 +801,9 @@ fn quest_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn quest_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
-    editable_quest(c, id)?;
+    if let Err(r) = editable_quest(c, id)? {
+        return Some(r);
+    }
     orm::bulk_update(&c.db, "quests", &[("parent_id", Sql::Null)], "quests.parent_id = ?", &[Sql::Integer(id)])?;
     c.db.execute("DELETE FROM quests WHERE id = ?1", [id]).ok()?;
     redirect("/quests")
@@ -803,7 +812,10 @@ fn quest_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 fn quest_status(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
     let body = c.json()?;
-    let q = editable_quest(c, id)?;
+    let q = match editable_quest(c, id)? {
+        Ok(q) => q,
+        Err(r) => return Some(r),
+    };
     let status = match body.get("status") {
         None => String::new(),
         Some(Value::String(v)) => strip(v),

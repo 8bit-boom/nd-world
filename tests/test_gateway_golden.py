@@ -7668,3 +7668,44 @@ def test_entity_note_routes_are_pythons(client, seed):
             ra, rb = d.post(f"/entity/{eid}/notes/{nid}/{tail}", data=data), via.post(f"/entity/{eid}/notes/{nid}/{tail}", data=data)
             assert (ra.status_code, ra.headers.get("location"), ra.content if ra.status_code >= 400 else b"") == (rb.status_code, rb.headers.get("location"), rb.content if rb.status_code >= 400 else b""), (eid, nid, tail)
             assert rb.headers.get("x-nd-served-by") == "gateway", (eid, nid, tail)
+
+
+def test_quest_edit_delete_status_refusals_are_pythons(client, seed):
+    """POST /quests/<id>/edit | delete and /api/quests/<id>/status: missing quest, another world's (a GM reaches it), a player's quest vs the GM's."""
+    from app.database import SessionLocal
+    from app.models import Quest
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        mk = lambda t, wid, **kw: Quest(world_id=wid, title=t, status="active", **kw)
+        rows = {k: mk(k, wid, **kw) for k, wid, kw in (("gm", seed.world_a.id, {}), ("gm2", seed.world_a.id, {}), ("far", seed.world_b.id, {}), ("far2", seed.world_b.id, {}),
+                                                       ("mine", seed.world_a.id, {"created_by_user_id": seed.player_a.id}), ("mine2", seed.world_a.id, {"created_by_user_id": seed.player_a.id}))}
+        db.add_all(rows.values())
+        db.commit()
+        ids = {k: v.id for k, v in rows.items()}
+    finally:
+        db.close()
+    ids["missing"] = 999999
+
+    def snap(i):
+        db = SessionLocal()
+        try:
+            q = db.get(Quest, i)
+            return None if q is None else (q.status, q.summary, q.category)
+        finally:
+            db.close()
+    for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        d = _signed_in(email, pw, seed.world_a.slug)
+        d.follow_redirects = False
+        via = _via(d, base)
+        via.follow_redirects = False
+        for ka, kb in (("gm", "gm2"), ("far", "far2"), ("mine", "mine2"), ("missing", "missing")):
+            for method, path, kw in (("POST", "/quests/{}/edit", {"data": {"title": "T", "summary": " s ", "status": "done"}}), ("POST", "/api/quests/{}/status", {"json": {"status": " failed "}}),
+                                     ("POST", "/quests/{}/delete", {})):
+                ra, rb = d.request(method, path.format(ids[ka]), **kw), via.request(method, path.format(ids[kb]), **kw)
+                assert (ra.status_code, ra.headers.get("location", "").replace(f"/{ids[ka]}", "/N"), ra.content if ra.status_code >= 400 or "status" in path else b"") == \
+                    (rb.status_code, rb.headers.get("location", "").replace(f"/{ids[kb]}", "/N"), rb.content if rb.status_code >= 400 or "status" in path else b""), (email, ka, path)
+                assert (snap(ids[ka]) is None) == (snap(ids[kb]) is None), (email, ka, path)
+                if email == seed.gm.email and ka in ("far", "missing"):
+                    assert rb.headers.get("x-nd-served-by") == "gateway", (ka, path)
