@@ -2654,10 +2654,10 @@ fn world_id_of(p: &crate::layout::PageCtx) -> Option<i64> {
 }
 
 /// `GET /api/backups` (app/routers/backups.py): the `world-*.db` snapshots in ND_BACKUP_DIR, newest name first. GM only (anyone else: Python's gate).
-/// `created_at` is the file's mtime in the server's local time, so a non-UTC TZ is Python's.
+/// `created_at` is the file's mtime in the server's local time (TZ).
 fn backups_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let (_db, p) = page(cfg, uri, headers)?;
-    if !p.is_gm || !matches!(std::env::var("TZ").unwrap_or_default().trim(), "" | "UTC" | "Etc/UTC") {
+    if !p.is_gm {
         return None;
     }
     let dir = std::env::var("ND_BACKUP_DIR").unwrap_or_default();
@@ -2675,9 +2675,8 @@ fn backups_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response
         let t = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
         let total_micros = (t.as_nanos() + 500) / 1000;
         let (secs, micros) = ((total_micros / 1_000_000) as i64, (total_micros % 1_000_000) as u32);
-        let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
-        let rem = secs.rem_euclid(86400);
-        let mut iso = format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", rem / 3600, rem % 3600 / 60, rem % 60);
+        let (y, m, d, hh, mm, ss) = nd_render::pyvalue::local_civil(secs);
+        let mut iso = format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}");
         if micros != 0 {
             iso.push_str(&format!(".{micros:06}"));
         }
@@ -2965,12 +2964,9 @@ fn kiy_plays(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Bo
 }
 
 /// What Python's `GET /api/live-jobs` holds besides the gateway's own rows, for a gateway with no Python behind it: the world's 20 newest bulk
-/// rename runs ("r:" keys), under the same 404 / 403 gate. `None`: the caller is not signed in or something is unusual (a non-UTC TZ).
+/// rename runs ("r:" keys), under the same 404 / 403 gate. `None`: the caller is not signed in or something is unusual.
 pub fn live_jobs_python_part(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let (db, p) = page(cfg, uri, headers)?;
-    if !matches!(std::env::var("TZ").unwrap_or_default().trim(), "" | "UTC" | "Etc/UTC") {
-        return None;
-    }
     let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
     if !crate::pages::section_ok(&p, Some(w), "background_jobs")? {
         return Some(crate::idpages::refusal(403));

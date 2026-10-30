@@ -20,7 +20,7 @@ impl PyDateTime {
     /// SQLAlchemy's SQLite text: "YYYY-MM-DD HH:MM:SS[.ffffff]" (or "YYYY-MM-DD" / an ISO "T").
     /// `int(dt.timestamp())` for a naive datetime read as UTC (see `timestamp` below)
     pub fn epoch_secs(&self) -> i64 {
-        days_from_civil(self.y, self.mo as i64, self.d as i64) * 86400 + (self.h * 3600 + self.mi * 60 + self.s) as i64
+        local_epoch(self.y, self.mo as i64, self.d as i64, self.h, self.mi, self.s)
     }
 
     pub fn parse(t: &str) -> Option<PyDateTime> {
@@ -113,11 +113,9 @@ impl Object for PyDateTime {
         match name {
             "strftime" => Ok(Value::from(self.strftime(args.first().and_then(|a| a.as_str()).unwrap_or(""))?)),
             "isoformat" => Ok(Value::from(self.isoformat())),
-            // a naive datetime read as UTC (the image runs in UTC; Python would use the container's local time)
+            // a naive datetime read in the server's local time, as Python does (UTC unless TZ says otherwise)
             "timestamp" => {
-                let days = days_from_civil(self.y, self.mo as i64, self.d as i64);
-                let secs = days * 86400 + (self.h * 3600 + self.mi * 60 + self.s) as i64;
-                Ok(Value::from(secs as f64 + self.us as f64 / 1e6))
+                Ok(Value::from(self.epoch_secs() as f64 + self.us as f64 / 1e6))
             }
             "date" => Ok(Value::from_object(PyDateTime { h: 0, mi: 0, s: 0, us: 0, ..(**self).clone() })),
             _ => Err(Error::new(ErrorKind::UnknownMethod, format!("datetime.{name}"))),
@@ -154,4 +152,70 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146097 + doe - 719468
+}
+
+extern "C" {
+    fn tzset();
+}
+
+fn utc_tz() -> bool {
+    matches!(std::env::var("TZ").unwrap_or_default().trim(), "" | "UTC" | "Etc/UTC")
+}
+
+/// `datetime(y, mo, d, h, mi, s).timestamp()` for a naive datetime: read in the server's local time (TZ, else /etc/localtime), which is UTC in the image
+pub fn local_epoch(y: i64, mo: i64, d: i64, h: u32, mi: u32, s: u32) -> i64 {
+    let utc = days_from_civil(y, mo, d) * 86400 + (h * 3600 + mi * 60 + s) as i64;
+    if utc_tz() {
+        return utc;
+    }
+    // SAFETY: mktime / tzset on a zeroed `tm` we own; the C library reads TZ itself
+    unsafe {
+        tzset();
+        let mut tm: libc::tm = std::mem::zeroed();
+        tm.tm_year = (y - 1900) as libc::c_int;
+        tm.tm_mon = (mo - 1) as libc::c_int;
+        tm.tm_mday = d as libc::c_int;
+        tm.tm_hour = h as libc::c_int;
+        tm.tm_min = mi as libc::c_int;
+        tm.tm_sec = s as libc::c_int;
+        tm.tm_isdst = -1;
+        let t = libc::mktime(&mut tm);
+        if t == -1 { utc } else { t as i64 }
+    }
+}
+
+/// `datetime.fromtimestamp(secs)`: the server's local calendar time for an epoch second (year, month, day, hour, minute, second)
+pub fn local_civil(secs: i64) -> (i64, i64, i64, u32, u32, u32) {
+    let utc = || {
+        let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+        let r = secs.rem_euclid(86400) as u32;
+        (y, m, d, r / 3600, r % 3600 / 60, r % 60)
+    };
+    if utc_tz() {
+        return utc();
+    }
+    // SAFETY: localtime_r into a zeroed `tm` we own
+    unsafe {
+        tzset();
+        let t = secs as libc::time_t;
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return utc();
+        }
+        (tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64, tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32)
+    }
+}
+
+/// the civil date of a days-since-epoch count (Howard Hinnant's civil_from_days)
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }

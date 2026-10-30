@@ -4265,7 +4265,7 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             let Some(url) = crate::tts::save(&cfg, &audio, "song", crate::tts::audio_extension(&ctype)) else { return crash() };
             let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
             let name = { let n = cut(&name, 256); if n.is_empty() { cut(&format!("Song: {title}"), 256) } else { n } };
-            let (y, mo, d) = crate::writes::civil_from_days((SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) / 86400) as i64);
+            let (y, mo, d, ..) = nd_render::pyvalue::local_civil(SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64);
             let description = cut(&format!("Performed lyrics for {title} ({}, {y:04}-{mo:02}-{d:02})", if model.is_empty() { "TTS" } else { &model }), 512);
             let answer = tokio::task::spawn_blocking(move || -> Option<Value> {
                 use rusqlite::types::Value as Sql;

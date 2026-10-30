@@ -1177,6 +1177,7 @@ version = "0.1.0"
 dependencies = [
  "fancy-regex",
  "html-escape",
+ "libc",
  "minijinja",
  "minijinja-contrib",
  "nd-perm",

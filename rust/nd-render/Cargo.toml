@@ -15,3 +15,4 @@ pulldown-cmark = { version = "0.12", default-features = false, features = ["html
 fancy-regex = "0.14"
 html-escape = "0.2"
 nd-perm = { path = "../nd-perm" }
+libc = "0.2"

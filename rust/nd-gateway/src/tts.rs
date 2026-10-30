@@ -148,8 +148,9 @@ pub fn save(cfg: &Config, audio: &[u8], prefix: &str, ext: &str) -> Option<Strin
     Some(format!("/uploads/audio/{name}"))
 }
 
-/// `time.strftime("%H:%M")` (the server's clock, UTC in the container)
+/// `time.strftime("%H:%M")` (the server's local clock: UTC in the container unless TZ is set)
 pub fn hh_mm() -> String {
-    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    format!("{:02}:{:02}", (s / 3600) % 24, (s / 60) % 60)
+    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (_, _, _, h, m, _) = nd_render::pyvalue::local_civil(s);
+    format!("{h:02}:{m:02}")
 }
