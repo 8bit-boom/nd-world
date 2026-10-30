@@ -8344,7 +8344,7 @@ def test_imagegen_reads_that_need_no_back_end_are_pythons(client, seed):
     v = _via(d, base)
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     pv = _via(p, base)
-    names = ["status", "models", "loras", "upscalers", "refiners", "ipadapter-models", "progress", "updates", "backends", "samplers-schedulers", "starred"]
+    names = ["status", "models", "models/downloaded", "loras", "upscalers", "refiners", "ipadapter-models", "progress", "updates", "backends", "samplers-schedulers", "starred"]
     served = 0
     for n in names:
         url = "/api/ai/imagegen/" + n

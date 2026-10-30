@@ -29,7 +29,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
-        "/api/perf/summary" | "/api/perf/recent" => perf_empty(&cfg, uri, headers),
+        "/api/ai/imagegen/models/downloaded" => imagegen_downloaded(&cfg, uri, headers),
+        "/api/ai/imagegen/models/downloaded" | "/api/perf/summary" | "/api/perf/recent" => perf_empty(&cfg, uri, headers),
         "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" => imagegen_tags_empty(&cfg, uri, headers),
         "/api/system/stats" => system_stats(&cfg, uri, headers),
         "/api/orgs/graph" => orgs_graph(&cfg, uri, headers),
@@ -3492,6 +3493,20 @@ fn gpu_power(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option
         *r.status_mut() = axum::http::StatusCode::BAD_REQUEST;
     }
     Some(r)
+}
+
+/// `GET /api/ai/imagegen/models/downloaded`: the model files on the SwarmUI volume. With no folder (or an empty one) the list is empty; a folder with files
+/// is walked in the file system's order, which is Python's. GM only.
+fn imagegen_downloaded(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let dir = std::path::PathBuf::from(std::env::var("SWARMUI_MODELS_DIR").unwrap_or_else(|_| "/data/swarmui-models".into()));
+    if dir.is_dir() && std::fs::read_dir(&dir).ok()?.next().is_some() {
+        return None;
+    }
+    crate::edits::json_response(&json!({"models": [], "folder_suggestions": ["", "LoRA", "VAE", "clip", "diffusion_models", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding"]}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)

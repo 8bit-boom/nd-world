@@ -75,6 +75,7 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Faction graph** (apis.rs): `GET /api/orgs/graph` for the GM - clusters by subtype laid out with the same trigonometry (`round` half to even), stored links, and
   mentions typed by the words around them. A name or text with an upper-case non-ASCII letter (where `str.lower` could differ) and what a player may see are Python's.
   `GET /api/ai/imagegen/models` answers `[]` when no image back end is configured.
+- **Downloaded image models** (apis.rs): `GET /api/ai/imagegen/models/downloaded` with no (or an empty) SwarmUI model folder; a folder with files is Python's (its walk order).
 - **Chat helpers** (apis.rs): `GET /api/ai/context-info` (the configured `num_ctx` or 4,096, and the auto-sizing ceiling) and `GET /api/ai/ping` (the SSE smoke test;
   the five tokens go out in one write instead of 50 ms apart, same bytes).
 - **Image generation reads without a back end** (apis.rs): `GET /api/ai/imagegen/status|loras|upscalers|refiners|ipadapter-models|progress|updates|backends|samplers-schedulers`
