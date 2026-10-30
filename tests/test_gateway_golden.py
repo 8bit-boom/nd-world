@@ -7966,3 +7966,60 @@ def test_gallery_browse_is_pythons(client, seed):
     nogm.cookies.set("active_world", "no-such-world")
     a, b = nogm.get(urls[0]), _via(nogm, base).get(urls[0])
     assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_media_rename_reads_are_pythons(client, seed):
+    """GET /api/media-rename/runs, /summary and /items (audio, video, image; with an album, a search, a bad kind and a bad album):
+    the GM gets Python's bytes from the gateway; a player is refused as Python refuses."""
+    from .conftest import PLAYER_PASSWORD
+    from app.models import AudioAlbum, AudioClip, ImageAlbum, MediaRenameRun, VideoAlbum, VideoClip
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        top = AudioAlbum(world_id=w, name="Music")
+        db.add(top)
+        db.flush()
+        sub = AudioAlbum(world_id=w, name="Battle", parent_id=top.id)
+        vtop = VideoAlbum(world_id=w, name="Clips")
+        db.add_all([sub, vtop])
+        db.flush()
+        db.add_all([
+            AudioClip(world_id=w, name="IMG_2041", file_url="/uploads/0123456789ab-door_creak.mp3", album_id=sub.id, transcript=" hi ", visible_to_players=True),
+            AudioClip(world_id=w, name="Door Creak", file_url="/uploads/creak.mp3", album_id=top.id),
+            AudioClip(world_id=w, name="", file_url="/uploads/x.mp3"),
+            VideoClip(world_id=w, name="Intro", file_url="/uploads/video/v.mp4", poster_url="/uploads/poster.png", album_id=vtop.id),
+            VideoClip(world_id=w, name="clip_01", file_url="/uploads/video/clip_01.mp4"),
+            MediaRenameRun(world_id=w, status="done", total=3, done=3, created_by_user_id=seed.gm.id, results_json=json.dumps([{"kind": "audio"}])),
+            MediaRenameRun(world_id=w, status="pending", created_by_user_id=None),
+            MediaRenameRun(world_id=seed.world_b.id, status="done"),
+        ])
+        ia = ImageAlbum(world_id=w, name="Maps", image_urls_json=json.dumps(["/uploads/0123456789ab-city_map.png", "/uploads/b.jpg", 5]))
+        db.add(ia)
+        db.commit()
+        ids = (top.id, sub.id, vtop.id, ia.id)
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    urls = ["/api/media-rename/runs", "/api/media-rename/summary", "/api/media-rename/items?kind=audio", "/api/media-rename/items?kind=video",
+            "/api/media-rename/items?kind=image", f"/api/media-rename/items?kind=audio&album={ids[1]}", f"/api/media-rename/items?kind=video&album={ids[2]}",
+            f"/api/media-rename/items?kind=image&album={ids[3]}", "/api/media-rename/items?kind=audio&q=door", "/api/media-rename/items?kind=audio&q=%20CREAK%20",
+            "/api/media-rename/items?kind=image&q=map", "/api/media-rename/items?kind=image&album=99999", "/api/media-rename/items?kind=audio&album=abc",
+            "/api/media-rename/items?kind=nope", "/api/media-rename/items", "/api/media-rename/items?kind=audio&q=%C3%A9"]
+    for url in urls:
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        if not url.endswith("%C3%A9"):
+            assert b.headers.get("x-nd-served-by") == "gateway", url
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for url in urls[:4]:
+        a, b = p.get(url), pv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+    nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nogm.cookies.set("active_world", "no-such-world")
+    nv = _via(nogm, base)
+    for url in urls[:3]:
+        a, b = nogm.get(url), nv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url

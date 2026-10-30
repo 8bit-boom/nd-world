@@ -28,6 +28,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
+        "/api/media-rename/runs" => media_rename_runs(&cfg, uri, headers),
+        "/api/media-rename/summary" => media_rename_summary(&cfg, uri, headers),
+        "/api/media-rename/items" => media_rename_items(&cfg, uri, headers),
         "/api/gallery/browse" => gallery_browse(&cfg, uri, headers),
         "/admin/diagnostics/events" => diagnostics_events(&cfg, uri, headers),
         "/api/maps/props" => map_props_list(&cfg, uri, headers),
@@ -94,7 +97,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -244,19 +247,8 @@ fn dt_iso(r: &Map<String, Value>, key: &str) -> Option<Value> {
     }
 }
 
-/// `media_rename_run` (app/routers/media_rename.py): one rename run of the active world, its results included - a viewer
-/// who may edit none of the audio / video / images sections is 403, a run of another world (or missing) is 404
-fn media_rename_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
-    let (db, p) = page(cfg, uri, headers)?;
-    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
-    let level = |s: &str| crate::pages::edit_level(&p, w, s);
-    if !(level("audio")? || level("video")? || level("images")?) {
-        return Some(crate::idpages::refusal(403));
-    }
-    let wid = w.get("id")?.as_i64()?;
-    let Ok(r) = db.query_row("SELECT * FROM media_rename_runs WHERE id = ?1 AND world_id = ?2", [id, wid], |row| crate::layout::row_map(row)) else {
-        return Some(crate::idpages::refusal(404));
-    };
+/// `_run_view` with `_run_names`: one run as the status routes show it (`with_results`: the proposals and errors too)
+fn media_run_view(db: &rusqlite::Connection, r: &Map<String, Value>, with_results: bool) -> Option<Value> {
     // _run_names: {user id: display_name or email local part}; no author in the row: "someone"
     let by = match r.get("created_by_user_id").and_then(|v| v.as_i64()) {
         Some(uid) => db.query_row("SELECT * FROM users WHERE id = ?1", [uid], |row| crate::layout::row_map(row)).ok().and_then(|u| {
@@ -271,7 +263,7 @@ fn media_rename_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Op
         Some(((rv, rn), (ev, en))) => (rv, ev, rn, en),
         None => (json!([]), json!(["Stored results were unreadable."]), 0, 1),
     };
-    let out = json!({
+    let mut out = json!({
         "id": r.get("id")?.as_i64()?, "status": r.get("status").cloned().unwrap_or(Value::Null),
         "done": r.get("done").and_then(|v| v.as_i64()).unwrap_or(0),
         "total": r.get("total").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -280,8 +272,29 @@ fn media_rename_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Op
         "proposals": proposals, "errors_count": errors_count,
         "created_at": dt_strftime(&r, "created_at", "%Y-%m-%dT%H:%M:%SZ")?,
         "by": by.as_deref().unwrap_or("someone"),
-        "results": results, "errors": errors,
     });
+    if with_results {
+        out["results"] = results;
+        out["errors"] = errors;
+    }
+    Some(out)
+}
+
+
+/// `media_rename_run` (app/routers/media_rename.py): one rename run of the active world, its results included - a viewer
+/// who may edit none of the audio / video / images sections is 403, a run of another world (or missing) is 404
+fn media_rename_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let level = |s: &str| crate::pages::edit_level(&p, w, s);
+    if !(level("audio")? || level("video")? || level("images")?) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let Ok(r) = db.query_row("SELECT * FROM media_rename_runs WHERE id = ?1 AND world_id = ?2", [id, wid], |row| crate::layout::row_map(row)) else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let out = media_run_view(&db, &r, true)?;
     crate::edits::json_response(&out)
 }
 
@@ -2710,6 +2723,183 @@ fn gallery_browse(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
     }
     let crumbs: Vec<Value> = crumbs.iter().map(|b| json!({"id": b.get("id"), "name": b.get("name")})).collect();
     crate::edits::json_response(&json!({"breadcrumb": crumbs, "albums": albums, "images": images}))
+}
+
+/// The media-rename routes' gate: the active world (404 without) and the sections the viewer may edit, in `SECTION` order (audio, video, image)
+fn media_rename_gate(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Result<(rusqlite::Connection, i64, Vec<&'static str>), Response<Body>>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(Err(crate::idpages::refusal(404))) };
+    let wid = w.get("id")?.as_i64()?;
+    let mut kinds = vec![];
+    for (kind, section) in [("audio", "audio"), ("video", "video"), ("image", "images")] {
+        if crate::pages::edit_level(&p, w, section)? {
+            kinds.push(kind);
+        }
+    }
+    Some(Ok((db, wid, kinds)))
+}
+
+/// `GET /api/media-rename/runs`: the world's 20 newest runs
+fn media_rename_runs(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, wid, kinds) = match media_rename_gate(cfg, uri, headers)? {
+        Ok(g) => g,
+        Err(r) => return Some(r),
+    };
+    if kinds.is_empty() {
+        return Some(crate::idpages::refusal(403));
+    }
+    let runs = rows_of(&db, "SELECT * FROM media_rename_runs WHERE world_id = ?1 ORDER BY id DESC LIMIT 20", &[&wid])?;
+    let mut out = vec![];
+    for r in &runs {
+        out.push(media_run_view(&db, r, false)?);
+    }
+    crate::edits::json_response(&json!({"runs": out}))
+}
+
+/// `GET /api/media-rename/summary`: {audio|video|image: {total, needs_work}} for the kinds the viewer may edit
+fn media_rename_summary(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, wid, kinds) = match media_rename_gate(cfg, uri, headers)? {
+        Ok(g) => g,
+        Err(r) => return Some(r),
+    };
+    if kinds.is_empty() {
+        return Some(crate::idpages::refusal(403));
+    }
+    let mut out = Map::new();
+    for kind in kinds {
+        let (total, needs) = if kind == "image" {
+            let usage = crate::media_rename::image_usage(&db, wid)?;
+            (usage.len(), usage.iter().filter(|u| crate::media_rename::looks_generic(&u.3) && u.1.is_empty()).count())
+        } else {
+            let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+            let rows = rows_of(&db, &format!("SELECT name, file_url FROM {table} WHERE world_id = ?1 ORDER BY name, id"), &[&wid])?;
+            let needs = rows.iter().filter(|r| crate::media_rename::looks_generic(r.get("name").and_then(|v| v.as_str()).unwrap_or(""))).count();
+            (rows.len(), needs)
+        };
+        out.insert(kind.into(), json!({"total": total, "needs_work": needs}));
+    }
+    crate::edits::json_response(&Value::Object(out))
+}
+
+/// `_album_labels`: [(album id, "Parent / Child")] in table order; None when a name is not text
+fn media_album_labels(db: &rusqlite::Connection, table: &str, wid: i64) -> Option<Vec<(i64, String)>> {
+    let albums = rows_of(db, &format!("SELECT * FROM {table} WHERE world_id = ?1"), &[&wid])?;
+    let by_id: std::collections::HashMap<i64, &Map<String, Value>> = albums.iter().filter_map(|a| Some((a.get("id")?.as_i64()?, a))).collect();
+    fn label(a: &Map<String, Value>, by_id: &std::collections::HashMap<i64, &Map<String, Value>>, depth: u32) -> Option<String> {
+        let parent = a.get("parent_id").and_then(|v| v.as_i64()).filter(|p| *p != 0 && depth < 20).and_then(|p| by_id.get(&p).copied());
+        let own = a.get("name").and_then(|v| v.as_str())?;
+        Some(match parent {
+            Some(p) => format!("{} / {own}", label(p, by_id, depth + 1)?),
+            None => own.to_string(),
+        })
+    }
+    albums.iter().map(|a| Some((a.get("id")?.as_i64()?, label(a, &by_id, 0)?))).collect()
+}
+
+/// `GET /api/media-rename/items?kind=&album=&q=`: the library's items to choose from, each with `generic`. Text matching lower-cases in
+/// Python: anything past ASCII on either side is Python's.
+fn media_rename_items(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    const MAX_LISTED: usize = 1500;
+    let (db, wid, kinds) = match media_rename_gate(cfg, uri, headers)? {
+        Ok(g) => g,
+        Err(r) => return Some(r),
+    };
+    let kind_q = crate::pages::query_param(uri, "kind");
+    let Some(kind) = kind_q.as_deref().filter(|k| kinds.contains(k)) else { return Some(crate::idpages::refusal(403)) };
+    let q_raw = crate::pages::query_param(uri, "q").unwrap_or_default();
+    let q = nd_render::text::py_strip(&q_raw).to_string();
+    if !q.is_ascii() {
+        return None;
+    }
+    let q = q.to_ascii_lowercase();
+    let album = match crate::pages::query_param(uri, "album").unwrap_or_default().as_str() {
+        "" => 0,
+        t => match crate::form::py_int(t) {
+            Some(n) => n,
+            None if t.bytes().all(|c| c.is_ascii_alphabetic() || c == b'.') => 0, // int() refuses words and floats alike
+            None => return None,
+        },
+    };
+    let mut items = vec![];
+    let mut generic_flags = vec![];
+    let labels;
+    if kind == "audio" || kind == "video" {
+        let (table, albums) = if kind == "audio" { ("audio_clips", "audio_albums") } else { ("video_clips", "video_albums") };
+        labels = media_album_labels(&db, albums, wid)?;
+        let rows = if album != 0 {
+            rows_of(&db, &format!("SELECT * FROM {table} WHERE world_id = ?1 AND album_id = ?2 ORDER BY name, id LIMIT {}", MAX_LISTED + 1), &[&wid, &album])?
+        } else {
+            rows_of(&db, &format!("SELECT * FROM {table} WHERE world_id = ?1 ORDER BY name, id LIMIT {}", MAX_LISTED + 1), &[&wid])?
+        };
+        for row in rows {
+            let text = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fname = crate::media_rename::readable_filename(&text("file_url"));
+            let name = text("name");
+            if !q.is_empty() {
+                if !(name.is_ascii() && fname.is_ascii()) {
+                    return None;
+                }
+                if !name.to_ascii_lowercase().contains(&q) && !fname.to_ascii_lowercase().contains(&q) {
+                    continue;
+                }
+            }
+            let generic = crate::media_rename::looks_generic(&name);
+            let poster = text("poster_url");
+            let thumb = if kind == "video" && !poster.is_empty() { json!(nd_render::thumb_url(&poster)?) } else { Value::Null };
+            let album_label = row.get("album_id").and_then(|v| v.as_i64()).and_then(|a| labels.iter().find(|l| l.0 == a)).map(|l| l.1.clone()).unwrap_or_default();
+            generic_flags.push(generic);
+            items.push(json!({
+                "kind": kind, "id": row.get("id"), "name": name, "filename": fname, "album": album_label, "generic": generic,
+                "has_transcript": !nd_render::text::py_strip(&text("transcript")).is_empty(),
+                "visible": crate::edits::py_truthy_pub(row.get("visible_to_players")), "thumb": thumb,
+            }));
+        }
+    } else {
+        labels = media_album_labels(&db, "image_albums", wid)?;
+        let usage = crate::media_rename::image_usage(&db, wid)?;
+        let in_album: Option<Vec<String>> = if album != 0 {
+            let chosen = rows_of(&db, "SELECT * FROM image_albums WHERE id = ?1 AND world_id = ?2", &[&album, &wid])?.into_iter().next();
+            Some(match chosen {
+                Some(a) => crate::gallery::album_urls(&a).as_array()?.iter().filter_map(|u| u.as_str().map(str::to_string)).collect(),
+                None => vec![],
+            })
+        } else {
+            None
+        };
+        let mut sorted: Vec<&crate::media_rename::ImageUse> = usage.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        for (url, uses, albums, name) in sorted.into_iter().map(|u| (&u.0, &u.1, &u.2, &u.3)) {
+            if in_album.as_ref().is_some_and(|set| !set.contains(url)) {
+                continue;
+            }
+            let fname = crate::media_rename::readable_filename(url);
+            if !q.is_empty() {
+                if !(name.is_ascii() && fname.is_ascii()) {
+                    return None;
+                }
+                if !name.to_ascii_lowercase().contains(&q) && !fname.to_ascii_lowercase().contains(&q) {
+                    continue;
+                }
+            }
+            let generic = crate::media_rename::looks_generic(name) && uses.is_empty();
+            generic_flags.push(generic);
+            items.push(json!({
+                "kind": "image", "url": url, "name": name, "filename": fname, "album": albums.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
+                "used_in": uses.iter().take(3).collect::<Vec<_>>(), "thumb": nd_render::thumb_url(url)?, "generic": generic,
+            }));
+        }
+    }
+    let mut album_list: Vec<(i64, String)> = labels;
+    if album_list.iter().any(|l| !l.1.is_ascii()) {
+        return None; // sorted(key=str.lower)
+    }
+    album_list.sort_by_key(|l| l.1.to_ascii_lowercase());
+    let truncated = items.len() > MAX_LISTED;
+    items.truncate(MAX_LISTED);
+    generic_flags.truncate(MAX_LISTED);
+    let albums: Vec<Value> = album_list.into_iter().map(|(i, n)| json!({"id": i, "name": n})).collect();
+    crate::edits::json_response(&json!({"kind": kind, "items": items, "albums": albums, "truncated": truncated,
+        "generic_count": generic_flags.iter().filter(|g| **g).count()}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)

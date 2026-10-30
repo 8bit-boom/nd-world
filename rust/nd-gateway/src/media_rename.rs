@@ -336,10 +336,10 @@ fn picture_b64(path: Option<&Path>) -> Option<String> {
 }
 
 /// One image of the world: (url, where it is used, its albums, the name it shows)
-type ImageUse = (String, Vec<String>, Vec<String>, String);
+pub(crate) type ImageUse = (String, Vec<String>, Vec<String>, String);
 
 /// `image_usage`
-fn image_usage(db: &rusqlite::Connection, wid: i64) -> Option<Vec<ImageUse>> {
+pub(crate) fn image_usage(db: &rusqlite::Connection, wid: i64) -> Option<Vec<ImageUse>> {
     let mut usage: Vec<ImageUse> = vec![];
     let mut names: Vec<(String, String)> = vec![];
     for entry in crate::gallery::discover(db, wid)? {
