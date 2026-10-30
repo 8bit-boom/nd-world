@@ -8236,3 +8236,27 @@ def test_ai_page_reads_are_pythons(client, seed):
             f.unlink(missing_ok=True)
         else:
             f.write_bytes(was)
+
+
+def test_unconfigured_unsloth_routes_are_pythons_400(client, seed):
+    """The Studio status routes that start with the "no Unsloth backend configured" check: the gateway gives Python's 400 when no key is set (and
+    forwards otherwise, so both sides stay equal either way); a player is refused as Python refuses."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    urls = ["models", "image/status", "image/load-progress", "auto-switch", "status", "context-overrides", "audio-models", "version", "probe",
+            "hub/download-progress?repo_id=a/b", "hub/download-progress", "gguf-variants?repo_id=a/b", "gguf-variants"]
+    unconfigured = 0
+    for u in urls:
+        url = "/api/ai/unsloth/" + u
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        if a.status_code == 400 and b"No Unsloth backend configured" in a.content:
+            unconfigured += 1
+            assert b.headers.get("x-nd-served-by") == "gateway", url
+        a, b = p.get(url), pv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+    assert unconfigured >= 9 or os.environ.get("UNSLOTH_API_KEY"), unconfigured

@@ -29,6 +29,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
+        "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status"
+        | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe"
+        | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" => unsloth_unconfigured(&cfg, uri, headers),
         "/api/ai/recap-instructions" => ai_recap_instructions(&cfg, uri, headers),
         "/api/ai/defaults" => ai_defaults(&cfg, uri, headers),
         "/api/ai/prompt-presets" => ai_prompt_presets(&cfg, uri, headers),
@@ -104,7 +107,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/sessions" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -3126,6 +3129,24 @@ fn ai_prompt_presets(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
     let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "scope": r.get("scope"), "label": r.get("label"), "icon": text(r, "icon"),
         "text": text(r, "text"), "negative": text(r, "negative")})).collect();
     crate::edits::json_response(&json!({"presets": list}))
+}
+
+/// The Unsloth Studio routes that start with `_unsloth_or_400()`: with no Studio API key (Settings or UNSLOTH_API_KEY) the answer is Python's 400.
+/// With a key they talk to Studio, which is Python's. GM only.
+fn unsloth_unconfigured(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    if matches!(uri.path(), "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants") && crate::pages::query_param(uri, "repo_id").is_none() {
+        return None; // the 422 for the missing parameter comes first
+    }
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    if key.is_some() {
+        return None;
+    }
+    Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No Unsloth backend configured \u{2014} set UNSLOTH_API_KEY (Settings \u{2192} System)."))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)

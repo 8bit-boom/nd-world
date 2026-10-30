@@ -56,7 +56,7 @@ them after each batch; the phase is done when both are empty and the steps below
   name with Python's `clean`; the finished job's row removed (an unknown or running job is Python's 400 word for word).
 - **Board save / delete refusals** (edits.rs `editable_board`): Python looks the board up by slug alone and checks edit rights in the board's own
   world, so a GM reaches any world's board; a missing board is its 404, a player without the edit tier its 403. A player outside the board's
-  world is still Python's.
+  world is still Python's (a Python-free install with a key needs the Studio client ported - the main item left in the AI group)..
 - **Join page** (`GET /join/<code>`, share.rs `join_form`): the sign-up form for a good invite and the reason for a bad one (invalid, revoked,
   expired, used up). A signed-in browser with a good link is redeemed by Python; the POST (accounts, passwords, 2FA) stays Python's.
 - **Schema heal on boot** (startup.rs `heal_schema`, only with `ND_PYTHON_FREE=1` - next to a Python app both would run DDL against the file at boot and race; found when an aborted test run left a table-less shard database): for a database that already exists, the gateway now does the additive part of Python's
@@ -93,6 +93,8 @@ them after each batch; the phase is done when both are empty and the steps below
   still need Python (AI back-end status routes, `/media-rename` page, `/studio`, `/export/foundry.json`, orgs graph, perf/stats, docs).
 - **AI page reads** (apis.rs): `GET /api/ai/sessions`, `/recap-instructions`, `/defaults` (ai_models.json; an unreadable file is the empty library, a wrong
   shape is Python's 500) and `/prompt-presets?scope=` (a chat world with no prompts yet is Python's: it seeds the defaults). All GM only.
+- **Unsloth routes with no key** (apis.rs): the 11 Studio status routes that open with `_unsloth_or_400()` (models, image/status, auto-switch, status, ...)
+  answer Python's 400 "No Unsloth backend configured" when no Studio key is saved or in the environment. With a key they talk to Studio: still Python's
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything
