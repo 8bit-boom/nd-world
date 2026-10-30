@@ -60,6 +60,7 @@ them after each batch; the phase is done when both are empty and the steps below
 - **AI sheet-template page** (pages.rs): `GET /characters/templates/ai-new` (GM; `has_world_rules` from the world's rules text).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
   anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
+- **Handout printing** (pages.rs): `POST /handouts/print` - the chosen entities of the active world as printable pages, in the order asked.
 - **Map overlay save** (edits.rs): `POST /api/maps/<slug>/overlay` - the GM's markers and regions (each list at most 500), the stored JSON text byte for byte, the
   list / size 400s; a body Python cannot read (its 500), another world's map and who may edit maps stay Python's.
 - **Joining with an invite** (auth.rs): `POST /join/<code>` - sign-up (display name, the short-password / existing-account / empty-field pages), log-in mode (shared lockout

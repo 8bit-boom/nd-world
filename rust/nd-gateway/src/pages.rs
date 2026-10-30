@@ -1178,6 +1178,46 @@ pub fn media_rename_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Heade
     render_with(pages, "media_rename/index.html", ctx, headers)
 }
 
+/// `POST /handouts/print` (app/routers/handouts.py): the chosen entities of the active world as printable handouts, in the order asked (GM only; an
+/// id that is not this world's is skipped). A body Python cannot read (its 500) is not ours.
+pub fn handouts_print(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    use serde_json::{json, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(wid) = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) else {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "No active world"));
+    };
+    if !crate::edits::plain_numbers(body) {
+        return None;
+    }
+    let Value::Object(parsed) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let ids: Vec<i64> = match parsed.get("ids") {
+        None => vec![],
+        Some(Value::Array(a)) => a.iter().map(|x| match x {
+            Value::Number(n) if n.is_i64() => n.as_i64(),
+            Value::String(s) => crate::form::py_int(nd_render::text::py_strip(s)),
+            _ => None,
+        }).collect::<Option<Vec<_>>>()?,
+        Some(_) => return None,
+    };
+    let mut items = vec![];
+    for id in ids {
+        let e = db.query_row("SELECT * FROM entities WHERE id = ?1 AND world_id = ?2", [id, wid], |r| crate::layout::row_map(r)).ok();
+        if let Some(e) = e {
+            let text = match e.get("body") { None | Some(Value::Null) => String::new(), Some(Value::String(s)) => s.clone(), _ => return None };
+            let html = if text.is_empty() { String::new() } else { nd_render::md::render_md(&text) };
+            items.push(json!({"entity": e, "body_html": html}));
+        }
+    }
+    let mut ctx = p.ctx;
+    ctx.insert("entities".into(), Value::Array(items));
+    render_with(pages, "handout.html", ctx, headers)
+}
+
 pub(crate) fn edit_level(p: &crate::layout::PageCtx, world: &serde_json::Map<String, serde_json::Value>, section: &str) -> Option<bool> {
     if p.is_gm {
         return Some(true);

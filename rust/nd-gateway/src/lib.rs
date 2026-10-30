@@ -538,6 +538,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/handouts/print" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        let (pages_, cfg, uri, headers, b) = (app.pages.clone(), app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::handouts_print(&pages_, &cfg, &uri, &headers, &b)).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST
         && matches!(req.uri().path(), "/api/ai/unsloth/hub/download" | "/api/ai/unsloth/image/load" | "/api/ai/unsloth/image/unload" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/context-overrides")
         && app.cfg.rust_routes.iter().any(|r| r == "pages")

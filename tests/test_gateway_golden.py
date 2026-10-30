@@ -8900,3 +8900,50 @@ def test_map_overlay_save_is_pythons(client, seed):
         for slug in slugs.values():
             (maps / f"{slug}.json").unlink(missing_ok=True)
     assert served >= 3, served
+
+
+def test_handout_print_is_pythons(client, seed):
+    """POST /handouts/print: chosen entities in the order asked (an unknown or other world's id skipped, string ids, none), with and without a picture,
+    summary and body; no world cookie; a player gets Python's answer; unreadable bodies are Python's 500."""
+    import re
+    from app.database import SessionLocal
+    from app.models import Entity
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        es = [Entity(world_id=w, kind="npc", name="Zed <Z>", summary="a 'quiet' one", body="plain **bold** text", image_url="/uploads/zed.png"),
+              Entity(world_id=w, kind="location", name="Alley", body=""),
+              Entity(world_id=w, kind="item", name="Blade", summary="sharp", body="one paragraph only"),
+              Entity(world_id=seed.world_b.id, kind="npc", name="Elsewhere", body="x")]
+        db.add_all(es)
+        db.commit()
+        ids = [e.id for e in es]
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def norm(t):
+        return re.sub(r"\s+", " ", t).strip()
+
+    bodies = [{"ids": [ids[2], ids[0], ids[1]]}, {"ids": [ids[0], 999999, ids[3], str(ids[1])]}, {"ids": []}, {}, {"ids": [ids[0], ids[0]]}]
+    served = 0
+    for body in bodies:
+        a, b = d.post("/handouts/print", json=body), v.post("/handouts/print", json=body)
+        assert a.status_code == b.status_code == 200, (body, a.status_code, b.status_code)
+        assert norm(a.text) == norm(b.text), (body, norm(a.text)[:600], norm(b.text)[:600])
+        served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served == len(bodies), served
+    for raw in (b"not json", b"[1]", b'{"ids": "abc"}', b'{"ids": [null]}', b'{"ids": [1.5]}'):
+        a = d.post("/handouts/print", content=raw, headers={"Content-Type": "application/json"})
+        b = v.post("/handouts/print", content=raw, headers={"Content-Type": "application/json"})
+        assert (a.status_code, a.content) == (b.status_code, b.content), raw
+    nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nogm.cookies.set("active_world", "no-such-world")
+    a, b = nogm.post("/handouts/print", json={"ids": [ids[0]]}), _via(nogm, base).post("/handouts/print", json={"ids": [ids[0]]})
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a, b = p.post("/handouts/print", json={"ids": [ids[0]]}), _via(p, base).post("/handouts/print", json={"ids": [ids[0]]})
+    assert (a.status_code, a.content) == (b.status_code, b.content)
