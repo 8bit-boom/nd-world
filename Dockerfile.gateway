@@ -3,9 +3,11 @@
 # control itself. What still needs Python in the build only (a throw-away stage): the static files' thumbnails, AVIF maps, tile pyramids, minified
 # and pre-compressed copies, which are made exactly as for the normal image and copied over.
 #
-# Not served here (no Python to forward to; they answer 501 with the reason): the PDF text reader behind AI attachments, the character .pdf export,
-# videos' ffmpeg conversions, the legacy Ollama back end's status routes (a Studio key is served), FastAPI's /docs and /openapi.json, the world
-# Foundry export, and the refusals of rarely used routes - the list is in docs/RUST_PORT_HANDOFF.md. Use the normal Dockerfile until it is acceptable.
+# Served here since the first draft: an https:// Studio (rustls; the system CA store, SSL_CERT_FILE honoured), video uploads' ffmpeg conversions and
+# posters, GIF / AVIF / animated pictures (ffmpeg's first frame) and PDF text (lopdf; spacing can differ from pypdf's), TZ-aware local times.
+# Not served here (no Python to forward to; they answer 501 with the reason): the character .pdf export, the legacy Ollama back end's status routes
+# (a Studio key is served), King in Yellow web fetches, FastAPI's /docs and /openapi.json, the world Foundry export, and the refusals of rarely used
+# routes - the list is in docs/RUST_PORT_HANDOFF.md and docs/RUST_PORT_AUDIT.md.
 FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
 
 FROM rust:1-slim AS gateway
@@ -38,7 +40,7 @@ COPY static/ ./static/
 RUN python -m app.static_thumbs --avif-maps && python -m app.map_tiles && python -m app.precompress --minify
 
 FROM debian:stable-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=gateway /nd-gateway /usr/local/bin/nd-gateway
 WORKDIR /app

@@ -79,3 +79,13 @@ against ~346 MiB of memory, and the flows create world / entity / upload / invit
 - Time zones: the gateway reads TZ the way the C library does; Python uses `datetime`. They agree except across a daylight-saving gap; the shards
   pass under `Europe/Budapest`, but a host in another zone has not been run.
 - Do not point the new image at the production volume before the copy test; keep `/admin/backup.zip` before any switch.
+
+## 5. Update: the three items recommended afterwards were done
+
+- TLS client: the gateway reaches an `https://` Studio itself (rustls; tested with a self-signed certificate through `SSL_CERT_FILE`). Still not served
+  without Python: the King in Yellow web fetches and the legacy Ollama Hugging Face search (they are Python's own outbound calls, not Studio's).
+- GIF / AVIF / animated pictures and video: video uploads, chunked completion and attach are ported with Python's exact ffmpeg commands (parity-tested
+  against Python); without Python, GIF / AVIF / animated pictures are read through ffmpeg's first frame for thumbnails and map tile pyramids.
+- PDF text for AI attachments, the system-draft rulebook and imported notes, without Python only (lopdf). The character `.pdf` export is still Python's.
+- Also fixed from the Docker run: `/worlds/{id}/edit`, signed-out `/uploads`, a fresh database booted by the gateway only when it runs Python-free,
+  and local time under a non-UTC `TZ`.
