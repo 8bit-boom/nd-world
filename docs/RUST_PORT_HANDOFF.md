@@ -150,7 +150,12 @@ tests' odd inputs) plus real gaps:
 - PDF text extraction for AI attachments (`pypdf`) and `GET /characters/{}/export.pdf` (reportlab): the documented sidecar candidates.
 - Audio attachments / live-transcript checks with a Studio key set (a call to Studio with fallbacks and snapshots).
 - Videos (ffmpeg conversion) in the session media panel and the video library uploads.
-- `GET /api/ai/models`, `GET /api/ai/context-info` (Python's in-memory model catalogue / Ollama options; they move with the settings-override sync).
+- `GET /api/ai/models` (Python's in-memory model catalogue; it moves with the settings-override sync). `GET /api/ai/context-info` is done.
+- The Python-free crawl (`scripts/python_free_crawl.sh`, 179 parameterless GET routes) still lists ~50 routes that need Python: the Studio / SwarmUI
+  back-end passthroughs (`/api/ai/unsloth/*` with a key, `/api/ai/imagegen/*` with a back end, `/api/ai/models|hardware|resident|debug|test-chat`,
+  `/api/ai/ollama/hf-*`), `/api/orgs/graph` (float layout + keyword scan), `/export/foundry.json` (markdown per entity), `/api/kiy/inspirations`
+  (public web fetches), `/api/system/stats` and `/api/perf/*` (Python's own process), and FastAPI's `/docs`, `/redoc`, `/openapi.json`.
+  The Studio client (`app/unsloth_extras.py`) is the biggest single item: port it and most of the first group follows.
 - `/api/ai/whisper/*` are probes of routes that do not exist (Python's 404 / 405).
 - Deleting an image generation job (`DELETE /api/ai/imagegen/jobs/{}` and the player one): removes the job's pictures unless starred.
 - Maps whose picture is AVIF / GIF / animated: the pyramid is cut by Python (the image crate has no AVIF decoder here).
