@@ -53,6 +53,7 @@
   </form>
 </div>
 {% include "_gallery_picker_modal.html" %}
+<script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
 <script>
 // Same drag&drop pattern as the schematic editor's background drop zone
 // (app/templates/schematic.html) and the maps-list upload labels — here it
@@ -62,6 +63,14 @@
   const zone = document.getElementById('map-img-dropzone');
   const input = zone.querySelector('input[type=file]');
   const label = document.getElementById('map-img-dropzone-label');
+  ndRegisterPasteZone(zone, files => {   // Ctrl+V of a picture fills the field like a drop
+    const f = files[0];
+    if (!f || !f.type.startsWith('image/')) return;
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    input.files = dt.files;
+    label.textContent = f.name;
+  });
   zone.addEventListener('dragenter', e => {
     if (!e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();

@@ -170,6 +170,7 @@
 {% if _is_gm %}
 {% include "_gallery_picker_modal.html" %}
 {% endif %}
+<script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
 <script>
 // Shared by both the map-image and schematic-background "🖼 Gallery"
 // buttons above — each button sits next to its own upload <form>/<label>,
@@ -210,6 +211,15 @@ function renameViaPrompt(btn, label) {
 // background-image drop zone (app/templates/schematic.html), wired here to
 // just populate the existing file input and submit its form.
 document.querySelectorAll('.map-upload-label').forEach(label => {
+  ndRegisterPasteZone(label, files => {   // Ctrl+V of a picture over the label uploads it like a drop
+    const f = files[0];
+    if (!f || !f.type.startsWith('image/')) return;
+    const input = label.querySelector('input[type=file]');
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    input.files = dt.files;
+    input.form.submit();
+  });
   label.addEventListener('dragenter', e => {
     if (!e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
