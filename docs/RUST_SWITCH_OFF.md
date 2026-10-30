@@ -516,3 +516,7 @@ in a small sidecar, as the plan allows, if a port is not good enough.
   staging folder skipped) and `POST /admin/backup/restore/cancel`. Duplicate zip entries and any unreadable entry go to Python. With `ND_PYTHON_FREE=1`
   the gateway also does `_apply_staged_restore` at boot (WAL folded in, the old database kept as `world.db.pre-restore-<stamp>`, uploads/ and maps/
   merged, an incomplete stage discarded); next to Python, Python still applies it at its own start.
+
+- **Reset all layouts / delete an image job** (edits.rs): `DELETE /api/view-prefs` (every saved layout of the person gone, `{reset: n}`, site layout
+  dropped from the session) and `DELETE /api/ai/imagegen/jobs/<id>` (a finished job's row, its pictures and previews - `_thumb`/`_display`, AVIF or
+  WebP - removed after the commit unless a starred image keeps one; in progress = Python's 400; another world's or an unknown id the 404).

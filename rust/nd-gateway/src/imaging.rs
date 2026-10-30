@@ -188,3 +188,13 @@ mod tests {
         }
     }
 }
+
+/// `path` and every copy imaging.py can make of it (`derived_paths_for`: thumbnails and display copies, AVIF or WebP), to delete them together
+pub fn with_derived(path: &Path) -> Vec<std::path::PathBuf> {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let mut out = vec![path.to_path_buf()];
+    for suf in ["_thumb.avif", "_thumb.webp", "_display.avif", "_display.webp"] {
+        out.push(path.with_file_name(format!("{stem}{suf}")));
+    }
+    out
+}

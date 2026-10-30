@@ -550,6 +550,9 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     if let Some(id) = path.strip_prefix("/api/view-prefs/preset/").filter(|s| ok(s)) {
         return (*method == Method::POST).then(|| (view_pref_preset as SlugHandler, id.to_string()));
     }
+    if let Some(id) = path.strip_prefix("/api/ai/imagegen/jobs/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit())) {
+        return (*method == Method::DELETE).then(|| (imagegen_job_delete as SlugHandler, id.to_string()));
+    }
     if path == "/api/view-prefs" && *method == Method::DELETE {
         return Some((view_pref_reset_all as SlugHandler, String::new()));
     }
@@ -7196,6 +7199,55 @@ fn view_pref_reset(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
         return Some(r);
     }
     json_response(&json!({"reset": section}))
+}
+
+/// `DELETE /api/ai/imagegen/jobs/<id>` (app/routers/ai.py `api_imagegen_job_delete`, image_jobs.delete_job): a finished job's row gone with the
+/// pictures it made (and their previews) unless a starred image still points at one; a job in progress is Python's 400
+fn imagegen_job_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let job = c.db.query_row("SELECT status, result_urls_json, params_json FROM image_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))).ok();
+    let Some((status, urls, params)) = job else { return Some(crate::idpages::refusal(404)) };
+    if matches!(status.as_deref(), Some("pending" | "generating")) {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Job is still in progress \u{2014} cancel it first"));
+    }
+    // _delete_job_image_files: unreadable result JSON, no urls or no uploads_dir leaves the files alone
+    let mut doomed = vec![];
+    let list = match serde_json::from_str::<Value>(urls.as_deref().filter(|t| !t.is_empty()).unwrap_or("[]")) {
+        Ok(Value::Array(l)) => l,
+        Ok(Value::Null) | Err(_) => vec![],
+        Ok(_) => return None, // a non-list result: Python's iteration
+    };
+    if !list.is_empty() {
+        let dir = match serde_json::from_str::<Value>(params.as_deref().filter(|t| !t.is_empty()).unwrap_or("{}")) {
+            Ok(Value::Object(o)) => o.get("uploads_dir").cloned().unwrap_or(Value::Null),
+            Ok(_) => return None, // params that are not an object: Python's AttributeError
+            Err(_) => Value::Null,
+        };
+        match dir {
+            Value::Null => {}
+            Value::String(d) if d.is_empty() => {}
+            Value::String(d) => {
+                for u in &list {
+                    let Some(url) = u.as_str().filter(|u| u.starts_with("/uploads/ai-images/")) else { continue };
+                    let starred: i64 = c.db.query_row("SELECT COUNT(*) FROM starred_images WHERE url = ?1", [url], |r| r.get(0)).ok()?;
+                    let fname = &url["/uploads/ai-images/".len()..];
+                    if starred > 0 || fname.is_empty() || fname.contains('/') || fname.contains('\\') {
+                        continue;
+                    }
+                    doomed.extend(crate::imaging::with_derived(&std::path::Path::new(&d).join("ai-images").join(fname)));
+                }
+            }
+            _ => return None, // a directory that is not text: Python's reading of it
+        }
+    }
+    c.db.execute("DELETE FROM image_jobs WHERE id = ?1", [id]).ok()?;
+    c.removals.extend(doomed);
+    json_response(&json!({"ok": true}))
 }
 
 /// `view_prefs_reset_all`: every saved layout of the person gone, the site layout forgotten from the session

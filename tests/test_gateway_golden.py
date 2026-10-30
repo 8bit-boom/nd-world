@@ -9304,3 +9304,72 @@ def test_view_prefs_reset_all_is_pythons(client, seed):
         assert (again.status_code, again.json()) == (200, {"reset": 0}), again.text
         assert side.get("/api/view-prefs").json() == {}
     assert first.headers.get("x-nd-served-by") == "gateway" and again.headers.get("x-nd-served-by") == "gateway"
+
+
+def test_imagegen_job_delete_is_pythons(client, seed):
+    """DELETE /api/ai/imagegen/jobs/<id>: a finished job's row and its pictures (with previews) gone, a starred picture kept, a job in progress Python's
+    400, another world's or an unknown id the 404, unreadable results / no uploads_dir leaving the files; the same script on both servers."""
+    import json as _json
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import ImageJob, StarredImage
+    base = str(client.base_url)
+    w = seed.world_a.id
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+
+    def run(side, url_base):
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        if url_base != DIRECT:
+            d = _via(d, url_base)
+        tag = side + os.urandom(3).hex()
+        folder = uploads / "ai-images"
+        folder.mkdir(parents=True, exist_ok=True)
+        names = {k: f"{tag}-{k}.png" for k in ("a", "star", "b")}
+        for n in names.values():
+            for suf in ("", "_thumb.avif", "_thumb.webp", "_display.avif", "_display.webp"):
+                (folder / (n[:-4] + suf if suf else n)).write_bytes(b"x")
+        keep = folder / f"{tag}-keep.png"
+        keep.write_bytes(b"x")
+        db = SessionLocal()
+        try:
+            db.add(StarredImage(url=f"/uploads/ai-images/{names['star']}"))
+            mk = lambda status, urls, params: ImageJob(world_id=w, status=status, result_urls_json=urls, params_json=params)  # noqa: E731
+            pj = _json.dumps({"uploads_dir": str(uploads)})
+            jobs = dict(
+                done=mk("done", _json.dumps([f"/uploads/ai-images/{names['a']}", f"/uploads/ai-images/{names['star']}", "/uploads/other/x.png", "/uploads/ai-images/a/b.png", 5]), pj),
+                busy=mk("generating", "[]", pj),
+                nodir=mk("done", _json.dumps([f"/uploads/ai-images/{tag}-keep.png"]), "{}"),
+                badjson=mk("error", "not json", pj),
+                empty=mk("cancelled", "[]", "{}"),
+                other=ImageJob(world_id=seed.world_b.id, status="done", result_urls_json="[]", params_json="{}"),
+            )
+            db.add_all(jobs.values())
+            db.commit()
+            ids = {k: j.id for k, j in jobs.items()}
+        finally:
+            db.close()
+        out = []
+        for k in ("done", "busy", "nodir", "badjson", "empty", "other", "done"):
+            r = d.delete(f"/api/ai/imagegen/jobs/{ids[k]}")
+            out.append((k, r.status_code, r.text))
+        r = d.delete("/api/ai/imagegen/jobs/99999999")
+        out.append(("unknown", r.status_code, r.text))
+        files = sorted(p.name.replace(tag, "T") for p in folder.glob(f"{tag}*"))
+        db = SessionLocal()
+        try:
+            left = sorted(k for k, i in ids.items() if db.get(ImageJob, i))
+            db.query(ImageJob).filter(ImageJob.id.in_(ids.values())).delete(synchronize_session=False)
+            db.query(StarredImage).filter(StarredImage.url.like(f"%{tag}%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+        for p in folder.glob(f"{tag}*"):
+            p.unlink()
+        return out, files, left, d
+
+    py_out, py_files, py_left, _ = run("py", DIRECT)
+    gw_out, gw_files, gw_left, d = run("gw", base)
+    assert py_out == gw_out and py_files == gw_files and py_left == gw_left, (py_out, gw_out, py_files, gw_files, py_left, gw_left)
+    assert py_left == ["busy", "other"] and any("T-star.png" == f for f in py_files)
+    r = d.delete("/api/ai/imagegen/jobs/99999999")
+    assert r.status_code == 404 and r.headers.get("x-nd-served-by") == "gateway"
