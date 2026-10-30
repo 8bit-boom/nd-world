@@ -8378,10 +8378,11 @@ class _RoutedStudio:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         self.routes = {}
+        self.log = []          # (method, path, parsed JSON body) of every POST / PUT
         outer = self
 
         class H(BaseHTTPRequestHandler):
-            def do_GET(self):
+            def _answer(self):
                 path = self.path.split("?", 1)[0]
                 if self.headers.get("Authorization", "") != "Bearer sk-studio-key":
                     code, body = 401, {"detail": "Not authenticated"}
@@ -8393,6 +8394,22 @@ class _RoutedStudio:
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+
+            def do_GET(self):
+                self._answer()
+
+            def _with_body(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    parsed = json.loads(raw) if raw else None
+                except ValueError:
+                    parsed = raw.decode("utf-8", "replace")
+                outer.log.append((self.command, self.path.split("?", 1)[0], parsed))
+                self._answer()
+
+            do_POST = _with_body
+            do_PUT = _with_body
 
             def log_message(self, *a):
                 pass
@@ -8507,3 +8524,71 @@ def test_unsloth_studio_status_routes_are_pythons(client, seed):
         save(d, "", "")
         save(v, "", "")
     assert served >= 25, served
+
+
+def test_unsloth_studio_actions_are_pythons(client, seed):
+    """POST /api/ai/unsloth/hub/download, image/load (with a file name), image/unload, auto-switch and context-overrides: what Studio is sent (method,
+    path and JSON, from the stand-in's log) and what the caller is answered, Python against the gateway - for a Studio that answers and one that errors
+    or lacks the route; the refusals (a missing id, a body that is not an object) and a player's 403."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    studio = _RoutedStudio()
+
+    def save(side, key, url):
+        data = {"ollama_model": "", "ollama_url": "", "llm_url": url, "llm_model": "nd-test/model", "llm_api_key": key}
+        if not key:
+            data["llm_api_key_clear"] = "1"
+        assert side.post("/settings/system", data=data, follow_redirects=False).status_code == 303
+
+    calls = [
+        ("/api/ai/unsloth/hub/download", {"repo_id": " unsloth/a-GGUF ", "gguf_variant": "Q4_K_M"}),
+        ("/api/ai/unsloth/hub/download", {"repo_id": "unsloth/b", "gguf_variant": ""}),
+        ("/api/ai/unsloth/hub/download", {"repo_id": ""}),
+        ("/api/ai/unsloth/hub/download", {}),
+        ("/api/ai/unsloth/image/load", {"repo_id": "x/img", "gguf_filename": "q4.gguf"}),
+        ("/api/ai/unsloth/image/load", {"repo_id": ""}),
+        ("/api/ai/unsloth/image/unload", None),
+        ("/api/ai/unsloth/auto-switch", {"enabled": True, "media_auto_switch_model": 0, "auto_unload_idle_seconds": 120}),
+        ("/api/ai/unsloth/auto-switch", {"auto_unload_idle_seconds": -5}),
+        ("/api/ai/unsloth/auto-switch", {}),
+        ("/api/ai/unsloth/context-overrides", {"model_id": "nd-test/model", "max_seq_length": 8192, "extra": {"k": [1, 2]}}),
+        ("/api/ai/unsloth/context-overrides", {"model_id": "  "}),
+    ]
+    good = {"/api/hub/download": (200, {"job_key": "j1", "state": "running", "accepted": True}),
+            "/api/inference/images/load": (200, {"loaded": False, "engine": "x"}),
+            "/api/inference/images/unload": (200, {"loaded": False}),
+            "/api/settings/openai-auto-switch": (200, {"enabled": True}),
+            "/api/settings/openai-auto-switch/overrides": (200, {"ok": True})}
+    bad = {"/api/hub/download": (400, {"detail": "no such repo"}), "/api/inference/images/load": (409, {"error": {"message": "busy"}}),
+           "/api/inference/images/unload": (500, {"detail": "boom"}), "/api/settings/openai-auto-switch": (400, {"detail": [{"msg": "m1"}]})}
+    served = 0
+    try:
+        save(d, "sk-studio-key", studio.url())
+        save(v, "sk-studio-key", studio.url())
+        for label, table in (("good", good), ("bad", bad), ("none", {})):
+            studio.routes = table
+            for url, payload in calls:
+                outs = []
+                for side in (d, v):
+                    studio.log.clear()
+                    r = side.post(url, json=payload) if payload is not None else side.post(url)
+                    outs.append((r.status_code, r.content, list(studio.log), r.headers.get("x-nd-served-by")))
+                assert outs[0][:3] == outs[1][:3], (label, url, payload, outs[0][:3], outs[1][:3])
+                served += outs[1][3] == "gateway"
+                a, b = p.post(url, json=payload or {}), pv.post(url, json=payload or {})
+                assert (a.status_code, a.content) == (b.status_code, b.content), (label, url, "player")
+        # a body that is not an object, and invalid JSON, are FastAPI's 422
+        studio.routes = good
+        for raw in (b"[1,2]", b"not json", b'"text"'):
+            a = d.post("/api/ai/unsloth/hub/download", content=raw, headers={"Content-Type": "application/json"})
+            b = v.post("/api/ai/unsloth/hub/download", content=raw, headers={"Content-Type": "application/json"})
+            assert (a.status_code, a.content) == (b.status_code, b.content), raw
+    finally:
+        studio.close()
+        save(d, "", "")
+        save(v, "", "")
+    assert served >= 20, served

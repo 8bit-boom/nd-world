@@ -84,22 +84,17 @@ fn route_missing(body: &[u8], status: u16) -> bool {
     }
 }
 
-/// `_request("GET", path, params=...)`: Studio's JSON (an empty or non-JSON body is `{}`)
-async fn get(b: &Backend, path: &str, query: &[(&str, &str)]) -> Result<Value, Failure> {
-    let uri = format!("{}{}{}", base_url(b), path, query_string(query));
-    let uri: hyper::Uri = uri.parse().map_err(|e| Failure { status: 503, msg: format!("Unsloth Studio unreachable: InvalidURL: {e}"), missing: false, unreachable: true })?;
-    let (status, body) = crate::studio_key::studio_get(uri, &b.key)
-        .await
-        .map_err(|e| Failure { status: 503, msg: format!("Unsloth Studio unreachable: {e}"), missing: false, unreachable: true })?;
+/// What `_request` makes of Studio's answer: its JSON (an empty or non-JSON body is `{}`), or the failure
+fn interpret(path: &str, status: u16, body: &[u8]) -> Result<Value, Failure> {
     let auth_relevant = path.starts_with("/v1/") || path.starts_with("/api/inference/");
     if status == 401 && auth_relevant {
         note_auth_failure();
     }
-    if status == 404 && route_missing(&body, status) {
+    if status == 404 && route_missing(body, status) {
         return Err(Failure { status: 404, msg: format!("This Studio build doesn't provide {path} \u{2014} update Studio to use it"), missing: true, unreachable: false });
     }
     if status >= 400 {
-        return Err(Failure { status, msg: crate::studio_key::error_message(&body, status), missing: false, unreachable: false });
+        return Err(Failure { status, msg: crate::studio_key::error_message(body, status), missing: false, unreachable: false });
     }
     if status < 300 && auth_relevant {
         note_auth_ok();
@@ -107,10 +102,35 @@ async fn get(b: &Backend, path: &str, query: &[(&str, &str)]) -> Result<Value, F
     if body.is_empty() {
         return Ok(json!({}));
     }
-    if !crate::edits::plain_numbers(&body) || body.windows(3).any(|w| w == b"NaN") || body.windows(8).any(|w| w == b"Infinity") {
+    if !crate::edits::plain_numbers(body) || body.windows(3).any(|w| w == b"NaN") || body.windows(8).any(|w| w == b"Infinity") {
         return Err(Failure { status: 0, msg: String::new(), missing: false, unreachable: false }); // not ours to re-serialise
     }
-    Ok(serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| json!({})))
+    Ok(serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!({})))
+}
+
+/// `_request("GET", path, params=...)`
+async fn get(b: &Backend, path: &str, query: &[(&str, &str)]) -> Result<Value, Failure> {
+    let uri = format!("{}{}{}", base_url(b), path, query_string(query));
+    let uri: hyper::Uri = uri.parse().map_err(|e| Failure { status: 503, msg: format!("Unsloth Studio unreachable: InvalidURL: {e}"), missing: false, unreachable: true })?;
+    let (status, body) = crate::studio_key::studio_get(uri, &b.key)
+        .await
+        .map_err(|e| Failure { status: 503, msg: format!("Unsloth Studio unreachable: {e}"), missing: false, unreachable: true })?;
+    interpret(path, status, &body)
+}
+
+/// `_request(method, path, json_body=...)` for the actions (60 s)
+async fn send(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Result<Value, Failure> {
+    use http_body_util::BodyExt;
+    let unreachable = |e: String| Failure { status: 503, msg: format!("Unsloth Studio unreachable: {e}"), missing: false, unreachable: true };
+    let req = crate::ai::backend_request(b, method, path, body).ok_or_else(|| unreachable("InvalidURL".into()))?;
+    let call = async {
+        let resp = crate::ai::client().request(req).await.map_err(|e| unreachable(if e.is_connect() { format!("ConnectError: {e}") } else { format!("HTTPError: {e}") }))?;
+        let status = resp.status().as_u16();
+        let bytes = resp.into_body().collect().await.map_err(|e| unreachable(format!("HTTPError: {e}")))?.to_bytes();
+        Ok::<_, Failure>((status, bytes))
+    };
+    let (status, bytes) = tokio::time::timeout(std::time::Duration::from_secs(60), call).await.map_err(|_| unreachable("ReadTimeout: timed out".into()))??;
+    interpret(path, status, &bytes)
 }
 
 /// `HTTPException(exc.status_code, str(exc))`; a failure that is only "not ours" (status 0) declines
@@ -226,6 +246,107 @@ pub async fn route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Res
         "probe" => probe(b).await,
         "status" => status(b).await,
         _ => None,
+    }
+}
+
+/// `str(body.get(key) or "").strip()` for a JSON body value; None when the value is not text, nothing or false (Python would format it)
+fn text_field(body: &Map<String, Value>, key: &str) -> Option<String> {
+    match body.get(key) {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Some(String::new()),
+        Some(Value::String(s)) => Some(nd_render::text::py_strip(s).to_string()),
+        Some(_) => None,
+    }
+}
+
+/// `POST /api/ai/unsloth/...` actions for a signed-in GM: hub download, image load (file name given) / unload, auto-switch and per-model
+/// overrides. None: Python's (anyone else, a body that is not a JSON object, a Studio over https, ...).
+pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -> Option<Response<Body>> {
+    let path = uri.path().strip_prefix("/api/ai/unsloth/")?.to_string();
+    if !matches!(path.as_str(), "hub/download" | "image/load" | "image/unload" | "auto-switch" | "context-overrides") {
+        return None;
+    }
+    let (c, u, h) = (cfg.clone(), uri.clone(), headers.clone());
+    let b = tokio::task::spawn_blocking(move || -> Option<Backend> {
+        let db = crate::writes::open(&c)?;
+        let n = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &c, "POST", &u, &h, n)?;
+        if !p.is_gm {
+            return None;
+        }
+        crate::ai::backend(&db)
+    })
+    .await
+    .ok()??;
+    if path == "image/unload" {
+        return match send(&b, "POST", "/api/inference/images/unload", None).await {
+            Ok(v) => ok(&v),
+            Err(f) => failure_response(f),
+        };
+    }
+    let parsed: Value = serde_json::from_slice(body).ok()?;
+    let obj = parsed.as_object()?;
+    let bad = |msg: &str| Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, msg));
+    let result = match path.as_str() {
+        "hub/download" => {
+            let repo = text_field(obj, "repo_id")?;
+            if repo.is_empty() {
+                return bad("repo_id is required");
+            }
+            let variant = text_field(obj, "gguf_variant")?;
+            let mut req = Map::new();
+            req.insert("repo_id".into(), json!(repo));
+            if !variant.is_empty() {
+                req.insert("gguf_variant".into(), json!(variant));
+            }
+            send(&b, "POST", "/api/hub/download", Some(&Value::Object(req))).await
+        }
+        "image/load" => {
+            let repo = text_field(obj, "repo_id")?;
+            if repo.is_empty() {
+                return bad("repo_id is required");
+            }
+            let file = text_field(obj, "gguf_filename")?;
+            if file.is_empty() {
+                return None; // the repo's default file is looked up (Studio's variants, then Hugging Face): Python's
+            }
+            send(&b, "POST", "/api/inference/images/load", Some(&json!({"model_path": repo, "model_kind": "gguf", "gguf_filename": file}))).await
+        }
+        "auto-switch" => {
+            let mut req = Map::new();
+            for key in ["enabled", "media_auto_switch_model"] {
+                match obj.get(key) {
+                    None | Some(Value::Null) => {}
+                    Some(v) => {
+                        req.insert(key.into(), json!(py_truthy(Some(v))));
+                    }
+                }
+            }
+            match obj.get("auto_unload_idle_seconds") {
+                None | Some(Value::Null) => {}
+                Some(Value::Number(n)) if n.is_i64() => {
+                    req.insert("auto_unload_idle_seconds".into(), json!(n.as_i64()?.max(0)));
+                }
+                Some(Value::Bool(v)) => {
+                    req.insert("auto_unload_idle_seconds".into(), json!(*v as i64));
+                }
+                Some(_) => return None, // int() of anything else
+            }
+            send(&b, "PUT", "/api/settings/openai-auto-switch", Some(&Value::Object(req))).await
+        }
+        _ => {
+            let model = text_field(obj, "model_id")?;
+            if model.is_empty() {
+                return bad("model_id is required");
+            }
+            match send(&b, "PUT", "/api/settings/openai-auto-switch/overrides", Some(&parsed)).await {
+                Err(f) if f.missing => return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "This Studio build doesn't expose per-model overrides")),
+                other => other,
+            }
+        }
+    };
+    match result {
+        Ok(v) => ok(&v),
+        Err(f) => failure_response(f),
     }
 }
 
