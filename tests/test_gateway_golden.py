@@ -8753,7 +8753,7 @@ def test_join_with_an_invite_is_pythons(client, seed):
     from datetime import datetime, timedelta
     from app import totp as _totp
     from app.database import SessionLocal
-    from app.models import InviteCode, User, WorldMembership
+    from app.models import InviteCode, User, World, WorldMembership
     base = str(client.base_url)
     w = seed.world_a.id
 
@@ -8809,6 +8809,30 @@ def test_join_with_an_invite_is_pythons(client, seed):
             db.close()
         r = c2.post("/login/2fa", data={"code": pyotp.TOTP(secret).now()})
         out.append(("2fa code", r.status_code, r.headers.get("location"), cookies_of(r), norm(r.text, tag)))
+        # a world with a starting layout preset: a new player gets it (their saved layouts, the site layout in the session), a player who already has layouts keeps them
+        db = SessionLocal()
+        try:
+            from app.models import UserViewPref, World
+            pw = World(name=f"Preset {tag}", slug=f"preset-{tag}", layout_preset="player_phone")
+            db.add(pw)
+            db.flush()
+            db.add(InviteCode(code=f"jn-pre-{tag}", world_id=pw.id))
+            db.commit()
+            pw_id = pw.id
+        finally:
+            db.close()
+        c4 = httpx.Client(base_url=url_base, timeout=60, follow_redirects=False)
+        post("preset signup", f"jn-pre-{tag}", {"mode": "signup", "email": f"pre-{tag}@x.org", "password": "longenough1"}, c4)
+        r4 = c4.get("/api/view-prefs")
+        out.append(("preset prefs", r4.status_code, None, [], json.dumps(r4.json(), sort_keys=True) if r4.status_code == 200 else r4.text[:80]))
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.email == f"pre-{tag}@x.org").first()
+            out.append(("preset rows", 0, None, [], json.dumps(sorted((r.section, r.prefs_json) for r in db.query(UserViewPref).filter(UserViewPref.user_id == u.id).all()))))
+            pm = db.query(WorldMembership).filter(WorldMembership.user_id == u.id, WorldMembership.world_id == pw_id).first()
+            out.append(("preset member", 0, None, [], pm.role if pm else None))
+        finally:
+            db.close()
         # a GM logs in with an invite: no membership
         c3 = httpx.Client(base_url=url_base, timeout=60, follow_redirects=False)
         post("gm login", f"jn-two-{tag}", {"mode": "login", "email": seed.gm.email, "password": GM_PASSWORD}, c3)
@@ -8821,6 +8845,16 @@ def test_join_with_an_invite_is_pythons(client, seed):
                 rows.append((e.replace(tag, "T"), bool(u), u.display_name.replace(tag, "T") if u else None, bool(u and u.is_gm), m.role if m else None))
             for code in ("ok", "used", "two"):
                 rows.append((code, db.query(InviteCode).filter(InviteCode.code == f"jn-{code}-{tag}").first().uses_count))
+        finally:
+            db.close()
+        db = SessionLocal()
+        try:                                        # the extra world must not outlive the test (other tests count worlds)
+            from app.models import UserViewPref
+            wid = db.query(World).filter(World.slug == f"preset-{tag}").first().id
+            db.query(WorldMembership).filter(WorldMembership.world_id == wid).delete()
+            db.query(InviteCode).filter(InviteCode.world_id == wid).delete()
+            db.query(World).filter(World.id == wid).delete()
+            db.commit()
         finally:
             db.close()
         return out, rows, r.headers.get("x-nd-served-by")
@@ -8947,3 +8981,56 @@ def test_handout_print_is_pythons(client, seed):
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     a, b = p.post("/handouts/print", json={"ids": [ids[0]]}), _via(p, base).post("/handouts/print", json={"ids": [ids[0]]})
     assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_view_pref_presets_are_pythons(client, seed):
+    """POST /api/view-prefs/preset/<id>: every preset, on a person with nothing saved and on one with layouts already saved (merged onto them, a junk
+    row skipped); the answer, the rows written (as Python's json.dumps writes them) and the re-signed site layout compared by running Python's save on the
+    prepared state, restoring it, then the gateway's; an unknown preset is Python's 404."""
+    from app.database import SessionLocal
+    from app.models import UserViewPref
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    uid = seed.player_a.id
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def prepare(rows):
+        db = SessionLocal()
+        try:
+            db.query(UserViewPref).filter(UserViewPref.user_id == uid).delete()
+            for section, text in rows:
+                db.add(UserViewPref(user_id=uid, section=section, prefs_json=text))
+            db.commit()
+        finally:
+            db.close()
+
+    def rows():
+        db = SessionLocal()
+        try:
+            return sorted((r.section, r.prefs_json) for r in db.query(UserViewPref).filter(UserViewPref.user_id == uid).all())
+        finally:
+            db.close()
+
+    states = [[], [("site", json.dumps({"options": {"nav": "top", "width": "narrow"}, "pins": [3]})), ("combat", json.dumps({"mode": "list", "size": 3})),
+                   ("facts", "not json"), ("hub", json.dumps({"mode": "nope"})), ("entity_page", "")]]
+    served = 0
+    try:
+        for state in states:
+            for preset in ("table_night", "prep", "player_phone", "reading"):
+                prepare(state)
+                a = d.post(f"/api/view-prefs/preset/{preset}")
+                after_py = rows()
+                prepare(state)
+                b = v.post(f"/api/view-prefs/preset/{preset}")
+                after_gw = rows()
+                assert (a.status_code, a.content) == (b.status_code, b.content), (preset, a.text, b.text)
+                assert after_py == after_gw, (preset, after_py, after_gw)
+                served += b.headers.get("x-nd-served-by") == "gateway"
+                assert ("site", "") not in after_gw and any(r[0] == "site" for r in after_gw)
+                assert v.get("/dice").headers.get("x-nd-served-by") == "gateway"
+        a, b = d.post("/api/view-prefs/preset/nope"), v.post("/api/view-prefs/preset/nope")
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+    finally:
+        prepare([])
+    assert served == 8, served

@@ -527,7 +527,7 @@ fn login_2fa(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body
     if let Some(code) = invite_code.as_deref().filter(|c| !c.is_empty()) {
         let invite = db.query_row("SELECT * FROM invite_codes WHERE code = ?1 LIMIT 1", [code], |r| crate::layout::row_map(r)).ok();
         if invite.is_some() && crate::share::invite_error(invite.as_ref())?.is_empty() {
-            redeemed = Some(redeem(db, &s, invite?)?);
+            redeemed = Some(redeem(db, &mut s, invite?)?);
         }
     }
     let mut r = with_cookie(redeemed.unwrap_or_else(|| redirect(&next)), session_cookie(pages, &s, had));
@@ -547,15 +547,12 @@ fn login_2fa(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body
 }
 
 /// `_redeem(request, db, invite)`: a signed-in non-GM joins the invite's world as a player (once; the use is counted), then to "/" with the world
-/// chosen. None: what Python would do differently (a world with a starting layout preset applies it; an odd slug is quoted in the cookie)
-fn redeem(db: &rusqlite::Connection, session: &Map<String, Value>, invite: Map<String, Value>) -> Option<Response<Body>> {
+/// chosen; a world with a starting layout preset applies it for a player with no saved layouts yet (`_start_with_world_layout`). None: an odd slug
+/// (Python quotes it in the cookie)
+fn redeem(db: &rusqlite::Connection, session: &mut Map<String, Value>, invite: Map<String, Value>) -> Option<Response<Body>> {
     use rusqlite::types::Value as Sql;
     let world_id = invite.get("world_id")?.as_i64()?;
     let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [world_id], |r| crate::layout::row_map(r)).ok();
-    let preset = world.as_ref().and_then(|w| w.get("layout_preset")).filter(|v| crate::edits::py_truthy_pub(Some(v)));
-    if preset.is_some() {
-        return None;
-    }
     let uid = session.get("user_id").and_then(|v| v.as_i64());
     let user = uid.and_then(|id| db.query_row("SELECT * FROM users WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok());
     if let Some(user) = user.filter(|u| !crate::edits::py_truthy_pub(u.get("is_gm"))) {
@@ -565,6 +562,15 @@ fn redeem(db: &rusqlite::Connection, session: &Map<String, Value>, invite: Map<S
             crate::orm::insert(db, "world_memberships", &[("world_id", Sql::Integer(world_id)), ("user_id", Sql::Integer(uid)), ("role", Sql::Text("player".into()))])?;
             let used = invite.get("uses_count").and_then(|v| v.as_i64()).unwrap_or(0);
             crate::orm::update(db, "invite_codes", invite.get("id")?.as_i64()?, &[("uses_count", Sql::Integer(used + 1))])?;
+            // _start_with_world_layout: the world's starting preset, for someone with no saved layouts yet - never over their own choices
+            let preset = world.as_ref().and_then(|w| w.get("layout_preset")).and_then(|v| v.as_str()).filter(|p| crate::edits::preset_known(p));
+            let has_rows = db.query_row("SELECT 1 FROM user_view_prefs WHERE user_id = ?1 LIMIT 1", [uid], |r| r.get::<_, i64>(0)).is_ok();
+            if let (Some(preset), false) = (preset, has_rows) {
+                let choices = crate::edits::apply_preset(db, uid, preset)?;
+                if let Some(site) = choices.get("site") {
+                    session.insert("site_layout".into(), json!({"options": site.get("options"), "pins": site.get("pins"), "at": now(), "uid": uid}));
+                }
+            }
         }
     }
     let mut r = redirect("/");
@@ -609,10 +615,6 @@ fn join_submit(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, bo
     if email.is_empty() || password.is_empty() {
         return join_page(None, Some("Email and password are required.".into()), StatusCode::BAD_REQUEST);
     }
-    // a world with a starting layout preset applies it for a new player: Python's, before anything is written
-    if world.get("layout_preset").is_some_and(|v| crate::edits::py_truthy_pub(Some(v))) {
-        return None;
-    }
     let user = user_by_email(db, &email);
     let user = if mode == "login" {
         let key = format!("{}|{email}", ip(peer));
@@ -653,7 +655,7 @@ fn join_submit(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, bo
         return Some(with_cookie(redirect("/login/2fa"), session_cookie(pages, &s, had)));
     }
     sign_in(db, &mut s, &user);
-    let r = redeem(db, &s, invite)?;
+    let r = redeem(db, &mut s, invite)?;
     Some(with_cookie(r, session_cookie(pages, &s, had)))
 }
 

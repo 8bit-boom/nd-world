@@ -543,6 +543,9 @@ pub fn handles(method: &Method, path: &str) -> bool {
 /// The saved-layout routes (app/routers/view_prefs_api.py): a section name in the path, POST and DELETE
 fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     let ok = |s: &str| !s.is_empty() && s.len() <= 40 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if let Some(id) = path.strip_prefix("/api/view-prefs/preset/").filter(|s| ok(s)) {
+        return (*method == Method::POST).then(|| (view_pref_preset as SlugHandler, id.to_string()));
+    }
     if let Some(sec) = path.strip_prefix("/api/view-prefs/").filter(|s| ok(s)) {
         return match *method {
             Method::POST => Some((view_pref_save as SlugHandler, sec.to_string())),
@@ -7082,6 +7085,91 @@ fn view_pref_save(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
         return Some(r);
     }
     json_response(&cleaned)
+}
+
+/// `view_prefs.PRESETS[id]["sets"]`: (section, what the preset sets) - a map of site options, or the mode of the other sections
+fn preset_sets(id: &str) -> Option<Vec<(&'static str, Value)>> {
+    Some(match id {
+        "table_night" => vec![("site", json!({"nav": "rail", "density": "compact"})), ("cockpit", json!("rail")), ("combat", json!("compact"))],
+        "prep" => vec![("site", json!({"width": "wide"})), ("entity_page", json!("cols")), ("facts", json!("table"))],
+        "player_phone" => vec![("site", json!({"nav": "bottom", "density": "touch"})), ("hub", json!("play")), ("entity_page", json!("tabs")), ("recap", json!("sections"))],
+        "reading" => vec![("site", json!({"width": "reading"})), ("entity_page", json!("reader")), ("rules", json!("book"))],
+        _ => return None,
+    })
+}
+
+/// Whether `view_prefs.PRESETS` has this preset
+pub(crate) fn preset_known(id: &str) -> bool {
+    preset_sets(id).is_some()
+}
+
+/// `apply_preset(db, user_id, preset_id)`: save every layout a preset sets for one person (merged onto what they had); {section: cleaned}.
+/// None: a preset Python does not know, or a stored row this port reads differently
+pub(crate) fn apply_preset(db: &Connection, uid: i64, id: &str) -> Option<Map<String, Value>> {
+    let sets = preset_sets(id)?;
+    let stored = |section: &str| -> Option<Option<Value>> {
+        let raw: Option<Option<String>> = db.query_row("SELECT prefs_json FROM user_view_prefs WHERE user_id = ?1 AND section = ?2 LIMIT 1", rusqlite::params![uid, section], |r| r.get(0)).ok();
+        let Some(raw) = raw else { return Some(None) };
+        let text = raw.filter(|t| !t.is_empty()).unwrap_or_else(|| "{}".into());
+        if !plain_numbers(text.as_bytes()) {
+            return None;
+        }
+        match serde_json::from_str::<Value>(&text) {
+            Ok(v) => Some(Some(view_clean(section, Some(&v))?)),
+            Err(_) => Some(None), // unreadable rows are skipped (saved_for)
+        }
+    };
+    let mut choices = Map::new();
+    for (section, val) in &sets {
+        let base = match stored(section)? {
+            Some(cur) if cur.as_object().is_some_and(|o| !o.is_empty()) => cur,
+            _ => view_clean(section, Some(&json!({})))?,
+        };
+        let mut base = base.as_object()?.clone();
+        if *section == "site" {
+            let mut options = base.get("options").and_then(|o| o.as_object()).cloned().unwrap_or_default();
+            for (k, v) in val.as_object()? {
+                options.insert(k.clone(), v.clone());
+            }
+            base.insert("options".into(), Value::Object(options));
+        } else {
+            base.insert("mode".into(), val.clone());
+        }
+        choices.insert(section.to_string(), view_clean(section, Some(&Value::Object(base)))?);
+    }
+    for (section, cleaned) in &choices {
+        let text = nd_render::py_dumps(cleaned);
+        let row: Option<i64> = db.query_row("SELECT id FROM user_view_prefs WHERE user_id = ?1 AND section = ?2 LIMIT 1", rusqlite::params![uid, section], |r| r.get(0)).ok();
+        match row {
+            Some(rid) => {
+                orm::update(db, "user_view_prefs", rid, &[("prefs_json", s(&text))])?;
+            }
+            None => {
+                orm::insert(db, "user_view_prefs", &[("user_id", Sql::Integer(uid)), ("section", s(section)), ("prefs_json", s(&text))])?;
+            }
+        }
+    }
+    Some(choices)
+}
+
+/// `POST /api/view-prefs/preset/<id>` (app/routers/view_prefs_api.py `view_prefs_preset`): one click, several of the person's own layouts - merged onto what
+/// they had and saved; the site layout rides in the session. Answers {section: cleaned choice}.
+fn view_pref_preset(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if preset_sets(id).is_none() {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Unknown preset"));
+    }
+    let uid = c.p.user_id;
+    let choices = apply_preset(&c.db, uid, id)?;
+    let mut r = json_response(&Value::Object(choices.clone()))?;
+    if let Some(site) = choices.get("site") {
+        let at = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+        let value = site.clone();
+        let line = crate::auth::resign(c.cfg, c.headers, move |sess| {
+            sess.insert("site_layout".into(), json!({"options": value.get("options"), "pins": value.get("pins"), "at": at, "uid": uid}));
+        })?;
+        r.headers_mut().append(header::SET_COOKIE, line.parse().ok()?);
+    }
+    Some(r)
 }
 
 fn view_pref_reset(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
