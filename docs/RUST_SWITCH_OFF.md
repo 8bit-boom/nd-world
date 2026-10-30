@@ -85,6 +85,9 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Disabled lore extras** (pages.rs): `/dreamlands` and `/king-in-yellow` with their Settings switch off render `feature_disabled.html` (a `Simple`
   row's `extra` can now swap the template), so a fresh Python-free install answers both.
 - **King in Yellow play list** (apis.rs): `GET /api/kiy/plays` (kiy_plays.json beside the database; a shape Python raises on is declined).
+- **Task and job lists without Python** (lib.rs, apis.rs): with `ND_PYTHON_FREE=1`, `GET /api/ai/tasks` joins the gateway's tasks to an empty list and
+  `GET /api/live-jobs` reads Python's part itself (the world's 20 newest bulk rename runs, `r:` rows, same gate), so the Background Jobs tray works with
+  nothing behind the gateway. Tested by starting a second, Python-free gateway on the test database and comparing the rows with Python's.
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything

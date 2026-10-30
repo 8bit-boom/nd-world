@@ -2932,6 +2932,47 @@ fn kiy_plays(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Bo
     crate::edits::json_response(&json!({"plays": out, "count": plays.len()}))
 }
 
+/// What Python's `GET /api/live-jobs` holds besides the gateway's own rows, for a gateway with no Python behind it: the world's 20 newest bulk
+/// rename runs ("r:" keys), under the same 404 / 403 gate. `None`: the caller is not signed in or something is unusual (a non-UTC TZ).
+pub fn live_jobs_python_part(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !matches!(std::env::var("TZ").unwrap_or_default().trim(), "" | "UTC" | "Etc/UTC") {
+        return None;
+    }
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    if !crate::pages::section_ok(&p, Some(w), "background_jobs")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs_f64();
+    let epoch = |r: &Map<String, Value>, key: &str| -> Option<Option<f64>> {
+        match r.get(key) {
+            None | Some(Value::Null) => Some(None),
+            Some(v) => {
+                let d = nd_render::pyvalue::PyDateTime::parse(v.get("__dt__").or(Some(v))?.as_str()?)?;
+                Some(Some(d.epoch_secs() as f64 + d.us as f64 / 1e6))
+            }
+        }
+    };
+    let mut rows = vec![];
+    for run in rows_of(&db, "SELECT * FROM media_rename_runs WHERE world_id = ?1 ORDER BY id DESC LIMIT 20", &[&wid])? {
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let in_progress = matches!(status, "pending" | "running");
+        let started = epoch(&run, "created_at")?.unwrap_or(now);
+        let finished = if in_progress { None } else { epoch(&run, "updated_at")? };
+        let shown = if status == "pending" { "running" } else { status };
+        let end = finished.unwrap_or(now);
+        let num = |k: &str| run.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+        rows.push(json!({
+            "key": format!("r:{}", run.get("id")?.as_i64()?), "source": "rename", "label": "Bulk rename", "detail": "", "status": shown,
+            "error": run.get("error").and_then(|v| v.as_str()).unwrap_or(""), "started": started, "elapsed": ((end - started) as i64).max(0), "position": 0,
+            "progress": format!("{} / {}", num("done"), num("total")), "can_cancel": in_progress,
+            "can_restart": matches!(status, "cancelled" | "error" | "interrupted"), "can_remove": !in_progress,
+        }));
+    }
+    crate::edits::json_response(&json!({"jobs": rows}))
+}
+
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
 fn quests_board(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let (db, p) = page(cfg, uri, headers)?;

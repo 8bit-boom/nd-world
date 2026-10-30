@@ -471,7 +471,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
             let mut req = req;
             req.headers_mut().remove(axum::http::header::ACCEPT_ENCODING); // a plain body to merge into
-            let python = app.proxy.forward(req, peer).await;
+            let python = if config::python_free() {
+                // no Python tasks to list: an empty list of its shape for the gateway's own to join
+                Response::builder().status(axum::http::StatusCode::OK).header("content-type", "application/json").body(Body::from("{\"tasks\":[]}")).unwrap()
+            } else {
+                app.proxy.forward(req, peer).await
+            };
             return tasks::list(cfg, uri, headers, python).await;
         }
         if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::DELETE) {
@@ -497,7 +502,16 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             let cfg = app.cfg.clone();
             let mut req = req;
             req.headers_mut().remove(axum::http::header::ACCEPT_ENCODING);
-            let python = app.proxy.forward(req, peer).await;
+            let python = if config::python_free() {
+                // nothing behind the gateway: Python's own part of the list (the rename runs) is read here
+                let (c, u, h) = (cfg.clone(), req.uri().clone(), req.headers().clone());
+                match tokio::task::spawn_blocking(move || apis::live_jobs_python_part(&c, &u, &h)).await {
+                    Ok(Some(r)) => r,
+                    _ => app.proxy.forward(req, peer).await,
+                }
+            } else {
+                app.proxy.forward(req, peer).await
+            };
             return ai::live_jobs_list(cfg, python).await;
         }
         if let Some(resp) = ai::live_job_action(app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone()).await {

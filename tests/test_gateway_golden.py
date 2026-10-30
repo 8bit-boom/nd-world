@@ -8083,3 +8083,55 @@ def test_kiy_play_list_is_pythons(client, seed):
         assert (a.status_code, a.content) == (b.status_code, b.content)
     finally:
         f.unlink(missing_ok=True)
+
+
+def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
+    """A gateway with no Python behind it (ND_PYTHON_FREE=1, nothing at the upstream) lists the bulk rename runs of /api/live-jobs as Python
+    does (the "r:" rows; the in-memory rows are Python's own and absent), and /api/ai/tasks answers an empty list."""
+    import shutil
+    import socket
+    import subprocess
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import MediaRenameRun
+    root = Path(__file__).resolve().parent.parent
+    binary = root / "rust" / "target" / "release" / "nd-gateway"
+    if not binary.exists():
+        pytest.skip("the gateway binary is not built")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([MediaRenameRun(world_id=w, status="done", total=4, done=4), MediaRenameRun(world_id=w, status="error", total=9, done=2, error="boom"),
+                    MediaRenameRun(world_id=w, status="cancelled", total=3, done=1), MediaRenameRun(world_id=seed.world_b.id, status="done")])
+        db.commit()
+    finally:
+        db.close()
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(os.environ, ND_PYTHON_FREE="1", ND_UPSTREAM="127.0.0.1:1", ND_GATEWAY_LISTEN=f"127.0.0.1:{port}", DB_PATH=os.environ["DB_PATH"],
+               ND_STATIC_DIR=str(root / "static"), ND_TEMPLATES_DIR=str(root / "app" / "templates"), ND_BUNDLED_MAPS_DIR=str(root / "app" / "maps"),
+               ND_RUST_ROUTES="login,dice_roll,live,pages,writes,ai,mcp,fans,auth", SECRET_KEY="python-free-test-key", ND_PBKDF2_ITERATIONS="1000")
+    proc = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(50):
+            try:
+                httpx.get(f"http://127.0.0.1:{port}/login", timeout=2)
+                break
+            except httpx.HTTPError:
+                time.sleep(0.2)
+        free = httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30, follow_redirects=False)
+        r = free.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"})
+        assert r.status_code in (302, 303), (r.status_code, r.text[:300])
+        free.cookies.set("active_world", seed.world_a.slug)
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        mine = lambda resp: [j for j in resp.json()["jobs"] if j["key"].startswith("r:")]  # noqa: E731
+        a, b = d.get("/api/live-jobs"), free.get("/api/live-jobs")
+        assert a.status_code == b.status_code == 200, (a.status_code, b.status_code)
+        assert len(mine(a)) >= 3 and mine(a) == mine(b)
+        t = free.get("/api/ai/tasks")
+        assert (t.status_code, t.json()) == (200, {"tasks": []})
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

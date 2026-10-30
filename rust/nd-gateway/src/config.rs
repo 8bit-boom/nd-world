@@ -45,8 +45,13 @@ impl Config {
 
 /// With no Python app to sign sessions, a missing SECRET_KEY gets the same fallback app/main.py has: a random key for this process only
 /// (every session ends at the next restart), with the same warning. Next to Python the gateway keeps reading what Python signs, so none is made.
+/// `ND_PYTHON_FREE=1`: this gateway is the whole app (no Python behind it)
+pub fn python_free() -> bool {
+    matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
 fn python_free_key() -> Option<String> {
-    if !matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on") {
+    if !python_free() {
         return None;
     }
     use rand::RngCore;
