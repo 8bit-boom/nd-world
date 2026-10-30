@@ -177,6 +177,8 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 
 /// (pattern with `{}` for an integer id, handler)
 const ROUTES: &[(&str, Handler)] = &[
+    ("/api/media-rename/apply", media_rename_apply),
+    ("/api/media-rename/undo", media_rename_undo),
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
     ("/api/ai/attachments/upload/complete", attach_complete),
     ("/maps/schematic/new", schematic_new),
@@ -8397,6 +8399,337 @@ fn map_overlay_save(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         }
     }
     json_response(&json!({"ok": true}))
+}
+
+// ── the AI renamer's apply / undo (app/routers/media_rename.py, app/media_rename.py) ──
+
+/// The sections the renamer works on, by kind
+fn rename_section(kind: &str) -> Option<&'static str> {
+    match kind {
+        "audio" => Some("audio"),
+        "video" => Some("video"),
+        "image" => Some("images"),
+        _ => None,
+    }
+}
+
+/// `datetime.utcnow()` as the column text SQLAlchemy writes
+fn utc_now() -> String {
+    orm::now_stamp()
+}
+
+/// The session's view of `media_titles` while a rename batch runs. Python's session has autoflush off: a query sees the rows as they were when the request began
+/// (an attribute changed earlier in the request shows, a delete or an added row does not), and everything is written at the end. A second added title for one URL
+/// is a unique-constraint failure there (its 500), so that is `None` here and the request goes to Python.
+#[derive(Default)]
+struct TitleBook {
+    loaded: std::collections::HashMap<String, (i64, String, bool, bool)>, // url -> (id, title, deleted, changed)
+    adds: Vec<(String, String)>,
+}
+
+impl TitleBook {
+    fn get(&mut self, db: &Connection, wid: i64, url: &str) -> Option<(i64, String)> {
+        if !self.loaded.contains_key(url) {
+            if let Ok((id, title)) = db.query_row("SELECT id, title FROM media_titles WHERE world_id = ?1 AND url = ?2 LIMIT 1", rusqlite::params![wid, url], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+                self.loaded.insert(url.to_string(), (id, title, false, false));
+            }
+        }
+        self.loaded.get(url).map(|t| (t.0, t.1.clone()))
+    }
+    fn delete(&mut self, url: &str) {
+        if let Some(t) = self.loaded.get_mut(url) {
+            t.2 = true;
+        }
+    }
+    fn set(&mut self, url: &str, title: &str) {
+        if let Some(t) = self.loaded.get_mut(url) {
+            t.1 = title.to_string();
+            t.3 = true;
+        }
+    }
+    fn add(&mut self, url: &str, title: &str) -> Option<()> {
+        if self.adds.iter().any(|a| a.0 == url) {
+            return None;
+        }
+        self.adds.push((url.to_string(), title.to_string()));
+        Some(())
+    }
+    fn commit(self, db: &Connection, wid: i64) -> Option<()> {
+        for (url, title) in &self.adds {
+            orm::insert(db, "media_titles", &[("world_id", Sql::Integer(wid)), ("url", s(url)), ("title", s(title))])?;
+        }
+        for (_, (id, title, deleted, changed)) in &self.loaded {
+            if *deleted {
+                db.execute("DELETE FROM media_titles WHERE id = ?1", [id]).ok()?;
+            } else if *changed {
+                orm::update(db, "media_titles", *id, &[("title", s(title)), ("updated_at", s(&utc_now()))])?;
+            }
+        }
+        Some(())
+    }
+}
+
+/// `POST /api/media-rename/apply` {renames:[{kind, id|url, name}], run_id?}: clips get the new name, an image a MediaTitle (an empty name clears it); every change is logged under
+/// one batch id for undo. {batch_id, applied, skipped:[{ref, reason}]}
+fn media_rename_apply(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    use crate::media_rename::{py_str, stored_name};
+    let world = c.p.world.clone()?;
+    let wid = world.get("id")?.as_i64()?;
+    let body = match json_parse_refusal(c.body, "Send a JSON body.", Some("Send a JSON object."))? {
+        Some(r) => return Some(r),
+        None => c.json_value()?,
+    };
+    let Value::Object(body) = body else { return None };
+    let renames = match body.get("renames") {
+        Some(Value::Array(a)) if !a.is_empty() => a.clone(),
+        _ => return Some(bad400("Nothing to rename.")),
+    };
+    for r in &renames {
+        let kind = r.as_object().and_then(|o| o.get("kind")).and_then(|k| k.as_str());
+        match kind.and_then(rename_section) {
+            Some(section) => {
+                if !c.can_edit_section(section)? {
+                    return Some(crate::idpages::refusal(403));
+                }
+            }
+            None => {
+                if r.as_object().and_then(|o| o.get("kind")).is_some_and(|k| !k.is_string() && !k.is_null()) {
+                    return None; // a kind that is not text: `kind not in SECTION` hashes it, Python's
+                }
+                return Some(crate::idpages::refusal(403));
+            }
+        }
+    }
+    if renames.len() > 500 {
+        return Some(bad400("At most 500 renames at a time."));
+    }
+    let batch = format!("{:016x}", rand::random::<u64>());
+    let user_id = c.p.user_id;
+    let (mut applied, mut skipped) = (0i64, vec![]);
+    let skip = |skipped: &mut Vec<Value>, r: &str, reason: &str| skipped.push(json!({"ref": r.chars().take(120).collect::<String>(), "reason": reason}));
+    let mut known: Option<Vec<(String, String)>> = None; // {url: the name it shows now}
+    let mut book = TitleBook::default();
+    for entry in &renames {
+        let Some(e) = entry.as_object() else {
+            skip(&mut skipped, &py_str(entry), "Not a rename.");
+            continue;
+        };
+        let name = match e.get("name") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
+            Some(Value::String(s)) => stored_name(s),
+            _ => return None,
+        };
+        let kind = e.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        match kind {
+            "audio" | "video" => {
+                let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+                let id = match e.get("id").map(py_int_value) {
+                    Some(Ok(i)) => Some(i),
+                    Some(Err(PyErr::Unsure)) => return None,
+                    _ => None,
+                };
+                let row = id.and_then(|i| c.db.query_row(&format!("SELECT id, name FROM {table} WHERE id = ?1 AND world_id = ?2"), rusqlite::params![i, wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok());
+                let idtext = e.get("id").map(py_str).unwrap_or_else(|| "None".into());
+                match row {
+                    None => skip(&mut skipped, &format!("{kind} {idtext}"), "Not found in this world."),
+                    Some((rid, _)) if name.is_empty() => skip(&mut skipped, &format!("{kind} {rid}"), "A name cannot be empty."),
+                    Some((rid, old)) if old.as_deref() == Some(name.as_str()) => {
+                        let _ = old;
+                        skip(&mut skipped, &format!("{kind} {rid}"), "Already has that name.")
+                    }
+                    Some((rid, old)) => {
+                        orm::insert(&c.db, "media_rename_log", &[("world_id", Sql::Integer(wid)), ("batch_id", s(&batch)), ("kind", s(kind)), ("ref_id", Sql::Integer(rid)),
+                            ("old_name", s(old.as_deref().unwrap_or(""))), ("new_name", s(&name)), ("user_id", Sql::Integer(user_id))])?;
+                        orm::update(&c.db, table, rid, &[("name", s(&name))])?;
+                        applied += 1;
+                    }
+                }
+            }
+            "image" => {
+                if known.is_none() {
+                    known = Some(known_image_names(&c.db, wid)?);
+                }
+                let list = known.as_mut()?;
+                let Some(url) = e.get("url").and_then(|u| u.as_str()).filter(|u| list.iter().any(|k| k.0 == *u)).map(str::to_string) else {
+                    if e.get("url").is_some_and(|u| u.is_array() || u.is_object()) {
+                        return None; // `url not in dict` hashes it
+                    }
+                    skip(&mut skipped, &e.get("url").map(py_str).unwrap_or_else(|| "None".into()), "Not an image of this world.");
+                    continue;
+                };
+                let existing = book.get(&c.db, wid, &url);
+                if name.is_empty() {
+                    let Some((_, title)) = existing else {
+                        skip(&mut skipped, &url, "It has no chosen title to clear.");
+                        continue;
+                    };
+                    orm::insert(&c.db, "media_rename_log", &[("world_id", Sql::Integer(wid)), ("batch_id", s(&batch)), ("kind", s("image")), ("ref_url", s(&url)),
+                        ("old_name", s(&title)), ("new_name", s("")), ("user_id", Sql::Integer(user_id))])?;
+                    book.delete(&url);
+                    applied += 1;
+                    continue;
+                }
+                if list.iter().find(|k| k.0 == url).map(|k| k.1.as_str()) == Some(name.as_str()) {
+                    skip(&mut skipped, &url, "Already has that name.");
+                    continue;
+                }
+                orm::insert(&c.db, "media_rename_log", &[("world_id", Sql::Integer(wid)), ("batch_id", s(&batch)), ("kind", s("image")), ("ref_url", s(&url)),
+                    ("old_name", s(existing.as_ref().map(|t| t.1.as_str()).unwrap_or(""))), ("new_name", s(&name)), ("user_id", Sql::Integer(user_id))])?;
+                if let Some(k) = list.iter_mut().find(|k| k.0 == url) {
+                    k.1 = name.clone();
+                }
+                match existing {
+                    Some(_) => book.set(&url, &name),
+                    None => book.add(&url, &name)?,
+                }
+                applied += 1;
+            }
+            _ => {
+                let r = match (e.get("id").filter(|v| py_truthy(Some(v))), e.get("url")) {
+                    (Some(v), _) => py_str(v),
+                    (None, Some(u)) => py_str(u),
+                    (None, None) => "None".into(),
+                };
+                skip(&mut skipped, &r, "Unknown kind.");
+            }
+        }
+    }
+    book.commit(&c.db, wid)?;
+    // the proposals came from a background run: they are dealt with now
+    if let Some(run_id) = body.get("run_id").filter(|v| !v.is_null()) {
+        forget_rename_results(&c.db, wid, run_id, &renames)?;
+    }
+    json_response(&json!({"batch_id": batch, "applied": applied, "skipped": skipped}))
+}
+
+/// `all_world_image_urls`: [(url, the name it shows)] for every image in use or in an album, sorted by URL
+fn known_image_names(db: &Connection, wid: i64) -> Option<Vec<(String, String)>> {
+    let mut names: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for e in crate::gallery::discover(db, wid)? {
+        let u = e.get("url")?.as_str()?.to_string();
+        names.insert(u, match e.get("name") { Some(Value::String(s)) => s.clone(), _ => return None });
+    }
+    let overrides = crate::gallery::title_overrides(db, wid)?;
+    let mut st = db.prepare("SELECT image_urls_json FROM image_albums WHERE world_id = ?1").ok()?;
+    let albums: Vec<Option<String>> = st.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+    for raw in albums {
+        let urls = match serde_json::from_str::<Value>(raw.as_deref().filter(|r| !r.is_empty()).unwrap_or("[]")) { Ok(Value::Array(a)) => a, _ => vec![] };
+        for u in urls {
+            let Value::String(u) = u else { continue };
+            if !names.contains_key(&u) {
+                let name = match overrides.get(&u).filter(|v| py_truthy(Some(v))) {
+                    Some(Value::String(t)) => t.clone(),
+                    Some(_) => return None,
+                    None => crate::gallery::display_name(&u, &[])?,
+                };
+                names.insert(u, name);
+            }
+        }
+    }
+    Some(names.into_iter().collect())
+}
+
+/// `forget_results`: drop dealt-with proposals from the run, and a finished run with nothing left to review. A missing / foreign / malformed id is ignored.
+fn forget_rename_results(db: &Connection, wid: i64, run_id: &Value, refs: &[Value]) -> Option<()> {
+    use crate::media_rename::py_str;
+    let id = match py_int_value(run_id) {
+        Ok(i) => i,
+        Err(PyErr::Unsure) => return None,
+        Err(_) => return Some(()),
+    };
+    let Some((rid, status, results)) = db.query_row("SELECT id, status, results_json FROM media_rename_runs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))).ok() else { return Some(()) };
+    let key = |v: &Value| -> Option<String> {
+        let o = v.as_object()?;
+        let kind = o.get("kind").map(py_str).unwrap_or_else(|| "None".into());
+        let which = if o.get("kind").and_then(|k| k.as_str()) == Some("image") { o.get("url") } else { o.get("id") };
+        Some(format!("{kind}:{}", which.map(py_str).unwrap_or_else(|| "None".into())))
+    };
+    let gone: Vec<String> = refs.iter().filter_map(key).collect();
+    let text = results.filter(|t| !t.is_empty()).unwrap_or_else(|| "[]".into());
+    if !plain_numbers(text.as_bytes()) {
+        return None;
+    }
+    let Ok(Value::Array(all)) = serde_json::from_str::<Value>(&text) else { return None };
+    let mut kept = vec![];
+    for r in all {
+        match key(&r) {
+            Some(k) if gone.contains(&k) => {}
+            Some(_) => kept.push(r),
+            None => return None, // `.get` on a non-dict: Python's own failure
+        }
+    }
+    let in_progress = matches!(status.as_deref(), Some("pending" | "running"));
+    if kept.is_empty() && !in_progress {
+        db.execute("DELETE FROM media_rename_runs WHERE id = ?1", [rid]).ok()?;
+    } else {
+        orm::update(db, "media_rename_runs", rid, &[("results_json", s(&nd_render::py_dumps(&Value::Array(kept))))])?;
+    }
+    Some(())
+}
+
+/// `POST /api/media-rename/undo` {batch_id}: put a batch back; items renamed again since are left and listed
+fn media_rename_undo(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let world = c.p.world.clone()?;
+    let wid = world.get("id")?.as_i64()?;
+    let mut any = false;
+    for section in ["audio", "video", "images"] {
+        any |= c.can_edit_section(section)?;
+    }
+    if !any {
+        return Some(crate::idpages::refusal(403));
+    }
+    let body = match json_parse_refusal(c.body, "Send a JSON body.", Some("Send a JSON object."))? {
+        Some(r) => return Some(r),
+        None => c.json_value()?,
+    };
+    let Value::Object(body) = body else { return None };
+    let batch = match body.get("batch_id") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        _ => return None,
+    };
+    if batch.is_empty() {
+        return Some(bad400("Say which batch to undo."));
+    }
+    let mut st = c.db.prepare("SELECT id, kind, ref_id, ref_url, old_name, new_name FROM media_rename_log WHERE world_id = ?1 AND batch_id = ?2 AND undone_at IS NULL").ok()?;
+    type LogRow = (i64, String, Option<i64>, Option<String>, Option<String>, Option<String>);
+    let logs: Vec<LogRow> = st.query_map(rusqlite::params![wid, batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    drop(st);
+    let (mut restored, mut skipped) = (0i64, vec![]);
+    let mut book = TitleBook::default();
+    for (lid, kind, ref_id, ref_url, old, new) in logs {
+        if kind == "audio" || kind == "video" {
+            let table = if kind == "audio" { "audio_clips" } else { "video_clips" };
+            let row = c.db.query_row(&format!("SELECT id, name FROM {table} WHERE id = ?1 AND world_id = ?2"), rusqlite::params![ref_id, wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok();
+            match row {
+                Some((rid, name)) if name == new => {
+                    orm::update(&c.db, table, rid, &[("name", s(old.as_deref().unwrap_or("")))])?;
+                    restored += 1;
+                }
+                other => skipped.push(json!({"ref": format!("{kind} {}", ref_id.map(|i| i.to_string()).unwrap_or_else(|| "None".into())),
+                    "reason": if other.is_some() { "It was renamed again since." } else { "It no longer exists." }})),
+            }
+        } else {
+            let url = ref_url.clone().unwrap_or_default();
+            let title = if ref_url.is_some() { book.get(&c.db, wid, &url) } else { None };
+            let current = title.as_ref().map(|t| t.1.clone()).unwrap_or_default();
+            if Some(current.as_str()) == new.as_deref() {
+                match (old.as_deref().filter(|o| !o.is_empty()), title) {
+                    (Some(o), Some(_)) => book.set(&url, o),
+                    (Some(o), None) => book.add(ref_url.as_deref()?, o)?,
+                    (None, Some(_)) => book.delete(&url),
+                    (None, None) => {}
+                }
+                restored += 1;
+            } else {
+                skipped.push(json!({"ref": ref_url.clone().unwrap_or_else(|| "None".into()), "reason": "It was renamed again since."}));
+            }
+        }
+        orm::update(&c.db, "media_rename_log", lid, &[("undone_at", s(&utc_now()))])?;
+    }
+    book.commit(&c.db, wid)?;
+    json_response(&json!({"restored": restored, "skipped": skipped}))
 }
 
 fn map_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {

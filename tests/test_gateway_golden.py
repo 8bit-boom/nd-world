@@ -9099,3 +9099,92 @@ def test_gpu_power_limit_requests_are_pythons(client, seed):
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     a, b = p.post("/api/system/gpu-power", json={"index": 0, "watts": 100}), _via(p, base).post("/api/system/gpu-power", json={"index": 0, "watts": 100})
     assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_media_rename_apply_and_undo_are_pythons(client, seed):
+    """POST /api/media-rename/apply and /undo: clips and images renamed, cleared and skipped for every reason, a run's reviewed proposals forgotten, undo (once,
+    and with an item renamed again since), and the 400 / 403 refusals. Python and the gateway each run the same script on their own twin library; the answers
+    (batch ids aside) and the rows left behind must agree."""
+    import re
+    from app.database import SessionLocal
+    from app.models import AudioClip, ImageAlbum, MediaRenameLog, MediaRenameRun, MediaTitle, VideoClip
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+
+    def run(side, url_base):
+        tag = side + os.urandom(3).hex()
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        if url_base != DIRECT:
+            d = _via(d, url_base)
+        db = SessionLocal()
+        try:
+            a1, a2 = AudioClip(world_id=w, name=f"IMG_1-{tag}", file_url=f"/uploads/a1-{tag}.mp3"), AudioClip(world_id=w, name=f"Same-{tag}", file_url=f"/uploads/a2-{tag}.mp3")
+            v1 = VideoClip(world_id=w, name=f"clip_9-{tag}", file_url=f"/uploads/v1-{tag}.mp4")
+            other = AudioClip(world_id=seed.world_b.id, name=f"Other-{tag}", file_url=f"/uploads/o-{tag}.mp3")
+            db.add_all([a1, a2, v1, other, ImageAlbum(world_id=w, name=f"Pics {tag}", image_urls_json=json.dumps([f"/uploads/0123456789ab-{tag}-one.png", f"/uploads/{tag}-two.png"])),
+                        MediaTitle(world_id=w, url=f"/uploads/{tag}-two.png", title="Old title")])
+            db.flush()
+            run_row = MediaRenameRun(world_id=w, status="done", results_json=json.dumps([{"kind": "audio", "id": a1.id}, {"kind": "video", "id": v1.id}, {"kind": "audio", "id": 987654}]),
+                                     total=3, done=3)
+            db.add(run_row)
+            db.commit()
+            ids = dict(a1=a1.id, a2=a2.id, v1=v1.id, other=other.id, run=run_row.id)
+        finally:
+            db.close()
+        norm = lambda r: (r.status_code, re.sub(r"[0-9a-f]{16}", "BATCH", re.sub(re.escape(tag), "T", re.sub(r"\b\d{2,}\b", "N", re.sub(r'"ref":"(audio|video) \d+"', r'"ref":"\1 N"', r.text)))))  # noqa: E731
+        out = []
+
+        def post(path, payload):
+            r = d.post(path, json=payload)
+            out.append((path.rsplit("/", 1)[1],) + norm(r))
+            return r
+
+        post("/api/media-rename/apply", {})
+        post("/api/media-rename/apply", {"renames": []})
+        post("/api/media-rename/apply", {"renames": [{"kind": "bogus", "id": 1, "name": "x"}]})
+        post("/api/media-rename/apply", {"renames": ["junk", 5, None, [1], {"kind": "audio"}, {"kind": "nope", "id": 3}, {"kind": "image", "url": "/uploads/nowhere.png", "name": "n"}]})
+        first = post("/api/media-rename/apply", {"run_id": ids["run"], "renames": [
+            {"kind": "audio", "id": ids["a1"], "name": "  Door \t Creak\x07  "}, {"kind": "audio", "id": ids["a2"], "name": f"Same-{tag}"}, {"kind": "audio", "id": str(ids["a2"]), "name": ""},
+            {"kind": "audio", "id": ids["other"], "name": "Steal"}, {"kind": "video", "id": ids["v1"], "name": "Intro"}, {"kind": "video", "id": "abc", "name": "x"},
+            {"kind": "image", "url": f"/uploads/0123456789ab-{tag}-one.png", "name": "Hero"}, {"kind": "image", "url": f"/uploads/{tag}-two.png", "name": ""},
+            {"kind": "audio", "id": ids["a1"], "name": "x" * 300}]})
+        batch = first.json()["batch_id"]
+        run_after = SessionLocal()
+        try:
+            rr = run_after.query(MediaRenameRun).filter(MediaRenameRun.id == ids["run"]).first()
+            out.append(("run kept", 0, json.dumps(sorted(([("A1" if x["id"] == ids["a1"] else "V1" if x["id"] == ids["v1"] else x["id"]), x["kind"]] for x in json.loads(rr.results_json)), key=str)) if rr else "deleted"))
+        finally:
+            run_after.close()
+        post("/api/media-rename/apply", {"run_id": "junk", "renames": [{"kind": "audio", "id": ids["a2"], "name": "Again"}]})
+        post("/api/media-rename/undo", {})
+        post("/api/media-rename/undo", {"batch_id": ""})
+        # rename one item again, then undo: it is left and listed
+        post("/api/media-rename/apply", {"renames": [{"kind": "audio", "id": ids["a1"], "name": "Third"}]})
+        post("/api/media-rename/undo", {"batch_id": batch})
+        post("/api/media-rename/undo", {"batch_id": batch})
+        post("/api/media-rename/undo", {"batch_id": "no-such-batch"})
+        db = SessionLocal()
+        try:
+            state = ([(c.name or "").replace(tag, "T") for c in db.query(AudioClip).filter(AudioClip.id.in_([ids["a1"], ids["a2"], ids["other"]])).order_by(AudioClip.id)],
+                     db.get(VideoClip, ids["v1"]).name.replace(tag, "T"),
+                     sorted((t.url.replace(tag, "T"), t.title) for t in db.query(MediaTitle).filter(MediaTitle.world_id == w, MediaTitle.url.like(f"%{tag}%"))),
+                     sorted((l.kind, (l.old_name or "").replace(tag, "T"), (l.new_name or "").replace(tag, "T"), l.undone_at is not None, (l.ref_url or "").replace(tag, "T"))
+                            for l in db.query(MediaRenameLog).filter(MediaRenameLog.world_id == w, (MediaRenameLog.new_name.like(f"%{tag}%")) | (MediaRenameLog.old_name.like(f"%{tag}%"))
+                                                                      | (MediaRenameLog.ref_url.like(f"%{tag}%")) | (MediaRenameLog.batch_id == batch))))
+        finally:
+            db.close()
+        return out, state
+
+    py_out, py_state = run("py", DIRECT)
+    gw_out, gw_state = run("gw", base)
+    for a, b in zip(py_out, gw_out):
+        assert a == b, (a, b)
+    assert len(py_out) == len(gw_out) and py_state == gw_state, (py_state, gw_state)
+    probe = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base)
+    r = probe.post("/api/media-rename/undo", json={"batch_id": "x"})
+    assert r.headers.get("x-nd-served-by") == "gateway"
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for path, body in (("/api/media-rename/apply", {"renames": [{"kind": "audio", "id": 1, "name": "x"}]}), ("/api/media-rename/undo", {"batch_id": "x"})):
+        a, b = p.post(path, json=body), _via(p, base).post(path, json=body)
+        assert (a.status_code, a.content) == (b.status_code, b.content), path

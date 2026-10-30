@@ -96,11 +96,17 @@ fn strip_chars(s: &str, set: &str) -> String {
 }
 
 /// `str(x)` of a JSON value (a string as it is)
-fn py_str(v: &Value) -> String {
+pub(crate) fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         other => py_repr(other),
     }
+}
+
+/// `_stored_name(text)`: control characters out, white space folded, trimmed, at most 256 characters
+pub(crate) fn stored_name(text: &str) -> String {
+    let kept: String = text.chars().filter(|c| !matches!(*c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{7f}')).collect();
+    strip(&ws_sub(&kept)).chars().take(256).collect()
 }
 
 /// `readable_filename`

@@ -505,3 +505,8 @@ gateway answer would not count toward Python's lockout, so they move at the swit
 
 Python-only libraries with no exact Rust twin (reportlab for PDF export, the PDF / HTML sheet readers behind the AI drafters) may stay
 in a small sidecar, as the plan allows, if a port is not good enough.
+
+- **Media rename apply / undo** (edits.rs): `POST /api/media-rename/apply` and `/undo` — clips and images renamed or cleared with every skip reason, the
+  400 / 403 refusals, `MediaRenameLog` rows, a reviewed run's proposals forgotten, undo (once, and "renamed again since"). Python's session has
+  `autoflush=False`, so a batch that clears the same image twice (two pending `MediaTitle` adds) crashes Python with a unique-constraint 500; the
+  gateway's `TitleBook` emulates the deferred writes and declines that case rather than answering differently.
