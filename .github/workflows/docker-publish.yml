@@ -103,3 +103,82 @@ jobs:
           enc=$(docker run --rm "$IMAGE" ffmpeg -hide_banner -encoders)
           for e in libsvtav1 libopus libmp3lame libx264; do echo "$enc" | grep -q " $e " || { echo "missing encoder $e"; exit 1; }; done
           docker run --rm -e DB_PATH=/tmp/smoke.db -e SECRET_KEY=ci-smoke-check-not-a-real-secret-0000 "$IMAGE" python -c "import app.main" && echo "app imports"
+
+  # The Python-free image (Dockerfile.gateway, docs/PYTHON_FREE_IMAGE_BUILD.md): the Rust gateway alone, no Python at run time. Published under its OWN
+  # package name (<repo>-gateway), never as a tag of the normal image, so a deployment that follows :latest of the normal image (Watchtower on TrueNAS)
+  # is not moved onto it by accident - pointing an app at this one is a deliberate choice.
+  build-and-push-gateway:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}-gateway
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # loaded into the local Docker first, so the smoke test below runs BEFORE anything is pushed
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gateway
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,scope=gateway,mode=max
+
+      - name: Report image size
+        run: |
+          size=$(docker image inspect -f '{{.Size}}' "$IMAGE_NAME:${{ github.sha }}")
+          echo "### Python-free image size: $((size / 1000000)) MB (uncompressed)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # the pinned static ffmpeg has what the gateway shells out to: the AV1 decoder (AVIF pictures), the AV1 / Opus / H.264 encoders (video upload conversion)
+      - name: Check ffmpeg in the image
+        run: |
+          dec=$(docker run --rm --entrypoint ffmpeg "$IMAGE_NAME:${{ github.sha }}" -hide_banner -decoders)
+          echo "$dec" | grep -q " libdav1d " || { echo "missing decoder libdav1d"; exit 1; }
+          enc=$(docker run --rm --entrypoint ffmpeg "$IMAGE_NAME:${{ github.sha }}" -hide_banner -encoders)
+          for e in libsvtav1 libopus libx264; do echo "$enc" | grep -q " $e " || { echo "missing encoder $e"; exit 1; }; done
+
+      # a real boot on an empty volume: the schema and seed rows made by the gateway itself, the seeded GM signing in, the pages that need no Python,
+      # and a request only Python could answer getting the plain "not in this image" answer instead of hanging
+      - name: Smoke test (boots, signs in, serves pages)
+        run: |
+          docker run -d --name nd-pf -p 8000:8000 \
+            -e SECRET_KEY=ci-smoke-check-not-a-real-secret-0000 -e GM_EMAIL=gm@example.org -e GM_PASSWORD=ci-smoke-password-1 \
+            "$IMAGE_NAME:${{ github.sha }}"
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/__gateway/health >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:8000/__gateway/health || { docker logs nd-pf; exit 1; }
+          curl -sf -o /dev/null http://127.0.0.1:8000/login || { docker logs nd-pf; exit 1; }
+          curl -s -c /tmp/jar -o /dev/null -w '%{http_code}\n' -d "email=gm@example.org&password=ci-smoke-password-1&next=/" http://127.0.0.1:8000/login | grep -q 303 \
+            || { echo "sign-in failed"; docker logs nd-pf; exit 1; }
+          for p in / /maps /dice /settings /worlds /characters /api/me; do
+            code=$(curl -s -b /tmp/jar -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$p")
+            echo "$p -> $code"
+            [ "$code" = "200" ] || { echo "$p did not answer 200"; docker logs nd-pf; exit 1; }
+          done
+          code=$(curl -s -b /tmp/jar -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/openapi.json)
+          [ "$code" = "501" ] || { echo "/openapi.json answered $code, expected the 501 'not in this image'"; exit 1; }
+          docker rm -f nd-pf
+
+      - name: Push
+        run: |
+          docker tag "$IMAGE_NAME:${{ github.sha }}" "$IMAGE_NAME:latest"
+          docker push "$IMAGE_NAME:${{ github.sha }}"
+          docker push "$IMAGE_NAME:latest"

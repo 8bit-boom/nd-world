@@ -17,6 +17,23 @@ character `.pdf` export, FastAPI's `/docs` and `/openapi.json`, the world Foundr
 search, King in Yellow web fetches; the gateway has no TLS client, so a Studio/Ollama URL must be `http://`), and the legacy Ollama back
 end's status routes (a Unsloth Studio key is served).
 
+## 0b. Or pull what CI built (no local build)
+
+Every push to `main` that passes the tests also builds this image in CI (`.github/workflows/docker-publish.yml`, job `build-and-push-gateway`) and, only
+after a smoke test (it boots on an empty volume, the seeded GM signs in, `/`, `/maps`, `/dice`, `/settings`, `/worlds`, `/characters` and `/api/me` answer 200,
+`/openapi.json` answers the 501 "not in this image", and the pinned ffmpeg has the AV1 decoder and the AV1 / Opus / H.264 encoders), pushes it as
+`ghcr.io/<owner>/<repo>-gateway:latest` and `:<commit sha>`. It is a **separate package** from the normal image on purpose: an app that follows the normal
+image's `:latest` (Watchtower) is never moved onto the Python-free one by accident.
+
+```bash
+docker pull ghcr.io/<owner>/<repo>-gateway:latest          # a private package needs: docker login ghcr.io -u <user> (a token with read:packages)
+docker run -d --name nd-pf -p 8000:8000 -v nd-pf-data:/data -e SECRET_KEY=... -e GM_EMAIL=... -e GM_PASSWORD=... -e TZ=Europe/Budapest ghcr.io/<owner>/<repo>-gateway:latest
+```
+
+On TrueNAS SCALE use a custom app with that image, port 8000, a volume on a CLONED dataset at `/data` (snapshot and clone first - never the live dataset),
+the live app's `SECRET_KEY` (so sessions survive), `TZ`, and for a week `ND_DECLINE_TRACE=1` (each request the gateway could not answer is then logged with its
+body in the app's log). A new package on GitHub is private by default: make it public in the package settings, or give TrueNAS a registry login.
+
 ## 1. Prerequisites
 
 - Docker with BuildKit (`docker buildx version`). Allow ~6 GB free disk and a few minutes; the Rust build is the slow part (cached after the
