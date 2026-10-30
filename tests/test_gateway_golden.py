@@ -8706,3 +8706,4 @@ def test_orgs_graph_is_pythons(client, seed):
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     a, b = p.get("/api/orgs/graph"), _via(p, base).get("/api/orgs/graph")
     assert (a.status_code, a.content) == (b.status_code, b.content)
+

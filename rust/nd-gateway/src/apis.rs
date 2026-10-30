@@ -1404,26 +1404,18 @@ fn first_truthy<'a>(o: &'a Map<String, Value>, keys: &[&str]) -> Option<Option<&
     Some(None)
 }
 
-/// `GET /characters/<id>/export.foundry.json` (app/routers/characters.py `character_export_foundry`): a Foundry JournalEntry
-fn pc_export_foundry(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
-    let db = crate::writes::open(cfg)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
-    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
-    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
-    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
-        return Some(crate::idpages::refusal(403));
-    }
+/// `_pc_to_foundry_journal(pc)`: one character as a Foundry JournalEntry document
+pub(crate) fn pc_foundry_doc(db: &rusqlite::Connection, pc: &Map<String, Value>, id: i64) -> Option<Value> {
     let col = |k: &str| -> Option<String> {
         match pc.get(k) { None | Some(Value::Null) => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None }
     };
     let name = col("name")?;
     let title = if name.is_empty() { "Character".to_string() } else { name.clone() };
     let (backstory, notes) = (col("backstory")?, col("notes")?);
-    let tpl = crate::sheets::pc_template(&db, &pc)?;
+    let tpl = crate::sheets::pc_template(db, pc)?;
     let doc = if let Some(t) = tpl.as_ref().filter(|t| t.custom()) {
         let mut body = vec![format!("<h1>{}</h1>", html_escape(&title))];
-        for (section, pairs) in pc_export_sections(&db, &pc)? {
+        for (section, pairs) in pc_export_sections(db, pc)? {
             body.push(format!("<h2>{}</h2><ul>{}</ul>", html_escape(&section),
                 pairs.iter().map(|(l, v)| format!("<li><strong>{}:</strong> {}</li>", html_escape(l), html_escape(v))).collect::<String>()));
         }
@@ -1438,7 +1430,7 @@ fn pc_export_foundry(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> O
             "pages": [{"name": "Character Sheet", "type": "text", "text": {"format": 1, "content": body.concat()}, "sort": 0}],
             "flags": {"nd-world": {"source": "nd-world", "character_id": id, "system": slug}}})
     } else {
-        let d = crate::edits::derived(&pc)?;
+        let d = crate::edits::derived(pc)?;
         let level = pc.get("level").and_then(|v| v.as_i64())?;
         let hp = pc.get("current_hp").and_then(|v| v.as_i64())?;
         let (hp_max, shock_max, shock_cur) = (d.get("hp_max")?.as_i64()?, d.get("shock_max")?.as_i64()?, d.get("shock_current")?.as_i64()?);
@@ -1509,6 +1501,20 @@ fn pc_export_foundry(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> O
                       {"name": "Feats", "type": "text", "text": {"format": 1, "content": feats_html}, "sort": 200}],
             "flags": {"nd-world": {"source": "nd-world", "character_id": id}}})
     };
+    Some(doc)
+}
+
+/// `GET /characters/<id>/export.foundry.json` (app/routers/characters.py `character_export_foundry`): a Foundry JournalEntry
+fn pc_export_foundry(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let doc = pc_foundry_doc(&db, &pc, id)?;
     let fname = export_name(pc.get("name").and_then(|v| v.as_str()))?;
     let body = nd_render::py_dumps_indent_as(&json!([doc]), 2, false);
     let mut r = crate::edits::json_response_raw(&body, "application/json")?;
