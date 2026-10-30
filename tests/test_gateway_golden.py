@@ -8135,3 +8135,44 @@ def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_session_audio_job_list_and_rename_history_are_pythons(client, seed):
+    """GET /api/sessions/ai/audio-jobs (all, per game session, a bad filter) and /api/media-rename/history (batches with examples, an undone
+    one, a missing author): for the GM; a player is refused as Python refuses."""
+    from datetime import datetime, timedelta
+    from app.database import SessionLocal
+    from app.models import AudioJob, MediaRenameLog
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    t0 = datetime(2026, 5, 1, 12, 0, 0)
+    db = SessionLocal()
+    try:
+        db.add_all([AudioJob(world_id=w, purpose="session_recap", filename="a.mp3", status="done", transcript="t", recap="r", game_session_id=3, created_at=t0),
+                    AudioJob(world_id=w, purpose="condense", filename="b.mp3", status="error", error="x", model="m", game_session_id=4, created_at=t0 + timedelta(minutes=1)),
+                    AudioJob(world_id=w, purpose="attachment", filename="c.mp3", status="done", created_at=t0 + timedelta(minutes=2)),
+                    AudioJob(world_id=seed.world_b.id, purpose="condense", filename="d.mp3", status="done", created_at=t0)])
+        for i in range(5):
+            db.add(MediaRenameLog(world_id=w, batch_id="aaa", kind="audio", ref_id=i, old_name=f"old{i}", new_name=f"new{i}", user_id=seed.gm.id, created_at=t0))
+        db.add_all([MediaRenameLog(world_id=w, batch_id="bbb", kind="image", ref_url="/uploads/x.png", old_name="", new_name="Nice", user_id=None, created_at=t0 + timedelta(hours=1),
+                                   undone_at=t0 + timedelta(hours=2)),
+                    MediaRenameLog(world_id=w, batch_id="ccc", kind="video", ref_id=1, old_name="v", new_name="V", user_id=seed.player_a.id, created_at=t0 + timedelta(hours=3)),
+                    MediaRenameLog(world_id=seed.world_b.id, batch_id="zzz", kind="video", ref_id=1, old_name="v", new_name="V", created_at=t0)])
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    urls = ["/api/sessions/ai/audio-jobs", "/api/sessions/ai/audio-jobs?game_session_id=3", "/api/sessions/ai/audio-jobs?game_session_id=99",
+            "/api/sessions/ai/audio-jobs?game_session_id=x", "/api/media-rename/history"]
+    for url in urls:
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        if "=x" not in url:
+            assert b.headers.get("x-nd-served-by") == "gateway", url
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for url in (urls[0], urls[4]):
+        a, b = p.get(url), pv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url

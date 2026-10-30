@@ -28,6 +28,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
+        "/api/media-rename/history" => media_rename_history(&cfg, uri, headers),
+        "/api/sessions/ai/audio-jobs" => session_audio_job_list(&cfg, uri, headers),
         "/api/kiy/plays" => kiy_plays(&cfg, uri, headers),
         "/api/media-rename/runs" => media_rename_runs(&cfg, uri, headers),
         "/api/media-rename/summary" => media_rename_summary(&cfg, uri, headers),
@@ -98,7 +100,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -299,6 +301,23 @@ fn media_rename_run(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Op
     crate::edits::json_response(&out)
 }
 
+/// sessions.py `_job_to_dict`: a session recap / condense job as the sessions page shows it
+fn session_job_value(j: &Map<String, Value>) -> Option<Value> {
+    let purpose = j.get("purpose").and_then(|v| v.as_str()).unwrap_or_default();
+    let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
+    Some(json!({
+        "id": j.get("id")?.as_i64()?, "purpose": purpose, "filename": v("filename"),
+        "status": v("status"), "error": v("error"),
+        "transcript": v("transcript"), "recap": v("recap"), "model": s("model").unwrap_or_default(),
+        "extra_instructions": s("extra_instructions").unwrap_or_default(),
+        "game_session_id": v("game_session_id"),
+        "chunk_current": v("chunk_current"), "chunk_total": v("chunk_total"),
+        "run_started_at": dt_iso(&j, "run_started_at")?, "finished_at": dt_iso(&j, "finished_at")?,
+        "created_at": dt_iso(&j, "created_at")?, "updated_at": dt_iso(&j, "updated_at")?,
+    }))
+}
+
 /// `api_audio_job_status` (app/routers/sessions.py): a session-recap or condense job of the active world, as sessions.py's
 /// own `_job_to_dict` writes it - a smaller dict than audio_jobs.py's (no purpose_label, no resumable flag, ...), and a job
 /// of another purpose is the same 404 a missing one is
@@ -313,18 +332,7 @@ fn session_audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i6
     if purpose != "session_recap" && purpose != "condense" {
         return Some(crate::idpages::refusal(404));
     }
-    let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_string);
-    let v = |k: &str| j.get(k).cloned().unwrap_or(Value::Null);
-    let out = json!({
-        "id": j.get("id")?.as_i64()?, "purpose": purpose, "filename": v("filename"),
-        "status": v("status"), "error": v("error"),
-        "transcript": v("transcript"), "recap": v("recap"), "model": s("model").unwrap_or_default(),
-        "extra_instructions": s("extra_instructions").unwrap_or_default(),
-        "game_session_id": v("game_session_id"),
-        "chunk_current": v("chunk_current"), "chunk_total": v("chunk_total"),
-        "run_started_at": dt_iso(&j, "run_started_at")?, "finished_at": dt_iso(&j, "finished_at")?,
-        "created_at": dt_iso(&j, "created_at")?, "updated_at": dt_iso(&j, "updated_at")?,
-    });
+    let out = session_job_value(&j)?;
     crate::edits::json_response(&out)
 }
 
@@ -2971,6 +2979,73 @@ pub fn live_jobs_python_part(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Op
         }));
     }
     crate::edits::json_response(&json!({"jobs": rows}))
+}
+
+/// `GET /api/sessions/ai/audio-jobs[?game_session_id=N]` (app/routers/sessions.py): the world's 20 newest recap / condense jobs
+fn session_audio_job_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let jobs = match crate::pages::query_param(uri, "game_session_id") {
+        None => rows_of(&db, "SELECT * FROM audio_jobs WHERE world_id = ?1 AND purpose IN ('session_recap', 'condense') ORDER BY created_at DESC LIMIT 20", &[&wid])?,
+        Some(t) if !t.is_empty() && t.len() < 18 && t.bytes().all(|c| c.is_ascii_digit()) => {
+            let gs: i64 = t.parse().ok()?;
+            rows_of(&db, "SELECT * FROM audio_jobs WHERE world_id = ?1 AND purpose IN ('session_recap', 'condense') AND game_session_id = ?2 ORDER BY created_at DESC LIMIT 20", &[&wid, &gs])?
+        }
+        Some(_) => return None,
+    };
+    let list: Option<Vec<Value>> = jobs.iter().map(session_job_value).collect();
+    crate::edits::json_response(&Value::Array(list?))
+}
+
+/// `GET /api/media-rename/history` (`recent_batches`): the latest 10 applied rename batches, newest first - when, by whom, how many, whether
+/// undone, up to three examples
+fn media_rename_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, wid, kinds) = match media_rename_gate(cfg, uri, headers)? {
+        Ok(g) => g,
+        Err(r) => return Some(r),
+    };
+    if kinds.is_empty() {
+        return Some(crate::idpages::refusal(403));
+    }
+    let logs = rows_of(&db, "SELECT * FROM media_rename_log WHERE world_id = ?1 ORDER BY id DESC LIMIT 2000", &[&wid])?;
+    // batch id -> (first log, count, all undone, examples), in the order batches first appear
+    let mut order: Vec<Value> = vec![];
+    let mut batches: Vec<(Value, Map<String, Value>, i64, bool, Vec<Value>)> = vec![];
+    for log in logs {
+        let id = log.get("batch_id").cloned().unwrap_or(Value::Null);
+        let undone = !matches!(log.get("undone_at"), None | Some(Value::Null));
+        let at = log.get("created_at").cloned().unwrap_or(Value::Null);
+        let idx = match order.iter().position(|o| *o == id) {
+            Some(i) => i,
+            None => {
+                order.push(id.clone());
+                let mut first = Map::new();
+                first.insert("at".into(), at);
+                first.insert("user_id".into(), log.get("user_id").cloned().unwrap_or(Value::Null));
+                batches.push((id, first, 0, true, vec![]));
+                order.len() - 1
+            }
+        };
+        let b = &mut batches[idx];
+        b.2 += 1;
+        b.3 = b.3 && undone;
+        if b.4.len() < 3 {
+            b.4.push(json!({"old": log.get("old_name"), "new": log.get("new_name")}));
+        }
+    }
+    let mut out = vec![];
+    for (id, first, count, undone, examples) in batches.into_iter().take(10) {
+        let by = match first.get("user_id").and_then(|v| v.as_i64()).filter(|u| *u != 0) {
+            Some(uid) => rows_of(&db, "SELECT * FROM users WHERE id = ?1", &[&uid])?.into_iter().next().and_then(|u| {
+                u.get("display_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+                    .or_else(|| u.get("email")?.as_str()?.split('@').next().map(str::to_string))
+            }),
+            None => None,
+        };
+        out.push(json!({"batch_id": id, "at": dt_strftime(&first, "at", "%Y-%m-%dT%H:%M:%SZ")?, "count": count, "undone": undone,
+            "examples": examples, "by": by.as_deref().unwrap_or("someone")}));
+    }
+    crate::edits::json_response(&json!({"batches": out}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)

@@ -88,6 +88,9 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Task and job lists without Python** (lib.rs, apis.rs): with `ND_PYTHON_FREE=1`, `GET /api/ai/tasks` joins the gateway's tasks to an empty list and
   `GET /api/live-jobs` reads Python's part itself (the world's 20 newest bulk rename runs, `r:` rows, same gate), so the Background Jobs tray works with
   nothing behind the gateway. Tested by starting a second, Python-free gateway on the test database and comparing the rows with Python's.
+- **Session job list, rename history** (apis.rs): `GET /api/sessions/ai/audio-jobs[?game_session_id=]` (20 newest recap / condense jobs; the dict builder is
+  shared with the single-job route) and `GET /api/media-rename/history` (the latest 10 applied batches). Crawl: 57 of 179 parameterless GET routes
+  still need Python (AI back-end status routes, `/media-rename` page, `/studio`, `/export/foundry.json`, orgs graph, perf/stats, docs).
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything
