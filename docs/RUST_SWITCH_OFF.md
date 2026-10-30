@@ -107,7 +107,8 @@ them after each batch; the phase is done when both are empty and the steps below
   Python's wording for its errors (`_error_message`, "This Studio build doesn't provide ..."). The key-death banner's two timestamps are kept in memory
   here as Python keeps them. Studio over https, a body past 64-bit numbers, or a failure Python lets escape as a 500 (the version probe's) stay Python's.
   Tested against a stand-in Studio for a healthy, an erroring, an empty and a key-rejecting Studio. The actions are served too: `POST /api/ai/unsloth/hub/download|image/load (with a file name)|image/unload|auto-switch|context-overrides` send Studio what Python sends
-  (compared through the stand-in's request log). Left to Python: `image/load` without a file name (the variants / Hugging Face lookup), the stt/tts checks, `update`.
+  (compared through the stand-in's request log). `GET /api/ai/models` and `/api/ai/resident` are served on a Studio back end too (built-in + saved models, `loaded` marks from `/v1/models`; the legacy Ollama back end is
+  Python's). Left to Python: `image/load` without a file name (the variants / Hugging Face lookup), the stt/tts checks, `update`.
 - **Unsloth routes with no key** (apis.rs): the 11 Studio status routes that open with `_unsloth_or_400()` (models, image/status, auto-switch, status, ...)
   answer Python's 400 "No Unsloth backend configured" when no Studio key is saved or in the environment. With a key they talk to Studio: still Python's
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`

@@ -8592,3 +8592,60 @@ def test_unsloth_studio_actions_are_pythons(client, seed):
         save(d, "", "")
         save(v, "", "")
     assert served >= 20, served
+
+
+def test_ai_model_catalogue_and_resident_on_studio_are_pythons(client, seed):
+    """GET /api/ai/models and /api/ai/resident with a (stand-in) Studio: loaded flags, the models Studio lists that the catalogue does not, saved custom
+    models and a hidden built-in (ai_models.json), a Studio that errors or answers junk; a player is refused as Python refuses."""
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    studio = _RoutedStudio()
+    f = Path(os.environ["DB_PATH"]).parent / "ai_models.json"
+    was = f.read_bytes() if f.exists() else None
+
+    def save(side, key, url):
+        data = {"ollama_model": "", "ollama_url": "", "llm_url": url, "llm_model": "nd-test/model", "llm_api_key": key}
+        if not key:
+            data["llm_api_key_clear"] = "1"
+        assert side.post("/settings/system", data=data, follow_redirects=False).status_code == 303
+
+    tables = [
+        {"/v1/models": (200, {"data": [{"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "loaded": True}, {"id": "Other/Model", "loaded": False}, {"id": "my/custom", "loaded": True}]})},
+        {"/v1/models": (200, {"data": []})},
+        {"/v1/models": (500, {"detail": "down"})},
+        {"/v1/models": (200, {"data": "junk"})},
+        {},
+    ]
+    files = [None, '{"custom": [{"id": "my/custom", "label": "Mine", "thinking": true}, {"id": "gemma4:26b", "label": "Ollama one"}], "hidden": []}',
+             '{"custom": [{"id": "my/custom", "label": "Mine"}], "hidden": ["unsloth/gemma-4-26B-A4B-it-GGUF"], "defaults": {"chat": "x"}}', "garbage"]
+    served = 0
+    try:
+        save(d, "sk-studio-key", studio.url())
+        save(v, "sk-studio-key", studio.url())
+        for body in files:
+            if body is None:
+                f.unlink(missing_ok=True)
+            else:
+                f.write_text(body, encoding="utf-8")
+            for table in tables:
+                studio.routes = table
+                for url in ("/api/ai/models", "/api/ai/resident"):
+                    a, b = d.get(url), v.get(url)
+                    assert (a.status_code, a.content) == (b.status_code, b.content), (body, table, url, a.text[:300], b.text[:300])
+                    served += b.headers.get("x-nd-served-by") == "gateway"
+                    a, b = p.get(url), pv.get(url)
+                    assert (a.status_code, a.content) == (b.status_code, b.content), (url, "player")
+    finally:
+        studio.close()
+        save(d, "", "")
+        save(v, "", "")
+        if was is None:
+            f.unlink(missing_ok=True)
+        else:
+            f.write_bytes(was)
+    assert served >= 30, served

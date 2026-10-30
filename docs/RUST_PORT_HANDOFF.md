@@ -150,7 +150,7 @@ tests' odd inputs) plus real gaps:
 - PDF text extraction for AI attachments (`pypdf`) and `GET /characters/{}/export.pdf` (reportlab): the documented sidecar candidates.
 - Audio attachments / live-transcript checks with a Studio key set (a call to Studio with fallbacks and snapshots).
 - Videos (ffmpeg conversion) in the session media panel and the video library uploads.
-- `GET /api/ai/models` (Python's in-memory model catalogue; it moves with the settings-override sync). `GET /api/ai/context-info` is done.
+- `GET /api/ai/models` / `resident` / the Studio routes are done for a Studio back end (studio.rs); the legacy Ollama back end (no Studio key) stays Python's.
 - The Python-free crawl (`scripts/python_free_crawl.sh`, 179 parameterless GET routes) still lists ~50 routes that need Python: the Studio / SwarmUI
   back-end passthroughs (`/api/ai/unsloth/*` with a key, `/api/ai/imagegen/*` with a back end, `/api/ai/models|hardware|resident|debug|test-chat`,
   `/api/ai/ollama/hf-*`), `/api/orgs/graph` (float layout + keyword scan), `/export/foundry.json` (markdown per entity), `/api/kiy/inspirations`

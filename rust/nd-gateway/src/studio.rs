@@ -350,6 +350,125 @@ pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -
     }
 }
 
+/// `_client().list()` on a Studio backend: (model id, loaded flag) from `/v1/models`; [] when Studio fails. None when an id is not text
+/// (Python would fail on it later)
+async fn v1_models(b: &Backend) -> Option<Vec<(String, bool)>> {
+    let Ok(uri) = format!("{}/v1/models", base_url(b)).parse::<hyper::Uri>() else { return Some(vec![]) };
+    let got = tokio::time::timeout(std::time::Duration::from_secs(8), crate::studio_key::studio_get(uri, &b.key)).await;
+    let Ok(Ok((status, body))) = got else { return Some(vec![]) };
+    if status >= 400 {
+        return Some(vec![]);
+    }
+    let Ok(Value::Object(o)) = serde_json::from_slice::<Value>(&body) else { return Some(vec![]) };
+    let mut out = vec![];
+    match o.get("data") {
+        Some(Value::Array(a)) => {
+            for m in a {
+                let Some(m) = m.as_object() else { continue };
+                match m.get("id") {
+                    Some(Value::String(id)) if !id.is_empty() => out.push((id.clone(), py_truthy(m.get("loaded")))),
+                    Some(v) if py_truthy(Some(v)) => return None,
+                    _ => {}
+                }
+            }
+        }
+        Some(v) if py_truthy(Some(v)) => return Some(vec![]), // iterating it fails: the empty list
+        _ => {}
+    }
+    Some(out)
+}
+
+/// `GET /api/ai/models` and `/api/ai/resident` on a Studio backend (the legacy Ollama backend is Python's). GM only.
+pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let path = uri.path().to_string();
+    let (c, u, h) = (cfg.clone(), uri.clone(), headers.clone());
+    let b = tokio::task::spawn_blocking(move || -> Option<Backend> {
+        let db = crate::writes::open(&c)?;
+        let n = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &c, "GET", &u, &h, n)?;
+        if !p.is_gm {
+            return None;
+        }
+        crate::ai::backend(&db)
+    })
+    .await
+    .ok()??;
+    let listed = v1_models(&b).await?;
+    if path == "/api/ai/resident" {
+        let models: Vec<Value> = listed.iter().filter(|m| m.1)
+            .map(|m| json!({"model": m.0, "size_bytes": null, "size_vram_bytes": null, "size_ram_bytes": null, "expires_at": null})).collect();
+        return ok(&json!({"models": models}));
+    }
+    // the catalogue: the Studio built-in, the ones saved in ai_models.json (minus the hidden), each marked loaded / built in
+    let data: Value = match std::fs::read(cfg.db_path.parent()?.join("ai_models.json")) {
+        Ok(bytes) => {
+            let t = String::from_utf8(bytes).ok()?;
+            if !crate::edits::plain_numbers(t.as_bytes()) || t.contains("NaN") || t.contains("Infinity") {
+                return None;
+            }
+            serde_json::from_str(&t).unwrap_or_else(|_| json!({"custom": [], "hidden": []}))
+        }
+        Err(_) => json!({"custom": [], "hidden": []}),
+    };
+    let data = data.as_object()?;
+    let hidden: Vec<Value> = match data.get("hidden") {
+        None => vec![],
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return None,
+    };
+    let custom: Vec<Value> = match data.get("custom") {
+        None => vec![],
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return None,
+    };
+    let builtin = json!({"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "label": "Gemma 4 26B (Unsloth, IQ4_NL)", "thinking": true});
+    let mut all: Vec<Value> = vec![];
+    if !hidden.contains(&builtin["id"]) {
+        all.push(builtin.clone());
+    }
+    for m in &custom {
+        let id = m.as_object()?.get("id")?;
+        if *id != builtin["id"] && !hidden.contains(id) {
+            all.push(m.clone());
+        }
+    }
+    const KNOWN: [&str; 3] = ["gemma4:26b", "hf.co/noctrex/gemma-4-26B-A4B-it-MXFP4_MOE-GGUF:gemma-4-26B-A4B-it-MXFP4_MOE.gguf",
+        "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf"];
+    if listed.iter().any(|m| !m.0.is_ascii()) {
+        return None; // str.lower
+    }
+    let loaded_lower: Vec<String> = listed.iter().map(|m| m.0.to_ascii_lowercase()).collect();
+    let is_loaded = |id: &str| {
+        let ml = id.to_ascii_lowercase();
+        loaded_lower.iter().any(|ll| ml == *ll || ll.contains(&ml) || ml.contains(ll.as_str()))
+    };
+    let mut result = vec![];
+    for m in &all {
+        let o = m.as_object()?;
+        let id = o.get("id")?.as_str()?;
+        if !id.is_ascii() {
+            return None;
+        }
+        let mut entry = o.clone();
+        entry.insert("loaded".into(), json!(is_loaded(id)));
+        entry.insert("builtin".into(), json!(KNOWN.contains(&id)));
+        result.push((id.to_ascii_lowercase(), Value::Object(entry)));
+    }
+    let listed_lower: Vec<String> = result.iter().map(|r| r.0.clone()).collect();
+    for (id, _) in &listed {
+        let ll = id.to_ascii_lowercase();
+        if !listed_lower.iter().any(|r| ll == *r || r.contains(&ll) || ll.contains(r.as_str())) {
+            result.push((ll, json!({"id": id, "label": id, "loaded": true, "builtin": false})));
+        }
+    }
+    let models: Vec<Value> = result.into_iter().map(|r| r.1).collect();
+    ok(&json!({
+        "models": models, "default": b.model,
+        "available": listed.iter().map(|m| json!(m.0)).collect::<Vec<_>>(),
+        "defaults": crate::apis::model_defaults(&cfg)?,
+    }))
+}
+
 async fn passthrough(b: &Backend, path: &str, query: &[(&str, &str)]) -> Option<Response<Body>> {
     match get(b, path, query).await {
         Ok(v) => ok(&v),

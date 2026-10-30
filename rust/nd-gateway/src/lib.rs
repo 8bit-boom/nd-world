@@ -609,6 +609,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/api/ai/models" | "/api/ai/resident") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // the model catalogue and what is resident, on a Studio back end
+        if let Some(resp) = studio::ai_models_route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/api/ai/unsloth/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // Unsloth Studio's status routes: what Studio answers, with Python's wording for its errors (no key: apis.rs's 400)
         if let Some(resp) = studio::route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {

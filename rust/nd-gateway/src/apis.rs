@@ -3088,12 +3088,8 @@ fn ai_recap_instructions(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option
     crate::edits::json_response(&json!({"instructions": text}))
 }
 
-/// `GET /api/ai/defaults`: the model chosen for each surface, from ai_models.json beside the database. GM only.
-fn ai_defaults(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
-    let (_db, p) = page(cfg, uri, headers)?;
-    if !p.is_gm {
-        return None;
-    }
+/// `get_defaults()`: the model chosen for each surface, from ai_models.json beside the database
+pub(crate) fn model_defaults(cfg: &Config) -> Option<Value> {
     let data: Value = match std::fs::read(cfg.db_path.parent()?.join("ai_models.json")) {
         Ok(b) => {
             let t = String::from_utf8(b).ok()?;
@@ -3113,7 +3109,16 @@ fn ai_defaults(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<
     for surface in ["chat", "ask_ai", "image", "recap", "assist"] {
         out.insert(surface.into(), defaults.get(surface).cloned().unwrap_or(json!("")));
     }
-    crate::edits::json_response(&Value::Object(out))
+    Some(Value::Object(out))
+}
+
+/// `GET /api/ai/defaults`: the model chosen for each surface. GM only.
+fn ai_defaults(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    crate::edits::json_response(&model_defaults(cfg)?)
 }
 
 /// `GET /api/ai/prompt-presets?scope=chat|image`: the world's quick prompts. A world with no chat prompts yet gets Python's seeded defaults
