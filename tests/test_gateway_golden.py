@@ -8055,3 +8055,31 @@ def test_disabled_lore_extras_are_pythons(client, seed):
             db.commit()
         finally:
             db.close()
+
+
+def test_kiy_play_list_is_pythons(client, seed):
+    """GET /api/kiy/plays: no library file, a good one, an empty object, unreadable text, and shapes Python chokes on (the gateway
+    declines those, so both sides answer the same 500); a player is refused as Python refuses."""
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    f = Path(os.environ["DB_PATH"]).parent / "kiy_plays.json"
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    cases = [(None, True), ('[{"id":"ab12","title":"One é","text":"x","ts":5},{"id":"cd34","title":"Two","text":"y"}]', True), ("{}", True),
+             ("not json", True), ("[]", True), ('[{"id":"a","title":"t","ts":null}]', True), ('[{"title":"no id"}]', False), ('{"a":1}', False), ("[1]", False)]
+    try:
+        for body, served in cases:
+            if body is None:
+                f.unlink(missing_ok=True)
+            else:
+                f.write_text(body, encoding="utf-8")
+            a, b = d.get("/api/kiy/plays"), v.get("/api/kiy/plays")
+            assert (a.status_code, a.content) == (b.status_code, b.content), body
+            assert (b.headers.get("x-nd-served-by") == "gateway") == served, body
+        a, b = p.get("/api/kiy/plays"), pv.get("/api/kiy/plays")
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+    finally:
+        f.unlink(missing_ok=True)

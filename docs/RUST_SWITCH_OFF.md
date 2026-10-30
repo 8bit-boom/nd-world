@@ -84,6 +84,7 @@ them after each batch; the phase is done when both are empty and the steps below
   shared with the single-run route; a search with anything past ASCII on either side is Python's, since `str.lower` differs).
 - **Disabled lore extras** (pages.rs): `/dreamlands` and `/king-in-yellow` with their Settings switch off render `feature_disabled.html` (a `Simple`
   row's `extra` can now swap the template), so a fresh Python-free install answers both.
+- **King in Yellow play list** (apis.rs): `GET /api/kiy/plays` (kiy_plays.json beside the database; a shape Python raises on is declined).
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything

@@ -28,6 +28,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
+        "/api/kiy/plays" => kiy_plays(&cfg, uri, headers),
         "/api/media-rename/runs" => media_rename_runs(&cfg, uri, headers),
         "/api/media-rename/summary" => media_rename_summary(&cfg, uri, headers),
         "/api/media-rename/items" => media_rename_items(&cfg, uri, headers),
@@ -97,7 +98,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2900,6 +2901,35 @@ fn media_rename_items(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Re
     let albums: Vec<Value> = album_list.into_iter().map(|(i, n)| json!({"id": i, "name": n})).collect();
     crate::edits::json_response(&json!({"kind": kind, "items": items, "albums": albums, "truncated": truncated,
         "generic_count": generic_flags.iter().filter(|g| **g).count()}))
+}
+
+/// `GET /api/kiy/plays` (app/routers/lore_extras.py): the saved King in Yellow plays (kiy_plays.json beside the database) without their text. GM only.
+fn kiy_plays(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let raw = std::fs::read(cfg.db_path.parent()?.join("kiy_plays.json")).ok().and_then(|b| String::from_utf8(b).ok());
+    let plays: Vec<Value> = match raw {
+        None => vec![],
+        Some(t) => {
+            if t.contains("NaN") || t.contains("Infinity") || !crate::edits::plain_numbers(t.as_bytes()) {
+                return None;
+            }
+            match serde_json::from_str::<Value>(&t) {
+                Ok(Value::Array(a)) => a,
+                Ok(Value::Object(o)) if o.is_empty() => vec![],
+                Ok(_) => return None, // iterating anything else raises in Python
+                Err(_) => vec![], // unreadable: Python starts over with an empty library
+            }
+        }
+    };
+    let mut out = vec![];
+    for play in &plays {
+        let o = play.as_object()?;
+        out.push(json!({"id": o.get("id")?, "title": o.get("title")?, "ts": o.get("ts").cloned().unwrap_or(json!(0))}));
+    }
+    crate::edits::json_response(&json!({"plays": out, "count": plays.len()}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
