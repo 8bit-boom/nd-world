@@ -9287,3 +9287,20 @@ def test_backup_restore_staging_is_pythons(client, seed):
     b = _via(p, base).post("/admin/backup/restore", data={"confirm_name": name}, files={"file": ("b.zip", make_zip(good), "application/zip")}, follow_redirects=False)
     assert (a.status_code, a.content) == (b.status_code, b.content)
     assert not RESTORE_STAGING_DIR.exists()
+
+
+def test_view_prefs_reset_all_is_pythons(client, seed):
+    """DELETE /api/view-prefs: every saved layout of the person dropped (the count answered), the site layout forgotten from the session; twice (0 the
+    second time)."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    for side in (d, v):
+        assert side.post("/api/view-prefs/site", json={"options": {"nav": "rail"}, "pins": []}).status_code == 200
+        first = side.delete("/api/view-prefs")
+        again = side.delete("/api/view-prefs")
+        assert (first.status_code, first.json()) == (200, {"reset": 1}), first.text
+        assert (again.status_code, again.json()) == (200, {"reset": 0}), again.text
+        assert side.get("/api/view-prefs").json() == {}
+    assert first.headers.get("x-nd-served-by") == "gateway" and again.headers.get("x-nd-served-by") == "gateway"

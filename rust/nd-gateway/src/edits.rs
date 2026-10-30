@@ -550,6 +550,9 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     if let Some(id) = path.strip_prefix("/api/view-prefs/preset/").filter(|s| ok(s)) {
         return (*method == Method::POST).then(|| (view_pref_preset as SlugHandler, id.to_string()));
     }
+    if path == "/api/view-prefs" && *method == Method::DELETE {
+        return Some((view_pref_reset_all as SlugHandler, String::new()));
+    }
     if let Some(sec) = path.strip_prefix("/api/view-prefs/").filter(|s| ok(s)) {
         return match *method {
             Method::POST => Some((view_pref_save as SlugHandler, sec.to_string())),
@@ -7193,6 +7196,19 @@ fn view_pref_reset(c: &mut Ctx, section: &str) -> Option<Response<Body>> {
         return Some(r);
     }
     json_response(&json!({"reset": section}))
+}
+
+/// `view_prefs_reset_all`: every saved layout of the person gone, the site layout forgotten from the session
+fn view_pref_reset_all(c: &mut Ctx, _unused: &str) -> Option<Response<Body>> {
+    let n = c.db.execute("DELETE FROM user_view_prefs WHERE user_id = ?1", rusqlite::params![c.p.user_id]).ok()?;
+    let line = crate::auth::resign(c.cfg, c.headers, |sess| {
+        sess.shift_remove("site_layout");
+    })?;
+    let mut r = json_response(&json!({"reset": n}))?;
+    if let Ok(v) = line.parse() {
+        r.headers_mut().append(header::SET_COOKIE, v);
+    }
+    Some(r)
 }
 
 /// `_named(db, user_id, section)`: the person's saved views of a section, by name
