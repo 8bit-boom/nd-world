@@ -59,6 +59,8 @@ them after each batch; the phase is done when both are empty and the steps below
   world is still Python's (a Python-free install with a key needs the Studio client ported - the main item left in the AI group).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
   anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
+- **Chat helpers** (apis.rs): `GET /api/ai/context-info` (the configured `num_ctx` or 4,096, and the auto-sizing ceiling) and `GET /api/ai/ping` (the SSE smoke test;
+  the five tokens go out in one write instead of 50 ms apart, same bytes).
 - **Image generation reads without a back end** (apis.rs): `GET /api/ai/imagegen/status|loras|upscalers|refiners|ipadapter-models|progress|updates|backends|samplers-schedulers`
   answer from the configuration alone (`IMAGEGEN_TYPE` / `IMAGEGEN_URL` / Studio as the image back end) - nothing configured, Studio, or not SwarmUI; a SwarmUI /
   ComfyUI to ask is Python's. `GET /api/ai/imagegen/starred` reads the starred pictures.

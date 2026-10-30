@@ -8348,3 +8348,21 @@ def test_imagegen_reads_that_need_no_back_end_are_pythons(client, seed):
         assert (a.status_code, a.content) == (b.status_code, b.content), url
     assert served >= 4, served
     assert v.get("/api/ai/imagegen/starred").headers.get("x-nd-served-by") == "gateway"
+
+
+def test_ai_context_info_and_ping_are_pythons(client, seed):
+    """GET /api/ai/context-info and /api/ai/ping: the same bytes and headers from the gateway; a player is refused as Python refuses."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for url in ("/api/ai/context-info", "/api/ai/ping"):
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        for h in ("content-type", "cache-control", "x-accel-buffering"):
+            assert a.headers.get(h) == b.headers.get(h), (url, h)
+        assert b.headers.get("x-nd-served-by") == "gateway", url
+        a, b = p.get(url), pv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
