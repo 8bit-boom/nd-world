@@ -52,6 +52,7 @@ pub mod settings_system;
 pub mod kiy;
 pub mod net;
 pub mod pdftext;
+pub mod sheet_import;
 pub mod startup;
 pub mod restore;
 pub mod imaging;

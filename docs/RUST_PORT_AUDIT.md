@@ -89,3 +89,6 @@ against ~346 MiB of memory, and the flows create world / entity / upload / invit
 - PDF text for AI attachments, the system-draft rulebook and imported notes, without Python only (lopdf). The character `.pdf` export is still Python's.
 - Also fixed from the Docker run: `/worlds/{id}/edit`, signed-out `/uploads`, a fresh database booted by the gateway only when it runs Python-free,
   and local time under a non-UTC `TZ`.
+- AI character draft from an uploaded sheet (PDF / HTML / MD / TXT / JSON / photo, sized and read in parts): ported; the PDF and HTML readers work without Python only.
+  What is left from the list above is the character `.pdf` export, the legacy Ollama back end, FastAPI's docs pages, the world Foundry export and the
+  rare-input refusals.

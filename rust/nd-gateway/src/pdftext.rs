@@ -5,6 +5,11 @@
 /// All pages (or the first `max_pages`) joined by a blank line, as `"\\n\\n".join(page.extract_text() or "")`.
 /// None: not applicable here (Python is available, so it reads the file); Some(Err): the document could not be read.
 pub fn extract(data: &[u8], max_pages: Option<usize>) -> Option<Result<String, ()>> {
+    Some(extract_pages(data, max_pages)?.map(|p| p.join("\n\n")))
+}
+
+/// The text of each page (the first `max_pages`), same availability as `extract`
+pub fn extract_pages(data: &[u8], max_pages: Option<usize>) -> Option<Result<Vec<String>, ()>> {
     if !crate::config::python_free() {
         return None;
     }
@@ -18,5 +23,5 @@ pub fn extract(data: &[u8], max_pages: Option<usize>) -> Option<Result<String, (
     let numbers: Vec<u32> = doc.get_pages().keys().copied().collect();
     let take = max_pages.unwrap_or(usize::MAX);
     let texts: Vec<String> = numbers.into_iter().take(take).map(|n| doc.extract_text(&[n]).unwrap_or_default()).collect();
-    Some(Ok(texts.join("\n\n")))
+    Some(Ok(texts))
 }

@@ -24,6 +24,7 @@ base64 = "0.22"
 hmac = "0.12"
 nd-render = { path = "../nd-render" }
 nd-perm = { path = "../nd-perm" }
+html-escape = "0.2"
 minijinja = "2"
 sha1 = "0.10"
 sha2 = "0.10"

@@ -1121,8 +1121,50 @@ fn usable_template(db: &rusqlite::Connection, wid: i64, template_id: i64) -> Opt
     Some(Some(crate::sheets::Tpl::load(row)?))
 }
 
+const NOTES_SYSTEM: &str = "You are preparing a long character sheet from another tabletop system so that the character can be rebuilt in a different system. You are reading PART {part} OF {parts} of the sheet. Write compact plain-text notes that keep EVERY fact needed to rebuild the character: name, player, race/species, class/archetype, level, attributes and stats with their exact numbers, HP and other resources, skills, abilities / spells / feats (name plus a short effect), equipment, appearance, backstory, relationships, goals. Keep numbers, names and spellings exactly as written, in the sheet's own language. Group the notes under short headings, one fact per short line, no commentary, and never invent anything that is not in the text. Use at most about {budget} characters in total.";
+const SHEET_MAX_PARTS: usize = 8;
+
+/// `_transcript_chunk_char_budget(text, system, think, extra)`
+fn transcript_budget(b: &Backend, text: &str, system: &str, think: bool, extra: i64) -> i64 {
+    let ctx = crate::ai::max_auto_ctx().min(b.context_tokens);
+    let system_tokens = if system.is_empty() { 0 } else { system.chars().count() as i64 / crate::ai::chars_per_token(system) };
+    let reserved = 1200 + system_tokens + if think { crate::ai::env_i64("THINKING_HEADROOM_TOKENS", 4096).max(0) } else { 0 } + extra.max(0);
+    (ctx - reserved).max(500) * crate::ai::chars_per_token(text)
+}
+
+/// `sheet_budgets`: (limit, part_chars) - how much of the sheet the draft prompt takes at once, and how much one notes call reads
+fn sheet_budgets(b: &Backend, setting: Option<i64>, source: &str, system: &str, header: &str, prompt: &str, use_rag: bool, think: bool) -> (i64, i64) {
+    let cpt = crate::ai::chars_per_token;
+    let n = |t: &str| t.chars().count() as i64;
+    let extra = n(header) / cpt(header) + if prompt.is_empty() { 0 } else { n(&take(prompt, 4000)) / cpt(prompt) } + if use_rag { 3000 / cpt(source) } else { 0 } + 2000;
+    let mut limit = transcript_budget(b, source, system, think, extra).clamp(3000, 60000);
+    if let Some(v) = setting {
+        limit = v.clamp(2000, 60000);
+    }
+    let notes = NOTES_SYSTEM.replace("{part}", "1").replace("{parts}", "1").replace("{budget}", &limit.to_string());
+    (limit, transcript_budget(b, source, &notes, false, 1500).max(3000))
+}
+
+/// `plan_sheet`: (direct, the parts to condense, truncated, unread characters)
+fn plan_sheet(text: &str, limit: i64, part_chars: i64) -> (bool, Vec<String>, bool, i64) {
+    if limit <= 0 || text.chars().count() as i64 <= limit {
+        return (true, vec![], false, 0);
+    }
+    let parts = crate::ai::split_chunks(text, part_chars.max(1) as usize);
+    if parts.len() <= SHEET_MAX_PARTS {
+        return (false, parts, false, 0);
+    }
+    let kept: Vec<String> = parts.into_iter().take(SHEET_MAX_PARTS).collect();
+    let unread = (text.chars().count() as i64 - kept.iter().map(|x| x.chars().count() as i64).sum::<i64>()).max(0);
+    (false, kept, true, unread)
+}
+
 fn character_draft_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
-    let form = crate::ai::small_form(headers, body)?; // an uploaded sheet: Python's
+    // the form, with the sheet an upload may carry
+    let (form, files) = match crate::form::content_type(headers).as_str() {
+        "multipart/form-data" => crate::form::parse_multipart(headers, body)?,
+        _ => (crate::ai::small_form(headers, body)?, vec![]),
+    };
     let Some(w) = p.world.as_ref() else { return Some(detail(StatusCode::BAD_REQUEST, "No active world")) };
     let wid = w.get("id")?.as_i64()?;
     let think = crate::ai::form_bool(&form, "think", true)?;
@@ -1145,46 +1187,119 @@ fn character_draft_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCt
             return Some(detail(StatusCode::BAD_REQUEST, "Pick one of the listed systems."));
         }
     }
-    if prompt.is_empty() {
+    let bk = backend(db);
+    let mut source_text = String::new();
+    if let Some(f) = files.iter().rev().find(|f| f.name == "file").filter(|f| !f.filename.is_empty()) {
+        if f.data.len() > crate::sheet_import::MAX_IMPORT_BYTES {
+            return Some(detail(StatusCode::BAD_REQUEST, "File too large (over 12 MB)"));
+        }
+        if !f.data.is_empty() {
+            // a photo needs the model; without a key that is Python's own failure
+            let needs_model = matches!(f.filename.rsplit('.').next().map(|e| e.to_lowercase()).as_deref(), Some("png" | "jpg" | "jpeg" | "webp"));
+            if needs_model && bk.is_none() {
+                return None;
+            }
+            let dummy;
+            let b: &Backend = match bk.as_ref() {
+                Some(b) => b,
+                None => {
+                    dummy = Backend { scheme: "http", host: String::new(), base_path: String::new(), key: String::new(), model: String::new(), options: Map::new(), per_model: Map::new(), context_tokens: 16384 };
+                    &dummy
+                }
+            };
+            match tokio::runtime::Handle::current().block_on(crate::sheet_import::sheet_text(&f.data, &f.filename, &prompt, b))? {
+                Ok(t) => source_text = t,
+                Err(m) => return Some(detail(StatusCode::BAD_REQUEST, m)),
+            }
+        }
+    }
+    if prompt.is_empty() && source_text.is_empty() {
         return Some(detail(StatusCode::BAD_REQUEST, "Describe the character you want, or upload a sheet (PDF / HTML / MD / TXT / JSON / image)."));
     }
     if use_rag && world_has_vault(db, wid) {
         return None;
     }
     let tpl = usable_template(db, wid, template_id)?;
-    draft_frame(w, tpl.as_ref())?;
-    let bk = backend(db)?;
+    let (system, _schema, header) = draft_frame(w, tpl.as_ref())?;
+    let bk = bk?;
+    let (mut source_limit, mut part_chars) = (0i64, 0i64);
+    let mut plan = (true, vec![], false, 0i64);
+    if !source_text.is_empty() {
+        let setting: Option<i64> = db.query_row("SELECT character_import_max_chars FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok().flatten();
+        (source_limit, part_chars) = sheet_budgets(&bk, setting, &source_text, &system, &header, &prompt, use_rag, think);
+        plan = plan_sheet(&source_text, source_limit, part_chars);
+    }
+    let parts = if plan.0 { 0 } else { plan.1.len() };
+    let source_chars = source_text.chars().count();
     let id = crate::runners::new_job("character draft", json!({"status": "running", "started": now(), "user_id": p.user_id, "draft": null, "error": "",
-        "stage": "building", "part": 0, "parts": 0}), 12);
+        "stage": if parts > 0 { "reading" } else { "building" }, "part": 0, "parts": parts}), 12);
+    let sheet = Arc::new((source_text, source_limit, part_chars));
     let rerun: Rerun = Arc::new(move |id| {
-        let (cfg, bk, prompt) = (cfg.clone(), bk.clone(), prompt.clone());
+        let (cfg, bk, prompt, sheet) = (cfg.clone(), bk.clone(), prompt.clone(), sheet.clone());
         Box::pin(async move {
-            let res = character_draft_task(cfg, bk, id, wid, &prompt, think, use_rag, template_id).await;
+            let res = character_draft_task(cfg, bk, id, wid, &prompt, think, use_rag, template_id, &sheet.0, sheet.1, sheet.2).await;
             settle("character draft", id, "draft", res);
         })
     });
     crate::runners::run("character draft", "character draft", id, rerun);
-    Some(ok(json!({"job_id": id, "status": "running", "source_chars": 0, "source_limit": 0, "source_parts": 0, "source_truncated": false, "source_unread_chars": 0})))
+    Some(ok(json!({"job_id": id, "status": "running", "source_chars": source_chars, "source_limit": source_limit, "source_parts": parts,
+        "source_truncated": plan.2, "source_unread_chars": plan.3})))
+}
+
+/// `_condense_sheet`: the parts read one by one (plain text, no thinking), their notes joined
+async fn condense_sheet(b: &Backend, id: i64, parts: &[String], limit: i64) -> Result<String, String> {
+    let n = parts.len();
+    let budget = (limit / n as i64).max(500);
+    let mut out = vec![];
+    for (i, part) in parts.iter().enumerate() {
+        let i = i + 1;
+        crate::runners::update("character draft", id, |e| { e.insert("stage".into(), json!("reading")); e.insert("part".into(), json!(i)); e.insert("parts".into(), json!(n)); });
+        let system = NOTES_SYSTEM.replace("{part}", &i.to_string()).replace("{parts}", &n.to_string()).replace("{budget}", &budget.to_string());
+        let model = b.model.clone();
+        let raw = crate::ai::generate_chat(b, &model, &system, &[json!({"role": "user", "content": part})], false, &Map::new()).await;
+        let notes = crate::edits::py_strip_pub(&raw);
+        if notes.is_empty() || notes.starts_with("[AI ") || notes.starts_with("[empty response") {
+            return Err(format!("The AI could not read part {i} of {n} of the sheet{} — try again, or upload a shorter sheet.",
+                if notes.is_empty() { String::new() } else { format!(" ({})", take(&notes, 160)) }));
+        }
+        out.push(format!("### Part {i} of {n}\n{}", take(&notes, budget as usize)));
+    }
+    crate::runners::update("character draft", id, |e| { e.insert("stage".into(), json!("building")); e.insert("part".into(), json!(n)); e.insert("parts".into(), json!(n)); });
+    Ok(out.join("\n\n"))
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn character_draft_task(cfg: Arc<Config>, b: Backend, id: i64, wid: i64, prompt: &str, think: bool, use_rag: bool, template_id: i64) -> Result<Value, String> {
-    let (c, pr) = (cfg.clone(), prompt.to_string());
-    let (system, schema, user, tpl_row) = tokio::task::spawn_blocking(move || -> Result<(String, Value, String, Option<Map<String, Value>>), String> {
+async fn character_draft_task(cfg: Arc<Config>, b: Backend, id: i64, wid: i64, prompt: &str, think: bool, use_rag: bool, template_id: i64, source: &str, source_limit: i64, part_chars: i64) -> Result<Value, String> {
+    let (c, pr, src) = (cfg.clone(), prompt.to_string(), source.to_string());
+    let (system, schema, mut user, tpl_row) = tokio::task::spawn_blocking(move || -> Result<(String, Value, String, Option<Map<String, Value>>), String> {
         let db = crate::writes::open(&c).ok_or("database")?;
         let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).map_err(|e| e.to_string())?;
         let tpl = usable_template(&db, wid, template_id).ok_or("template")?;
         let (system, schema, header) = draft_frame(&world, tpl.as_ref()).ok_or("template")?;
         let mut user = header;
         if use_rag {
-            let rag = take(&crate::retrieval::smart_world_context(&db, wid, &take(&pr, 1500), 8, 2).unwrap_or_default(), 3000);
+            let rag = take(&crate::retrieval::smart_world_context(&db, wid, &take(if pr.is_empty() { &src } else { &pr }, 1500), 8, 2).unwrap_or_default(), 3000);
             if !rag.is_empty() {
                 user.push_str(&format!("\n\n=== WORLD LORE (for names/places grounding) ===\n{rag}"));
             }
         }
-        user.push_str(&format!("\n\n=== PLAYER'S REQUEST ===\n{}", take(&pr, 4000)));
         Ok((system, schema, user, tpl.map(|t| t.row)))
     }).await.map_err(|_| "Cancelled.".to_string())??;
+    if !source.is_empty() {
+        let (direct, parts, truncated, unread) = plan_sheet(source, source_limit, part_chars);
+        if direct {
+            user.push_str(&format!("\n\n=== SOURCE SHEET (translate this character into this system's rules; keep its identity) ===\n{source}"));
+        } else {
+            let notes = condense_sheet(&b, id, &parts, source_limit).await?;
+            user.push_str(&format!("\n\n=== SOURCE SHEET (a long sheet, read in {} parts and condensed into notes; translate this character into this system's rules; keep its identity) ===\n{notes}", parts.len()));
+            if truncated {
+                user.push_str(&format!("\n[…about {unread} characters at the end of the sheet could not be read — work from what is above…]"));
+            }
+        }
+    }
+    if !prompt.is_empty() {
+        user.push_str(&format!("\n\n=== PLAYER'S REQUEST ===\n{}", take(prompt, 4000)));
+    }
     crate::runners::update("character draft", id, |e| { e.insert("stage".into(), json!("building")); });
     let model = b.model.clone();
     let raw = crate::ai::generate_chat_format(&b, &model, &system, &[json!({"role": "user", "content": user})], think, &Map::new(), Some(&schema)).await;

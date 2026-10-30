@@ -2173,6 +2173,120 @@ def test_character_draft_is_pythons(client, seed, studio):
     studio.reply_seq = None
 
 
+def test_character_draft_from_an_uploaded_sheet_is_pythons(client, seed, studio):
+    """/api/characters/ai/start with a sheet: a markdown / text file as it is, JSON pretty-printed, a photo read by the model, a sheet too long for one prompt
+    read in parts (the notes calls, the stage the poll shows, the truncation note), a sheet with a request, the refusals (an empty upload, a Word file, an
+    unknown type) - the start's answer, every request to the model and the finished draft compared between Python and the gateway."""
+    from app.database import SessionLocal, get_app_settings
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    png = b"\x89PNG\r\n\x1a\n" + b"p" * 40
+    draft = _reply(json.dumps({"name": "Ana Vos", "level": "3", "stats": {"str": 9}, "equipment": [{"name": "Rope", "qty": 2}]}))
+    sheet = "Name: Ana Vos\nClass: Ranger\nStr 9 Dex 14\n" + "She keeps a ledger of debts. " * 5
+    long_sheet = "\n\n".join(f"Chapter {i}. " + ("The ledger names a debtor and a sum. " * 40) for i in range(110))
+    db = SessionLocal()
+    try:
+        st = get_app_settings(db)
+        saved = st.character_import_max_chars
+    finally:
+        db.close()
+
+    def set_limit(v):
+        db = SessionLocal()
+        try:
+            get_app_settings(db).character_import_max_chars = v
+            db.commit()
+        finally:
+            db.close()
+
+    def run(side, files, form, replies):
+        studio.requests.clear()
+        studio.reply_seq = list(replies)
+        r = side.post("/api/characters/ai/start", data=form, files=files)
+        out = [r.status_code, {k: v for k, v in r.json().items() if k != "job_id"} if r.status_code == 200 else r.json(), r.headers.get("x-nd-served-by")]
+        if r.status_code == 200:
+            p = _poll(side, f"/api/characters/ai/{r.json()['job_id']}")
+            out += [p.status_code, {k: v for k, v in p.json().items() if k != "job_id"}]
+        return out, [q["body"] for q in studio.requests]
+
+    cases = [
+        ("md", [("file", ("ana.md", sheet.encode(), "text/markdown"))], {"think": "false"}, [draft]),
+        ("txt + request", [("file", ("ana.TXT", sheet.encode(), "text/plain"))], {"prompt": " Make her a bard ", "think": "false"}, [draft]),
+        ("json", [("file", ("ana.json", json.dumps({"name": "Ana", "stats": {"str": 9}, "tags": ["x", "é"], "level": 3}).encode(), "application/json"))], {"think": "false"}, [draft]),
+        ("bad json", [("file", ("ana.json", b'{"name": "Ana", oops', "application/json"))], {"think": "false"}, [draft]),
+        ("photo", [("file", ("sheet.png", png, "image/png"))], {"think": "false"}, [_reply(json.dumps({"name": "Pic", "level": 2})), draft]),
+        ("empty file", [("file", ("empty.md", b"", "text/markdown"))], {}, []),
+        ("word", [("file", ("ana.docx", b"PK", "application/octet-stream"))], {}, []),
+        ("unknown", [("file", ("ana.xyz", b"data", "application/octet-stream"))], {}, []),
+        ("no ext", [("file", ("README", b"data", "application/octet-stream"))], {}, []),
+    ]
+    try:
+        for label, files, form, replies in cases:
+            a, ra = run(gm, files, form, replies)
+            b, rb = run(_via(gm, base), files, form, replies)
+            assert a[:2] + a[3:] == b[:2] + b[3:], (label, a, b)
+            assert ra == rb, (label, json.dumps(ra)[:3000], json.dumps(rb)[:3000])
+            if a[0] == 200:
+                assert b[2] == "gateway", (label, b)
+        # a sheet too long for one prompt: read in parts, then drafted from the notes
+        set_limit(2000)
+        files = [("file", ("big.txt", long_sheet.encode(), "text/plain"))]
+        probe, _ = run(gm, files, {"think": "false"}, [draft])
+        n = probe[1]["source_parts"]
+        assert n >= 2, probe
+        replies = [_reply(f"notes {i} " + "n" * 300) for i in range(1, n + 1)] + [draft]
+        a, ra = run(gm, files, {"think": "false"}, replies)
+        b, rb = run(_via(gm, base), files, {"think": "false"}, replies)
+        assert a[:2] + a[3:] == b[:2] + b[3:], (a, b)
+        assert ra == rb and len(ra) == n + 1, (len(ra), n)
+        assert b[2] == "gateway" and b[1]["source_truncated"] == a[1]["source_truncated"]
+        # a part the model fails to read stops the job with its number
+        bad = [_reply("")] * n
+        a, ra = run(gm, files, {"think": "false"}, bad)
+        b, rb = run(_via(gm, base), files, {"think": "false"}, bad)
+        assert a[:2] + a[3:] == b[:2] + b[3:] and a[4]["status"] == "error", (a, b)
+    finally:
+        set_limit(saved)
+        studio.reply_seq = None
+
+
+def test_character_draft_from_a_pdf_and_html_sheet_without_python(client, seed, studio, tmp_path):
+    """In a gateway with no Python (ND_PYTHON_FREE) a PDF sheet (lopdf) and an HTML sheet (the field values kept next to their names) are read and
+    reach the model as the SOURCE SHEET; next to Python these two stay Python's. Absolute checks - the readers are not Python's."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from .test_gateway_golden import _python_free_gateway
+    pdf = tmp_path / "s.pdf"
+    cv = canvas.Canvas(str(pdf), pagesize=A4)
+    cv.drawString(72, 700, "Name: Ana Vos the Ranger")
+    cv.showPage()
+    cv.drawString(72, 700, "Second page: keeps a ledger")
+    cv.save()
+    page = ("<html><head><title>Sheet</title></head><body><h1>Ana Vos</h1><label>Class</label><select name='class'><option>Bard</option><option selected>Ranger</option></select>"
+            "<input name='str' value='9'><script>var secret = 1;</script></body></html>")
+    draft = _reply(json.dumps({"name": "Ana Vos", "level": "3"}))
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        for name, data, want in (("s.pdf", pdf.read_bytes(), ["Name: Ana Vos the Ranger", "Second page: keeps a ledger"]),
+                                 ("s.html", page.encode(), ["Page title: Sheet", "# Ana Vos", "[class: Ranger]", "[str: 9]"])):
+            studio.requests.clear()
+            studio.reply_seq = [draft]
+            r = g.post("/api/characters/ai/start", data={"think": "false"}, files={"file": (name, data, "application/octet-stream")})
+            assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", (name, r.status_code, r.text[:300])
+            assert r.json()["source_chars"] > 20, r.json()
+            p = _poll(g, f"/api/characters/ai/{r.json()['job_id']}")
+            assert p.json()["status"] == "done" and p.json()["draft"]["name"] == "Ana Vos", (name, p.json())
+            sent = json.dumps([q["body"] for q in studio.requests])
+            assert "SOURCE SHEET" in sent and all(w.replace("'", "\\u0027") in sent or w in sent for w in want), (name, sent[:1500])
+            assert "secret" not in sent
+        r = g.post("/api/characters/ai/start", data={}, files={"file": ("x.pdf", b"not a pdf", "application/pdf")})
+        assert r.status_code == 400 and "PDF" in r.json()["detail"], (r.status_code, r.text[:200])
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        studio.reply_seq = None
+
+
 def test_map_build_draw_is_pythons(client, seed, studio):
     """/maps/schematic/{slug}/ai-build/start in draw mode and its poll: the element aliases, numbers and colours, append vs replace, the
     saved elements (ids are random, so compared without them), and the failures."""

@@ -1841,7 +1841,7 @@ fn degeneration_ratio(recap: &str) -> f64 {
     dupes as f64 / lines.len() as f64
 }
 
-fn chars_per_token(text: &str) -> i64 {
+pub(crate) fn chars_per_token(text: &str) -> i64 {
     let sample: Vec<char> = text.chars().take(4000).collect();
     if sample.is_empty() { return 4 }
     if (sample.iter().filter(|c| (**c as u32) > 127).count() as f64) / (sample.len() as f64) > 0.3 { 2 } else { 4 }
@@ -2399,11 +2399,11 @@ async fn run_condense_job(id: i64) {
 
 // ── parsing facts out of a recap (POST /api/facts/parse-job; the job: audio_jobs purpose="facts_parse") ──
 
-fn env_i64(k: &str, d: i64) -> i64 {
+pub(crate) fn env_i64(k: &str, d: i64) -> i64 {
     std::env::var(k).ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(d)
 }
 
-fn max_auto_ctx() -> i64 {
+pub(crate) fn max_auto_ctx() -> i64 {
     env_i64("MAX_AUTO_NUM_CTX", 32768).max(8192)
 }
 
@@ -2421,7 +2421,7 @@ fn facts_chunk_plan(raw: &str, think: bool, lore_tokens: i64, system: &str) -> (
 }
 
 /// `_split_transcript_into_chunks`: pieces of at most `size` characters, broken at a paragraph, a line or a sentence end past halfway
-fn split_chunks(text: &str, size: usize) -> Vec<String> {
+pub(crate) fn split_chunks(text: &str, size: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= size {
         return vec![text.to_string()];
@@ -4838,6 +4838,11 @@ async fn draft_from_images(b: &Backend, images: &[Vec<u8>], hint: &str, characte
             .ok_or_else(|| "Could not read a character off that photo — try a clearer/closer picture, or a different model.".to_string());
     }
     entity_draft(&parsed, &kinds).ok_or_else(|| "Could not turn that photo into an entity — try a clearer/closer picture, or a different model.".to_string())
+}
+
+/// `parse_character_from_images`: a photo of a character sheet drafted into a character (the photos read by the model)
+pub(crate) async fn draft_character_from_images(b: &Backend, images: &[Vec<u8>], hint: &str) -> Result<Value, String> {
+    draft_from_images(b, images, hint, true).await
 }
 
 /// `ai.MAX_VISION_IMPORT_IMAGES`
