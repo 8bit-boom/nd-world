@@ -9618,3 +9618,215 @@ def test_studio_over_https_is_reached_by_the_gateway(client, seed, tmp_path):
         proc.wait(timeout=10)
         srv.shutdown()
         d.post("/settings/system", data={"ollama_model": "", "ollama_url": "", "llm_url": "", "llm_model": "", "llm_api_key_clear": "1"}, follow_redirects=False)
+
+
+def _python_free_gateway(seed, extra_env=None):
+    """(process, base url, a signed-in GM client) for a second gateway with no Python behind it, on the shared test database."""
+    import socket
+    import subprocess
+    import time
+    from pathlib import Path
+    import pytest
+    root = Path(__file__).resolve().parent.parent
+    binary = root / "rust" / "target" / "release" / "nd-gateway"
+    if not binary.exists():
+        pytest.skip("the gateway binary is not built")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(os.environ, ND_PYTHON_FREE="1", ND_UPSTREAM="127.0.0.1:1", ND_GATEWAY_LISTEN=f"127.0.0.1:{port}", DB_PATH=os.environ["DB_PATH"],
+               ND_STATIC_DIR=str(root / "static"), ND_TEMPLATES_DIR=str(root / "app" / "templates"), ND_BUNDLED_MAPS_DIR=str(root / "app" / "maps"),
+               ND_RUST_ROUTES="login,dice_roll,live,pages,writes,ai,mcp,fans,auth", SECRET_KEY="python-free-test-key", ND_PBKDF2_ITERATIONS="1000", **(extra_env or {}))
+    proc = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(50):
+        try:
+            httpx.get(f"http://127.0.0.1:{port}/login", timeout=2)
+            break
+        except httpx.HTTPError:
+            time.sleep(0.2)
+    g = httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=120, follow_redirects=False)
+    assert g.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"}).status_code in (302, 303)
+    g.cookies.set("active_world", seed.world_a.slug)
+    return proc, f"http://127.0.0.1:{port}", g
+
+
+def test_video_uploads_and_attach_are_pythons(client, seed, tmp_path):
+    """POST /video/upload and /video/upload/complete (a native MP4 with its poster, an MKV remuxed to MP4, a file ffmpeg cannot read - stored as it
+    is, no poster), /video/<id>/attach and /audio/<id>/attach: the same ffmpeg commands on both servers, so the same rows and files."""
+    import re
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+    from app.database import SessionLocal
+    from app.models import AudioClip, Entity, VideoClip
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is not installed")
+    base = str(client.base_url)
+    mp4, mkv = tmp_path / "t.mp4", tmp_path / "t.mkv"
+    for out in (mp4, mkv):
+        made = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=2", "-f", "lavfi", "-i", "sine=duration=2",
+                               "-c:v", "libx264" if out == mp4 else "mpeg4", "-pix_fmt", "yuv420p", "-c:a", "aac" if out == mp4 else "mp3", "-shortest", str(out)], capture_output=True)
+        if made.returncode != 0:
+            pytest.skip("this ffmpeg cannot make the test videos: " + made.stderr.decode()[:200])
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads" / "video"
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        ent = Entity(world_id=w, kind="npc", name="Vid Ent")
+        other = Entity(world_id=seed.world_b.id, kind="npc", name="Far Ent")
+        db.add_all([ent, other])
+        db.commit()
+        ent_id, other_id = ent.id, other.id
+    finally:
+        db.close()
+
+    def run(side, url_base):
+        tag = side + os.urandom(3).hex()
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        if url_base != DIRECT:
+            d = _via(d, url_base)
+        out = []
+        cases = [("a.mp4", mp4.read_bytes(), f"Clip {tag}"), ("b.mkv", mkv.read_bytes(), f"Mkv {tag}"), ("c.mp4", b"not a video at all", f"Junk {tag}"), ("d.exe", b"x", "Bad")]
+        for filename, data, name in cases:
+            r = d.post("/video/upload", data={"name": name, "description": " d ", "visible_to_players": "on", "entity_id": str(ent_id)},
+                       files={"file": (filename, data, "application/octet-stream")}, follow_redirects=False)
+            out.append(("upload", filename, r.status_code, r.headers.get("location"), r.text[:120] if r.status_code != 303 else ""))
+        half = len(mkv.read_bytes()) // 2
+        uid = os.urandom(16).hex()
+        for i, part in enumerate((mkv.read_bytes()[:half], mkv.read_bytes()[half:])):
+            r = d.post("/video/upload/chunk", data={"upload_id": uid, "chunk_index": str(i)}, files={"file": ("part", part, "application/octet-stream")})
+            assert r.status_code == 200, r.text
+        r = d.post("/video/upload/complete", data={"upload_id": uid, "filename": "e.mkv", "total_chunks": "2", "name": f"Chunked {tag}"})
+        out.append(("complete", r.status_code, r.text))
+        db = SessionLocal()
+        try:
+            clips = db.query(VideoClip).filter(VideoClip.name.like(f"%{tag}%")).order_by(VideoClip.id).all()
+            rows = [(c.name.replace(tag, "T"), bool(c.visible_to_players), c.entity_id == ent_id if c.entity_id else None, re.sub(r"[0-9a-f]{12,}", "H", c.file_url or ""), bool(c.poster_url),
+                     (uploads / Path(c.file_url).name).is_file(), c.poster_url is not None and (uploads / Path(c.poster_url).name).is_file()) for c in clips]
+            ids = [c.id for c in clips]
+            ac = AudioClip(world_id=w, name=f"Aud {tag}", file_url="/uploads/audio/x.mp3")
+            db.add(ac)
+            db.commit()
+            audio_id = ac.id
+        finally:
+            db.close()
+        for kind, cid in (("video", ids[0]), ("video", ids[0]), ("audio", audio_id), ("video", 99999999)):
+            for val in (str(ent_id), str(other_id), "abc", ""):
+                r = d.post(f"/{kind}/{cid}/attach", data={"entity_id": val}, follow_redirects=False)
+                out.append(("attach", kind, val.replace(str(ent_id), "E").replace(str(other_id), "O"), r.status_code,
+                            (r.headers.get("location") or "").replace(str(ent_id), "E")))
+        db = SessionLocal()
+        try:
+            for c in db.query(VideoClip).filter(VideoClip.id.in_(ids)):
+                for u in (c.file_url, c.poster_url):
+                    if u and (uploads / Path(u).name).exists():
+                        (uploads / Path(u).name).unlink()
+            db.query(VideoClip).filter(VideoClip.id.in_(ids)).delete(synchronize_session=False)
+            db.query(AudioClip).filter(AudioClip.id == audio_id).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+        return out, rows
+
+    try:
+        py_out, py_rows = run("py", DIRECT)
+        gw_out, gw_rows = run("gw", base)
+        assert py_out == gw_out, (py_out, gw_out)
+        assert py_rows == gw_rows, (py_rows, gw_rows)
+        assert len(py_rows) == 4 and py_rows[0][4] and py_rows[0][5], py_rows
+        d = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base)
+        r = d.post("/video/upload", data={"name": "Served", "visible_to_players": "on"}, files={"file": ("s.mp4", mp4.read_bytes(), "video/mp4")}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway", (r.status_code, r.text[:200])
+        db = SessionLocal()
+        try:
+            for c in db.query(VideoClip).filter(VideoClip.name == "Served"):
+                for u in (c.file_url, c.poster_url):
+                    if u and (uploads / Path(u).name).exists():
+                        (uploads / Path(u).name).unlink()
+                db.delete(c)
+            db.commit()
+        finally:
+            db.close()
+    finally:
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.id.in_([ent_id, other_id])).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_without_python_the_gateway_reads_gif_avif_and_pdf(client, seed, tmp_path):
+    """In a gateway with no Python (ND_PYTHON_FREE): a GIF and an AVIF go into a gallery album (kept as uploaded, thumbnail made from the first frame
+    through ffmpeg), and a PDF given to the AI attachment picker answers its text (lopdf), where next to Python these are Python's."""
+    import shutil
+    from pathlib import Path
+    import pytest
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import ImageAlbum
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is not installed")
+    frames = [Image.new("RGB", (64, 48), c) for c in ("red", "blue")]
+    gif, avif = tmp_path / "a.gif", tmp_path / "b.avif"
+    frames[0].save(gif, save_all=True, append_images=frames[1:], duration=100, loop=0)
+    try:
+        Image.new("RGB", (64, 48), "green").save(avif, "AVIF")
+    except Exception:
+        pytest.skip("Pillow cannot write AVIF here")
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    pdf = tmp_path / "t.pdf"
+    cv = canvas.Canvas(str(pdf), pagesize=A4)
+    cv.drawString(72, 700, "The silt lord keeps the third key.")
+    cv.showPage()
+    cv.drawString(72, 700, "Second page text.")
+    cv.save()
+    db = SessionLocal()
+    try:
+        album = ImageAlbum(world_id=seed.world_a.id, name="PF album", image_urls_json="[]")
+        db.add(album)
+        db.commit()
+        album_id = album.id
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    root = Path(os.environ["DB_PATH"]).parent / "uploads" / "gallery"
+    try:
+        for f, name in ((gif, "a.gif"), (avif, "b.avif")):
+            r = g.post(f"/images/albums/{album_id}/upload", files={"file": (name, f.read_bytes(), "application/octet-stream")})
+            assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway", (name, r.status_code, r.text[:200])
+        db = SessionLocal()
+        try:
+            urls = json.loads(db.get(ImageAlbum, album_id).image_urls_json)
+        finally:
+            db.close()
+        assert len(urls) == 2 and urls[0].endswith(".gif") and urls[1].endswith(".avif"), urls
+        for u in urls:
+            stem = Path(u).stem
+            assert any(root.glob(f"{stem}_thumb.*")), (u, sorted(p.name for p in root.glob(f"{stem}*")))
+        # an AVIF map picture: the map is made and its page is the gateway's (the tile pyramid is cut from ffmpeg's first frame)
+        big = tmp_path / "map.avif"
+        Image.new("RGB", (900, 700), "teal").save(big, "AVIF")
+        mapname = "pf-avif-" + os.urandom(3).hex()
+        r = g.post("/maps/new", data={"name": mapname, "width": "900", "height": "700"}, files={"image_file": ("map.avif", big.read_bytes(), "image/avif")})
+        assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway", (r.status_code, r.text[:200])
+        page = g.get(f"/maps/{mapname}")
+        assert page.status_code == 200 and page.headers.get("x-nd-served-by") == "gateway", (page.status_code, page.text[:200])
+        r = g.post("/api/ai/attachments/upload", files={"file": ("t.pdf", pdf.read_bytes(), "application/pdf")})
+        assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", (r.status_code, r.text[:300])
+        body = r.json()
+        assert body["kind"] == "document" and "silt lord keeps the third key" in body["text"] and "Second page text" in body["text"], body
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        db = SessionLocal()
+        try:
+            for u in json.loads(db.get(ImageAlbum, album_id).image_urls_json or "[]"):
+                for p in root.glob(f"{Path(u).stem}*"):
+                    p.unlink()
+            db.query(ImageAlbum).filter(ImageAlbum.id == album_id).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()

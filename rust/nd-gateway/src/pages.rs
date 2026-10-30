@@ -1916,7 +1916,7 @@ pub fn schematic_masked_background(_pages: &Pages, cfg: &Config, uri: &Uri, head
         return None;
     }
     let src = cfg.db_path.parent()?.join("uploads").join(rel);
-    let img = crate::imaging::readable(&src)?.to_rgb8();
+    let img = crate::imaging::readable_or_frame(&src)?.to_rgb8();
     let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64);
     let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
     let scale = (2400.0 / cw.max(ch)).min(1.0);

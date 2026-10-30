@@ -41,6 +41,45 @@ pub fn readable(path: &Path) -> Option<DynamicImage> {
     }
 }
 
+/// The first frame of a picture this port cannot read exactly (AVIF, GIF, an animated PNG / WebP), decoded by ffmpeg into PNG: only in an image with
+/// no Python (ND_PYTHON_FREE), where the alternative is not answering at all. Pillow's own reading of such a picture differs slightly (an AVIF's
+/// colour conversion, a GIF's palette), so next to Python these stay Python's.
+pub fn first_frame(path: &Path) -> Option<DynamicImage> {
+    if !crate::config::python_free() || !CONVERTIBLE.contains(&suffix_lower(path).as_str()) {
+        return None;
+    }
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"]).arg(path).args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"])
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return None;
+    }
+    let img = image::load_from_memory_with_format(&out.stdout, image::ImageFormat::Png).ok()?;
+    use image::ColorType::*;
+    match img.color() {
+        L8 | La8 | Rgb8 | Rgba8 => Some(img),
+        _ => Some(DynamicImage::ImageRgba8(img.to_rgba8())),
+    }
+}
+
+/// The pixel size of such a picture, from ffprobe (cheap, unlike decoding it)
+pub fn first_frame_dims(path: &Path) -> Option<(u32, u32)> {
+    if !crate::config::python_free() || !CONVERTIBLE.contains(&suffix_lower(path).as_str()) {
+        return None;
+    }
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"]).arg(path)
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let (w, h) = text.lines().next()?.trim().split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+/// `readable`, else (without Python) the first frame ffmpeg reads
+pub fn readable_or_frame(path: &Path) -> Option<DynamicImage> {
+    readable(path).or_else(|| first_frame(path))
+}
+
 /// `_frame_mode`: RGBA when the picture has an alpha channel (and the target can hold one), else RGB
 fn frame(img: &DynamicImage, jpeg: bool) -> DynamicImage {
     if !jpeg && img.color().has_alpha() {
@@ -104,7 +143,12 @@ pub fn convert_upload(path: &Path, static_format: &str) -> Option<Finished> {
 }
 
 fn finish(path: &Path, static_format: &str, preview_format: Option<&str>) -> Option<Finished> {
-    let img = readable(path)?;
+    let (img, whole) = match readable(path) {
+        Some(i) => (i, true),
+        // no Python to hand it to: keep the picture as uploaded (its animation, its palette) and make the thumbnail from its first frame
+        None => (first_frame(path)?, false),
+    };
+    let static_format = if whole { static_format } else { "none" };
     let (target, ext) = match static_format {
         "avif" => ("avif", "avif"),
         "webp" => ("webp", "webp"),
@@ -197,4 +241,51 @@ pub fn with_derived(path: &Path) -> Vec<std::path::PathBuf> {
         out.push(path.with_file_name(format!("{stem}{suf}")));
     }
     out
+}
+
+static THUMB_CFG: std::sync::OnceLock<crate::config::Config> = std::sync::OnceLock::new();
+
+/// Without Python: the thumbnails of map pictures and bundled pictures that the page asks for (Python's `static_thumbs.request`) are made here, once
+/// each, on a background thread - the page shows the original this time
+pub fn serve_thumbnail_requests(cfg: &crate::config::Config) {
+    let _ = THUMB_CFG.set(cfg.clone());
+    let _ = nd_render::THUMB_QUEUE.set(queue_thumbnail);
+}
+
+fn queue_thumbnail(src: &Path) {
+    static BUSY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    let busy = BUSY.get_or_init(Default::default);
+    if !busy.lock().map(|mut b| b.insert(src.to_path_buf())).unwrap_or(false) {
+        return;
+    }
+    let src = src.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = make_thumbnail(&src);
+        if let Ok(mut b) = busy.lock() {
+            b.remove(&src);
+        }
+    });
+}
+
+/// `make_thumbnail(path)` in the Settings preview format (AVIF unless WebP is chosen)
+fn make_thumbnail(src: &Path) -> Option<()> {
+    let cfg = THUMB_CFG.get()?;
+    let db = crate::writes::open(cfg)?;
+    let preview: Option<String> = db.query_row("SELECT preview_format FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok().flatten();
+    let (pil, suffix, q) = match preview.as_deref() {
+        Some("webp") | Some("original") => ("webp", "_thumb.webp", 74u8),
+        _ => ("avif", "_thumb.avif", 60u8),
+    };
+    let img = readable_or_frame(src)?;
+    let framed = frame(&frame(&img, false), false);
+    let small = match thumbnail_size(framed.width(), framed.height(), THUMBNAIL_MAX_DIM) {
+        Some((w, h)) => framed.resize_exact(w, h, image::imageops::FilterType::Lanczos3),
+        None => framed,
+    };
+    let stem = src.file_stem()?.to_string_lossy().to_string();
+    let dest = src.with_file_name(format!("{stem}{suffix}"));
+    encode(&small, pil, q, &dest)?;
+    let other = src.with_file_name(format!("{stem}{}", if suffix == "_thumb.avif" { "_thumb.webp" } else { "_thumb.avif" }));
+    let _ = std::fs::remove_file(other);
+    Some(())
 }

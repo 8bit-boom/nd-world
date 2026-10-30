@@ -111,7 +111,7 @@ pub fn build(cfg: &Config, slug: &str, src: &Path, map_w: i64, map_h: i64) -> Op
     let out = root.join(&k);
     let tmp = root.join(format!("{k}.part"));
     let _ = std::fs::remove_dir_all(&tmp);
-    let img: DynamicImage = crate::imaging::readable(src)?;
+    let img: DynamicImage = crate::imaging::readable_or_frame(src)?;
     let mut prev: RgbaImage = img.to_rgba8();
     drop(img);
     let (zmin, native) = plan_levels(prev.width() as i64, prev.height() as i64, map_w, map_h);
@@ -180,10 +180,10 @@ pub fn meta_for(cfg: &Config, slug: &str, src: &Path, map_w: i64, map_h: i64) ->
         };
     }
     // a picture this port cannot read exactly (AVIF, GIF, animated, 16-bit) is cut by Python
-    if crate::imaging::readable(src).is_none() {
-        return Meta::Decline;
-    }
-    let dims = image::ImageReader::open(src).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok());
+    let dims = match crate::imaging::readable(src) {
+        Some(_) => image::ImageReader::open(src).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok()),
+        None => crate::imaging::first_frame_dims(src),
+    };
     let Some((w, h)) = dims else { return Meta::Decline };
     if !fits(cfg, w as i64 * h as i64) {
         return Meta::None;

@@ -297,6 +297,9 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/{}/media/audio/{}/remove", sm_audio_remove),
     ("/api/sessions/{}/media/video/{}/remove", sm_video_item_remove),
     ("/audio/upload/complete", audio_complete),
+    ("/video/upload/complete", video_complete),
+    ("/audio/{}/attach", audio_attach),
+    ("/video/{}/attach", video_attach),
     ("/api/sessions/{}/media/upload/complete", sm_complete),
     ("/images/albums/upload/complete", gallery_complete),
     ("/pages/upload/complete", pages_complete),
@@ -391,6 +394,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/video/upload/chunk", video_chunk),
     ("/pages/upload/chunk", pages_chunk),
     ("/audio/upload", audio_upload),
+    ("/video/upload", video_upload),
     ("/pages/upload", pages_upload),
     ("/images/albums/upload/chunk", gallery_chunk),
     ("/images/albums/{}/upload", gallery_upload),
@@ -6340,6 +6344,11 @@ const PAGE_EXTS: [&str; 2] = [".html", ".htm"];
 
 /// Write a new library item from a finished file at `dest` (already in place under <uploads>/<folder>)
 fn add_library_item(c: &mut Ctx, lib: &Lib, wid: i64, f: &Form, filename: &str, file_name: &str, album: Option<i64>, with_entity: bool) -> Option<()> {
+    add_library_item_with(c, lib, wid, f, filename, file_name, album, with_entity, vec![])
+}
+
+/// `add_library_item` with more columns (a video's poster)
+fn add_library_item_with(c: &mut Ctx, lib: &Lib, wid: i64, f: &Form, filename: &str, file_name: &str, album: Option<i64>, with_entity: bool, extra: Vec<(&str, Sql)>) -> Option<()> {
     let fallback = if lib.sheets { "Untitled page" } else { "Untitled clip" };
     let mut cols: Vec<(&str, Sql)> = vec![
         ("world_id", Sql::Integer(wid)),
@@ -6349,6 +6358,7 @@ fn add_library_item(c: &mut Ctx, lib: &Lib, wid: i64, f: &Form, filename: &str, 
         ("visible_to_players", Sql::Integer(flag_param(f, "visible_to_players"))),
         ("album_id", album.map_or(Sql::Null, Sql::Integer)),
     ];
+    cols.extend(extra);
     if lib.sheets {
         cols.push(("is_character_sheet_template", Sql::Integer(flag_param(f, "is_character_sheet_template"))));
     }
@@ -6442,6 +6452,199 @@ fn audio_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 fn pages_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let cap = env_bytes("MAX_PAGE_UPLOAD_BYTES", 50 * 1024 * 1024)?;
     library_upload(c, &PAGES, &PAGE_EXTS, 200, cap, false)
+}
+
+// ── video uploads: the conversion ladder and the poster, with the same ffmpeg commands Python runs (app/routers/video.py) ─────
+
+const VIDEO_NATIVE_EXTS: [&str; 5] = [".mp4", ".m4v", ".webm", ".ogv", ".mov"];
+const VIDEO_CONVERTIBLE_EXTS: [&str; 7] = [".mkv", ".avi", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"];
+
+fn video_ext_ok(ext: &str) -> bool {
+    VIDEO_NATIVE_EXTS.contains(&ext) || VIDEO_CONVERTIBLE_EXTS.contains(&ext)
+}
+
+fn ffmpeg_ok(args: &[std::ffi::OsString], out: &std::path::Path) -> bool {
+    let status = std::process::Command::new("ffmpeg").args(args)
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    let good = matches!(status, Ok(st) if st.success()) && std::fs::metadata(out).map_or(false, |m| m.is_file() && m.len() > 0);
+    if !good {
+        let _ = std::fs::remove_file(out);
+    }
+    good
+}
+
+fn os(v: &[&str]) -> Vec<std::ffi::OsString> {
+    v.iter().map(std::ffi::OsString::from).collect()
+}
+
+/// `_convert_video`: the opt-in AV1 / Opus copy "<stem>-av1.webm" (None on any failure: the original stays)
+fn video_convert_av1(src: &std::path::Path, dir: &std::path::Path, max_height: Option<i64>, bitrate: Option<i64>) -> Option<std::path::PathBuf> {
+    let out = dir.join(format!("{}-av1.webm", src.file_stem()?.to_string_lossy()));
+    let kbps = bitrate.filter(|b| *b > 0).unwrap_or(2000);
+    let mut a = os(&["-y", "-i"]);
+    a.push(src.into());
+    a.extend(os(&["-c:v", "libsvtav1", "-b:v", &format!("{kbps}k")]));
+    if let Some(h) = max_height.filter(|h| *h > 0) {
+        a.extend(os(&["-vf", &format!("scale=-2:min(ih\\,{h})")]));
+    }
+    a.extend(os(&["-c:a", "libopus", "-b:a", "128k"]));
+    a.push(out.clone().into());
+    ffmpeg_ok(&a, &out).then_some(out)
+}
+
+/// `_remux_or_transcode`: MKV / AVI / TS ... into a playable MP4 beside it (a lossless remux, else an H.264 / AAC transcode)
+fn video_remux_or_transcode(src: &std::path::Path) -> Option<std::path::PathBuf> {
+    let out = src.with_extension("mp4");
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"]).arg(src)
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+    let hevc = matches!(&probe, Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).trim().to_lowercase() == "hevc");
+    let mut a = os(&["-y", "-i"]);
+    a.push(src.into());
+    a.extend(os(&["-map", "0:v:0", "-map", "0:a:0", "-c", "copy"]));
+    if hevc {
+        a.extend(os(&["-tag:v", "hvc1"]));
+    }
+    a.extend(os(&["-movflags", "+faststart"]));
+    a.push(out.clone().into());
+    if ffmpeg_ok(&a, &out) {
+        return Some(out);
+    }
+    let mut t = os(&["-y", "-i"]);
+    t.push(src.into());
+    t.extend(os(&["-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]));
+    t.push(out.clone().into());
+    ffmpeg_ok(&t, &out).then_some(out)
+}
+
+/// `_generate_poster`: a frame from ~1 s in, at most 480 px wide, "<stem>.jpg" beside the video
+fn video_poster(video: &std::path::Path, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let poster = dir.join(format!("{}.jpg", video.file_stem()?.to_string_lossy()));
+    let mut a = os(&["-y", "-ss", "1", "-i"]);
+    a.push(video.into());
+    a.extend(os(&["-frames:v", "1", "-vf", "scale=min(iw\\,480):-2", "-q:v", "4"]));
+    a.push(poster.clone().into());
+    ffmpeg_ok(&a, &poster).then_some(poster)
+}
+
+/// `_finish_stored_file` then `_generate_poster`: the final file and its poster url; every file made is tracked, the replaced original goes after the commit
+fn video_finish(c: &mut Ctx, wid: i64, dest: &std::path::Path, dir: &std::path::Path) -> Option<(std::path::PathBuf, Option<String>)> {
+    let w = row(&c.db, "SELECT * FROM worlds WHERE id = ?1", wid)?;
+    let mut final_path = dest.to_path_buf();
+    if py_truthy(w.get("video_convert_enabled")) {
+        if let Some(conv) = video_convert_av1(dest, dir, w.get("video_convert_max_height").and_then(|v| v.as_i64()), w.get("video_convert_bitrate_kbps").and_then(|v| v.as_i64())) {
+            c.created.push(conv.clone());
+            c.removals.push(dest.to_path_buf());
+            final_path = conv;
+        }
+    }
+    if VIDEO_CONVERTIBLE_EXTS.contains(&py_suffix_lower(&dest.file_name()?.to_string_lossy())?.as_str()) && final_path == dest {
+        if let Some(mp4) = video_remux_or_transcode(dest) {
+            c.created.push(mp4.clone());
+            c.removals.push(dest.to_path_buf());
+            final_path = mp4;
+        }
+    }
+    let poster = video_poster(&final_path, dir);
+    let poster_url = poster.map(|p| {
+        c.created.push(p.clone());
+        format!("/uploads/video/{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    });
+    Some((final_path, poster_url))
+}
+
+/// `POST /video/upload` (app/routers/video.py `video_upload`): the file saved, converted when it must be, a poster made, the clip added
+fn video_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = upload_cap(c, "max_video_mb", "MAX_VIDEO_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024)?;
+    let f = c.form()?;
+    let wid = lib_editor(c, &VIDEO)?;
+    if world_count(c, VIDEO.items, wid)? >= 100 {
+        return None;
+    }
+    let part = one_file(c, "file")?;
+    if part.filename.is_empty() || part.len as i64 > cap {
+        return None;
+    }
+    let filename = part.filename.clone();
+    let ext = py_suffix_lower(&filename)?;
+    if !video_ext_ok(&ext) {
+        return None;
+    }
+    let album = form_album(c, &VIDEO, wid, &f)?;
+    let target = uploads_root(c)?.join("video");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    let (final_path, poster_url) = video_finish(c, wid, &dest, &target)?;
+    let final_name = final_path.file_name()?.to_string_lossy().to_string();
+    add_library_item_with(c, &VIDEO, wid, &f, &filename, &final_name, album, true, vec![("poster_url", poster_url.map_or(Sql::Null, |u| s(&u)))])?;
+    match album {
+        Some(a) => redirect(&format!("{}/albums/{a}", VIDEO.base)),
+        None => redirect(VIDEO.base),
+    }
+}
+
+/// `POST /video/upload/complete`: the chunks reassembled, then the same finish as a direct upload
+fn video_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let cap = upload_cap(c, "max_video_mb", "MAX_VIDEO_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024)?;
+    let f = c.form()?;
+    let wid = lib_editor(c, &VIDEO)?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let filename = f.get("filename").filter(|v| !v.is_empty())?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let ext = py_suffix_lower(&filename)?;
+    if !video_ext_ok(&ext) || world_count(c, VIDEO.items, wid)? >= 100 {
+        return None;
+    }
+    let (dir, parts, size) = chunk_parts(c, VIDEO.section, &id, total)?;
+    if size as i64 > cap {
+        return None;
+    }
+    let album = form_album(c, &VIDEO, wid, &f)?;
+    let target = uploads_root(c)?.join("video");
+    std::fs::create_dir_all(&target).ok()?;
+    let dest = target.join(unique_upload_filename(&filename, &ext)?);
+    c.created.push(dest.clone());
+    reassemble(&parts, &dest)?;
+    let (final_path, poster_url) = video_finish(c, wid, &dest, &target)?;
+    let final_name = final_path.file_name()?.to_string_lossy().to_string();
+    add_library_item_with(c, &VIDEO, wid, &f, &filename, &final_name, album, false, vec![("poster_url", poster_url.map_or(Sql::Null, |u| s(&u)))])?;
+    c.removals.push(dir);
+    json_response(&json!({"ok": true}))
+}
+
+/// `POST /audio/<id>/attach` and `/video/<id>/attach`: the clip tied to an entity of its own world (empty or unknown: detached)
+fn lib_attach(c: &mut Ctx, lib: &Lib, id: i64) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let Some(clip) = row(&c.db, &format!("SELECT * FROM {} WHERE id = ?1", lib.items), id) else { return Some(crate::idpages::refusal(404)) };
+    if !content_editor(c) {
+        return None;
+    }
+    let wid = clip.get("world_id")?.as_i64()?;
+    let raw = strip(f.get("entity_id").unwrap_or(""));
+    let ent = if raw.is_empty() {
+        None
+    } else {
+        match digit_field(&raw).ok()? {
+            Some(eid) => c.db.query_row("SELECT id FROM entities WHERE id = ?1 AND world_id = ?2", [eid, wid], |r| r.get::<_, i64>(0)).ok(),
+            None => None,
+        }
+    };
+    orm::update(&c.db, lib.items, id, &[("entity_id", ent.map_or(Sql::Null, Sql::Integer))])?;
+    match ent {
+        Some(e) => redirect(&format!("/entity/{e}")),
+        None => redirect(lib.base),
+    }
+}
+
+fn video_attach(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_attach(c, &VIDEO, ids[0])
+}
+
+fn audio_attach(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    lib_attach(c, &AUDIO, ids[0])
 }
 
 // ── gallery uploads: pictures converted and thumbnailed (crate::imaging) ─────
@@ -9121,6 +9324,25 @@ fn entity_note_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         };
         // undecodable bytes (errors="replace" may differ in detail): Python's
         strip(std::str::from_utf8(data).ok()?)
+    } else if ext == ".pdf" {
+        if pick.len(c)? as i64 > env_bytes("MAX_NOTE_IMPORT_BYTES", 10 * 1024 * 1024)? {
+            return None;
+        }
+        let tmp;
+        let data: &[u8] = match &pick {
+            FilePick::Mem(p) => &p.data,
+            FilePick::Disk(_) => {
+                let t = c.uploads_scratch()?;
+                pick.write_to(c, &t)?;
+                tmp = std::fs::read(&t).ok()?;
+                let _ = std::fs::remove_file(&t);
+                &tmp
+            }
+        };
+        match crate::pdftext::extract(data, None)? {
+            Ok(text) => strip(&text),
+            Err(()) => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Could not extract text from this PDF")),
+        }
     } else {
         return None;
     };
@@ -14440,15 +14662,17 @@ fn studio_key_set(c: &Ctx) -> bool {
     saved.filter(|k| !k.is_empty()).is_some() || std::env::var("UNSLOTH_API_KEY").map_or(false, |k| !k.is_empty())
 }
 
-/// `_finish_attachment_upload`: what the picker gets back. A PDF (pypdf) and an audio file with a Studio key (transcription) are Python's.
+/// `_finish_attachment_upload`: what the picker gets back. A PDF (pypdf; the gateway reads it only without Python) and an audio file with a Studio key (transcription) are Python's.
 fn attach_finish(c: &Ctx, dest: &std::path::Path, ext: &str, kind: &str, original: &str) -> Option<Response<Body>> {
     let text = match kind {
         "document" => {
             if ext == ".pdf" {
-                return None;
+                // pypdf's text (empty when it fails, as `_extract_document_text` returns): only without Python
+                crate::pdftext::extract(&std::fs::read(dest).ok()?, None)?.unwrap_or_default()
+            } else {
+                // read_text(encoding="utf-8", errors="replace") in text mode: newlines translated to \n
+                String::from_utf8_lossy(&std::fs::read(dest).ok()?).replace("\r\n", "\n").replace('\r', "\n")
             }
-            // read_text(encoding="utf-8", errors="replace") in text mode: newlines translated to \n
-            String::from_utf8_lossy(&std::fs::read(dest).ok()?).replace("\r\n", "\n").replace('\r', "\n")
         }
         "audio" => {
             if studio_key_set(c) {

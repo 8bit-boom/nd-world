@@ -284,6 +284,7 @@ pub fn init_db(cfg: &Config) {
         return;
     }
     crate::restore::apply_staged(cfg);
+    crate::imaging::serve_thumbnail_requests(cfg);
     if !needs_boot(cfg) {
         // the additive schema heal is for a container with no Python in it (ND_PYTHON_FREE=1): next to a Python app both would run DDL against
         // the same file at boot, and Python's own create_all / _migrate already does this work

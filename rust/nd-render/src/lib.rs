@@ -177,6 +177,12 @@ fn thumb(url: Option<String>) -> Result<Value, Error> {
         };
         if !fresh {
             if src.is_file() {
+                // Python's `static_thumbs.request(src)`: the thumbnail made in the background, the original shown this once. Set by a gateway that has
+                // no Python to do it; otherwise the page is Python's
+                if let Some(queue) = THUMB_QUEUE.get() {
+                    queue(&src);
+                    return Ok(Value::from(url));
+                }
                 return Err(Error::new(ErrorKind::InvalidOperation, "a thumbnail would be queued: Python's job"));
             }
             return Ok(Value::from(url));
@@ -190,6 +196,9 @@ fn thumb(url: Option<String>) -> Result<Value, Error> {
         None => Ok(Value::from(url)),
     }
 }
+
+/// Who makes a missing bundled / map-picture thumbnail (the gateway, when it runs without Python)
+pub static THUMB_QUEUE: std::sync::OnceLock<fn(&std::path::Path)> = std::sync::OnceLock::new();
 
 fn percent_decode(s: &str) -> String {
     // URLs in the database are written by the app unencoded; a "%" is taken literally, as Python's Path does

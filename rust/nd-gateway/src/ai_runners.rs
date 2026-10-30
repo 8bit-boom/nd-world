@@ -729,7 +729,12 @@ fn system_draft_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, 
             let ext = base.rfind('.').filter(|&i| i > 0 && i < base.len() - 1).map(|i| base[i..].to_lowercase()).unwrap_or_default();
             match ext.as_str() {
                 ".md" | ".markdown" | ".txt" => parts.push(String::from_utf8_lossy(&f.data).into_owned()),
-                ".json" | ".pdf" => return None, // pretty-printed JSON and PDF text extraction: Python's
+                ".json" => return None, // pretty-printed JSON: Python's
+                ".pdf" => match crate::pdftext::extract(&f.data, Some(400))? { // pypdf's text: read here only without Python
+                    Ok(text) if !text.trim().is_empty() => parts.push(text.trim().to_string()),
+                    Ok(_) => return Some(detail(StatusCode::BAD_REQUEST, "This PDF has no extractable text (it may be a scan) — paste the rules instead.")),
+                    Err(()) => return Some(detail(StatusCode::BAD_REQUEST, "Reading this PDF failed (PdfReadError) — export it as text or paste the rules.")),
+                },
                 ".doc" | ".docx" | ".odt" => return Some(detail(StatusCode::BAD_REQUEST, "Word documents aren't readable here — export the rules to PDF or plain text, or paste them.")),
                 other => return Some(detail(StatusCode::BAD_REQUEST, format!("Unsupported file type {} — use PDF, MD, TXT or JSON, or paste the text.", py_repr(&json!(other))))),
             }
