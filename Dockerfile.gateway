@@ -3,8 +3,9 @@
 # control itself. What still needs Python in the build only (a throw-away stage): the static files' thumbnails, AVIF maps, tile pyramids, minified
 # and pre-compressed copies, which are made exactly as for the normal image and copied over.
 #
-# Not served here (no Python to forward to; they answer 502): the PDF text reader behind AI attachments, the character .pdf export, videos' ffmpeg
-# conversions, /api/ai/models and a few refusals - the list is in docs/RUST_PORT_HANDOFF.md. Use the normal Dockerfile until that list is acceptable.
+# Not served here (no Python to forward to; they answer 501 with the reason): the PDF text reader behind AI attachments, the character .pdf export,
+# videos' ffmpeg conversions, the legacy Ollama back end's status routes (a Studio key is served), FastAPI's /docs and /openapi.json, the world
+# Foundry export, and the refusals of rarely used routes - the list is in docs/RUST_PORT_HANDOFF.md. Use the normal Dockerfile until it is acceptable.
 FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
 
 FROM rust:1-slim AS gateway
