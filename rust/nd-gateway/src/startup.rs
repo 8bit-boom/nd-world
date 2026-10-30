@@ -277,6 +277,9 @@ pub fn seed_bundled_maps(cfg: &Config) {
 }
 
 pub fn init_db(cfg: &Config) {
+    if crate::config::python_free() {
+        crate::restore::apply_staged(cfg);
+    }
     seed_bundled_maps(cfg);
     if !needs_boot(cfg) {
         // the additive schema heal is for a container with no Python in it (ND_PYTHON_FREE=1): next to a Python app both would run DDL against
@@ -325,7 +328,7 @@ pub fn init_db(cfg: &Config) {
 /// leaves a paused job in. Python's resume_interrupted_jobs re-runs them through its engines; the gateway's own audio
 /// runner resumes its audio jobs the same way below.
 /// the civil date of a days-since-epoch count (Howard Hinnant's civil_from_days)
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719468;
     let era = z.div_euclid(146097);
     let doe = z.rem_euclid(146097);

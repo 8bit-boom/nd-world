@@ -9188,3 +9188,102 @@ def test_media_rename_apply_and_undo_are_pythons(client, seed):
     for path, body in (("/api/media-rename/apply", {"renames": [{"kind": "audio", "id": 1, "name": "x"}]}), ("/api/media-rename/undo", {"batch_id": "x"})):
         a, b = p.post(path, json=body), _via(p, base).post(path, json=body)
         assert (a.status_code, a.content) == (b.status_code, b.content), path
+
+
+def test_backup_restore_staging_is_pythons(client, seed):
+    """POST /admin/backup/restore and /restore/cancel: the confirmation text, a bad zip, a zip with no world.db / manifest, a world.db that is not a database
+    or predates the schema (all Python's 400s), and a good backup staged - its media (an escaping name skipped), world.db and manifest - then cancelled.
+    Python and the gateway stage the same zip; the staging folder they leave must be identical."""
+    import hashlib
+    import io
+    import sqlite3
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    from app.database import RESTORE_STAGING_DIR
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    name = seed.world_a.name
+
+    def sqlite_bytes(aliases=True, worlds=True):
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / "x.db"
+            con = sqlite3.connect(str(p))
+            if worlds:
+                con.execute("CREATE TABLE worlds (id INTEGER PRIMARY KEY, name TEXT)")
+            con.execute("CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT" + (", aliases TEXT)" if aliases else ")"))
+            con.commit()
+            con.close()
+            return p.read_bytes()
+
+    def make_zip(entries):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for n, data in entries:
+                z.writestr(n, data)
+        return buf.getvalue()
+
+    good = [("world.db", sqlite_bytes()), ("manifest.json", b'{"version": 1}'), ("uploads/a/one.txt", b"one"), ("maps/m.txt", b"map"),
+            ("uploads/", b""), ("../escape.txt", b"no"), ("/abs.txt", b"no"), ("uploads/x/../y.txt", b"y")]
+    cases = [
+        ("wrong name", "nope", make_zip(good)),
+        ("padded name", f"  {name}  ", make_zip(good)),
+        ("not a zip", name, b"this is not a zip file at all"),
+        ("empty zip", name, make_zip([])),
+        ("no manifest", name, make_zip([("world.db", sqlite_bytes())])),
+        ("junk db", name, make_zip([("world.db", b"garbage" * 50), ("manifest.json", b"{}")])),
+        ("no worlds table", name, make_zip([("world.db", sqlite_bytes(worlds=False)), ("manifest.json", b"{}")])),
+        ("old schema", name, make_zip([("world.db", sqlite_bytes(aliases=False)), ("manifest.json", b"{}")])),
+        ("good", name, make_zip(good)),
+    ]
+
+    def tree():
+        out = {}
+        if RESTORE_STAGING_DIR.exists():
+            for f in sorted(RESTORE_STAGING_DIR.rglob("*")):
+                out[str(f.relative_to(RESTORE_STAGING_DIR))] = hashlib.sha1(f.read_bytes()).hexdigest() if f.is_file() else "dir"
+        return out
+
+    def run(url_base):
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        if url_base != DIRECT:
+            d = _via(d, url_base)
+        out = []
+        try:
+            for label, confirm, data in cases:
+                r = d.post("/admin/backup/restore", data={"confirm_name": confirm}, files={"file": ("backup.zip", data, "application/zip")}, follow_redirects=False)
+                out.append((label, r.status_code, r.headers.get("location"), r.text[:300], tree()))
+                d.post("/admin/backup/restore/cancel", follow_redirects=False)
+            r = d.post("/admin/backup/restore", data={"confirm_name": name}, files={"file": ("backup.zip", make_zip(good), "application/zip")}, follow_redirects=False)
+            c = d.post("/admin/backup/restore/cancel", follow_redirects=False)
+            out.append(("cancel", c.status_code, c.headers.get("location"), tree()))
+            c = d.post("/admin/backup/restore/cancel", follow_redirects=False)
+            out.append(("cancel again", c.status_code, c.headers.get("location"), tree()))
+        finally:
+            import shutil
+            shutil.rmtree(RESTORE_STAGING_DIR, ignore_errors=True)
+        return out
+
+    py = run(DIRECT)
+    gw = run(base)
+    for a, b in zip(py, gw):
+        assert a == b, (a[0], a, b)
+    assert len(py) == len(gw)
+    good_row = [r for r in py if r[0] == "good"][0]
+    assert good_row[1] == 303 and "uploads/a/one.txt" in good_row[4] and "uploads/y.txt" in good_row[4] and "world.db" in good_row[4]
+    probe = _via(_signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug), base)
+    r = probe.post("/admin/backup/restore", data={"confirm_name": "nope"}, files={"file": ("b.zip", b"x", "application/zip")}, follow_redirects=False)
+    assert r.status_code == 400 and r.headers.get("x-nd-served-by") == "gateway"
+    try:
+        r = probe.post("/admin/backup/restore", data={"confirm_name": name}, files={"file": ("b.zip", make_zip(good), "application/zip")}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway"
+        r = probe.post("/admin/backup/restore/cancel", follow_redirects=False)
+        assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway"
+    finally:
+        import shutil
+        shutil.rmtree(RESTORE_STAGING_DIR, ignore_errors=True)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a = p.post("/admin/backup/restore", data={"confirm_name": name}, files={"file": ("b.zip", make_zip(good), "application/zip")}, follow_redirects=False)
+    b = _via(p, base).post("/admin/backup/restore", data={"confirm_name": name}, files={"file": ("b.zip", make_zip(good), "application/zip")}, follow_redirects=False)
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    assert not RESTORE_STAGING_DIR.exists()

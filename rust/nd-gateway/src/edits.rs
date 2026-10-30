@@ -177,6 +177,7 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 
 /// (pattern with `{}` for an integer id, handler)
 const ROUTES: &[(&str, Handler)] = &[
+    ("/admin/backup/restore/cancel", crate::restore::cancel),
     ("/api/media-rename/apply", media_rename_apply),
     ("/api/media-rename/undo", media_rename_undo),
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
@@ -402,6 +403,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/characters/upload-media", toolbar_pc_media),
     ("/api/characters/{}/hub/keepsakes/upload", hub_keepsake_upload),
     ("/worlds/{}/import", world_import),
+    ("/admin/backup/restore", crate::restore::stage),
     ("/api/ai/attachments/audio-jobs", attach_audio_job_create),
     ("/api/ai/attachments/audio-jobs/chunk", attach_audio_job_chunk),
     ("/api/ai/attachments/upload", attach_upload),

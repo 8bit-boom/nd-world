@@ -50,6 +50,7 @@ pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
 pub mod startup;
+pub mod restore;
 pub mod imaging;
 pub mod markup;
 pub mod layout;

@@ -510,3 +510,9 @@ in a small sidecar, as the plan allows, if a port is not good enough.
   400 / 403 refusals, `MediaRenameLog` rows, a reviewed run's proposals forgotten, undo (once, and "renamed again since"). Python's session has
   `autoflush=False`, so a batch that clears the same image twice (two pending `MediaTitle` adds) crashes Python with a unique-constraint 500; the
   gateway's `TitleBook` emulates the deferred writes and declines that case rather than answering differently.
+
+- **Full Backup restore** (restore.rs): `POST /admin/backup/restore` (GM only; the active world's name typed to confirm, 400s for a bad / empty zip, no
+  world.db or manifest, a world.db that is not a database or has no `entities.aliases`; media staged first, world.db last, entries that would escape the
+  staging folder skipped) and `POST /admin/backup/restore/cancel`. Duplicate zip entries and any unreadable entry go to Python. With `ND_PYTHON_FREE=1`
+  the gateway also does `_apply_staged_restore` at boot (WAL folded in, the old database kept as `world.db.pre-restore-<stamp>`, uploads/ and maps/
+  merged, an incomplete stage discarded); next to Python, Python still applies it at its own start.
