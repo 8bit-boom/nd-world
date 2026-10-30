@@ -33,8 +33,18 @@ fn starting_page() -> Response<Body> {
 }
 
 /// The answer for a request only the Python app can serve, when there is none (`ND_PYTHON_FREE=1`): 501 with the reason, in JSON for the API and a page otherwise
-fn not_in_this_image(path: &str, headers: &HeaderMap) -> Response<Body> {
+fn not_in_this_image(method: &Method, path: &str, headers: &HeaderMap) -> Response<Body> {
     let wants_json = path.starts_with("/api/") || path.starts_with("/mcp") || headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("json") && !a.contains("html"));
+    // a write the gateway declined is almost always input it could not accept (a refusal Python words in detail): a generic 400, not a 501
+    if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) {
+        let msg = "This request could not be completed: check what was sent. (This install has no Python app to explain the refusal in detail.)";
+        if wants_json {
+            return Response::builder().status(StatusCode::BAD_REQUEST).header(header::CONTENT_TYPE, "application/json").header(header::CACHE_CONTROL, "no-store")
+                .body(Body::from(format!("{{\"detail\":\"{msg}\"}}"))).unwrap();
+        }
+        return Response::builder().status(StatusCode::BAD_REQUEST).header(header::CONTENT_TYPE, "text/html; charset=utf-8").header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(format!("<!doctype html><meta charset=utf-8><title>Could not complete</title><body style=\"font-family:sans-serif;background:#111;color:#ddd;padding:2rem\"><h1>Could not complete</h1><p>{msg}</p><p><a href=\"javascript:history.back()\" style=\"color:#8cf\">Back</a></p>"))).unwrap();
+    }
     let msg = "This request needs the Python app, which this image does not include (ND_PYTHON_FREE).";
     if wants_json {
         return Response::builder().status(StatusCode::NOT_IMPLEMENTED).header(header::CONTENT_TYPE, "application/json").header(header::CACHE_CONTROL, "no-store")
@@ -65,7 +75,7 @@ impl Proxy {
         let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
         census("PY", method.as_str(), parts.uri.path());
         if crate::config::python_free() {
-            return not_in_this_image(parts.uri.path(), &req_headers);
+            return not_in_this_image(&method, parts.uri.path(), &req_headers);
         }
         let uri: hyper::Uri = match format!("http://{}{}", self.cfg.upstream, pq).parse() {
             Ok(u) => u,

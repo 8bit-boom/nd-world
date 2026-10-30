@@ -127,6 +127,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Unsloth routes with no key** (apis.rs): the 11 Studio status routes that open with `_unsloth_or_400()` (models, image/status, auto-switch, status, ...)
   answer Python's 400 "No Unsloth backend configured" when no Studio key is saved or in the environment. With a key they talk to Studio: still Python's
 - **Timings without Python** (apis.rs): with `ND_PYTHON_FREE=1`, `GET /api/perf/summary|recent` answer the empty shape (the request ring was Python's own memory).
+- **Declined writes without Python** (proxy.rs): a POST / PUT / PATCH / DELETE the gateway declined is almost always input it could not accept, so `ND_PYTHON_FREE=1` answers 400 with a
+  generic message (JSON or a page) instead of 501; Python's exact wording needs the route's refusal ported.
 - **A clear answer for what is not here** (proxy.rs): with `ND_PYTHON_FREE=1` a request only Python could serve is a 501 with the reason - JSON for `/api/*` and `/mcp`, a short page
   otherwise - instead of the "starting" page that retries forever. `scripts/python_free_crawl.sh` counts 501s.
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
