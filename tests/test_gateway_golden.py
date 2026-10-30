@@ -8260,3 +8260,31 @@ def test_unconfigured_unsloth_routes_are_pythons_400(client, seed):
         a, b = p.get(url), pv.get(url)
         assert (a.status_code, a.content) == (b.status_code, b.content), url
     assert unconfigured >= 9 or os.environ.get("UNSLOTH_API_KEY"), unconfigured
+
+
+def test_studio_console_page_without_a_studio_is_pythons(client, seed):
+    """GET /studio with no Studio Console URL and no key: the page with an empty address, from the gateway; with a Console URL saved, Python's page
+    (the gateway steps aside); a player gets Python's 403."""
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    f = Path(os.environ["DB_PATH"]).parent / "ai_models.json"
+    was = f.read_bytes() if f.exists() else None
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    try:
+        f.unlink(missing_ok=True)
+        keyless = not os.environ.get("UNSLOTH_API_KEY")
+        served = _same_page(d, v, "/studio", "gm")
+        assert served or not keyless
+        f.write_text('{"studio_console_url": "studio.lan:8888"}', encoding="utf-8")
+        assert not _same_page(d, v, "/studio", "gm console url")
+        f.write_text('{"studio_console_url": ""}', encoding="utf-8")
+        _same_page(d, v, "/studio", "gm empty url")
+        _same_page(p, _via(p, base), "/studio", "player")
+    finally:
+        if was is None:
+            f.unlink(missing_ok=True)
+        else:
+            f.write_bytes(was)

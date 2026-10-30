@@ -229,6 +229,7 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/display", template: "display.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[], extra: None },
     Simple { path: "/handouts", template: "handouts_gallery.html", section: None, needs_world: false, gm_only: false, edit: false,
              lists: &[("entities", "SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name, id")], extra: None },
+    Simple { path: "/studio", template: "studio_console.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[], extra: Some(studio_console) },
     Simple { path: "/dreamlands", template: "dreamlands.html", section: Some("dreamlands"), needs_world: false, gm_only: false, edit: false, lists: &[],
              extra: Some(|db, c| feature_flag(db, c, "dreamlands_enabled", "Dreamlands", "\u{1F319}")) },
     Simple { path: "/king-in-yellow", template: "king_in_yellow.html", section: Some("king-in-yellow"), needs_world: false, gm_only: false, edit: false, lists: &[],
@@ -301,6 +302,31 @@ fn feature_flag(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde
         c.insert("feature_icon".into(), serde_json::json!(icon));
         c.insert("__template".into(), serde_json::json!("feature_disabled.html"));
     }
+    Some(())
+}
+
+/// app/main.py `studio_console` with no Studio set up (no Console URL in ai_models.json, no Studio API key): the page with an empty address.
+/// Anything configured needs `studio_browser_url`'s host rewriting: Python's.
+fn studio_console(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
+    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "/data/world.db".into());
+    let explicit = match std::fs::read(std::path::Path::new(&db_path).parent()?.join("ai_models.json")) {
+        Ok(b) => match serde_json::from_slice::<serde_json::Value>(&b) {
+            Ok(serde_json::Value::Object(o)) => o.get("studio_console_url").cloned(),
+            Ok(_) => return None,
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+    if !matches!(explicit, None | Some(serde_json::Value::Null)) && explicit.as_ref().and_then(|v| v.as_str()) != Some("") {
+        return None;
+    }
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    if key.is_some() {
+        return None;
+    }
+    c.insert("studio_url".into(), serde_json::json!(""));
+    c.insert("studio_derived_from".into(), serde_json::json!(""));
     Some(())
 }
 
