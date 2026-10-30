@@ -8133,6 +8133,7 @@ def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
         assert len(mine(a)) >= 3 and mine(a) == mine(b)
         t = free.get("/api/ai/tasks")
         assert (t.status_code, t.json()) == (200, {"tasks": []})
+        assert free.get("/api/perf/summary").json() == {"slow_ms": 800.0, "routes": []} and free.get("/api/perf/recent").json() == {"requests": []}
         # a route only Python serves: a clear 501 (JSON for the API, a page otherwise), not a "starting" loop
         j = free.get("/api/definitely-not-ported-here")
         assert j.status_code == 501 and "Python app" in j.json()["detail"], (j.status_code, j.text)
