@@ -304,6 +304,7 @@ pub async fn route(pages: Arc<Pages>, cfg: Arc<Config>, method: Method, uri: Uri
                 Some(with_cookie(page(&pages, "auth/login_2fa.html", json!({"error": null}), StatusCode::OK, &headers)?, None))
             }
             ("POST", "/login/2fa") => login_2fa(&pages, &db, &headers, &body),
+            ("POST", p) if p.starts_with("/join/") => join_submit(&pages, &db, &headers, &body, peer, p.strip_prefix("/join/")?),
             ("GET", "/account/2fa/setup") => twofa_setup(&pages, &cfg, &db, &uri, &headers),
             ("POST", "/account/2fa/setup") => twofa_confirm(&pages, &cfg, &db, &uri, &headers, &body),
             ("POST", "/account/name") => account_name(&pages, &cfg, &db, &uri, &headers, &body),
@@ -495,9 +496,6 @@ fn check_code(db: &rusqlite::Connection, user: &Map<String, Value>, code: &str) 
 
 fn login_2fa(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     let (mut s, had) = read_session(pages, headers);
-    if s.get("pending_2fa_invite_code").is_some() {
-        return None; // redeeming an invite on the way in: Python's
-    }
     let Some(pending) = s.get("pending_2fa_user_id").filter(|v| crate::edits::py_truthy_pub(Some(v))).and_then(|v| v.as_i64()) else {
         return Some(with_cookie(redirect("/login"), None));
     };
@@ -521,10 +519,18 @@ fn login_2fa(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body
     }
     clear("2fa", &key);
     let next = safe_next_url(Some(s.shift_remove("pending_2fa_next").and_then(|v| v.as_str().map(str::to_string)).as_deref().unwrap_or("/")));
-    s.shift_remove("pending_2fa_invite_code");
+    let invite_code = s.shift_remove("pending_2fa_invite_code").and_then(|v| v.as_str().map(str::to_string));
     s.shift_remove("pending_2fa_user_id");
     sign_in(db, &mut s, &user);
-    let mut r = with_cookie(redirect(&next), session_cookie(pages, &s, had));
+    // an invite redeemed on the way in (a link opened by someone with two-step sign-in): a good one joins the world, else the usual redirect
+    let mut redeemed = None;
+    if let Some(code) = invite_code.as_deref().filter(|c| !c.is_empty()) {
+        let invite = db.query_row("SELECT * FROM invite_codes WHERE code = ?1 LIMIT 1", [code], |r| crate::layout::row_map(r)).ok();
+        if invite.is_some() && crate::share::invite_error(invite.as_ref())?.is_empty() {
+            redeemed = Some(redeem(db, &s, invite?)?);
+        }
+    }
+    let mut r = with_cookie(redeemed.unwrap_or_else(|| redirect(&next)), session_cookie(pages, &s, had));
     if !form.get("trust_device").unwrap_or("").trim().is_empty() {
         let raw: String = {
             use base64::Engine;
@@ -538,6 +544,117 @@ fn login_2fa(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body
         r.headers_mut().append(header::SET_COOKIE, c.parse().ok()?);
     }
     Some(r)
+}
+
+/// `_redeem(request, db, invite)`: a signed-in non-GM joins the invite's world as a player (once; the use is counted), then to "/" with the world
+/// chosen. None: what Python would do differently (a world with a starting layout preset applies it; an odd slug is quoted in the cookie)
+fn redeem(db: &rusqlite::Connection, session: &Map<String, Value>, invite: Map<String, Value>) -> Option<Response<Body>> {
+    use rusqlite::types::Value as Sql;
+    let world_id = invite.get("world_id")?.as_i64()?;
+    let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [world_id], |r| crate::layout::row_map(r)).ok();
+    let preset = world.as_ref().and_then(|w| w.get("layout_preset")).filter(|v| crate::edits::py_truthy_pub(Some(v)));
+    if preset.is_some() {
+        return None;
+    }
+    let uid = session.get("user_id").and_then(|v| v.as_i64());
+    let user = uid.and_then(|id| db.query_row("SELECT * FROM users WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok());
+    if let Some(user) = user.filter(|u| !crate::edits::py_truthy_pub(u.get("is_gm"))) {
+        let uid = user.get("id")?.as_i64()?;
+        let existing: bool = db.query_row("SELECT 1 FROM world_memberships WHERE world_id = ?1 AND user_id = ?2 LIMIT 1", [world_id, uid], |r| r.get::<_, i64>(0)).is_ok();
+        if !existing {
+            crate::orm::insert(db, "world_memberships", &[("world_id", Sql::Integer(world_id)), ("user_id", Sql::Integer(uid)), ("role", Sql::Text("player".into()))])?;
+            let used = invite.get("uses_count").and_then(|v| v.as_i64()).unwrap_or(0);
+            crate::orm::update(db, "invite_codes", invite.get("id")?.as_i64()?, &[("uses_count", Sql::Integer(used + 1))])?;
+        }
+    }
+    let mut r = redirect("/");
+    if let Some(w) = world {
+        let slug = w.get("slug").and_then(|v| v.as_str())?;
+        if slug.is_empty() || !slug.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')) {
+            return None;
+        }
+        r.headers_mut().append(header::SET_COOKIE, format!("active_world={slug}; Max-Age=31536000; Path=/; SameSite=lax").parse().ok()?);
+    }
+    Some(r)
+}
+
+/// `POST /join/<code>` (app/routers/auth.py `join_submit`): sign up with an invite (or log in with it), then join the world
+fn join_submit(pages: &Pages, db: &rusqlite::Connection, headers: &HeaderMap, body: &[u8], peer: Option<SocketAddr>, code: &str) -> Option<Response<Body>> {
+    use rusqlite::types::Value as Sql;
+    let code = percent_encoding::percent_decode_str(code).decode_utf8().ok()?.to_string();
+    if code.is_empty() || code.contains('/') {
+        return None;
+    }
+    let invite: Option<Map<String, Value>> = db.query_row("SELECT * FROM invite_codes WHERE code = ?1 LIMIT 1", [&code], |r| crate::layout::row_map(r)).ok();
+    let error = crate::share::invite_error(invite.as_ref())?;
+    let world = match &invite {
+        Some(i) => match db.query_row("SELECT * FROM worlds WHERE id = ?1", [i.get("world_id")?.as_i64()?], |r| crate::layout::row_map(r)) {
+            Ok(w) => Value::Object(w),
+            Err(_) => Value::Null,
+        },
+        None => Value::Null,
+    };
+    let join_page = |error: Option<&str>, form_error: Option<String>, status: StatusCode| -> Option<Response<Body>> {
+        let ctx = json!({"code": code, "world": world, "error": error, "form_error": form_error});
+        Some(with_cookie(page(pages, "auth/join.html", ctx, status, headers)?, None))
+    };
+    if !error.is_empty() {
+        return join_page(Some(error), None, StatusCode::BAD_REQUEST);
+    }
+    let invite = invite?;
+    let form = crate::ai::small_form(headers, body)?;
+    let mode = form.get("mode").unwrap_or("signup").to_string();
+    let email = form.get("email").unwrap_or("").trim().to_lowercase();
+    let password = form.get("password").unwrap_or("").to_string();
+    if email.is_empty() || password.is_empty() {
+        return join_page(None, Some("Email and password are required.".into()), StatusCode::BAD_REQUEST);
+    }
+    // a world with a starting layout preset applies it for a new player: Python's, before anything is written
+    if world.get("layout_preset").is_some_and(|v| crate::edits::py_truthy_pub(Some(v))) {
+        return None;
+    }
+    let user = user_by_email(db, &email);
+    let user = if mode == "login" {
+        let key = format!("{}|{email}", ip(peer));
+        let locked = lock_remaining("login", &key);
+        if locked > 0 {
+            return join_page(None, Some(too_many(locked)), StatusCode::TOO_MANY_REQUESTS);
+        }
+        let ok = match &user {
+            Some(u) => verify_password(&password, u.get("password_hash").and_then(|v| v.as_str()).unwrap_or("")),
+            None => {
+                burn();
+                false
+            }
+        };
+        let Some(u) = user.filter(|_| ok) else {
+            record_failure("login", &key);
+            return join_page(None, Some("Incorrect email or password.".into()), StatusCode::BAD_REQUEST);
+        };
+        clear("login", &key);
+        u
+    } else {
+        if user.is_some() {
+            return join_page(None, Some("An account with that email already exists \u{2014} log in instead.".into()), StatusCode::BAD_REQUEST);
+        }
+        if password.chars().count() < 8 {
+            return join_page(None, Some("Password must be at least 8 characters.".into()), StatusCode::BAD_REQUEST);
+        }
+        let display = Some(form.get("display_name").unwrap_or("").trim().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(|| email.split('@').next().unwrap_or("").to_string());
+        let id = crate::orm::insert(db, "users", &[("email", Sql::Text(email.clone())), ("password_hash", Sql::Text(crate::account::hash_password_pub(&password))),
+            ("display_name", Sql::Text(display)), ("is_gm", Sql::Integer(0))])?;
+        db.query_row("SELECT * FROM users WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok()?
+    };
+    let uid = user.get("id")?.as_i64()?;
+    let (mut s, had) = read_session(pages, headers);
+    if crate::edits::py_truthy_pub(user.get("totp_enabled")) && !trusted(db, headers, uid) {
+        s.insert("pending_2fa_user_id".into(), json!(uid));
+        s.insert("pending_2fa_invite_code".into(), json!(code));
+        return Some(with_cookie(redirect("/login/2fa"), session_cookie(pages, &s, had)));
+    }
+    sign_in(db, &mut s, &user);
+    let r = redeem(db, &s, invite)?;
+    Some(with_cookie(r, session_cookie(pages, &s, had)))
 }
 
 fn json_answer(status: StatusCode, v: Value) -> Response<Body> {

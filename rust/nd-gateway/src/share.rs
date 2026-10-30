@@ -133,7 +133,7 @@ pub fn share_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
 }
 
 /// `_invite_error(invite)` for a row: the message, or "" when the link is good (None: stored values Python would compare its own way)
-fn invite_error(invite: Option<&Map<String, Value>>) -> Option<&'static str> {
+pub(crate) fn invite_error(invite: Option<&Map<String, Value>>) -> Option<&'static str> {
     let Some(i) = invite else { return Some("This invite link is invalid.") };
     if py_truthy_pub(i.get("revoked")) {
         return Some("This invite link has been revoked.");

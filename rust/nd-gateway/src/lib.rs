@@ -645,7 +645,8 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::POST && req.uri().path() == "/logout" && app.cfg.rust_routes.iter().any(|r| r == "auth") {
         return crate::idpages::refusal(405);
     }
-    if (matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa") | ("GET", "/account/2fa/setup") | ("POST", "/account/2fa/setup") | ("POST", "/account/name") | ("POST", "/account/tokens/new")))
+    if (matches!((req.method().as_str(), req.uri().path()), ("POST", "/login") | ("POST", "/api/login") | ("GET", "/logout") | ("GET", "/login/2fa") | ("POST", "/login/2fa") | ("GET", "/account/2fa/setup") | ("POST", "/account/2fa/setup") | ("POST", "/account/name") | ("POST", "/account/tokens/new"))
+        || (req.method() == axum::http::Method::POST && req.uri().path().starts_with("/join/")))
         && app.cfg.rust_routes.iter().any(|r| r == "auth") {
         // signing in and out (app/routers/auth.py)
         let (parts, body) = req.into_parts();

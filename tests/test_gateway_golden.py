@@ -8741,3 +8741,97 @@ def test_system_stats_reading_matches_pythons_shape(client, seed):
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     a, b = p.get("/api/system/stats"), _via(p, base).get("/api/system/stats")
     assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_join_with_an_invite_is_pythons(client, seed):
+    """POST /join/<code>: sign-up (display name, the short-password / existing-account / empty-field refusals), log-in mode, links that are used up,
+    revoked, expired or unknown, a signed-up person's session working afterwards, a two-step account redeeming on the way in (/login/2fa), and a GM
+    logging in with an invite (no membership). Python and the gateway each run the same script with their own names; the answers (status, redirect,
+    cookies, the page) and the rows left behind must agree."""
+    import re
+    import pyotp
+    from datetime import datetime, timedelta
+    from app import totp as _totp
+    from app.database import SessionLocal
+    from app.models import InviteCode, User, WorldMembership
+    base = str(client.base_url)
+    w = seed.world_a.id
+
+    def norm(text, tag):
+        return re.sub(r"\s+", " ", text.replace(tag, "T")).strip()
+
+    def cookies_of(r):
+        return sorted(h.split("=", 1)[0] for h in r.headers.get_list("set-cookie"))
+
+    def run(side_name, url_base):
+        tag = side_name
+        c = httpx.Client(base_url=url_base, timeout=60, follow_redirects=False)
+        db = SessionLocal()
+        try:
+            db.add_all([InviteCode(code=f"jn-ok-{tag}", world_id=w), InviteCode(code=f"jn-used-{tag}", world_id=w, max_uses=1, uses_count=1),
+                        InviteCode(code=f"jn-rev-{tag}", world_id=w, revoked=True), InviteCode(code=f"jn-exp-{tag}", world_id=w, expires_at=datetime.utcnow() - timedelta(days=1)),
+                        InviteCode(code=f"jn-two-{tag}", world_id=w, max_uses=5)])
+            secret = _totp.generate_secret()
+            db.add(User(email=f"twofa-{tag}@x.org", password_hash=__import__("app.auth", fromlist=["x"]).hash_password("twofa-password-1"), display_name="Two", is_gm=False,
+                        totp_enabled=True, totp_secret=secret, totp_backup_codes_json="[]"))
+            db.commit()
+        finally:
+            db.close()
+        out = []
+
+        def post(label, code, data, client_=None):
+            r = (client_ or c).post(f"/join/{code}", data=data)
+            out.append((label, r.status_code, r.headers.get("location"), cookies_of(r), norm(r.text, tag)))
+            return r
+
+        ok = f"jn-ok-{tag}"
+        r = post("signup", ok, {"mode": "signup", "email": f" New-{tag}@X.org ", "password": "longenough1", "display_name": " Newbie <b> "})
+        r2 = c.get("/")
+        out.append(("session works", r2.status_code, r2.headers.get("location"), [], ""))
+        post("signup again", ok, {"mode": "signup", "email": f"new-{tag}@x.org", "password": "longenough1"})
+        post("short password", ok, {"mode": "signup", "email": f"short-{tag}@x.org", "password": "short"})
+        post("empty email", ok, {"mode": "signup", "email": "", "password": "longenough1"})
+        post("empty password", ok, {"mode": "signup", "email": f"nopw-{tag}@x.org", "password": ""})
+        post("no display name", ok, {"email": f"plain-{tag}@x.org", "password": "longenough1"})
+        post("login wrong", ok, {"mode": "login", "email": f"new-{tag}@x.org", "password": "nope-nope-1"})
+        post("login unknown", ok, {"mode": "login", "email": f"ghost-{tag}@x.org", "password": "nope-nope-1"})
+        post("login right", ok, {"mode": "login", "email": f"new-{tag}@x.org", "password": "longenough1"})
+        for dead in ("used", "rev", "exp"):
+            post(f"dead {dead}", f"jn-{dead}-{tag}", {"mode": "signup", "email": f"dead-{dead}-{tag}@x.org", "password": "longenough1"})
+        post("unknown", f"nope-{tag}", {"mode": "signup", "email": f"unk-{tag}@x.org", "password": "longenough1"})
+        # a two-step account redeeming on the way in
+        c2 = httpx.Client(base_url=url_base, timeout=60, follow_redirects=False)
+        post("2fa login", f"jn-two-{tag}", {"mode": "login", "email": f"twofa-{tag}@x.org", "password": "twofa-password-1"}, c2)
+        db = SessionLocal()
+        try:
+            secret = db.query(User).filter(User.email == f"twofa-{tag}@x.org").first().totp_secret
+        finally:
+            db.close()
+        r = c2.post("/login/2fa", data={"code": pyotp.TOTP(secret).now()})
+        out.append(("2fa code", r.status_code, r.headers.get("location"), cookies_of(r), norm(r.text, tag)))
+        # a GM logs in with an invite: no membership
+        c3 = httpx.Client(base_url=url_base, timeout=60, follow_redirects=False)
+        post("gm login", f"jn-two-{tag}", {"mode": "login", "email": seed.gm.email, "password": GM_PASSWORD}, c3)
+        db = SessionLocal()
+        try:
+            rows = []
+            for e in (f"new-{tag}@x.org", f"plain-{tag}@x.org", f"short-{tag}@x.org", f"twofa-{tag}@x.org", seed.gm.email):
+                u = db.query(User).filter(User.email == e).first()
+                m = db.query(WorldMembership).filter(WorldMembership.user_id == u.id, WorldMembership.world_id == w).first() if u else None
+                rows.append((e.replace(tag, "T"), bool(u), u.display_name.replace(tag, "T") if u else None, bool(u and u.is_gm), m.role if m else None))
+            for code in ("ok", "used", "two"):
+                rows.append((code, db.query(InviteCode).filter(InviteCode.code == f"jn-{code}-{tag}").first().uses_count))
+        finally:
+            db.close()
+        return out, rows, r.headers.get("x-nd-served-by")
+
+    py_out, py_rows, _ = run("py", DIRECT)
+    gw_out, gw_rows, _ = run("gw", base)
+    assert len(py_out) == len(gw_out)
+    for a, b in zip(py_out, gw_out):
+        assert a == b, (a, b)
+    assert py_rows == gw_rows, (py_rows, gw_rows)
+    assert py_rows[0][1:] == (True, "Newbie <b>", False, "player"), py_rows[0]
+    probe = httpx.Client(base_url=base, timeout=60, follow_redirects=False)
+    r = probe.post("/join/jn-ok-gw", data={"mode": "signup", "email": "served@x.org", "password": "longenough1"})
+    assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway"
