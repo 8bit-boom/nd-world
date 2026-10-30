@@ -3014,7 +3014,12 @@ fn media_rename_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
     if kinds.is_empty() {
         return Some(crate::idpages::refusal(403));
     }
-    let logs = rows_of(&db, "SELECT * FROM media_rename_log WHERE world_id = ?1 ORDER BY id DESC LIMIT 2000", &[&wid])?;
+    crate::edits::json_response(&json!({"batches": media_rename_batches(&db, wid)?}))
+}
+
+/// `recent_batches`: the latest 10 applied rename batches of a world, newest first
+pub(crate) fn media_rename_batches(db: &rusqlite::Connection, wid: i64) -> Option<Vec<Value>> {
+    let logs = rows_of(db, "SELECT * FROM media_rename_log WHERE world_id = ?1 ORDER BY id DESC LIMIT 2000", &[&wid])?;
     // batch id -> (first log, count, all undone, examples), in the order batches first appear
     let mut order: Vec<Value> = vec![];
     let mut batches: Vec<(Value, Map<String, Value>, i64, bool, Vec<Value>)> = vec![];
@@ -3043,7 +3048,7 @@ fn media_rename_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
     let mut out = vec![];
     for (id, first, count, undone, examples) in batches.into_iter().take(10) {
         let by = match first.get("user_id").and_then(|v| v.as_i64()).filter(|u| *u != 0) {
-            Some(uid) => rows_of(&db, "SELECT * FROM users WHERE id = ?1", &[&uid])?.into_iter().next().and_then(|u| {
+            Some(uid) => rows_of(db, "SELECT * FROM users WHERE id = ?1", &[&uid])?.into_iter().next().and_then(|u| {
                 u.get("display_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
                     .or_else(|| u.get("email")?.as_str()?.split('@').next().map(str::to_string))
             }),
@@ -3052,7 +3057,7 @@ fn media_rename_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
         out.push(json!({"batch_id": id, "at": dt_strftime(&first, "at", "%Y-%m-%dT%H:%M:%SZ")?, "count": count, "undone": undone,
             "examples": examples, "by": by.as_deref().unwrap_or("someone")}));
     }
-    crate::edits::json_response(&json!({"batches": out}))
+    Some(out)
 }
 
 /// `GET /api/ai/sessions` (app/routers/ai.py): the active world's saved Chat conversations, newest first. GM only (anyone else: Python's 403).

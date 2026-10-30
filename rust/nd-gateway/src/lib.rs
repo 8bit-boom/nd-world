@@ -414,6 +414,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/media-rename" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::media_rename_page(&pages_, &cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/boards/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         // /boards/<slug>/export stays Python's: board_export.html fills a dict with `.update()`, which MiniJinja's values cannot do

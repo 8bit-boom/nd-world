@@ -58,7 +58,8 @@ them after each batch; the phase is done when both are empty and the steps below
   world, so a GM reaches any world's board; a missing board is its 404, a player without the edit tier its 403. A player outside the board's
   world is still Python's (a Python-free install with a key needs the Studio client ported - the main item left in the AI group).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
-  anything configured needs `studio_browser_url`'s host rewriting and stays Python's..
+  anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
+- **Media rename page** (pages.rs, lib.rs): `GET /media-rename[?kind=&album=]` with the start kind, style presets, `ai_ready` and the last 10 batches..
 - **Join page** (`GET /join/<code>`, share.rs `join_form`): the sign-up form for a good invite and the reason for a bad one (invalid, revoked,
   expired, used up). A signed-in browser with a good link is redeemed by Python; the POST (accounts, passwords, 2FA) stays Python's.
 - **Schema heal on boot** (startup.rs `heal_schema`, only with `ND_PYTHON_FREE=1` - next to a Python app both would run DDL against the file at boot and race; found when an aborted test run left a table-less shard database): for a database that already exists, the gateway now does the additive part of Python's

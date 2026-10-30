@@ -26,7 +26,7 @@ const CHUNK: usize = 6;
 const CHUNK_WITH_PICTURES: usize = 3;
 pub const RUN_INTERRUPTED_NOTE: &str = "Paused by a server restart - it picks up from the last saved chunk.";
 
-const STYLE_PRESETS: [(&str, &str); 5] = [
+pub(crate) const STYLE_PRESETS: [(&str, &str); 5] = [
     ("descriptive", "Plain, descriptive names: say what the thing is or shows, in Title Case."),
     ("short", "Keep names very short: two to four words."),
     ("lore", "Names that read as part of the setting - use the world's own places, people and tone when the clues support it."),

@@ -1132,6 +1132,46 @@ pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     render_with(pages, "quests/list.html", p.ctx, headers)
 }
 
+/// `GET /media-rename[?kind=&album=]` (app/routers/media_rename.py `media_rename_page`): the AI renamer's page for a viewer who may edit
+/// audio, video or images. No world, or nothing to edit, is Python's 404 / 403.
+pub fn media_rename_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let w = p.world.clone()?;
+    let wid = w.get("id")?.as_i64()?;
+    let mut editable = vec![];
+    for (kind, section) in [("audio", "audio"), ("video", "video"), ("image", "images")] {
+        if edit_level(&p, &w, section)? {
+            editable.push(kind);
+        }
+    }
+    let first = *editable.first()?;
+    let kind = query_param(uri, "kind");
+    let album = match query_param(uri, "album").unwrap_or_default().as_str() {
+        "" => 0,
+        t => match crate::form::py_int(t) {
+            Some(n) => n,
+            None if t.bytes().all(|c| c.is_ascii_alphabetic() || c == b'.') => 0,
+            None => return None,
+        },
+    };
+    let kind = match kind.as_deref() {
+        Some(k) if editable.contains(&k) => k.to_string(),
+        _ => first.to_string(),
+    };
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    let presets: Map<String, Value> = crate::media_rename::STYLE_PRESETS.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+    let mut ctx = p.ctx;
+    ctx.insert("start".into(), json!({"kind": kind, "album": album, "kinds": editable}));
+    ctx.insert("presets".into(), Value::Object(presets));
+    ctx.insert("ai_ready".into(), json!(key.is_some()));
+    ctx.insert("history".into(), Value::Array(crate::apis::media_rename_batches(&db, wid)?));
+    render_with(pages, "media_rename/index.html", ctx, headers)
+}
+
 pub(crate) fn edit_level(p: &crate::layout::PageCtx, world: &serde_json::Map<String, serde_json::Value>, section: &str) -> Option<bool> {
     if p.is_gm {
         return Some(true);

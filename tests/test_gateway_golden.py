@@ -8288,3 +8288,31 @@ def test_studio_console_page_without_a_studio_is_pythons(client, seed):
             f.unlink(missing_ok=True)
         else:
             f.write_bytes(was)
+
+
+def test_media_rename_page_is_pythons(client, seed):
+    """GET /media-rename[?kind=&album=]: the renamer's page with some history, for the GM (each kind, a bad kind, an album, a word for the album) and
+    for a player, whose default read-only sections are Python's 403."""
+    from datetime import datetime
+    from app.database import SessionLocal
+    from app.models import MediaRenameLog
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        db.add_all([MediaRenameLog(world_id=seed.world_a.id, batch_id="pg1", kind="audio", ref_id=1, old_name="IMG_1", new_name="Door <Creak>", user_id=seed.gm.id,
+                                   created_at=datetime(2026, 6, 1, 9, 30, 0)),
+                    MediaRenameLog(world_id=seed.world_a.id, batch_id="pg2", kind="image", ref_url="/uploads/a.png", old_name="", new_name="Map", user_id=None,
+                                   created_at=datetime(2026, 6, 2, 9, 30, 0), undone_at=datetime(2026, 6, 3, 9, 30, 0))])
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    for url in ("/media-rename", "/media-rename?kind=video", "/media-rename?kind=image&album=3", "/media-rename?kind=nope", "/media-rename?album=abc"):
+        assert _same_page(d, v, url, "gm"), url
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    _same_page(p, _via(p, base), "/media-rename", "player")
+    nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nogm.cookies.set("active_world", "no-such-world")
+    _same_page(nogm, _via(nogm, base), "/media-rename", "no world")
