@@ -86,10 +86,10 @@ accumulated; delete tests/_data/shard*/forwarded.log before the next full run fo
 | Step | State |
 |---|---|
 | 1. Authentication (login, 2FA, sign-out, sessions) | done; 2FA setup page and confirm done; password change / 2FA disable / backup-code regenerate wait for the switch (below) |
-| 2. Busiest Python-only routes | in progress (see "Left" below) |
+| 2. Busiest Python-only routes | nearly done: the census lists refusals and edge cases of otherwise-ported routes, plus the items under "Left" |
 | 3. Mixed routes: refusals / edge cases | started: character quick-edits, party stash (incl. give), saved views, conditions, currency |
-| 4. Migrations, DB healing, seeding, background loops | not started |
-| 5. Dockerfile without Python | not started |
+| 4. Migrations, DB healing, seeding, background loops | done in the gateway: boot / heal / seed (startup.rs), job sweeps and adoption, db_upkeep, backups, fan control; left: static-thumbnail warming, preview-format and thumbnail remakes (build-time in the Python-free image), the diagnostics journal |
+| 5. Dockerfile without Python | `Dockerfile.gateway` written (unbuilt here: no Docker daemon); `scripts/python_free_crawl.sh` boots the gateway alone and lists the routes that answer 501 |
 
 Ported in the latest batches (details in `RUST_SWITCH_OFF.md`): settings page, session planner, character hub tabs (quests, world,
 now, schedule, log, notes, keepsakes, places, handouts), uploads access, party pages (incl. the Rest undo), calendar search,
