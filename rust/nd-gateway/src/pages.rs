@@ -229,6 +229,12 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/display", template: "display.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[], extra: None },
     Simple { path: "/handouts", template: "handouts_gallery.html", section: None, needs_world: false, gm_only: false, edit: false,
              lists: &[("entities", "SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name, id")], extra: None },
+    Simple { path: "/characters/templates/ai-new", template: "characters/template_ai.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[],
+             extra: Some(|_, c| {
+                 let has = c.get("world").and_then(|w| w.get("rules_md")).and_then(|v| v.as_str()).map(|t| !nd_render::text::py_strip(t).is_empty()).unwrap_or(false);
+                 c.insert("has_world_rules".into(), serde_json::json!(has));
+                 Some(())
+             }) },
     Simple { path: "/studio", template: "studio_console.html", section: None, needs_world: true, gm_only: true, edit: false, lists: &[], extra: Some(studio_console) },
     Simple { path: "/dreamlands", template: "dreamlands.html", section: Some("dreamlands"), needs_world: false, gm_only: false, edit: false, lists: &[],
              extra: Some(|db, c| feature_flag(db, c, "dreamlands_enabled", "Dreamlands", "\u{1F319}")) },

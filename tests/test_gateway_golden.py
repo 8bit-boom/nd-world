@@ -767,7 +767,7 @@ def test_calendar_month_the_gateway_builds_is_pythons(client, seed):
 
 SIMPLE_FORM_URLS = ("/professions/new", "/races/new", "/boards/new", "/characters/templates/new", "/maps/schematic/new",
                     "/entity-templates/new", "/tables/new", "/display", "/handouts", "/dreamlands", "/king-in-yellow", "/sessions/new",
-                    "/quests/new", "/editor", "/entity-templates", "/characters/templates", "/worlds", "/export", "/maps/new")
+                    "/quests/new", "/editor", "/entity-templates", "/characters/templates", "/worlds", "/export", "/maps/new", "/characters/templates/ai-new")
 
 
 def _same_page(d, via, url, who):
@@ -801,6 +801,7 @@ def test_simple_form_pages_the_gateway_builds_are_pythons(client, seed):
                     EntityTemplate(world_id=None, name="Blank", slug="gw-blank", fields_json="")])
         wa = db.query(World).filter(World.id == w).first()
         wa.custom_kinds_json = json.dumps([{"id": "custom_ship", "label": "Ship", "icon": "⛵", "subtypes": ["sloop"]}])
+        wa.rules_md = "House rules"
         db.commit()
     finally:
         db.close()

@@ -57,6 +57,7 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Board save / delete refusals** (edits.rs `editable_board`): Python looks the board up by slug alone and checks edit rights in the board's own
   world, so a GM reaches any world's board; a missing board is its 404, a player without the edit tier its 403. A player outside the board's
   world is still Python's (a Python-free install with a key needs the Studio client ported - the main item left in the AI group).
+- **AI sheet-template page** (pages.rs): `GET /characters/templates/ai-new` (GM; `has_world_rules` from the world's rules text).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
   anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
 - **Chat helpers** (apis.rs): `GET /api/ai/context-info` (the configured `num_ctx` or 4,096, and the auto-sizing ceiling) and `GET /api/ai/ping` (the SSE smoke test;
