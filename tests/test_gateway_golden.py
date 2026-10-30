@@ -9486,3 +9486,49 @@ def test_home_dashboard_refusals_are_pythons(client, seed):
         assert v.post(f"/api/worlds/{wid}/home/pinned-tile", json={"label": "T", "target_type": "url", "target_ref": "/x"}).text == '{"detail":"Dashboard is full"}'
     finally:
         put(*saved)
+
+
+def test_world_edit_page_and_upload_login_redirect_are_pythons(client, seed):
+    """GET /worlds/<id>/edit: the settings form with invites (active, revoked, used up, expiring), members and AI instruction files, the same page from both
+    servers for the GM; a missing world the 404; and GET /uploads/... without a session sent to the sign-in page by both."""
+    from datetime import datetime, timedelta
+    from app.database import SessionLocal
+    from app.models import AiInstruction, InviteCode
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    tag = os.urandom(3).hex()
+    db = SessionLocal()
+    try:
+        rows = [InviteCode(code=f"we-{tag}-a", world_id=w, created_by_id=seed.gm.id, max_uses=3, uses_count=1),
+                InviteCode(code=f"we-{tag}-b", world_id=w, created_by_id=seed.gm.id, revoked=True, expires_at=datetime.utcnow() + timedelta(days=3)),
+                InviteCode(code=f"we-{tag}-c", world_id=w, created_by_id=seed.gm.id, max_uses=2, uses_count=2),
+                AiInstruction(world_id=w, title=f"Voice <{tag}>", content="Be terse.", enabled=True)]
+        db.add_all(rows)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    try:
+        served = 0
+        for email, pw, world in ((seed.gm.email, GM_PASSWORD, seed.world_a.slug), (seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)):
+            d = _signed_in(email, pw, world)
+            v = _via(d, base)
+            for url in (f"/worlds/{w}/edit", f"/worlds/{seed.world_b.id}/edit", "/worlds/999999/edit"):
+                served += _same_page(d, v, url, email)
+        assert served >= 2
+        anon_py, anon_gw = httpx.Client(base_url=DIRECT), httpx.Client(base_url=base)
+        for url in ("/uploads/nowhere.png", "/uploads/a/b.webp"):
+            a, b = anon_py.get(url, follow_redirects=False), anon_gw.get(url, follow_redirects=False)
+            assert (a.status_code, a.headers.get("location")) == (b.status_code, b.headers.get("location")) == (303, f"/login?next={url}")
+            assert b.headers.get("x-nd-served-by") == "gateway"
+    finally:
+        db = SessionLocal()
+        try:
+            db.query(InviteCode).filter(InviteCode.code.like(f"we-{tag}-%")).delete(synchronize_session=False)
+            db.query(AiInstruction).filter(AiInstruction.title.like(f"%{tag}%")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()

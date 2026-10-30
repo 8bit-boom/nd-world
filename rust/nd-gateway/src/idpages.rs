@@ -23,6 +23,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/entity-templates/", "/edit", entity_template_edit),
     ("/characters/templates/", "/edit", sheet_template_edit),
     ("/display/combat/", "", display_combat),
+    ("/worlds/", "/edit", world_edit_page),
     ("/worlds/", "/kinds/edit", kinds_edit),
     ("/worlds/", "/rules/edit", rules_edit),
     ("/pages/", "", page_viewer),
@@ -169,6 +170,62 @@ pub(crate) fn load_custom_kinds(world: &Map<String, Value>) -> Vec<Value> {
                         "created_at": truthy(e.get("created_at")).unwrap_or(json!(""))}));
     }
     out
+}
+
+/// `GET /worlds/<id>/edit` (app/main.py `world_edit_form`): the settings form with the world's invites, members and AI instruction files
+fn world_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(w) = row(db, "SELECT * FROM worlds WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let out = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(out)
+    };
+    let invites = rows("SELECT * FROM invite_codes WHERE world_id = ?1 ORDER BY created_at DESC")?;
+    let instructions = rows("SELECT * FROM ai_instructions WHERE world_id = ?1 ORDER BY created_at")?;
+    // (membership, user) pairs, by the person's name
+    let mut st = db.prepare("SELECT m.*, u.* FROM world_memberships m JOIN users u ON u.id = m.user_id WHERE m.world_id = ?1 ORDER BY u.display_name").ok()?;
+    let ncols = db.prepare("SELECT * FROM world_memberships LIMIT 0").ok()?.column_count();
+    let members: Vec<Value> = st.query_map([id], |r| {
+        let (mut m, mut u) = (Map::new(), Map::new());
+        let stmt = r.as_ref();
+        let all = crate::layout::row_map(r)?;
+        let names: Vec<String> = (0..stmt.column_count()).filter_map(|i| stmt.column_name(i).ok().map(str::to_string)).collect();
+        for (i, name) in names.iter().enumerate() {
+            // row_map keeps one value per column name: the join repeats `id`, so read each side by position
+            let v = match r.get_ref(i)? {
+                rusqlite::types::ValueRef::Null => Value::Null,
+                rusqlite::types::ValueRef::Integer(n) => json!(n),
+                rusqlite::types::ValueRef::Real(f) => json!(f),
+                rusqlite::types::ValueRef::Text(t) if stmt.columns()[i].decl_type().map_or(false, |d| d.eq_ignore_ascii_case("DATETIME")) => json!({"__dt__": String::from_utf8_lossy(t)}),
+                rusqlite::types::ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).into_owned()),
+                rusqlite::types::ValueRef::Blob(_) => Value::Null,
+            };
+            if i < ncols { m.insert(name.clone(), v); } else { u.insert(name.clone(), v); }
+        }
+        let _ = all;
+        Ok(json!([Value::Object(m), Value::Object(u)]))
+    }).ok()?.collect::<Result<_, _>>().ok()?;
+    p.ctx.insert("edit_world".into(), Value::Object(w));
+    p.ctx.insert("invites".into(), json!(invites));
+    p.ctx.insert("members".into(), Value::Array(members));
+    p.ctx.insert("ai_instructions".into(), json!(instructions));
+    p.ctx.insert("viewer_is_gm".into(), json!(p.is_gm));
+    p.ctx.insert("max_characters_cap".into(), json!(20));
+    // the context processor's theme picker values (app/templating.py): the presets in Python's order and the picker's two groups
+    let d = nd_render::app::data();
+    let mut presets = Map::new();
+    for pair in d.get("theme_presets_full")?.as_array()? {
+        let (k, items) = (pair.get(0)?.as_str()?, pair.get(1)?.as_array()?);
+        let mut m = Map::new();
+        for kv in items {
+            m.insert(kv.get(0)?.as_str()?.to_string(), kv.get(1)?.clone());
+        }
+        presets.insert(k.to_string(), Value::Object(m));
+    }
+    p.ctx.insert("theme_presets".into(), Value::Object(presets));
+    p.ctx.insert("genre_preset_keys".into(), d.get("genre_preset_keys")?.clone());
+    p.ctx.insert("game_preset_keys".into(), d.get("game_preset_keys")?.clone());
+    render_with(pages, "world_edit.html", p.ctx, headers)
 }
 
 /// `GET /worlds/<id>/kinds/edit` (app/routers/kinds_admin.py `kinds_edit_form`)

@@ -277,10 +277,13 @@ pub fn seed_bundled_maps(cfg: &Config) {
 }
 
 pub fn init_db(cfg: &Config) {
-    if crate::config::python_free() {
-        crate::restore::apply_staged(cfg);
-    }
     seed_bundled_maps(cfg);
+    if !crate::config::python_free() {
+        // next to the Python app its own boot makes (and heals) the schema; two processes running DDL against one new file at the same time
+        // end in "database is locked" for one of them
+        return;
+    }
+    crate::restore::apply_staged(cfg);
     if !needs_boot(cfg) {
         // the additive schema heal is for a container with no Python in it (ND_PYTHON_FREE=1): next to a Python app both would run DDL against
         // the same file at boot, and Python's own create_all / _migrate already does this work

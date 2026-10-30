@@ -112,7 +112,7 @@ async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
         }
     }
     // auth_gate: the refusals no route is reached for (sign in first, an expired session, a path this role may not use)
-    let gated = app.cfg.rust_routes.iter().any(|r| r == "auth") && !p.starts_with("/static/") && !p.starts_with("/uploads/")
+    let gated = app.cfg.rust_routes.iter().any(|r| r == "auth") && !p.starts_with("/static/")
         && !p.starts_with("/__") && p != "/mcp" && !p.starts_with("/mcp/");
     let refused = if gated {
         let (pages, cfg, method, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.method().to_string(), req.uri().clone(), req.headers().clone());

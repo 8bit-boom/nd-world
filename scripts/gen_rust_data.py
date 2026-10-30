@@ -69,6 +69,9 @@ def column_defaults() -> dict:
     return out
 
 
+from app.theme_presets import GAME_PRESET_KEYS as GAME_PRESET_KEYS_ALL, GENRE_PRESET_KEYS as GENRE_PRESET_KEYS_ALL, THEME_PRESETS as THEME_PRESETS_ALL  # noqa: E402
+
+
 def theme_presets_clean() -> list:
     from app.main import THEME_PRESETS, _sanitize_theme
     return [[k, list(_sanitize_theme(v).items())] for k, v in THEME_PRESETS.items()]
@@ -186,6 +189,9 @@ def make() -> dict:
         "view_presets_text": json.dumps(view_prefs.PRESETS), "view_titles": view_prefs.SECTION_TITLES,
         # the built-in world themes as /worlds/<id>/theme/preset stores them (_sanitize_theme already applied), key order kept as pairs
         "theme_presets_clean": theme_presets_clean(),
+        # the same presets as the theme picker lists them (as defined, key order kept as pairs) and the picker's two groups
+        "theme_presets_full": [[k, list(v.items())] for k, v in THEME_PRESETS_ALL.items()],
+        "genre_preset_keys": list(GENRE_PRESET_KEYS_ALL), "game_preset_keys": list(GAME_PRESET_KEYS_ALL),
         "column_defaults": column_defaults(),
         # a list of pairs, not a dict: the file is written with sorted keys and the ruleset menu keeps Python's order
         "quest_statuses": quests.STATUSES, "quest_categories": quests.CATEGORIES,
