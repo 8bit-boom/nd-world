@@ -393,6 +393,30 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
     })
     .await
     .ok()??;
+    if path == "/api/ai/debug" {
+        // `debug_info()` when Studio answers both probes; the failure texts are the HTTP library's, so they stay Python's
+        let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;
+        let (status, body) = crate::studio_key::studio_get(uri, &b.key).await.ok()?;
+        if status >= 400 || !crate::edits::plain_numbers(&body) {
+            return None;
+        }
+        let Value::Object(o) = serde_json::from_slice::<Value>(&body).ok()? else { return None };
+        let mut ids = vec![];
+        if let Some(Value::Array(a)) = o.get("data") {
+            for m in a {
+                match m.as_object().and_then(|m| m.get("id")) {
+                    Some(Value::String(id)) if !id.is_empty() => ids.push(json!(id)),
+                    Some(v) if py_truthy(Some(v)) => return None,
+                    _ => {}
+                }
+            }
+        } else if o.get("data").is_some_and(|d| py_truthy(Some(d))) {
+            return None;
+        }
+        get(&b, "/api/hub/cached-gguf", &[]).await.ok()?;
+        return ok(&json!({"ollama_url": base_url(&b), "ollama_reachable": true, "backend": "unsloth", "loaded_models": ids, "default_model": b.model,
+            "stt": {"ok": true, "backend": "unsloth", "url": base_url(&b)}}));
+    }
     let listed = v1_models(&b).await?;
     if path == "/api/ai/resident" {
         let models: Vec<Value> = listed.iter().filter(|m| m.1)

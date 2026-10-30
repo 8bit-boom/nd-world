@@ -8621,7 +8621,8 @@ def test_ai_model_catalogue_and_resident_on_studio_are_pythons(client, seed):
         assert side.post("/settings/system", data=data, follow_redirects=False).status_code == 303
 
     tables = [
-        {"/v1/models": (200, {"data": [{"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "loaded": True}, {"id": "Other/Model", "loaded": False}, {"id": "my/custom", "loaded": True}]})},
+        {"/v1/models": (200, {"data": [{"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "loaded": True}, {"id": "Other/Model", "loaded": False}, {"id": "my/custom", "loaded": True}]}),
+         "/api/hub/cached-gguf": (200, {"cached": []})},
         {"/v1/models": (200, {"data": []})},
         {"/v1/models": (500, {"detail": "down"})},
         {"/v1/models": (200, {"data": "junk"})},
@@ -8640,7 +8641,7 @@ def test_ai_model_catalogue_and_resident_on_studio_are_pythons(client, seed):
                 f.write_text(body, encoding="utf-8")
             for table in tables:
                 studio.routes = table
-                for url in ("/api/ai/models", "/api/ai/resident"):
+                for url in ("/api/ai/models", "/api/ai/resident", "/api/ai/debug"):
                     a, b = d.get(url), v.get(url)
                     assert (a.status_code, a.content) == (b.status_code, b.content), (body, table, url, a.text[:300], b.text[:300])
                     served += b.headers.get("x-nd-served-by") == "gateway"

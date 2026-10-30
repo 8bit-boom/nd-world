@@ -621,7 +621,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/api/ai/models" | "/api/ai/resident") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/api/ai/models" | "/api/ai/resident" | "/api/ai/debug") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // the model catalogue and what is resident, on a Studio back end
         if let Some(resp) = studio::ai_models_route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
