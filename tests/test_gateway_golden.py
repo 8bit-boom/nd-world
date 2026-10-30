@@ -8835,3 +8835,68 @@ def test_join_with_an_invite_is_pythons(client, seed):
     probe = httpx.Client(base_url=base, timeout=60, follow_redirects=False)
     r = probe.post("/join/jn-ok-gw", data={"mode": "signup", "email": "served@x.org", "password": "longenough1"})
     assert r.status_code == 303 and r.headers.get("x-nd-served-by") == "gateway"
+
+
+def test_map_overlay_save_is_pythons(client, seed):
+    """POST /api/maps/<slug>/overlay: markers and regions saved (new row, then an update), the stored JSON text byte for byte (non-ASCII, floats,
+    nested), the list / size refusals, a missing or other world's map, and who may edit maps; Python saves one twin map, the gateway the other."""
+    from app.database import SessionLocal
+    from app.models import MapOverlay, WorldMembership
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    maps = Path(os.environ["DB_PATH"]).parent / "maps"
+    maps.mkdir(parents=True, exist_ok=True)
+    slugs = {"py": "ov-py-map", "gw": "ov-gw-map", "other": "ov-other-world"}
+    for tag, slug in slugs.items():
+        (maps / f"{slug}.json").write_text(json.dumps({"world_id": seed.world_b.id if tag == "other" else w, "name": slug}), encoding="utf-8")
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def stored(slug):
+        db = SessionLocal()
+        try:
+            o = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
+            return (o.custom_markers_json, o.custom_regions_json) if o else None
+        finally:
+            db.close()
+
+    payloads = [
+        {"custom_markers": [{"x": 1.5, "y": -2, "label": "Café — \"quoted\"", "tags": ["a", {"b": None}], "big": 1e21, "ok": True}], "custom_regions": [{"points": [[0, 0], [1, 1]]}]},
+        {"custom_markers": [], "custom_regions": []},
+        {"custom_markers": [{"x": 3}]},
+        {},
+    ]
+    served = 0
+    try:
+        for payload in payloads:
+            outs = []
+            for side, tag in ((d, "py"), (v, "gw")):
+                r = side.post(f"/api/maps/{slugs[tag]}/overlay", json=payload)
+                outs.append((r.status_code, r.content, stored(slugs[tag]), r.headers.get("x-nd-served-by")))
+            assert outs[0][:3] == outs[1][:3], (payload, outs[0][:3], outs[1][:3])
+            served += outs[1][3] == "gateway"
+        # refusals: not lists, too many, junk bodies (Python's 500 is declined), a map of another world, a missing one
+        for body in ({"custom_markers": {"a": 1}}, {"custom_markers": [], "custom_regions": "x"}, {"custom_markers": None}, {"custom_markers": [0] * 501},
+                     {"custom_regions": [0] * 501}, {"custom_markers": [0] * 500}):
+            outs = []
+            for side, tag in ((d, "py"), (v, "gw")):
+                r = side.post(f"/api/maps/{slugs[tag]}/overlay", json=body)
+                outs.append((r.status_code, r.content, stored(slugs[tag])))
+            assert outs[0] == outs[1], (str(body)[:60], outs[0][:2], outs[1][:2])
+        for raw in (b"not json", b"[1]", b'"s"', b""):
+            outs = []
+            for side, tag in ((d, "py"), (v, "gw")):
+                r = side.post(f"/api/maps/{slugs[tag]}/overlay", content=raw, headers={"Content-Type": "application/json"})
+                outs.append((r.status_code, r.content))
+            assert outs[0] == outs[1], (raw, outs)
+        for slug in (slugs["other"], "ov-no-such-map"):
+            a, b = d.post(f"/api/maps/{slug}/overlay", json={}), v.post(f"/api/maps/{slug}/overlay", json={})
+            assert (a.status_code, a.content) == (b.status_code, b.content), slug
+        p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        a, b = p.post(f"/api/maps/{slugs['py']}/overlay", json={}), _via(p, base).post(f"/api/maps/{slugs['py']}/overlay", json={})
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+    finally:
+        for slug in slugs.values():
+            (maps / f"{slug}.json").unlink(missing_ok=True)
+    assert served >= 3, served

@@ -496,7 +496,8 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
     ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
-    ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete)];
+    ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete),
+    ("/api/maps/", "/overlay", map_overlay_save)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
     // /api/sessions/<id>/media/image/<uid>/<visibility|rename|remove>: the handler reads the session id and uid back from the path
@@ -8280,6 +8281,34 @@ fn own_map(c: &Ctx, slug: &str) -> Option<(std::path::PathBuf, Map<String, Value
         return None;
     }
     Some((jf, data))
+}
+
+/// `POST /api/maps/<slug>/overlay` (app/main.py `save_map_overlay`): the GM's own markers and regions on an image map, each list at most 500 long.
+/// A body Python cannot read is its 500 (not ours); a map that is not this world's, or no edit right on maps, is Python's 404 / 403.
+fn map_overlay_save(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    own_map(c, slug)?;
+    if !plain_numbers(c.body) {
+        return None;
+    }
+    let Value::Object(body) = c.json_value()? else { return None };
+    let list = |k: &str| body.get(k).cloned().unwrap_or_else(|| json!([]));
+    let (Value::Array(markers), Value::Array(regions)) = (list("custom_markers"), list("custom_regions")) else {
+        return Some(bad400("custom_markers and custom_regions must be lists"));
+    };
+    if markers.len() > 500 || regions.len() > 500 {
+        return Some(bad400("Too many markers/regions \u{2014} limit is 500 each"));
+    }
+    let (m_text, r_text) = (nd_render::py_dumps(&Value::Array(markers)), nd_render::py_dumps(&Value::Array(regions)));
+    let existing: Option<i64> = c.db.query_row("SELECT id FROM map_overlays WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| r.get(0)).ok();
+    match existing {
+        Some(id) => {
+            orm::update(&c.db, "map_overlays", id, &[("custom_markers_json", s(&m_text)), ("custom_regions_json", s(&r_text))])?;
+        }
+        None => {
+            orm::insert(&c.db, "map_overlays", &[("slug", s(slug)), ("custom_markers_json", s(&m_text)), ("custom_regions_json", s(&r_text))])?;
+        }
+    }
+    json_response(&json!({"ok": true}))
 }
 
 fn map_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
