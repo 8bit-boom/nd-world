@@ -153,7 +153,7 @@ tests' odd inputs) plus real gaps:
 - `GET /api/ai/models` / `resident` / the Studio routes are done for a Studio back end (studio.rs); the legacy Ollama back end (no Studio key) stays Python's.
 - The Python-free crawl (`scripts/python_free_crawl.sh`, 179 parameterless GET routes) still lists ~50 routes that need Python: the Studio / SwarmUI
   back-end passthroughs (`/api/ai/unsloth/*` with a key, `/api/ai/imagegen/*` with a back end, `/api/ai/models|hardware|resident|debug|test-chat`,
-  `/api/ai/ollama/hf-*`), `/api/orgs/graph` (float layout + keyword scan), `/export/foundry.json` (markdown per entity), `/api/kiy/inspirations`
+  `/api/ai/ollama/hf-*`), `/export/foundry.json` (markdown per entity), `/api/kiy/inspirations`
   (public web fetches), `/api/system/stats` and `/api/perf/*` (Python's own process), and FastAPI's `/docs`, `/redoc`, `/openapi.json`.
   The Studio client (`app/unsloth_extras.py`) is the biggest single item: port it and most of the first group follows.
 - `/api/ai/whisper/*` are probes of routes that do not exist (Python's 404 / 405).

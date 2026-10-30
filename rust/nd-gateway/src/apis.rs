@@ -29,9 +29,10 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
+        "/api/orgs/graph" => orgs_graph(&cfg, uri, headers),
         "/api/ai/context-info" => ai_context_info(&cfg, uri, headers),
         "/api/ai/ping" => ai_ping(&cfg, uri, headers),
-        "/api/ai/imagegen/status" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models"
+        "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models"
         | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" => imagegen_unbacked(&cfg, uri, headers),
         "/api/ai/imagegen/starred" => imagegen_starred(&cfg, uri, headers),
         "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status"
@@ -112,7 +113,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -3187,6 +3188,7 @@ fn imagegen_unbacked(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
     let path = uri.path().trim_start_matches("/api/ai/imagegen/");
     let body = match path {
         "status" if !configured => json!({"ok": false, "reason": "not configured"}),
+        "models" if !configured => json!({"models": []}),
         "loras" if !configured || studio => json!({"loras": []}),
         "upscalers" if !configured || studio => json!({"upscalers": []}),
         "refiners" if !configured || studio => json!({"refiners": []}),
@@ -3250,6 +3252,144 @@ fn ai_ping(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body
     body.push_str("data: [DONE]\n\n");
     Response::builder().status(axum::http::StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8")
         .header("x-accel-buffering", "no").header("cache-control", "no-cache").header("x-nd-served-by", "gateway").body(Body::from(body)).ok()
+}
+
+/// `str.lower()` where it is certain: ASCII, and non-ASCII characters that are not upper case (they lower to themselves)
+fn lower_safe(s: &str) -> Option<String> {
+    if s.chars().any(|c| !c.is_ascii() && c.is_uppercase()) {
+        return None;
+    }
+    Some(s.to_ascii_lowercase())
+}
+
+/// Python's `needle in hay` / `hay.find(needle)` over characters: the character index of the first match
+fn find_chars(hay: &[char], needle: &[char]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()] == *needle)
+}
+
+/// `GET /api/orgs/graph` (app/routers/boards_generate.py `_build_faction_graph`): the faction relationship graph - organizations laid out in
+/// clusters by subtype, an edge for each stored link and for each organization named in another's text, its kind read from the words around
+/// the mention. The GM's full graph; what a player or assistant may see needs the visibility filter, which is Python's.
+fn orgs_graph(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let wid = world_id_of(&p).unwrap_or(1);
+    let orgs = rows_of(&db, "SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('organization') ORDER BY subtype, name", &[&wid])?;
+    if orgs.is_empty() {
+        return crate::edits::json_response(&json!({"nodes": [], "edges": []}));
+    }
+    let text = |e: &Map<String, Value>, k: &str| -> Option<String> {
+        match e.get(k) {
+            None | Some(Value::Null) => Some(String::new()),
+            Some(Value::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    // clusters by subtype (else kind), in the order they first appear
+    let mut clusters: Vec<(String, Vec<&Map<String, Value>>)> = vec![];
+    for e in &orgs {
+        let sub = text(e, "subtype")?;
+        let key = lower_safe(if sub.is_empty() { text(e, "kind")? } else { sub }.as_str().to_string().as_str()).or(None)?;
+        let key = if key.is_empty() { "other".to_string() } else { key };
+        match clusters.iter_mut().find(|c| c.0 == key) {
+            Some(c) => c.1.push(e),
+            None => clusters.push((key, vec![e])),
+        }
+    }
+    let colors: [(&str, &str); 11] = [("megacorp", "#00f0ff"), ("corporation", "#00f0ff"), ("government", "#3b82f6"), ("syndicate", "#ff2d78"), ("cult", "#a78bfa"),
+        ("religion", "#a78bfa"), ("culture", "#22c55e"), ("gang", "#f97316"), ("secret society", "#8b0000"), ("ai entity", "#e879f9"), ("family", "#fbbf24")];
+    let (cx, cy, cluster_r) = (1400.0_f64, 900.0_f64, 700.0_f64);
+    let mut node_ids: Vec<(i64, String)> = vec![];
+    let mut nodes = vec![];
+    let n_clusters = clusters.len();
+    for (ci, (key, members)) in clusters.iter().enumerate() {
+        let angle = (2.0 * std::f64::consts::PI * ci as f64 / n_clusters as f64) - std::f64::consts::PI / 2.0;
+        let ccx = cx + cluster_r * angle.cos();
+        let ccy = cy + cluster_r * angle.sin();
+        let inner_r = ((30 * members.len()).min(180)).max(80) as f64;
+        let color = colors.iter().find(|c| c.0 == key).map(|c| c.1).unwrap_or("#6b7280");
+        for (ni, e) in members.iter().enumerate() {
+            let nangle = 2.0 * std::f64::consts::PI * ni as f64 / members.len().max(1) as f64;
+            let nx = ccx + inner_r * nangle.cos();
+            let ny = ccy + inner_r * nangle.sin();
+            let id = e.get("id")?.as_i64()?;
+            let nid = format!("fn-{id}");
+            node_ids.push((id, nid.clone()));
+            let or_empty = |k: &str| -> Option<Value> { Some(if py_truthy_text(e.get(k)) { e.get(k).cloned()? } else { json!("") }) };
+            nodes.push(json!({"id": nid, "type": "faction", "title": e.get("name"), "body": or_empty("summary")?, "color": color, "image_url": or_empty("image_url")?,
+                "entity_id": id, "status": "", "tags": or_empty("tags")?, "x": nx.round_ties_even() as i64, "y": ny.round_ties_even() as i64}));
+        }
+    }
+    let node_of = |id: i64| node_ids.iter().find(|n| n.0 == id).map(|n| n.1.clone());
+    // stored links between organizations (table order)
+    let in_list = node_ids.iter().map(|n| n.0.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = db.prepare(&format!("SELECT source_id, target_id FROM entity_links WHERE source_id IN ({in_list}) AND target_id IN ({in_list})")).ok()?;
+    let links: Vec<(i64, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    let mut edges = vec![];
+    let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    for (src, tgt) in links {
+        let pair = (src.min(tgt), src.max(tgt));
+        if !seen.insert(pair) {
+            continue;
+        }
+        edges.push(json!({"id": format!("fe-{src}-{tgt}"), "from": node_of(src)?, "to": node_of(tgt)?, "label": "", "color": "#6b7280", "style": "solid", "kind": "link", "direction": "fwd"}));
+    }
+    // organizations named in another's text
+    let relation_keywords: [(&str, &[&str]); 5] = [
+        ("allies", &["allied", "allies", "alliance", "partner", "coalition", "cooperat", "friend"]),
+        ("enemies", &["enemy", "enemies", "hostile", "war", "conflict", "fights", "against", "oppose", "oppos"]),
+        ("controls", &["controls", "commands", "dominates", "puppet", "directs", "governs", "runs"]),
+        ("subsidiary", &["subsidiary", "branch", "division", "arm of", "owned by", "sub-unit", "founded by"]),
+        ("rivals", &["rival", "rivals", "competing", "competition", "compete", "contend", "contest"]),
+    ];
+    let edge_color = |k: &str| match k { "allies" => "#22c55e", "enemies" => "#ef4444", "controls" => "#00f0ff", "subsidiary" => "#a78bfa", "rivals" => "#f97316", _ => "#6b7280" };
+    // {name.lower(): id} - a later organization with the same name takes the id, the key keeps its place
+    let mut name_to_id: Vec<(String, i64)> = vec![];
+    for e in &orgs {
+        let name = lower_safe(&text(e, "name")?)?;
+        let id = e.get("id")?.as_i64()?;
+        match name_to_id.iter_mut().find(|n| n.0 == name) {
+            Some(n) => n.1 = id,
+            None => name_to_id.push((name, id)),
+        }
+    }
+    for e in &orgs {
+        let id = e.get("id")?.as_i64()?;
+        let full = lower_safe(&format!("{} {}", text(e, "body")?, text(e, "summary")?))?;
+        let hay: Vec<char> = full.chars().collect();
+        for (other_name, other_id) in &name_to_id {
+            let needle: Vec<char> = other_name.chars().collect();
+            if *other_id == id {
+                continue;
+            }
+            let Some(pos) = find_chars(&hay, &needle) else { continue };
+            let pair = (id.min(*other_id), id.max(*other_id));
+            if !seen.insert(pair) {
+                continue;
+            }
+            let lo = pos.saturating_sub(120);
+            let hi = (pos + needle.len() + 120).min(hay.len());
+            let context: String = hay[lo..hi].iter().collect();
+            let kind = relation_keywords.iter().find(|(_, kws)| kws.iter().any(|kw| context.contains(kw))).map(|(k, _)| *k).unwrap_or("neutral");
+            edges.push(json!({"id": format!("fe-{id}-{other_id}"), "from": node_of(id)?, "to": node_of(*other_id)?,
+                "label": if kind != "neutral" { kind } else { "" }, "color": edge_color(kind),
+                "style": if kind == "subsidiary" || kind == "neutral" { "dashed" } else { "solid" }, "kind": kind, "direction": "fwd"}));
+        }
+    }
+    crate::edits::json_response(&json!({"nodes": nodes, "edges": edges}))
+}
+
+/// Python truthiness of a text column (`x or ""`)
+fn py_truthy_text(v: Option<&Value>) -> bool {
+    matches!(v, Some(Value::String(s)) if !s.is_empty())
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)

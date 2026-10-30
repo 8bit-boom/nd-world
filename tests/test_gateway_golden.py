@@ -8338,7 +8338,7 @@ def test_imagegen_reads_that_need_no_back_end_are_pythons(client, seed):
     v = _via(d, base)
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     pv = _via(p, base)
-    names = ["status", "loras", "upscalers", "refiners", "ipadapter-models", "progress", "updates", "backends", "samplers-schedulers", "starred"]
+    names = ["status", "models", "loras", "upscalers", "refiners", "ipadapter-models", "progress", "updates", "backends", "samplers-schedulers", "starred"]
     served = 0
     for n in names:
         url = "/api/ai/imagegen/" + n
@@ -8649,3 +8649,60 @@ def test_ai_model_catalogue_and_resident_on_studio_are_pythons(client, seed):
         else:
             f.write_bytes(was)
     assert served >= 30, served
+
+
+def test_orgs_graph_is_pythons(client, seed):
+    """GET /api/orgs/graph: organizations in clusters by subtype, stored links, mentions with each relation word, duplicate names, a world with none,
+    no world cookie; a name with an upper-case non-ASCII letter is Python's; a player gets Python's answer."""
+    from app.database import SessionLocal
+    from app.models import Entity, World, entity_links
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        w = seed.world_a.id
+        orgs = [Entity(world_id=w, kind="organization", subtype="megacorp", name="Arasaka", summary="Allied with Militech in the east", tags="corp,jp", image_url="/uploads/a.png"),
+                Entity(world_id=w, kind="organization", subtype="megacorp", name="Militech", body="Long history of war against Arasaka. Also a rival of Biotechnica."),
+                Entity(world_id=w, kind="organization", subtype="Gang", name="Maelstrom", body="Subsidiary of nothing; owned by the Kerry crowd. Mentions Militech once."),
+                Entity(world_id=w, kind="organization", subtype="", name="Biotechnica", summary="Controls the food; commands Maelstrom?"),
+                Entity(world_id=w, kind="organization", subtype="mystery", name="Plain", body="Nothing here but Biotechnica."),
+                Entity(world_id=w, kind="organization", subtype="Gang", name="Plain", body="A duplicate name"),
+                Entity(world_id=w, kind="organization", subtype="cult", name="Order", summary="x" * 300 + " Maelstrom " + "y" * 300),
+                Entity(world_id=w, kind="npc", name="Not an org", body="Arasaka")]
+        db.add_all(orgs)
+        db.flush()
+        db.execute(entity_links.insert().values(source_id=orgs[0].id, target_id=orgs[2].id))
+        db.execute(entity_links.insert().values(source_id=orgs[2].id, target_id=orgs[0].id))
+        db.execute(entity_links.insert().values(source_id=orgs[1].id, target_id=orgs[3].id))
+        db.commit()
+        wb = seed.world_b.id
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    for url in ("/api/orgs/graph",):
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), (a.text[:400], b.text[:400])
+        assert b.headers.get("x-nd-served-by") == "gateway"
+        assert len(a.json()["nodes"]) >= 6 and len(a.json()["edges"]) >= 4, a.text[:300]
+    # a world with no organizations, and no active world at all
+    other = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_b.slug)
+    a, b = other.get("/api/orgs/graph"), _via(other, base).get("/api/orgs/graph")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nogm.cookies.set("active_world", "no-such-world")
+    a, b = nogm.get("/api/orgs/graph"), _via(nogm, base).get("/api/orgs/graph")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    # an upper-case non-ASCII letter in a name: Python lowers it, the gateway steps aside
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="organization", subtype="gang", name="École Noire", body="Mentions Arasaka"))
+        db.commit()
+    finally:
+        db.close()
+    a, b = d.get("/api/orgs/graph"), v.get("/api/orgs/graph")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+    assert b.headers.get("x-nd-served-by") is None
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a, b = p.get("/api/orgs/graph"), _via(p, base).get("/api/orgs/graph")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
