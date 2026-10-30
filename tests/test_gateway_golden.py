@@ -8316,3 +8316,35 @@ def test_media_rename_page_is_pythons(client, seed):
     nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     nogm.cookies.set("active_world", "no-such-world")
     _same_page(nogm, _via(nogm, base), "/media-rename", "no world")
+
+
+def test_imagegen_reads_that_need_no_back_end_are_pythons(client, seed):
+    """GET /api/ai/imagegen/status, loras, upscalers, refiners, ipadapter-models, progress, updates, backends, samplers-schedulers and starred: with no
+    SwarmUI / ComfyUI configured the answer follows from the settings alone (Python and the gateway agree byte for byte; where a back end would be asked
+    the gateway steps aside); starred pictures with parameters."""
+    from app.database import SessionLocal
+    from app.models import StarredImage
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        db.add_all([StarredImage(url="/uploads/gw-star-1.png", prompt="a city", negative="blur", model="m1", seed=7, params_json='{"steps": 20, "cfg": 7.5, "tags": ["a", "b"]}'),
+                    StarredImage(url="/uploads/gw-star-2.png", prompt="", negative="", model="", seed=-1, params_json="")])
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    names = ["status", "loras", "upscalers", "refiners", "ipadapter-models", "progress", "updates", "backends", "samplers-schedulers", "starred"]
+    served = 0
+    for n in names:
+        url = "/api/ai/imagegen/" + n
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        served += b.headers.get("x-nd-served-by") == "gateway"
+        a, b = p.get(url), pv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+    assert served >= 4, served
+    assert v.get("/api/ai/imagegen/starred").headers.get("x-nd-served-by") == "gateway"

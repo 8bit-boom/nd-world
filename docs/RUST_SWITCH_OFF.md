@@ -59,6 +59,9 @@ them after each batch; the phase is done when both are empty and the steps below
   world is still Python's (a Python-free install with a key needs the Studio client ported - the main item left in the AI group).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
   anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
+- **Image generation reads without a back end** (apis.rs): `GET /api/ai/imagegen/status|loras|upscalers|refiners|ipadapter-models|progress|updates|backends|samplers-schedulers`
+  answer from the configuration alone (`IMAGEGEN_TYPE` / `IMAGEGEN_URL` / Studio as the image back end) - nothing configured, Studio, or not SwarmUI; a SwarmUI /
+  ComfyUI to ask is Python's. `GET /api/ai/imagegen/starred` reads the starred pictures.
 - **Media rename page** (pages.rs, lib.rs): `GET /media-rename[?kind=&album=]` with the start kind, style presets, `ai_ready` and the last 10 batches..
 - **Join page** (`GET /join/<code>`, share.rs `join_form`): the sign-up form for a good invite and the reason for a bad one (invalid, revoked,
   expired, used up). A signed-in browser with a good link is redeemed by Python; the POST (accounts, passwords, 2FA) stays Python's.

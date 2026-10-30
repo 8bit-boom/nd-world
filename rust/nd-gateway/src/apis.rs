@@ -29,6 +29,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
         "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
+        "/api/ai/imagegen/status" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models"
+        | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" => imagegen_unbacked(&cfg, uri, headers),
+        "/api/ai/imagegen/starred" => imagegen_starred(&cfg, uri, headers),
         "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status"
         | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe"
         | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" => unsloth_unconfigured(&cfg, uri, headers),
@@ -107,7 +110,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -3152,6 +3155,64 @@ fn unsloth_unconfigured(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
         return None;
     }
     Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No Unsloth backend configured \u{2014} set UNSLOTH_API_KEY (Settings \u{2192} System)."))
+}
+
+/// The image-generation status routes whose answer follows from the configuration alone (app/ai.py `_get_type` / `_get_url`): nothing set up, or Studio
+/// as the image backend, where Python has nothing to ask. A SwarmUI / ComfyUI back end to talk to is Python's. GM only.
+fn imagegen_unbacked(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    let studio = key.is_some() && std::env::var("UNSLOTH_IMAGE_MODEL").map(|m| !m.is_empty()).unwrap_or(false);
+    let (kind, has_url) = if studio {
+        ("unsloth".to_string(), true)
+    } else {
+        let t = std::env::var("IMAGEGEN_TYPE").unwrap_or_default();
+        if !t.is_ascii() {
+            return None;
+        }
+        (t.to_ascii_lowercase(), !std::env::var("IMAGEGEN_URL").unwrap_or_default().trim_end_matches('/').is_empty())
+    };
+    let configured = !kind.is_empty() && has_url;
+    let path = uri.path().trim_start_matches("/api/ai/imagegen/");
+    let body = match path {
+        "status" if !configured => json!({"ok": false, "reason": "not configured"}),
+        "loras" if !configured || studio => json!({"loras": []}),
+        "upscalers" if !configured || studio => json!({"upscalers": []}),
+        "refiners" if !configured || studio => json!({"refiners": []}),
+        "ipadapter-models" if !configured || studio => json!({"models": []}),
+        "progress" if kind != "swarmui" => json!({"active": false, "percent": 0.0, "current_percent": 0.0, "preview": ""}),
+        "updates" if kind != "swarmui" || !has_url => json!({"updates": {}}),
+        "backends" if kind != "swarmui" || !has_url => json!({"backends": [], "resources": {}}),
+        "samplers-schedulers" if !has_url => json!({"samplers": SAMPLERS.to_vec(), "schedulers": SCHEDULERS.to_vec()}),
+        _ => return None,
+    };
+    crate::edits::json_response(&body)
+}
+
+const SAMPLERS: [&str; 33] = ["euler", "euler_ancestral", "euler_cfg_pp", "euler_ancestral_cfg_pp", "heun", "heunpp2", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "ddim", "lcm", "uni_pc", "uni_pc_bh2", "ipndm", "ipndm_v", "deis", "res_multistep", "res_multistep_cfg_pp", "sa_solver", "er_sde", "gradient_estimation", "restart"];
+const SCHEDULERS: [&str; 11] = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta", "linear_quadratic", "kl_optimal", "ays", "gits"];
+
+/// `GET /api/ai/imagegen/starred`: every starred picture (across worlds), newest first
+fn imagegen_starred(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let mut out = vec![];
+    for i in rows_of(&db, "SELECT * FROM starred_images ORDER BY created_at DESC", &[])? {
+        let raw = i.get("params_json").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("{}");
+        if raw.contains("NaN") || raw.contains("Infinity") || !crate::edits::plain_numbers(raw.as_bytes()) {
+            return None;
+        }
+        let params: Value = serde_json::from_str(raw).ok()?;
+        out.push(json!({"id": i.get("id"), "url": i.get("url"), "prompt": i.get("prompt"), "negative": i.get("negative"), "model": i.get("model"),
+            "seed": i.get("seed"), "params": params, "created_at": dt_iso(&i, "created_at")?}));
+    }
+    crate::edits::json_response(&json!({"images": out}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
