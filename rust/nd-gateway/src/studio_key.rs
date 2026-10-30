@@ -226,7 +226,7 @@ pub(crate) async fn studio_get(uri: hyper::Uri, key: &str) -> Result<(u16, Bytes
     Err("TooManyRedirects: exceeded 20 redirects".into())
 }
 
-fn resolve_location(base: &hyper::Uri, loc: &str) -> Result<hyper::Uri, String> {
+pub(crate) fn resolve_location(base: &hyper::Uri, loc: &str) -> Result<hyper::Uri, String> {
     if loc.starts_with("http://") || loc.starts_with("https://") {
         return loc.parse::<hyper::Uri>().map_err(|e| format!("InvalidURL: {e}"));
     }

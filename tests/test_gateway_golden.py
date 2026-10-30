@@ -9830,3 +9830,82 @@ def test_without_python_the_gateway_reads_gif_avif_and_pdf(client, seed, tmp_pat
             db.commit()
         finally:
             db.close()
+
+
+def test_king_in_yellow_inspirations_without_python(client, seed, tmp_path):
+    """GET /api/kiy/inspirations in a gateway with no Python: the five public sources fetched over TLS (a stand-in server with a self-signed certificate
+    replaces their hosts through the test hook), each one dropping out on its own when it fails - Wikipedia, DuckDuckGo, Open Library, Archive.org and
+    the Gutenberg text cut into passages."""
+    import ssl
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import pytest
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    made = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "2", "-subj", "/CN=localhost",
+                           "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth",
+                           "-addext", "keyUsage=digitalSignature,keyEncipherment"], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("openssl is not available to make a certificate")
+    para = lambda n: (f"Paragraph {n} of the play, long enough to be kept as a passage and read aloud at the table. " * 3).strip()  # noqa: E731
+    book = "front matter\n\nThe Repairer of Reputations\n\n" + "\n\n".join(para(i) for i in range(30)) + "\n\nThe Yellow Sign\n\n" + "\n\n".join(para(100 + i) for i in range(10)) + \
+        "\n\nThe Mask\n\n" + para(200) + "\n\nEnd of the Project Gutenberg eBook"
+    hits = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            hits.append(path)
+            code, body, ctype = 404, b"{}", "application/json"
+            if path.startswith("/api/rest_v1/page/summary/"):
+                if path.endswith("Hastur"):
+                    code, body = 404, b"{}"            # one article missing: it drops out
+                else:
+                    code, body = 200, json.dumps({"extract": "An article about " + path.rsplit("/", 1)[1] + ". " + "x" * 700}).encode()
+            elif path == "/":
+                code, body = 200, json.dumps({"AbstractText": "", "RelatedTopics": [{"Text": "A related topic that is long enough to count as text."}]}).encode()
+            elif path == "/works/OL15143745W.json":
+                code, body = 200, json.dumps({"description": {"value": "A cycle of short stories that is described at some length by Open Library."}}).encode()
+            elif path == "/advancedsearch.php":
+                code, body = 200, json.dumps({"response": {"docs": [{"description": "short"}, {"description": ["An archive description that is long enough to keep."]}]}}).encode()
+            elif path.startswith("/cache/epub/"):
+                code, body, ctype = 200, book.encode(), "text/plain; charset=utf-8"
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert), str(key))
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    proc, url, g = _python_free_gateway(seed, {"SSL_CERT_FILE": str(cert), "ND_TEST_HOOKS": "1", "ND_WEB_FETCH_BASE": f"https://127.0.0.1:{srv.server_address[1]}"})
+    try:
+        r = g.get("/api/kiy/inspirations")
+        assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", (r.status_code, r.text[:300])
+        items = r.json()["inspirations"]
+        by = {}
+        for it in items:
+            by.setdefault(it["source"], []).append(it)
+        assert len(by["Wikipedia"]) == 8 and all(len(i["extract"]) <= 600 for i in by["Wikipedia"]), by.get("Wikipedia")   # nine asked, Hastur missing
+        assert "Hastur" not in [i["title"] for i in by["Wikipedia"]]
+        assert len(by["DuckDuckGo"]) == 4 and by["DuckDuckGo"][0]["extract"].startswith("A related topic")
+        assert by["Open Library"][0]["extract"].startswith("A cycle of short stories")
+        assert [i["title"] for i in by["Archive.org"]] == ["King in Yellow — Archive.org", "Hastur — Archive.org"]
+        chambers = by["Chambers (1895)"]
+        assert 2 <= len(chambers) <= 4 and chambers[0]["title"].endswith("passage") and " [...] " in chambers[0]["extract"] and len(chambers[0]["extract"]) <= 700, chambers
+        assert {c["title"] for c in chambers[1:]} <= {"The Yellow Sign", "The Mask", "The Repairer of Reputations"}
+        assert set(hits) >= {"/", "/works/OL15143745W.json", "/advancedsearch.php", "/cache/epub/8492/pg8492.txt"}
+        # the same call with the sources unreachable is an empty list, not an error
+        srv.shutdown()
+        srv.server_close()
+        e = g.get("/api/kiy/inspirations")
+        assert e.status_code == 200 and e.json() == {"inspirations": []}, (e.status_code, e.text[:200])
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

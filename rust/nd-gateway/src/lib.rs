@@ -49,6 +49,7 @@ pub mod studio;
 pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
+pub mod kiy;
 pub mod net;
 pub mod pdftext;
 pub mod startup;
@@ -627,6 +628,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/api/ai/models" | "/api/ai/resident" | "/api/ai/debug") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // the model catalogue and what is resident, on a Studio back end
         if let Some(resp) = studio::ai_models_route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/api/kiy/inspirations" && config::python_free() {
+        // public web fetches, random and live: answered here only where there is no Python to do it
+        if let Some(resp) = edits::json_response(&kiy::inspirations().await) {
             return resp;
         }
     }
