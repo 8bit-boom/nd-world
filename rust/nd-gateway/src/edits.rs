@@ -7492,7 +7492,7 @@ fn posted_link(b: &Map<String, Value>, kinds: &[String]) -> Option<Option<Value>
 fn home_quick_link(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let b = c.json()?;
     let (w, kinds) = home_world(c, ids[0])?;
-    let link = posted_link(&b, &kinds)??; // an invalid link's 400: Python's
+    let Some(link) = posted_link(&b, &kinds)? else { return Some(detail400("Invalid link")) };
     let mut sections = home_sections(&world_text(&w, "home_sections_json"), &kinds)?;
     let idx = match b.get("section_index").and_then(|v| v.as_i64()).filter(|_| !b.get("section_index").is_some_and(|v| v.is_boolean())) {
         Some(i) if (0..sections.len() as i64).contains(&i) => i as usize,
@@ -7508,7 +7508,7 @@ fn home_quick_link(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     let links = sections[idx].get_mut("links")?.as_array_mut()?;
     if links.len() >= 50 {
-        return None;
+        return Some(detail400("Section is full"));
     }
     links.push(link);
     orm::update(&c.db, "worlds", ids[0], &[("home_sections_json", s(&nd_render::py_dumps(&json!(sections))))])?;
@@ -7518,10 +7518,10 @@ fn home_quick_link(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 fn home_pin_tile(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let b = c.json()?;
     let (w, kinds) = home_world(c, ids[0])?;
-    let tile = posted_link(&b, &kinds)??;
+    let Some(tile) = posted_link(&b, &kinds)? else { return Some(detail400("Invalid tile")) };
     let mut tiles = home_tiles(&world_text(&w, "home_pinned_tiles_json"), &kinds)?;
     if tiles.len() >= 24 {
-        return None;
+        return Some(detail400("Dashboard is full"));
     }
     tiles.push(tile.clone());
     orm::update(&c.db, "worlds", ids[0], &[("home_pinned_tiles_json", s(&nd_render::py_dumps(&json!(tiles))))])?;
@@ -7534,7 +7534,7 @@ fn home_unpin_tile(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let index = b.get("index").filter(|v| !v.is_boolean())?.as_i64()?;
     let mut tiles = home_tiles(&world_text(&w, "home_pinned_tiles_json"), &kinds)?;
     if !(0..tiles.len() as i64).contains(&index) {
-        return None;
+        return Some(detail400("No such tile"));
     }
     tiles.remove(index as usize);
     orm::update(&c.db, "worlds", ids[0], &[("home_pinned_tiles_json", s(&nd_render::py_dumps(&json!(tiles))))])?;
@@ -7544,10 +7544,9 @@ fn home_unpin_tile(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 fn home_hide_kind(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let b = c.json()?;
     let (w, kinds) = home_world(c, ids[0])?;
-    let kind = b.get("kind")?.as_str()?.to_string();
-    if !kinds.contains(&kind) {
-        return None;
-    }
+    let Some(kind) = b.get("kind").and_then(|v| v.as_str()).map(str::to_string).filter(|k| kinds.contains(k)) else {
+        return Some(detail400("Not a valid kind for this world"));
+    };
     let mut hidden = home_hidden(&world_text(&w, "home_hidden_kinds_json"), &kinds)?;
     if !hidden.contains(&kind) {
         hidden.push(kind);

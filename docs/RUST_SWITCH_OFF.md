@@ -521,3 +521,4 @@ in a small sidecar, as the plan allows, if a port is not good enough.
   dropped from the session) and `DELETE /api/ai/imagegen/jobs/<id>` (a finished job's row, its pictures and previews - `_thumb`/`_display`, AVIF or
   WebP - removed after the commit unless a starred image keeps one; in progress = Python's 400; another world's or an unknown id the 404).
 - **Player image-job delete** (edits.rs): `DELETE /api/ai/imagegen/player/jobs/<id>` shares the GM route's cleanup; the world's opt-in flag (403), someone else's or an ownerless job (404).
+- **Home dashboard refusals** (edits.rs): quick-link / pinned-tile / hide-kind answer Python's 400s themselves: "Invalid link", "Invalid tile", "Section is full" (50 links), "Dashboard is full" (24 tiles), "No such tile", "Not a valid kind for this world".

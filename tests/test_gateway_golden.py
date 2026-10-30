@@ -9429,3 +9429,60 @@ def test_imagegen_player_job_delete_is_pythons(client, seed):
     strip = lambda o: [x[:3] for x in o]  # noqa: E731
     assert strip(py) == strip(gw), (py, gw)
     assert [x[3] for x in gw[1:]] == ["gateway"] * 5
+
+
+def test_home_dashboard_refusals_are_pythons(client, seed):
+    """The home dashboard's JSON edits refused with Python's 400s: an invalid link / tile, a full section (50 links) / dashboard (24 tiles), a tile index
+    that does not exist, a kind the world does not have; and the normal answers around them."""
+    from app.database import SessionLocal
+    from app.models import World
+    base = str(client.base_url)
+    wid = seed.world_a.id
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    db = SessionLocal()
+    try:
+        w = db.get(World, wid)
+        saved = (w.home_sections_json, w.home_pinned_tiles_json, w.home_hidden_kinds_json)
+    finally:
+        db.close()
+
+    def put(sections, tiles, hidden):
+        db = SessionLocal()
+        try:
+            w = db.get(World, wid)
+            w.home_sections_json, w.home_pinned_tiles_json, w.home_hidden_kinds_json = sections, tiles, hidden
+            db.commit()
+        finally:
+            db.close()
+
+    link = {"label": "L", "icon": "", "target_type": "url", "target_ref": "/maps", "visible_to_players": True}
+    posts = [
+        ("/api/worlds/{w}/home/quick-link", {"label": "", "target_type": "url", "target_ref": "/x"}),
+        ("/api/worlds/{w}/home/quick-link", {"label": "Ok", "target_type": "url", "target_ref": "/x"}),
+        ("/api/worlds/{w}/home/quick-link", {"label": "Ok", "target_type": "kind", "target_ref": "no-such-kind"}),
+        ("/api/worlds/{w}/home/pinned-tile", {"label": "T", "target_type": "nope", "target_ref": "/x"}),
+        ("/api/worlds/{w}/home/pinned-tile", {"label": "T", "target_type": "url", "target_ref": "/x"}),
+        ("/api/worlds/{w}/home/pinned-tile/remove", {"index": 99}),
+        ("/api/worlds/{w}/home/pinned-tile/remove", {"index": 0}),
+        ("/api/worlds/{w}/home/hide-kind", {"kind": "no-such-kind"}),
+        ("/api/worlds/{w}/home/hide-kind", {"kind": 5}),
+        ("/api/worlds/{w}/home/hide-kind", {}),
+    ]
+    states = {
+        "empty": ("[]", "[]", "[]"),
+        "full": (json.dumps([{"name": "S", "visible_to_players": True, "links": [link] * 50}]), json.dumps([link] * 24), "[]"),
+    }
+    try:
+        for name, st in states.items():
+            results = []
+            for side in (d, v):
+                put(*st)
+                results.append([(p, (r := side.post(p.format(w=wid), json=b)).status_code, r.text) for p, b in posts])
+            assert results[0] == results[1], (name, results)
+            r = v.post(f"/api/worlds/{wid}/home/pinned-tile", json={"label": "T", "target_type": "url", "target_ref": "/x"})
+            assert r.headers.get("x-nd-served-by") == "gateway", name
+        put(*states["full"])
+        assert v.post(f"/api/worlds/{wid}/home/pinned-tile", json={"label": "T", "target_type": "url", "target_ref": "/x"}).text == '{"detail":"Dashboard is full"}'
+    finally:
+        put(*saved)
