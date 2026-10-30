@@ -60,6 +60,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **AI sheet-template page** (pages.rs): `GET /characters/templates/ai-new` (GM; `has_world_rules` from the world's rules text).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
   anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
+- **Prompt tag completion, nothing downloaded** (apis.rs): `GET /api/ai/imagegen/tags/sources|status` and `/tags?q=` on an install with no tag list (no `tags/*_tags.csv`, no active
+  source, no custom sources) answer the two built-in sources as not downloaded and no tags; a downloaded list (cached in Python's memory) is Python's.
 - **Layout presets** (edits.rs): `POST /api/view-prefs/preset/<id>` (table_night, prep, player_phone, reading) merges the preset onto the person's saved layouts, writes the
   rows as Python's json.dumps does and re-signs the site layout into the session; the same `apply_preset` serves the join flow.
 - **Handout printing** (pages.rs): `POST /handouts/print` - the chosen entities of the active world as printable pages, in the order asked.

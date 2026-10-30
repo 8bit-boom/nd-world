@@ -9034,3 +9034,37 @@ def test_view_pref_presets_are_pythons(client, seed):
     finally:
         prepare([])
     assert served == 8, served
+
+
+def test_imagegen_tag_routes_with_no_tag_list_are_pythons(client, seed):
+    """GET /api/ai/imagegen/tags/sources, /tags/status and /tags?q= on an install with no tag list downloaded: the gateway answers Python's bytes;
+    once a list is on disk (a source file and the active choice) it steps aside and both agree; a bad limit is FastAPI's 422."""
+    import shutil
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    tags = Path(os.environ["DB_PATH"]).parent / "tags"
+    shutil.rmtree(tags, ignore_errors=True)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    urls = ["/api/ai/imagegen/tags/sources", "/api/ai/imagegen/tags/status", "/api/ai/imagegen/tags", "/api/ai/imagegen/tags?q=cat", "/api/ai/imagegen/tags?q=cat&limit=5",
+            "/api/ai/imagegen/tags?q=cat&limit=x", "/api/ai/imagegen/tags?limit=-1"]
+    served = 0
+    try:
+        for url in urls:
+            a, b = d.get(url), v.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), url
+            served += b.headers.get("x-nd-served-by") == "gateway"
+            a, b = p.get(url), pv.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (url, "player")
+        assert served >= 5, served
+        tags.mkdir(parents=True, exist_ok=True)
+        (tags / "danbooru_tags.csv").write_text("cat,0,100\ncatgirl,0,50\ndog,0,70\n", encoding="utf-8")
+        (tags / "active_source.txt").write_text("danbooru", encoding="utf-8")
+        for url in urls:
+            a, b = d.get(url), v.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (url, "with a list")
+            assert b.headers.get("x-nd-served-by") is None, url
+    finally:
+        shutil.rmtree(tags, ignore_errors=True)
