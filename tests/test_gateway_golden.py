@@ -8023,3 +8023,35 @@ def test_media_rename_reads_are_pythons(client, seed):
     for url in urls[:3]:
         a, b = nogm.get(url), nv.get(url)
         assert (a.status_code, a.content) == (b.status_code, b.content), url
+
+
+def test_disabled_lore_extras_are_pythons(client, seed):
+    """GET /dreamlands and /king-in-yellow with their Settings switches off: the "is disabled" page, for the GM and a player (restored after)."""
+    from app.database import SessionLocal, get_app_settings
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        st = get_app_settings(db)
+        was = (st.dreamlands_enabled, st.king_in_yellow_enabled)
+        st.dreamlands_enabled = st.king_in_yellow_enabled = False
+        db.commit()
+    finally:
+        db.close()
+    try:
+        for email, pw in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+            d = _signed_in(email, pw, seed.world_a.slug)
+            via = _via(d, base)
+            for url in ("/dreamlands", "/king-in-yellow"):
+                _same_page(d, via, url, email)
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        for url in ("/dreamlands", "/king-in-yellow"):
+            assert _same_page(d, _via(d, base), url, "gm"), url
+    finally:
+        db = SessionLocal()
+        try:
+            st = get_app_settings(db)
+            st.dreamlands_enabled, st.king_in_yellow_enabled = was
+            db.commit()
+        finally:
+            db.close()

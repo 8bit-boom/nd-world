@@ -230,9 +230,9 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/handouts", template: "handouts_gallery.html", section: None, needs_world: false, gm_only: false, edit: false,
              lists: &[("entities", "SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name, id")], extra: None },
     Simple { path: "/dreamlands", template: "dreamlands.html", section: Some("dreamlands"), needs_world: false, gm_only: false, edit: false, lists: &[],
-             extra: Some(|db, _| app_flag(db, "dreamlands_enabled")) },
+             extra: Some(|db, c| feature_flag(db, c, "dreamlands_enabled", "Dreamlands", "\u{1F319}")) },
     Simple { path: "/king-in-yellow", template: "king_in_yellow.html", section: Some("king-in-yellow"), needs_world: false, gm_only: false, edit: false, lists: &[],
-             extra: Some(|db, _| app_flag(db, "king_in_yellow_enabled")) },
+             extra: Some(|db, c| feature_flag(db, c, "king_in_yellow_enabled", "King in Yellow", "\u{1F3AD}")) },
     Simple { path: "/sessions/new", template: "sessions/detail.html", section: None, needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(session_new) },
     Simple { path: "/quests/new", template: "quests/detail.html", section: Some("quests"), needs_world: true, gm_only: false, edit: true,
              lists: &[("parties", "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id"), ("quests", "SELECT * FROM quests WHERE world_id = ?1 ORDER BY title, id"),
@@ -293,9 +293,15 @@ fn worlds_page(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_
 }
 
 /// a feature switch in app_settings: off = Python's "feature disabled" page
-fn app_flag(db: &rusqlite::Connection, col: &str) -> Option<()> {
+/// An optional lore extra: its page when the Settings switch is on, else `feature_disabled.html` (the handler's own answer)
+fn feature_flag(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>, col: &str, name: &str, icon: &str) -> Option<()> {
     let on: Option<i64> = db.query_row(&format!("SELECT {col} FROM app_settings LIMIT 1"), [], |r| r.get(0)).ok()?;
-    (on == Some(1)).then_some(())
+    if on != Some(1) {
+        c.insert("feature_name".into(), serde_json::json!(name));
+        c.insert("feature_icon".into(), serde_json::json!(icon));
+        c.insert("__template".into(), serde_json::json!("feature_disabled.html"));
+    }
+    Some(())
 }
 
 fn world_id_of(c: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
@@ -378,7 +384,11 @@ pub fn simple(pages: &Pages, cfg: &Config, page: &Simple, uri: &Uri, headers: &H
     if let Some(f) = page.extra {
         f(&db, &mut p.ctx)?;
     }
-    render_with(pages, page.template, p.ctx, headers)
+    let template = match p.ctx.remove("__template") {
+        Some(serde_json::Value::String(t)) => std::borrow::Cow::Owned(t),
+        _ => std::borrow::Cow::Borrowed(page.template),
+    };
+    render_with(pages, &template, p.ctx, headers)
 }
 
 const COL_PRIORITY: &[&str] = &["rank", "rarity", "damage", "armor", "rounds", "strength", "body", "dexterity", "perception", "augment slots", "max health",
