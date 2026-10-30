@@ -7891,3 +7891,78 @@ def test_small_json_reads_are_pythons(client, seed):
     for url in urls:
         a, b = httpx.get(DIRECT + url, follow_redirects=False), anon.get(url)
         assert (a.status_code, a.content) == (b.status_code, b.content), ("anon", url)
+
+
+def test_backups_list_and_diagnostics_events_are_pythons(client, seed):
+    """GET /api/backups (not configured: 400) and /admin/diagnostics/events (empty, then with lines, then with a line
+    break only Python splits on): the GM gets Python's bytes from the gateway; a player is refused as Python refuses."""
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    diag = Path(os.environ["DB_PATH"]).parent / "diagnostics"
+    diag.mkdir(parents=True, exist_ok=True)
+    log = diag / "events.log"
+    log.unlink(missing_ok=True)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    try:
+        for body, served in ((None, True), (b"restart pid=1\nstall 3s\n", True), (b"no newline at end", True), (b"a\r\nb\r\n", False), (b"a\x0bb\n", False)):
+            if body is None:
+                log.unlink(missing_ok=True)
+            else:
+                log.write_bytes(body)
+            a, b = d.get("/admin/diagnostics/events"), v.get("/admin/diagnostics/events")
+            assert (a.status_code, a.headers["content-type"], a.content) == (b.status_code, b.headers["content-type"], b.content), body
+            assert (b.headers.get("x-nd-served-by") == "gateway") == served, body
+        a, b = d.get("/api/backups"), v.get("/api/backups")
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+        for url in ("/api/backups", "/admin/diagnostics/events"):
+            a, b = p.get(url), pv.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), url
+    finally:
+        log.unlink(missing_ok=True)
+
+
+def test_gallery_browse_is_pythons(client, seed):
+    """GET /api/gallery/browse: the root, an album with pictures (named by title, use, or file) and sub-albums, another world's album,
+    a missing one, a malformed id - for the GM; a player is refused as Python refuses."""
+    from app.database import SessionLocal
+    from app.models import ImageAlbum
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        root = ImageAlbum(world_id=w, name="Zed", image_urls_json=json.dumps(["/uploads/0123456789ab-cover.png", "/uploads/plain.jpg"]))
+        other = ImageAlbum(world_id=seed.world_b.id, name="Other", image_urls_json="[]")
+        junk = ImageAlbum(world_id=w, name="Alpha", image_urls_json="not json")
+        db.add_all([root, other, junk])
+        db.flush()
+        sub = ImageAlbum(world_id=w, name="Sub", parent_id=root.id, image_urls_json=json.dumps(["/uploads/sub.png"]))
+        sub2 = ImageAlbum(world_id=w, name="Sub é", parent_id=root.id, image_urls_json="[]")
+        db.add_all([sub, sub2])
+        db.commit()
+        ids = (root.id, other.id, junk.id, sub.id)
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    urls = ["/api/gallery/browse", "/api/gallery/browse?album_id=0", "/api/gallery/browse?album_id=%d" % ids[0], "/api/gallery/browse?album_id=%d" % ids[3],
+            "/api/gallery/browse?album_id=%d" % ids[1], "/api/gallery/browse?album_id=%d" % ids[2], "/api/gallery/browse?album_id=999999", "/api/gallery/browse?album_id=x",
+            "/api/gallery/browse?album_id=-1"]
+    for url in urls:
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+        if "album_id=x" not in url and "album_id=-1" not in url:
+            assert b.headers.get("x-nd-served-by") == "gateway", url
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for url in urls[:3]:
+        a, b = p.get(url), pv.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content), url
+    nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    nogm.cookies.set("active_world", "no-such-world")
+    a, b = nogm.get(urls[0]), _via(nogm, base).get(urls[0])
+    assert (a.status_code, a.content) == (b.status_code, b.content)

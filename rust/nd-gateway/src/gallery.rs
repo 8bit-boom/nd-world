@@ -177,6 +177,25 @@ pub fn discover(db: &Connection, wid: i64) -> Option<Vec<Map<String, Value>>> {
     Some(out)
 }
 
+/// `world_image_names`: {url: a chosen title, else where it is used, else the file name} for the given URLs
+pub fn world_image_names(db: &Connection, wid: i64, urls: &[String]) -> Option<Map<String, Value>> {
+    let overrides = title_overrides(db, wid)?;
+    let used: Vec<(String, Value)> = discover(db, wid)?.into_iter().map(|e| (e["url"].as_str().unwrap_or("").to_string(), e["name"].clone())).collect();
+    let truthy = |v: &Value| !matches!(v, Value::Null) && v.as_str() != Some("");
+    let mut names = Map::new();
+    for u in urls {
+        let name = match overrides.get(u).filter(|v| truthy(v)) {
+            Some(t) => t.clone(),
+            None => match used.iter().rev().find(|(k, _)| k == u).map(|(_, n)| n).filter(|v| truthy(v)) {
+                Some(n) => n.clone(),
+                None => json!(display_name(u, &[])?),
+            },
+        };
+        names.insert(u.clone(), name);
+    }
+    Some(names)
+}
+
 /// `_load_urls`: an album's picture list ([] for anything that is not a JSON list)
 pub fn album_urls(album: &Map<String, Value>) -> Value {
     let raw = album.get("image_urls_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");

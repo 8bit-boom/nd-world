@@ -75,6 +75,11 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Small JSON reads** (apis.rs): `/api/quests/board`, `/api/combat/recent`, `/api/audio/clips`, `/api/world-players`, `/api/tables/options`,
   `/api/video-jobs`, `/api/maps/props`, `/api/facts/last-parse` and `/tables/export` (same SQL as Python, so row order matches; a table whose
   entries do not parse is declined, Python answers 500). The creation catalog and sheet template list are served too.
+- **Backups list, diagnostics events, gallery picker** (apis.rs): `GET /api/backups` (the `world-*.db` snapshots; a non-UTC `TZ` is Python's,
+  since `created_at` is local time), `GET /admin/diagnostics/events` (events.log as text; a file with `\r` or another line break only
+  `str.splitlines` splits on is Python's) and `GET /api/gallery/browse[?album_id=N]` (the picker tree, GM only). Still Python's from the crawl:
+  `/api/orgs/graph` (float layout + keyword scan), `/export/foundry.json` (markdown rendering per entity), `/api/system/stats` and
+  `/api/perf/*` (Python's own process state).
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything

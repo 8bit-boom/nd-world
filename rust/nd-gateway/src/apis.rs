@@ -27,6 +27,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/api/sessions/", "/live-transcript/check").is_some() => live_transcript_check(&cfg, uri, headers, id_between(path, "/api/sessions/", "/live-transcript/check")?),
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
+        "/api/backups" => backups_list(&cfg, uri, headers),
+        "/api/gallery/browse" => gallery_browse(&cfg, uri, headers),
+        "/admin/diagnostics/events" => diagnostics_events(&cfg, uri, headers),
         "/api/maps/props" => map_props_list(&cfg, uri, headers),
         "/api/facts/last-parse" => facts_last_parse(&cfg, uri, headers),
         "/tables/export" => tables_export(&cfg, uri, headers),
@@ -91,7 +94,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2602,6 +2605,111 @@ fn live_transcript_check(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) 
 
 fn world_id_of(p: &crate::layout::PageCtx) -> Option<i64> {
     p.world.as_ref()?.get("id")?.as_i64()
+}
+
+/// `GET /api/backups` (app/routers/backups.py): the `world-*.db` snapshots in ND_BACKUP_DIR, newest name first. GM only (anyone else: Python's gate).
+/// `created_at` is the file's mtime in the server's local time, so a non-UTC TZ is Python's.
+fn backups_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm || !matches!(std::env::var("TZ").unwrap_or_default().trim(), "" | "UTC" | "Etc/UTC") {
+        return None;
+    }
+    let dir = std::env::var("ND_BACKUP_DIR").unwrap_or_default();
+    if dir.trim().is_empty() {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "Scheduled backups are not configured \u{2014} set ND_BACKUP_DIR"));
+    }
+    let mut out: Vec<(String, u64, String)> = vec![];
+    for entry in std::fs::read_dir(dir.trim()).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name().into_string().ok()?;
+        if !(name.starts_with("world-") && name.ends_with(".db")) || name.len() < 9 {
+            continue;
+        }
+        let meta = entry.metadata().ok()?;
+        let t = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        let total_micros = (t.as_nanos() + 500) / 1000;
+        let (secs, micros) = ((total_micros / 1_000_000) as i64, (total_micros % 1_000_000) as u32);
+        let (y, m, d) = crate::writes::civil_from_days(secs.div_euclid(86400));
+        let rem = secs.rem_euclid(86400);
+        let mut iso = format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", rem / 3600, rem % 3600 / 60, rem % 60);
+        if micros != 0 {
+            iso.push_str(&format!(".{micros:06}"));
+        }
+        out.push((name, meta.len(), iso));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    let list: Vec<Value> = out.into_iter().map(|(n, size, at)| json!({"name": n, "size_bytes": size, "created_at": at})).collect();
+    crate::edits::json_response(&json!({"backups": list}))
+}
+
+/// `GET /admin/diagnostics/events`: events.log from the diagnostics folder (ND_DIAG_DIR, else beside the database) as plain text. GM only.
+fn diagnostics_events(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let dir = match std::env::var("ND_DIAG_DIR") {
+        Ok(d) if !d.trim().is_empty() => std::path::PathBuf::from(d.trim()),
+        _ => cfg.db_path.parent()?.join("diagnostics"),
+    };
+    if !dir.is_dir() {
+        return None; // Python creates it; leave that to it
+    }
+    let text = match std::fs::read(dir.join("events.log")) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => String::new(),
+    };
+    // str.splitlines() also splits on \x0b \x0c \x1c-\x1e \x85 \u2028 \u2029: anything but \n / \r\n is Python's
+    if text.chars().any(|c| matches!(c, '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}')) {
+        return None;
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut lines = lines;
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let body = if lines.is_empty() { "(no events recorded yet)\n".to_string() } else { format!("{}\n", lines.join("\n")) };
+    crate::edits::json_response_raw(&body, "text/plain; charset=utf-8")
+}
+
+/// `GET /api/gallery/browse[?album_id=N]` (app/routers/gallery.py): the picker's album tree - sub-albums with cover and counts, and at an
+/// album its pictures (named) and breadcrumb. GM only; an album of another world is Python's 404.
+fn gallery_browse(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let album_id = match crate::pages::query_param(uri, "album_id") {
+        None => 0,
+        Some(t) if !t.is_empty() && t.len() < 18 && t.bytes().all(|c| c.is_ascii_digit()) => t.parse::<i64>().ok()?,
+        Some(_) => return None,
+    };
+    let urls_of = |a: &Map<String, Value>| -> Option<Vec<String>> {
+        crate::gallery::album_urls(a).as_array()?.iter().map(|u| u.as_str().map(|s| s.to_string())).collect()
+    };
+    let (children, images, crumbs) = if album_id != 0 {
+        let album = rows_of(&db, "SELECT * FROM image_albums WHERE id = ?1", &[&album_id])?.into_iter().next();
+        let Some(album) = album.filter(|a| a.get("world_id").and_then(|v| v.as_i64()) == Some(wid)) else { return Some(crate::idpages::refusal(404)) };
+        let children = rows_of(&db, "SELECT * FROM image_albums WHERE parent_id = ?1 ORDER BY name", &[&album_id])?;
+        let urls = urls_of(&album)?;
+        let names = crate::gallery::world_image_names(&db, wid, &urls)?;
+        let images: Vec<Value> = urls.iter().map(|u| json!({"url": u, "name": names.get(u)})).collect();
+        let mut crumbs = crate::media::breadcrumb(&db, "image_albums", &album)?;
+        crumbs.push(Value::Object(album));
+        (children, Value::Array(images), crumbs)
+    } else {
+        (rows_of(&db, "SELECT * FROM image_albums WHERE world_id = ?1 AND parent_id IS NULL ORDER BY name", &[&wid])?, Value::Null, vec![])
+    };
+    let mut albums = vec![];
+    for a in &children {
+        let urls = urls_of(a)?;
+        let id = a.get("id").and_then(|v| v.as_i64())?;
+        let subs: i64 = db.query_row("SELECT COUNT(*) FROM image_albums WHERE parent_id = ?1", [id], |r| r.get(0)).ok()?;
+        albums.push(json!({"id": id, "name": a.get("name"), "cover_url": urls.first(), "image_count": urls.len(), "sub_album_count": subs}));
+    }
+    let crumbs: Vec<Value> = crumbs.iter().map(|b| json!({"id": b.get("id"), "name": b.get("name")})).collect();
+    crate::edits::json_response(&json!({"breadcrumb": crumbs, "albums": albums, "images": images}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
