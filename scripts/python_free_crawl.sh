@@ -1,6 +1,6 @@
 #!/bin/bash
 # The Python-free check (docs/RUST_SWITCH_OFF.md): boot the gateway alone on a fresh data folder (ND_PYTHON_FREE=1, no upstream), sign the seeded GM in,
-# and GET every parameterless route the Python app has. What answers 502 is a route only Python serves. Needs rust/target/release/nd-gateway and
+# and GET every parameterless route the Python app has. What answers 501 (or 502) is a route only Python serves. Needs rust/target/release/nd-gateway and
 # a Python with the app's requirements (PYTHON=...) to list the routes.   usage: scripts/python_free_crawl.sh [port]
 set -u
 cd "$(dirname "$0")/.."
@@ -22,6 +22,6 @@ P
 n=0; bad=0
 while read -r p; do
   n=$((n+1)); code=$(curl -s -b $D/c.txt -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:$PORT$p")
-  [ "$code" = "502" ] && { echo "502 $p"; bad=$((bad+1)); }
+  { [ "$code" = "501" ] || [ "$code" = "502" ]; } && { echo "$code $p"; bad=$((bad+1)); }
 done < $D/routes.txt
 echo "$bad of $n parameterless GET routes need Python"

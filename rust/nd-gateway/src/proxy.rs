@@ -32,6 +32,18 @@ fn starting_page() -> Response<Body> {
         .unwrap()
 }
 
+/// The answer for a request only the Python app can serve, when there is none (`ND_PYTHON_FREE=1`): 501 with the reason, in JSON for the API and a page otherwise
+fn not_in_this_image(path: &str, headers: &HeaderMap) -> Response<Body> {
+    let wants_json = path.starts_with("/api/") || path.starts_with("/mcp") || headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("json") && !a.contains("html"));
+    let msg = "This request needs the Python app, which this image does not include (ND_PYTHON_FREE).";
+    if wants_json {
+        return Response::builder().status(StatusCode::NOT_IMPLEMENTED).header(header::CONTENT_TYPE, "application/json").header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(format!("{{\"detail\":\"{msg}\"}}"))).unwrap();
+    }
+    Response::builder().status(StatusCode::NOT_IMPLEMENTED).header(header::CONTENT_TYPE, "text/html; charset=utf-8").header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(format!("<!doctype html><meta charset=utf-8><title>Not available</title><body style=\"font-family:sans-serif;background:#111;color:#ddd;padding:2rem\"><h1>Not available here</h1><p>{msg}</p>"))).unwrap()
+}
+
 impl Proxy {
     pub fn new(cfg: Arc<Config>) -> Proxy {
         let mut http = HttpConnector::new();
@@ -52,6 +64,9 @@ impl Proxy {
 
         let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
         census("PY", method.as_str(), parts.uri.path());
+        if crate::config::python_free() {
+            return not_in_this_image(parts.uri.path(), &req_headers);
+        }
         let uri: hyper::Uri = match format!("http://{}{}", self.cfg.upstream, pq).parse() {
             Ok(u) => u,
             Err(_) => return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(),
