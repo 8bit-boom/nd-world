@@ -153,7 +153,7 @@ tests' odd inputs) plus real gaps:
 - `GET /api/ai/models` / `resident` / the Studio routes are done for a Studio back end (studio.rs); the legacy Ollama back end (no Studio key) stays Python's.
 - The Python-free crawl (`scripts/python_free_crawl.sh`, 179 parameterless GET routes) still lists ~50 routes that need Python: the Studio / SwarmUI
   back-end passthroughs (`/api/ai/unsloth/*` with a key, `/api/ai/imagegen/*` with a back end, `/api/ai/models|hardware|resident|debug|test-chat`,
-  `/api/ai/ollama/hf-*`), `/export/foundry.json` (the world's Foundry export: tried, and parked - its entity / rules HTML must be byte-identical, and `nd_render::md::render_md` matches Python-Markdown only up to whitespace, which the page comparisons ignore; the per-character export is done and shares `pc_foundry_doc`), `/api/kiy/inspirations`
+  `/api/ai/ollama/hf-*`), `/export/foundry.json` (the world's Foundry export: tried, and parked - its entity / rules HTML must be byte-identical, and `nd_render::md::render_md` is pulldown-cmark, not markdown2, so it matches only approximately (whitespace, and some inputs - see docs/RUST_PAGES.md); a byte-exact markdown2 port is the real prerequisite; the per-character export is done and shares `pc_foundry_doc`), `/api/kiy/inspirations`
   (public web fetches), `/api/system/stats` and `/api/perf/*` (Python's own process), and FastAPI's `/docs`, `/redoc`, `/openapi.json`.
   The Studio client (`app/unsloth_extras.py`) is the biggest single item: port it and most of the first group follows.
 - `/api/ai/whisper/*` are probes of routes that do not exist (Python's 404 / 405).
