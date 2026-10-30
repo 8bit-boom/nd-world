@@ -101,6 +101,11 @@ them after each batch; the phase is done when both are empty and the steps below
   still need Python (AI back-end status routes, `/media-rename` page, `/studio`, `/export/foundry.json`, orgs graph, perf/stats, docs).
 - **AI page reads** (apis.rs): `GET /api/ai/sessions`, `/recap-instructions`, `/defaults` (ai_models.json; an unreadable file is the empty library, a wrong
   shape is Python's 500) and `/prompt-presets?scope=` (a chat world with no prompts yet is Python's: it seeds the defaults). All GM only.
+- **Studio status routes with a key** (studio.rs): `GET /api/ai/unsloth/models|image/status|image/load-progress|auto-switch|status|context-overrides|audio-models|version|probe|
+  hub/download-progress|gguf-variants|key-check|auth-status` ask Studio what Python asks (hyper client, redirects followed, 30 s) and answer with Studio's own JSON or
+  Python's wording for its errors (`_error_message`, "This Studio build doesn't provide ..."). The key-death banner's two timestamps are kept in memory
+  here as Python keeps them. Studio over https, a body past 64-bit numbers, or a failure Python lets escape as a 500 (the version probe's) stay Python's.
+  Tested against a stand-in Studio for a healthy, an erroring, an empty and a key-rejecting Studio. Only the POSTs (loads, downloads, checks) are left.
 - **Unsloth routes with no key** (apis.rs): the 11 Studio status routes that open with `_unsloth_or_400()` (models, image/status, auto-switch, status, ...)
   answer Python's 400 "No Unsloth backend configured" when no Studio key is saved or in the environment. With a key they talk to Studio: still Python's
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`

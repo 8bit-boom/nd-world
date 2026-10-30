@@ -294,7 +294,7 @@ pub async fn hardware(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<
 }
 
 /// `installed_models_detail()` on a Studio backend: `/v1/models`' ids ([] on any failure)
-async fn studio_models(b: &crate::ai::Backend) -> Vec<String> {
+pub(crate) async fn studio_models(b: &crate::ai::Backend) -> Vec<String> {
     use http_body_util::BodyExt;
     let Some(req) = crate::ai::backend_request(b, "GET", "/v1/models", None) else { return vec![] };
     let fetch = async {

@@ -45,6 +45,7 @@ pub mod home;
 pub mod hub;
 pub mod importer;
 pub mod settings_overrides;
+pub mod studio;
 pub mod studio_key;
 pub mod settings_system;
 pub mod startup;
@@ -591,6 +592,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         // the GM's JSON exports of a world's entities
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || export::get(&cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/api/ai/unsloth/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // Unsloth Studio's status routes: what Studio answers, with Python's wording for its errors (no key: apis.rs's 400)
+        if let Some(resp) = studio::route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;
         }
     }

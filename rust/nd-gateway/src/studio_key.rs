@@ -33,7 +33,7 @@ fn effective_key(saved: &str) -> String {
 /// app/ai.py `effective_llm_url`: the override (llm_url or ollama_url column, rstripped of trailing
 /// slashes) wins; with no URL, a key means the Studio address (never send a Bearer to Ollama), no
 /// key means the Ollama address.
-fn effective_url(saved_url: &str, key: &str) -> String {
+pub(crate) fn effective_url(saved_url: &str, key: &str) -> String {
     if !saved_url.is_empty() {
         return saved_url.to_string();
     }
@@ -59,7 +59,7 @@ fn key_hint(key: &str) -> String {
     }
 }
 
-fn key_sources(saved: &str, env: &str) -> Value {
+pub(crate) fn key_sources(saved: &str, env: &str) -> Value {
     let in_use = if !saved.is_empty() {
         "settings"
     } else if !env.is_empty() {
@@ -71,7 +71,7 @@ fn key_sources(saved: &str, env: &str) -> Value {
 }
 
 /// app/main.py `_key_explanation`: one sentence on which key is in play
-fn key_explanation(info: &Map<String, Value>) -> String {
+pub(crate) fn key_explanation(info: &Map<String, Value>) -> String {
     let s = |k: &str| info.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     match s("in_use").as_str() {
         "settings" => {
@@ -113,6 +113,14 @@ fn clean_pasted_key(raw: &str) -> Result<String, &'static str> {
     Ok(key)
 }
 
+/// Python's `str(v)` for a JSON value: a string as it is, anything else as its repr
+fn py_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => py_repr(other),
+    }
+}
+
 /// Python's `v or ""` for a JSON value that should be a string
 fn truthy_str(v: Option<&Value>) -> String {
     match v {
@@ -136,14 +144,14 @@ fn is_truthy(v: &Value) -> bool {
 /// app/unsloth_extras.py `_error_message`: Studio's own error text from a failed response, whatever
 /// shape it took — {"error": {"message"}} / {"error": "..."} / {"error": [...]}, FastAPI
 /// {"detail": ...}, a JSON list/string, or a non-JSON body. Never fails.
-fn error_message(body: &[u8], status: u16) -> String {
+pub(crate) fn error_message(body: &[u8], status: u16) -> String {
     let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let mut msg = String::new();
     if let Some(obj) = parsed.as_object() {
         match obj.get("error") {
             Some(Value::Object(err)) => msg = truthy_str(err.get("message")),
             Some(Value::String(s)) => msg = s.clone(),
-            Some(Value::Array(a)) if !a.is_empty() => msg = a.iter().map(py_repr).collect::<Vec<_>>().join("; "),
+            Some(Value::Array(a)) if !a.is_empty() => msg = a.iter().map(py_str).collect::<Vec<_>>().join("; "),
             _ => {}
         }
         if msg.is_empty() {
@@ -153,8 +161,8 @@ fn error_message(body: &[u8], status: u16) -> String {
                     .iter()
                     .map(|d| match d {
                         // str(d.get("msg") if isinstance(d, dict) else d) — a dict without msg says "None"
-                        Value::Object(o) => py_repr(o.get("msg").unwrap_or(&Value::Null)),
-                        other => py_repr(other),
+                        Value::Object(o) => py_str(o.get("msg").unwrap_or(&Value::Null)),
+                        other => py_str(other),
                     })
                     .collect::<Vec<_>>()
                     .join("; "),
@@ -184,7 +192,7 @@ fn error_message(body: &[u8], status: u16) -> String {
 /// GET {url}/api/hub/cached-gguf with the Bearer header; redirects followed (httpx's default 20),
 /// 30 s overall. Err: the unreachable message tail (Python composes `f"{type(exc).__name__}: {exc}"`;
 /// these are best-effort — a real Studio either answers or doesn't).
-async fn studio_get(uri: hyper::Uri, key: &str) -> Result<(u16, Bytes), String> {
+pub(crate) async fn studio_get(uri: hyper::Uri, key: &str) -> Result<(u16, Bytes), String> {
     let mut http = HttpConnector::new();
     http.set_connect_timeout(Some(Duration::from_secs(8)));
     http.set_nodelay(true);
@@ -242,7 +250,7 @@ fn resolve_location(base: &hyper::Uri, loc: &str) -> Result<hyper::Uri, String> 
 
 /// app/unsloth_extras.py `verify_key` (the candidate branch — the gateway never verifies the
 /// effective key for a banner: that note is Python's in-process state, gone at the switch)
-async fn verify_key(url: &str, key: &str) -> Value {
+pub(crate) async fn verify_key(url: &str, key: &str) -> Value {
     if key.is_empty() {
         return json!({"ok": false, "status": 0, "url": url, "message": "No Studio API key is set."});
     }

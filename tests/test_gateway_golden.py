@@ -8366,3 +8366,143 @@ def test_ai_context_info_and_ping_are_pythons(client, seed):
         assert b.headers.get("x-nd-served-by") == "gateway", url
         a, b = p.get(url), pv.get(url)
         assert (a.status_code, a.content) == (b.status_code, b.content), url
+
+
+class _RoutedStudio:
+    """A stand-in Unsloth Studio with a table of {path: (status, json body)} that a test swaps between rounds; any other path is FastAPI's 404.
+    Only 'Bearer sk-studio-key' is accepted (401 otherwise)."""
+
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.routes = {}
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = self.path.split("?", 1)[0]
+                if self.headers.get("Authorization", "") != "Bearer sk-studio-key":
+                    code, body = 401, {"detail": "Not authenticated"}
+                else:
+                    code, body = outer.routes.get(path, (404, {"detail": "Not Found"}))
+                raw = json.dumps(body).encode() if not isinstance(body, bytes) else body
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def url(self):
+        return f"http://127.0.0.1:{self.port}"
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def test_unsloth_studio_status_routes_are_pythons(client, seed):
+    """GET /api/ai/unsloth/* with a (stand-in) Studio configured: models, image status / load progress, auto-switch, context overrides (present,
+    missing, with a context that differs from ours), audio models, version, the probe, the status card, download progress, quant variants, the key
+    check and the auth status - for a Studio that answers, one that answers errors, and a key it rejects. Python's and the gateway's bytes are
+    compared (the banner timestamps normalised: each process keeps its own); a player is refused as Python refuses."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    studio = _RoutedStudio()
+
+    def save(side, key, url):
+        data = {"ollama_model": "", "ollama_url": "", "llm_url": url, "llm_model": "nd-test/model", "llm_api_key": key}
+        if not key:
+            data["llm_api_key_clear"] = "1"
+        r = side.post("/settings/system", data=data, follow_redirects=False)
+        assert r.status_code == 303, (r.status_code, r.text[:200])
+
+    cached = [
+        {"repo_id": "unsloth/a-GGUF", "task": "text-generation", "size_bytes": 1234, "load_id": "unsloth/a", "capabilities": {"requires_variant": True}},
+        {"repo_id": "x/img", "task": "text-to-image", "capabilities": {"can_download": False}},
+        {"repo_id": "x/whisper-small", "task": "automatic-speech-recognition", "size_bytes": 5, "capabilities": {"x": 1}},
+        {"repo_id": "x/orpheus-tts", "task": "text-to-speech", "size_bytes": 7},
+        {"repo_id": "x/odd", "task": "mystery", "load_id": None},
+    ]
+    good = {
+        "/api/hub/cached-gguf": (200, {"cached": cached}),
+        "/v1/models": (200, {"data": [{"id": "unsloth/a"}, {"id": "other"}]}),
+        "/api/inference/images/status": (200, {"loaded": True, "repo_id": "x/img", "gguf_filename": "q4.gguf", "vram": 1.5}),
+        "/api/inference/images/load-progress": (200, {"progress": 0.5, "phase": "loading"}),
+        "/api/inference/loaded-models": (200, {"models": [{"id": "unsloth/a", "kind": "chat"}]}),
+        "/api/settings/openai-auto-switch": (200, {"enabled": True, "auto_unload_idle_seconds": 300, "media_auto_switch_model": False}),
+        "/api/settings/openai-auto-switch/overrides": (200, {"overrides": {"nd-test/model": {"max_seq_length": 4096}}}),
+        "/version": (200, {"version": "2026.4.1", "other": "é"}),
+        "/api/hub/download-progress": (200, {"progress": 0.25, "complete_on_disk": False}),
+        "/api/hub/gguf-variants": (200, {"repo_id": "x/y", "variants": ["Q4_K_M", "Q8_0"], "default_variant": "Q4_K_M"}),
+        "/health": (200, {"status": "ok", "version": "h1"}),
+    }
+    errors = {
+        "/api/hub/cached-gguf": (500, {"error": {"message": "hub exploded"}}),
+        "/api/inference/images/status": (500, {"detail": "image backend down"}),
+        "/api/inference/images/load-progress": (404, {"detail": "Model not loading"}),
+        "/api/inference/loaded-models": (503, {"error": "busy"}),
+        "/api/settings/openai-auto-switch": (400, {"detail": [{"msg": "bad one"}, {"msg": "bad two"}]}),
+        "/api/settings/openai-auto-switch/overrides": (200, b"not json at all"),
+        "/api/hub/download-progress": (404, {"detail": "Repository 'x/y' not found"}),
+        "/api/hub/gguf-variants": (422, ["x", "y"]),
+    }
+    suffixes = ["models", "image/status", "image/load-progress", "auto-switch", "status", "context-overrides", "audio-models", "version", "probe",
+                "hub/download-progress?repo_id=x%2Fy", "gguf-variants?repo_id=x/y", "key-check", "auth-status"]
+
+    def scrub(r):
+        try:
+            body = r.json()
+        except ValueError:
+            return r.content
+        if isinstance(body, dict):
+            for key in ("failed_at", "ok_at"):
+                body.get(key) is not None and body.__setitem__(key, "T")
+            if isinstance(body.get("auth"), dict):
+                for key in ("failed_at", "ok_at"):
+                    body["auth"].get(key) is not None and body["auth"].__setitem__(key, "T")
+        return body
+
+    served = 0
+    try:
+        save(d, "sk-studio-key", studio.url())
+        save(v, "sk-studio-key", studio.url())
+        for label, table in (("good", good), ("errors", errors), ("empty", {})):
+            studio.routes = table
+            for s in suffixes:
+                url = "/api/ai/unsloth/" + s
+                a, b = d.get(url), v.get(url)
+                assert (a.status_code, scrub(a)) == (b.status_code, scrub(b)), (label, url, a.text[:300], b.text[:300])
+                served += b.headers.get("x-nd-served-by") == "gateway"
+                a, b = p.get(url), pv.get(url)
+                assert (a.status_code, a.content) == (b.status_code, b.content), (label, url, "player")
+        # a missing version in every build, then a version-less answer
+        studio.routes = {"/api/version": (404, {"detail": "Not Found"}), "/version": (404, {}), "/api/about": (404, "x")}
+        a, b = d.get("/api/ai/unsloth/version"), v.get("/api/ai/unsloth/version")
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+        # a key Studio rejects
+        save(d, "sk-wrong", studio.url())
+        save(v, "sk-wrong", studio.url())
+        studio.routes = good
+        for s in ("models", "status", "key-check", "image/status"):
+            url = "/api/ai/unsloth/" + s
+            a, b = d.get(url), v.get(url)
+            assert (a.status_code, scrub(a)) == (b.status_code, scrub(b)), ("wrong key", url, a.text[:300], b.text[:300])
+        a, b = d.get("/api/ai/unsloth/auth-status"), v.get("/api/ai/unsloth/auth-status")
+        assert scrub(a)["key_failed"] == scrub(b)["key_failed"] is True, (a.text, b.text)
+    finally:
+        studio.close()
+        save(d, "", "")
+        save(v, "", "")
+    assert served >= 25, served
