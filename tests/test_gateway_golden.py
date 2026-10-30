@@ -7846,7 +7846,7 @@ def test_small_json_reads_are_pythons(client, seed):
     """GET /api/quests/board, /api/combat/recent, /api/audio/clips, /api/world-players, /api/tables/options, /api/video-jobs: with data, for the GM, a
     player (refused), without a world cookie, and signed out."""
     from app.database import SessionLocal
-    from app.models import AudioClip, CombatSession, Party, Quest, RandomTable, VideoClip, VideoJob, WorldMembership
+    from app.models import AudioClip, AudioJob, CombatSession, MapProp, Party, Quest, RandomTable, VideoClip, VideoJob, WorldMembership
     from .conftest import PLAYER_PASSWORD
     base = str(client.base_url)
     w = seed.world_a.id
@@ -7862,12 +7862,15 @@ def test_small_json_reads_are_pythons(client, seed):
                     Quest(world_id=w, title="Done", status="done"), Quest(world_id=w, title="Child", status="active", parent_id=1),
                     CombatSession(world_id=w, name="Fight 1", round_num=0), CombatSession(world_id=w, name="Template", is_template=True),
                     AudioClip(world_id=w, name="Zed", file_url="/uploads/audio/z.mp3", description="d", album_id=None), AudioClip(world_id=w, name="Abe", file_url="/uploads/audio/a.mp3"),
-                    RandomTable(world_id=w, name="Loot", slug="gw-sj-loot", entries_json='[{"label":"a"},{"label":"b"}]'), RandomTable(world_id=None, name="Global", slug="gw-sj-global", entries_json="bad"),
-                    VideoJob(world_id=w, prompt="a dragon", status="done", clip_id=clip.id), VideoJob(world_id=w, prompt="", status="failed", error="boom"), VideoJob(world_id=w, prompt="x", status=None)])
+                    RandomTable(world_id=w, name="Loot", slug="gw-sj-loot", entries_json='[{"label":"a"},{"label":"b"}]'), RandomTable(world_id=None, name="Global", slug="gw-sj-global", entries_json="[]"),
+                    VideoJob(world_id=w, prompt="a dragon", status="done", clip_id=clip.id), VideoJob(world_id=w, prompt="", status="failed", error="boom"), VideoJob(world_id=w, prompt="x", status=None),
+                    AudioJob(world_id=w, purpose="facts_parse", filename="p", status="done", result_json='[{"content": "a fact"}]', transcript="", audio_path="", delete_after=False),
+                    AudioJob(world_id=w, purpose="facts_parse", filename="p2", status="done", result_json="{bad", draft_consumed=True, transcript="", audio_path="", delete_after=False),
+                    MapProp(world_id=w, name="Barrel", tags="wood", file_url="/uploads/maps/props/b.png", kind="prop", px_w=64, px_h=64, cells_w=1.5, cells_h=1.0)])
         db.commit()
     finally:
         db.close()
-    urls = ["/api/quests/board", "/api/combat/recent", "/api/audio/clips", "/api/world-players", "/api/tables/options", "/api/video-jobs", "/api/characters/catalog", "/api/characters/templates"]
+    urls = ["/api/quests/board", "/api/combat/recent", "/api/audio/clips", "/api/world-players", "/api/tables/options", "/api/video-jobs", "/api/characters/catalog", "/api/characters/templates", "/api/maps/props", "/api/facts/last-parse", "/tables/export"]
     gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     for who, tag in ((gm, "gm"), (pl, "player")):

@@ -27,6 +27,9 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/api/sessions/", "/live-transcript/check").is_some() => live_transcript_check(&cfg, uri, headers, id_between(path, "/api/sessions/", "/live-transcript/check")?),
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
+        "/api/maps/props" => map_props_list(&cfg, uri, headers),
+        "/api/facts/last-parse" => facts_last_parse(&cfg, uri, headers),
+        "/tables/export" => tables_export(&cfg, uri, headers),
         "/api/characters/catalog" => characters_catalog(&cfg, uri, headers),
         "/api/characters/templates" => characters_templates(&cfg, uri, headers),
         "/api/combat/recent" => combat_recent(&cfg, uri, headers),
@@ -88,7 +91,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -2741,6 +2744,56 @@ fn characters_templates(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
             .and_then(|s| nd_render::app::data()["system_digests"].get(s).and_then(|v| v.as_str())).map_or(false, |d| !d.is_empty());
         let own = !nd_render::text::py_strip(t.get("rules_md").and_then(|v| v.as_str()).unwrap_or("")).is_empty();
         out.push(json!({"id": t.get("id"), "name": t.get("name"), "is_builtin": match t.get("is_builtin") { Some(Value::Null) | None => Value::Null, _ => json!(builtin) }, "sheet_mode": t.get("sheet_mode"), "fields": fields, "system": system, "has_rules": digest || own}));
+    }
+    crate::edits::json_response(&Value::Array(out))
+}
+
+/// `GET /api/maps/props`: the world's prop library (the maps edit tier; 404 without a world)
+fn map_props_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else { return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "No world selected")) };
+    if p.user_id <= 0 || !crate::pages::edit_level(&p, w, "maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let mut props = vec![];
+    for r in rows_of(&db, "SELECT * FROM map_props WHERE world_id = ?1 ORDER BY name, id", &[&wid])? {
+        props.push(json!({"id": r.get("id"), "name": r.get("name"), "tags": if crate::edits::py_truthy_pub(r.get("tags")) { r.get("tags").cloned().unwrap_or(Value::Null) } else { json!("") },
+            "url": r.get("file_url"), "kind": r.get("kind"), "px_w": r.get("px_w"), "px_h": r.get("px_h"), "cells_w": r.get("cells_w"), "cells_h": r.get("cells_h")}));
+    }
+    crate::edits::json_response(&json!({"props": props, "limit": 500}))
+}
+
+/// `GET /api/facts/last-parse`: the newest finished facts-parse draft that was not yet saved (400 without a world, 404 when there is none)
+fn facts_last_parse(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(wid) = world_id_of(&p) else { return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world")) };
+    let Some(job) = rows_of(&db, "SELECT * FROM audio_jobs WHERE world_id = ?1 AND purpose = 'facts_parse' AND status = 'done' AND draft_consumed IS NOT 1 ORDER BY created_at DESC LIMIT 1", &[&wid])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let raw = job.get("result_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+    if raw.contains("NaN") || raw.contains("Infinity") || !crate::edits::plain_numbers(raw.as_bytes()) {
+        return None;
+    }
+    let facts: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!([]));
+    crate::edits::json_response(&json!({"job_id": job.get("id"), "created_at": dt_iso(&job, "created_at")?, "game_session_id": job.get("game_session_id"), "facts": facts}))
+}
+
+/// `GET /tables/export`: the global tables and the world's own as a JSON list
+fn tables_export(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let rows = match world_id_of(&p) {
+        Some(w) => rows_of(&db, "SELECT * FROM random_tables WHERE world_id IS NULL OR world_id = ?1", &[&w])?,
+        None => rows_of(&db, "SELECT * FROM random_tables WHERE world_id IS NULL", &[])?,
+    };
+    let mut out = vec![];
+    for t in rows {
+        let raw = t.get("entries_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
+        if raw.contains("NaN") || raw.contains("Infinity") || !crate::edits::plain_numbers(raw.as_bytes()) {
+            return None;
+        }
+        let entries: Value = serde_json::from_str(raw).ok()?;
+        out.push(json!({"name": t.get("name"), "category": t.get("category"), "description": t.get("description"), "entries": entries}));
     }
     crate::edits::json_response(&Value::Array(out))
 }

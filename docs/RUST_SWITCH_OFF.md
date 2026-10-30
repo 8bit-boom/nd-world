@@ -72,6 +72,9 @@ them after each batch; the phase is done when both are empty and the steps below
   boots a fresh database, signs the seeded GM in and serves `/`, `/maps`, `/characters`, `/calendar`, `/sessions`, `/settings`. A crawl of the
   app's 179 parameterless GET routes against it lists the routes that still answer 502 (no Python): the AI back-end status routes, and
   a set of small reads (`/api/tables/options`, `/api/quests/board`, ...) that the next batches port.
+- **Small JSON reads** (apis.rs): `/api/quests/board`, `/api/combat/recent`, `/api/audio/clips`, `/api/world-players`, `/api/tables/options`,
+  `/api/video-jobs`, `/api/maps/props`, `/api/facts/last-parse` and `/tables/export` (same SQL as Python, so row order matches; a table whose
+  entries do not parse is declined, Python answers 500). The creation catalog and sheet template list are served too.
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything
