@@ -60,6 +60,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **AI sheet-template page** (pages.rs): `GET /characters/templates/ai-new` (GM; `has_world_rules` from the world's rules text).
 - **Studio console page, unconfigured** (pages.rs): `GET /studio` renders with an empty address when there is no Console URL in ai_models.json and no key;
   anything configured needs `studio_browser_url`'s host rewriting and stays Python's.
+- **System monitor reading** (sysstats.rs): `GET /api/system/stats` - CPU (two /proc/stat samples, per core, load, hwmon temperature, model), memory (+ ZFS ARC) and
+  `nvidia-smi` GPUs, cached for a second like Python's. A live reading, so its test compares the shape and what does not move. The GPU power-limit POST is still Python's.
 - **Faction graph** (apis.rs): `GET /api/orgs/graph` for the GM - clusters by subtype laid out with the same trigonometry (`round` half to even), stored links, and
   mentions typed by the words around them. A name or text with an upper-case non-ASCII letter (where `str.lower` could differ) and what a player may see are Python's.
   `GET /api/ai/imagegen/models` answers `[]` when no image back end is configured.
@@ -90,8 +92,7 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Backups list, diagnostics events, gallery picker** (apis.rs): `GET /api/backups` (the `world-*.db` snapshots; a non-UTC `TZ` is Python's,
   since `created_at` is local time), `GET /admin/diagnostics/events` (events.log as text; a file with `\r` or another line break only
   `str.splitlines` splits on is Python's) and `GET /api/gallery/browse[?album_id=N]` (the picker tree, GM only). Still Python's from the crawl:
-  `/export/foundry.json` (markdown rendering per entity), `/api/system/stats` and
-  `/api/perf/*` (Python's own process state).
+  `/export/foundry.json` (markdown rendering per entity), `/api/perf/*` (Python's own process state).
 - **Media rename reads** (apis.rs): `GET /api/media-rename/runs` (20 newest), `/summary` and `/items?kind=&album=&q=` (the `_run_view` builder is
   shared with the single-run route; a search with anything past ASCII on either side is Python's, since `str.lower` differs).
 - **Disabled lore extras** (pages.rs): `/dreamlands` and `/king-in-yellow` with their Settings switch off render `feature_disabled.html` (a `Simple`

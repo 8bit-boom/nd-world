@@ -8707,3 +8707,37 @@ def test_orgs_graph_is_pythons(client, seed):
     a, b = p.get("/api/orgs/graph"), _via(p, base).get("/api/orgs/graph")
     assert (a.status_code, a.content) == (b.status_code, b.content)
 
+
+
+def test_system_stats_reading_matches_pythons_shape(client, seed):
+    """GET /api/system/stats: a live reading, so the numbers move between the two calls - what must agree is the shape and what does not move (core
+    count and model, memory and swap totals, the GPU block), plus the no-store header; a player is refused as Python refuses."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def shape(x):
+        if isinstance(x, dict):
+            return {k: shape(y) for k, y in x.items()}
+        if isinstance(x, list):
+            return [shape(y) for y in x[:1]] + (["..."] if len(x) > 1 else [])
+        return "number" if isinstance(x, (int, float)) and not isinstance(x, bool) else ("null" if x is None else type(x).__name__)
+
+    a, b = d.get("/api/system/stats"), v.get("/api/system/stats")
+    assert a.status_code == b.status_code == 200
+    assert b.headers.get("x-nd-served-by") == "gateway" and a.headers["cache-control"] == b.headers["cache-control"] == "no-store"
+    ja, jb = a.json(), b.json()
+    assert list(ja) == list(jb) == ["time", "cpu", "memory", "gpu"]
+    assert list(ja["cpu"]) == list(jb["cpu"]) and list(ja["memory"]) == list(jb["memory"])
+    for k in ("cores", "model"):
+        assert ja["cpu"][k] == jb["cpu"][k], k
+    assert len(ja["cpu"]["per_core"]) == len(jb["cpu"]["per_core"]) and len(ja["cpu"]["load"]) == len(jb["cpu"]["load"])
+    for k in ("total", "swap_total"):
+        assert ja["memory"][k] == jb["memory"][k], k
+    assert (ja["memory"]["zfs_arc"] is None) == (jb["memory"]["zfs_arc"] is None)
+    assert ja["gpu"] == jb["gpu"] or shape(ja["gpu"]) == shape(jb["gpu"]), (ja["gpu"], jb["gpu"])
+    assert isinstance(jb["time"], float) and isinstance(jb["cpu"]["percent"], (float, type(None)))
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a, b = p.get("/api/system/stats"), _via(p, base).get("/api/system/stats")
+    assert (a.status_code, a.content) == (b.status_code, b.content)
