@@ -8176,3 +8176,63 @@ def test_session_audio_job_list_and_rename_history_are_pythons(client, seed):
     for url in (urls[0], urls[4]):
         a, b = p.get(url), pv.get(url)
         assert (a.status_code, a.content) == (b.status_code, b.content), url
+
+
+def test_ai_page_reads_are_pythons(client, seed):
+    """GET /api/ai/sessions, /recap-instructions, /defaults, /prompt-presets: saved chats, the standing recap text, the per-surface models (a
+    missing file, a good one, unreadable text, a wrong shape) and quick prompts (image with rows, chat with rows; a chat world with none is
+    Python's, which seeds them); a bad scope is its 400."""
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import ChatSession, PromptPreset, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([ChatSession(world_id=w, surface="chat", title="First"), ChatSession(world_id=w, surface="npc", title="Npc talk"),
+                    ChatSession(world_id=w, surface="chat", title="Second é"), ChatSession(world_id=seed.world_b.id, surface="chat", title="Other"),
+                    PromptPreset(world_id=w, scope="image", label="Neon", icon="", text="a city", negative="blur", sort_order=2),
+                    PromptPreset(world_id=w, scope="image", label="Dusk", icon="\U0001F305", text="", negative="", sort_order=1),
+                    PromptPreset(world_id=w, scope="chat", label="Hook", icon="⚡", text="Write a hook", sort_order=0)])
+        db.query(World).filter(World.id == w).first().recap_instructions = "Keep it short — please"
+        db.commit()
+    finally:
+        db.close()
+    f = Path(os.environ["DB_PATH"]).parent / "ai_models.json"
+    was = f.read_bytes() if f.exists() else None
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    urls = ["/api/ai/sessions", "/api/ai/recap-instructions", "/api/ai/defaults", "/api/ai/prompt-presets?scope=image", "/api/ai/prompt-presets?scope=chat",
+            "/api/ai/prompt-presets?scope=bad", "/api/ai/prompt-presets"]
+    try:
+        for body, served in ((None, True), ('{"defaults": {"chat": "llama3", "image": "sd", "extra": 1}, "custom": []}', True), ("[]", False),
+                              ("not json", True), ('{"defaults": []}', False), ('{"defaults": {"recap": null}}', True)):
+            if body is None:
+                f.unlink(missing_ok=True)
+            else:
+                f.write_text(body, encoding="utf-8")
+            a, b = d.get("/api/ai/defaults"), v.get("/api/ai/defaults")
+            assert (a.status_code, a.content) == (b.status_code, b.content), body
+            assert (b.headers.get("x-nd-served-by") == "gateway") == served, body
+        for url in urls:
+            a, b = d.get(url), v.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), url
+            if url not in ("/api/ai/prompt-presets",):
+                assert b.headers.get("x-nd-served-by") == "gateway", url
+        for url in urls[:5]:
+            a, b = p.get(url), pv.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), url
+        nogm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        nogm.cookies.set("active_world", "no-such-world")
+        nv = _via(nogm, base)
+        for url in urls[:2] + urls[3:4]:
+            a, b = nogm.get(url), nv.get(url)
+            assert (a.status_code, a.content) == (b.status_code, b.content), url
+    finally:
+        if was is None:
+            f.unlink(missing_ok=True)
+        else:
+            f.write_bytes(was)

@@ -91,6 +91,8 @@ them after each batch; the phase is done when both are empty and the steps below
 - **Session job list, rename history** (apis.rs): `GET /api/sessions/ai/audio-jobs[?game_session_id=]` (20 newest recap / condense jobs; the dict builder is
   shared with the single-job route) and `GET /api/media-rename/history` (the latest 10 applied batches). Crawl: 57 of 179 parameterless GET routes
   still need Python (AI back-end status routes, `/media-rename` page, `/studio`, `/export/foundry.json`, orgs graph, perf/stats, docs).
+- **AI page reads** (apis.rs): `GET /api/ai/sessions`, `/recap-instructions`, `/defaults` (ai_models.json; an unreadable file is the empty library, a wrong
+  shape is Python's 500) and `/prompt-presets?scope=` (a chat world with no prompts yet is Python's: it seeds the defaults). All GM only.
 - **Chat job reads and small AI deletes** (apis.rs): `GET /api/ai/chat/jobs` and `/<id>` (GM, active world), `GET /api/ai/imagegen/player/jobs`
   (a player's own, the GM's view of all with the owner's name), `DELETE /api/ai/chat/jobs/<id>` (finished only) and `DELETE
   /api/ai/imagegen/model-templates/custom/<id>`. Deleting an image job (it removes the job's picture files unless starred) and anything

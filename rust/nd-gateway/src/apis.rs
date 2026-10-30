@@ -28,6 +28,10 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/chat/jobs" => chat_jobs_list(&cfg, uri, headers),
         "/api/quests/board" => quests_board(&cfg, uri, headers),
         "/api/backups" => backups_list(&cfg, uri, headers),
+        "/api/ai/sessions" => ai_chat_sessions(&cfg, uri, headers),
+        "/api/ai/recap-instructions" => ai_recap_instructions(&cfg, uri, headers),
+        "/api/ai/defaults" => ai_defaults(&cfg, uri, headers),
+        "/api/ai/prompt-presets" => ai_prompt_presets(&cfg, uri, headers),
         "/api/media-rename/history" => media_rename_history(&cfg, uri, headers),
         "/api/sessions/ai/audio-jobs" => session_audio_job_list(&cfg, uri, headers),
         "/api/kiy/plays" => kiy_plays(&cfg, uri, headers),
@@ -100,7 +104,7 @@ pub fn is_get(path: &str) -> bool {
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
-        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
+        || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/sessions" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some()
 }
 
 /// the id of `/api/parties/<id>/vitals` (plain digits, as FastAPI's int reads them here)
@@ -3046,6 +3050,82 @@ fn media_rename_history(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
             "examples": examples, "by": by.as_deref().unwrap_or("someone")}));
     }
     crate::edits::json_response(&json!({"batches": out}))
+}
+
+/// `GET /api/ai/sessions` (app/routers/ai.py): the active world's saved Chat conversations, newest first. GM only (anyone else: Python's 403).
+fn ai_chat_sessions(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let rows = rows_of(&db, "SELECT id, title FROM chat_sessions WHERE world_id = ?1 AND surface = 'chat' ORDER BY updated_at DESC", &[&wid])?;
+    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "title": r.get("title")})).collect();
+    crate::edits::json_response(&json!({"sessions": list}))
+}
+
+/// `GET /api/ai/recap-instructions`: the world's standing recap instructions. GM only.
+fn ai_recap_instructions(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(w) = p.world.as_ref() else { return Some(crate::idpages::refusal(404)) };
+    let text = w.get("recap_instructions").and_then(|v| v.as_str()).unwrap_or("");
+    crate::edits::json_response(&json!({"instructions": text}))
+}
+
+/// `GET /api/ai/defaults`: the model chosen for each surface, from ai_models.json beside the database. GM only.
+fn ai_defaults(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let data: Value = match std::fs::read(cfg.db_path.parent()?.join("ai_models.json")) {
+        Ok(b) => {
+            let t = String::from_utf8(b).ok()?;
+            if t.contains("NaN") || t.contains("Infinity") || !crate::edits::plain_numbers(t.as_bytes()) {
+                return None;
+            }
+            serde_json::from_str(&t).unwrap_or_else(|_| json!({"custom": [], "hidden": []})) // unreadable: the empty library
+        }
+        Err(_) => json!({"custom": [], "hidden": []}),
+    };
+    let defaults = match data.as_object()?.get("defaults") {
+        None => Map::new(),
+        Some(Value::Object(d)) => d.clone(),
+        Some(_) => return None,
+    };
+    let mut out = Map::new();
+    for surface in ["chat", "ask_ai", "image", "recap", "assist"] {
+        out.insert(surface.into(), defaults.get(surface).cloned().unwrap_or(json!("")));
+    }
+    crate::edits::json_response(&Value::Object(out))
+}
+
+/// `GET /api/ai/prompt-presets?scope=chat|image`: the world's quick prompts. A world with no chat prompts yet gets Python's seeded defaults
+/// (a write), so that case is Python's.
+fn ai_prompt_presets(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let scope = crate::pages::query_param(uri, "scope")?;
+    if scope != "chat" && scope != "image" {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "scope must be 'chat' or 'image'"));
+    }
+    let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
+    let rows = rows_of(&db, "SELECT * FROM prompt_presets WHERE world_id = ?1 AND scope = ?2 ORDER BY sort_order, id", &[&wid, &scope])?;
+    if rows.is_empty() && scope == "chat" {
+        return None;
+    }
+    let text = |r: &Map<String, Value>, k: &str| {
+        let v = r.get(k).cloned().unwrap_or(Value::Null);
+        if crate::edits::py_truthy_pub(Some(&v)) { v } else { json!("") }
+    };
+    let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "scope": r.get("scope"), "label": r.get("label"), "icon": text(r, "icon"),
+        "text": text(r, "text"), "negative": text(r, "negative")})).collect();
+    crate::edits::json_response(&json!({"presets": list}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)
