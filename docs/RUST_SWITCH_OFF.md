@@ -520,3 +520,4 @@ in a small sidecar, as the plan allows, if a port is not good enough.
 - **Reset all layouts / delete an image job** (edits.rs): `DELETE /api/view-prefs` (every saved layout of the person gone, `{reset: n}`, site layout
   dropped from the session) and `DELETE /api/ai/imagegen/jobs/<id>` (a finished job's row, its pictures and previews - `_thumb`/`_display`, AVIF or
   WebP - removed after the commit unless a starred image keeps one; in progress = Python's 400; another world's or an unknown id the 404).
+- **Player image-job delete** (edits.rs): `DELETE /api/ai/imagegen/player/jobs/<id>` shares the GM route's cleanup; the world's opt-in flag (403), someone else's or an ownerless job (404).

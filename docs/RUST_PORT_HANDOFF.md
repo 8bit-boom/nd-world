@@ -157,7 +157,7 @@ tests' odd inputs) plus real gaps:
   (public web fetches), `/api/perf/*` (Python's own request timings), and FastAPI's `/docs`, `/redoc`, `/openapi.json`.
   The Studio client (`app/unsloth_extras.py`) is the biggest single item: port it and most of the first group follows.
 - `/api/ai/whisper/*` are probes of routes that do not exist (Python's 404 / 405).
-- Deleting an image generation job (`DELETE /api/ai/imagegen/jobs/{}` and the player one): removes the job's pictures unless starred.
+- Done since: media-rename apply / undo, Full Backup restore (stage, cancel, boot-time apply when Python-free), `DELETE /api/view-prefs`, deleting an image job (GM and player routes). No route-level gap is known beyond the parked items above; run the decline-trace sweep (`ND_DECLINE_TRACE=1`) to look for more.
 - Maps whose picture is AVIF / GIF / animated: the pyramid is cut by Python (the image crate has no AVIF decoder here).
 - The mixed-route long tail below.
 

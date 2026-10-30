@@ -550,6 +550,9 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     if let Some(id) = path.strip_prefix("/api/view-prefs/preset/").filter(|s| ok(s)) {
         return (*method == Method::POST).then(|| (view_pref_preset as SlugHandler, id.to_string()));
     }
+    if let Some(id) = path.strip_prefix("/api/ai/imagegen/player/jobs/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit())) {
+        return (*method == Method::DELETE).then(|| (imagegen_player_job_delete as SlugHandler, id.to_string()));
+    }
     if let Some(id) = path.strip_prefix("/api/ai/imagegen/jobs/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit())) {
         return (*method == Method::DELETE).then(|| (imagegen_job_delete as SlugHandler, id.to_string()));
     }
@@ -7207,9 +7210,22 @@ fn imagegen_job_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
     if !c.p.is_gm {
         return None;
     }
+    image_job_delete(c, id, false)
+}
+
+/// `DELETE /api/ai/imagegen/player/jobs/<id>`: the same for a player's own job (the world must allow players; someone else's job is a 404)
+fn imagegen_player_job_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm && !py_truthy(c.p.world.as_ref().and_then(|w| w.get("players_can_use_image_gen"))) {
+        return Some(crate::idpages::refusal(403));
+    }
+    image_job_delete(c, id, true)
+}
+
+fn image_job_delete(c: &mut Ctx, id: &str, own_only: bool) -> Option<Response<Body>> {
     let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
     let id: i64 = id.parse().ok()?;
-    let job = c.db.query_row("SELECT status, result_urls_json, params_json FROM image_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+    let uid = if own_only && !c.p.is_gm { c.p.user_id } else { -1 };
+    let job = c.db.query_row("SELECT status, result_urls_json, params_json FROM image_jobs WHERE id = ?1 AND world_id = ?2 AND (?3 = -1 OR created_by_user_id = ?3)", rusqlite::params![id, wid, uid],
         |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))).ok();
     let Some((status, urls, params)) = job else { return Some(crate::idpages::refusal(404)) };
     if matches!(status.as_deref(), Some("pending" | "generating")) {

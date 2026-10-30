@@ -9373,3 +9373,59 @@ def test_imagegen_job_delete_is_pythons(client, seed):
     assert py_left == ["busy", "other"] and any("T-star.png" == f for f in py_files)
     r = d.delete("/api/ai/imagegen/jobs/99999999")
     assert r.status_code == 404 and r.headers.get("x-nd-served-by") == "gateway"
+
+
+def test_imagegen_player_job_delete_is_pythons(client, seed):
+    """DELETE /api/ai/imagegen/player/jobs/<id>: a player's own finished job deleted, someone else's the 404, a job in progress Python's 400, the world's
+    opt-in flag off the 403; the same script on both servers."""
+    from app.database import SessionLocal
+    from app.models import ImageJob, World
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    w = seed.world_a.id
+
+    def set_flag(on):
+        db = SessionLocal()
+        try:
+            db.get(World, w).players_can_use_image_gen = on
+            db.commit()
+        finally:
+            db.close()
+
+    def run(url_base):
+        d = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+        if url_base != DIRECT:
+            d = _via(d, url_base)
+        db = SessionLocal()
+        try:
+            mine, busy, theirs, nobody = (ImageJob(world_id=w, created_by_user_id=u, status=s, result_urls_json="[]", params_json="{}")
+                                          for u, s in ((seed.player_a.id, "done"), (seed.player_a.id, "pending"), (seed.gm.id, "done"), (None, "done")))
+            db.add_all([mine, busy, theirs, nobody])
+            db.commit()
+            ids = [mine.id, busy.id, theirs.id, nobody.id]
+        finally:
+            db.close()
+        out = []
+        try:
+            set_flag(False)
+            r = d.delete(f"/api/ai/imagegen/player/jobs/{ids[0]}")
+            out.append(("off", r.status_code, r.text))
+            set_flag(True)
+            for i in (0, 1, 2, 3, 0):
+                r = d.delete(f"/api/ai/imagegen/player/jobs/{ids[i]}")
+                out.append((i, r.status_code, r.text, r.headers.get("x-nd-served-by")))
+        finally:
+            set_flag(False)
+            db = SessionLocal()
+            try:
+                db.query(ImageJob).filter(ImageJob.id.in_(ids)).delete(synchronize_session=False)
+                db.commit()
+            finally:
+                db.close()
+        return out
+
+    py = run(DIRECT)
+    gw = run(base)
+    strip = lambda o: [x[:3] for x in o]  # noqa: E731
+    assert strip(py) == strip(gw), (py, gw)
+    assert [x[3] for x in gw[1:]] == ["gateway"] * 5
