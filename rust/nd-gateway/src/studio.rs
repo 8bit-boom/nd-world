@@ -59,7 +59,7 @@ fn auth_status(url: Option<&str>) -> Value {
 }
 
 fn base_url(b: &Backend) -> String {
-    format!("http://{}{}", b.host, b.base_path)
+    b.base_url()
 }
 
 fn query_string(query: &[(&str, &str)]) -> String {

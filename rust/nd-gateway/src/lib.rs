@@ -49,6 +49,7 @@ pub mod studio;
 pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
+pub mod net;
 pub mod startup;
 pub mod restore;
 pub mod imaging;

@@ -9532,3 +9532,89 @@ def test_world_edit_page_and_upload_login_redirect_are_pythons(client, seed):
             db.commit()
         finally:
             db.close()
+
+
+def test_studio_over_https_is_reached_by_the_gateway(client, seed, tmp_path):
+    """A Studio at an https:// address (a stand-in with a self-signed certificate the gateway is told to trust through SSL_CERT_FILE): the gateway's
+    own TLS client reads its version and model list, where it used to hand every https:// back end to Python. A second gateway process (the shared one
+    does not trust the certificate); the Studio's address and key are the Settings row Python also reads."""
+    import socket
+    import ssl
+    import subprocess
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    import pytest
+    root = Path(__file__).resolve().parent.parent
+    binary = root / "rust" / "target" / "release" / "nd-gateway"
+    if not binary.exists():
+        pytest.skip("the gateway binary is not built")
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    made = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "2", "-subj", "/CN=localhost",
+                           "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth", "-addext", "keyUsage=digitalSignature,keyEncipherment"], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("openssl is not available to make a certificate")
+    seen = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            seen.append((path, self.headers.get("Authorization")))
+            if self.headers.get("Authorization") != "Bearer sk-studio-key":
+                code, body = 401, {"detail": "Not authenticated"}
+            else:
+                code, body = {"/version": (200, {"version": "2026.4.1"}), "/v1/models": (200, {"data": [{"id": "unsloth/a"}]}),
+                              "/api/hub/cached-gguf": (200, {"cached": []})}.get(path, (404, {"detail": "Not Found"}))
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert), str(key))
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    studio_url = f"https://127.0.0.1:{srv.server_address[1]}"
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    r = d.post("/settings/system", data={"ollama_model": "", "ollama_url": "", "llm_url": studio_url, "llm_model": "nd-test/model", "llm_api_key": "sk-studio-key"},
+               follow_redirects=False)
+    assert r.status_code == 303, r.text[:200]
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = dict(os.environ, ND_UPSTREAM="127.0.0.1:1", ND_GATEWAY_LISTEN=f"127.0.0.1:{port}", DB_PATH=os.environ["DB_PATH"], SSL_CERT_FILE=str(cert),
+               ND_STATIC_DIR=str(root / "static"), ND_TEMPLATES_DIR=str(root / "app" / "templates"),
+               ND_RUST_ROUTES="login,dice_roll,live,pages,writes,ai,mcp,fans,auth", SECRET_KEY=os.environ.get("SECRET_KEY", "test-secret-key-not-for-production"),
+               ND_PBKDF2_ITERATIONS="1000")
+    env.pop("SSL_CERT_DIR", None)
+    logfile = open(tmp_path / "gw.log", "w")
+    proc = subprocess.Popen([str(binary)], env=env, stdout=logfile, stderr=logfile)
+    try:
+        for _ in range(50):
+            try:
+                httpx.get(f"http://127.0.0.1:{port}/login", timeout=2)
+                break
+            except httpx.HTTPError:
+                time.sleep(0.2)
+        g = httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30, follow_redirects=False)
+        assert g.post("/login", data={"email": seed.gm.email, "password": GM_PASSWORD, "next": "/"}).status_code in (302, 303)
+        g.cookies.set("active_world", seed.world_a.slug)
+        a = g.get("/api/ai/unsloth/version")
+        assert a.status_code == 200, (a.status_code, a.text[:200], seen, (tmp_path / "gw.log").read_text()[-600:])
+        assert a.status_code == 200 and a.headers.get("x-nd-served-by") == "gateway", (a.status_code, a.text[:300])
+        assert a.json().get("version") == "2026.4.1", a.text
+        assert ("/version", "Bearer sk-studio-key") in seen, seen
+        m = g.get("/api/ai/unsloth/models")
+        assert m.status_code == 200 and m.headers.get("x-nd-served-by") == "gateway", (m.status_code, m.text[:300])
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        srv.shutdown()
+        d.post("/settings/system", data={"ollama_model": "", "ollama_url": "", "llm_url": "", "llm_model": "", "llm_api_key_clear": "1"}, follow_redirects=False)

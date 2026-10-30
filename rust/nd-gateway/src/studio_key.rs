@@ -193,10 +193,7 @@ pub(crate) fn error_message(body: &[u8], status: u16) -> String {
 /// 30 s overall. Err: the unreachable message tail (Python composes `f"{type(exc).__name__}: {exc}"`;
 /// these are best-effort — a real Studio either answers or doesn't).
 pub(crate) async fn studio_get(uri: hyper::Uri, key: &str) -> Result<(u16, Bytes), String> {
-    let mut http = HttpConnector::new();
-    http.set_connect_timeout(Some(Duration::from_secs(8)));
-    http.set_nodelay(true);
-    let client = Client::builder(TokioExecutor::new()).pool_idle_timeout(Duration::from_secs(30)).build(http);
+    let client = Client::builder(TokioExecutor::new()).pool_idle_timeout(Duration::from_secs(30)).build(crate::net::connector(Some(Duration::from_secs(8))));
     let mut current = uri;
     for _ in 0..20 {
         let req = HyperRequest::builder()

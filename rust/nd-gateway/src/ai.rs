@@ -71,6 +71,8 @@ fn cooldowns() -> &'static Mutex<HashMap<i64, Instant>> {
 /// The LLM backend as app.ai resolves it (Settings row first, then the environment); None when it is not Unsloth over plain http
 #[derive(Clone)]
 pub struct Backend {
+    /// "http" or "https"
+    pub scheme: &'static str,
     pub host: String,
     pub base_path: String,
     pub key: String,
@@ -84,6 +86,11 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// `scheme://host/base_path`, no trailing slash
+    pub fn base_url(&self) -> String {
+        format!("{}://{}{}", self.scheme, self.host, self.base_path)
+    }
+
     /// `effective_ollama_options(model)`: the instance-wide options with the model's own layered on top
     fn options_for(&self, model: &str) -> Map<String, Value> {
         let mut o = self.options.clone();
@@ -127,7 +134,11 @@ pub fn backend(db: &rusqlite::Connection) -> Option<Backend> {
         let e = env("UNSLOTH_URL");
         if e.is_empty() { "http://unsloth:8000".into() } else { e.trim_end_matches('/').to_string() }
     });
-    let rest = url.strip_prefix("http://")?;
+    let (scheme, rest) = match (url.strip_prefix("http://"), url.strip_prefix("https://")) {
+        (Some(r), _) => ("http", r),
+        (None, Some(r)) => ("https", r),
+        _ => return None,
+    };
     let (host, base_path) = match rest.split_once('/') {
         Some((h, p)) => (h.to_string(), format!("/{p}")),
         None => (rest.to_string(), String::new()),
@@ -156,7 +167,7 @@ pub fn backend(db: &rusqlite::Connection) -> Option<Backend> {
     }
     let context_tokens = st.get("llm_context_tokens").and_then(|v| v.as_i64()).filter(|n| *n > 0)
         .unwrap_or_else(|| env("LLM_CONTEXT_TOKENS").parse::<i64>().unwrap_or(16384).max(1024));
-    Some(Backend { host, base_path, key, model, options, per_model, context_tokens })
+    Some(Backend { scheme, host, base_path, key, model, options, per_model, context_tokens })
 }
 
 /// `_translate_options`: ollama option names to the OpenAI body's (num_ctx dropped: fixed at model load; others unknown there dropped)
@@ -291,15 +302,12 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
     Some(Plan::Fresh(Job { backend, requested: model, system: lines.join("\n"), messages: vec![json!({"role": "user", "content": question})], think, extra, cache: Some(key), on_done: None, detached: false }))
 }
 
-type Client = hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Full<bytes::Bytes>>;
-
-pub(crate) fn client() -> &'static Client {
-    static C: OnceLock<Client> = OnceLock::new();
-    C.get_or_init(|| hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http())
+pub(crate) fn client() -> &'static crate::net::HttpsClient {
+    crate::net::client()
 }
 
 pub(crate) fn backend_request(b: &Backend, method: &str, path: &str, body: Option<&Value>) -> Option<hyper::Request<http_body_util::Full<bytes::Bytes>>> {
-    let uri = format!("http://{}{}{}", b.host, b.base_path, path);
+    let uri = format!("{}{}", b.base_url(), path);
     let data = body.map(|v| serde_json::to_vec(v).unwrap_or_default()).unwrap_or_default();
     let mut req = hyper::Request::builder().method(method).uri(uri).header(header::AUTHORIZATION, format!("Bearer {}", b.key));
     if body.is_some() {

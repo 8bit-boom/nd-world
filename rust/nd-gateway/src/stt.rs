@@ -159,7 +159,7 @@ async fn stt_call(b: &Backend, audio: Vec<u8>, filename: &str, model: &str) -> R
         filename.replace('"', "%22")).as_bytes());
     body.extend_from_slice(&audio);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    let req = hyper::Request::builder().method("POST").uri(format!("http://{}{}/v1/audio/transcriptions", b.host, b.base_path))
+    let req = hyper::Request::builder().method("POST").uri(format!("{}/v1/audio/transcriptions", b.base_url()))
         .header("authorization", format!("Bearer {}", b.key)).header("content-type", format!("multipart/form-data; boundary={boundary}"))
         .body(http_body_util::Full::new(bytes::Bytes::from(body))).map_err(|e| (503, e.to_string(), true))?;
     let resp = crate::ai::client().request(req).await.map_err(|e| (503, format!("Unsloth Studio unreachable: ConnectError: {e}"), true))?;
