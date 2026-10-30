@@ -212,6 +212,10 @@ fn which(name: &str) -> Option<String> {
 
 /// (exit code, stdout, stderr) of a fixed argument list, 4 s at most
 fn run(exe: &str, args: &[String]) -> std::io::Result<(i32, String, String)> {
+    run_for(exe, args, Duration::from_secs(4))
+}
+
+fn run_for(exe: &str, args: &[String], limit: Duration) -> std::io::Result<(i32, String, String)> {
     use std::process::{Command, Stdio};
     let mut child = Command::new(exe).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let start = Instant::now();
@@ -219,7 +223,7 @@ fn run(exe: &str, args: &[String]) -> std::io::Result<(i32, String, String)> {
         if child.try_wait()?.is_some() {
             break;
         }
-        if start.elapsed() > Duration::from_secs(4) {
+        if start.elapsed() > limit {
             let _ = child.kill();
             break;
         }
@@ -292,6 +296,54 @@ fn gpu_stats() -> Value {
         g.remove("uuid");
     }
     json!({"available": true, "devices": gpus})
+}
+
+/// `set_power_limit(index, watts)`: (ok, the JSON answer). The range check uses the card's own reported limits, so nonsense is refused before any command runs.
+pub fn set_power_limit(index: &Value, watts: &Value) -> (bool, Value) {
+    let fail = |m: String| (false, json!({"ok": false, "message": m}));
+    let index = match index {
+        Value::Number(n) if n.is_i64() => n.as_i64().unwrap_or(0),
+        _ => return fail("index and watts must be numbers.".into()),
+    };
+    let watts_f = match watts {
+        Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+        _ => return fail("index and watts must be numbers.".into()),
+    };
+    if !watts_f.is_finite() || watts_f.trunc() != watts_f {
+        return fail("watts must be a whole number.".into());
+    }
+    let watts = watts_f as i64;
+    let current = gpu_stats();
+    if current["available"] != json!(true) {
+        return fail(current.get("reason").and_then(|r| r.as_str()).unwrap_or("No GPU available.").to_string());
+    }
+    let Some(card) = current["devices"].as_array().and_then(|d| d.iter().find(|g| g["index"].as_i64() == Some(index))) else {
+        return fail("There is no GPU with that index.".into());
+    };
+    let (Some(lo), Some(hi)) = (card["power_min_w"].as_f64(), card["power_max_w"].as_f64()) else {
+        return fail("This card does not report a power-limit range, so the limit cannot be set from here.".into());
+    };
+    if !(lo <= watts as f64 && watts as f64 <= hi) {
+        return fail(format!("The limit must be between {} and {} W for this card.", lo.round_ties_even() as i64, hi.round_ties_even() as i64));
+    }
+    let Some(exe) = which("nvidia-smi") else { return fail("nvidia-smi could not be run: not found".into()) };
+    let (code, out, err) = match run_for(&exe, &["-i".into(), index.to_string(), "-pl".into(), watts.to_string()], Duration::from_secs(10)) {
+        Ok(r) => r,
+        Err(e) => return fail(format!("nvidia-smi could not be run: {}", take(&e.to_string().split_whitespace().collect::<Vec<_>>().join(" "), 160))),
+    };
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None; // the next reading must show the new limit
+    let joined: String = format!("{out} {err}").chars().map(|c| if c == '\n' || (' '..='~').contains(&c) { c } else { ' ' }).collect();
+    let text = nd_render::text::py_strip(&joined).to_string();
+    if code != 0 {
+        let low = text.to_lowercase();
+        let hint = if low.contains("permission") || low.contains("not supported") {
+            format!(" The container is not allowed to change it. Set it from the TrueNAS shell instead: sudo nvidia-smi -i {index} -pl {watts} (add it under System \u{2192} Advanced \u{2192} Init/Shutdown Scripts as a post-init command to keep it after a reboot).")
+        } else {
+            String::new()
+        };
+        return fail(format!("{}{hint}", if text.is_empty() { "nvidia-smi failed.".to_string() } else { format!("nvidia-smi refused: {}", take(&text, 200)) }));
+    }
+    (true, json!({"ok": true, "message": format!("Power limit set to {watts} W. It lasts until the driver reloads or the machine restarts."), "watts": watts}))
 }
 
 /// `snapshot()`: everything, cached for a second

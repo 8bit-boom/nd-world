@@ -946,7 +946,7 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/system/gpu-power")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
@@ -954,6 +954,7 @@ pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         "/api/ai/world-context-smart" => world_context_smart(&cfg, uri, headers, body),
         "/api/ai/world-context-player" => world_context_player(&cfg, uri, headers, body),
         "/api/ai/unsloth/prefs" => unsloth_prefs(&cfg, uri, headers, body),
+        "/api/system/gpu-power" => gpu_power(&cfg, uri, headers, body),
         _ => None,
     }
 }
@@ -3466,6 +3467,30 @@ fn perf_empty(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
     let body = if uri.path().ends_with("/summary") { json!({"slow_ms": slow, "routes": []}) } else { json!({"requests": []}) };
     let mut r = crate::edits::json_response(&body)?;
     r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
+    Some(r)
+}
+
+/// `POST /api/system/gpu-power` {index, watts}: set a card's power limit inside its own min..max (GM only; a body that is not JSON / an object is the 400s)
+fn gpu_power(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let bad = |m: &str| Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, m));
+    if !crate::edits::plain_numbers(raw) {
+        return None;
+    }
+    let body = match serde_json::from_slice::<Value>(raw) {
+        Ok(Value::Object(o)) => o,
+        Ok(_) => return bad("JSON object required"),
+        Err(_) if std::str::from_utf8(raw).is_ok() && !raw.contains(&0) && !raw.windows(3).any(|w| w == b"NaN") && !raw.windows(8).any(|w| w == b"Infinity") => return bad("JSON body required"),
+        Err(_) => return None, // json.loads reads UTF-16 / 32 and NaN: Python's
+    };
+    let (ok, result) = crate::sysstats::set_power_limit(body.get("index").unwrap_or(&Value::Null), body.get("watts").unwrap_or(&Value::Null));
+    let mut r = crate::edits::json_response(&result)?;
+    if !ok {
+        *r.status_mut() = axum::http::StatusCode::BAD_REQUEST;
+    }
     Some(r)
 }
 

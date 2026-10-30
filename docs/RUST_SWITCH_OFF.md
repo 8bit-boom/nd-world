@@ -71,7 +71,7 @@ them after each batch; the phase is done when both are empty and the steps below
   counter), the dead-link pages (used up, revoked, expired, unknown), the player membership + use count, the `active_world` cookie, and a two-step account
   redeeming on the way in (`/login/2fa` now finishes a pending invite). A world's starting layout preset is applied to a new member with no saved layouts (`_start_with_world_layout`).
 - **System monitor reading** (sysstats.rs): `GET /api/system/stats` - CPU (two /proc/stat samples, per core, load, hwmon temperature, model), memory (+ ZFS ARC) and
-  `nvidia-smi` GPUs, cached for a second like Python's. A live reading, so its test compares the shape and what does not move. The GPU power-limit POST is still Python's.
+  `nvidia-smi` GPUs, cached for a second like Python's. A live reading, so its test compares the shape and what does not move. `POST /api/system/gpu-power` validates exactly as Python does (type, whole watts, the card's own min..max) and runs `nvidia-smi -pl`; only the paths before the command are compared in tests (no GPU here).
 - **Faction graph** (apis.rs): `GET /api/orgs/graph` for the GM - clusters by subtype laid out with the same trigonometry (`round` half to even), stored links, and
   mentions typed by the words around them. A name or text with an upper-case non-ASCII letter (where `str.lower` could differ) and what a player may see are Python's.
   `GET /api/ai/imagegen/models` answers `[]` when no image back end is configured.

@@ -9075,3 +9075,25 @@ def test_imagegen_tag_routes_with_no_tag_list_are_pythons(client, seed):
             assert b.headers.get("x-nd-served-by") is None, url
     finally:
         shutil.rmtree(tags, ignore_errors=True)
+
+
+def test_gpu_power_limit_requests_are_pythons(client, seed):
+    """POST /api/system/gpu-power: the refusals that come before any command runs (bodies that are not JSON objects, indexes / watts that are not
+    numbers or not whole, then no nvidia-smi here), identical from Python and the gateway; a player gets Python's answer."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    bodies = [b"", b"not json", b"[1]", b'"s"', b"{}", b'{"index": 0}', b'{"index": 0, "watts": 100}', b'{"index": "0", "watts": 100}', b'{"index": true, "watts": 100}',
+              b'{"index": 0, "watts": 100.5}', b'{"index": 0, "watts": 100.0}', b'{"index": 0, "watts": "100"}', b'{"index": 1.0, "watts": 100}', b'{"index": 0, "watts": 1e3}',
+              b'{"index": 0, "watts": null}']
+    served = 0
+    for raw in bodies:
+        a = d.post("/api/system/gpu-power", content=raw, headers={"Content-Type": "application/json"})
+        b = v.post("/api/system/gpu-power", content=raw, headers={"Content-Type": "application/json"})
+        assert (a.status_code, a.content) == (b.status_code, b.content), raw
+        served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 12, served
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a, b = p.post("/api/system/gpu-power", json={"index": 0, "watts": 100}), _via(p, base).post("/api/system/gpu-power", json={"index": 0, "watts": 100})
+    assert (a.status_code, a.content) == (b.status_code, b.content)
