@@ -543,3 +543,12 @@ non-ASCII as `\uXXXX`; number spellings serde would change (1.0, 1E5, huge ints)
 Follow-up: a hand-made character column (`stats_json` as a dict, `null` or plain text) no longer fails the page Python-free. The list columns read as
 no entries (`list_col`, `stat_values`, the carry limit), and `/characters` leaves out a character it still cannot build instead of declining the
 whole roster. With Python behind the gateway nothing changes: those requests still go to Python.
+
+## Final state of the port (31 Oct 2026)
+
+- Everything is on `main` (last code change `8594534`; suites and CI green, Python-free image published and checked on a fresh volume under `TZ=Europe/Budapest`).
+- Odd stored data sweep: every JSON column that had rows in the test database (34 columns, nine odd values each: `null`, `{}`, `[]`, text, a number,
+  a dict, a list of non-objects, `[null]`) was crawled against 148 pages Python-free; none turned a 200 into 501. The test database has no rows for
+  entities, maps, sessions, combat, quests, parties, boards, albums or audio, so those tables were NOT exercised.
+- Known and accepted: a GET for a row that does not exist answers 501 Python-free (Python: 404); the items under "Deliberately left" above.
+- Remaining work is on the operator side: the copy-of-real-data upgrade test and a week of `ND_DECLINE_TRACE=1`. Fix what the trace shows, nothing else.
