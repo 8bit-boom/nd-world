@@ -178,6 +178,7 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 /// (pattern with `{}` for an integer id, handler)
 const ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore/cancel", crate::restore::cancel),
+    ("/api/ai/sessions", ai_chat_session_save),
     ("/api/media-rename/apply", media_rename_apply),
     ("/api/media-rename/undo", media_rename_undo),
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
@@ -559,6 +560,9 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     }
     if let Some(id) = path.strip_prefix("/api/ai/imagegen/jobs/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit())) {
         return (*method == Method::DELETE).then(|| (imagegen_job_delete as SlugHandler, id.to_string()));
+    }
+    if let Some(id) = path.strip_prefix("/api/ai/sessions/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
+        return (*method == Method::DELETE).then(|| (ai_chat_session_delete as SlugHandler, id.to_string()));
     }
     if path == "/api/view-prefs" && *method == Method::DELETE {
         return Some((view_pref_reset_all as SlugHandler, String::new()));
@@ -7505,6 +7509,101 @@ fn image_job_delete(c: &mut Ctx, id: &str, own_only: bool) -> Option<Response<Bo
     }
     c.db.execute("DELETE FROM image_jobs WHERE id = ?1", [id]).ok()?;
     c.removals.extend(doomed);
+    json_response(&json!({"ok": true}))
+}
+
+/// `POST /api/ai/sessions` (app/routers/ai.py `api_chat_sessions_save`): the Chat page's save-on-every-turn upsert, GM only. `messages` is
+/// what pydantic's `ChatMessage.model_dump()` writes back (role, content, attachments of kind / url / name / text, nothing else); a body
+/// pydantic would 422 or read differently is Python's
+fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let sid = match body.get("session_id") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    let mut msgs = vec![];
+    for m in body.get("messages")?.as_array()? {
+        let m = m.as_object()?;
+        let mut out = Map::new();
+        out.insert("role".into(), Value::String(m.get("role")?.as_str()?.to_string()));
+        out.insert("content".into(), Value::String(m.get("content")?.as_str()?.to_string()));
+        let mut atts = vec![];
+        match m.get("attachments") {
+            None => {}
+            Some(Value::Array(a)) => {
+                for x in a {
+                    let x = x.as_object()?;
+                    let text = |k: &str| -> Option<Value> {
+                        match x.get(k) {
+                            None => Some(Value::String(String::new())),
+                            Some(Value::String(t)) => Some(Value::String(t.clone())),
+                            _ => None,
+                        }
+                    };
+                    let mut at = Map::new();
+                    at.insert("kind".into(), Value::String(x.get("kind")?.as_str()?.to_string()));
+                    at.insert("url".into(), Value::String(x.get("url")?.as_str()?.to_string()));
+                    at.insert("name".into(), text("name")?);
+                    at.insert("text".into(), text("text")?);
+                    atts.push(Value::Object(at));
+                }
+            }
+            _ => return None,
+        }
+        out.insert("attachments".into(), Value::Array(atts));
+        msgs.push(Value::Object(out));
+    }
+    let stored = nd_render::py_dumps(&Value::Array(msgs.clone()));
+    let existing: Option<i64> = if sid != 0 {
+        c.db.query_row("SELECT id FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", rusqlite::params![sid, wid], |r| r.get(0)).ok()
+    } else {
+        None
+    };
+    let id = match existing {
+        Some(id) => {
+            orm::update(&c.db, "chat_sessions", id, &[("messages_json", s(&stored))])?;
+            id
+        }
+        None => {
+            // _chat_session_title: the first user message with text, its first line, 80 characters
+            let mut title = "New chat".to_string();
+            for m in &msgs {
+                if m["role"].as_str() == Some("user") {
+                    let content = m["content"].as_str()?;
+                    if content.chars().any(|ch| ('\u{1c}'..='\u{1f}').contains(&ch)) {
+                        return None; // str.strip() reads these as space, trim() does not
+                    }
+                    let t = content.trim();
+                    if !t.is_empty() {
+                        title = t.split('\n').next().unwrap_or("").chars().take(80).collect();
+                        break;
+                    }
+                }
+            }
+            orm::insert(&c.db, "chat_sessions", &[("world_id", Sql::Integer(wid)), ("user_id", Sql::Integer(c.p.user_id)), ("surface", s("chat")),
+                ("title", s(&title)), ("messages_json", s(&stored))])?
+        }
+    };
+    json_response(&json!({"id": id}))
+}
+
+/// `DELETE /api/ai/sessions/<id>`: a saved Chat conversation of the active world gone (GM only; another surface's row is a 404)
+fn ai_chat_session_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return Some(crate::idpages::refusal(403));
+    }
+    let Some(wid) = c.world_id() else { return Some(crate::idpages::refusal(404)) };
+    let id: i64 = id.parse().ok()?;
+    let n = c.db.execute("DELETE FROM chat_sessions WHERE id = ?1 AND world_id = ?2 AND surface = 'chat'", rusqlite::params![id, wid]).ok()?;
+    if n == 0 {
+        return Some(crate::idpages::refusal(404));
+    }
     json_response(&json!({"ok": true}))
 }
 

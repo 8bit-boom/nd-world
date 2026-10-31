@@ -9956,3 +9956,72 @@ def test_character_pages_with_compact_json_columns_are_pythons(client, seed):
             con.commit()
         finally:
             con.close()
+
+
+def test_ai_chat_sessions_save_open_delete_are_pythons(client, seed):
+    """POST /api/ai/sessions (save, then update by id), GET /api/ai/sessions/<id> and DELETE: the same answers from both servers - the
+    title from the first user line, messages written back as pydantic dumps them (attachments defaulted, extra keys dropped), a pinned id of
+    another world / unknown id a fresh row, a player 403, a missing row 404; and a Python-free gateway can save and reopen a chat."""
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    tag = os.urandom(3).hex()
+    first = f"  Rolling é {tag}\nsecond line"
+    msgs = [{"role": "system", "content": "ignored"}, {"role": "user", "content": first, "extra": 1},
+            {"role": "assistant", "content": "ok", "attachments": [{"kind": "image", "url": "/u/x.png", "ignored": True}]}]
+    made = {}
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/sessions", json={"messages": msgs})
+        assert r.status_code == 200, (side, r.text)
+        made[side] = r.json()["id"]
+        if side == "gw":
+            assert r.headers.get("x-nd-served-by") == "gateway"
+    got = {}
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.get(f"/api/ai/sessions/{made[side]}")
+        assert r.status_code == 200, (side, r.text)
+        got[side] = r.json()
+    assert got["py"]["messages"] == got["gw"]["messages"]
+    assert got["gw"]["messages"][1]["content"] == first and got["gw"]["messages"][1]["attachments"] == []
+    assert got["gw"]["messages"][2]["attachments"] == [{"kind": "image", "url": "/u/x.png", "name": "", "text": ""}]
+    lst = {side: {s["id"]: s["title"] for s in cl.get("/api/ai/sessions").json()["sessions"]} for side, cl in (("py", d), ("gw", v))}
+    assert lst["py"][made["py"]] == lst["gw"][made["gw"]] == first.strip().split("\n")[0]
+    # update by id keeps the row and the title
+    msgs2 = msgs + [{"role": "user", "content": "more"}]
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/sessions", json={"session_id": made[side], "messages": msgs2})
+        assert r.status_code == 200 and r.json()["id"] == made[side], (side, r.text)
+    assert d.get(f"/api/ai/sessions/{made['py']}").json()["messages"] == v.get(f"/api/ai/sessions/{made['gw']}").json()["messages"]
+    # an unknown id saves a new row; no user text is "New chat"
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.post("/api/ai/sessions", json={"session_id": 99999999, "messages": [{"role": "assistant", "content": "hi"}]})
+        assert r.status_code == 200 and r.json()["id"] != 99999999
+        nid = r.json()["id"]
+        assert {s["id"]: s["title"] for s in cl.get("/api/ai/sessions").json()["sessions"]}[nid] == "New chat"
+        assert cl.delete(f"/api/ai/sessions/{nid}").json() == {"ok": True}
+    # refusals
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    for side, cl in (("py", p), ("gw", pv)):
+        assert cl.get(f"/api/ai/sessions/{made['py']}").status_code == 403
+        assert cl.post("/api/ai/sessions", json={"messages": []}).status_code == 403
+        assert cl.delete(f"/api/ai/sessions/{made['py']}").status_code == 403
+    for side, cl in (("py", d), ("gw", v)):
+        r = cl.get("/api/ai/sessions/99999999")
+        assert r.status_code == 404 and r.json() == {"detail": "Not Found"}, (side, r.text)
+        assert cl.delete("/api/ai/sessions/99999999").status_code == 404
+    # delete
+    for side, cl in (("py", d), ("gw", v)):
+        assert cl.delete(f"/api/ai/sessions/{made[side]}").json() == {"ok": True}
+        assert cl.get(f"/api/ai/sessions/{made[side]}").status_code == 404
+    # no Python behind it: the same flow
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/api/ai/sessions", json={"messages": msgs})
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        assert g.get(f"/api/ai/sessions/{sid}").json()["messages"] == got["gw"]["messages"]
+        assert g.delete(f"/api/ai/sessions/{sid}").json() == {"ok": True}
+    finally:
+        proc.terminate()

@@ -552,3 +552,13 @@ whole roster. With Python behind the gateway nothing changes: those requests sti
   entities, maps, sessions, combat, quests, parties, boards, albums or audio, so those tables were NOT exercised.
 - Known and accepted: a GET for a row that does not exist answers 501 Python-free (Python: 404); the items under "Deliberately left" above.
 - Remaining work is on the operator side: the copy-of-real-data upgrade test and a week of `ND_DECLINE_TRACE=1`. Fix what the trace shows, nothing else.
+
+## Fix: AI Chat history (save / open / delete) was missing from the gateway
+
+Only `GET /api/ai/sessions` (the list) was ported. Open (`GET /api/ai/sessions/<id>`), the save-on-every-turn `POST /api/ai/sessions` and `DELETE` went to
+Python, so a Python-free image showed the history list but "Failed to load session ... d.messages is undefined" on a click, and silently saved nothing
+(the page ignores a failed save). Now ported (apis.rs `ai_chat_session_get`, edits.rs `ai_chat_session_save` / `ai_chat_session_delete`): GM only,
+messages written as pydantic's dump (role, content, attachments of kind / url / name / text, extras dropped), the title from the first user line (80
+characters), an unknown or other-world id saved as a new row, a missing row 404. Test: `test_ai_chat_sessions_save_open_delete_are_pythons` (parity,
+403s, 404s, and the same flow on a Python-free gateway). The crawl missed it because only parameterless GETs and the data fuzz without chat rows were run:
+the next sweep should drive the pages' own fetch calls (`static/js` and templates) rather than the route list.
