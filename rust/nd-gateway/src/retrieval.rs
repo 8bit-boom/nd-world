@@ -370,10 +370,14 @@ pub fn format_context_eligible(db: &Connection, entities: &[Map<String, Value>],
             if notes_total >= ENTITY_NOTES_TOTAL_BUDGET {
                 break;
             }
-            if n.get("content_is_html").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
+            let is_html = n.get("content_is_html").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+            if is_html && !crate::config::python_free() {
                 return None; // html_to_markdown: Python's
             }
             let mut content = text(n, "content").unwrap_or_default();
+            if is_html {
+                content = crate::sheet_import::html_to_sheet_text(&content); // no Python: the note's plain text
+            }
             if strip_secret {
                 content = strip(&content, None)?;
             }

@@ -574,3 +574,20 @@ the rewrite cases in `test_blocking_recap_and_facts_routes_are_pythons`, the exp
 
 Still Python-only (answer a generic 400 / 501 without it): imagegen tag-list download / activate / delete (`/api/ai/imagegen/tags/*`), `POST /api/ai/unsloth/update`,
 King in Yellow `generate` and `plays`, `POST /api/ai/pull` and `GET /api/ai/test-chat` (legacy Ollama), `POST /api/worlds` (no page calls it).
+
+## Sending pictures, sounds and video to the table (second screen and players' popup)
+
+- **Players' popup (spotlight)**: "Send…" (the hover button on any picture, and the lightbox) opens a dialog for a title and a description; the players
+  read them under the picture (`#lightbox-caption`, base.html). `POST /images/spotlight` takes an optional `label` (trimmed, 600 characters; none =
+  the gallery's name). The server also accepts the copies a page shows (`x_thumb.webp`, `x_display.webp`, `?display=1`) as the original, and a picture
+  the GM wrote into this world's own text (an HTML `<img>`, a sized markdown embed) - before, only gallery pictures, which is why a picture in an entity
+  answered "not in this world's gallery". Python `gallery.resolve_sendable_image`, Rust `gallery::resolve_sendable_image`; tests in tests/test_gallery.py.
+- **Second screen**: `POST /api/display/show` takes `kind: "audio"` and `"video"` (an address as safe as a picture's, a title, a description); the display
+  window plays them (`#av-layer`, a click starts it when the browser refuses autoplay) and stops them when something else is shown. Hovering a `<video>` /
+  `<audio>` on any page offers "Send…". tests/test_second_screen.py.
+- Not done yet: video for the players' popup (audio already has "Now Playing").
+
+## Fix: an entity with a rich-text (HTML) note answered 501 without Python
+
+The entity page builds the AI panel's context from the entity's notes; a note stored as HTML went through Python's html2text, so the gateway declined the
+whole page. Python-free it now uses its own plain-text reader (also in the AI chat's entity context and retrieval); next to Python nothing changes.

@@ -866,10 +866,12 @@ fn identity_context(db: &rusqlite::Connection, e: &Map<String, Value>, viewer: (
     let notes: Vec<(Option<String>, Option<i64>)> = st.query_map([eid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let mut note_lines = vec![];
     for (content, html) in notes {
-        if html.unwrap_or(0) != 0 {
+        let is_html = html.unwrap_or(0) != 0;
+        if is_html && !crate::config::python_free() {
             return None; // a note stored as HTML: Python's markdown conversion
         }
         let content = content.unwrap_or_default();
+        let content = if is_html { crate::sheet_import::html_to_sheet_text(&content) } else { content }; // no Python: its plain text
         let content = crate::edits::py_strip_pub(&if gm { content } else { crate::retrieval::strip(&content, None)? });
         if !content.is_empty() {
             note_lines.push(format!("- {content}"));

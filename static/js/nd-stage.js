@@ -50,7 +50,17 @@
     '#nd-stage-toast.on{opacity:1}' +
     '#nd-lightbox-actions{position:fixed;top:14px;right:70px;z-index:100011;display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 90px)}' +
     '#nd-lightbox-actions .nd-stage-float{position:static;display:block;min-height:36px;padding:.4rem .75rem}' +
-    '#nd-spot-lightbtn.on{background:#ff2d78;color:#fff}' });
+    '#nd-spot-lightbtn.on{background:#ff2d78;color:#fff}' +
+    '#nd-send-dlg{position:fixed;inset:0;z-index:100020;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:1rem}' +
+    '#nd-send-dlg .box{background:var(--bg2,#181820);color:var(--text,#eee);border:1px solid var(--neon,#0ff);border-radius:10px;padding:1rem;width:min(460px,100%);max-height:92vh;overflow:auto;font:.9rem system-ui,sans-serif}' +
+    '#nd-send-dlg h3{margin:0 0 .6rem;font-size:1rem;color:var(--neon,#0ff)}' +
+    '#nd-send-dlg img.pv{display:block;max-width:100%;max-height:160px;margin:0 auto .6rem;border-radius:6px}' +
+    '#nd-send-dlg label{display:block;margin:.4rem 0 .15rem;color:var(--text-dim,#999);font-size:.78rem}' +
+    '#nd-send-dlg input,#nd-send-dlg textarea{width:100%;box-sizing:border-box;background:var(--bg3,#22222c);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:4px;padding:.45rem .55rem;font:inherit}' +
+    '#nd-send-dlg .row{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem}' +
+    '#nd-send-dlg button{background:var(--bg3,#22222c);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:4px;padding:.5rem .8rem;font:inherit;cursor:pointer;min-height:38px}' +
+    '#nd-send-dlg button.go{border-color:var(--neon,#0ff)}' +
+    '#nd-send-dlg button:hover{border-color:var(--neon,#0ff)}' });
   document.head.appendChild(css);
 
   // ── API ───────────────────────────────────────────────────────────────────
@@ -74,6 +84,7 @@
   }
   var api = {
     showImage: function (url, title, caption) { return send('/api/display/show', { kind: 'image', url: toPath(url), title: title || '', caption: caption || '' }, '📺 ' + (title || 'Image') + ' → second screen'); },
+    showMedia: function (kind, url, title, caption) { return send('/api/display/show', { kind: kind, url: toPath(url), title: title || '', caption: caption || '' }, (kind === 'video' ? '🎬 ' : '🎵 ') + (title || kind) + ' → second screen'); },
     showText: function (text, title) { return send('/api/display/show', { kind: 'text', text: text, title: title || '' }, '📺 Text → second screen'); },
     showMap: function (mapSlug, title) { return send('/api/display/show', { kind: 'map', slug: mapSlug }, '📺 ' + (title || 'Map') + ' → second screen'); },
     showEntity: function (id, mode) { return send('/api/display/show', { kind: 'entity', entity_id: id, mode: mode || '' }, '📺 Sent to the second screen'); },
@@ -81,6 +92,60 @@
     openDisplay: openDisplay
   };
   window.ndStage = api;
+
+  // ── the players' popup (the world's Spotlight): one picture at a time, with the words the GM typed under it ────────────
+  function sendToPlayers(url, label) {
+    return fetch('/images/spotlight' + W, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: toPath(url).split('?')[0], label: label || '' }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          // the server only broadcasts images that belong to this world's gallery, portraits and pages
+          toast(res.status === 404 ? '\ud83d\udc65 That picture is not in this world\'s gallery, so it can\'t be sent to the players'
+                                    : '\ud83d\udc65 ' + (res.d.detail || ('HTTP ' + res.status)));
+          return res;
+        }
+        if (window.ndSpotlightSeen && res.d.version != null) window.ndSpotlightSeen(res.d.version);   // not on my own screen again
+        toast('\ud83d\udc65 Sent to all players');
+        document.dispatchEvent(new CustomEvent('nd-spot-sent'));
+        return res;
+      })
+      .catch(function (err) { toast('\ud83d\udc65 ' + err.message); });
+  }
+  // "Send this picture": a title and a description to go with it, then the second screen, the players, or both.
+  function openSendDialog(opts) {
+    var old = document.getElementById('nd-send-dlg'); if (old) old.remove();
+    var url = opts.url, kind = opts.kind || 'image', back = el('div', { id: 'nd-send-dlg', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Send this ' + kind });
+    var box = el('div', { class: 'box' });
+    var title = el('input', { type: 'text', maxlength: '200', placeholder: 'Title (optional)' });
+    var desc = el('textarea', { rows: '3', maxlength: '500', placeholder: 'Description the table reads under the picture (optional)' });
+    title.value = opts.title || '';
+    function close() { back.remove(); document.removeEventListener('keydown', onKey, true); }
+    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+    function go(screen, players) {
+      var t = title.value.trim(), d = desc.value.trim();
+      if (screen) { if (kind === 'image') api.showImage(url, t, d); else api.showMedia(kind, url, t, d); }
+      if (players) sendToPlayers(url, [t, d].filter(Boolean).join(' \u2014 '));
+      close();
+    }
+    var send = function (label, cls, screen, players) { return el('button', { type: 'button', class: cls, text: label, onclick: function () { go(screen, players); } }); };
+    box.appendChild(el('h3', { text: kind === 'image' ? 'Send this picture' : kind === 'video' ? 'Send this video' : 'Send this sound' }));
+    if (kind === 'image') box.appendChild(el('img', { class: 'pv', src: url, alt: '' }));
+    else box.appendChild(el('div', { text: (kind === 'video' ? '\ud83c\udfac ' : '\ud83c\udfb5 ') + decodeURIComponent(url.split('?')[0].split('/').pop() || ''), style: 'margin:0 0 .5rem;color:var(--text-dim,#999)' }));
+    box.appendChild(el('label', { text: 'Title' })); box.appendChild(title);
+    box.appendChild(el('label', { text: 'Description' })); box.appendChild(desc);
+    var buttons = [send('\ud83d\udcfa To the second screen', opts.target === 'screen' || kind !== 'image' ? 'go' : '', true, false)];
+    if (kind === 'image') buttons.push(send('\ud83d\udc65 To the players', opts.target === 'players' ? 'go' : '', false, true), send('Both', '', true, true));
+    buttons.push(el('button', { type: 'button', text: 'Cancel', onclick: close }));
+    box.appendChild(el('div', { class: 'row' }, buttons));
+    back.appendChild(box);
+    back.addEventListener('click', function (e) { if (e.target === back) close(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(back);
+    (opts.target === 'players' ? desc : title).focus();
+  }
+  api.sendDialog = openSendDialog;
 
   // ── opening the display on the other monitor ──────────────────────────────
   // The window is opened SYNCHRONOUSLY inside the click (a pop-up opened after an `await` loses the
@@ -122,18 +187,20 @@
   panel.appendChild(el('div', { text: 'Recently shown', style: 'color:var(--text-dim,#999);font-size:.72rem;margin-bottom:.3rem' }));
   panel.appendChild(recentEl);
   panel.appendChild(el('div', { class: 'nd-stage-row', style: 'margin-top:.6rem' }, [sideSel]));
-  panel.appendChild(el('div', { class: 'nd-stage-tip', text: 'Hover any image (or open it full size) and press "📺 Send to screen". Select any text and press "📺 Show text". On the display window: click for fullscreen, scroll to zoom.' }));
+  panel.appendChild(el('div', { class: 'nd-stage-tip', text: 'Hover any image, video or sound (or open a picture full size) and press "📺 Send…". Select any text and press "📺 Show text". On the display window: click for fullscreen, scroll to zoom.' }));
   document.body.appendChild(fab); document.body.appendChild(panel);
 
   function refreshPanel(state) {
     if (!state) return;
-    nowEl.textContent = state.current ? ('On screen: ' + (state.current.title || (state.current.kind === 'image' ? 'image' : 'text card'))) : 'Nothing on the screen.';
+    nowEl.textContent = state.current ? ('On screen: ' + (state.current.title || ({ image: 'image', audio: 'sound', video: 'video', map: 'map' }[state.current.kind] || 'text card'))) : 'Nothing on the screen.';
     recentEl.textContent = '';
     (state.recent || []).forEach(function (item) {
       var b = el('button', { type: 'button', title: item.title || '' }, [
-        item.kind === 'image' ? el('img', { src: item.url, alt: item.title || '', loading: 'lazy' }) : el('span', { text: '📝 ' + (item.title || 'Text') })]);
+        item.kind === 'image' ? el('img', { src: item.url, alt: item.title || '', loading: 'lazy' })
+          : el('span', { text: (item.kind === 'audio' ? '🎵 ' : item.kind === 'video' ? '🎬 ' : '📝 ') + (item.title || (item.kind === 'audio' || item.kind === 'video' ? item.kind : 'Text')) })]);
       b.addEventListener('click', function () {
         if (item.kind === 'image') api.showImage(item.url, item.title, item.caption);
+        else if (item.kind === 'audio' || item.kind === 'video') api.showMedia(item.kind, item.url, item.title, item.caption);
         else if (item.source && item.source.type === 'entity') api.showEntity(item.source.id, 'text');
         else api.showText(item.html ? new DOMParser().parseFromString(item.html, 'text/html').body.textContent : '', item.title);
       });
@@ -145,10 +212,16 @@
   document.addEventListener('click', function (e) { if (!panel.contains(e.target) && e.target !== fab) { panel.classList.remove('open'); fab.classList.remove('open'); } });
 
   // ── "send to screen" over any image ───────────────────────────────────────
-  var imgBtn = el('button', { type: 'button', id: 'nd-stage-imgbtn', class: 'nd-stage-float', text: '📺 Send to screen' });
+  var imgBtn = el('button', { type: 'button', id: 'nd-stage-imgbtn', class: 'nd-stage-float', text: '📺 Send…' });
   document.body.appendChild(imgBtn);
   var hoverImg = null, hideTimer = null;
+  function mediaSrc(m) { return m.currentSrc || m.src || ((m.querySelector && m.querySelector('source[src]')) || {}).src || ''; }
   function qualifies(img) {
+    if (img && (img.tagName === 'VIDEO' || img.tagName === 'AUDIO')) {
+      var mr = img.getBoundingClientRect();
+      if (!mediaSrc(img) || mr.width < 110 || img.closest('#nd-stage-panel, #lightbox-overlay, nav, .topbar, header.topbar, [data-nd-stage="off"], .nd-embed, #nd-now-playing')) return false;
+      return true;
+    }
     if (!img || img.tagName !== 'IMG' || !img.currentSrc && !img.src) return false;
     var r = img.getBoundingClientRect();
     if (r.width < 110 || r.height < 70) return false;
@@ -173,7 +246,7 @@
     imgBtn.style.left = Math.max(6, Math.min(window.innerWidth - imgBtn.offsetWidth - 6, r.left + 8)) + 'px';
   }
   document.addEventListener('mouseover', function (e) {
-    var img = e.target && e.target.tagName === 'IMG' ? e.target : null;
+    var img = e.target && /^(IMG|VIDEO|AUDIO)$/.test(e.target.tagName) ? e.target : null;
     if (img && qualifies(img)) { clearTimeout(hideTimer); hoverImg = img; placeBtn(img); }
     else if (e.target === imgBtn) { clearTimeout(hideTimer); }
   });
@@ -183,7 +256,8 @@
   window.addEventListener('scroll', function () { imgBtn.style.display = 'none'; }, { passive: true });
   imgBtn.addEventListener('click', function (e) {
     e.preventDefault(); e.stopPropagation();
-    if (hoverImg) api.showImage(fullSrc(hoverImg), titleFor(hoverImg));
+    if (hoverImg && hoverImg.tagName !== 'IMG') openSendDialog({ kind: hoverImg.tagName.toLowerCase(), url: toPath(mediaSrc(hoverImg)), title: titleFor(hoverImg) });
+    else if (hoverImg) openSendDialog({ url: fullSrc(hoverImg), title: titleFor(hoverImg) });
     imgBtn.style.display = 'none';
   });
 
@@ -192,7 +266,7 @@
   if (lb && lbImg) {
     var bar = el('div', { id: 'nd-lightbox-actions' });
     var lbBtn = el('button', { type: 'button', id: 'nd-stage-lightbtn', class: 'nd-stage-float', text: '📺 Send to screen' });
-    lbBtn.addEventListener('click', function (e) { e.stopPropagation(); if (lbImg.src) api.showImage(lbImg.src, lbImg.alt || titleFor(lbImg)); });
+    lbBtn.addEventListener('click', function (e) { e.stopPropagation(); if (lbImg.src) openSendDialog({ url: lbImg.src, title: lbImg.alt || titleFor(lbImg), target: 'screen' }); });
     var spBtn = el('button', { type: 'button', id: 'nd-spot-lightbtn', class: 'nd-stage-float', text: '👥 Send to players' });
     bar.appendChild(lbBtn); bar.appendChild(spBtn); lb.appendChild(bar);
 
@@ -213,24 +287,17 @@
     spBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       if (!lbImg.src) return;
-      var clearing = sending;
-      fetch((clearing ? '/images/spotlight/clear' : '/images/spotlight') + W, {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(clearing ? {} : { url: toPath(lbImg.src).split('?')[0] }) })
-        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
+      if (!sending) { openSendDialog({ url: lbImg.src, title: lbImg.alt || '', target: 'players' }); return; }
+      fetch('/images/spotlight/clear' + W, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
         .then(function (res) {
-          if (!res.ok) {
-            // the server only broadcasts images that belong to this world's gallery, portraits and pages
-            toast(res.status === 404 ? '👥 That picture is not in this world\'s gallery, so it can\'t be sent to the players'
-                                      : '👥 ' + (res.d.detail || ('HTTP ' + res.status)));
-            return;
-          }
-          if (window.ndSpotlightSeen && res.d.version != null) window.ndSpotlightSeen(res.d.version);   // not on my own screen again
-          paintSpot(!clearing);
-          toast(clearing ? '👥 Players\' popup closed' : '👥 Sent to all players');
+          if (!res.ok) { toast('\ud83d\udc65 ' + (res.d.detail || 'Could not stop it')); return; }
+          if (window.ndSpotlightSeen && res.d.version != null) window.ndSpotlightSeen(res.d.version);
+          paintSpot(false); toast('\ud83d\udc65 Players\' popup closed');
         })
-        .catch(function (err) { toast('👥 ' + err.message); });
+        .catch(function (err) { toast('\ud83d\udc65 ' + err.message); });
     });
+    document.addEventListener('nd-spot-sent', function () { if (lb.classList.contains('open')) refreshSpot(); });
     // every time the lightbox opens, show whether the players are already looking at this very image
     new MutationObserver(function () { if (lb.classList.contains('open')) { paintSpot(false); refreshSpot(); } })
       .observe(lb, { attributes: true, attributeFilter: ['class'] });

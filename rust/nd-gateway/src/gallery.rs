@@ -361,3 +361,43 @@ pub fn all_world_image_urls(db: &Connection, wid: i64) -> Option<Vec<Value>> {
     }
     Some(names.into_iter().map(|(u, n)| json!({"url": u, "name": n})).collect())
 }
+
+/// `resolve_sendable_image`: (url, name) of the picture a GM may send to the players for `url`. A small / display copy (`x_thumb.webp`,
+/// `x.png?display=1`) is the original it was made from; a picture written into this world's own text by hand (an HTML <img>, a sized embed the
+/// gallery does not list) is the world's too. Anything else is not.
+pub fn resolve_sendable_image(db: &Connection, wid: i64, url: &str, entries: &[Value]) -> Option<Option<(String, String)>> {
+    let base = url.split('?').next()?.split('#').next()?.to_string();
+    let name_of = |e: &Value| e.get("name").and_then(|n| n.as_str()).map(str::to_string);
+    if let Some(e) = entries.iter().find(|e| e.get("url").and_then(|u| u.as_str()) == Some(base.as_str())) {
+        return Some(Some((base, name_of(e)?)));
+    }
+    let lower = base.to_ascii_lowercase();
+    for suffix in ["_thumb.webp", "_thumb.avif", "_display.webp", "_display.avif"] {
+        if lower.ends_with(suffix) {
+            let stem = &base[..base.len() - suffix.len()];
+            let mut urls: Vec<&Value> = entries.iter().collect();
+            urls.sort_by(|a, b| a["url"].as_str().cmp(&b["url"].as_str()));
+            for e in urls {
+                let u = e.get("url")?.as_str()?;
+                if u.rsplit_once('.').map(|(a, _)| a) == Some(stem) {
+                    return Some(Some((u.to_string(), name_of(e)?)));
+                }
+            }
+        }
+    }
+    if base.starts_with("/uploads/") && !base.contains("..") && !base.contains('\\') {
+        let one = |sql: &str| -> Option<bool> { Some(db.query_row(sql, rusqlite::params![wid, base], |_| Ok(())).is_ok()) };
+        let hit = one("SELECT 1 FROM entities WHERE world_id = ?1 AND (instr(coalesce(body, ''), ?2) > 0 OR instr(coalesce(summary, ''), ?2) > 0 OR instr(coalesce(image_url, ''), ?2) > 0) LIMIT 1")?
+            || one("SELECT 1 FROM entity_notes n JOIN entities e ON e.id = n.entity_id WHERE e.world_id = ?1 AND instr(coalesce(n.content, ''), ?2) > 0 LIMIT 1")?
+            || one("SELECT 1 FROM player_characters WHERE world_id = ?1 AND (instr(coalesce(backstory, ''), ?2) > 0 OR instr(coalesce(notes, ''), ?2) > 0) LIMIT 1")?;
+        if hit {
+            let overrides = title_overrides(db, wid)?;
+            let name = match overrides.get(&base).filter(|t| t.as_str().map_or(false, |s| !s.is_empty())) {
+                Some(t) => t.as_str()?.to_string(),
+                None => display_name(&base, &[])?,
+            };
+            return Some(Some((base, name)));
+        }
+    }
+    Some(None)
+}

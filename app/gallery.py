@@ -151,3 +151,35 @@ def all_world_image_urls(db: Session, world: World) -> list:
                 if isinstance(u, str) and u not in names:
                     names[u] = overrides.get(u) or image_display_name(u)
     return [{"url": u, "name": names[u]} for u in sorted(names)]
+
+
+_DERIVED_RE = re.compile(r"^(.*)_(thumb|display)\.(webp|avif)$", re.I)
+
+
+def resolve_sendable_image(db: Session, world: World, url: str, entries: dict):
+    """(url, name) of the picture a GM may send to the players for `url`, or None. `entries` is {url: name} from all_world_image_urls().
+    A picture the page shows as its small / display copy (`x_thumb.webp`, `x_display.webp`, `x.png?display=1`) is the original it was made from;
+    a picture the GM wrote into this world's own text by hand (an HTML <img>, a sized markdown embed the gallery does not list) is the world's
+    too. Anything else on disk is not."""
+    base = url.split("?", 1)[0].split("#", 1)[0]
+    if base in entries:
+        return base, entries[base]
+    m = _DERIVED_RE.match(base)
+    if m:
+        for u in sorted(entries):
+            if u.rsplit(".", 1)[0] == m.group(1):
+                return u, entries[u]
+    if base.startswith("/uploads/") and ".." not in base and "\\" not in base:
+        from sqlalchemy import func, or_
+        hit = db.query(Entity.id).filter(Entity.world_id == world.id, or_(
+            func.instr(func.coalesce(Entity.body, ""), base) > 0, func.instr(func.coalesce(Entity.summary, ""), base) > 0,
+            func.instr(func.coalesce(Entity.image_url, ""), base) > 0)).first()
+        if not hit:
+            hit = (db.query(EntityNote.id).join(Entity, Entity.id == EntityNote.entity_id)
+                   .filter(Entity.world_id == world.id, func.instr(func.coalesce(EntityNote.content, ""), base) > 0).first())
+        if not hit:
+            hit = db.query(PlayerCharacter.id).filter(PlayerCharacter.world_id == world.id, or_(
+                func.instr(func.coalesce(PlayerCharacter.backstory, ""), base) > 0, func.instr(func.coalesce(PlayerCharacter.notes, ""), base) > 0)).first()
+        if hit:
+            return base, title_overrides(db, world.id).get(base) or image_display_name(base)
+    return None

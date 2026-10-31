@@ -10137,3 +10137,27 @@ def test_characters_roll_star_and_model_list_edits_are_pythons(client, seed):
             f.unlink(missing_ok=True)
         else:
             f.write_bytes(was)
+
+
+def test_entity_with_a_rich_text_note_opens_without_python(client, seed):
+    """An entity with a note stored as HTML (the rich-text editor's) used to make the gateway decline the whole page (Python's html2text); with no
+    Python behind it the page opens, and the note's text reaches the AI panel's context."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="note", name=f"Html note host {os.urandom(3).hex()}", body="Body")
+        db.add(e)
+        db.flush()
+        db.add(EntityNote(entity_id=e.id, content="<p>Hello <b>rich</b> world</p><ul><li>one</li></ul>", content_is_html=True, visible_to_players=True))
+        db.commit()
+        eid = e.id
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.get(f"/entity/{eid}")
+        assert r.status_code == 200, (r.status_code, r.text[:200])
+        assert "Hello" in r.text and "rich" in r.text
+    finally:
+        proc.terminate()

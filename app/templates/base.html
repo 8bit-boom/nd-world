@@ -221,6 +221,7 @@
 
 <div id="lightbox-overlay" class="lightbox-overlay" role="dialog" aria-modal="true" aria-label="Image preview" onclick="closeLightbox()">
   <div id="lightbox-stage" class="lightbox-stage"><img id="lightbox-img" src="" alt="" draggable="false"/></div>
+  <div id="lightbox-caption" class="lightbox-caption" hidden onclick="event.stopPropagation()"></div>
   <button type="button" class="lightbox-close" onclick="closeLightbox()" aria-label="Close">✕</button>
   <div class="lightbox-bar" onclick="event.stopPropagation()">
     <span class="lightbox-hint">Click: actual size · wheel / pinch: zoom · drag: move</span>
@@ -244,8 +245,11 @@
 <script src="/static/js/nd-base-lightbox.js?v={{ asset_v('js/nd-base-lightbox.js') }}"></script>
 <script>
 let _lightboxReturnFocus = null;
-function openLightbox(src, alt) {
+function openLightbox(src, alt, caption) {
   if (!src) return;
+  // a picture the GM sent to the players comes with the words they typed (title / description), read under it
+  var cap = document.getElementById('lightbox-caption');
+  if (cap) { cap.textContent = caption || ''; cap.hidden = !caption; }
   _lightboxReturnFocus = document.activeElement;
   // An upload is shown at display size (2,560 px, ?display=1 - a large original can be 5-10x the bytes); "Full size", zooming in past it
   // or "Always open at full size" load the original in place (static/js/nd-base-lightbox.js - zoom, pan, actual size).
@@ -260,6 +264,8 @@ function closeLightbox() {
   document.getElementById('lightbox-overlay').classList.remove('open');
   if (window.ndLightbox) ndLightbox.close();
   document.getElementById('lightbox-img').src = '';
+  var cap = document.getElementById('lightbox-caption');
+  if (cap) { cap.textContent = ''; cap.hidden = true; }
   document.body.style.overflow = '';
   if (_lightboxReturnFocus && document.body.contains(_lightboxReturnFocus)) _lightboxReturnFocus.focus();
   _lightboxReturnFocus = null;
@@ -339,7 +345,7 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
       if (suppressOnce) { suppressOnce = false; }
       // The GM is the one sending: their own tabs must not pop the picture up (or close what they are looking at).
       else if (_ND_IS_GM) { /* players only */ }
-      else if (data.image_url) { openLightbox(data.image_url, data.label || ''); }
+      else if (data.image_url) { openLightbox(data.image_url, data.label || '', data.label || ''); }
       else { closeLightbox(); }
     }
     if (data.audio_version !== seenAudioVersion) {

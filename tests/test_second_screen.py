@@ -136,9 +136,30 @@ def test_safe_url_forms_are_accepted(client, seed):
 
 def test_unknown_kind_and_junk_bodies_are_400(client, seed):
     _gm(client, seed)
-    assert _show(client, kind="video", url="/uploads/a.mp4").status_code == 400
+    assert _show(client, kind="slideshow", url="/uploads/a.mp4").status_code == 400
     assert client.post("/api/display/show", content=b"nope", headers={"content-type": "application/json"}).status_code == 400
     assert client.post("/api/display/show", json=["x"]).status_code == 400
+
+
+def test_a_sound_or_a_video_can_be_put_on_the_screen(client, seed):
+    """audio / video items: a site-local or http(s) address, a title and a description, in the recent list like a picture; an address that could
+    run anything is refused (word for word the picture's rule, with the kind in the message)."""
+    _gm(client, seed)
+    r = _show(client, kind="audio", url="/uploads/rain.mp3", title=" Rain ", caption="  on the roof ")
+    assert r.status_code == 200, r.text
+    cur = r.json()["current"]
+    assert (cur["kind"], cur["url"], cur["title"], cur["caption"], cur["source"]) == ("audio", "/uploads/rain.mp3", "Rain", "on the roof", {"type": "audio"})
+    r = _show(client, kind="video", url="https://example.com/film.mp4", title="T" * 900, caption="C" * 5000)
+    cur = r.json()["current"]
+    assert cur["kind"] == "video" and len(cur["title"]) <= 200 and len(cur["caption"]) <= 600
+    assert [i["kind"] for i in r.json()["recent"][:2]] == ["video", "audio"]
+    for kind in ("audio", "video"):
+        for bad in ("javascript:alert(1)", "//evil.example/x.mp3", "", "uploads/rel.mp3"):
+            b = _show(client, kind=kind, url=bad)
+            assert b.status_code == 400 and b.json() == {"detail": f"That {kind} address is not allowed"}, (kind, bad, b.text)
+    assert client.get("/api/display/state").json()["current"]["kind"] == "video"
+    html = client.get("/display").text
+    assert 'id="av-video"' in html and 'id="av-audio"' in html and "cur.kind === 'audio' || cur.kind === 'video'" in html
 
 
 def test_title_and_caption_are_bounded(client, seed):

@@ -10420,13 +10420,23 @@ fn spotlight_send(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let b = c.json()?;
     let url = b.get("url").and_then(|u| u.as_str()).filter(|u| !u.is_empty())?.to_string();
     let entries = crate::gallery::all_world_image_urls(&c.db, wid)?;
-    let label = take_chars(entries.iter().find(|e| e.get("url").and_then(|u| u.as_str()) == Some(url.as_str()))?.get("name")?.as_str()?, 256);
+    let Some((url, name)) = crate::gallery::resolve_sendable_image(&c.db, wid, &url, &entries)? else {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Image not found"));
+    };
+    let known = take_chars(&name, 256);
+    // what the GM typed to go with the picture is what the players read under it; else the name the gallery knows it by
+    let typed = match b.get("label") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(t)) => py_strip_pub(t),
+        _ => return None,
+    };
+    let label = if typed.is_empty() { known } else { take_chars(&typed, 600) };
     let w = row(&c.db, "SELECT spotlight_version FROM worlds WHERE id = ?1", wid)?;
     let version = w.get("spotlight_version").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
     orm::update(&c.db, "worlds", wid, &[("spotlight_image_url", s(&url)), ("spotlight_label", s(&label)), ("spotlight_version", Sql::Integer(version))])?;
     let last: Option<String> = c.db.query_row("SELECT url FROM world_handouts WHERE world_id = ?1 ORDER BY id DESC LIMIT 1", [wid], |r| r.get(0)).ok();
     if last.as_deref() != Some(url.as_str()) {
-        orm::insert(&c.db, "world_handouts", &[("world_id", Sql::Integer(wid)), ("url", s(&url)), ("label", s(&label))])?;
+        orm::insert(&c.db, "world_handouts", &[("world_id", Sql::Integer(wid)), ("url", s(&url)), ("label", s(&take_chars(&label, 256)))])?;
     }
     signal_spot(c)?;
     json_response(&json!({"ok": true, "version": version}))
@@ -11282,6 +11292,13 @@ fn stage_item(c: &Ctx, wid: i64, b: &Map<String, Value>) -> Result<Value, Option
             }
             Ok(json!({"kind": "image", "url": url, "title": stage_text(b.get("title"), 200), "caption": stage_text(b.get("caption"), 600), "source": {"type": "image"}}))
         }
+        Some(k @ ("audio" | "video")) => {
+            let url = safe_image_url(b.get("url"));
+            if url.is_empty() {
+                return bad_request(&format!("That {k} address is not allowed"));
+            }
+            Ok(json!({"kind": k, "url": url, "title": stage_text(b.get("title"), 200), "caption": stage_text(b.get("caption"), 600), "source": {"type": k}}))
+        }
         Some("text") => {
             // _text(value, cap): "" for anything but a string
             let text = match b.get("text") {
@@ -11297,8 +11314,8 @@ fn stage_item(c: &Ctx, wid: i64, b: &Map<String, Value>) -> Result<Value, Option
             };
             Ok(json!({"kind": "text", "title": title, "html": nd_render::md::render_md(&text), "source": {"type": "text"}}))
         }
-        Some(_) => bad_request("kind must be image, text, entity, map or combat"),
-        None => bad_request("kind must be image, text, entity, map or combat"),
+        Some(_) => bad_request("kind must be image, audio, video, text, entity, map or combat"),
+        None => bad_request("kind must be image, audio, video, text, entity, map or combat"),
     }
 }
 

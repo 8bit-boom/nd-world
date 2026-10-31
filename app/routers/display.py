@@ -194,13 +194,19 @@ def _build_item(db: Session, world, body: dict) -> dict:
             raise HTTPException(400, "That image address is not allowed")
         return {"kind": "image", "url": url, "title": _text(body.get("title"), _TITLE_CAP),
                 "caption": _text(body.get("caption"), _CAPTION_CAP), "source": {"type": "image"}}
+    if kind in ("audio", "video"):
+        url = safe_image_url(body.get("url"))        # the same rule: a site-local /path or an http(s) address, nothing that can run
+        if not url:
+            raise HTTPException(400, f"That {kind} address is not allowed")
+        return {"kind": kind, "url": url, "title": _text(body.get("title"), _TITLE_CAP),
+                "caption": _text(body.get("caption"), _CAPTION_CAP), "source": {"type": kind}}
     if kind == "text":
         text = _text(body.get("text"), _TEXT_CAP)
         if not text:
             raise HTTPException(400, "Nothing to show")
         return {"kind": "text", "title": _text(body.get("title"), _TITLE_CAP), "html": _text_html(text),
                 "source": {"type": "text"}}
-    raise HTTPException(400, "kind must be image, text, entity, map or combat")
+    raise HTTPException(400, "kind must be image, audio, video, text, entity, map or combat")
 
 
 # ── routes (GM only) ─────────────────────────────────────────────────────────

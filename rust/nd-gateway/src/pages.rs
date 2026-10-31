@@ -801,10 +801,15 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         if !is_gm && !truthy_json(n.get("visible_to_players")) {
             continue;
         }
-        if truthy_json(n.get("content_is_html")) {
+        let html_note = truthy_json(n.get("content_is_html"));
+        if html_note && !crate::config::python_free() {
             return None; // html2text is Python's
         }
         let mut c = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if html_note {
+            // no Python to run html2text: the note's plain text, for the AI panel's context only
+            c = crate::sheet_import::html_to_sheet_text(&c);
+        }
         if !is_gm {
             c = nd_perm::gmonly::strip_gm_only(&c, None, nd_render::now_minute())?;
         }

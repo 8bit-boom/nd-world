@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import media_albums
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, world_can_edit_section, world_can_view_section
-from ..gallery import all_world_image_urls, discover_world_images, image_display_name, world_image_names
+from ..gallery import all_world_image_urls, discover_world_images, image_display_name, resolve_sendable_image, world_image_names
 from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, MediaTitle, World, WorldHandout
 from ..templating import templates, thumb_url
@@ -324,15 +324,23 @@ def image_spotlight_send(request: Request, db: Session = Depends(get_db), active
     # Same authorization boundary as image_delete: only an image already
     # reachable from this world may be broadcast to its players.
     entries = {e["url"]: e["name"] for e in all_world_image_urls(db, world)}
-    if url not in entries:
+    found = resolve_sendable_image(db, world, url, entries)
+    if found is None:
         raise HTTPException(404, "Image not found")
+    url, entries = found[0], {found[0]: found[1]}
 
+    # What the GM typed to go with the picture (a title and / or a description) is what the players read under it; without
+    # one it is the name the gallery knows the image by.
+    caption = payload.get("label")
+    if caption is not None and not isinstance(caption, str):
+        raise HTTPException(400, "Invalid label")
+    label = (caption or "").strip()[:600] or entries[url][:256]
     world.spotlight_image_url = url
-    world.spotlight_label = entries[url][:256]
+    world.spotlight_label = label
     world.spotlight_version = (world.spotlight_version or 0) + 1
     last = db.query(WorldHandout).filter(WorldHandout.world_id == world.id).order_by(WorldHandout.id.desc()).first()
     if last is None or last.url != url:          # showing the same picture again is not a second handout
-        db.add(WorldHandout(world_id=world.id, url=url, label=entries[url][:256]))
+        db.add(WorldHandout(world_id=world.id, url=url, label=label[:256]))
     db.commit()
     from .. import main as _main_module  # deferred — see audio_jobs.py's own use of this pattern
     _main_module._spotlight_cache.clear()

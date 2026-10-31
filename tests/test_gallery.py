@@ -930,6 +930,29 @@ def test_gm_send_spotlight_then_player_poll_sees_it(client, seed):
     assert data["version"] >= 1
 
 
+def test_spotlight_carries_the_title_and_description_the_gm_typed(client, seed):
+    """"Send to players" with a title / description: the players read it under the picture (the world's spotlight label, what /api/spotlight
+    returns), trimmed and capped; none typed keeps the gallery's own name; a label that is not text is a 400."""
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/spotlight", json={"url": "/uploads/scene.png", "label": "  The ruins \u2014 a cold wind blows \u00e9  "})
+    assert r.status_code == 200, r.text
+    assert _world(seed.world_a.id).spotlight_label == "The ruins \u2014 a cold wind blows \u00e9"
+    assert client.get("/api/spotlight").json()["label"] == "The ruins \u2014 a cold wind blows \u00e9"
+    r = client.post("/images/spotlight", json={"url": "/uploads/scene.png", "label": "x" * 900})
+    assert r.status_code == 200 and len(_world(seed.world_a.id).spotlight_label) == 600
+    r = client.post("/images/spotlight", json={"url": "/uploads/scene.png", "label": "   "})
+    assert r.status_code == 200 and _world(seed.world_a.id).spotlight_label == "scene.png"
+    r = client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+    assert r.status_code == 200 and _world(seed.world_a.id).spotlight_label == "scene.png"
+    r = client.post("/images/spotlight", json={"url": "/uploads/scene.png", "label": 5})
+    assert r.status_code == 400
+    # the page shows the words under the picture
+    html = client.get("/").text
+    assert 'id="lightbox-caption"' in html and "openLightbox(data.image_url, data.label || '', data.label || '')" in html
+
+
 def test_gm_clear_spotlight(client, seed):
     _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
     login(client, seed.gm.email, GM_PASSWORD)
@@ -1258,3 +1281,27 @@ def test_album_page_has_selection_and_bulk_buttons(client, seed):
     assert page.count('class="album-img-check"') == 2
     for needle in ("albumToggleAll()", "albumRemoveSelected()", "albumDeleteSelected()", "/images/delete-many"):
         assert needle in page, needle
+
+
+def test_spotlight_accepts_the_copies_a_page_shows_and_pictures_written_into_the_text(client, seed):
+    """A picture an entity page shows as its small / display copy is the original it was made from; one the GM wrote into this world's text by
+    hand (an HTML <img>) is the world's; a file nothing in the world mentions is still refused."""
+    from app.models import Entity
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="note", name="Hand written",
+                      body='<img src="/uploads/handmade-abc.png" width="300"> and ![x](/uploads/orig-1.png =50%)'))
+        db.commit()
+    finally:
+        db.close()
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/orig-1.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    for sent, stored in (("/uploads/orig-1_thumb.webp", "/uploads/orig-1.png"), ("/uploads/orig-1_display.webp", "/uploads/orig-1.png"),
+                         ("/uploads/orig-1.png?display=1", "/uploads/orig-1.png"), ("/uploads/handmade-abc.png?display=1", "/uploads/handmade-abc.png")):
+        r = client.post("/images/spotlight", json={"url": sent})
+        assert r.status_code == 200, (sent, r.text)
+        assert _world(seed.world_a.id).spotlight_image_url == stored, sent
+    for bad in ("/uploads/nobody-mentions-me.png", "/uploads/../etc/passwd", "/static/style.css"):
+        r = client.post("/images/spotlight", json={"url": bad})
+        assert r.status_code == 404 and r.json() == {"detail": "Image not found"}, (bad, r.text)
