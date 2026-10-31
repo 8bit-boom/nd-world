@@ -3551,11 +3551,48 @@ fn pc_conditions(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     json_response(&json!({"conditions": new}))
 }
 
-/// A stored JSON column as Python's json.dumps wrote it (re-dumping it must give the same text, else its numbers or spacing are something
-/// serde would change: Python's)
+/// `raw` without the whitespace outside string literals, with every non-ASCII char written as the lowercase `\uXXXX` (surrogate pairs) that
+/// `ensure_ascii` writes: the form two spellings of the same JSON share
+fn json_skeleton(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let (mut in_str, mut esc) = (false, false);
+    for ch in raw.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+                out.push(ch);
+            } else if ch == '\\' {
+                esc = true;
+                out.push(ch);
+            } else {
+                if ch == '"' {
+                    in_str = false;
+                }
+                if (ch as u32) > 0x7f {
+                    let mut b = [0u16; 2];
+                    for u in ch.encode_utf16(&mut b) {
+                        out.push_str(&format!("\\u{:04x}", u));
+                    }
+                } else {
+                    out.push(ch);
+                }
+            }
+        } else if ch == '"' {
+            in_str = true;
+            out.push(ch);
+        } else if !matches!(ch, ' ' | '\t' | '\n' | '\r') {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// A stored JSON column whose text Python's json.dumps would write again unchanged but for spacing and `\u` escaping (a browser posts it
+/// compact; Python re-dumps whole columns on every write, so spacing never reaches a result). Numbers that serde would change (1.0, 1E5,
+/// huge ints) still decline: those are Python's
 fn canonical_json(raw: &str) -> Option<Value> {
     let v: Value = serde_json::from_str(raw).ok()?;
-    (nd_render::py_dumps(&v) == raw).then_some(v)
+    (json_skeleton(&nd_render::py_dumps(&v)) == json_skeleton(raw)).then_some(v)
 }
 
 fn pc_currency(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {

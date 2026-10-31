@@ -9909,3 +9909,31 @@ def test_king_in_yellow_inspirations_without_python(client, seed, tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_character_pages_with_compact_json_columns_are_pythons(client, seed):
+    """A browser posts stats_json compactly (no spaces, raw non-ASCII); the gateway must still build /characters and /characters/<id> itself
+    (and, with no Python behind it, not answer 501): same pages from both servers, served by the gateway."""
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    tag = os.urandom(3).hex()
+    stats = [{"id": k, "label": k.upper(), "abbr": k[:3], "value": 10 + i} for i, k in enumerate(("str", "dex", "con", "int", "wis", "cha", "lck", "wil"))]
+    ids = []
+    for name, sj in ((f"Compact {tag}", json.dumps(stats, separators=(",", ":"))),
+                     (f"Café {tag}", json.dumps([{"id": "str", "value": 10, "label": "Stärke é"}], separators=(",", ":"), ensure_ascii=False)),
+                     (f"Plain {tag}", '[{"id":"str","value":10}]')):
+        r = d.post("/characters/new", data={"name": name, "player_name": "P", "stats_json": sj}, follow_redirects=False)
+        assert r.status_code in (302, 303), r.text[:200]
+        ids.append(int(r.headers["location"].rstrip("/").split("/")[-1].split("?")[0]))
+    served = _same_page(d, v, "/characters", "gm")
+    for i in ids:
+        served += _same_page(d, v, f"/characters/{i}", "gm")
+    assert served >= 3
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        for u in ["/characters"] + [f"/characters/{i}" for i in ids]:
+            r = g.get(u)
+            assert r.status_code == 200, (u, r.status_code, r.text[:200])
+    finally:
+        proc.terminate()
