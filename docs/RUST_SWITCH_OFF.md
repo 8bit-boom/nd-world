@@ -562,3 +562,15 @@ messages written as pydantic's dump (role, content, attachments of kind / url / 
 characters), an unknown or other-world id saved as a new row, a missing row 404. Test: `test_ai_chat_sessions_save_open_delete_are_pythons` (parity,
 403s, 404s, and the same flow on a Python-free gateway). The crawl missed it because only parameterless GETs and the data fuzz without chat rows were run:
 the next sweep should drive the pages' own fetch calls (`static/js` and templates) rather than the route list.
+
+## Gap batch: routes the pages call that the gateway did not have (found by comparing every Python route with what the suite got the gateway to answer)
+
+The route list was the wrong yardstick (it said "ported" for a prefix, and the list GET of chat history hid that open / save / delete were missing). The
+better check is: every route the page JS or a template calls, against a Python-free gateway. Found and ported so far (all Rust, each with a parity test):
+`POST /api/ai/status` (the AI dot every page polls; Studio back end), `POST /api/characters/roll` (the sheet's quick roller), `POST /api/ai/imagegen/star`
+and `/unstar`, `POST /api/ai/models/add|remove|reset` (ai_models.json byte for byte), `POST /api/ai/rewrite` (the editor toolbar's AI rewrite),
+`GET /api/npc-talk/<id>/export.md`. Tests: `test_ai_status_dot_on_studio_is_pythons`, `test_characters_roll_star_and_model_list_edits_are_pythons`,
+the rewrite cases in `test_blocking_recap_and_facts_routes_are_pythons`, the export in `test_npc_history_is_pythons`.
+
+Still Python-only (answer a generic 400 / 501 without it): imagegen tag-list download / activate / delete (`/api/ai/imagegen/tags/*`), `POST /api/ai/unsloth/update`,
+King in Yellow `generate` and `plays`, `POST /api/ai/pull` and `GET /api/ai/test-chat` (legacy Ollama), `POST /api/worlds` (no page calls it).

@@ -3826,6 +3826,8 @@ enum SyncAi {
     FromFacts { b: Backend, model: String, facts: Vec<String>, think: bool, instr: String },
     Facts { b: Backend, model: String, text: String, think: bool, lore: String, extra: String },
     FolkTale(Assist),
+    /// `POST /api/ai/rewrite`: a short passage rewritten as a preview
+    Rewrite { b: Backend, how: String, text: String },
     Compact { b: Backend, model: String, history: String, think: bool },
     /// `generate(prompt)`: the default system prompt, one user message
     Generate { b: Backend, prompt: String },
@@ -3950,6 +3952,33 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 _ => format!("Create a quest hook for '{}'. World context: {}", req("title")?, opt("context")?),
             };
             SyncAi::Generate { b: backend(&db)?, prompt }
+        }
+        "/api/ai/rewrite" => {
+            if !p.is_gm {
+                return None;
+            }
+            let Some(Value::String(t)) = b.get("text") else { return None };
+            let text = crate::edits::py_strip_pub(t);
+            if text.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "No text provided");
+            }
+            if text.chars().count() > 4000 {
+                return refuse(StatusCode::BAD_REQUEST, "Select a smaller part (4000 characters at most).");
+            }
+            let style = text_raw(&b, "style")?;
+            let instruction = text_raw(&b, "instruction")?;
+            let how = match style.as_str() {
+                "shorter" => "Make it shorter and tighter. Keep every fact.".to_string(),
+                "longer" => "Expand it with a little more vivid detail. Do not contradict or add major new facts.".to_string(),
+                "creepier" => "Make the tone eerie and unsettling. Keep every fact.".to_string(),
+                "simpler" => "Say it in simpler, plainer words. Keep every fact.".to_string(),
+                "grammar" => "Fix spelling, grammar and punctuation only. Change nothing else.".to_string(),
+                _ => crate::edits::py_strip_pub(&instruction).chars().take(300).collect(),
+            };
+            if how.is_empty() {
+                return refuse(StatusCode::BAD_REQUEST, "Say how to rewrite it.");
+            }
+            SyncAi::Rewrite { b: backend(&db)?, how, text }
         }
         "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" => {
             if !(p.is_gm || p.role.as_deref() == Some("assistant")) || p.world.is_none() {
@@ -4325,6 +4354,17 @@ async fn answer_sync(plan: SyncAi) -> Response<Body> {
             let result = generate_chat(&b, &b.model, &recap_text("_SYSTEM"), &[json!({"role": "user", "content": prompt})], false, &Map::new()).await;
             ok(json!({"result": result}))
         }
+        SyncAi::Rewrite { b, how, text } => {
+            let system = "You rewrite short passages of tabletop role-playing game notes. Follow the instruction exactly. Keep the same language, the same point of view and any markdown. Never add [gmonly], [spoiler] or other bracket tags. Reply with ONLY the rewritten passage - no preface, no quotes, no explanation.";
+            let mut opts = Map::new();
+            opts.insert("temperature".into(), json!(0.7));
+            let out = generate_chat(&b, &b.model, system, &[json!({"role": "user", "content": format!("Instruction: {how}\n\nPassage:\n{text}")})], false, &opts).await;
+            let out = crate::edits::py_strip_pub(&out);
+            if out.is_empty() || out.starts_with("[AI ") || out.starts_with("[empty response") || out.chars().count() > 8000 {
+                return err(StatusCode::BAD_GATEWAY, "The AI gave no usable answer.".into());
+            }
+            ok(json!({"text": out}))
+        }
         SyncAi::Chat { b, model, system, messages, options } => {
             let result = generate_chat(&b, &model, &system, &messages, false, &options).await;
             ok(json!({"result": result}))
@@ -4661,7 +4701,7 @@ pub async fn media_run_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
 pub fn is_sync_ai(path: &str) -> bool {
     matches!(path, "/api/sessions/ai/expand-notes" | "/api/sessions/ai/condense-recap" | "/api/sessions/ai/summarize-transcript" | "/api/facts/parse" | "/api/facts/folk-tale"
         | "/api/ai/chat" | "/api/ai/chat/compact" | "/api/ai/generate/entity" | "/api/ai/generate/npc" | "/api/ai/generate/location" | "/api/ai/generate/quest"
-        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/character-from-images" | "/api/ai/entity-from-images" | "/api/ai/tts")
+        | "/api/ai/generate/entity-smart" | "/api/ai/entity-from-text" | "/api/ai/entities-from-text-batch" | "/api/ai/rewrite" | "/api/ai/character-from-images" | "/api/ai/entity-from-images" | "/api/ai/tts")
         || path == "/api/bulk-edit/parse"
         || crate::ai_more::serves(path)
         || (path.starts_with("/api/npc-talk/") && path.ends_with("/speak"))

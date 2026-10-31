@@ -6729,6 +6729,11 @@ def test_npc_history_is_pythons(client, seed):
                 ra, rb = d.get(url), _via(d, base).get(url)
                 assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
                 assert (ra.status_code, ra.json()) == (rb.status_code, rb.json()), (email, url, allowed)
+                url = f"/api/npc-talk/{eid}/export.md"
+                ra, rb = d.get(url), _via(d, base).get(url)
+                assert rb.headers.get("x-nd-served-by") == "gateway", (email, url)
+                assert (ra.status_code, ra.content, ra.headers.get("content-type"), ra.headers.get("content-disposition")) == \
+                       (rb.status_code, rb.content, rb.headers.get("content-type"), rb.headers.get("content-disposition")), (email, url, allowed)
     db = SessionLocal()
     try:
         db.get(World, w).players_can_ask_ai = True
@@ -10025,3 +10030,110 @@ def test_ai_chat_sessions_save_open_delete_are_pythons(client, seed):
         assert g.delete(f"/api/ai/sessions/{sid}").json() == {"ok": True}
     finally:
         proc.terminate()
+
+
+def test_ai_status_dot_on_studio_is_pythons(client, seed):
+    """POST /api/ai/status (the AI dot on every page) with a stand-in Studio: ok with the loaded names, unavailable when Studio errors. Python
+    caches its answer for 15 s, so each case waits until its cache has turned over before comparing."""
+    import time
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    studio = _RoutedStudio()
+
+    def save(side, key, url):
+        data = {"ollama_model": "", "ollama_url": "", "llm_url": url, "llm_model": "nd-test/model", "llm_api_key": key}
+        if not key:
+            data["llm_api_key_clear"] = "1"
+        assert side.post("/settings/system", data=data, follow_redirects=False).status_code == 303
+
+    try:
+        save(d, "sk-studio-key", studio.url())
+        save(v, "sk-studio-key", studio.url())
+        for table, want in (({"/v1/models": (200, {"data": [{"id": "a/one", "loaded": True}, {"id": "b/two"}, {"nothing": 1}]})}, "ok"),
+                            ({"/v1/models": (500, {"detail": "down"})}, "unavailable")):
+            studio.routes = table
+            b = v.post("/api/ai/status")
+            assert b.status_code == 200 and b.headers.get("x-nd-served-by") == "gateway", b.text
+            assert b.json()["status"] == want, b.text
+            if want == "ok":
+                assert b.json()["loaded_models"] == ["a/one", "b/two"] and b.json()["backend"] == "unsloth"
+            for _ in range(40):
+                a = d.post("/api/ai/status")
+                if a.content == b.content:
+                    break
+                time.sleep(0.5)
+            assert (a.status_code, a.content) == (b.status_code, b.content), (a.text, b.text)
+    finally:
+        studio.close()
+        save(d, "", "")
+        save(v, "", "")
+
+
+def test_characters_roll_star_and_model_list_edits_are_pythons(client, seed):
+    """POST /api/characters/roll (shape, bounds, errors; the dice are random), POST /api/ai/imagegen/star + unstar, and POST /api/ai/models
+    add / remove / reset (ai_models.json byte for byte): the same answers from both servers."""
+    from pathlib import Path
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    # rolls
+    for expr in ("2D6+3", " 1d20 ", "20d1000-5", "30d6", "0d6", "1d20", "3d4+0", "1d1", "1d1001", "d6", "2d", "1d6+", "abc", "", "1d20+99999999999999999999"):
+        a, b = d.post("/api/characters/roll", json={"expr": expr}), v.post("/api/characters/roll", json={"expr": expr})
+        assert a.status_code == b.status_code, (expr, a.text, b.text)
+        ja, jb = a.json(), b.json()
+        if a.status_code != 200:
+            assert ja == jb, expr
+            continue
+        for j in (ja, jb):
+            assert j["expr"] == expr.strip().lower() and j["total"] == sum(j["rolls"]) + j["modifier"] and len(j["rolls"]) == min(int(expr.strip().lower().split("d")[0]), 20)
+        assert list(ja) == list(jb) and ja["modifier"] == jb["modifier"], expr
+    a, b = d.post("/api/characters/roll", json={}), v.post("/api/characters/roll", json={})
+    assert a.json()["expr"] == b.json()["expr"] == "1d20"
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    # starred pictures
+    tag = os.urandom(3).hex()
+    url = f"/uploads/ai-images/star-{tag}.png"
+    body = {"url": url, "prompt": "p", "seed": 7, "params": {"steps": 20, "sampler": "euler"}}
+    ids = {}
+    for side, cl in (("py", d), ("gw", v)):
+        u = url + side
+        r = cl.post("/api/ai/imagegen/star", json={**body, "url": u})
+        assert r.status_code == 200 and r.json().get("already") is None, (side, r.text)
+        ids[side] = r.json()["id"]
+        r2 = cl.post("/api/ai/imagegen/star", json={**body, "url": u})
+        assert r2.json() == {"ok": True, "id": ids[side], "already": True}
+    star = {s["url"]: s for s in d.get("/api/ai/imagegen/starred").json()["images"]}
+    for k in ("prompt", "negative", "model", "seed", "params"):
+        assert star[url + "py"][k] == star[url + "gw"][k], k
+    for side, cl in (("py", d), ("gw", v)):
+        assert cl.post("/api/ai/imagegen/unstar", json={"url": url + side}).json() == {"ok": True}
+    assert not [s for s in d.get("/api/ai/imagegen/starred").json()["images"] if s["url"].startswith(url)]
+    # the model list file
+    f = Path(os.environ["DB_PATH"]).parent / "ai_models.json"
+    was = f.read_bytes() if f.exists() else None
+    steps = [("add", {"id": " my/Model:7b ", "label": ""}), ("add", {"id": "my/Model:7b", "label": "dup"}), ("add", {"id": "other/x", "label": " Ex "}),
+             ("add", {"id": "gemma4:26b"}), ("remove", {"model_id": "gemma4:26b"}), ("remove", {"model_id": "my/Model:7b"}), ("remove", {"model_id": "nope"}),
+             ("add", {"id": "gemma4:26b"}), ("reset", {}), ("add", {"id": "  "}), ("add", {"id": "café/ü"})]
+    try:
+        for start in (None, '{"custom": [{"id": "z/z", "label": "Zed"}], "hidden": ["q"], "tts_model": "m"}'):
+            outs = {}
+            for side, cl in (("py", d), ("gw", v)):
+                if start is None:
+                    f.unlink(missing_ok=True)
+                else:
+                    f.write_text(start, encoding="utf-8")
+                got = []
+                for op, payload in steps:
+                    r = cl.post(f"/api/ai/models/{op}", json=payload)
+                    got.append((op, r.status_code, r.json(), f.read_bytes() if f.exists() else None))
+                outs[side] = got
+                if side == "gw":
+                    assert r.headers.get("x-nd-served-by") == "gateway"
+            assert outs["py"] == outs["gw"], start
+        assert d.post("/api/ai/models/remove", json={"model_id": "x"}).status_code == v.post("/api/ai/models/remove", json={"model_id": "x"}).status_code
+    finally:
+        if was is None:
+            f.unlink(missing_ok=True)
+        else:
+            f.write_bytes(was)

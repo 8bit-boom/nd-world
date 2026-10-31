@@ -948,7 +948,7 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/system/gpu-power")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
@@ -957,8 +957,95 @@ pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         "/api/ai/world-context-player" => world_context_player(&cfg, uri, headers, body),
         "/api/ai/unsloth/prefs" => unsloth_prefs(&cfg, uri, headers, body),
         "/api/system/gpu-power" => gpu_power(&cfg, uri, headers, body),
+        "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset" => models_edit(&cfg, uri, headers, body),
         _ => None,
     }
+}
+
+/// `POST /api/ai/models/add|remove|reset` (app/routers/ai.py): the model list kept in ai_models.json beside the database - a model added to
+/// `custom` (or a built-in one un-hidden), removed (or a built-in one hidden), the hidden list cleared. The built-in ids are always the Ollama
+/// registry's three (as Python checks them, whichever back end runs). Deleting from Ollama is Python's.
+fn models_edit(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option<Response<Body>> {
+    const BUILTIN: [&str; 3] = ["gemma4:26b", "hf.co/noctrex/gemma-4-26B-A4B-it-MXFP4_MOE-GGUF:gemma-4-26B-A4B-it-MXFP4_MOE.gguf",
+        "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf"];
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let which = uri.path().rsplit('/').next()?.to_string();
+    let path = cfg.db_path.parent()?.join("ai_models.json");
+    let mut data = match std::fs::read_to_string(&path) {
+        Ok(t) => match serde_json::from_str::<Value>(&t) {
+            Ok(Value::Object(o)) if crate::edits::plain_numbers(t.as_bytes()) => o,
+            Ok(_) => return None,
+            Err(_) if t.contains("NaN") || t.contains("Infinity") => return None,
+            Err(_) => serde_json::from_value(json!({"custom": [], "hidden": []})).ok()?,
+        },
+        Err(_) => serde_json::from_value(json!({"custom": [], "hidden": []})).ok()?,
+    };
+    let list = |data: &Map<String, Value>, k: &str| -> Option<Vec<Value>> {
+        match data.get(k) {
+            None => Some(vec![]),
+            Some(Value::Array(a)) => Some(a.clone()),
+            _ => None,
+        }
+    };
+    let custom_ids_ok = |c: &[Value]| c.iter().all(|m| m.as_object().is_some_and(|o| o.contains_key("id")));
+    if which == "reset" {
+        data.insert("hidden".into(), json!([]));
+    } else {
+        let b = match serde_json::from_slice::<Value>(raw).ok()? {
+            Value::Object(o) if crate::edits::plain_numbers(raw) => o,
+            _ => return None,
+        };
+        if which == "add" {
+            let id = crate::edits::py_strip_pub(b.get("id")?.as_str()?);
+            let label = match b.get("label") {
+                None => String::new(),
+                Some(Value::String(t)) => crate::edits::py_strip_pub(t),
+                _ => return None,
+            };
+            if id.is_empty() {
+                return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "model id required"));
+            }
+            let label = if label.is_empty() { id.rsplit('/').next()?.split(':').next()?.to_string() } else { label };
+            if BUILTIN.contains(&id.as_str()) {
+                let hidden: Vec<Value> = list(&data, "hidden")?.into_iter().filter(|i| i.as_str() != Some(id.as_str())).collect();
+                data.insert("hidden".into(), Value::Array(hidden));
+            } else {
+                let mut custom = list(&data, "custom")?;
+                if !custom_ids_ok(&custom) {
+                    return None;
+                }
+                if !custom.iter().any(|m| m.get("id").and_then(|v| v.as_str()) == Some(id.as_str())) {
+                    custom.push(json!({"id": id, "label": label}));
+                    data.insert("custom".into(), Value::Array(custom));
+                }
+            }
+        } else {
+            let id = b.get("model_id")?.as_str()?.to_string();
+            match b.get("delete_from_ollama") {
+                None | Some(Value::Bool(false)) => {}
+                _ => return None,
+            }
+            if BUILTIN.contains(&id.as_str()) {
+                let mut hidden = list(&data, "hidden")?;
+                if !hidden.iter().any(|i| i.as_str() == Some(id.as_str())) {
+                    hidden.push(json!(id));
+                }
+                data.insert("hidden".into(), Value::Array(hidden));
+            } else {
+                let custom = list(&data, "custom")?;
+                if !custom_ids_ok(&custom) {
+                    return None;
+                }
+                let kept: Vec<Value> = custom.into_iter().filter(|m| m.get("id").and_then(|v| v.as_str()) != Some(id.as_str())).collect();
+                data.insert("custom".into(), Value::Array(kept));
+            }
+        }
+    }
+    std::fs::write(&path, nd_render::py_dumps_indent(&Value::Object(data), 2)).ok()?;
+    crate::edits::json_response(&json!({"ok": true}))
 }
 
 /// `unsloth_prefs_set` (app/routers/ai.py, GM-only by the auth gate): the TTS / STT choices and the Studio console URL in ai_models.json

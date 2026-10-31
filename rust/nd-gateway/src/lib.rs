@@ -632,6 +632,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/ai/status" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        // the AI dot's poll, on a Studio back end
+        if let Some(resp) = studio::ai_status_route(app.cfg.clone()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/kiy/inspirations" && config::python_free() {
         // public web fetches, random and live: answered here only where there is no Python to do it
         if let Some(resp) = edits::json_response(&kiy::inspirations().await) {

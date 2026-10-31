@@ -1154,6 +1154,15 @@ def test_blocking_recap_and_facts_routes_are_pythons(client, seed, studio):
         ("/api/bulk-edit/parse", {"instruction": "  "}, []),
         ("/api/ai/entities-from-text-batch", {"text": "Borin the smith. Bree the town."},
          [_reply(json.dumps({"entities": [{"kind": "character", "name": "Borin"}, {"kind": "location", "name": "Bree"}]}))]),
+        ("/api/ai/rewrite", {"text": " The inn was dark. ", "style": "creepier"}, [_reply("  The inn was dark... and watching.  ")]),
+        ("/api/ai/rewrite", {"text": "x" * 4000, "style": "grammar"}, [_reply("fixed")]),
+        ("/api/ai/rewrite", {"text": "The inn.", "instruction": " Make it rhyme " + "y" * 400}, [_reply("An inn, a sin.")]),
+        ("/api/ai/rewrite", {"text": "The inn.", "style": "nope", "instruction": "Shout"}, [_reply("THE INN.")]),
+        ("/api/ai/rewrite", {"text": "The inn.", "style": "shorter"}, [_reply("")]),
+        ("/api/ai/rewrite", {"text": "The inn.", "style": "longer"}, [_reply("z" * 8001)]),
+        ("/api/ai/rewrite", {"text": "   ", "style": "shorter"}, []),
+        ("/api/ai/rewrite", {"text": "x" * 4001, "style": "shorter"}, []),
+        ("/api/ai/rewrite", {"text": "The inn."}, []),
     ]
     for i, (path, body, replies) in enumerate(cases):
         out = []

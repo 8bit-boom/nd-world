@@ -15,6 +15,12 @@ fn npc_history_id(path: &str) -> Option<i64> {
     (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
 }
 
+/// `/api/npc-talk/<id>/export.md`: the id (plain digits)
+fn npc_export_id(path: &str) -> Option<i64> {
+    let d = path.strip_prefix("/api/npc-talk/")?.strip_suffix("/export.md")?;
+    (!d.is_empty() && d.len() < 16 && d.bytes().all(|b| b.is_ascii_digit()) && !(d.len() > 1 && d.starts_with('0'))).then(|| d.parse().ok())?
+}
+
 /// `/api/characters/<id>/share` and `.../hub/sessions`: the id (plain digits)
 fn character_tail(path: &str, tail: &str) -> Option<i64> {
     let d = path.strip_prefix("/api/characters/")?.strip_suffix(tail)?;
@@ -27,6 +33,9 @@ pub fn serves(method: &Method, path: &str) -> bool {
     }
     if npc_history_id(path).is_some() {
         return *method == Method::GET || *method == Method::DELETE;
+    }
+    if npc_export_id(path).is_some() {
+        return *method == Method::GET;
     }
     match path {
         "/health" | "/api/ai/world-summary" | "/api/ai/world-context" => *method == Method::GET,
@@ -149,7 +158,10 @@ pub fn handle(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, bod
         return share_state(cfg, uri, headers, id);
     }
     if let Some(eid) = npc_history_id(path) {
-        return npc_history(cfg, method, uri, headers, eid);
+        return npc_history(cfg, method, uri, headers, eid, false);
+    }
+    if let Some(eid) = npc_export_id(path) {
+        return npc_history(cfg, method, uri, headers, eid, true);
     }
     // the presets: the GM's (the auth gate refuses anyone else before this)
     let db = crate::writes::open(cfg)?;
@@ -257,7 +269,7 @@ fn world_summary(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respons
 }
 
 /// `GET` / `DELETE /api/npc-talk/<id>/history` (app/routers/npc_talk.py): the caller's saved conversation with one NPC, or its removal
-fn npc_history(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, eid: i64) -> Option<Response<Body>> {
+fn npc_history(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, eid: i64, export: bool) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
@@ -275,8 +287,9 @@ fn npc_history(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, ei
     let vis = if p.is_gm { String::new() } else {
         format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
     };
-    let npc = db.query_row(&format!("SELECT kind FROM entities WHERE id = ?1 AND world_id = ?2{vis}"), rusqlite::params![eid, wid], |r| r.get::<_, Option<String>>(0)).ok();
-    let Some(kind) = npc else { return Some(crate::idpages::refusal(404)) };
+    let npc = db.query_row(&format!("SELECT kind, name FROM entities WHERE id = ?1 AND world_id = ?2{vis}"), rusqlite::params![eid, wid],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).ok();
+    let Some((kind, npc_name)) = npc else { return Some(crate::idpages::refusal(404)) };
     let kind = kind?;
     if !["character", "creature", "organization"].contains(&kind.as_str()) {
         if !kind.is_ascii() {
@@ -291,6 +304,39 @@ fn npc_history(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, ei
             db.execute("DELETE FROM chat_sessions WHERE id = ?1", [id]).ok()?;
         }
         return crate::edits::json_response(&json!({"ok": true}));
+    }
+    if export {
+        // the caller's conversation as markdown: "**You:**" for their lines, the NPC's name for the rest
+        let name = npc_name?;
+        let list = match row {
+            None => vec![],
+            Some((_, raw)) => {
+                let raw = raw.filter(|s| !s.is_empty()).unwrap_or_else(|| "[]".into());
+                if !crate::edits::plain_numbers(raw.as_bytes()) {
+                    return None;
+                }
+                match serde_json::from_str::<Value>(&raw).ok()? {
+                    Value::Array(a) => a,
+                    _ => return None,
+                }
+            }
+        };
+        let mut lines = vec![format!("# Conversation with {name}"), String::new()];
+        for m in &list {
+            let m = m.as_object()?;
+            let who = if m.get("role").and_then(|r| r.as_str()) == Some("user") { "You".to_string() } else { name.clone() };
+            let content = match m.get("content") {
+                None => "",
+                Some(Value::String(t)) => t.as_str(),
+                _ => return None,
+            };
+            lines.push(format!("**{who}:** {content}"));
+            lines.push(String::new());
+        }
+        return Response::builder().status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+            .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"npc-{eid}-conversation.md\""))
+            .header("x-nd-served-by", "gateway").body(Body::from(lines.join("\n"))).ok();
     }
     let messages = match row {
         None => json!([]),

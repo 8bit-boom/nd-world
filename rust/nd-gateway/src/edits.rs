@@ -179,6 +179,9 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 const ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore/cancel", crate::restore::cancel),
     ("/api/ai/sessions", ai_chat_session_save),
+    ("/api/characters/roll", characters_roll),
+    ("/api/ai/imagegen/star", imagegen_star),
+    ("/api/ai/imagegen/unstar", imagegen_unstar),
     ("/api/media-rename/apply", media_rename_apply),
     ("/api/media-rename/undo", media_rename_undo),
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
@@ -7591,6 +7594,103 @@ fn ai_chat_session_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
         }
     };
     json_response(&json!({"id": id}))
+}
+
+/// `POST /api/characters/roll` (app/routers/characters.py `dice_roll`): the sheet's quick roller, "<n>d<sides>[+-mod]" (at most 20 dice, sides 2-1000).
+/// Python's 500s (a body that is not an object, an `expr` that is not text) and anything beyond ASCII are Python's.
+fn characters_roll(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let raw = match body.get("expr") {
+        None => "1d20".to_string(),
+        Some(Value::String(t)) => t.clone(),
+        _ => return None,
+    };
+    if !raw.is_ascii() {
+        return None;
+    }
+    let is_space = |ch: char| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{1c}'..='\u{1f}');
+    let expr = raw.to_ascii_lowercase().trim_matches(is_space).to_string();
+    let err = |m: &str| -> Option<Response<Body>> {
+        let mut r = json_response(&json!({"error": m}))?;
+        *r.status_mut() = StatusCode::BAD_REQUEST;
+        Some(r)
+    };
+    // ^(\d+)d(\d+)([+-]\d+)?$
+    let (count_s, rest) = match expr.split_once('d') {
+        Some((a, b)) if !a.is_empty() && a.bytes().all(|x| x.is_ascii_digit()) => (a, b),
+        _ => return err("Invalid dice expression"),
+    };
+    let (sides_s, mod_s) = match rest.find(|ch| ch == '+' || ch == '-') {
+        Some(i) => (&rest[..i], Some(&rest[i..])),
+        None => (rest, None),
+    };
+    if sides_s.is_empty() || !sides_s.bytes().all(|x| x.is_ascii_digit()) {
+        return err("Invalid dice expression");
+    }
+    if let Some(m) = mod_s {
+        if m.len() < 2 || !m[1..].bytes().all(|x| x.is_ascii_digit()) {
+            return err("Invalid dice expression");
+        }
+    }
+    if count_s.len() > 300 || sides_s.len() > 300 || mod_s.is_some_and(|m| m.len() > 300) {
+        return None; // int() of thousands of digits is Python's limit error
+    }
+    let count: i64 = count_s.trim_start_matches('0').parse().unwrap_or(0).min(20);
+    let sides: i64 = if sides_s.trim_start_matches('0').len() > 4 { i64::MAX } else { sides_s.parse().ok()? };
+    let modifier: i64 = match mod_s {
+        Some(m) => m.parse().ok()?, // beyond i64: Python's big integer
+        None => 0,
+    };
+    if !(2..=1000).contains(&sides) {
+        return err("Invalid die size");
+    }
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let rolls: Vec<i64> = (0..count).map(|_| rng.gen_range(1..=sides)).collect();
+    let total = rolls.iter().sum::<i64>().checked_add(modifier)?;
+    json_response(&json!({"expr": expr, "rolls": rolls, "modifier": modifier, "total": total,
+        "crit": count == 1 && sides == 20 && rolls[0] == 20, "fumble": count == 1 && sides == 20 && rolls[0] == 1}))
+}
+
+/// `POST /api/ai/imagegen/star` (api_imagegen_star): a picture kept in the starred list - the url once; asked again, the same id with `already`
+fn imagegen_star(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let url = body.get("url")?.as_str()?.to_string();
+    let text = |k: &str| -> Option<String> {
+        match body.get(k) {
+            None => Some(String::new()),
+            Some(Value::String(t)) => Some(t.clone()),
+            _ => None,
+        }
+    };
+    let (prompt, negative, model) = (text("prompt")?, text("negative")?, text("model")?);
+    let seed = match body.get("seed") {
+        None => -1,
+        Some(Value::Number(n)) => n.as_i64()?,
+        _ => return None,
+    };
+    let params = match body.get("params") {
+        None => json!({}),
+        Some(v @ Value::Object(_)) => v.clone(),
+        _ => return None,
+    };
+    let existing: Option<i64> = c.db.query_row("SELECT id FROM starred_images WHERE url = ?1 LIMIT 1", [&url], |r| r.get(0)).ok();
+    if let Some(id) = existing {
+        return json_response(&json!({"ok": true, "id": id, "already": true}));
+    }
+    let id = orm::insert(&c.db, "starred_images", &[("url", s(&url)), ("prompt", s(&prompt)), ("negative", s(&negative)), ("model", s(&model)),
+        ("seed", Sql::Integer(seed)), ("params_json", s(&nd_render::py_dumps(&params)))])?;
+    json_response(&json!({"ok": true, "id": id}))
+}
+
+/// `POST /api/ai/imagegen/unstar`: the picture off the starred list
+fn imagegen_unstar(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let body: Value = serde_json::from_slice(c.body).ok()?;
+    let url = body.as_object()?.get("url")?.as_str()?.to_string();
+    c.db.execute("DELETE FROM starred_images WHERE url = ?1", [&url]).ok()?;
+    json_response(&json!({"ok": true}))
 }
 
 /// `DELETE /api/ai/sessions/<id>`: a saved Chat conversation of the active world gone (GM only; another surface's row is a 404)

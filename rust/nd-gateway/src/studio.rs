@@ -378,6 +378,42 @@ async fn v1_models(b: &Backend) -> Option<Vec<(String, bool)>> {
     Some(out)
 }
 
+/// `POST /api/ai/status` (app/ai.py `status`): what the AI dot on every page shows. On a Studio backend: "ok" with the model names `/v1/models`
+/// lists, or "unavailable" when it fails or says something unreadable (Python's `except Exception`). The legacy Ollama back end stays Python's.
+pub async fn ai_status_route(cfg: Arc<Config>) -> Option<Response<Body>> {
+    let c = cfg.clone();
+    let b = tokio::task::spawn_blocking(move || -> Option<Backend> {
+        let db = crate::writes::open(&c)?;
+        crate::ai::backend(&db)
+    })
+    .await
+    .ok()??;
+    let down = || ok(&json!({"status": "unavailable", "model": b.model, "backend": "unsloth"}));
+    let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;
+    let got = tokio::time::timeout(std::time::Duration::from_secs(15), crate::studio_key::studio_get(uri, &b.key)).await;
+    let Ok(Ok((status, body))) = got else { return down() };
+    if status >= 400 || !crate::edits::plain_numbers(&body) {
+        return if status >= 400 { down() } else { None };
+    }
+    let Ok(Value::Object(o)) = serde_json::from_slice::<Value>(&body) else { return down() };
+    let mut ids = vec![];
+    match o.get("data") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(a)) => {
+            for m in a {
+                let Some(m) = m.as_object() else { continue };
+                match m.get("id") {
+                    Some(Value::String(id)) if !id.is_empty() => ids.push(json!(id)),
+                    Some(v) if py_truthy(Some(v)) => return None, // a model name that is not text: Python's
+                    _ => {}
+                }
+            }
+        }
+        Some(_) => return None,
+    }
+    ok(&json!({"status": "ok", "model": b.model, "loaded_models": ids, "backend": "unsloth"}))
+}
+
 /// `GET /api/ai/models` and `/api/ai/resident` on a Studio backend (the legacy Ollama backend is Python's). GM only.
 pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
     let path = uri.path().to_string();
