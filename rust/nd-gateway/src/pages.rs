@@ -2029,7 +2029,11 @@ pub fn characters_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     let mut out = vec![];
     for mut pc in pcs {
         let id = pc.get("id")?.as_i64()?;
-        derived.insert(id.to_string(), Value::Object(crate::edits::derived(&pc)?));
+        match crate::edits::derived(&pc) {
+            Some(d) => derived.insert(id.to_string(), Value::Object(d)),
+            None if crate::config::python_free() => continue, // one unreadable character must not take the roster down
+            None => return None,
+        };
         let tid = pc.get("sheet_template_id").and_then(|v| v.as_i64());
         let tpl = tid.and_then(|t| tpls.iter().find(|x| x.get("id").and_then(|v| v.as_i64()) == Some(t)));
         if let (Some(t), true) = (tpl, tid.map_or(false, |t| custom_ids.contains(&t))) {

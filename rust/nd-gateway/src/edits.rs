@@ -2602,6 +2602,7 @@ pub(crate) fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>>
     let raw = pc.get("stats_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let stats = match serde_json::from_str::<Value>(raw) {
         Ok(v) => v,
+        Err(_) if crate::config::python_free() => Value::Null, // hand-made text: no stats rather than a failed page
         Err(_) => return None,
     };
     let mut out: Vec<(String, i64)> = vec![];
@@ -4099,7 +4100,7 @@ pub(crate) fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[
     // {str(id): float(value or 0)}: one value float() refuses empties the whole table
     let raw = pc.get("stats_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     let mut stats: Vec<(String, f64)> = vec![];
-    match serde_json::from_str::<Value>(raw).ok()? {
+    match serde_json::from_str::<Value>(raw).or_else(|e| if crate::config::python_free() { Ok(Value::Null) } else { Err(e) }).ok()? {
         Value::Array(a) => {
             for x in a {
                 let Some(o) = x.as_object() else { continue };
@@ -4113,6 +4114,7 @@ pub(crate) fn carry_info(db: &Connection, pc: &Map<String, Value>, equipment: &[
                 stats.push((id, v));
             }
         }
+        _ if crate::config::python_free() => {}
         _ => return None,
     }
     let get = |k: &str| stats.iter().find(|(id, _)| id == k).map_or(0.0, |(_, v)| *v);
@@ -14287,6 +14289,13 @@ fn num_int(v: Option<&Value>) -> Option<i64> {
 /// A JSON list column read by `json.loads(col or "[]")` that must be a list (anything else: Python's)
 fn list_col(pc: &Map<String, Value>, col: &str) -> Option<Vec<Value>> {
     let raw = pc.get(col).and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("[]");
+    if crate::config::python_free() {
+        // nothing to ask: a hand-made column (a dict, null, text) reads as no entries rather than failing the page
+        return Some(match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Array(a)) => a,
+            _ => vec![],
+        });
+    }
     match canonical_json(raw)? {
         Value::Array(a) => Some(a),
         _ => None,

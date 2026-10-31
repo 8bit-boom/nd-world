@@ -9935,5 +9935,24 @@ def test_character_pages_with_compact_json_columns_are_pythons(client, seed):
         for u in ["/characters"] + [f"/characters/{i}" for i in ids]:
             r = g.get(u)
             assert r.status_code == 200, (u, r.status_code, r.text[:200])
+        # hand-made columns (a dict, null, text): Python-free, the page still renders and one such character never takes the roster down
+        import sqlite3
+        con = sqlite3.connect(os.environ["DB_PATH"])
+        try:
+            for i, bad in zip(ids, ('{"str":10}', "null", "not json")):
+                con.execute("UPDATE player_characters SET stats_json = ?1 WHERE id = ?2", (bad, i))
+            con.commit()
+        finally:
+            con.close()
+        for u in ["/characters"] + [f"/characters/{i}" for i in ids[:2]]:
+            r = g.get(u)
+            assert r.status_code == 200, (u, r.status_code, r.text[:200])
     finally:
         proc.terminate()
+        import sqlite3
+        con = sqlite3.connect(os.environ["DB_PATH"])
+        try:  # Python would fail on these; leave the shared database readable for the other tests
+            con.execute("UPDATE player_characters SET stats_json = '[]' WHERE id IN (%s)" % ",".join(str(i) for i in ids))
+            con.commit()
+        finally:
+            con.close()

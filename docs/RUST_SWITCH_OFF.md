@@ -539,3 +539,7 @@ in a small sidecar, as the plan allows, if a port is not good enough.
 the gateway this was invisible (proxied), Python-free it was a 501. The guard now compares after dropping whitespace outside strings and writing
 non-ASCII as `\uXXXX`; number spellings serde would change (1.0, 1E5, huge ints) still decline. Test:
 `test_character_pages_with_compact_json_columns_are_pythons` (parity with Python, plus a Python-free gateway answering 200).
+
+Follow-up: a hand-made character column (`stats_json` as a dict, `null` or plain text) no longer fails the page Python-free. The list columns read as
+no entries (`list_col`, `stat_values`, the carry limit), and `/characters` leaves out a character it still cannot build instead of declining the
+whole roster. With Python behind the gateway nothing changes: those requests still go to Python.
