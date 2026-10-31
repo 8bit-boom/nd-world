@@ -300,7 +300,9 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
     let mut ordered: Vec<&String> = lower_to_id.iter().map(|(k, _)| k).collect();
     ordered.sort_by(|a, b| b.chars().count().cmp(&a.chars().count())); // stable, longest first (Python's sorted(key=len, reverse=True))
     let alt = ordered.iter().map(|n| fancy_regex::escape(n).into_owned()).collect::<Vec<_>>().join("|");
-    let pattern = Regex::new(&format!(r"(?i)(?<![A-Za-z0-9_])({alt})(?![A-Za-z0-9_])")).ok()?;
+    // a world with thousands of names makes this one big alternation; fancy-regex's default backtrack limit (1M) is hit on ordinary
+    // non-ASCII text (Python's re has no limit), so raise it - and decline instead of panicking if even that is not enough
+    let pattern = fancy_regex::RegexBuilder::new(&format!(r"(?i)(?<![A-Za-z0-9_])({alt})(?![A-Za-z0-9_])")).backtrack_limit(200_000_000).build().ok()?;
     let tag_name = re!(r"^</?\s*([a-zA-Z0-9]+)");
     let mut skip_depth: i64 = 0;
     let mut out = String::new();
@@ -335,11 +337,11 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
             out.push_str(chunk);
             continue;
         }
-        let replaced = pattern.replace_all(chunk, |c: &fancy_regex::Captures| {
+        let replaced = pattern.try_replacen(chunk, 0, |c: &fancy_regex::Captures| {
             let found = &c[0];
             let id = lower_to_id.iter().find(|(k, _)| *k == found.to_lowercase()).map(|(_, i)| *i).unwrap_or(0);
             format!(r#"<a href="/entity/{id}" class="auto-entity-link">{found}</a>"#)
-        });
+        }).ok()?;
         out.push_str(&replaced);
     }
     Some(out)
