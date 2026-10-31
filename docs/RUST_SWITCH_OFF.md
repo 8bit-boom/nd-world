@@ -585,7 +585,7 @@ King in Yellow `generate` and `plays`, `POST /api/ai/pull` and `GET /api/ai/test
 - **Second screen**: `POST /api/display/show` takes `kind: "audio"` and `"video"` (an address as safe as a picture's, a title, a description); the display
   window plays them (`#av-layer`, a click starts it when the browser refuses autoplay) and stops them when something else is shown. Hovering a `<video>` /
   `<audio>` on any page offers "Send…". tests/test_second_screen.py.
-- Not done yet: video for the players' popup (audio already has "Now Playing").
+- **Video for the players**: the same popup takes a film (`POST /images/spotlight` with an `mp4` / `webm` / `m4v` / `mov` / `ogv` / `mkv` address: one of this world's video-library clips, or one written into its text). Players get a full-screen player (autoplay, controls, ✕) with the title and description under it, and it closes when the GM stops the spotlight; a film is not kept as a handout. Audio keeps "Now Playing".
 
 ## Fix: an entity with a rich-text (HTML) note answered 501 without Python
 

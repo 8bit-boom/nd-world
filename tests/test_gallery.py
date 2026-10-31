@@ -1305,3 +1305,33 @@ def test_spotlight_accepts_the_copies_a_page_shows_and_pictures_written_into_the
     for bad in ("/uploads/nobody-mentions-me.png", "/uploads/../etc/passwd", "/static/style.css"):
         r = client.post("/images/spotlight", json={"url": bad})
         assert r.status_code == 404 and r.json() == {"detail": "Image not found"}, (bad, r.text)
+
+
+def test_spotlight_can_send_a_video_to_the_players(client, seed):
+    """A film from this world's video library (or written into its text) goes out through the same popup, with the words typed under it; a film
+    nobody in the world has is refused; a film is not kept as a handout."""
+    from app.models import Entity, VideoClip, WorldHandout
+    db = SessionLocal()
+    try:
+        db.add(VideoClip(world_id=seed.world_a.id, name="Cutscene one", file_url="/uploads/video/cut-1.mp4"))
+        db.add(Entity(world_id=seed.world_a.id, kind="note", name="Embeds a film", body='<video src="/uploads/video/embedded-2.webm" controls></video>'))
+        db.commit()
+        handouts_before = db.query(WorldHandout).filter(WorldHandout.world_id == seed.world_a.id).count()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/spotlight", json={"url": "/uploads/video/cut-1.mp4", "label": "The reveal — watch closely"})
+    assert r.status_code == 200, r.text
+    w = _world(seed.world_a.id)
+    assert (w.spotlight_image_url, w.spotlight_label) == ("/uploads/video/cut-1.mp4", "The reveal — watch closely")
+    r = client.post("/images/spotlight", json={"url": "/uploads/video/embedded-2.webm"})
+    assert r.status_code == 200 and _world(seed.world_a.id).spotlight_label == "embedded-2.webm"
+    r = client.post("/images/spotlight", json={"url": "/uploads/video/nobody-has-this.mp4"})
+    assert r.status_code == 404 and r.json() == {"detail": "Image not found"}
+    db = SessionLocal()
+    try:
+        assert db.query(WorldHandout).filter(WorldHandout.world_id == seed.world_a.id).count() == handouts_before
+    finally:
+        db.close()
+    assert "ndSpotlightVideoShow(data.image_url, data.label || '')" in client.get("/").text

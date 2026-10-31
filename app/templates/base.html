@@ -345,8 +345,9 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
       if (suppressOnce) { suppressOnce = false; }
       // The GM is the one sending: their own tabs must not pop the picture up (or close what they are looking at).
       else if (_ND_IS_GM) { /* players only */ }
-      else if (data.image_url) { openLightbox(data.image_url, data.label || '', data.label || ''); }
-      else { closeLightbox(); }
+      else if (data.image_url && /\.(mp4|webm|m4v|mov|ogv|mkv)(\?|#|$)/i.test(data.image_url)) { closeLightbox(); ndSpotlightVideoShow(data.image_url, data.label || ''); }
+      else if (data.image_url) { ndSpotlightVideoHide(); openLightbox(data.image_url, data.label || '', data.label || ''); }
+      else { closeLightbox(); ndSpotlightVideoHide(); }
     }
     if (data.audio_version !== seenAudioVersion) {
       seenAudioVersion = data.audio_version;
@@ -362,6 +363,39 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
   ndPoll(pollSpotlight, 60000);
   window.addEventListener('nd-signal', function (e) { if (e.detail && e.detail.name === 'spot') pollSpotlight(); });
 })();
+
+// A film the GM sent to the players: a full-screen player over the page, with the words typed under it; ✕ closes it for this viewer.
+function ndSpotlightVideoHide() {
+  var o = document.getElementById('nd-spot-video');
+  if (!o) return;
+  var v = o.querySelector('video');
+  try { v.pause(); } catch (e) {}
+  v.removeAttribute('src'); try { v.load(); } catch (e) {}
+  o.remove();
+}
+function ndSpotlightVideoShow(url, label) {
+  ndSpotlightVideoHide();
+  var o = document.createElement('div');
+  o.id = 'nd-spot-video'; o.setAttribute('role', 'dialog'); o.setAttribute('aria-modal', 'true'); o.setAttribute('aria-label', label || 'Video');
+  o.style.cssText = 'position:fixed;inset:0;z-index:100010;background:rgba(0,0,0,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.8rem;padding:1rem';
+  var v = document.createElement('video');
+  v.controls = true; v.autoplay = true; v.playsInline = true; v.src = url;
+  v.style.cssText = 'max-width:96vw;max-height:78vh;background:#000';
+  var x = document.createElement('button');
+  x.type = 'button'; x.textContent = '\u2715'; x.setAttribute('aria-label', 'Close');
+  x.style.cssText = 'position:absolute;top:14px;right:14px;width:42px;height:42px;border-radius:50%;border:1px solid #888;background:#111;color:#eee;font-size:1.1rem;cursor:pointer';
+  x.onclick = ndSpotlightVideoHide;
+  o.appendChild(v); o.appendChild(x);
+  if (label) {
+    var c = document.createElement('div');
+    c.textContent = label;
+    c.style.cssText = 'max-width:min(60rem,92vw);padding:.6rem 1rem;text-align:center;background:rgba(0,0,0,.72);color:#eee;border-radius:8px;font-size:1.05rem;line-height:1.45;white-space:pre-wrap;max-height:18vh;overflow:auto';
+    o.appendChild(c);
+  }
+  document.body.appendChild(o);
+  var p = v.play(); if (p && p.catch) p.catch(function () {});
+}
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') ndSpotlightVideoHide(); });
 
 function ndSpotlightSuppressNextPoll() {
   try { sessionStorage.setItem('nd_spotlight_suppress_once', '1'); } catch (e) {}

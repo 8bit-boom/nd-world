@@ -368,6 +368,14 @@ pub fn all_world_image_urls(db: &Connection, wid: i64) -> Option<Vec<Value>> {
 pub fn resolve_sendable_image(db: &Connection, wid: i64, url: &str, entries: &[Value]) -> Option<Option<(String, String)>> {
     let base = url.split('?').next()?.split('#').next()?.to_string();
     let name_of = |e: &Value| e.get("name").and_then(|n| n.as_str()).map(str::to_string);
+    if is_video_url(&base) {
+        // a film for the players' popup: one of this world's library clips, or one written into its text
+        let clip: Option<Option<String>> = db.query_row("SELECT name FROM video_clips WHERE world_id = ?1 AND file_url = ?2 LIMIT 1", rusqlite::params![wid, base], |r| r.get(0)).ok();
+        if let Some(name) = clip {
+            return Some(Some((base, name.unwrap_or_default())));
+        }
+        return referenced_in_world(db, wid, base);
+    }
     if let Some(e) = entries.iter().find(|e| e.get("url").and_then(|u| u.as_str()) == Some(base.as_str())) {
         return Some(Some((base, name_of(e)?)));
     }
@@ -385,6 +393,16 @@ pub fn resolve_sendable_image(db: &Connection, wid: i64, url: &str, entries: &[V
             }
         }
     }
+    referenced_in_world(db, wid, base)
+}
+
+pub fn is_video_url(base: &str) -> bool {
+    let l = base.to_ascii_lowercase();
+    [".mp4", ".webm", ".m4v", ".mov", ".ogv", ".mkv"].iter().any(|e| l.ends_with(e))
+}
+
+/// (url, name) when `base` (an /uploads/ file) is written into this world's own text
+fn referenced_in_world(db: &Connection, wid: i64, base: String) -> Option<Option<(String, String)>> {
     if base.starts_with("/uploads/") && !base.contains("..") && !base.contains('\\') {
         let one = |sql: &str| -> Option<bool> { Some(db.query_row(sql, rusqlite::params![wid, base], |_| Ok(())).is_ok()) };
         let hit = one("SELECT 1 FROM entities WHERE world_id = ?1 AND (instr(coalesce(body, ''), ?2) > 0 OR instr(coalesce(summary, ''), ?2) > 0 OR instr(coalesce(image_url, ''), ?2) > 0) LIMIT 1")?

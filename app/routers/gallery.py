@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import media_albums
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, world_can_edit_section, world_can_view_section
-from ..gallery import all_world_image_urls, discover_world_images, image_display_name, resolve_sendable_image, world_image_names
+from ..gallery import all_world_image_urls, discover_world_images, image_display_name, resolve_sendable_image, VIDEO_URL_RE, world_image_names
 from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, MediaTitle, World, WorldHandout
 from ..templating import templates, thumb_url
@@ -339,7 +339,7 @@ def image_spotlight_send(request: Request, db: Session = Depends(get_db), active
     world.spotlight_label = label
     world.spotlight_version = (world.spotlight_version or 0) + 1
     last = db.query(WorldHandout).filter(WorldHandout.world_id == world.id).order_by(WorldHandout.id.desc()).first()
-    if last is None or last.url != url:          # showing the same picture again is not a second handout
+    if (last is None or last.url != url) and not VIDEO_URL_RE.search(url):   # showing the same picture again is not a second handout; a film is not one
         db.add(WorldHandout(world_id=world.id, url=url, label=label[:256]))
     db.commit()
     from .. import main as _main_module  # deferred — see audio_jobs.py's own use of this pattern

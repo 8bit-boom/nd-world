@@ -135,8 +135,8 @@
     else box.appendChild(el('div', { text: (kind === 'video' ? '\ud83c\udfac ' : '\ud83c\udfb5 ') + decodeURIComponent(url.split('?')[0].split('/').pop() || ''), style: 'margin:0 0 .5rem;color:var(--text-dim,#999)' }));
     box.appendChild(el('label', { text: 'Title' })); box.appendChild(title);
     box.appendChild(el('label', { text: 'Description' })); box.appendChild(desc);
-    var buttons = [send('\ud83d\udcfa To the second screen', opts.target === 'screen' || kind !== 'image' ? 'go' : '', true, false)];
-    if (kind === 'image') buttons.push(send('\ud83d\udc65 To the players', opts.target === 'players' ? 'go' : '', false, true), send('Both', '', true, true));
+    var buttons = [send('\ud83d\udcfa To the second screen', opts.target === 'screen' || kind === 'audio' ? 'go' : '', true, false)];
+    if (kind === 'image' || kind === 'video') buttons.push(send('\ud83d\udc65 To the players', opts.target === 'players' ? 'go' : '', false, true), send('Both', '', true, true));
     buttons.push(el('button', { type: 'button', text: 'Cancel', onclick: close }));
     box.appendChild(el('div', { class: 'row' }, buttons));
     back.appendChild(box);

@@ -10435,7 +10435,7 @@ fn spotlight_send(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     let version = w.get("spotlight_version").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
     orm::update(&c.db, "worlds", wid, &[("spotlight_image_url", s(&url)), ("spotlight_label", s(&label)), ("spotlight_version", Sql::Integer(version))])?;
     let last: Option<String> = c.db.query_row("SELECT url FROM world_handouts WHERE world_id = ?1 ORDER BY id DESC LIMIT 1", [wid], |r| r.get(0)).ok();
-    if last.as_deref() != Some(url.as_str()) {
+    if last.as_deref() != Some(url.as_str()) && !crate::gallery::is_video_url(&url) {
         orm::insert(&c.db, "world_handouts", &[("world_id", Sql::Integer(wid)), ("url", s(&url)), ("label", s(&take_chars(&label, 256)))])?;
     }
     signal_spot(c)?;

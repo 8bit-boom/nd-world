@@ -154,6 +154,7 @@ def all_world_image_urls(db: Session, world: World) -> list:
 
 
 _DERIVED_RE = re.compile(r"^(.*)_(thumb|display)\.(webp|avif)$", re.I)
+VIDEO_URL_RE = re.compile(r"\.(mp4|webm|m4v|mov|ogv|mkv)$", re.I)
 
 
 def resolve_sendable_image(db: Session, world: World, url: str, entries: dict):
@@ -162,6 +163,13 @@ def resolve_sendable_image(db: Session, world: World, url: str, entries: dict):
     a picture the GM wrote into this world's own text by hand (an HTML <img>, a sized markdown embed the gallery does not list) is the world's
     too. Anything else on disk is not."""
     base = url.split("?", 1)[0].split("#", 1)[0]
+    if VIDEO_URL_RE.search(base):
+        # a film for the players' popup: one of this world's library clips, or one written into its text
+        from .models import VideoClip
+        clip = db.query(VideoClip.name).filter(VideoClip.world_id == world.id, VideoClip.file_url == base).first()
+        if clip:
+            return base, clip[0]
+        return _referenced_in_world(db, world, base)
     if base in entries:
         return base, entries[base]
     m = _DERIVED_RE.match(base)
@@ -169,6 +177,11 @@ def resolve_sendable_image(db: Session, world: World, url: str, entries: dict):
         for u in sorted(entries):
             if u.rsplit(".", 1)[0] == m.group(1):
                 return u, entries[u]
+    return _referenced_in_world(db, world, base)
+
+
+def _referenced_in_world(db: Session, world: World, base: str):
+    """(base, name) when `base` (an /uploads/ file) is written into this world's own text, else None."""
     if base.startswith("/uploads/") and ".." not in base and "\\" not in base:
         from sqlalchemy import func, or_
         hit = db.query(Entity.id).filter(Entity.world_id == world.id, or_(
