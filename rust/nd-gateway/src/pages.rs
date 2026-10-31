@@ -653,42 +653,50 @@ fn truthy_json(v: Option<&serde_json::Value>) -> bool {
 }
 
 /// `GET /entity/{id}` (app/main.py `detail`): one entity's page - body with headings and autolinks, notes, custom fields, connections, media.
+/// Why a page builder gave up (an entity page that answers "Not available here" without Python): the line is in the log, with the path
+fn dtrace<T>(line: u32) -> Option<T> {
+    if crate::config::python_free() || std::env::var("ND_DECLINE_TRACE").is_ok() {
+        eprintln!("DECLINE GET entity page gave up at pages.rs:{line}");
+    }
+    None
+}
+
 pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     use nd_render::{md, text};
     use serde_json::{json, Map, Value};
-    let id: i64 = uri.path().strip_prefix("/entity/")?.parse().ok()?;
-    let db = crate::writes::open(cfg)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let id: i64 = uri.path().strip_prefix("/entity/").or_else(|| dtrace(659))?.parse().ok().or_else(|| dtrace(659))?;
+    let db = crate::writes::open(cfg).or_else(|| dtrace(660))?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok().or_else(|| dtrace(661))?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now).or_else(|| dtrace(662))?;
     let one = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Option<Map<String, Value>>> {
         use rusqlite::OptionalExtension;
         db.query_row(sql, params, |r| crate::layout::row_map(r)).optional().ok()
     };
     let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
-        let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
+        let mut st = db.prepare(sql).ok().or_else(|| dtrace(668))?;
+        let r = st.query_map(params, |r| crate::layout::row_map(r)).ok().or_else(|| dtrace(669))?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
     // _entity_view_gate: every refusal is Python's 404
-    let entity = one("SELECT * FROM entities WHERE id = ?1", &[&id])??;
+    let entity = one("SELECT * FROM entities WHERE id = ?1", &[&id]).or_else(|| dtrace(673))?.or_else(|| dtrace(673))?;
     let ewid = entity.get("world_id").and_then(|v| v.as_i64());
     let ent_world = match ewid {
-        Some(w) => one("SELECT * FROM worlds WHERE id = ?1", &[&w])??,
+        Some(w) => one("SELECT * FROM worlds WHERE id = ?1", &[&w]).or_else(|| dtrace(676))?.or_else(|| dtrace(676))?,
         None => return None,
     };
-    let ewid = ewid?;
+    let ewid = ewid.or_else(|| dtrace(679))?;
     if !p.is_gm {
-        let member: i64 = db.query_row("SELECT count(*) FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [ewid, p.user_id], |r| r.get(0)).ok()?;
+        let member: i64 = db.query_row("SELECT count(*) FROM world_memberships WHERE world_id = ?1 AND user_id = ?2", [ewid, p.user_id], |r| r.get(0)).ok().or_else(|| dtrace(681))?;
         if member == 0 {
             return None;
         }
         let s = |k: &str| ent_world.get(k).and_then(|v| v.as_str());
         let kind = entity.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), &format!("kind_{kind}"))? == "none" {
+        if nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), &format!("kind_{kind}")).or_else(|| dtrace(687))? == "none" {
             return None;
         }
         if !truthy_json(entity.get("visible_to_players")) {
-            let shared: i64 = db.query_row("SELECT count(*) FROM entity_player_access WHERE entity_id = ?1 AND user_id = ?2", [id, p.user_id], |r| r.get(0)).ok()?;
+            let shared: i64 = db.query_row("SELECT count(*) FROM entity_player_access WHERE entity_id = ?1 AND user_id = ?2", [id, p.user_id], |r| r.get(0)).ok().or_else(|| dtrace(691))?;
             if shared == 0 {
                 return None;
             }
@@ -708,30 +716,30 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let (mut audio, mut video) = (vec![], vec![]);
     if let Some(aw) = active_wid {
         let v = if is_gm { "" } else { " AND visible_to_players IS 1" };
-        audio = rows(&format!("SELECT * FROM audio_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw])?;
-        video = rows(&format!("SELECT * FROM video_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw])?;
+        audio = rows(&format!("SELECT * FROM audio_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw]).or_else(|| dtrace(711))?;
+        video = rows(&format!("SELECT * FROM video_clips WHERE entity_id = ?1 AND world_id = ?2{v} ORDER BY created_at DESC"), &[&id, &aw]).or_else(|| dtrace(712))?;
     }
-    let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id])?;
+    let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id]).or_else(|| dtrace(714))?;
     let notes_vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
-    let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id])?;
-    let names = autolink_names(&db, ewid, Some(id), &vis)?;
+    let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id]).or_else(|| dtrace(716))?;
+    let names = autolink_names(&db, ewid, Some(id), &vis).or_else(|| dtrace(717))?;
     for n in notes.iter_mut() {
         let content = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let content = if is_gm { content } else { strip(&content)? };
+        let content = if is_gm { content } else { strip(&content).or_else(|| dtrace(720))? };
         let html = if truthy_json(n.get("content_is_html")) { content } else { md::render_md(&content) };
-        n.insert("content_html".into(), Value::String(text::autolink_entities(&html, &names)?));
+        n.insert("content_html".into(), Value::String(text::autolink_entities(&html, &names).or_else(|| dtrace(722))?));
     }
     // custom fields of a template-made entity
     let mut custom_sections: Vec<(String, Vec<Value>)> = vec![];
     let mut custom_fields = Map::new();
     if let Some(tid) = entity.get("template_id").and_then(|v| v.as_i64()) {
-        let tpl = one("SELECT fields_json FROM entity_templates WHERE id = ?1", &[&tid])?;
+        let tpl = one("SELECT fields_json FROM entity_templates WHERE id = ?1", &[&tid]).or_else(|| dtrace(728))?;
         let fields: Vec<Value> = match tpl.and_then(|t| t.get("fields_json").and_then(|v| v.as_str()).map(str::to_string)) {
-            Some(s) if !s.is_empty() => serde_json::from_str(&s).ok()?,
+            Some(s) if !s.is_empty() => serde_json::from_str(&s).ok().or_else(|| dtrace(730))?,
             _ => vec![],
         };
         custom_fields = match entity.get("custom_fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-            Some(s) => serde_json::from_str::<Value>(s).ok()?.as_object()?.clone(),
+            Some(s) => serde_json::from_str::<Value>(s).ok().or_else(|| dtrace(734))?.as_object().or_else(|| dtrace(734))?.clone(),
             None => Map::new(),
         };
         for f in fields {
@@ -744,14 +752,14 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     }
     let body = entity.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let summary = entity.get("summary").and_then(|v| v.as_str()).map(str::to_string);
-    let safe_body = if is_gm { body.clone() } else { strip(&body)? };
+    let safe_body = if is_gm { body.clone() } else { strip(&body).or_else(|| dtrace(747))? };
     let safe_summary: Value = match &summary {
         None => Value::Null,
-        Some(s) => Value::String(if is_gm { s.clone() } else { strip(s)? }),
+        Some(s) => Value::String(if is_gm { s.clone() } else { strip(s).or_else(|| dtrace(750))? }),
     };
     let (mut body_sections, mut toc) = (vec![], vec![]);
     if !safe_body.is_empty() {
-        let html = text::autolink_entities(&md::render_md(&text::strip_legacy_anchors(&safe_body)), &names)?;
+        let html = text::autolink_entities(&md::render_md(&text::strip_legacy_anchors(&safe_body)), &names).or_else(|| dtrace(754))?;
         let (h, t) = text::rules_toc(&html, "123");
         toc = t;
         body_sections = text::split_sections_h123(&h);
@@ -759,21 +767,21 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let related = rows(
         &format!("SELECT e.* FROM entities e WHERE e.id IN (SELECT target_id FROM entity_links WHERE source_id = ?1) AND {vis} ORDER BY e.kind, e.name"),
         &[&id],
-    )?;
+    ).or_else(|| dtrace(762))?;
     // retrieval.entity_extra_context
     let mut parts: Vec<String> = vec![];
     let mut field_lines: Vec<String> = vec![];
     for (_, fields) in &custom_sections {
         for f in fields {
-            let fid = f.get("id").and_then(|v| v.as_str())?;
+            let fid = f.get("id").and_then(|v| v.as_str()).or_else(|| dtrace(768))?;
             let label = f.get("label").and_then(|v| v.as_str()).unwrap_or("");
             if f.get("type").and_then(|v| v.as_str()) == Some("list") {
                 for row in custom_fields.get(fid).and_then(|v| v.as_array()).cloned().unwrap_or_default() {
                     let mut bits = vec![];
                     for sf in f.get("item_fields").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
-                        let sid = sf.get("id").and_then(|v| v.as_str())?;
+                        let sid = sf.get("id").and_then(|v| v.as_str()).or_else(|| dtrace(774))?;
                         if truthy_json(row.get(sid)) {
-                            bits.push(format!("{}: {}", sf.get("label").and_then(|v| v.as_str()).unwrap_or(""), py_str_value(&row[sid])?));
+                            bits.push(format!("{}: {}", sf.get("label").and_then(|v| v.as_str()).unwrap_or(""), py_str_value(&row[sid]).or_else(|| dtrace(776))?));
                         }
                     }
                     if !bits.is_empty() {
@@ -783,9 +791,9 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
                 continue;
             }
             let Some(v) = custom_fields.get(fid).filter(|v| truthy_json(Some(v))) else { continue };
-            let mut val = py_str_value(v)?;
+            let mut val = py_str_value(v).or_else(|| dtrace(786))?;
             if !is_gm {
-                val = nd_perm::gmonly::strip_gm_only(&val, None, nd_render::now_minute())?;
+                val = nd_perm::gmonly::strip_gm_only(&val, None, nd_render::now_minute()).or_else(|| dtrace(788))?;
             }
             let val = text::py_strip(&val);
             if !val.is_empty() {
@@ -811,7 +819,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
             c = crate::sheet_import::html_to_sheet_text(&c);
         }
         if !is_gm {
-            c = nd_perm::gmonly::strip_gm_only(&c, None, nd_render::now_minute())?;
+            c = nd_perm::gmonly::strip_gm_only(&c, None, nd_render::now_minute()).or_else(|| dtrace(814))?;
         }
         let c = text::py_strip(&c);
         if !c.is_empty() {
@@ -832,7 +840,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let mut ai_custom = String::new();
     if let Some(aw) = active_wid {
         let pl = if is_gm { "" } else { " AND applies_to_players IS 1" };
-        let rs = rows(&format!("SELECT title, content FROM ai_instructions WHERE world_id = ?1 AND enabled IS 1{pl} ORDER BY created_at"), &[&aw])?;
+        let rs = rows(&format!("SELECT title, content FROM ai_instructions WHERE world_id = ?1 AND enabled IS 1{pl} ORDER BY created_at"), &[&aw]).or_else(|| dtrace(835))?;
         let ps: Vec<String> = rs
             .iter()
             .filter_map(|r| {

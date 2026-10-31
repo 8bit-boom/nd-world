@@ -10161,3 +10161,29 @@ def test_entity_with_a_rich_text_note_opens_without_python(client, seed):
         assert "Hello" in r.text and "rich" in r.text
     finally:
         proc.terminate()
+
+
+def test_entity_pages_open_without_python_when_a_name_has_accents(client, seed):
+    """One entity named with a non-ASCII letter (Éowyn, Őrült, 日本) made the gateway decline EVERY entity page of the world (the auto-link step
+    does not promise Python's case folding there); with no Python behind it the pages open, and the accented name is linked in another entity's text."""
+    from app.database import SessionLocal
+    from app.models import Entity
+    tag = os.urandom(3).hex()
+    db = SessionLocal()
+    try:
+        names = [f"Éowyn{tag}", f"Őrült{tag}", f"日本語{tag}"]
+        for n in names:
+            db.add(Entity(world_id=seed.world_a.id, kind="character", name=n, body="x"))
+        host = Entity(world_id=seed.world_a.id, kind="note", name=f"Host{tag}", body=f"We met Éowyn{tag} and Őrült{tag} at dusk.")
+        db.add(host)
+        db.commit()
+        hid = host.id
+    finally:
+        db.close()
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.get(f"/entity/{hid}")
+        assert r.status_code == 200, (r.status_code, r.text[:200])
+        assert f"Éowyn{tag}" in r.text and f'href="/entity/' in r.text
+    finally:
+        proc.terminate()

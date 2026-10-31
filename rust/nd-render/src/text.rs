@@ -270,6 +270,11 @@ pub fn derive_name_variants(name: &str) -> Vec<String> {
     variants.into_iter().filter(|v| v.split(py_ws).filter(|w| !w.is_empty()).all(all_capitalized)).collect()
 }
 
+/// `ND_PYTHON_FREE` set (the image with no Python behind it): there is nothing to hand a request to, so a page opens rather than declines
+fn python_free_env() -> bool {
+    matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
 /// `rendering.autolink_entities(html, names)`; `names` in the dict's insertion order. `None` = the names hold something this port does not
 /// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently).
 pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> {
@@ -282,8 +287,8 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
         if key.chars().count() < 3 {
             continue;
         }
-        if !key.is_ascii() {
-            return None;
+        if !key.is_ascii() && !python_free_env() {
+            return None; // next to Python: its case folding is the reference; without it the page must open (accented names are ordinary)
         }
         if !lower_to_id.iter().any(|(k, _)| *k == key) {
             lower_to_id.push((key, *id));
