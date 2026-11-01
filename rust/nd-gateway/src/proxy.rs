@@ -54,6 +54,35 @@ fn not_in_this_image(method: &Method, path: &str, headers: &HeaderMap) -> Respon
         .body(Body::from(format!("<!doctype html><meta charset=utf-8><title>Not available</title><body style=\"font-family:sans-serif;background:#111;color:#ddd;padding:2rem\"><h1>Not available here</h1><p>{msg}</p>"))).unwrap()
 }
 
+/// A page of a row that does not exist: Python's own answer (404, {"detail": "Not Found"}) instead of "Not available here". Only for the detail
+/// pages whose row is found by an id or a slug alone; a row that exists (or any other path) stays the refusal of this image.
+fn missing_row_404(cfg: &Config, path: &str) -> Option<Response<Body>> {
+    let (table, col, key) = {
+        let rest = path.strip_prefix('/')?;
+        let (head, tail) = rest.split_once('/')?;
+        if tail.is_empty() || tail.contains('/') && !(head == "maps" && tail.starts_with("schematic/") && tail["schematic/".len()..].find('/').is_none()) {
+            return None;
+        }
+        let tail = tail.strip_prefix("schematic/").unwrap_or(tail);
+        let id = !tail.is_empty() && tail.len() < 16 && tail.bytes().all(|b| b.is_ascii_digit()) && !(tail.len() > 1 && tail.starts_with('0'));
+        match head {
+            "entity" | "handout" if id => ("entities", "id", tail),
+            "characters" if id => ("player_characters", "id", tail),
+            "sessions" | "session-log" if id => ("game_sessions", "id", tail),
+            "combat" if id => ("combat_sessions", "id", tail),
+            "quests" if id => ("quests", "id", tail),
+            "parties" if id => ("parties", "id", tail),
+            // a slug: never the words that are pages of their own ("new")
+            "maps" if tail != "new" => ("schematics", "slug", tail),
+            "boards" if tail != "new" => ("invest_boards", "slug", tail),
+            _ => return None,
+        }
+    };
+    let db = crate::writes::open(cfg)?;
+    let found: bool = db.query_row(&format!("SELECT 1 FROM {table} WHERE {col} = ?1 LIMIT 1"), [key], |_| Ok(())).is_ok();
+    (!found).then(|| crate::idpages::refusal(404))
+}
+
 impl Proxy {
     pub fn new(cfg: Arc<Config>) -> Proxy {
         let mut http = HttpConnector::new();
@@ -75,6 +104,13 @@ impl Proxy {
         let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
         census("PY", method.as_str(), parts.uri.path());
         if crate::config::python_free() {
+            // every request this image cannot answer is named in the log (method and path only: no query, no body), so a real refusal can be found
+            eprintln!("DECLINE {} {}", method, parts.uri.path());
+            if method == Method::GET {
+                if let Some(r) = missing_row_404(&self.cfg, parts.uri.path()) {
+                    return r;
+                }
+            }
             return not_in_this_image(&method, parts.uri.path(), &req_headers);
         }
         let uri: hyper::Uri = match format!("http://{}{}", self.cfg.upstream, pq).parse() {

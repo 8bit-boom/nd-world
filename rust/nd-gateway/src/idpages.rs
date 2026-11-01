@@ -26,6 +26,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/worlds/", "/edit", world_edit_page),
     ("/worlds/", "/kinds/edit", kinds_edit),
     ("/worlds/", "/rules/edit", rules_edit),
+    ("/worlds/", "/home/edit", home_edit_page),
     ("/pages/", "", page_viewer),
     ("/quests/", "", quest_detail),
     ("/entity/", "/edit", entity_edit),
@@ -235,6 +236,62 @@ fn kinds_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: 
     p.ctx.insert("edit_world".into(), Value::Object(w));
     p.ctx.insert("max_custom_kinds".into(), json!(25));
     render_with(pages, "kinds_edit.html", p.ctx, headers)
+}
+
+/// `GET /worlds/<id>/home/edit` (app/routers/home_content.py `world_home_edit_form`): the home page editor - sections, pinned tiles and hidden kinds as
+/// the sanitizers read them, and the pickers' lists (entities, sessions, quests, boards, maps)
+fn home_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    let Some(w) = row(db, "SELECT * FROM worlds WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let kinds = crate::edits::kinds_of(Some(&w))?;
+    let text = |k: &str| w.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut sections = crate::edits::home_sections(&text("home_sections_json"), &kinds)?;
+    if sections.is_empty() {
+        sections.push(json!({"name": "Quick Links", "visible_to_players": true, "links": []}));
+    }
+    let tiles = crate::edits::home_tiles(&text("home_pinned_tiles_json"), &kinds)?;
+    let hidden = crate::edits::home_hidden(&text("home_hidden_kinds_json"), &kinds)?;
+    let (_, icons, _) = nd_render::app::effective_kind_tables(Some(&w))?;
+    let list = |sql: &str| -> Option<Vec<Value>> {
+        let mut st = db.prepare(sql).ok()?;
+        let out = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(out.into_iter().map(Value::Object).collect())
+    };
+    let entities = list("SELECT id, name FROM entities WHERE world_id = ?1 ORDER BY name")?;
+    let sessions = list("SELECT id, session_num, title FROM game_sessions WHERE world_id = ?1 ORDER BY session_num")?;
+    let quests = list("SELECT id, title FROM quests WHERE world_id = ?1 ORDER BY title")?;
+    let boards = list("SELECT slug, name FROM invest_boards WHERE world_id = ?1 ORDER BY name")?;
+    let schematics = list("SELECT slug, name FROM schematics WHERE world_id = ?1 ORDER BY name")?;
+    // _world_maps: the .json maps beside the database that belong to this world, by file name
+    let mut maps: Vec<Value> = vec![];
+    if let Some(dir) = db.path().and_then(|d| std::path::Path::new(d).parent().map(|d| d.join("maps"))) {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let mut files: Vec<std::path::PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map_or(false, |x| x == "json")).collect();
+            files.sort();
+            for f in files {
+                let Some(stem) = f.file_stem().and_then(|s| s.to_str()).map(str::to_string) else { continue };
+                let Ok(raw) = std::fs::read_to_string(&f) else { continue };
+                let Ok(Value::Object(m)) = serde_json::from_str::<Value>(&raw) else { continue };
+                let wid = m.get("world_id").cloned().unwrap_or(json!(1));
+                if wid.as_i64() == Some(id) || (wid == json!(true) && id == 1) {
+                    let name = m.get("name").cloned().filter(|v| v.is_string()).unwrap_or(json!(stem));
+                    maps.push(json!([stem, name]));
+                }
+            }
+        }
+    }
+    p.ctx.insert("edit_world".into(), Value::Object(w));
+    p.ctx.insert("initial_sections".into(), Value::Array(sections));
+    p.ctx.insert("initial_pinned_tiles".into(), Value::Array(tiles));
+    p.ctx.insert("initial_hidden_kinds".into(), json!(hidden));
+    p.ctx.insert("kinds".into(), json!(kinds));
+    p.ctx.insert("kind_icons".into(), icons);
+    p.ctx.insert("entities".into(), Value::Array(entities));
+    p.ctx.insert("sessions".into(), Value::Array(sessions));
+    p.ctx.insert("quests".into(), Value::Array(quests));
+    p.ctx.insert("boards".into(), Value::Array(boards));
+    p.ctx.insert("schematics".into(), Value::Array(schematics));
+    p.ctx.insert("maps".into(), Value::Array(maps));
+    render_with(pages, "home_edit.html", p.ctx, headers)
 }
 
 /// `GET /worlds/<id>/rules/edit` (app/main.py `world_rules_edit_form`) - for a world with no rules overlay stored; one with an overlay

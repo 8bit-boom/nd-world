@@ -739,10 +739,18 @@ fn entity_download(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Opt
     }
     let text = entity_markdown(&db, &p, &e, &w, id)?;
     let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("entity");
-    let fname: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || " -_".contains(*c)).collect();
+    let python_free = crate::config::python_free();
+    let fname: String = name.chars().filter(|c| if python_free { c.is_alphanumeric() } else { c.is_ascii_alphanumeric() } || " -_".contains(*c)).collect();
     let fname = if fname.is_empty() { "entity".to_string() } else { fname };
+    // a name beyond ASCII (Python writes it as latin-1 and fails on anything wider): the standard UTF-8 form with a plain fallback
+    let disposition = if fname.is_ascii() {
+        format!("attachment; filename=\"{fname}.md\"")
+    } else {
+        let plain: String = fname.chars().map(|c| if c.is_ascii() { c } else { '_' }).collect();
+        format!("attachment; filename=\"{plain}.md\"; filename*=UTF-8''{}.md", percent_encoding::utf8_percent_encode(&fname, percent_encoding::NON_ALPHANUMERIC))
+    };
     Some(Response::builder().header(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")
-        .header(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{fname}.md\""))
+        .header(axum::http::header::CONTENT_DISPOSITION, disposition)
         .header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap())
 }
 
@@ -2260,12 +2268,15 @@ pub(crate) fn entity_markdown(db: &rusqlite::Connection, p: &crate::layout::Page
     };
     let name = e.get("name").and_then(|v| v.as_str())?.to_string();
     let kind = e.get("kind").and_then(|v| v.as_str())?.to_string();
-    if !name.is_ascii() || !kind.is_ascii() {
-        return None; // str.isalnum() / str.capitalize() beyond ASCII: Python's
+    if (!name.is_ascii() || !kind.is_ascii()) && !crate::config::python_free() {
+        return None; // str.isalnum() / str.capitalize() beyond ASCII: Python's (without it, accented names are ordinary: Rust's rules)
     }
     let (_, icons, _) = nd_render::app::effective_kind_tables(Some(w))?;
     let icon = icons.get(&kind).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let cap = kind.chars().next().map(|c| c.to_ascii_uppercase().to_string() + &kind[1..].to_ascii_lowercase()).unwrap_or_default();
+    let cap = {
+        let mut it = kind.chars();
+        it.next().map(|c| c.to_uppercase().collect::<String>() + &it.as_str().to_lowercase()).unwrap_or_default()
+    };
     let mut label = nd_render::text::py_strip(&format!("{icon} {cap}")).to_string();
     match e.get("subtype") {
         Some(Value::String(s)) if !s.is_empty() => label.push_str(&format!(" \u{2014} {s}")),

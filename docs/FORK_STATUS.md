@@ -12,9 +12,12 @@ Branch purpose and rules: `CLAUDE.md`. Update this file with every batch (move i
 
 ## Batch 0: find what real data breaks (do this first)
 - [ ] Restore a real backup into a copy; run the entity crawl; fix every DECLINE line, most frequent first.
-- [ ] Extend the crawl to every list and detail page: characters, maps, boards, sessions, combat, quests, parties, albums, audio, video, calendar.
-- [ ] Put the same decline logging into every page builder (the `dtrace` pattern in `rust/nd-gateway/src/pages.rs`).
-- [ ] Missing row: answer 404 (not 501) without Python on every ID route.
+- [x] Extend the crawl to every detail page of every list: `scripts/python_free_crawl_all.py` (entities, characters, sessions, combat, quests, parties, maps,
+      boards, albums, tables, templates, world pages, kinds). Still to add: calendar, audio / video library pages, search, rules.
+- [x] Log every request the Python-free image cannot answer: `DECLINE <method> <path>` (proxy.rs). Per-step reasons exist for the entity page only
+      (`dtrace`, pages.rs); add them to the other page builders when a path shows up in the log.
+- [x] Missing row: 404 `{"detail": "Not Found"}` (not 501) without Python for entity, handout, character, session, session-log, combat, quest, party,
+      map and board pages (proxy.rs `missing_row_404`).
 
 ## Batch 1: still Python-only calls the pages make
 - [ ] imagegen tag lists: `POST /api/ai/imagegen/tags/fetch`, `/activate`, `/delete`
@@ -36,5 +39,11 @@ Branch purpose and rules: `CLAUDE.md`. Update this file with every batch (move i
 - [ ] Move the build-time Python stage of `Dockerfile.gateway` (thumbnails, AVIF maps, tile pyramids, minify) to Rust.
 - [ ] Then, only with a month of clean real use: make the Python-free image the default.
 
+## Found by the all-pages crawl on synthetic data, fixed
+- [x] `GET /entity/<id>/download.md` was refused for any entity whose name has an accented letter (Python-free only): now served, with an RFC 5987
+      `filename*` (Python writes the name as latin-1 and fails on anything wider).
+- [x] `GET /worlds/<id>/home/edit` (the home page editor) was not ported at all: now a page of the gateway, byte-identical to Python.
+
 ## Log
-(Add one line per batch: date, what, tests, commit.)
+- 2026-11-01  batch 0 part 1: DECLINE log for every refusal, missing rows 404, all-pages crawl script, download.md for accented names, home page
+  editor page. Tests: `test_python_free_missing_rows_are_404_and_accented_downloads_work`, `test_home_page_editor_is_pythons`.

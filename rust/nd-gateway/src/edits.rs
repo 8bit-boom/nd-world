@@ -6971,7 +6971,7 @@ fn folder_rename(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 }
 
 /// `effective_kinds(world)[0]` for a world row (None: the built-ins)
-fn kinds_of(world: Option<&Map<String, Value>>) -> Option<Vec<String>> {
+pub(crate) fn kinds_of(world: Option<&Map<String, Value>>) -> Option<Vec<String>> {
     nd_perm::sections::effective_kinds(world.and_then(|w| w.get("custom_kinds_json")).and_then(|v| v.as_str()))
 }
 
@@ -7827,7 +7827,7 @@ fn json_list_or_empty(raw: &str) -> Option<Vec<Value>> {
 }
 
 /// `_sanitize_sections(raw, kinds)`
-fn home_sections(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
+pub(crate) fn home_sections(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
     let mut out = vec![];
     for sec in json_list_or_empty(raw)?.iter().take(20) {
         let Some(sm) = sec.as_object() else { continue };
@@ -7852,7 +7852,7 @@ fn home_sections(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
 }
 
 /// `_sanitize_pinned_tiles(raw, kinds)`
-fn home_tiles(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
+pub(crate) fn home_tiles(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
     let mut out = vec![];
     for l in json_list_or_empty(raw)?.iter().take(24) {
         if let Some(v) = home_link(l, kinds)? {
@@ -7863,7 +7863,7 @@ fn home_tiles(raw: &str, kinds: &[String]) -> Option<Vec<Value>> {
 }
 
 /// `_sanitize_hidden_kinds(raw, kinds)`
-fn home_hidden(raw: &str, kinds: &[String]) -> Option<Vec<String>> {
+pub(crate) fn home_hidden(raw: &str, kinds: &[String]) -> Option<Vec<String>> {
     let mut seen: Vec<String> = vec![];
     for k in json_list_or_empty(raw)? {
         if let Some(k) = k.as_str() {

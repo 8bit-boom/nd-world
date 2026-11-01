@@ -591,3 +591,11 @@ King in Yellow `generate` and `plays`, `POST /api/ai/pull` and `GET /api/ai/test
 
 The entity page builds the AI panel's context from the entity's notes; a note stored as HTML went through Python's html2text, so the gateway declined the
 whole page. Python-free it now uses its own plain-text reader (also in the AI chat's entity context and retrieval); next to Python nothing changes.
+
+
+## rust-fork batch 0 (part 1)
+- Every request the Python-free image cannot answer is logged as `DECLINE <method> <path>` (method and path only), so a real refusal can be found in `docker logs`.
+- A detail page of a row that does not exist answers Python's 404 (`{"detail": "Not Found"}`) without Python (entity, handout, character, session, session-log,
+  combat, quest, party, map, board) instead of "Not available here".
+- `scripts/python_free_crawl_all.py`: opens every detail page of every list in a copy of your data and lists what answers 501, with the DECLINE lines.
+- Fixed from its first run: `/entity/<id>/download.md` with an accented name, `/worlds/<id>/home/edit` (new page, parity-tested).

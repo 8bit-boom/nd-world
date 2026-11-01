@@ -10187,3 +10187,91 @@ def test_entity_pages_open_without_python_when_a_name_has_accents(client, seed):
         assert f"Éowyn{tag}" in r.text and f'href="/entity/' in r.text
     finally:
         proc.terminate()
+
+
+def test_python_free_missing_rows_are_404_and_accented_downloads_work(client, seed):
+    """Batch 0 of the Rust fork. Without Python: a detail page of a row that does not exist answers Python's own 404 ({"detail": "Not Found"}), not
+    "Not available here"; an entity with an accented name downloads as markdown (the page used to be declined)."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import Entity
+    tag = os.urandom(3).hex()
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name=f"Éowyn {tag}", body="Shieldmaiden of Rohan")
+        db.add(e)
+        db.commit()
+        eid = e.id
+    finally:
+        db.close()
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    for url in ("/entity/99999999", "/characters/99999999", "/sessions/99999999", "/combat/99999999", "/quests/99999999", "/parties/99999999",
+                "/maps/no-such-map", "/boards/no-such-board", "/handout/99999999"):
+        a, b = d.get(url), v.get(url)
+        assert (a.status_code, a.content) == (b.status_code, b.content) == (404, b'{"detail":"Not Found"}'), (url, a.status_code, b.status_code, b.text[:100])
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        for u in ("/entity/99999999", "/characters/99999999", "/sessions/99999999", "/combat/99999999", "/quests/99999999", "/parties/99999999",
+                  "/maps/no-such-map", "/boards/no-such-board", "/handout/99999999"):
+            r = g.get(u)
+            assert r.status_code == 404 and r.json() == {"detail": "Not Found"}, (u, r.status_code, r.text[:100])
+        r = g.get(f"/entity/{eid}/download.md")
+        assert r.status_code == 200, (r.status_code, r.text[:200])
+        assert "Shieldmaiden of Rohan" in r.text and "# Éowyn" in r.text
+        assert "filename*=UTF-8''" in r.headers["content-disposition"], r.headers["content-disposition"]
+        assert g.get("/maps/new").status_code != 404   # a page of its own is never taken for a missing slug
+    finally:
+        proc.terminate()
+
+
+def test_home_page_editor_is_pythons(client, seed):
+    """GET /worlds/<id>/home/edit (the home page editor): the same page from both servers for a world with saved sections, pinned tiles, hidden kinds
+    and things to pick from (entities with awkward names, sessions, quests, boards, maps), an empty world, and a missing world (404); and the
+    Python-free gateway opens it."""
+    import json as _json
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import Entity, GameSession, InvestBoard, Quest, Schematic, World
+    base = str(client.base_url)
+    tag = os.urandom(3).hex()
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        world = db.get(World, w)
+        world.home_title, world.home_subtitle, world.home_welcome_md = f"Title {tag} <b>", "Sub & é", "Welcome **home**"
+        world.home_sections_json = _json.dumps([{"name": "Quick Links", "visible_to_players": True,
+                                                  "links": [{"label": "Rules", "target_type": "url", "target_ref": "/rules", "icon": "", "visible_to_players": True}]},
+                                                 {"name": "Second", "visible_to_players": False, "links": []}])
+        world.home_pinned_tiles_json = _json.dumps([{"label": "Maps", "target_type": "url", "target_ref": "/maps", "icon": "\U0001f5fa", "visible_to_players": True}])
+        world.home_hidden_kinds_json = _json.dumps(["item"])
+        db.add_all([Entity(world_id=w, kind="character", name=f"Zed \"quoted\" {tag}"), Entity(world_id=w, kind="location", name=f"Ash & <Ember> {tag}"),
+                    GameSession(world_id=w, title=f"Opening {tag}", session_num=1), Quest(world_id=w, title=f"Find it {tag}"),
+                    InvestBoard(world_id=w, name=f"Board {tag}", slug=f"board-{tag}"), Schematic(world_id=w, name=f"Map {tag}", slug=f"map-{tag}", elements_json="[]")])
+        db.commit()
+    finally:
+        db.close()
+    maps_dir = Path(os.environ["DB_PATH"]).parent / "maps"
+    maps_dir.mkdir(exist_ok=True)
+    mf = maps_dir / f"zz-{tag}.json"
+    mf.write_text(_json.dumps({"world_id": w, "name": f"Json map {tag}"}), encoding="utf-8")
+    other = maps_dir / f"zz-other-{tag}.json"
+    other.write_text(_json.dumps({"world_id": seed.world_b.id, "name": "Not ours"}), encoding="utf-8")
+    try:
+        d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        v = _via(d, base)
+        served = 0
+        for url in (f"/worlds/{w}/home/edit", f"/worlds/{seed.world_b.id}/home/edit", "/worlds/999999/home/edit"):
+            served += _same_page(d, v, url, "gm")
+        assert served >= 1
+        proc, url, g = _python_free_gateway(seed)
+        try:
+            r = g.get(f"/worlds/{w}/home/edit")
+            assert r.status_code == 200 and f"Json map {tag}" in r.text and "Not ours" not in r.text, (r.status_code, r.text[:200])
+            assert g.get("/worlds/999999/home/edit").status_code == 404
+        finally:
+            proc.terminate()
+    finally:
+        mf.unlink(missing_ok=True)
+        other.unlink(missing_ok=True)
