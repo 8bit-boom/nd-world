@@ -1,13 +1,14 @@
 # The Python-free image (docs/RUST_SWITCH_OFF.md): the Rust gateway answers every route itself - no Python, no uvicorn, no second process.
 # The gateway boots the database on a fresh volume (startup.rs), heals an existing one (ND_PYTHON_FREE=1) and runs the job sweeps, backups and fan
-# control itself. What still needs Python in the build only (a throw-away stage): the static files' thumbnails, AVIF maps, tile pyramids, minified
-# and pre-compressed copies, which are made exactly as for the normal image and copied over.
+# control itself. Nothing in this build needs Python any more: the static files' thumbnails, AVIF maps, tile pyramids, minified CSS and pre-compressed
+# copies are made by the Rust nd-assets program (rust/nd-gateway/src/assets.rs) in the gateway stage. Differences from the normal image: JavaScript is
+# not minified (only compressed), and the encoders are Rust's (the pictures are equivalent, not byte-identical).
 #
 # Served here since the first draft: an https:// Studio (rustls; the system CA store, SSL_CERT_FILE honoured), video uploads' ffmpeg conversions and
 # posters, GIF / AVIF / animated pictures (ffmpeg's first frame) and PDF text (lopdf; spacing can differ from pypdf's), TZ-aware local times.
-# Not served here (no Python to forward to; they answer 501 with the reason): the character .pdf export, the legacy Ollama back end's status routes
-# (a Studio key is served), King in Yellow web fetches, FastAPI's /docs and /openapi.json, the world Foundry export, and the refusals of rarely used
-# routes - the list is in docs/RUST_PORT_HANDOFF.md and docs/RUST_PORT_AUDIT.md.
+# Not served here (no Python to forward to; they answer 501 with the reason): the legacy Ollama back end's routes (a Studio key is served), FastAPI's
+# /docs and /openapi.json, and the refusals of rarely used routes - see docs/FORK_STATUS.md. (The character .pdf export, the world Foundry export and
+# the King in Yellow routes are served by the gateway.)
 FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
 
 FROM rust:1-slim AS gateway
@@ -27,26 +28,23 @@ COPY rust/nd-render/src nd-render/src
 COPY rust/nd-render/data nd-render/data
 COPY rust/nd-perm/src nd-perm/src
 RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs nd-render/src/lib.rs nd-perm/src/lib.rs \
-    && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway \
-    && cp "target/$(uname -m)-unknown-linux-musl/release/nd-gateway" /nd-gateway
+    && cargo build --release --locked --target "$(uname -m)-unknown-linux-musl" -p nd-gateway --bins \
+    && cp "target/$(uname -m)-unknown-linux-musl/release/nd-gateway" /nd-gateway \
+    && cp "target/$(uname -m)-unknown-linux-musl/release/nd-assets" /nd-assets
 
-# the build-time pictures and compressed static files (needs Python and Pillow; none of it reaches the final image)
-FROM python:3.13-slim AS assets
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app/ ./app/
-COPY static/ ./static/
-RUN python -m app.static_thumbs --avif-maps && python -m app.map_tiles && python -m app.precompress --minify
+# the build-time pictures, tile pyramids, minified CSS and compressed twins of the static files, made by the Rust nd-assets (src/assets.rs): no Python
+COPY static/ /assets/static/
+COPY app/maps/ /assets/maps/
+RUN /nd-assets /assets/static /assets/maps
 
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=gateway /nd-gateway /usr/local/bin/nd-gateway
 WORKDIR /app
-COPY --from=assets /app/static ./static
-COPY --from=assets /app/app/templates ./app/templates
-COPY --from=assets /app/app/maps ./app/maps
+COPY --from=gateway /assets/static ./static
+COPY app/templates ./app/templates
+COPY app/maps ./app/maps
 
 ARG GIT_SHA=""
 ENV ND_BUILD=${GIT_SHA} \

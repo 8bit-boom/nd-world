@@ -276,6 +276,25 @@ fn make_thumbnail(src: &Path) -> Option<()> {
         Some("webp") | Some("original") => ("webp", "_thumb.webp", 74u8),
         _ => ("avif", "_thumb.avif", 60u8),
     };
+    thumbnail_as(src, pil, suffix, q)
+}
+
+/// The image build's thumbnail (nd-assets): AVIF, as an install on the default Settings makes it
+pub fn build_thumbnail(src: &Path) -> Option<()> {
+    thumbnail_as(src, "avif", "_thumb.avif", 60)
+}
+
+/// the picture's pixels as the build / maps code wants them: RGB, or RGBA when it has transparency
+pub fn build_frame(img: &DynamicImage) -> DynamicImage {
+    frame(img, false)
+}
+
+/// write `bytes` of `img` in `format` at `dest` (the encoder the uploads use)
+pub fn build_encode(img: &DynamicImage, format: &str, quality: u8, dest: &Path) -> Option<()> {
+    encode(img, format, quality, dest)
+}
+
+fn thumbnail_as(src: &Path, pil: &str, suffix: &str, q: u8) -> Option<()> {
     let img = readable_or_frame(src)?;
     let framed = frame(&frame(&img, false), false);
     let small = match thumbnail_size(framed.width(), framed.height(), THUMBNAIL_MAX_DIM) {

@@ -51,6 +51,7 @@ pub mod studio_key;
 pub mod settings_system;
 pub mod kiy;
 pub mod minipdf;
+pub mod assets;
 pub mod tags;
 pub mod net;
 pub mod pdftext;

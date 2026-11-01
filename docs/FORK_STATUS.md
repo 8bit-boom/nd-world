@@ -37,7 +37,7 @@ Branch purpose and rules: `CLAUDE.md`. Update this file with every batch (move i
 - [ ] Port a refusal's wording only when `ND_DECLINE_TRACE=1` shows it is hit in real use.
 
 ## Batch 4: shrink the hybrid image
-- [ ] Move the build-time Python stage of `Dockerfile.gateway` (thumbnails, AVIF maps, tile pyramids, minify) to Rust.
+- [x] The build-time Python stage of `Dockerfile.gateway` is gone: `nd-assets` (`rust/nd-gateway/src/assets.rs`, a second binary) makes the AVIF maps (4 at a time), thumbnails, tile pyramids, minified CSS and `.gz`/`.br` twins. Differences from the Python stage: JavaScript is compressed but not minified; Rust encoders (equivalent pictures, not identical bytes). Run on a copy of `static/`: 14 maps 40.0 MB to 13.6 MB, CSS 220 KB to 172 KB, 94 files compressed, brace counts equal; 9m41 single-threaded before the 4-way change. **The Docker image itself was not built here (no Docker daemon in this sandbox): the first real check is the `docker-publish` run.**
 - [ ] Then, only with a month of clean real use: make the Python-free image the default.
 
 ## Found by the all-pages crawl on synthetic data, fixed
