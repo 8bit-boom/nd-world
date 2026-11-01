@@ -27,10 +27,15 @@ fn target(url: &str) -> String {
 
 /// httpx's `client.get(url)` with redirects followed: (status, body), None on any error or timeout
 async fn get(url: &str, timeout: Duration) -> Option<(u16, Bytes)> {
+    fetch(url, timeout, AGENT).await
+}
+
+/// the same with a chosen User-Agent
+pub async fn fetch(url: &str, timeout: Duration, agent: &str) -> Option<(u16, Bytes)> {
     let work = async {
         let mut current: hyper::Uri = target(url).parse().ok()?;
         for _ in 0..20 {
-            let req = hyper::Request::builder().method("GET").uri(current.clone()).header("user-agent", AGENT).body(Full::new(Bytes::new())).ok()?;
+            let req = hyper::Request::builder().method("GET").uri(current.clone()).header("user-agent", agent).body(Full::new(Bytes::new())).ok()?;
             let resp = crate::net::client().request(req).await.ok()?;
             let status = resp.status().as_u16();
             if matches!(status, 301 | 302 | 303 | 307 | 308) {

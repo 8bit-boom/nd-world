@@ -3525,6 +3525,9 @@ fn system_stats(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response
 /// The image prompt tag-completion routes (`/api/ai/imagegen/tags*`) on an install with no tag list downloaded: no `<source>_tags.csv`, no active source, no
 /// custom sources - the two built-in sources not downloaded and nothing to complete. A downloaded list (parsed once and cached by Python) is Python's. GM only.
 fn imagegen_tags_empty(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    if crate::config::python_free() {
+        return crate::tags::get(cfg, uri, headers);
+    }
     let (_db, p) = page(cfg, uri, headers)?;
     if !p.is_gm {
         return None;

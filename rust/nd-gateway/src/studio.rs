@@ -262,7 +262,7 @@ fn text_field(body: &Map<String, Value>, key: &str) -> Option<String> {
 /// overrides. None: Python's (anyone else, a body that is not a JSON object, a Studio over https, ...).
 pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     let path = uri.path().strip_prefix("/api/ai/unsloth/")?.to_string();
-    if !matches!(path.as_str(), "hub/download" | "image/load" | "image/unload" | "auto-switch" | "context-overrides") {
+    if !matches!(path.as_str(), "hub/download" | "image/load" | "image/unload" | "auto-switch" | "context-overrides" | "update") {
         return None;
     }
     let (c, u, h) = (cfg.clone(), uri.clone(), headers.clone());
@@ -282,6 +282,19 @@ pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -
             Ok(v) => ok(&v),
             Err(f) => failure_response(f),
         };
+    }
+    if path == "update" {
+        // studio_update(): POST /api/update, then /update on a missing route; a 405 (Python may retry as PUT) is Python's
+        for p in ["/api/update", "/update"] {
+            match send(&b, "POST", p, None).await {
+                Ok(v) if v.is_object() => return ok(&json!({"ok": true, "result": v})),
+                Ok(_) => return None,
+                Err(f) if f.missing => continue,
+                Err(f) if f.status == 405 => return None,
+                Err(f) => return failure_response(Failure { msg: format!("Unsloth Studio update: {}", f.msg), ..f }),
+            }
+        }
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "This Studio build doesn't expose an update API \u{2014} update the Docker image (or Desktop app) and recreate the container."));
     }
     let parsed: Value = serde_json::from_slice(body).ok()?;
     let obj = parsed.as_object()?;

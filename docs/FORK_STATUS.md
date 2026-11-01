@@ -20,10 +20,11 @@ Branch purpose and rules: `CLAUDE.md`. Update this file with every batch (move i
       map and board pages (proxy.rs `missing_row_404`).
 
 ## Batch 1: still Python-only calls the pages make
-- [ ] imagegen tag lists: `POST /api/ai/imagegen/tags/fetch`, `/activate`, `/delete`
-- [ ] `POST /api/ai/unsloth/update`
-- [ ] King in Yellow `POST /api/kiy/generate`, `/api/kiy/plays`, `DELETE /api/kiy/plays/{id}`
-- [ ] `POST /api/worlds`
+- [x] imagegen tag lists: GET sources/status/search and POST `fetch`, `/activate`, `/delete` (`tags.rs`, Python-free only: Python keeps a parsed-list cache)
+- [x] `POST /api/ai/unsloth/update`
+- [x] King in Yellow `POST /api/kiy/plays`, `DELETE /api/kiy/plays/{id}`
+- [ ] King in Yellow `POST /api/kiy/generate` (SSE: web inspirations + AI stream; random, not byte-testable; next)
+- [x] `POST /api/worlds`
 - [ ] legacy Ollama: `POST /api/ai/pull`, `GET /api/ai/test-chat` (or delete them)
 - [ ] `GET /characters/templates/{id}/export.json` and the other exports, for rows the gateway declines today
 

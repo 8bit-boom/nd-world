@@ -8570,14 +8570,17 @@ def test_unsloth_studio_actions_are_pythons(client, seed):
         ("/api/ai/unsloth/auto-switch", {}),
         ("/api/ai/unsloth/context-overrides", {"model_id": "nd-test/model", "max_seq_length": 8192, "extra": {"k": [1, 2]}}),
         ("/api/ai/unsloth/context-overrides", {"model_id": "  "}),
+        ("/api/ai/unsloth/update", None),
     ]
-    good = {"/api/hub/download": (200, {"job_key": "j1", "state": "running", "accepted": True}),
+    good = {"/api/update": (200, {"updated": True, "version": "2026.1"}),
+            "/api/hub/download": (200, {"job_key": "j1", "state": "running", "accepted": True}),
             "/api/inference/images/load": (200, {"loaded": False, "engine": "x"}),
             "/api/inference/images/unload": (200, {"loaded": False}),
             "/api/settings/openai-auto-switch": (200, {"enabled": True}),
             "/api/settings/openai-auto-switch/overrides": (200, {"ok": True})}
     bad = {"/api/hub/download": (400, {"detail": "no such repo"}), "/api/inference/images/load": (409, {"error": {"message": "busy"}}),
-           "/api/inference/images/unload": (500, {"detail": "boom"}), "/api/settings/openai-auto-switch": (400, {"detail": [{"msg": "m1"}]})}
+           "/api/inference/images/unload": (500, {"detail": "boom"}), "/api/settings/openai-auto-switch": (400, {"detail": [{"msg": "m1"}]}),
+           "/api/update": (500, {"detail": "no space"})}
     served = 0
     try:
         save(d, "sk-studio-key", studio.url())
@@ -8604,7 +8607,7 @@ def test_unsloth_studio_actions_are_pythons(client, seed):
         studio.close()
         save(d, "", "")
         save(v, "", "")
-    assert served >= 20, served
+    assert served >= 21, served
 
 
 def test_ai_model_catalogue_and_resident_on_studio_are_pythons(client, seed):
@@ -10275,3 +10278,116 @@ def test_home_page_editor_is_pythons(client, seed):
     finally:
         mf.unlink(missing_ok=True)
         other.unlink(missing_ok=True)
+
+
+def test_kiy_plays_save_delete_and_api_worlds_are_pythons(client, seed):
+    """Batch 1 of the Rust fork. POST /api/kiy/plays (+ DELETE) and POST /api/worlds: the same answers and the same stored file / rows from both
+    servers (ids and stamps aside); odd bodies are declined to Python and so answer alike; a player is refused alike."""
+    import json as _json
+    from pathlib import Path
+    from .conftest import PLAYER_PASSWORD
+    base = str(client.base_url)
+    f = Path(os.environ["DB_PATH"]).parent / "kiy_plays.json"
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    pv = _via(p, base)
+    try:
+        f.unlink(missing_ok=True)
+        out = {}
+        for side, cl in (("py", d), ("gw", v)):
+            f.unlink(missing_ok=True)
+            r1 = cl.post("/api/kiy/plays", json={"text": "Act é one", "title": "Custom"})
+            r2 = cl.post("/api/kiy/plays", json={"text": "Act two"})
+            assert r1.status_code == r2.status_code == 200, (side, r1.text, r2.text)
+            assert set(r1.json()) == {"id", "title", "count"} and r1.json()["title"] == "Custom" and r1.json()["count"] == 1
+            assert r2.json()["count"] == 2 and r2.json()["title"].startswith("The King in Yellow — ")
+            if side == "gw":
+                assert r1.headers.get("x-nd-served-by") == "gateway"
+            raw = f.read_text(encoding="utf-8")
+            rows = _json.loads(raw)
+            assert [list(x) for x in rows] == [["id", "title", "text", "ts"]] * 2
+            out[side] = (r2.json()["title"], [(x["title"], x["text"]) for x in rows], raw.count("\n"))
+            dl = cl.delete(f"/api/kiy/plays/{r1.json()['id']}")
+            assert dl.status_code == 200 and dl.json() == {"count": 1}, (side, dl.text)
+            if side == "gw":
+                assert dl.headers.get("x-nd-served-by") == "gateway"
+            assert cl.delete("/api/kiy/plays/nothere").json() == {"count": 1}
+        assert out["py"] == out["gw"]
+        for body in ({"title": "no text"}, {"text": 5}, {"text": "x", "title": 3}):
+            a, b = d.post("/api/kiy/plays", json=body), v.post("/api/kiy/plays", json=body)
+            assert (a.status_code, a.content) == (b.status_code, b.content), body
+        a, b = p.post("/api/kiy/plays", json={"text": "x"}), pv.post("/api/kiy/plays", json={"text": "x"})
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+    finally:
+        f.unlink(missing_ok=True)
+    tag = os.urandom(3).hex()
+    res = {}
+    for side, cl in (("py", d), ("gw", v)):
+        nm = f"Realm & Co {side}{tag}"
+        r = cl.post("/api/worlds", json={"name": nm, "description": "d", "accent": " #abc "})
+        again = cl.post("/api/worlds", json={"name": nm})
+        assert r.status_code == again.status_code == 200, (side, r.text)
+        slug = f"realm-and-co-{side}{tag}"
+        assert r.json()["slug"] == slug and r.json()["created"] is True
+        assert again.json() == {"id": r.json()["id"], "slug": slug, "created": False}
+        if side == "gw":
+            assert r.headers.get("x-nd-served-by") == "gateway"
+        r3 = cl.post("/api/worlds", json={"name": f"Bad {side}{tag}", "accent": "javascript:1"})
+        r4 = cl.post("/api/worlds", json={"name": f"Nul {side}{tag}", "description": None})
+        res[side] = (r3.json()["created"], r4.json()["created"])
+        from app.database import SessionLocal
+        from app.models import World
+        db = SessionLocal()
+        try:
+            w = {x.slug: (x.accent, x.description) for x in db.query(World).filter(World.slug.like(f"%{side}{tag}"))}
+        finally:
+            db.close()
+        assert w[slug] == ("#abc", "d") and w[f"bad-{side}{tag}"][0] == "#b44fff" and w[f"nul-{side}{tag}"][1] is None
+    assert res["py"] == res["gw"]
+    for body in ({"description": "x"}, {"name": 5}, {"name": "x", "accent": 5}):
+        a, b = d.post("/api/worlds", json=body), v.post("/api/worlds", json=body)
+        assert (a.status_code, a.content) == (b.status_code, b.content), body
+    a, b = p.post("/api/worlds", json={"name": "P"}), pv.post("/api/worlds", json={"name": "P"})
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_python_free_tag_lists_match_pythons(client, seed):
+    """Batch 1 of the Rust fork. The prompt tag lists without Python: sources / status / search over a CSV on disk read as Python reads it (quoted
+    names, rows it skips, the exact-then-prefix order, the colours of the active source), activate and delete (the files they leave), and a fetch
+    with no URL for an unknown source."""
+    import shutil
+    from pathlib import Path
+    tags = Path(os.environ["DB_PATH"]).parent / "tags"
+    was = tags.exists()
+    shutil.rmtree(tags, ignore_errors=True)
+    tags.mkdir()
+    tag = os.urandom(2).hex()
+    sid = f"t{tag}"
+    (tags / f"{sid}_tags.csv").write_text('red_hair,0,900\n"red, wine",1,50\nredstone,3,7\nnot a row\nblue,x,5\nred,4\n\xe9clair,0,3\n', encoding="utf-8")
+    (tags / "custom_sources.json").write_text(f'[{{"id": "{sid}", "label": "Mine", "description": "Custom", "url": "http://x/y.csv", "swarmui_name": "{sid}", "cat_colors": {{"1": "#111111"}}}}]')
+    (tags / "active_source.txt").write_text(sid)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    try:
+        proc, url, g = _python_free_gateway(seed)
+        try:
+            urls = ["/api/ai/imagegen/tags/sources", "/api/ai/imagegen/tags/status", "/api/ai/imagegen/tags?q=red", "/api/ai/imagegen/tags?q=Red+Hair&limit=2",
+                    "/api/ai/imagegen/tags?q=r&limit=1", "/api/ai/imagegen/tags?q=%C3%A9", "/api/ai/imagegen/tags?q=zzz", "/api/ai/imagegen/tags"]
+            for u in urls:
+                a, b = d.get(u), g.get(u)
+                assert (a.status_code, a.json()) == (b.status_code, b.json()), (u, a.text, b.text)
+                assert b.headers.get("x-nd-served-by") == "gateway", u
+            assert g.post("/api/ai/imagegen/tags/activate", json={"source_id": "nope"}).json() == {"detail": "Source 'nope' not downloaded yet"}
+            r = g.post("/api/ai/imagegen/tags/activate", json={"source_id": sid})
+            assert r.json() == {"ok": True, "active": sid, "count": 5}, r.text
+            assert g.post("/api/ai/imagegen/tags/fetch", json={"source_id": "mystery"}).json() == {"ok": False, "error": "No URL for this source"}
+            assert g.post("/api/ai/imagegen/tags/delete", json={"source_id": sid}).json() == {"ok": True}
+            assert not (tags / f"{sid}_tags.csv").exists() and (tags / "active_source.txt").read_text() == ""
+            assert (tags / "custom_sources.json").read_text() == "[]"
+            assert g.get("/api/ai/imagegen/tags/status").json() == {"loaded": False, "count": 0, "active": ""}
+        finally:
+            proc.terminate()
+    finally:
+        shutil.rmtree(tags, ignore_errors=True)
+        if was:
+            tags.mkdir()

@@ -50,6 +50,7 @@ pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
 pub mod kiy;
+pub mod tags;
 pub mod net;
 pub mod pdftext;
 pub mod sheet_import;
@@ -555,7 +556,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::POST
-        && matches!(req.uri().path(), "/api/ai/unsloth/hub/download" | "/api/ai/unsloth/image/load" | "/api/ai/unsloth/image/unload" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/context-overrides")
+        && matches!(req.uri().path(), "/api/ai/unsloth/hub/download" | "/api/ai/unsloth/image/load" | "/api/ai/unsloth/image/unload" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/update")
         && app.cfg.rust_routes.iter().any(|r| r == "pages")
     {
         // Unsloth Studio's actions: sent on to Studio with Python's wording for what it answers
@@ -637,6 +638,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         if let Some(resp) = studio::ai_status_route(app.cfg.clone()).await {
             return resp;
         }
+    }
+    if req.method() == axum::http::Method::POST && config::python_free() && matches!(req.uri().path(), "/api/ai/imagegen/tags/fetch" | "/api/ai/imagegen/tags/activate" | "/api/ai/imagegen/tags/delete") {
+        // the prompt tag lists: Python's files, answered here only where there is no Python (its parsed-list cache would go stale)
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = tags::post(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), &bytes).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/kiy/inspirations" && config::python_free() {
         // public web fetches, random and live: answered here only where there is no Python to do it

@@ -179,6 +179,7 @@ type Handler = fn(&mut Ctx, &[i64]) -> Option<Response<Body>>;
 const ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore/cancel", crate::restore::cancel),
     ("/api/ai/sessions", ai_chat_session_save),
+    ("/api/kiy/plays", kiy_play_save),
     ("/api/characters/roll", characters_roll),
     ("/api/ai/imagegen/star", imagegen_star),
     ("/api/ai/imagegen/unstar", imagegen_unstar),
@@ -358,6 +359,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/theme/clear", theme_clear),
     ("/worlds/{}/theme/import", theme_import),
     ("/worlds/new", world_create),
+    ("/api/worlds", api_world_create),
     ("/worlds/{}/rules/edit", rules_edit),
     ("/worlds/{}/rules/import", rules_import),
     ("/worlds/{}/kinds/new", kinds_new),
@@ -566,6 +568,9 @@ fn view_route(method: &Method, path: &str) -> Option<(SlugHandler, String)> {
     }
     if let Some(id) = path.strip_prefix("/api/ai/sessions/").filter(|s| !s.is_empty() && s.len() <= 15 && s.bytes().all(|b| b.is_ascii_digit()) && !(s.len() > 1 && s.starts_with('0'))) {
         return (*method == Method::DELETE).then(|| (ai_chat_session_delete as SlugHandler, id.to_string()));
+    }
+    if let Some(id) = path.strip_prefix("/api/kiy/plays/").filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) {
+        return (*method == Method::DELETE).then(|| (kiy_play_delete as SlugHandler, id.to_string()));
     }
     if path == "/api/view-prefs" && *method == Method::DELETE {
         return Some((view_pref_reset_all as SlugHandler, String::new()));
@@ -7693,6 +7698,70 @@ fn imagegen_unstar(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     json_response(&json!({"ok": true}))
 }
 
+/// `_load_kiy_plays()`: the saved King in Yellow plays (kiy_plays.json beside the database); an unreadable file is an empty library, a file of
+/// something else is Python's
+fn kiy_load(c: &Ctx) -> Option<Vec<Value>> {
+    let path = c.cfg.db_path.parent()?.join("kiy_plays.json");
+    let Some(t) = std::fs::read(&path).ok().and_then(|b| String::from_utf8(b).ok()) else { return Some(vec![]) };
+    if t.contains("NaN") || t.contains("Infinity") || !plain_numbers(t.as_bytes()) {
+        return None;
+    }
+    match serde_json::from_str::<Value>(&t) {
+        Ok(Value::Array(a)) => Some(a),
+        Ok(Value::Object(o)) if o.is_empty() => Some(vec![]),
+        Ok(_) => None,
+        Err(_) => Some(vec![]),
+    }
+}
+
+fn kiy_save(c: &Ctx, plays: &[Value]) -> Option<()> {
+    let path = c.cfg.db_path.parent()?.join("kiy_plays.json");
+    std::fs::write(path, nd_render::py_dumps_indent(&Value::Array(plays.to_vec()), 2)).ok()
+}
+
+/// `POST /api/kiy/plays` (lore_extras.py `kiy_save_play`): a play kept in the library the next generation draws its style from. GM only.
+fn kiy_play_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let text = body.get("text")?.as_str()?.to_string();
+    let title = match body.get("title") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        _ => return None,
+    };
+    let mut plays = kiy_load(c)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let title = if title.is_empty() {
+        let (y, m, d, ..) = nd_render::pyvalue::local_civil(now);
+        format!("The King in Yellow \u{2014} {y:04}-{m:02}-{d:02}")
+    } else {
+        title
+    };
+    let id = format!("{:08x}", rand::random::<u32>());
+    plays.push(json!({"id": id, "title": title, "text": text, "ts": now}));
+    kiy_save(c, &plays)?;
+    json_response(&json!({"id": id, "title": title, "count": plays.len()}))
+}
+
+/// `DELETE /api/kiy/plays/<id>`: the play gone from the library (the file is written even when nothing matched, as Python does)
+fn kiy_play_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let plays = kiy_load(c)?;
+    let mut kept = vec![];
+    for p in plays {
+        if p.as_object()?.get("id")?.as_str().map_or(true, |x| x != id) {
+            kept.push(p);
+        }
+    }
+    kiy_save(c, &kept)?;
+    json_response(&json!({"count": kept.len()}))
+}
+
 /// `DELETE /api/ai/sessions/<id>`: a saved Chat conversation of the active world gone (GM only; another surface's row is a 404)
 fn ai_chat_session_delete(c: &mut Ctx, id: &str) -> Option<Response<Body>> {
     if !c.p.is_gm {
@@ -8283,6 +8352,41 @@ fn theme_import(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     set.push(("theme_json", s(&nd_render::py_dumps(&Value::Object(cleaned)))));
     orm::update(&c.db, "worlds", ids[0], &set)?;
     redirect(&format!("/worlds/{}/edit", ids[0]))
+}
+
+fn api_world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(c.body).ok().filter(|_| plain_numbers(c.body))?;
+    let body = body.as_object()?;
+    let name = body.get("name")?.as_str()?.to_string();
+    if !name.is_ascii() {
+        return None;
+    }
+    let slug: String = name.to_ascii_lowercase().replace(' ', "-").replace('&', "and").chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-').collect();
+    if slug.is_empty() {
+        return None;
+    }
+    if let Some(id) = c.db.query_row("SELECT id FROM worlds WHERE slug = ?1", [&slug], |r| r.get::<_, i64>(0)).ok() {
+        return json_response(&json!({"id": id, "slug": slug, "created": false}));
+    }
+    let desc = match body.get("description") {
+        None | Some(Value::Null) => Sql::Null,
+        Some(Value::String(d)) => s(d),
+        _ => return None,
+    };
+    let accent = match body.get("accent") {
+        None | Some(Value::Null) => "#b44fff".to_string(),
+        Some(Value::String(a)) => {
+            let a = strip(a);
+            let hex = regex::Regex::new(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$").ok()?;
+            if hex.is_match(&a) { a } else { "#b44fff".to_string() }
+        }
+        _ => return None,
+    };
+    let wid = orm::insert(&c.db, "worlds", &[("name", s(&name)), ("slug", s(&slug)), ("description", desc), ("accent", s(&accent))])?;
+    json_response(&json!({"id": wid, "slug": slug, "created": true}))
 }
 
 fn world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
