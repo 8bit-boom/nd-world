@@ -2505,7 +2505,8 @@ fn rules_download(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
             return Some(crate::idpages::refusal(403));
         }
     }
-    let mut text = crate::retrieval::world_rules_markdown(&w);
+    // main._world_rules_markdown also drops the legacy <a name="..."></a> anchors of Word/Google Docs exports
+    let mut text = nd_render::text::strip_legacy_anchors(&crate::retrieval::world_rules_markdown(&w));
     if !p.is_gm {
         text = crate::retrieval::strip_gm_directives(&text);
     }

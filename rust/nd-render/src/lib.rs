@@ -5,6 +5,7 @@ use minijinja::{AutoEscape, Output};
 pub mod app;
 pub mod difflib;
 pub mod pyvalue;
+pub mod html5_entities;
 pub mod rules;
 pub mod md;
 pub mod text;

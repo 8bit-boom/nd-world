@@ -10,7 +10,7 @@ use crate::text::{py_splitlines, py_strip};
 macro_rules! re {
     ($s:expr) => {{
         static R: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-        R.get_or_init(|| Regex::new($s).unwrap())
+        R.get_or_init(|| fancy_regex::RegexBuilder::new($s).backtrack_limit(200_000_000).build().unwrap())
     }};
 }
 
@@ -402,62 +402,87 @@ pub fn apply_overlay(sections: Vec<Value>, overlay: Option<&Value>, is_gm: bool)
     Some((flat, Some(panes)))
 }
 
-/// Python's `html.unescape` for the entities this port is sure of (&amp; &lt; &gt; &quot; &apos; &nbsp; and numeric ones for ordinary
-/// characters); None when the text has any other `&...` Python would decode (the page is then Python's)
+/// Python's `html.unescape`, exactly: the regex `&(#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[^\t\n\f <&#;]{1,32};?)`, the HTML5 entity table (names that
+/// need no `;` are tried longest prefix first), the charref replacement table and the invalid code points. Always Some; the Option stays so
+/// callers need not change.
 pub fn strict_unescape(s: &str) -> Option<String> {
+    use crate::html5_entities::{HTML5, INVALID_CHARREFS, INVALID_CODEPOINTS};
     if !s.contains('&') {
         return Some(s.to_string());
     }
+    let chars: Vec<char> = s.chars().collect();
+    let lookup = |name: &str| HTML5.binary_search_by(|(k, _)| (*k).cmp(name)).ok().map(|i| HTML5[i].1);
     let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find('&') {
-        out.push_str(&rest[..i]);
-        let tail = &rest[i + 1..];
-        // what Python's pattern would try to match after "&"
-        let next = tail.chars().next();
-        match next {
-            None => {
-                out.push('&');
-                rest = "";
-                continue;
-            }
-            Some(c) if matches!(c, '\t' | '\n' | '\x0c' | ' ' | '<' | '&' | ';') => {
-                out.push('&');
-                rest = tail;
-                continue;
-            }
-            _ => {}
-        }
-        let named = [("amp;", '&'), ("lt;", '<'), ("gt;", '>'), ("quot;", '"'), ("apos;", '\''), ("nbsp;", '\u{a0}')];
-        if let Some((n, c)) = named.iter().find(|(n, _)| tail.starts_with(n)) {
-            out.push(*c);
-            rest = &tail[n.len()..];
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '&' {
+            out.push(chars[i]);
+            i += 1;
             continue;
         }
-        if let Some(num) = tail.strip_prefix('#') {
-            let (digits, radix, skip) = match num.strip_prefix(['x', 'X']) {
-                Some(h) => (h.chars().take_while(|c| c.is_ascii_hexdigit()).collect::<String>(), 16, 2),
-                None => (num.chars().take_while(|c| c.is_ascii_digit()).collect::<String>(), 10, 1),
-            };
-            if digits.is_empty() || digits.len() > 7 {
-                return None;
+        let rest = &chars[i + 1..];
+        if rest.first() == Some(&'#') {
+            // numeric: &#123; or &#x1F;
+            let hex = matches!(rest.get(1), Some('x' | 'X'));
+            let start = if hex { 2 } else { 1 };
+            let n = rest[start.min(rest.len())..].iter().take_while(|c| if hex { c.is_ascii_hexdigit() } else { c.is_ascii_digit() }).count();
+            if n > 0 {
+                let digits: String = rest[start..start + n].iter().collect();
+                let mut end = start + n;
+                if rest.get(end) == Some(&';') {
+                    end += 1;
+                }
+                let trimmed = digits.trim_start_matches('0');
+                let num = if trimmed.is_empty() { 0 } else { u32::from_str_radix(trimmed, if hex { 16 } else { 10 }).unwrap_or(u32::MAX) };
+                if let Some((_, c)) = INVALID_CHARREFS.iter().find(|(k, _)| *k == num) {
+                    out.push(*c);
+                } else if (0xD800..=0xDFFF).contains(&num) || num > 0x10FFFF {
+                    out.push('\u{fffd}');
+                } else if INVALID_CODEPOINTS.contains(&num) {
+                    // dropped, as Python does
+                } else if let Some(c) = char::from_u32(num) {
+                    out.push(c);
+                }
+                i += 1 + end;
+                continue;
             }
-            let after = &tail[skip + digits.len()..];
-            if !after.starts_with(';') {
-                return None;
-            }
-            let cp = u32::from_str_radix(&digits, radix).ok()?;
-            let ok = (0x20..0x7f).contains(&cp) || cp == 0x0a || cp == 0x09 || (0xa0..0xd800).contains(&cp) || (0xe000..0xfdd0).contains(&cp) || (0x1_0000..0x10_fffe).contains(&cp) && cp & 0xfffe != 0xfffe;
-            if !ok {
-                return None;
-            }
-            out.push(char::from_u32(cp)?);
-            rest = &after[1..];
+            out.push('&');
+            i += 1;
             continue;
         }
-        return None;
+        // named: 1 to 32 characters outside [\t\n\f <&#;], then an optional ';'
+        let n = rest.iter().take(32).take_while(|c| !matches!(c, '\t' | '\n' | '\x0c' | ' ' | '<' | '&' | '#' | ';')).count();
+        if n == 0 {
+            out.push('&');
+            i += 1;
+            continue;
+        }
+        let mut end = n;
+        if rest.get(end) == Some(&';') {
+            end += 1;
+        }
+        let name: String = rest[..end].iter().collect();
+        if let Some(v) = lookup(&name) {
+            out.push_str(v);
+        } else {
+            // the longest prefix (two characters or more, shorter than the whole) that is an entity written without ';'
+            let found = (2..name.chars().count()).rev().find_map(|x| {
+                let cut = name.char_indices().nth(x).map(|(b, _)| b).unwrap_or(name.len());
+                lookup(&name[..cut]).map(|v| (v, cut))
+            });
+            match found {
+                Some((v, cut)) => {
+                    out.push_str(v);
+                    out.push_str(&name[cut..]);
+                }
+                None => {
+                    out.push('&');
+                    out.push_str(&name);
+                }
+            }
+        }
+        i += 1 + end;
     }
-    out.push_str(rest);
     Some(out)
 }
 

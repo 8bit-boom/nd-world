@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 macro_rules! re {
     ($p:expr) => {{
         static R: OnceLock<Regex> = OnceLock::new();
-        R.get_or_init(|| Regex::new($p).expect("pattern"))
+        R.get_or_init(|| fancy_regex::RegexBuilder::new($p).backtrack_limit(200_000_000).build().expect("pattern"))
     }};
 }
 
@@ -25,11 +25,81 @@ fn safe_color(raw: &str) -> Option<String> {
     COLOR_NAMES.contains(&l.as_str()).then_some(l)
 }
 
+/// markdown2 reads a line of only `#`s (no text) as a heading whose text is a `#`: `##` is `<h1>#</h1>`, `###` is `<h2>#</h2>`, up to
+/// `######` as `<h5>#</h5>`, and a lone `#` is a paragraph. pulldown-cmark makes an empty heading of them.
+fn fix_bare_hash_lines<'a>(text: &str, events: Vec<(Event<'a>, std::ops::Range<usize>)>) -> Vec<Event<'a>> {
+    use pulldown_cmark::{HeadingLevel as H, Tag, TagEnd};
+    let mut out: Vec<Event<'a>> = Vec::with_capacity(events.len());
+    let mut i = 0;
+    while i < events.len() {
+        if let (Event::Start(Tag::Heading { level, .. }), Some((Event::End(TagEnd::Heading(_)), _))) = (&events[i].0, events.get(i + 1)) {
+            let src = text.get(events[i].1.clone()).unwrap_or("");
+            let line = src.trim_end_matches(['\n', '\r']);
+            if !line.is_empty() && line.bytes().all(|b| b == b'#') && line.len() == *level as usize {
+                if line.len() == 1 {
+                    out.extend([Event::Start(Tag::Paragraph), Event::Text("#".into()), Event::End(TagEnd::Paragraph)]);
+                } else {
+                    let lvl = [H::H1, H::H1, H::H1, H::H2, H::H3, H::H4, H::H5][line.len()];
+                    out.extend([Event::Start(Tag::Heading { level: lvl, id: None, classes: vec![], attrs: vec![] }), Event::Text("#".into()), Event::End(TagEnd::Heading(lvl))]);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        out.push(events[i].0.clone());
+        i += 1;
+    }
+    out
+}
+
+/// markdown2 puts the paragraph that follows an empty bullet (`- ` + one blank line) into that bullet; CommonMark ends the bullet and
+/// leaves an empty `<li>`. Word/Docs imports are full of them, so join the next line onto the marker line (fenced code is left alone).
+fn join_empty_bullets(text: &str) -> std::borrow::Cow<'_, str> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let is_empty_bullet = |l: &str| {
+        let t = l.trim_start_matches(' ');
+        l.len() - t.len() <= 3 && {
+            let rest = t.strip_prefix(['-', '*', '+']).or_else(|| {
+                let digits = t.bytes().take_while(|b| b.is_ascii_digit()).count();
+                (digits > 0 && t[digits..].starts_with('.')).then(|| &t[digits + 1..])
+            });
+            rest.is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b == b' ' || b == b'\t'))
+        }
+    };
+    let is_marker_line = |l: &str| {
+        let t = l.trim_start();
+        t.strip_prefix(['-', '*', '+']).is_some_and(|r| r.starts_with([' ', '\t']))
+            || (t.bytes().take_while(|b| b.is_ascii_digit()).count() > 0 && t.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(". "))
+    };
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let (mut fence, mut changed, mut i) = (None::<String>, false, 0);
+    while i < lines.len() {
+        let l = lines[i];
+        let t = l.trim_start();
+        if let Some(f) = &fence {
+            if t.starts_with(f.as_str()) {
+                fence = None;
+            }
+        } else if t.starts_with("```") || t.starts_with("~~~") {
+            fence = Some(t[..3].to_string());
+        } else if is_empty_bullet(l) && i + 2 < lines.len() && lines[i + 1].trim().is_empty() && !lines[i + 2].trim().is_empty() && !is_marker_line(lines[i + 2]) && !lines[i + 2].starts_with([' ', '\t']) {
+            out.push(format!("{}{}", l.trim_end(), format!(" {}", lines[i + 2])));
+            changed = true;
+            i += 3;
+            continue;
+        }
+        out.push(l.to_string());
+        i += 1;
+    }
+    if changed { std::borrow::Cow::Owned(out.join("\n")) } else { std::borrow::Cow::Borrowed(text) }
+}
+
 fn markdown(text: &str) -> String {
+    let text = &*join_empty_bullets(text);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
-    let events = Parser::new_ext(text, opts).map(|e| match e {
+    let events = fix_bare_hash_lines(text, Parser::new_ext(text, opts).into_offset_iter().collect()).into_iter().map(|e| match e {
         Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
         // markdown2 writes a fenced block as a plain <pre><code> whatever its info string ("```python")
         Event::Start(pulldown_cmark::Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(_))) => {

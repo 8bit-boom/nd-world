@@ -265,10 +265,14 @@ struct Cal {
 pub fn get_or_create(db: &rusqlite::Connection, wid: i64) -> Option<()> {
     let exists: Option<i64> = db.query_row("SELECT id FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get(0)).ok();
     if exists.is_none() {
-        crate::orm::insert(db, "world_calendars", &[
+        let inserted = crate::orm::insert(db, "world_calendars", &[
             ("world_id", rusqlite::types::Value::Integer(wid)),
             ("config_json", rusqlite::types::Value::Text(nd_render::py_dumps(&default_config()))),
-        ])?;
+        ]);
+        // two first requests at once: the other one created the row (Python's page 500s there); the row is all this needs
+        if inserted.is_none() {
+            db.query_row("SELECT id FROM world_calendars WHERE world_id = ?1 ORDER BY id LIMIT 1", [wid], |r| r.get::<_, i64>(0)).ok()?;
+        }
     }
     Some(())
 }
@@ -546,6 +550,7 @@ fn era_name(c: &Map<String, Value>) -> Value {
 pub fn calendar_agenda(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
     let (mut p, wid) = page_ctx(&db, cfg, uri, headers)?;
+    get_or_create(&db, wid)?; // _get_or_create_calendar: the row is made on first use, so a first request never finds none
     let Cal { config, months, .. } = load(&db, wid)?;
     let c = config.as_object()?;
     let mut st = db
@@ -595,6 +600,7 @@ pub fn calendar_agenda(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
 pub fn calendar_year(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
     let (mut p, wid) = page_ctx(&db, cfg, uri, headers)?;
+    get_or_create(&db, wid)?; // _get_or_create_calendar: the row is made on first use, so a first request never finds none
     let Cal { config, months_v, months, current_day } = load(&db, wid)?;
     let c = config.as_object()?;
     let (cur_year, cur_idx, _) = resolve_date(&months, current_day);
@@ -671,6 +677,7 @@ pub fn calendar_config(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         return None;
     }
     let wid = world.get("id")?.as_i64()?;
+    get_or_create(&db, wid)?; // _get_or_create_calendar: the row is made on first use, so a first request never finds none
     let Cal { config, months, .. } = load(&db, wid)?;
     let c = config.as_object()?;
     let current_day = opt_int(c, "current_day", 1)?.max(1);
@@ -833,6 +840,7 @@ pub fn event_jump(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
         return Some(crate::idpages::refusal(403));
     }
     let wid = world.get("id")?.as_i64()?;
+    get_or_create(&db, wid)?; // _get_or_create_calendar: the row is made on first use, so a first request never finds none
     let cal = load(&db, wid)?;
     let dir = query_param(uri, "dir");
     let next = match dir.as_deref() {

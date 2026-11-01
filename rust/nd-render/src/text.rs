@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 macro_rules! re {
     ($p:expr) => {{
         static R: OnceLock<Regex> = OnceLock::new();
-        R.get_or_init(|| Regex::new($p).expect("pattern"))
+        R.get_or_init(|| fancy_regex::RegexBuilder::new($p).backtrack_limit(200_000_000).build().expect("pattern"))
     }};
 }
 
