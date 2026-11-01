@@ -131,9 +131,11 @@ fn display_combat(pages: &Pages, db: &Connection, p: PageCtx, id: i64, headers: 
         return None;
     }
     let world = p.world.as_ref()?;
-    let cs = row(db, "SELECT world_id, is_template, name FROM combat_sessions WHERE id = ?1", id)?;
+    // _combat_item: no such fight, one of another world, or a template is HTTPException(404, "Encounter not found")
+    let not_found = || Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Encounter not found"));
+    let Some(cs) = row(db, "SELECT world_id, is_template, name FROM combat_sessions WHERE id = ?1", id) else { return not_found() };
     if cs.get("world_id")?.as_i64() != world.get("id")?.as_i64() || cs.get("is_template").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
-        return None;
+        return not_found();
     }
     let title: String = match cs.get("name") {
         Some(Value::String(s)) => nd_render::text::py_strip(s).chars().take(200).collect(),
