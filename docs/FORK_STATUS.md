@@ -23,10 +23,10 @@ Branch purpose and rules: `CLAUDE.md`. Update this file with every batch (move i
 - [x] imagegen tag lists: GET sources/status/search and POST `fetch`, `/activate`, `/delete` (`tags.rs`, Python-free only: Python keeps a parsed-list cache)
 - [x] `POST /api/ai/unsloth/update`
 - [x] King in Yellow `POST /api/kiy/plays`, `DELETE /api/kiy/plays/{id}`
-- [ ] King in Yellow `POST /api/kiy/generate` (SSE: web inspirations + AI stream; random, not byte-testable; next)
+- [x] King in Yellow `POST /api/kiy/generate` (`ai.rs::kiy_generate`, Python-free only: random and web-fed; tested against the Studio stand-in)
 - [x] `POST /api/worlds`
-- [ ] legacy Ollama: `POST /api/ai/pull`, `GET /api/ai/test-chat` (or delete them)
-- [ ] `GET /characters/templates/{id}/export.json` and the other exports, for rows the gateway declines today
+- [x] legacy Ollama: `POST /api/ai/pull`, `GET /api/ai/test-chat`: will not be ported (the owner runs Unsloth, not Ollama); in a Python-free install they answer the "Not available here" refusal
+- [x] `GET /characters/templates/{id}/export.json` (the other exports were already ported; the all-pages crawl found no further gaps)
 
 ## Batch 2: exports and documents
 - [x] Character `.pdf` export: `minipdf.rs` (Helvetica, US Letter, wrapped, multi-page); same content and order as reportlab's, bytes differ. Text outside Latin-1/WinAnsi prints as `?`.

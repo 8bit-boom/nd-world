@@ -646,6 +646,17 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && config::python_free() && req.uri().path() == "/api/kiy/generate" && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        // the King in Yellow play, written live: random and web-fed, answered here only where there is no Python to do it
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = ai::kiy_generate(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && config::python_free() && matches!(req.uri().path(), "/api/ai/imagegen/tags/fetch" | "/api/ai/imagegen/tags/activate" | "/api/ai/imagegen/tags/delete") {
         // the prompt tag lists: Python's files, answered here only where there is no Python (its parsed-list cache would go stale)
         let (parts, body) = req.into_parts();

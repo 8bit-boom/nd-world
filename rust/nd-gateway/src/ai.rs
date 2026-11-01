@@ -4946,3 +4946,101 @@ fn entity_context_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]
     let excerpt = crate::retrieval::best_matching_excerpt(&raw, &query, 4000)?;
     Some(Ok(json!({"context": excerpt})))
 }
+
+const KIY_SYSTEM_HEAD: &str = "You are the anonymous author of THE KING IN YELLOW \u{2014} a forbidden two-act play set in the mythical city of CARCOSA on the shores of the Lake of Hali beneath twin suns. Write the complete play now in proper theatrical script format. Every performance must be genuinely unique: different character names, different opening scene, different central mystery. The King in Yellow wears many masks.\n\nCanonical elements (use freely): Cassilda, Camilla, The Stranger (who may be Hastur), The Pallid Mask, Uoht, Thale, Aldones, the Yellow Sign, Carcosa, Lake of Hali, the Hyades, twin suns, black stars, the Phantom of Truth.\n\nThemes: identity erosion, forbidden knowledge, the horror of beauty, madness as revelation, the thin line between art and destruction.\n\nSTRUCTURE:\nACT I \u{2014} Appears to be a melancholy aristocratic drama. Foreshadows what is to come. Ends with a character beginning to read Act II aloud.\nACT II \u{2014} Reality unravels. Cosmic horror is revealed. Characters lose identity. The Yellow Sign manifests. There is no happy ending.\n\nSTRICT FORMAT \u{2014} each element on its own line:\n  ACT I\n  Scene 1\n  [Stage direction describing the setting]\n  CHARACTER NAME. Dialogue here.\n\nInspirations gathered from across the veil (weave these themes in subtly, do not quote):\n";
+
+/// `POST /api/kiy/generate` (app/routers/lore_extras.py `kiy_generate`): the King in Yellow play, written live as a server-sent stream - web inspirations and two
+/// style excerpts from the saved library in the prompt, the model's tokens as `{"token": ...}` frames (thinking dropped), then `[DONE]`. Random and
+/// live, so it is answered here only without Python (ND_PYTHON_FREE), on a Studio back end. GM only.
+pub async fn kiy_generate(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    let c = cfg.clone();
+    let (backend_, requested, library) = tokio::task::spawn_blocking(move || -> Option<(Backend, String, Vec<(String, String)>)> {
+        let db = crate::writes::open(&c)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        let p = crate::layout::build(&db, &c, "POST", &uri, &headers, now)?;
+        if !p.is_gm {
+            return None;
+        }
+        let requested = if body.iter().all(|b| b.is_ascii_whitespace()) {
+            String::new()
+        } else {
+            match serde_json::from_slice::<Value>(&body).ok()? {
+                Value::Object(o) => match o.get("model") {
+                    None | Some(Value::Null) => String::new(),
+                    Some(Value::String(m)) => m.clone(),
+                    Some(_) => return None,
+                },
+                _ => return None,
+            }
+        };
+        let path = c.db_path.parent()?.join("kiy_plays.json");
+        let mut library = vec![];
+        if let Some(t) = std::fs::read(&path).ok().and_then(|b| String::from_utf8(b).ok()) {
+            if t.contains("NaN") || t.contains("Infinity") || !crate::edits::plain_numbers(t.as_bytes()) {
+                return None;
+            }
+            match serde_json::from_str::<Value>(&t) {
+                Ok(Value::Array(a)) => {
+                    for p in a {
+                        library.push((p.get("title")?.as_str()?.to_string(), p.get("text")?.as_str()?.to_string()));
+                    }
+                }
+                Ok(Value::Object(o)) if o.is_empty() => {}
+                Ok(_) => return None,
+                Err(_) => {}
+            }
+        }
+        Some((backend(&db)?, requested, library))
+    })
+    .await
+    .ok()??;
+    let inspirations = crate::kiy::inspirations().await;
+    let lines: Vec<String> = inspirations["inspirations"].as_array().map(|a| a.iter().map(|i| {
+        format!("[{} \u{2014} {}]: {}", i["source"].as_str().unwrap_or(""), i["title"].as_str().unwrap_or(""), i["extract"].as_str().unwrap_or(""))
+    }).collect()).unwrap_or_default();
+    let block = if lines.is_empty() { "(no external inspirations retrieved \u{2014} draw from imagination alone)".to_string() } else { lines.join("\n") };
+    let mut system = format!("{KIY_SYSTEM_HEAD}{block}");
+    if !library.is_empty() {
+        use rand::seq::SliceRandom;
+        let picks: Vec<&(String, String)> = library.choose_multiple(&mut rand::thread_rng(), library.len().min(2)).collect();
+        let parts: Vec<String> = picks.iter().map(|(t, x)| format!("--- excerpt from \"{t}\" ---\n{}\n---", crate::edits::py_strip_pub(&chead(x, 2500)))).collect();
+        system.push_str(&format!("\n\nRetrieved style references from the play library (study the voice, rhythm, and structure \u{2014} do NOT copy plot or characters):\n{}", parts.join("\n\n")));
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    tokio::spawn(async move {
+        let model = match tokio::time::timeout(Duration::from_secs(10), resolve_model(&backend_, &requested)).await {
+            Ok((m, _note)) => m,
+            Err(_) => {
+                let _ = tx.send(sse(&json!({"error": "AI backend did not answer the model check in time \u{2014} try again."}))).await;
+                let _ = tx.send("data: [DONE]\n\n".into()).await;
+                return;
+            }
+        };
+        let (ptx, mut prx) = tokio::sync::mpsc::channel::<Piece>(64);
+        let messages = vec![json!({"role": "user", "content": "Write the play. Begin with ACT I."})];
+        tokio::spawn(async move { stream_chat_retrying(&backend_, &model, &system, &messages, false, &Map::new(), &ptx).await });
+        loop {
+            match tokio::time::timeout(HEARTBEAT, prx.recv()).await {
+                Err(_) => {
+                    if tx.send(": keep-alive\n\n".into()).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Ok(Some(Piece::Thinking(_))) => {}
+                Ok(Some(piece)) => {
+                    let line = match piece {
+                        Piece::Error(t) => sse(&json!({"error": t})),
+                        Piece::Content(t) => sse(&json!({"token": t})),
+                        Piece::Thinking(_) => continue,
+                    };
+                    if tx.send(line).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = tx.send("data: [DONE]\n\n".into()).await;
+    });
+    Some(stream_response(rx))
+}

@@ -2624,3 +2624,32 @@ def test_player_imagegen_generate_is_pythons(client, seed, studio):
         s.commit()
     finally:
         s.close()
+
+
+def test_python_free_kiy_generate_streams_the_play(client, seed, studio):
+    """Batch 1 of the Rust fork. POST /api/kiy/generate in a gateway with no Python: the model's tokens come back as {"token"} frames (thinking
+    dropped) and [DONE]; the system prompt carries the author brief, the no-inspirations line (the web unreachable) and two style excerpts from the
+    saved library; a player is refused."""
+    from pathlib import Path
+    from .test_gateway_golden import _python_free_gateway
+    lib = Path(__import__("os").environ["DB_PATH"]).parent / "kiy_plays.json"
+    lib.write_text(json.dumps([{"id": "a1", "title": "Play One", "text": "  ACT I voice one  ", "ts": 1}, {"id": "b2", "title": "Play Two", "text": "ACT I voice two", "ts": 2},
+                               {"id": "c3", "title": "Play Three", "text": "ACT I voice three", "ts": 3}]))
+    studio.script = [_delta(reasoning_content="mulling"), _delta(content="ACT I\n"), _delta(content="Scene 1"), {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+    proc, url, g = _python_free_gateway(seed, {"ND_TEST_HOOKS": "1", "ND_WEB_FETCH_BASE": "https://127.0.0.1:1"})
+    try:
+        studio.requests.clear()
+        r = g.post("/api/kiy/generate", json={})
+        assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", (r.status_code, r.text[:200])
+        frames = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data: ") and line != "data: [DONE]"]
+        assert frames == [{"token": "ACT I\n"}, {"token": "Scene 1"}], r.text
+        assert r.text.rstrip().endswith("data: [DONE]")
+        body = studio.requests[-1]["body"]
+        system = body["messages"][0]["content"]
+        assert system.startswith("You are the anonymous author of THE KING IN YELLOW") and "(no external inspirations retrieved" in system
+        assert system.count('--- excerpt from "Play ') == 2 and "Retrieved style references" in system
+        assert body["messages"][-1] == {"role": "user", "content": "Write the play. Begin with ACT I."}
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        lib.unlink(missing_ok=True)

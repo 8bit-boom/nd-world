@@ -10467,3 +10467,30 @@ def test_world_foundry_export_is_pythons(client, seed):
     p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     r1, r2 = p.get("/export/foundry.json"), _via(p, base).get("/export/foundry.json")
     assert (r1.status_code, r1.content) == (r2.status_code, r2.content)
+
+
+def test_sheet_template_export_json_is_pythons(client, seed):
+    """GET /characters/templates/<id>/export.json: fields, system hooks and rules text as one indented attachment, byte for byte; an unknown id 404."""
+    from app.database import SessionLocal
+    from app.models import SheetTemplate
+    base = str(client.base_url)
+    tag = os.urandom(3).hex()
+    db = SessionLocal()
+    try:
+        t1 = SheetTemplate(world_id=seed.world_a.id, name=f"Asterion é {tag}", slug=f"ast-{tag}", sheet_mode="custom", description="Desc",
+                           fields_json=json.dumps([{"id": "wpn", "label": "Weapon", "type": "text"}]), system_json=json.dumps({"hit_die": 8}), rules_md="Rules é")
+        t2 = SheetTemplate(world_id=seed.world_a.id, name=f"Plain {tag}", slug=f"pl-{tag}", sheet_mode="nd", fields_json="", system_json="not json")
+        db.add_all([t1, t2])
+        db.commit()
+        ids = [t1.id, t2.id, 99999999]
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    served = 0
+    for i in ids:
+        a, b = d.get(f"/characters/templates/{i}/export.json"), _via(d, base).get(f"/characters/templates/{i}/export.json")
+        assert (a.status_code, a.content) == (b.status_code, b.content), i
+        if a.status_code == 200:
+            assert a.headers["content-disposition"] == b.headers["content-disposition"] and a.headers["content-type"] == b.headers["content-type"]
+            served += b.headers.get("x-nd-served-by") == "gateway"
+    assert served >= 1

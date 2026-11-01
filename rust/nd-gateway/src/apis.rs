@@ -81,6 +81,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/api/characters/", "/sync").is_some() => pc_sync_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/sync")?),
         path if id_between(path, "/api/characters/", "/advance").is_some() => pc_advance_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/advance")?),
         path if id_between(path, "/api/characters/", "/ability-cards").is_some() => pc_ability_cards(&cfg, uri, headers, id_between(path, "/api/characters/", "/ability-cards")?),
+        path if id_between(path, "/characters/templates/", "/export.json").is_some() => template_export(&cfg, uri, headers, id_between(path, "/characters/templates/", "/export.json")?),
         path if id_between(path, "/characters/", "/export.json").is_some() => pc_export_json(&cfg, uri, headers, id_between(path, "/characters/", "/export.json")?),
         path if id_between(path, "/characters/", "/export.pdf").is_some() => pc_export_pdf(&cfg, uri, headers, id_between(path, "/characters/", "/export.pdf")?),
         path if id_between(path, "/characters/", "/export.md").is_some() => pc_export_md(&cfg, uri, headers, id_between(path, "/characters/", "/export.md")?),
@@ -118,7 +119,7 @@ pub fn is_get(path: &str) -> bool {
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
-        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
+        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
         || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
 
@@ -2056,6 +2057,33 @@ pub(crate) fn pc_export_sections(db: &rusqlite::Connection, pc: &Map<String, Val
         sections.push(("Personality".into(), personality));
     }
     Some(sections)
+}
+
+/// `GET /characters/templates/<id>/export.json` (app/routers/characters.py `template_export`): the sheet template as one importable document -
+/// fields, the system hooks and its own rules text - as a `<name>.template.json` attachment
+fn template_export(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let Some(t) = rows_of(&db, "SELECT * FROM sheet_templates WHERE id = ?1", &[&id])?.into_iter().next() else {
+        return Some(crate::idpages::refusal(404));
+    };
+    let text = |k: &str| -> Option<String> {
+        match t.get(k) { None | Some(Value::Null) => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None }
+    };
+    let fields = py_json_strict(t.get("fields_json").and_then(|v| v.as_str()), "[]")?;
+    let system = match t.get("system_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        None => json!({}),
+        Some(raw) => match crate::map_layout::py_loads(raw) { Ok(Value::Object(o)) => Value::Object(o), _ => json!({}) },
+    };
+    let payload = json!({"name": t.get("name").cloned().unwrap_or(Value::Null), "description": text("description")?, "sheet_mode": t.get("sheet_mode").cloned().unwrap_or(Value::Null),
+        "fields": fields, "system": system, "rules_md": text("rules_md")?});
+    let fname = export_name(t.get("name").and_then(|v| v.as_str()))?;
+    let body = nd_render::py_dumps_indent_as(&payload, 2, false);
+    let mut r = crate::edits::json_response_raw(&body, "application/json")?;
+    r.headers_mut().insert("content-disposition", format!("attachment; filename=\"{fname}.template.json\"").parse().ok()?);
+    Some(r)
 }
 
 /// `GET /characters/<id>/export.pdf` (`character_export_pdf`): the same title, subtitle, sections, backstory and notes as the markdown export, set in
