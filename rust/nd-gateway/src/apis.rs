@@ -82,6 +82,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/api/characters/", "/advance").is_some() => pc_advance_get(&cfg, uri, headers, id_between(path, "/api/characters/", "/advance")?),
         path if id_between(path, "/api/characters/", "/ability-cards").is_some() => pc_ability_cards(&cfg, uri, headers, id_between(path, "/api/characters/", "/ability-cards")?),
         path if id_between(path, "/characters/", "/export.json").is_some() => pc_export_json(&cfg, uri, headers, id_between(path, "/characters/", "/export.json")?),
+        path if id_between(path, "/characters/", "/export.pdf").is_some() => pc_export_pdf(&cfg, uri, headers, id_between(path, "/characters/", "/export.pdf")?),
         path if id_between(path, "/characters/", "/export.md").is_some() => pc_export_md(&cfg, uri, headers, id_between(path, "/characters/", "/export.md")?),
         path if id_between(path, "/characters/", "/export.ndc").is_some() => pc_export_ndc(&cfg, uri, headers, id_between(path, "/characters/", "/export.ndc")?),
         path if id_between(path, "/characters/", "/export.foundry.json").is_some() => pc_export_foundry(&cfg, uri, headers, id_between(path, "/characters/", "/export.foundry.json")?),
@@ -117,7 +118,7 @@ pub fn is_get(path: &str) -> bool {
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
-        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
+        || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
         || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
 
@@ -1466,7 +1467,7 @@ fn pc_export_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Opti
 }
 
 /// `html.escape(s)` (quotes included)
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#x27;")
 }
 
@@ -1507,6 +1508,11 @@ fn first_truthy<'a>(o: &'a Map<String, Value>, keys: &[&str]) -> Option<Option<&
 
 /// `_pc_to_foundry_journal(pc)`: one character as a Foundry JournalEntry document
 pub(crate) fn pc_foundry_doc(db: &rusqlite::Connection, pc: &Map<String, Value>, id: i64) -> Option<Value> {
+    pc_foundry_doc_as(db, pc, id, true)
+}
+
+/// the same, `allow_custom` false for the world export, which calls Python's `_pc_to_foundry_journal(pc)` with no session: every sheet there is the N&D one
+pub(crate) fn pc_foundry_doc_as(db: &rusqlite::Connection, pc: &Map<String, Value>, id: i64, allow_custom: bool) -> Option<Value> {
     let col = |k: &str| -> Option<String> {
         match pc.get(k) { None | Some(Value::Null) => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None }
     };
@@ -1514,7 +1520,7 @@ pub(crate) fn pc_foundry_doc(db: &rusqlite::Connection, pc: &Map<String, Value>,
     let title = if name.is_empty() { "Character".to_string() } else { name.clone() };
     let (backstory, notes) = (col("backstory")?, col("notes")?);
     let tpl = crate::sheets::pc_template(db, pc)?;
-    let doc = if let Some(t) = tpl.as_ref().filter(|t| t.custom()) {
+    let doc = if let Some(t) = tpl.as_ref().filter(|t| allow_custom && t.custom()) {
         let mut body = vec![format!("<h1>{}</h1>", html_escape(&title))];
         for (section, pairs) in pc_export_sections(db, pc)? {
             body.push(format!("<h2>{}</h2><ul>{}</ul>", html_escape(&section),
@@ -2050,6 +2056,67 @@ pub(crate) fn pc_export_sections(db: &rusqlite::Connection, pc: &Map<String, Val
         sections.push(("Personality".into(), personality));
     }
     Some(sections)
+}
+
+/// `GET /characters/<id>/export.pdf` (`character_export_pdf`): the same title, subtitle, sections, backstory and notes as the markdown export, set in
+/// Helvetica on US Letter (minipdf.rs). Python's reportlab bytes are not matched; the content and its order are.
+fn pc_export_pdf(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    use crate::minipdf::{Font, Para, Piece};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let pc = db.query_row("SELECT * FROM player_characters WHERE id = ?1", [id], |r| crate::layout::row_map(r)).ok();
+    let Some(pc) = pc else { return Some(crate::idpages::refusal(404)) };
+    if !(p.is_gm || pc.get("owner_user_id").and_then(|v| v.as_i64()) == Some(p.user_id)) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let s = |k: &str| pc.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let n = |k: &str| pc.get(k).and_then(|v| v.as_i64());
+    let native = crate::edits::pc_maxima(&db, &pc)?.4;
+    let words = |t: &str, f: Font| -> Vec<Piece> { t.split_whitespace().map(|w| Piece::Word(w.to_string(), f)).collect() };
+    let para = |pieces: Vec<Piece>, size: f32, leading: f32, before: f32, after: f32, center: bool| Para { pieces, size, leading, before, after, center };
+    let mut paras = vec![para(words(if s("name").is_empty() { "Character" } else { s("name") }, Font::Bold), 18.0, 22.0, 0.0, 6.0, true)];
+    let mut subtitle = [s("race"), s("char_class")].iter().filter(|b| !b.is_empty()).map(|b| b.to_string()).collect::<Vec<_>>().join(" ");
+    if n("level").unwrap_or(0) != 0 && native {
+        subtitle = format!("{subtitle} \u{2014} Level {}", n("level").unwrap_or(0)).trim_matches(|c| c == ' ' || c == '\u{2014}').to_string();
+    }
+    if !subtitle.is_empty() {
+        paras.push(para(words(&subtitle, Font::Italic), 10.0, 12.0, 0.0, 12.0, false));
+    }
+    for (name, pairs) in pc_export_sections(&db, &pc)? {
+        paras.push(para(words(&name, Font::Bold), 14.0, 18.0, 12.0, 6.0, false));
+        let last = pairs.len();
+        for (i, (label, value)) in pairs.into_iter().enumerate() {
+            let mut pieces = words(&format!("{label}:"), Font::Bold);
+            pieces.extend(words(&value, Font::Regular));
+            paras.push(para(pieces, 10.0, 12.0, 0.0, if i + 1 == last { 8.0 } else { 0.0 }, false));
+        }
+    }
+    for (heading, key) in [("Backstory", "backstory"), ("Notes", "notes")] {
+        let text = nd_render::text::py_strip(s(key));
+        if text.is_empty() {
+            continue;
+        }
+        paras.push(para(words(heading, Font::Bold), 14.0, 18.0, 12.0, 6.0, false));
+        let chunks: Vec<&str> = text.split("\n\n").collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let mut pieces = vec![];
+            for (j, line) in chunk.split('\n').enumerate() {
+                if j > 0 {
+                    pieces.push(Piece::Break);
+                }
+                pieces.extend(words(line, Font::Regular));
+            }
+            paras.push(para(pieces, 10.0, 12.0, 0.0, if i + 1 == chunks.len() { 8.0 } else { 0.0 }, false));
+        }
+    }
+    let fname = export_name(pc.get("name").and_then(|v| v.as_str()))?;
+    let bytes = crate::minipdf::build(&paras);
+    let mut r = Response::builder().status(axum::http::StatusCode::OK).header("content-type", "application/pdf").header("x-nd-served-by", "gateway").body(Body::from(bytes)).ok()?;
+    if let Ok(v) = format!("attachment; filename=\"{fname}.pdf\"").parse() {
+        r.headers_mut().insert("content-disposition", v);
+    }
+    Some(r)
 }
 
 /// `GET /characters/<id>/export.md` (app/routers/characters.py `character_export_md`): the character as the same markdown file

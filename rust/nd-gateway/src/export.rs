@@ -442,3 +442,79 @@ pub fn rules_and_notes(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
         .body(Body::from(content))
         .ok()
 }
+
+/// `GET /export/foundry.json` (app/main.py `export_foundry`): every entity, the rules and every character of the active world as Foundry JournalEntry documents,
+/// in one JSON array (`stream_json_array_download`: each document indented by 2, then every line by 4 more). GM only.
+pub fn foundry_world(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let world = p.world.clone()?;
+    let wid = world.get("id")?.as_i64()?;
+    let slug = world.get("slug").and_then(|v| v.as_str())?;
+    if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare(sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    let text = |m: &Map<String, Value>, k: &str| -> Option<String> {
+        match m.get(k) { None | Some(Value::Null) => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None }
+    };
+    let mut docs: Vec<Value> = vec![];
+    let anchor_re = regex::Regex::new(r#"(?i)<a\s+name="[^"]*">\s*</a>"#).ok()?;
+    let rules = nd_render::md::render_md(&anchor_re.replace_all(&crate::retrieval::world_rules_markdown(&world), ""));
+    docs.push(json!({"name": "Rules", "folder": null,
+        "pages": [{"name": "Rules", "type": "text", "text": {"format": 1, "content": rules}, "sort": 0}],
+        "flags": {"nd-world": {"source": "nd-world", "kind": "rules"}}}));
+    let entities = rows("SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name")?;
+    let mut notes: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    if !entities.is_empty() {
+        let mut st = db.prepare("SELECT n.entity_id, n.content FROM entity_notes n JOIN entities e ON e.id = n.entity_id WHERE e.world_id = ?1 ORDER BY n.entity_id, n.created_at").ok()?;
+        let r = st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        for (eid, c) in r {
+            notes.entry(eid).or_default().push(c?);
+        }
+    }
+    for e in &entities {
+        let id = e.get("id")?.as_i64()?;
+        let kind = text(e, "kind")?;
+        let subtype = text(e, "subtype")?;
+        if !kind.is_ascii() || !subtype.is_ascii() || kind.is_empty() {
+            return None; // str.capitalize beyond ASCII: Python's
+        }
+        let kind_label = format!("{}{}{}", kind[..1].to_uppercase(), kind[1..].to_lowercase(), if subtype.is_empty() { String::new() } else { format!(" \u{2014} {subtype}") });
+        let (summary, body) = (text(e, "summary")?, text(e, "body")?);
+        let mut content = String::new();
+        if !summary.is_empty() {
+            content.push_str(&format!("<p><em>{}</em></p>", crate::apis::html_escape(&summary)));
+        }
+        content.push_str(&if body.is_empty() { "<p><em>No description.</em></p>".to_string() } else { nd_render::md::render_md(&body) });
+        let mut pages = vec![json!({"name": "Overview", "type": "text", "text": {"format": 1, "content": content}, "sort": 0})];
+        if let Some(ns) = notes.get(&id) {
+            let html: String = ns.iter().map(|n| nd_render::md::render_md(n)).collect();
+            pages.push(json!({"name": "Notes", "type": "text", "text": {"format": 1, "content": html}, "sort": 100}));
+        }
+        docs.push(json!({"name": format!("[{kind_label}] {}", text(e, "name")?), "folder": null, "pages": pages,
+            "flags": {"nd-world": {"source": "nd-world", "entity_id": id, "kind": kind}}}));
+    }
+    for pc in rows("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name")? {
+        let id = pc.get("id")?.as_i64()?;
+        docs.push(crate::apis::pc_foundry_doc_as(&db, &pc, id, false)?);
+    }
+    let mut out = String::from("[");
+    for (i, d) in docs.iter().enumerate() {
+        let t = nd_render::py_dumps_indent_as(d, 2, false);
+        let indented = t.split('\n').map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n");
+        out.push_str(&format!("{}\n{indented}", if i == 0 { "" } else { "," }));
+    }
+    out.push_str("\n]");
+    let mut r = crate::edits::json_response_raw(&out, "application/json")?;
+    r.headers_mut().insert("content-disposition", format!("attachment; filename=\"{slug}-foundry.json\"").parse().ok()?);
+    Some(r)
+}

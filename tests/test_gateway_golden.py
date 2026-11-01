@@ -10391,3 +10391,79 @@ def test_python_free_tag_lists_match_pythons(client, seed):
         shutil.rmtree(tags, ignore_errors=True)
         if was:
             tags.mkdir()
+
+
+def test_character_pdf_export_has_pythons_content(client, seed):
+    """Batch 2 of the Rust fork. GET /characters/<id>/export.pdf from the gateway: a real PDF (Python's reportlab bytes are not matched) with the
+    same file name, type and refusals as Python, and the character's name, sections, backstory and notes in it."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import PlayerCharacter
+    base = str(client.base_url)
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, owner_user_id=seed.player_a.id, name="Pdf Kira", player_name="Player A", race="Elf", char_class="Rigger",
+                             level=3, max_hp=20, current_hp=7, conditions_json='["Dazed"]', backstory="  Grew up on the docks.\n\nLeft (early) \\ ok.  ", notes=" Notes. ")
+        other = PlayerCharacter(world_id=seed.world_b.id, owner_user_id=seed.player_b.id, name="Over There")
+        db.add_all([pc, other])
+        db.commit()
+        ids = [pc.id, other.id, 999999]
+    finally:
+        db.close()
+    for cl in (_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)):
+        for i in ids:
+            a, b = cl.get(f"/characters/{i}/export.pdf"), _via(cl, base).get(f"/characters/{i}/export.pdf")
+            assert a.status_code == b.status_code, (i, a.status_code, b.status_code)
+            if a.status_code != 200:
+                assert a.content == b.content
+                continue
+            assert b.headers.get("x-nd-served-by") == "gateway"
+            for h in ("content-type", "content-disposition"):
+                assert a.headers[h] == b.headers[h], h
+            assert a.content.startswith(b"%PDF") and b.content.startswith(b"%PDF") and b.content.rstrip().endswith(b"%%EOF")
+            for needle in () if i != ids[0] else (b"Pdf Kira", b"Elf Rigger", b"Level 3", b"Basics", b"Player:", b"Conditions", b"Dazed", b"Resources", b"7/", b"Backstory",
+                           b"Grew up on the docks.", b"Left \\(early\\) \\\\ ok.", b"Notes"):
+                assert needle in b.content, needle
+
+
+def test_world_foundry_export_is_pythons(client, seed):
+    """Batch 2 of the Rust fork. GET /export/foundry.json: the rules, every entity (summary, markdown body, notes, a subtype in the title) and every
+    character as one indented JSON array, the same documents (the renderer's blank lines between blocks aside); a player is refused as Python refuses."""
+    from .conftest import PLAYER_PASSWORD
+    from app.database import SessionLocal
+    from app.models import Entity, EntityNote, PlayerCharacter
+    base = str(client.base_url)
+    tag = os.urandom(3).hex()
+    db = SessionLocal()
+    try:
+        a = Entity(world_id=seed.world_a.id, kind="location", subtype="City", name=f"Port <{tag}>", summary="A \"busy\" harbour & more", body="# Docks\n\nSome **bold** text.\n\n- one\n- two")
+        b = Entity(world_id=seed.world_a.id, kind="character", name=f"Zed {tag}", body="")
+        db.add_all([a, b])
+        db.flush()
+        db.add_all([EntityNote(entity_id=a.id, content="First *note*"), EntityNote(entity_id=a.id, content="Second\n\nnote")])
+        db.add(PlayerCharacter(world_id=seed.world_a.id, owner_user_id=seed.player_a.id, name=f"Pc {tag}", race="Elf", level=2, backstory="Back <b>story</b>"))
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    x, y = d.get("/export/foundry.json"), _via(d, base).get("/export/foundry.json")
+    assert x.status_code == y.status_code == 200
+    assert y.headers.get("x-nd-served-by") == "gateway"
+    import re as _re
+
+    def norm(v):
+        # the markdown renderer differs from markdown2 in blank lines between blocks only (pulldown-cmark); everything else must match
+        if isinstance(v, str):
+            return _re.sub(r"\s*\n\s*", "", v)
+        if isinstance(v, list):
+            return [norm(e) for e in v]
+        if isinstance(v, dict):
+            return {k: norm(e) for k, e in v.items()}
+        return v
+    assert norm(x.json()) == norm(y.json())
+    assert len(x.json()) == len(y.json()) >= 4
+    assert y.content.startswith(b"[\n    {\n      \"name\": \"Rules\"") and y.content.endswith(b"\n    }\n]")
+    assert x.headers["content-disposition"] == y.headers["content-disposition"] and x.headers["content-type"] == y.headers["content-type"]
+    p = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    r1, r2 = p.get("/export/foundry.json"), _via(p, base).get("/export/foundry.json")
+    assert (r1.status_code, r1.content) == (r2.status_code, r2.content)

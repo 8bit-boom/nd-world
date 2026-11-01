@@ -50,6 +50,7 @@ pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
 pub mod kiy;
+pub mod minipdf;
 pub mod tags;
 pub mod net;
 pub mod pdftext;
@@ -398,6 +399,12 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/rules-and-notes.md" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || export::rules_and_notes(&cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || export::foundry_world(&cfg, &uri, &headers)).await {
             return resp;
         }
     }

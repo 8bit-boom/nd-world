@@ -29,8 +29,8 @@ Branch purpose and rules: `CLAUDE.md`. Update this file with every batch (move i
 - [ ] `GET /characters/templates/{id}/export.json` and the other exports, for rows the gateway declines today
 
 ## Batch 2: exports and documents
-- [ ] Character `.pdf` export (reportlab): a PDF writer in Rust; same content, bytes need not match.
-- [ ] World Foundry export: needs markdown2's exact HTML; port its rules into `nd-render` or accept `pulldown-cmark`'s output for this export.
+- [x] Character `.pdf` export: `minipdf.rs` (Helvetica, US Letter, wrapped, multi-page); same content and order as reportlab's, bytes differ. Text outside Latin-1/WinAnsi prints as `?`.
+- [x] World Foundry export `GET /export/foundry.json` (`export.rs::foundry_world`): accepted pulldown-cmark's HTML (blank lines between blocks differ from markdown2; the test compares with that whitespace collapsed). Every character uses the N&D layout, as Python's call with no session does.
 - [ ] FastAPI `/docs`, `/redoc`, `/openapi.json`: leave (not used in production).
 
 ## Batch 3: refusals of rare input (about 445 mixed routes)
