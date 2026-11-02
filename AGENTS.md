@@ -44,6 +44,13 @@ bearer auth — see `ApiToken` in `app/models.py` — but that's a distinct
 surface from the content-creation REST routes described here, and MCP
 tools that require GM access still check `is_gm` at call time.)
 
+## How it runs (read before changing server code)
+
+The app is a Rust gateway (`rust/nd-gateway`) in front of the Python app. The gateway renders many pages and answers many APIs itself, identically to Python; what it does not
+answer goes to Python (hybrid image) or is refused (the Rust-only image, `ND_PYTHON_FREE=1`). So a change to a Python route or template usually needs the same change in Rust
+(`rust/nd-gateway/src/*.rs`, `rust/nd-render`), and the golden tests in `tests/test_gateway_golden.py` will fail until both agree. Templates in `app/templates` are shared by both renderers.
+Rules and the working loop: `CLAUDE.md`, `docs/FORK_RUST_PORT_GUIDE.md`. Which build and mode is running is shown in the footer and `GET /health`.
+
 ## If you're asked to modify the application code itself
 
 - Router-per-feature pattern: `app/routers/*.py`, each registered in

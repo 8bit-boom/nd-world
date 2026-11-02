@@ -1,4 +1,6 @@
-# Local Claude Code session: build, test and continue the Rust port (branch `rust-fork`)
+# Local Claude Code session: build, test and continue the Rust port
+
+> Update 2026-11-02: `rust-fork` is now `main` (the old hybrid-only `main` is `hybrid-python-main`); read `main` wherever this file says `rust-fork`. Sections 2 and 3 (the image build and the real-data crawl) were done by the local session; keep them as the checklist for the next change.
 
 For a Claude Code session on your own PC, with Docker and your real data. Read this first, then `docs/FORK_STATUS.md` (the checklist, kept current) and
 `docs/FORK_RUST_PORT_GUIDE.md` (the working loop and the rules learned the hard way).

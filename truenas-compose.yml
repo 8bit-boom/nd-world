@@ -90,6 +90,26 @@ services:
   # Optional: local AI image generation. Only starts if the "swarmui" profile is
   # active — set COMPOSE_PROFILES=swarmui (or ollama,swarmui) in .env, or run
   # `docker compose -f truenas-compose.yml --profile swarmui up -d`.
+  # OPTIONAL - try the Rust-only image (no Python) on a COPY of the data, on port 8088. Stop "world", copy /mnt/DeadPool/apps/nd-world to
+  # /mnt/DeadPool/apps/nd-world-pf (cp -r, not -a), start "world" again, then uncomment this service. Never point it at the live data folder.
+  # Every request it cannot answer is logged as a DECLINE line: docker logs <container> 2>&1 | grep -c DECLINE   (see README, "Images and run modes").
+  # world-pf:
+  #   image: ghcr.io/8bit-boom/nd-world-gateway:latest
+  #   environment:
+  #     DB_PATH: /data/world.db
+  #     ND_DECLINE_TRACE: "1"
+  #     SECRET_KEY: <the same value as "world" so a login works on both>
+  #     GM_EMAIL: <as "world">
+  #     GM_PASSWORD: <as "world">
+  #     TZ: Europe/Budapest
+  #     UNSLOTH_URL: http://unsloth:8000
+  #     UNSLOTH_API_KEY: <as "world">
+  #   ports:
+  #     - "8088:8000"
+  #   restart: unless-stopped
+  #   volumes:
+  #     - /mnt/DeadPool/apps/nd-world-pf:/data
+
   swarmui:
     profiles: ["swarmui"]
     image: ghcr.io/mcmonkeyprojects/swarmui:latest

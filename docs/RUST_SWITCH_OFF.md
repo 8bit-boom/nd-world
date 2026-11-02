@@ -599,3 +599,9 @@ whole page. Python-free it now uses its own plain-text reader (also in the AI ch
   combat, quest, party, map, board) instead of "Not available here".
 - `scripts/python_free_crawl_all.py`: opens every detail page of every list in a copy of your data and lists what answers 501, with the DECLINE lines.
 - Fixed from its first run: `/entity/<id>/download.md` with an accented name, `/worlds/<id>/home/edit` (new page, parity-tested).
+
+## Fork batches 0-4 and the move to `main` (Nov 2026)
+`docs/FORK_STATUS.md` has the checklist. Ported since: King in Yellow plays (save, delete) and the generate stream, `POST /api/worlds`, `POST /api/ai/unsloth/update`, the image tag lists
+(`tags.rs`, Rust-only image), the character `.pdf` export (`minipdf.rs`), the world Foundry export, the sheet template export, the home page editor; the image build's Python stage is replaced by
+`nd-assets` (`assets.rs`). The Rust-only image now logs every refusal (`DECLINE`) and answers a missing row with Python's 404. `rust-fork` became `main` on 2026-11-02.
+Every page footer, Settings and `/health` report the build and the mode (`nd_render::build_info` / `app/templating.py`).
