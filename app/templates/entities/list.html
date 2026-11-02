@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_views.html" import view_bar %}
+{% from "_views.html" import view_bar, pl_bar, pl_attrs %}
 {% block title %}{{ kind_icons[kind] }} {{ kind|capitalize }}s — {{ world.name }}{% endblock %}
 {% block content %}
 <div class="list-header">
@@ -11,6 +11,7 @@
       <input type="hidden" name="w" value="{{ world.slug if world else '' }}"/>
       <button type="submit" aria-label="Filter">⌕</button>
     </form>
+    {% if folders %}<span class="fn-switch" title="How the folders are shown">{{ pl_bar("folders") }}</span>{% endif %}
     {% if active_folder is not none %}
     <div class="view-toggle">
       <a href="{{ ('?' + ('folder=' + active_folder|urlencode + '&' if active_folder is not none else '') + ('q=' + q + '&' if q else '') + 'view=grid')|wq }}"
@@ -43,7 +44,7 @@
 <div id="bc-manage-wrap" style="display:none;margin:.3rem 0 .6rem"></div>
 {% endif %}
 
-<div class="list-layout">
+<div class="list-layout" {{ pl_attrs("folders", request) }}>
   {% if folders %}
   <aside class="folder-sidebar">
     <div class="folder-header">📂 FOLDERS</div>
@@ -61,7 +62,17 @@
   </aside>
   {% endif %}
 
+  {% if folders %}<div id="fn-backdrop" class="fn-backdrop"></div>{% endif %}
   <div class="list-main">
+    {% if folders %}
+    {# the other folder layouts (static/js/nd-folders.js fills them; the CSS shows the chosen one) #}
+    <div id="folder-nav" class="folder-nav">
+      <button type="button" id="fn-drawer-btn" class="fn-drawer-btn">📂 Folders</button>
+      <div id="fn-chips" class="fn-chips"></div>
+      <div id="fn-tiles" class="fn-tiles"></div>
+      <div id="fn-columns" class="fn-columns"></div>
+    </div>
+    {% endif %}
     <div id="bulk-action-bar" style="display:none;flex-wrap:wrap">
       <button type="button" id="bulk-select-all-btn">☑ Select All</button>
       <span><span id="bulk-count">0</span> selected</span>
@@ -288,6 +299,7 @@
   position:absolute; top:.5rem; left:.5rem; z-index:2; width:16px; height:16px; cursor:pointer;
 }
 </style>
+<script src="/static/js/nd-folders.js?v={{ asset_v('js/nd-folders.js') }}"></script>
 <script>
 const FOLDERS = {{ folders | tojson }};
 const COUNTS  = {{ folder_counts | tojson }};
@@ -521,6 +533,10 @@ function renderBreadcrumbManage() {
 }
 
 renderSidebar();
+if (window.ndFolders && document.getElementById('folder-nav')) {
+  ndFolders.build({ folders: FOLDERS, counts: COUNTS, active: ACTIVE, kind: KIND, total: {{ total_count | tojson }}, unfiled: COUNTS[''] || 0,
+    url: folderUrl, allUrl: {{ ('/kind/' + kind + ('?q=' + q if q else ''))|wq|tojson }}, unfiledUrl: {{ ('/kind/' + kind + '?folder=' + ('&q=' + q if q else ''))|wq|tojson }} });
+}
 renderSubfolderStrip();
 renderRootFolders();
 renderBreadcrumbManage();

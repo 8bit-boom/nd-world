@@ -58,6 +58,11 @@ MODE_LABELS = {
     "rail": ("▥", "Stage + rail"),
     "play": ("🎲", "Play"),
     "dashboard": ("▤", "Dashboard"),
+    "tree": ("🌳", "Tree"),
+    "chips": ("🏷", "Chips"),
+    "tiles": ("🗺", "Tiles"),
+    "columns": ("▥", "Columns"),
+    "drawer": ("📂", "Drawer"),
     "month": ("🗓", "Month"),
     "week": ("▭", "Week"),
     "mapfull": ("🗺", "Map only"),
@@ -192,7 +197,7 @@ SECTION_TITLES = {
     "site": "The site (navigation, width, density)", "images": "All images", "album": "Image album", "audio": "Audio library", "video": "Video library",
     "entities": "Entity lists", "notes": "My private notes", "entity_notes": "Notes on an entity", "connections": "An entity's connections",
     "quests": "Quests", "sessions": "Sessions (GM)", "session_log": "Session Log", "characters": "Characters", "board_notes": "A board's notes",
-    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "settings_page": "Settings", "board_view": "A board", "session_gm": "A session (GM)", "combat_list": "Encounters", "jobs_list": "Background jobs", "calendar_agenda": "Calendar agenda", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
+    "hub": "My character page", "cockpit": "Cockpit layout style", "entity_page": "An entity's page", "home": "The home page", "rules": "Rules", "search_results": "Search results", "facts": "Facts", "recap": "A session recap", "maps": "Maps", "folders": "Folders in entity lists", "parties": "Parties", "party_page": "A party's page", "boards": "Boards", "catalog": "Races and professions", "handouts": "Handouts", "worlds": "Worlds", "templates": "Templates", "calendar_view": "Calendar", "map_viewer": "The map viewer", "ai_chat": "AI chat", "settings_page": "Settings", "board_view": "A board", "session_gm": "A session (GM)", "combat_list": "Encounters", "jobs_list": "Background jobs", "calendar_agenda": "Calendar agenda", "dice": "Dice", "combat": "Combat tracker", "tables": "Random tables",
 }
 
 SECTIONS["entity_page"] = {
@@ -240,6 +245,8 @@ for _id, _modes, _labels in (
     ("settings_page", ["tabs", "onepage"], {}),
     ("ai_chat", ["withside", "focus"], {"focus": "Chat only"}),
     ("map_viewer", ["mapfull", "panel", "minimap"], {"mapfull": "Map only", "panel": "Map + list"}),
+    # how an entity list shows its folders: a tree sidebar (today's), a row of chips, big tiles, Finder-style columns, or a tree that slides in over the page
+    ("folders", ["tree", "chips", "tiles", "columns", "drawer"], {"tree": "Tree sidebar"}),
 ):
     SECTIONS[_id] = {"modes": _modes, "default": _modes[0], "size_modes": ["none"], "labels": _labels, "sorts": ["name"], "default_sort": "name", "groups": [], "filters": []}
 

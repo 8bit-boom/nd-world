@@ -33,6 +33,7 @@ read-only pages too; the soundboard is a priority for table use.
 * **Video** - poster grid, list, theater (big player + playlist sidebar), table.
 * **Notes** - timeline, sticky cards, reader (list + full note), outline; group by tag / entity / session / month.
 * **Entities** - cards, table, compact list, portrait wall, split browse, board (columns by a field, drag to change it), web (relations), outline, A-Z index.
+* **Folders (entity lists)** - how the folders of a list are shown (section `folders`, switcher in the list's header): tree sidebar (today's), chips (the siblings and what is inside the open folder, as pills), tiles (big folder cards at this level, with the child folders named), columns (Finder-style: a column per level down to the open folder) and drawer (the tree slides in over the page). Built by `static/js/nd-folders.js` from the same folder list and counts as the tree; the choice is saved to the account like any page layout. Renaming and removing a folder stays in the tree and the breadcrumb pencil.
 * **Other** - quests kanban, sessions timeline / calendar, facts grouped by session, character roster / stat table, maps and boards grid / list.
 
 ## Rules for adding a section

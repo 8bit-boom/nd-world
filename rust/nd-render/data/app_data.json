@@ -50417,6 +50417,28 @@
     "name"
    ]
   },
+  "folders": {
+   "default": "tree",
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "labels": {
+    "tree": "Tree sidebar"
+   },
+   "modes": [
+    "tree",
+    "chips",
+    "tiles",
+    "columns",
+    "drawer"
+   ],
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    "name"
+   ]
+  },
   "handouts": {
    "default": "grid",
    "default_sort": "name",
@@ -51746,6 +51768,51 @@
     }
    ]
   },
+  "folders": {
+   "default": "tree",
+   "default_group": "",
+   "default_size": 2,
+   "default_sort": "name",
+   "filters": [],
+   "groups": [],
+   "modes": [
+    {
+     "icon": "🌳",
+     "id": "tree",
+     "label": "Tree sidebar"
+    },
+    {
+     "icon": "🏷",
+     "id": "chips",
+     "label": "Chips"
+    },
+    {
+     "icon": "🗺",
+     "id": "tiles",
+     "label": "Tiles"
+    },
+    {
+     "icon": "▥",
+     "id": "columns",
+     "label": "Columns"
+    },
+    {
+     "icon": "📂",
+     "id": "drawer",
+     "label": "Drawer"
+    }
+   ],
+   "section": "folders",
+   "size_modes": [
+    "none"
+   ],
+   "sorts": [
+    {
+     "id": "name",
+     "label": "Name"
+    }
+   ]
+  },
   "handouts": {
    "default": "grid",
    "default_group": "",
@@ -52753,6 +52820,7 @@
   "entity_notes": "Notes on an entity",
   "entity_page": "An entity's page",
   "facts": "Facts",
+  "folders": "Folders in entity lists",
   "handouts": "Handouts",
   "home": "The home page",
   "hub": "My character page",

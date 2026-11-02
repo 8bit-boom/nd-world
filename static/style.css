@@ -2907,3 +2907,54 @@ body.home-night-on .home-edit-link { display: none; }
 .lightbox-full { background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: .35rem .7rem; font-size: .85rem; text-decoration: none; cursor: pointer; min-height: 32px; font-family: inherit; }
 .lightbox-full:disabled { opacity: .7; cursor: default; }
 .lightbox-full[hidden] { display: none; }
+
+/* Folder layouts (entity lists, section "folders"; static/js/nd-folders.js builds the pieces, nd-pagelayout.js sets data-view on .list-layout) */
+.fn-switch .ep-layoutbar { margin: 0; flex-wrap: nowrap; }
+.folder-nav { display: none; }
+.list-layout[data-pl="folders"]:not([data-view="tree"]):not([data-view="drawer"]) .folder-sidebar { display: none; }
+.list-layout[data-view="chips"] .folder-nav, .list-layout[data-view="tiles"] .folder-nav, .list-layout[data-view="columns"] .folder-nav, .list-layout[data-view="drawer"] .folder-nav { display: block; margin-bottom: .8rem; }
+.list-layout[data-view="chips"] #subfolder-strip, .list-layout[data-view="chips"] #root-folders,
+.list-layout[data-view="tiles"] #subfolder-strip, .list-layout[data-view="tiles"] #root-folders,
+.list-layout[data-view="columns"] #subfolder-strip, .list-layout[data-view="columns"] #root-folders { display: none; }
+.fn-chips, .fn-tiles, .fn-columns, .fn-drawer-btn { display: none; }
+.list-layout[data-view="chips"] .fn-chips { display: block; }
+.list-layout[data-view="tiles"] .fn-tiles { display: grid; }
+.list-layout[data-view="columns"] .fn-columns { display: flex; }
+.list-layout[data-view="drawer"] .fn-drawer-btn { display: inline-flex; }
+.fn-count { background: var(--bg3); border: 1px solid var(--border); border-radius: 999px; padding: 0 .45rem; font-size: .68rem; color: var(--text-dim); margin-left: .25rem; }
+/* chips */
+.fn-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-bottom: .45rem; }
+.fn-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); margin-right: .2rem; }
+.fn-chip { display: inline-flex; align-items: center; gap: .2rem; padding: .3rem .75rem; min-height: 32px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg2); color: var(--text-dim); font-size: .8rem; text-decoration: none; }
+.fn-chip:hover { color: var(--neon); border-color: var(--neon); }
+.fn-chip.active { color: var(--text); border-color: var(--neon); background: rgba(0, 240, 255, .1); }
+.fn-chip.fn-up { border-style: dashed; }
+.fn-inside { padding-left: .8rem; border-left: 2px solid var(--border); }
+/* tiles */
+.fn-tiles { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .7rem; }
+.fn-tile { display: flex; flex-direction: column; gap: .2rem; padding: .9rem 1rem; min-height: 6.5rem; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; text-decoration: none; color: var(--text); transition: border-color .15s, transform .15s; }
+.fn-tile:hover { border-color: var(--neon); transform: translateY(-2px); }
+.fn-tile-icon { font-size: 1.7rem; line-height: 1; }
+.fn-tile-name { font-weight: 600; overflow-wrap: anywhere; }
+.fn-tile-count { font-size: .76rem; color: var(--text-dim); }
+.fn-tile-hint { font-size: .72rem; color: var(--text-dim); opacity: .8; overflow-wrap: anywhere; }
+.fn-tile-up { border-style: dashed; background: transparent; min-height: 5rem; }
+/* columns */
+.fn-columns { gap: 0; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); max-height: 16rem; scroll-snap-type: x proximity; }
+.fn-col { flex: 0 0 13rem; min-width: 13rem; border-right: 1px solid var(--border); overflow-y: auto; scroll-snap-align: start; }
+.fn-col:last-child { border-right: none; }
+.fn-item { display: flex; align-items: center; gap: .3rem; padding: .45rem .7rem; min-height: 34px; color: var(--text-dim); text-decoration: none; font-size: .82rem; border-bottom: 1px solid rgba(255, 255, 255, .04); }
+.fn-item:hover { background: var(--bg3); color: var(--neon); }
+.fn-item.open { background: rgba(255, 255, 255, .05); color: var(--text); }
+.fn-item.active { background: rgba(0, 240, 255, .12); color: var(--text); box-shadow: inset 3px 0 0 var(--neon); }
+.fn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fn-more { color: var(--text-dim); font-size: .7rem; }
+/* drawer: the tree sidebar slides in over the page */
+.fn-drawer-btn { align-items: center; gap: .3rem; padding: .35rem .9rem; min-height: 34px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: .82rem; cursor: pointer; }
+.fn-drawer-btn:hover { border-color: var(--neon); color: var(--neon); }
+.fn-backdrop { display: none; }
+.list-layout[data-view="drawer"] .folder-sidebar { display: block; position: fixed; z-index: 1002; left: 0; top: 0; bottom: 0; width: min(86vw, 20rem); min-width: 0; max-height: none; border-radius: 0 8px 8px 0; transform: translateX(-105%); transition: transform .2s ease; box-shadow: none; }
+.list-layout[data-view="drawer"].fn-open .folder-sidebar { transform: none; box-shadow: 0 0 40px rgba(0, 0, 0, .7); }
+.list-layout[data-view="drawer"].fn-open .fn-backdrop { display: block; position: fixed; z-index: 1001; inset: 0; background: rgba(0, 0, 0, .5); }
+@media (prefers-reduced-motion: reduce) { .list-layout[data-view="drawer"] .folder-sidebar, .fn-tile { transition: none; } }
+@media (max-width: 700px) { .fn-col { flex-basis: 11rem; min-width: 11rem; } .fn-tiles { grid-template-columns: repeat(2, 1fr); } }
