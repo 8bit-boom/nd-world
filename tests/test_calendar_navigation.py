@@ -524,3 +524,23 @@ def test_players_cannot_reach_other_worlds_events_through_search(client, seed):
     client.cookies.set("active_world", seed.world_b.slug)         # a world this player is not in
     r = client.get("/api/calendar/search?q=secret")
     assert r.status_code in (403, 404) or r.json()["results"] == []
+
+
+@pytest.mark.parametrize("path", ["/calendar/year", "/calendar/agenda", "/calendar/config", "/calendar/event-jump?dir=next&from=1"])
+def test_first_request_of_a_world_without_a_calendar_row_creates_it(client, seed, path):
+    """Python makes the world's calendar row on first use (_get_or_create_calendar), so no GET page may answer 5xx for a world that
+    has none yet - the Rust gateway answered 501 for year / agenda / config until it did the same."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    db = SessionLocal()
+    try:
+        db.query(WorldCalendar).filter(WorldCalendar.world_id == seed.world_b.id).delete()
+        db.commit()
+    finally:
+        db.close()
+    assert client.get(path, follow_redirects=False).status_code < 400
+    db = SessionLocal()
+    try:
+        assert db.query(WorldCalendar).filter(WorldCalendar.world_id == seed.world_b.id).count() == 1
+    finally:
+        db.close()
