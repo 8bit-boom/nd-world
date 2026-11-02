@@ -52,3 +52,13 @@ def test_copied_addresses_of_things_in_this_world():
     for no in ("https://evil.example.org/uploads/a.png", "hello world", "", "/api/secret.png", "/uploads/gallery/a.exe",
                "/uploads/gallery/a.png and more", "data:image/png;base64,AAAA"):
         assert _call("addressOf", no, o) is None, no
+
+
+def test_a_file_only_clipboard_uploads_even_with_the_cursor_in_a_text_field():
+    # text going into a text field stays an ordinary paste; a copied file / screenshot has no text/plain, so it is an upload
+    assert _call("isTextPaste", ["text/plain", "text/html"], True) is True
+    assert _call("isTextPaste", ["Files"], True) is False
+    assert _call("isTextPaste", ["text/html", "Files"], True) is False            # "Copy image" in a browser
+    assert _call("isTextPaste", ["text/plain", "Files"], True) is True            # text and a file together: the text wins in a text field
+    assert _call("isTextPaste", ["text/plain", "Files"], False) is False          # not in a text field: nothing to paste text into
+    assert _call("isTextPaste", [], True) is False

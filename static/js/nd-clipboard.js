@@ -2,7 +2,8 @@
  *
  *   Ctrl+V  - a copied picture / screenshot / files go to the page's own upload field: the visible <input type=file> that accepts what was
  *             pasted (sets its files and fires "change", exactly like picking them; a page with a custom paste handler - the session media
- *             panel - keeps priority and this stays out of the way). Never while typing in a text field.
+ *             panel - keeps priority and this stays out of the way). Not for text going into a text field; a file-only clipboard still uploads
+ *             when the cursor happens to sit in a text field.
  *   Ctrl+C  - with nothing selected, copies the media under the pointer (or the focused card): a picture is copied AS a picture (paste it
  *             into another program, or into an upload field here); audio / video / an /uploads link is copied as its address, which the
  *             session media panel accepts with Ctrl+V.
@@ -53,13 +54,20 @@
     return { path: path, kind: kind };
   }
 
-  var api = { acceptMatches: acceptMatches, pastedName: pastedName, addressOf: addressOf };
+  /** Is this paste ordinary text going into a text field? A file-only clipboard (a copied file, a screenshot, "Copy image") has no text/plain, so pasting it
+   *  while the cursor sits in some text field still means "upload this" - the field has nothing to take from it. types: the clipboard's type list. */
+  function isTextPaste(types, intoEditable) {
+    if (!intoEditable) return false;
+    return Array.prototype.indexOf.call(types || [], 'text/plain') >= 0;
+  }
+
+  var api = { acceptMatches: acceptMatches, pastedName: pastedName, addressOf: addressOf, isTextPaste: isTextPaste };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; return; }
   if (typeof document === 'undefined') return;
   root.ndClipboard = api;
 
   // ── browser part ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  var toastEl = null, toastTimer = 0, lastHover = null;
+  var toastEl = null, toastTimer = 0, lastHover = null, lastClick = null;
 
   function toast(text) {
     if (!toastEl) {
@@ -115,7 +123,7 @@
       if (document.querySelector('input[type=file]')) toast('Nothing on this page takes that kind of file.');
       return;
     }
-    var input = cands.length === 1 ? cands[0] : (nearest(cands, document.activeElement) || nearest(cands, lastHover));
+    var input = cands.length === 1 ? cands[0] : (nearest(cands, document.activeElement) || nearest(cands, lastClick) || nearest(cands, lastHover));
     if (!input) {
       toast('This page has several upload fields (' + cands.slice(0, 3).map(labelOf).join(', ') + '). Click next to the one you want, then paste again.');
       return;
@@ -136,7 +144,7 @@
   }
   document.addEventListener('paste', function (e) {
     var cd = e.clipboardData;
-    if (!cd || isEditable(e.target)) return;
+    if (!cd || isTextPaste(cd.types, isEditable(e.target))) return;
     var files = Array.prototype.slice.call(cd.files || []);                 // read now: the clipboard is closed once this handler returns
     if (!files.length) return;
     setTimeout(function () { if (!e.defaultPrevented) deliver(files); }, 0); // after any page-specific handler has had its say
@@ -144,6 +152,7 @@
 
   // ---- copy ----
   document.addEventListener('mouseover', function (e) { lastHover = e.target; }, true);
+  document.addEventListener('pointerdown', function (e) { lastClick = e.target; }, true);   // "click next to the field you want, then paste"
   function subjectAt(el) {
     for (var n = el; n && n !== document.body; n = n.parentElement) {
       var u = n.getAttribute && n.getAttribute('data-nd-copy-url');
