@@ -1,7 +1,10 @@
 """Which build is running? A redeploy that silently reuses an old `:latest` looks exactly like a fix that did
 not work, so published images carry the commit they were built from (Dockerfile ARG -> ENV ND_BUILD) and show
 it on /health and in Settings > System."""
+import os
 from pathlib import Path
+
+import pytest
 
 from .conftest import GM_PASSWORD, login
 
@@ -45,6 +48,7 @@ def test_the_retired_denoise_tag_follows_latest_so_pinned_deployments_keep_updat
     assert ":latest-denoise" in workflow and ":latest\n" in workflow
 
 
+@pytest.mark.skipif(bool(os.environ.get("ND_TEST_BASE_URL")), reason="sets the environment of the app in this process; the gateway pair has its own (the Python-free golden test covers the gateway)")
 def test_footer_and_health_say_which_build_and_mode_is_running(client, seed, monkeypatch):
     """Every page's footer (and /health) names the build and how it runs: Python alone, the hybrid image (ND_MODE=hybrid) or the Python-free one."""
     monkeypatch.setenv("ND_BUILD", "abcdef0123456789")
