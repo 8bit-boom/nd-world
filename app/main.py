@@ -477,9 +477,18 @@ def _build_id() -> str:
     return (os.getenv("ND_BUILD") or "").strip()[:7] or "dev"
 
 
+def _run_mode() -> str:
+    """"rust" (the Python-free image), "hybrid" (the Rust gateway in front of this app: the normal image sets ND_MODE=hybrid) or "python" (this
+    app alone - a checkout, the tests, the Android app). Same rule as nd-render's `build_info`."""
+    if (os.getenv("ND_PYTHON_FREE") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return "rust"
+    m = (os.getenv("ND_MODE") or "").strip().lower()
+    return m if m in ("rust", "hybrid", "python") else "python"
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "build": _build_id()}
+    return {"status": "ok", "build": _build_id(), "mode": _run_mode()}
 
 
 # ── Auth gate ──────────────────────────────────────────────────────────────────

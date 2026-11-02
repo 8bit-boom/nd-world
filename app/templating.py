@@ -114,6 +114,20 @@ def asset_v(name: str) -> str:
 
 
 templates.env.globals["asset_v"] = asset_v
+
+
+_MODE_LABELS = {"rust": "Rust (no Python)", "hybrid": "Hybrid (Rust + Python)", "python": "Python"}
+
+
+def _build_info() -> dict:
+    """{"build", "mode", "label"} of the running image, for the footer and Settings: the commit (ND_BUILD, "dev" from a checkout) and whether this is
+    the Python-free image, the hybrid one or the Python app alone. nd-render's `build_info` answers the same."""
+    from .main import _build_id, _run_mode
+    mode = _run_mode()
+    return {"build": _build_id(), "mode": mode, "label": _MODE_LABELS[mode]}
+
+
+templates.env.globals["nd_build_info"] = _build_info
 # Content-creation gate for templates: True for a GM, and for a non-GM whose
 # active-world membership is role="assistant" (request.state.is_assistant,
 # computed by auth_gate on every non-GM request — see deps.can_edit_content).

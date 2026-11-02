@@ -53,7 +53,8 @@ RUN python -m app.static_thumbs --avif-maps && python -m app.map_tiles && python
 # Settings > System so "is the new image actually the one running?" has a one-glance answer. Declared
 # after the COPYs so a new commit does not invalidate the dependency layers above.
 ARG GIT_SHA=""
-ENV ND_BUILD=${GIT_SHA}
+ENV ND_BUILD=${GIT_SHA} \
+    ND_MODE=hybrid
 
 VOLUME ["/data"]
 ENV DB_PATH=/data/world.db

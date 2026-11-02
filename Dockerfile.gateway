@@ -49,6 +49,7 @@ COPY app/maps ./app/maps
 ARG GIT_SHA=""
 ENV ND_BUILD=${GIT_SHA} \
     ND_PYTHON_FREE=1 \
+    ND_MODE=rust \
     DB_PATH=/data/world.db \
     ND_STATIC_DIR=/app/static \
     ND_TEMPLATES_DIR=/app/app/templates \

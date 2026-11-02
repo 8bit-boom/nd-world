@@ -143,7 +143,8 @@ pub fn handle(cfg: &Config, method: &Method, uri: &Uri, headers: &HeaderMap, bod
     if path == "/health" {
         let build = std::env::var("ND_BUILD").unwrap_or_default();
         let build: String = nd_render::text::py_strip(&build).chars().take(7).collect();
-        return crate::edits::json_response(&json!({"status": "ok", "build": if build.is_empty() { "dev".to_string() } else { build }}));
+        let mode = nd_render::build_info().get_attr("mode").ok().and_then(|m| m.as_str().map(str::to_string)).unwrap_or_else(|| "python".into());
+        return crate::edits::json_response(&json!({"status": "ok", "build": if build.is_empty() { "dev".to_string() } else { build }, "mode": mode}));
     }
     if path == "/api/ai/world-summary" {
         return world_summary(cfg, uri, headers);

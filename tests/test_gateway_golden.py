@@ -10494,3 +10494,20 @@ def test_sheet_template_export_json_is_pythons(client, seed):
             assert a.headers["content-disposition"] == b.headers["content-disposition"] and a.headers["content-type"] == b.headers["content-type"]
             served += b.headers.get("x-nd-served-by") == "gateway"
     assert served >= 1
+
+
+def test_python_free_footer_and_health_name_the_build_and_mode(client, seed):
+    """The footer of a page and /health from a gateway with no Python name the build and 'Rust (no Python)'; the same page from the normal test pair is
+    identical on both servers (the pairs' parity tests compare whole pages, footer included)."""
+    proc, url, g = _python_free_gateway(seed, {"ND_BUILD": "0123456789abcdef"})
+    try:
+        assert g.get("/health").json() == {"status": "ok", "build": "0123456", "mode": "rust"}
+        page = g.get("/").text
+        assert 'id="nd-build"' in page and "build 0123456 · Rust (no Python)</span>" in page, page[-500:]
+        assert "Rust (no Python)" in g.get("/settings").text
+    finally:
+        proc.terminate()
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    a, b = d.get("/"), _via(d, base).get("/")
+    assert a.status_code == b.status_code == 200 and 'id="nd-build"' in b.text and a.text.split("<footer>")[1][:300] == b.text.split("<footer>")[1][:300]

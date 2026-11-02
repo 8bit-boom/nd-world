@@ -478,6 +478,7 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     env.add_filter("urlencode", py_urlencode);
     env.add_filter("wq", wq);
     // per-render answers the page builder put in the context under "__nd" (site_layout, can_edit, saved views)
+    env.add_function("nd_build_info", build_info);
     env.add_function("site_layout", |state: &State, _req: Value| -> Result<Value, Error> { Ok(nd(state, "site_layout")) });
     // markdown: pulldown-cmark plus the app's own tags (md.rs) - the owner chose CommonMark's behaviour over markdown2's (docs/RUST_PAGES.md)
     env.add_filter("md", |text: Option<String>| Value::from_safe_string(md::render_md(text.as_deref().unwrap_or(""))));
@@ -532,4 +533,18 @@ pub fn environment(templates_dir: &Path, static_dir: &Path) -> Environment<'stat
     });
     env.add_function("asset_v", asset_v_fn(static_dir.to_path_buf()));
     env
+}
+
+
+/// `{"build", "mode", "label"}` of the running image (app/templating.py `_build_info`): the commit (ND_BUILD, "dev" without one) and whether this is the
+/// Python-free image ("rust"), the hybrid one ("hybrid", ND_MODE) or the Python app alone ("python")
+pub fn build_info() -> Value {
+    let build = std::env::var("ND_BUILD").unwrap_or_default();
+    let build: String = text::py_strip(&build).chars().take(7).collect();
+    let build = if build.is_empty() { "dev".to_string() } else { build };
+    let free = matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on");
+    let m = std::env::var("ND_MODE").unwrap_or_default().trim().to_lowercase();
+    let mode = if free { "rust" } else if matches!(m.as_str(), "rust" | "hybrid" | "python") { m.as_str() } else { "python" };
+    let label = match mode { "rust" => "Rust (no Python)", "hybrid" => "Hybrid (Rust + Python)", _ => "Python" };
+    Value::from_serialize(serde_json::json!({"build": build, "mode": mode, "label": label}))
 }
