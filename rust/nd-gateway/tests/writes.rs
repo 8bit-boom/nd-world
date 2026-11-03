@@ -28,7 +28,7 @@ fn schema(db: &Connection) {
          CREATE TABLE shared_state (key TEXT PRIMARY KEY, value TEXT, n INTEGER DEFAULT 0);
          INSERT INTO users VALUES (1,'gm@x','Gamemaster',1,1),(2,'p@x','Pia',0,1),(3,'out@x','Outsider',0,1),(4,'asst@x','',0,1);
          INSERT INTO worlds VALUES (1,'alpha',NULL),(2,'beta','{\"dice\": {\"player\": \"none\", \"assistant\": \"read\"}}');
-         INSERT INTO world_memberships VALUES (1,1,2,'player'),(2,2,2,'player'),(3,1,4,'assistant'),(4,2,4,'assistant');",
+         INSERT INTO world_memberships (id, world_id, user_id, role) VALUES (1,1,2,'player'),(2,2,2,'player'),(3,1,4,'assistant'),(4,2,4,'assistant');",
     )
     .unwrap();
 }
