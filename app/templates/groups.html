@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Player groups — {{ world.name }}{% endblock %}
+{% block content %}
+<div class="grp-page">
+  <h1 class="grp-title">👥 Player groups</h1>
+  <p class="grp-intro">Several tables can play the same world. Put each player in a group, then limit an entity to some groups (its <em>Visibility</em> → “Only for these groups”): only the players of those groups see it. A player without a group sees only what is open to everyone.</p>
+
+  <section class="grp-section">
+    <h2>Groups</h2>
+    {% if groups %}
+    <ul class="grp-list">
+      {% for g in groups %}
+      <li class="grp-row">
+        <form method="post" action="/groups/{{ g.id }}/rename" class="grp-inline">
+          <input type="text" name="name" value="{{ g.name }}" maxlength="120" aria-label="Group name"/>
+          <button type="submit" class="btn-cancel">Rename</button>
+        </form>
+        <span class="grp-count">{{ limited.get(g.id, 0) }} limited entit{{ 'y' if limited.get(g.id, 0) == 1 else 'ies' }}</span>
+        <form method="post" action="/groups/{{ g.id }}/delete" class="grp-inline" onsubmit="return confirm('Delete this group? Its players become unassigned, and entities limited only to it become GM-only.')">
+          <button type="submit" class="btn-cancel">🗑 Delete</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="grp-empty">No groups yet.</p>
+    {% endif %}
+    <form method="post" action="/groups/new" class="grp-inline grp-new">
+      <input type="text" name="name" placeholder="New group, e.g. The Tuesday table" maxlength="120" required/>
+      <button type="submit" class="btn-save">＋ Add group</button>
+    </form>
+  </section>
+
+  <section class="grp-section">
+    <h2>Players</h2>
+    {% if members %}
+    <table class="grp-table">
+      <thead><tr><th>Player</th><th>Role</th><th>Group</th></tr></thead>
+      <tbody>
+      {% for m, u in members %}
+      <tr>
+        <td>{{ u.display_name or u.email }}</td>
+        <td>{{ {'player': 'Player', 'assistant': 'GM-Assistant', 'owner': 'World Owner'}.get(m.role or 'player', m.role) }}</td>
+        <td>
+          <form method="post" action="/groups/members/{{ u.id }}" class="grp-inline">
+            <select name="group_id" aria-label="Group of {{ u.display_name or u.email }}" onchange="this.form.submit()">
+              <option value="">— no group —</option>
+              {% for g in groups %}<option value="{{ g.id }}" {% if m.group_id == g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+            </select>
+            <noscript><button type="submit" class="btn-cancel">Save</button></noscript>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="grp-empty">Nobody has joined this world yet. <a href="/worlds/{{ world.id }}/edit">Invite players</a>.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

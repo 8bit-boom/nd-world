@@ -104,3 +104,12 @@ characters; "done" once they own one), 4 fill in your character sheet (new sheet
 session recaps / log, party, combat, maps, calendar, schedule, boards, pages, audio, video, Chronicler, the AI tools the GM switched on, search), the latest sessions and quests, the GM's own
 Quick Links ("From your GM"), and the lore kinds with entries. Python and the gateway are compared page by page in `tests/test_player_start.py`.
 
+### Player groups (several tables in one world) - phase 1: entities
+`/groups` (GM only; linked from the world's edit page and the entity form): make groups ("Tuesday table", "The new party") and put each player in one (`WorldMembership.group_id`, new
+`player_groups` table). An entity's Visibility has a fourth choice, "Only for these player groups": `Entity.group_ids_json` holds the groups, `visible_to_players` is False and
+`entity_player_access` holds the groups' players - so every place that already honours "specific players only" (lists, search, the entity page, links, the AI's lookups, MCP, export)
+applies the limit with no change of its own. Moving a player to another group, or deleting a group, re-syncs every group-limited entity (a group's last entity access never falls back to
+"everyone": it becomes GM-only). A player with no group sees only what is open to everyone. The bulk-visibility API takes `visibility_mode: "groups"` + `group_ids`.
+**Not yet separated by group** (a group's players still share these): session recaps and the session log, quests, facts, characters and parties, pages and media, maps, boards, the calendar. The
+restriction control is offered only on entities, so nothing looks protected that is not. Python and the gateway are compared in `tests/test_player_groups.py`.
+

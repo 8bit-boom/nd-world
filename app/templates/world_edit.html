@@ -302,6 +302,9 @@
       <code style="display:block;word-break:break-all;font-size:.82rem;background:var(--bg3);padding:.5rem;border-radius:3px">{{ reset_password_value }}</code>
     </div>
     {% endif %}
+    {% if members and viewer_is_gm %}
+    <p style="font-size:.8rem;margin:.2rem 0 .6rem"><a href="/groups" style="color:var(--neon)">👥 Player groups</a> — several tables in one world: put players in groups and limit entities to a group.</p>
+    {% endif %}
     {% if members %}
     <table class="cf-dynamic-table" style="width:100%;border-collapse:collapse">
       <thead><tr>

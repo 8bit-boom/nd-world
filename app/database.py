@@ -70,7 +70,7 @@ _GENERICALLY_HEALED_TABLES = (
     # which create_all() applies; generic healing only ever adds columns.
     "session_plans", "session_plan_slots", "session_plan_votes",
     # media_titles / media_rename_log (app.models - the AI media renamer): brand new, same reasoning as above.
-    "media_titles", "media_rename_log", "media_rename_runs",
+    "media_titles", "media_rename_log", "media_rename_runs", "player_groups",
     # map_props (app.models.MapProp - the map-object library): brand new, same reasoning as above.
     "map_props",
     # saved_views (app.models.SavedView - layouts saved under a name): brand new, same reasoning as above.
@@ -807,6 +807,8 @@ def _migrate():
             conn.execute(text("ALTER TABLE entities ADD COLUMN roleplay_personality TEXT DEFAULT ''"))
         if "rag_priority" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN rag_priority BOOLEAN DEFAULT 0"))
+        if "group_ids_json" not in cols:
+            conn.execute(text("ALTER TABLE entities ADD COLUMN group_ids_json TEXT DEFAULT ''"))
         # Composite index backing the (world_id, kind) filter almost every
         # entity query uses — see Entity.__table_args__'s own comment.
         # CREATE INDEX IF NOT EXISTS is naturally idempotent, unlike the
@@ -1114,6 +1116,8 @@ def _migrate():
             wm_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(world_memberships)")).fetchall()]
             if "role" not in wm_cols:
                 conn.execute(text("ALTER TABLE world_memberships ADD COLUMN role VARCHAR(20) DEFAULT 'player' NOT NULL"))
+            if "group_id" not in wm_cols:
+                conn.execute(text("ALTER TABLE world_memberships ADD COLUMN group_id INTEGER"))
         # worlds table — add players_see_party if missing
         w_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='worlds'"

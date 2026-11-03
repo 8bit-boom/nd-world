@@ -151,7 +151,7 @@
         <div style="display:flex;align-items:center;gap:.5rem">
           <input type="radio" id="vis-gm" name="visibility_mode" value="gm"
                  style="width:auto;accent-color:var(--neon2)"
-                 {% if entity and not entity.visible_to_players and not allowed_player_ids %}checked{% endif %}
+                 {% if entity and not entity.visible_to_players and not allowed_player_ids and not entity_group_ids %}checked{% endif %}
                  onchange="updateVisibilityUI()">
           <label for="vis-gm" style="margin:0;font-size:.82rem;color:var(--text-dim)">
             🔒 GM only (spoilers, secrets, unrevealed content)
@@ -160,13 +160,37 @@
         <div style="display:flex;align-items:center;gap:.5rem">
           <input type="radio" id="vis-players" name="visibility_mode" value="players"
                  style="width:auto;accent-color:var(--neon2)"
-                 {% if entity and not entity.visible_to_players and allowed_player_ids %}checked{% endif %}
+                 {% if entity and not entity.visible_to_players and allowed_player_ids and not entity_group_ids %}checked{% endif %}
                  onchange="updateVisibilityUI()">
           <label for="vis-players" style="margin:0;font-size:.82rem;color:var(--text-dim)">
             👥 Specific players only
           </label>
         </div>
+        {% if world_groups %}
+        <div style="display:flex;align-items:center;gap:.5rem">
+          <input type="radio" id="vis-groups" name="visibility_mode" value="groups"
+                 style="width:auto;accent-color:var(--neon2)"
+                 {% if entity and not entity.visible_to_players and entity_group_ids %}checked{% endif %}
+                 onchange="updateVisibilityUI()">
+          <label for="vis-groups" style="margin:0;font-size:.82rem;color:var(--text-dim)">
+            🛡 Only for these player groups
+          </label>
+        </div>
+        {% endif %}
       </div>
+      {% if world_groups %}
+      <div id="group-picker" style="display:none;margin:.5rem 0 0 1.7rem;padding:.5rem;border:1px solid rgba(255,255,255,.15);border-radius:4px">
+        {% for g in world_groups %}
+        <div style="display:flex;align-items:center;gap:.4rem;margin:.15rem 0">
+          <input type="checkbox" id="group-{{ g.id }}" name="allowed_group_ids" value="{{ g.id }}"
+                 style="width:auto;accent-color:var(--neon2)"
+                 {% if g.id in entity_group_ids %}checked{% endif %}>
+          <label for="group-{{ g.id }}" style="margin:0;font-size:.82rem">{{ g.name }} <span style="color:var(--text-dim)">({{ g.members }} player{{ '' if g.members == 1 else 's' }})</span></label>
+        </div>
+        {% endfor %}
+        <a href="/groups" style="font-size:.75rem;color:var(--text-dim)">Manage groups</a>
+      </div>
+      {% endif %}
       <div id="player-picker" style="display:none;margin:.5rem 0 0 1.7rem;padding:.5rem;border:1px solid rgba(255,255,255,.15);border-radius:4px">
         {% if world_players %}
         {% for p in world_players %}
@@ -511,6 +535,8 @@ function updateVisibilityUI() {
   const picker = document.getElementById('player-picker');
   const checked = document.querySelector('input[name="visibility_mode"]:checked');
   picker.style.display = (checked && checked.value === 'players') ? 'block' : 'none';
+  const gp = document.getElementById('group-picker');
+  if (gp) gp.style.display = (checked && checked.value === 'groups') ? 'block' : 'none';
 }
 
 updateSubtypes();

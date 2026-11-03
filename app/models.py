@@ -401,6 +401,18 @@ class User(Base):
     totp_backup_codes_json = Column(Text, default="[]")
 
 
+class PlayerGroup(Base):
+    """A table / party of players inside one world ("Tuesday table", "The new party"). The GM puts each player in one group
+    (WorldMembership.group_id) and can limit an entity to some groups (Entity.group_ids_json): the entity is then visible to the
+    players of those groups only. See app/groups.py."""
+    __tablename__ = "player_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class WorldMembership(Base):
     """A player's invited access to a specific World. GM accounts don't need a row
     here — is_gm implies access to every world."""
@@ -426,6 +438,8 @@ class WorldMembership(Base):
     # matching the ALTER TABLE _migrate() issues for existing installs (so a
     # row written by anything that skips the ORM still lands as a player).
     role = Column(String(20), default="player", nullable=False, server_default="player")
+    # The player group (PlayerGroup.id) this member plays in; NULL = no group yet. Maintained by app/groups.py.
+    group_id = Column(Integer, nullable=True)
 
     world = relationship("World")
     user = relationship("User")
@@ -492,6 +506,9 @@ class Entity(Base):
     body = Column(Text, nullable=True)
     # GM can hide spoilers/secrets from invited players; defaults visible so existing content is unaffected.
     visible_to_players = Column(Boolean, default=True)
+    # '[1, 2]' = visible only to the players of these PlayerGroups: visible_to_players is then False and entity_player_access holds their members, so every
+    # existing visibility check already applies (app/groups.py keeps it in step); '' / NULL = not limited by group.
+    group_ids_json = Column(Text, default="")
     # Opt this entity into the same "always searched, doesn't count against
     # the entity/notes RAG limits" treatment World Rules text already gets
     # (see app.retrieval.priority_entities_context) — for a big reference

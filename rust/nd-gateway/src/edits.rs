@@ -353,6 +353,10 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/invites/{}/revoke", invite_revoke),
     ("/worlds/{}/members/{}/remove", member_remove),
     ("/worlds/{}/members/{}/role", member_role),
+    ("/groups/new", groups_new),
+    ("/groups/{}/rename", groups_rename),
+    ("/groups/{}/delete", groups_delete),
+    ("/groups/members/{}", groups_assign),
     ("/worlds/{}/members/{}/clear-2fa", member_clear_2fa),
     ("/worlds/{}/notes/{}/new", private_note_new),
     ("/worlds/{}/notes/{}/{}/delete", private_note_delete),
@@ -1743,12 +1747,15 @@ struct EntityFields {
     cols: Vec<(&'static str, Sql)>,
     players: Vec<i64>,
     image_url: String,
+    /// visibility_mode == "groups": the group ids ticked (to be checked against the world's own groups)
+    groups: Option<Vec<i64>>,
 }
 
 fn entity_fields(f: &Form) -> Option<EntityFields> {
     let (kind, name) = (required(f, "kind")?, required(f, "name")?);
     // List[int] = Form([]): every value must be an int to pydantic (only plain digits here)
     let ids: Vec<i64> = f.all("allowed_player_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
+    let group_ids: Vec<i64> = f.all("allowed_group_ids").iter().map(|v| py_int(v)).collect::<Option<_>>()?;
     let template = match opt(f, "template_id", "") {
         "" => Sql::Null,
         v if v.bytes().all(|b| b.is_ascii_digit()) && v.len() <= 15 => Sql::Integer(v.parse().ok()?),
@@ -1773,6 +1780,7 @@ fn entity_fields(f: &Form) -> Option<EntityFields> {
         ("summary", or_null(opt(f, "summary", ""))),
         ("body", or_null(opt(f, "body", ""))),
         ("visible_to_players", Sql::Integer((visibility == "everyone") as i64)),
+        ("group_ids_json", s("")),
         ("rag_priority", Sql::Integer(flag_param(f, "rag_priority"))),
         ("template_id", template),
         ("custom_fields_json", s(custom)),
@@ -1785,7 +1793,7 @@ fn entity_fields(f: &Form) -> Option<EntityFields> {
             }
         }
     }
-    Some(EntityFields { cols, players, image_url: strip(opt(f, "image_url", "")) })
+    Some(EntityFields { cols, players, image_url: strip(opt(f, "image_url", "")), groups: (visibility == "groups").then_some(group_ids) })
 }
 
 /// `_sync_entity_access`
@@ -1795,6 +1803,122 @@ fn sync_access(db: &Connection, entity_id: i64, players: &[i64]) -> Option<()> {
         db.execute("INSERT INTO entity_player_access (entity_id, user_id) VALUES (?1, ?2)", [entity_id, *uid]).ok()?;
     }
     Some(())
+}
+
+// ── player groups (app/groups.py) ──
+
+/// The ids in an entity's `group_ids_json` (plain ints; anything else is ignored, as `parse_ids` does)
+fn group_id_list(raw: Option<&str>) -> Vec<i64> {
+    match raw.filter(|r| !r.is_empty()).and_then(|r| serde_json::from_str::<Value>(r).ok()) {
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_i64()).collect(),
+        _ => vec![],
+    }
+}
+
+/// `valid_group_ids`: these ids that are groups of the world, once each, in id order
+fn valid_group_ids(db: &Connection, world: i64, ids: &[i64]) -> Vec<i64> {
+    let mut out: Vec<i64> = vec![];
+    for id in ids {
+        let ok = db.query_row("SELECT 1 FROM player_groups WHERE id = ?1 AND world_id = ?2", [id, &world], |_| Ok(())).is_ok();
+        if ok && !out.contains(id) {
+            out.push(*id);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `apply_to_entity`: limit the entity to these groups (no valid group = GM only): hidden from everyone, visible to the groups' members
+fn apply_group_access(db: &Connection, entity_id: i64, world: i64, wanted: &[i64]) -> Option<()> {
+    let gids = valid_group_ids(db, world, wanted);
+    let json = if gids.is_empty() { String::new() } else { nd_render::py_dumps(&json!(gids)) };
+    orm::update(db, "entities", entity_id, &[("group_ids_json", s(&json)), ("visible_to_players", Sql::Integer(0))])?;
+    let mut members: Vec<i64> = vec![];
+    for g in &gids {
+        let mut st = db.prepare_cached("SELECT user_id FROM world_memberships WHERE world_id = ?1 AND group_id = ?2").ok()?;
+        for u in st.query_map([world, *g], |r| r.get::<_, i64>(0)).ok()? {
+            let u = u.ok()?;
+            if !members.contains(&u) {
+                members.push(u);
+            }
+        }
+    }
+    members.sort();
+    sync_access(db, entity_id, &members)
+}
+
+/// `resync`: after a member changed group or a group went away, every group-limited entity of the world is brought back in step
+fn resync_groups(db: &Connection, world: i64) -> Option<()> {
+    let mut st = db.prepare_cached("SELECT id, group_ids_json FROM entities WHERE world_id = ?1 AND group_ids_json IS NOT NULL AND group_ids_json != ''").ok()?;
+    let found: Vec<(i64, String)> = st.query_map([world], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    for (id, raw) in found {
+        apply_group_access(db, id, world, &group_id_list(Some(&raw)))?;
+    }
+    Some(())
+}
+
+fn groups_gm_world(c: &Ctx) -> Option<i64> {
+    if !c.p.is_gm {
+        return None; // the 403 is Python's
+    }
+    c.world_id()
+}
+
+fn groups_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let wid = groups_gm_world(c)?;
+    let f = c.form()?;
+    let name = take_chars(&strip(opt(&f, "name", "")), 120);
+    let have: i64 = c.db.query_row("SELECT count(*) FROM player_groups WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    if name.is_empty() || have >= 50 {
+        return None; // the 400s are Python's
+    }
+    orm::insert(&c.db, "player_groups", &[("world_id", Sql::Integer(wid)), ("name", s(&name))])?;
+    redirect("/groups")
+}
+
+fn group_of_world(c: &Ctx, wid: i64, gid: i64) -> Option<()> {
+    c.db.query_row("SELECT 1 FROM player_groups WHERE id = ?1 AND world_id = ?2", [gid, wid], |_| Ok(())).ok()
+}
+
+fn groups_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = groups_gm_world(c)?;
+    let f = c.form()?;
+    group_of_world(c, wid, ids[0])?;
+    let name = take_chars(&strip(opt(&f, "name", "")), 120);
+    if name.is_empty() {
+        return None;
+    }
+    orm::update(&c.db, "player_groups", ids[0], &[("name", s(&name))])?;
+    redirect("/groups")
+}
+
+fn groups_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = groups_gm_world(c)?;
+    group_of_world(c, wid, ids[0])?;
+    c.db.execute("UPDATE world_memberships SET group_id = NULL WHERE world_id = ?1 AND group_id = ?2", [wid, ids[0]]).ok()?;
+    c.db.execute("DELETE FROM player_groups WHERE id = ?1", [ids[0]]).ok()?;
+    resync_groups(&c.db, wid)?;
+    redirect("/groups")
+}
+
+fn groups_assign(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let wid = groups_gm_world(c)?;
+    let f = c.form()?;
+    let m = membership(c, wid, ids[0])?;
+    let raw = strip(opt(&f, "group_id", ""));
+    let gid = if raw.is_empty() {
+        Sql::Null
+    } else {
+        if !raw.bytes().all(|b| b.is_ascii_digit()) || raw.len() > 15 {
+            return None;
+        }
+        let gid: i64 = raw.parse().ok()?;
+        group_of_world(c, wid, gid)?;
+        Sql::Integer(gid)
+    };
+    orm::update(&c.db, "world_memberships", m, &[("group_id", gid)])?;
+    resync_groups(&c.db, wid)?;
+    redirect("/groups")
 }
 
 fn entity_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
@@ -1813,6 +1937,9 @@ fn entity_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     cols.push(("image_url", if image.is_empty() { Sql::Null } else { s(&image) }));
     let id = orm::insert(&c.db, "entities", &cols)?;
     sync_access(&c.db, id, &e.players)?;
+    if let Some(g) = &e.groups {
+        apply_group_access(&c.db, id, world, g)?;
+    }
     if !opt(&f, "save_and_new", "").is_empty() {
         let q = |v: &str| utf8_percent_encode(v, QUOTE).to_string();
         let kind = required(&f, "kind")?;
@@ -1839,6 +1966,10 @@ fn entity_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     orm::update(&c.db, "entities", ids[0], &cols)?;
     sync_access(&c.db, ids[0], &e.players)?;
+    if let Some(g) = &e.groups {
+        let world = c.db.query_row("SELECT world_id FROM entities WHERE id = ?1", [ids[0]], |r| r.get::<_, i64>(0)).ok()?;
+        apply_group_access(&c.db, ids[0], world, g)?;
+    }
     redirect(&format!("/entity/{}", ids[0]))
 }
 
@@ -1909,10 +2040,11 @@ fn bulk_visibility(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     let world = c.world_id()?;
     let ids = json_ids(b.get("entity_ids"))?;
     let mode = strip(json_str(&b, "visibility_mode", Some(""))?);
-    if !matches!(mode.as_str(), "everyone" | "gm" | "players") {
+    if !matches!(mode.as_str(), "everyone" | "gm" | "players" | "groups") {
         return None; // the 400: Python's
     }
     let players = if mode == "players" { json_ids(b.get("allowed_player_ids"))? } else { vec![] };
+    let groups = if mode == "groups" { valid_group_ids(&c.db, world, &json_ids(b.get("group_ids"))?) } else { vec![] };
     let mut uniq: Vec<i64> = vec![];
     for p in players {
         if !uniq.contains(&p) {
@@ -1921,10 +2053,13 @@ fn bulk_visibility(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     }
     let hit = world_entity_ids(&c.db, world, &ids, None);
     for id in &hit {
-        orm::update(&c.db, "entities", *id, &[("visible_to_players", Sql::Integer((mode == "everyone") as i64))])?;
+        orm::update(&c.db, "entities", *id, &[("visible_to_players", Sql::Integer((mode == "everyone") as i64)), ("group_ids_json", s(""))])?;
     }
     for id in &hit {
         sync_access(&c.db, *id, &uniq)?;
+        if mode == "groups" {
+            apply_group_access(&c.db, *id, world, &groups)?;
+        }
     }
     json_response(&json!({"updated": hit.len()}))
 }

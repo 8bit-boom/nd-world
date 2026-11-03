@@ -428,6 +428,8 @@ pub fn new_entity_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     ctx.insert("kind".into(), json!(kind));
     ctx.insert("world_players".into(), Value::Array(players));
     ctx.insert("allowed_player_ids".into(), json!([]));
+    ctx.insert("world_groups".into(), group_choices(&db, wid)?);
+    ctx.insert("entity_group_ids".into(), json!([]));
     ctx.insert("folder_options".into(), json!(folders));
     ctx.insert("prefill_folder".into(), json!(folder));
     ctx.insert("prefill_name".into(), json!(name));
@@ -435,6 +437,16 @@ pub fn new_entity_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     ctx.insert("custom_fields".into(), json!({}));
     ctx.insert("gallery_images".into(), Value::Array(crate::gallery::all_world_image_urls(&db, wid)?));
     render_with(pages, "entities/form.html", p.ctx, headers)
+}
+
+
+/// `_group_choices`: the world's player groups for the entity form's "Only for these groups" checklist: [{id, name, members}]
+fn group_choices(db: &Connection, wid: i64) -> Option<Value> {
+    let mut st = db.prepare_cached(
+        "SELECT player_groups.id, player_groups.name, (SELECT count(*) FROM world_memberships WHERE world_memberships.world_id = player_groups.world_id AND world_memberships.group_id = player_groups.id) \
+         FROM player_groups WHERE player_groups.world_id = ?1 ORDER BY player_groups.name, player_groups.id").ok()?;
+    let r = st.query_map([wid], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "members": r.get::<_, i64>(2)?}))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    Some(Value::Array(r))
 }
 
 /// `GET /entity/<id>/edit` (app/main.py `edit_form`) - for an entity of the viewer's active world (the auth gate has already let
@@ -462,10 +474,16 @@ fn entity_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers:
     let raw = e.get("custom_fields_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("{}");
     let custom: Value = serde_json::from_str(raw).ok()?;
     let ctx = &mut p.ctx;
+    let group_ids: Vec<i64> = match e.get("group_ids_json").and_then(|v| v.as_str()).filter(|r| !r.is_empty()).and_then(|r| serde_json::from_str::<Value>(r).ok()) {
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_i64()).collect(),
+        _ => vec![],
+    };
     ctx.insert("entity".into(), Value::Object(e));
     ctx.insert("kind".into(), json!(kind));
     ctx.insert("world_players".into(), Value::Array(players));
     ctx.insert("allowed_player_ids".into(), json!(allowed));
+    ctx.insert("world_groups".into(), group_choices(db, wid)?);
+    ctx.insert("entity_group_ids".into(), json!(group_ids));
     ctx.insert("folder_options".into(), json!(folders));
     ctx.insert("prefill_folder".into(), json!(""));
     ctx.insert("entity_templates".into(), Value::Array(entity_templates_payload(db, wid)?));

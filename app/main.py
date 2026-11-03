@@ -57,7 +57,8 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp
+from . import groups as _groups_mod
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
 from .routers.live_jobs import router as live_jobs_router
@@ -235,6 +236,8 @@ app.include_router(backups_router)
 app.include_router(knowledge_router)
 app.include_router(ai_instructions_router)
 app.include_router(system_monitor_router)
+from .routers.groups import router as groups_router  # noqa: E402
+app.include_router(groups_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -1468,6 +1471,15 @@ def _world_player_list(db: Session, world_id: int):
     )
 
 
+def _group_choices(db: Session, world_id: int) -> list:
+    """The world's player groups for the entity form's "Only for these groups" checklist: [{id, name, members}]."""
+    from . import groups as _g
+    counts = {}
+    for (gid,) in db.query(WorldMembership.group_id).filter(WorldMembership.world_id == world_id, WorldMembership.group_id.isnot(None)).all():
+        counts[gid] = counts.get(gid, 0) + 1
+    return [{"id": g.id, "name": g.name, "members": counts.get(g.id, 0)} for g in _g.world_groups(db, world_id)]
+
+
 def _sync_entity_access(db: Session, entity_id: int, player_ids):
     """Replace the set of players explicitly allowed to see a hidden entity."""
     db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
@@ -1802,7 +1814,7 @@ _WORLD_DELETE_MODELS = (
     AudioJob, ImageJob, ChatJob, VideoJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
     EntityRelation, VaultChunk, AiInstruction, EntityVoiceHint, CharacterJournalEntry,
     CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake,
-    SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp,
+    SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup,
 )
 
 
@@ -6945,6 +6957,7 @@ def new_form(request: Request, kind: str = "character", folder: str = "", name: 
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": set(),
+        "world_groups": _group_choices(db, world.id) if world else [], "entity_group_ids": [],
         "folder_options": folder_options, "prefill_folder": folder, "prefill_name": name.strip()[:256],
         "entity_templates": entity_templates, "custom_fields": {},
         "gallery_images": gallery_images,
@@ -6981,6 +6994,7 @@ async def create(
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
+    allowed_group_ids: List[int] = Form([]),
     template_id: Optional[str] = Form(None),
     custom_fields_json: str = Form("{}"),
     rag_priority: Optional[str] = Form(None),
@@ -7004,6 +7018,9 @@ async def create(
     db.commit()
     db.refresh(e)
     _sync_entity_access(db, e.id, allowed_player_ids if visibility_mode == "players" else [])
+    if visibility_mode == "groups":
+        _groups_mod.apply_to_entity(db, e, _groups_mod.valid_group_ids(db, world.id, allowed_group_ids))
+        db.commit()
     if save_and_new:
         # Removes the biggest friction in batch NPC/item entry — carries the
         # same kind/folder forward so the next entry starts right where this
@@ -7066,6 +7083,7 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
         "request": request, "entity": entity, "kind": entity.kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": allowed_player_ids,
+        "world_groups": _group_choices(db, entity.world_id), "entity_group_ids": _groups_mod.parse_ids(entity.group_ids_json),
         "folder_options": folder_options, "prefill_folder": "",
         "entity_templates": entity_templates, "custom_fields": custom_fields,
         "gallery_images": gallery_images,
@@ -7079,6 +7097,7 @@ def update(
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
+    allowed_group_ids: List[int] = Form([]),
     remove_image: Optional[str] = Form(None),
     template_id: Optional[str] = Form(None),
     custom_fields_json: str = Form("{}"),
@@ -7110,6 +7129,7 @@ def update(
     entity.summary = summary or None
     entity.body = body or None
     entity.visible_to_players = (visibility_mode == "everyone")
+    entity.group_ids_json = ""
     entity.rag_priority = bool(rag_priority)
     entity.template_id = int(template_id) if template_id and template_id.isdigit() else None
     try:
@@ -7119,6 +7139,9 @@ def update(
         entity.custom_fields_json = "{}"
     db.commit()
     _sync_entity_access(db, entity_id, allowed_player_ids if visibility_mode == "players" else [])
+    if visibility_mode == "groups":
+        _groups_mod.apply_to_entity(db, entity, _groups_mod.valid_group_ids(db, entity.world_id, allowed_group_ids))
+        db.commit()
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -7221,9 +7244,12 @@ def bulk_set_visibility(request: Request, db: Session = Depends(get_db), active_
         except (TypeError, ValueError):
             continue
     mode = str(body.get("visibility_mode", "")).strip()
-    if mode not in ("everyone", "gm", "players"):
-        raise HTTPException(400, "visibility_mode must be one of: everyone, gm, players")
+    if mode not in ("everyone", "gm", "players", "groups"):
+        raise HTTPException(400, "visibility_mode must be one of: everyone, gm, players, groups")
     allowed_player_ids = body.get("allowed_player_ids") or []
+    group_ids = []
+    if mode == "groups":
+        group_ids = _groups_mod.valid_group_ids(db, world.id, [int(v) for v in (body.get("group_ids") or []) if str(v).lstrip("-").isdigit()])
 
     entities = (
         db.query(Entity).filter(Entity.id.in_(ids), Entity.world_id == world.id).all()
@@ -7231,9 +7257,13 @@ def bulk_set_visibility(request: Request, db: Session = Depends(get_db), active_
     )
     for e in entities:
         e.visible_to_players = (mode == "everyone")
+        e.group_ids_json = ""
     db.commit()
     for e in entities:
         _sync_entity_access(db, e.id, allowed_player_ids if mode == "players" else [])
+        if mode == "groups":
+            _groups_mod.apply_to_entity(db, e, group_ids)
+    db.commit()
     return {"updated": len(entities)}
 
 

@@ -1247,6 +1247,50 @@ pub(crate) fn edit_level(p: &crate::layout::PageCtx, world: &serde_json::Map<Str
     Some(nd_perm::sections::section_level(false, p.role.as_deref(), s("section_access_json"), s("custom_kinds_json"), section)? == "edit")
 }
 
+/// `GET /groups` (app/routers/groups.py `groups_page`): the GM's player groups and which group each member plays in
+pub fn groups_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    use serde_json::{json, Map, Value};
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    let world = p.world.clone()?;
+    if !p.is_gm {
+        return None; // the 403 is Python's
+    }
+    let wid = world.get("id")?.as_i64()?;
+    let one = |sql: &str, id: i64| -> Option<Map<String, Value>> { db.query_row(sql, [id], |r| crate::layout::row_map(r)).ok() };
+    let groups: Vec<Map<String, Value>> = {
+        let mut st = db.prepare_cached("SELECT * FROM player_groups WHERE world_id = ?1 ORDER BY name, id").ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        r
+    };
+    let mut st = db.prepare_cached(
+        "SELECT world_memberships.id, users.id FROM world_memberships JOIN users ON users.id = world_memberships.user_id WHERE world_memberships.world_id = ?1 \
+         ORDER BY users.display_name, world_memberships.id").ok()?;
+    let pairs: Vec<(i64, i64)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let mut members = vec![];
+    for (m, u) in pairs {
+        members.push(json!([Value::Object(one("SELECT * FROM world_memberships WHERE id = ?1", m)?), Value::Object(one("SELECT * FROM users WHERE id = ?1", u)?)]));
+    }
+    // entities limited to each group
+    let mut limited = Map::new();
+    let mut st = db.prepare_cached("SELECT group_ids_json FROM entities WHERE world_id = ?1 AND group_ids_json IS NOT NULL AND group_ids_json != ''").ok()?;
+    for raw in st.query_map([wid], |r| r.get::<_, String>(0)).ok()? {
+        if let Ok(Value::Array(a)) = serde_json::from_str::<Value>(&raw.ok()?) {
+            for g in a.iter().filter_map(|v| v.as_i64()) {
+                let n = limited.get(&g.to_string()).and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+                limited.insert(g.to_string(), json!(n));
+            }
+        }
+    }
+    let c = &mut p.ctx;
+    c.insert("groups".into(), Value::Array(groups.into_iter().map(Value::Object).collect()));
+    c.insert("members".into(), Value::Array(members));
+    c.insert("limited".into(), json!({"__intkeys__": Value::Object(limited)}));
+    c.insert("max_groups".into(), json!(50));
+    render_with(pages, "groups.html", p.ctx, headers)
+}
+
 /// `GET /parties` (app/routers/parties.py `parties_list`)
 pub fn parties_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     use serde_json::{json, Map, Value};
