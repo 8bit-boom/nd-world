@@ -22,8 +22,9 @@ fn schema(db: &Connection) {
     db.execute_batch(
         "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, display_name TEXT, is_gm BOOLEAN, session_version INTEGER);
          CREATE TABLE worlds (id INTEGER PRIMARY KEY, slug TEXT, section_access_json TEXT);
-         CREATE TABLE world_memberships (id INTEGER PRIMARY KEY, world_id INTEGER, user_id INTEGER, role TEXT);
-         CREATE TABLE dice_rolls (id INTEGER PRIMARY KEY, world_id INTEGER, user_id INTEGER, user_name TEXT, notation TEXT, label TEXT, breakdown TEXT, total INTEGER, created_at DATETIME);
+         CREATE TABLE world_memberships (id INTEGER PRIMARY KEY, world_id INTEGER, user_id INTEGER, role TEXT, group_id INTEGER);
+         CREATE TABLE player_groups (id INTEGER PRIMARY KEY, world_id INTEGER, name TEXT);
+         CREATE TABLE dice_rolls (id INTEGER PRIMARY KEY, world_id INTEGER, user_id INTEGER, user_name TEXT, notation TEXT, label TEXT, breakdown TEXT, total INTEGER, created_at DATETIME, group_id INTEGER);
          CREATE TABLE shared_state (key TEXT PRIMARY KEY, value TEXT, n INTEGER DEFAULT 0);
          INSERT INTO users VALUES (1,'gm@x','Gamemaster',1,1),(2,'p@x','Pia',0,1),(3,'out@x','Outsider',0,1),(4,'asst@x','',0,1);
          INSERT INTO worlds VALUES (1,'alpha',NULL),(2,'beta','{\"dice\": {\"player\": \"none\", \"assistant\": \"read\"}}');
