@@ -199,6 +199,12 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/tables/import", tables_import),
     ("/api/quests/apply", quests_apply),
     ("/api/facts/bulk", facts_bulk),
+    ("/images/delete", image_delete),
+    ("/audio/{}/play-for-players", audio_play_for_players),
+    ("/audio/now-playing/stop", audio_now_playing_stop),
+    ("/video/settings", video_settings_save),
+    ("/api/backups/run", backups_run),
+    ("/images/delete-many", image_delete_many),
     ("/api/facts/from-job/{}", facts_from_job),
     ("/facts/{}/edit", fact_edit),
     ("/facts/{}/delete", fact_delete),
@@ -5994,7 +6000,10 @@ fn lib_item_edit(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> 
         set.push(("entity_id", ent));
     }
     if lib.now_playing && visible == 0 && now_playing_is(c, wid, &item)? {
-        return None; // hiding the clip players are hearing stops the broadcast and clears Python's in-memory spotlight cache: Python's
+        if !crate::config::python_free() {
+            return None; // hiding the clip players are hearing stops the broadcast and clears Python's in-memory spotlight cache: Python's
+        }
+        clear_now_playing(c, wid)?;
     }
     let album = match digit_field(f.get("album_id").unwrap_or("")).ok()? {
         Some(aid) => Some(lib_album(c, lib, wid, aid)?.get("id")?.as_i64()?),
@@ -6008,6 +6017,79 @@ fn lib_item_edit(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> 
     }
 }
 
+/// `_clear_now_playing(world)`: the broadcast of a clip to the players stops (the version moves on so open pages notice)
+fn clear_now_playing(c: &mut Ctx, wid: i64) -> Option<()> {
+    let version: i64 = c.db.query_row("SELECT COALESCE(now_playing_version, 0) FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
+    orm::update(&c.db, "worlds", wid, &[("now_playing_url", Sql::Null), ("now_playing_label", Sql::Null), ("now_playing_loop", Sql::Integer(0)), ("now_playing_version", Sql::Integer(version + 1))])?;
+    Some(())
+}
+
+/// `POST /audio/<id>/play-for-players`: the clip starts playing on every player's screen (only a clip the players can see)
+fn audio_play_for_players(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    if !crate::config::python_free() {
+        return None; // next to Python its in-memory spotlight cache must be cleared too
+    }
+    let f = c.form()?;
+    let wid = lib_editor(c, &AUDIO)?;
+    let clip = lib_item(c, &AUDIO, wid, ids[0]);
+    let Some(clip) = clip else { return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Not Found")) };
+    if !py_truthy(clip.get("visible_to_players")) {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Only a clip visible to players can be played for them"));
+    }
+    let version: i64 = c.db.query_row("SELECT COALESCE(now_playing_version, 0) FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok()?;
+    let label = take_chars(clip.get("name").and_then(|v| v.as_str()).unwrap_or(""), 256);
+    let looping = !opt(&f, "loop", "").is_empty();
+    orm::update(&c.db, "worlds", wid, &[("now_playing_url", clip.get("file_url").and_then(|v| v.as_str()).map_or(Sql::Null, s)), ("now_playing_label", s(&label)),
+        ("now_playing_loop", Sql::Integer(looping as i64)), ("now_playing_version", Sql::Integer(version + 1))])?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `POST /audio/now-playing/stop`
+fn audio_now_playing_stop(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !crate::config::python_free() {
+        return None;
+    }
+    let wid = lib_editor(c, &AUDIO)?;
+    clear_now_playing(c, wid)?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `POST /video/settings`: the world's space-saving video conversion preferences (a GM)
+fn video_settings_save(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    if !c.p.is_gm {
+        return None;
+    }
+    let wid = lib_editor(c, &VIDEO)?;
+    let positive = |k: &str| -> Option<Sql> {
+        let t = strip(f.get(k).unwrap_or(""));
+        if !t.is_empty() && !t.is_ascii() {
+            return None; // isdigit() of other scripts: Python's
+        }
+        Some(match t.parse::<i64>() { Ok(n) if t.bytes().all(|b| b.is_ascii_digit()) && n > 0 => Sql::Integer(n), _ => Sql::Null })
+    };
+    let enabled = !opt(&f, "video_convert_enabled", "").is_empty();
+    orm::update(&c.db, "worlds", wid, &[("video_convert_enabled", Sql::Integer(enabled as i64)), ("video_convert_max_height", positive("video_convert_max_height")?),
+        ("video_convert_bitrate_kbps", positive("video_convert_bitrate_kbps")?)])?;
+    redirect("/video")
+}
+
+/// `POST /api/backups/run` (app/routers/backups.py): a snapshot now, in ND_BACKUP_DIR (a GM)
+fn backups_run(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm {
+        return None;
+    }
+    let dir = std::env::var("ND_BACKUP_DIR").unwrap_or_default();
+    if dir.trim().is_empty() {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Scheduled backups are not configured \u{2014} set ND_BACKUP_DIR"));
+    }
+    let keep: usize = std::env::var("ND_BACKUP_KEEP").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    match crate::startup::backup_now(c.cfg, std::path::Path::new(dir.trim()), keep) {
+        Some(path) => json_response(&json!({"name": path.file_name()?.to_string_lossy(), "size_bytes": std::fs::metadata(&path).ok()?.len()})),
+        None => Some(crate::ai_more::detail(StatusCode::INTERNAL_SERVER_ERROR, "Snapshot failed: the database could not be copied")),
+    }
+}
+
 fn lib_item_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> {
     let wid = lib_editor(c, lib)?;
     let item = lib_item(c, lib, wid, ids[0])?;
@@ -6015,7 +6097,10 @@ fn lib_item_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>
         return None;
     }
     if lib.now_playing && now_playing_is(c, wid, &item)? {
-        return None; // the broadcast of this clip ends with it: Python's
+        if !crate::config::python_free() {
+            return None; // the broadcast of this clip ends with it, and Python's in-memory spotlight cache is cleared: Python's
+        }
+        clear_now_playing(c, wid)?;
     }
     c.db.execute(&format!("DELETE FROM {} WHERE id = ?1", lib.items), [ids[0]]).ok()?;
     for f in lib_item_files(lib, &item) {
@@ -6110,6 +6195,83 @@ fn image_album_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     }
     c.db.execute("DELETE FROM image_albums WHERE id = ?1", [ids[0]]).ok()?;
     redirect("/images")
+}
+
+/// `_delete_one_image` (app/routers/gallery.py): one unused image of this world removed (its album links, its title, then the file once the request commits);
+/// Ok(None) = done, Ok(Some((status, message))) = refused, Err = a case this port leaves to Python
+fn delete_one_image(c: &mut Ctx, wid: i64, url: &str, discovered: &[Map<String, Value>]) -> Option<Option<(u16, String)>> {
+    let entry = discovered.iter().find(|e| e.get("url").and_then(|v| v.as_str()) == Some(url));
+    if let Some(en) = entry {
+        let uses = en.get("uses").and_then(|u| u.as_array()).cloned().unwrap_or_default();
+        if !uses.is_empty() {
+            let mut places = uses.iter().take(3).map(|u| u.get("label").and_then(|l| l.as_str()).unwrap_or("").to_string()).collect::<Vec<_>>().join(", ");
+            if uses.len() > 3 {
+                places.push_str(&format!(", and {} more", uses.len() - 3));
+            }
+            return Some(Some((400, format!("Still used in {} place(s) ({places}) \u{2014} remove it there first.", uses.len()))));
+        }
+    }
+    let albums: Vec<Map<String, Value>> = {
+        let mut st = c.db.prepare_cached("SELECT * FROM image_albums WHERE world_id = ?1").ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        r
+    };
+    let mut found = false;
+    for album in &albums {
+        let urls = album_urls(album)?;
+        if urls.iter().any(|u| u.as_str() == Some(url)) {
+            found = true;
+            let kept: Vec<Value> = urls.into_iter().filter(|u| u.as_str() != Some(url)).collect();
+            orm::update(&c.db, "image_albums", album.get("id")?.as_i64()?, &[("image_urls_json", s(&nd_render::py_dumps(&Value::Array(kept))))])?;
+        }
+    }
+    if !found && entry.is_none() {
+        return Some(Some((404, "Image not found".into())));
+    }
+    c.db.execute("DELETE FROM media_titles WHERE world_id = ?1 AND url = ?2", rusqlite::params![wid, url]).ok()?;
+    remove_upload(c, url);
+    Some(None)
+}
+
+/// `POST /images/delete`: {"url"}: one unused image gone
+fn image_delete(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let wid = images_editor(c)?;
+    let b = c.json()?;
+    let url = match b.get("url") {
+        Some(Value::String(u)) if !u.is_empty() => u.clone(),
+        _ => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Missing url")),
+    };
+    let discovered = crate::gallery::discover(&c.db, wid)?;
+    match delete_one_image(c, wid, &url, &discovered)? {
+        Some((status, msg)) => Some(crate::ai_more::detail(StatusCode::from_u16(status).ok()?, msg)),
+        None => json_response(&json!({"ok": true})),
+    }
+}
+
+/// `POST /images/delete-many`: {"urls": [...]}: each follows the single-image rules; the ones that cannot go are reported, never blocking the rest
+fn image_delete_many(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let wid = images_editor(c)?;
+    let b = c.json()?;
+    let urls: Vec<String> = match b.get("urls") {
+        Some(Value::Array(a)) if !a.is_empty() && a.len() <= 500 && a.iter().all(|u| matches!(u, Value::String(t) if !t.is_empty())) => {
+            a.iter().filter_map(|u| u.as_str().map(str::to_string)).collect()
+        }
+        _ => return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Send up to 500 image urls")),
+    };
+    let discovered = crate::gallery::discover(&c.db, wid)?;
+    let (mut deleted, mut skipped) = (0, vec![]);
+    let mut seen: Vec<&String> = vec![];
+    for url in &urls {
+        if seen.contains(&url) {
+            continue;
+        }
+        seen.push(url);
+        match delete_one_image(c, wid, url, &discovered)? {
+            Some((_, reason)) => skipped.push(json!({"url": url, "reason": reason})),
+            None => deleted += 1,
+        }
+    }
+    json_response(&json!({"deleted": deleted, "skipped": skipped}))
 }
 
 /// `_load_urls(album)` (stored text serde would read differently: Python's)

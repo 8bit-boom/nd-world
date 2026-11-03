@@ -456,6 +456,10 @@ pub fn backups(cfg: &Config) {
 
 /// `create_snapshot` + `run_backup_once`: VACUUM INTO a `world-<stamp>.db` snapshot (a same-second collision gets
 /// a -2 suffix), then prune to the newest `keep`
+pub fn backup_now(cfg: &Config, dir: &std::path::Path, keep: usize) -> Option<std::path::PathBuf> {
+    run_backup_once(cfg, dir, keep)
+}
+
 fn run_backup_once(cfg: &Config, dir: &std::path::Path, keep: usize) -> Option<std::path::PathBuf> {
     let _ = std::fs::create_dir_all(dir);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
