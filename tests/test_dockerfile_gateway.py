@@ -11,3 +11,9 @@ def test_the_python_free_image_has_no_python_stage_and_minifies_javascript_witho
     assert "COPY --from=minify /w/static/ /assets/static/" in d
     assert d.index("AS minify") < d.index("AS gateway")
     assert "ND_MODE=rust" in d and "ND_PYTHON_FREE=1" in d
+
+
+def test_both_images_make_the_allocator_hand_freed_memory_back_at_once():
+    # under a burst of parallel requests mimalloc kept ~260 MB of freed pages for 15 s; with the delay at 0 the idle figure is ~80 MB
+    for f in ("Dockerfile", "Dockerfile.gateway"):
+        assert "MIMALLOC_PURGE_DELAY=0" in (ROOT / f).read_text(), f

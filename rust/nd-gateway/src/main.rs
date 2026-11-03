@@ -1,7 +1,11 @@
 // musl's own allocator serializes on a global lock: under 8 concurrent clients the static (musl) build served an entity list at 8 req/s where the same code on glibc
 // did 99. mimalloc has per-thread heaps (measured in docs/FORK_STATUS.md).
+#[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
 
 use nd_gateway::{router, Config};
 use std::net::SocketAddr;
@@ -13,6 +17,15 @@ async fn main() {
     if std::env::args().any(|a| a == "--version") {
         println!("nd-gateway {}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+    #[cfg(feature = "dhat-heap")]
+    if let Some(secs) = std::env::var("ND_DHAT_SECS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        let prof = dhat::Profiler::new_heap();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(secs));
+            drop(prof);
+            std::process::exit(0);
+        });
     }
     let cfg = Arc::new(Config::from_env());
     nd_render::set_paths(cfg.static_dir.clone(), cfg.db_path.parent().map(|p| p.join("uploads")).unwrap_or_default());

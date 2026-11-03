@@ -10540,3 +10540,24 @@ def test_python_free_perf_timings_are_route_templates_and_slow_ones_are_logged(c
         assert p.get("/api/perf/summary").status_code == 403
     finally:
         proc.terminate()
+
+
+def test_autolinks_are_the_same_when_entities_share_names_and_aliases(client, seed):
+    # the gateway keeps one automaton per world and leaves the viewed entity's own names out; Python builds the name map without it
+    db = SessionLocal()
+    try:
+        rows = [("Bob", "Bobby, Robert Smith", "Visit Bob Smith, Smith and bob in Ravenna. Éowyn too."), ("Bob Smith", "Smith", "Meet Bob and Ravenna."),
+                ("Bob", "Raven", "Raven, Bob, bob smith."), ("Ravenna", "", "Raven of Ravenna meets Smith."), ("Éowyn", "Eowyn", "Eowyn and Éowyn rode to Bob.")]
+        ids = []
+        for name, aliases, body in rows:
+            e = Entity(world_id=seed.world_a.id, kind="character", name=name, aliases=aliases, body=body)
+            db.add(e)
+            db.flush()
+            ids.append(e.id)
+        db.commit()
+    finally:
+        db.close()
+    via = _login(client, seed)
+    direct = _login(httpx.Client(base_url=DIRECT, timeout=120), seed)
+    res = golden.compare(direct, via, [f"/entity/{i}" for i in ids])
+    assert not res["differ"], {k: v[:4] for k, v in list(res["differ"].items())[:3]}

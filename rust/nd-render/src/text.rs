@@ -319,7 +319,7 @@ fn fold(s: &str) -> String {
 
 impl Matcher {
     /// `chunk` (a text node) with every name linked
-    fn link(&self, chunk: &str) -> String {
+    fn link(&self, chunk: &str, exclude: Option<i64>) -> String {
         let bytes = chunk.as_bytes();
         // the text the names are looked for in: the chunk itself when it is ASCII (the automaton ignores ASCII case), else a folded copy and, for every byte offset of it
         // that starts a character, where that character starts in the original
@@ -341,11 +341,12 @@ impl Matcher {
         let hay: &str = folded.as_deref().unwrap_or(chunk);
         let at_orig = |o: usize| if folded.is_some() { back[o] } else { o };
         // every occurrence of every name, then the same walk the regex makes: by start, the longest first, the first one whose edges are clear, on past it
-        let mut found: Vec<(usize, usize, usize)> = self.ac.find_overlapping_iter(hay).map(|m| (at_orig(m.start()), at_orig(m.end()), m.pattern().as_usize())).collect();
+        // (an excluded entity's own names are left out here, as if they were not in the automaton: the same one serves every entity's page)
+        let mut found: Vec<(usize, usize, usize)> = self.ac.find_overlapping_iter(hay).map(|m| (at_orig(m.start()), at_orig(m.end()), m.pattern().as_usize())).filter(|f| exclude != Some(self.ids[f.2])).collect();
         if found.is_empty() {
             return chunk.to_string();
         }
-        found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
         let mut out = String::with_capacity(chunk.len() + found.len() * 48);
         let (mut at, mut i) = (0usize, 0usize);
         while i < found.len() {
@@ -394,29 +395,45 @@ fn matcher_for(keys: &[(String, i64)]) -> Option<std::sync::Arc<Matcher>> {
 /// `rendering.autolink_entities(html, names)`; `names` in the dict's insertion order. `None` = the names hold something this port does not
 /// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently) while Python is there to answer.
 pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> {
-    autolink_impl(html, names, python_free_env())
+    autolink_impl(html, names, None, python_free_env())
+}
+
+/// the same with the names of the entity `exclude` left out: `names` is then the whole world's list (names that several entities have are all in it, in the dict's
+/// insertion order), so one automaton serves every entity's page. Python builds the dict without the excluded entity (the first of the others wins a shared name);
+/// leaving its matches out of the walk, and keeping the first listed of the rest where several names cover the same text, gives that same answer.
+pub fn autolink_entities_excluding(html: &str, names: &[(String, i64)], exclude: Option<i64>) -> Option<String> {
+    autolink_impl(html, names, exclude, python_free_env())
 }
 
 /// the same, `unicode_names` saying whether names with non-ASCII letters may be linked here
-fn autolink_impl(html: &str, names: &[(String, i64)], unicode_names: bool) -> Option<String> {
+fn autolink_impl(html: &str, names: &[(String, i64)], exclude: Option<i64>, unicode_names: bool) -> Option<String> {
     if html.is_empty() || names.is_empty() {
         return Some(html.to_string());
     }
+    // every (name, entity) pair once; two entities with the same name both stay (the walk picks the first listed one that is not excluded)
     let mut lower_to_id: Vec<(String, i64)> = vec![];
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(String, i64)> = std::collections::HashSet::new();
+    let mut usable = false;
     for (name, id) in names {
         let key = py_strip(name).to_lowercase();
         if key.chars().count() < 3 {
             continue;
         }
+        if exclude == Some(*id) {
+            if seen.insert((key.clone(), *id)) {
+                lower_to_id.push((key, *id));
+            }
+            continue;
+        }
         if !key.is_ascii() && !unicode_names {
             return None; // next to Python: its case folding is the reference; without it the page must open (accented names are ordinary)
         }
-        if seen.insert(key.clone()) {
+        usable = true;
+        if seen.insert((key.clone(), *id)) {
             lower_to_id.push((key, *id));
         }
     }
-    if lower_to_id.is_empty() {
+    if !usable {
         return Some(html.to_string());
     }
     let matcher = matcher_for(&lower_to_id)?;
@@ -454,7 +471,7 @@ fn autolink_impl(html: &str, names: &[(String, i64)], unicode_names: bool) -> Op
             out.push_str(chunk);
             continue;
         }
-        out.push_str(&matcher.link(chunk));
+        out.push_str(&matcher.link(chunk, exclude));
     }
     Some(out)
 }
@@ -606,6 +623,46 @@ mod autolink_tests {
         }
     }
 
+    /// Python builds the name dict without the viewed entity (first of the others wins a shared name); one automaton over the whole list, with that entity's matches
+    /// left out, must give the same page
+    #[test]
+    fn leaving_one_entity_out_equals_a_list_without_it() {
+        // (name, entity): shared names, aliases that overlap other names, accents, a name that is the viewed entity's own
+        let all: Vec<(String, i64)> = [
+            ("Bob", 1), ("Bob Smith", 2), ("Ash Court", 3), ("Ashen", 4), ("Bob", 5), ("Tide", 6), ("Tidewater", 1), ("Raven", 7), ("Ravenna", 7), ("Lantern Street", 8),
+            ("ash", 2), ("Hali", 9), ("Éowyn", 10), ("Eowyn", 11), ("Bob Smith", 12), ("Smith", 2), ("Smith", 13), ("Court", 3), ("RAVEN", 5),
+        ]
+        .iter()
+        .map(|(n, i)| (n.to_string(), *i))
+        .collect();
+        let pool = ["Bob", "Bob Smith", "Ash Court", "Ashen", "ash", "Tide", "Tidewater", "Raven", "Ravenna", "Lantern Street", "Hali", "Éowyn", "Smith", "Court"];
+        let glue = [" ", " ", ", ", ". ", "-", "_", "x", "7"];
+        let mut seed = 99u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for round in 0..600 {
+            let mut text = String::new();
+            for _ in 0..(4 + next() % 20) {
+                text.push_str(pool[next() % pool.len()]);
+                if next() % 4 == 0 {
+                    text = text.to_uppercase();
+                }
+                text.push_str(glue[next() % glue.len()]);
+            }
+            let ex = [1i64, 2, 3, 4, 5, 7, 12, 99][round % 8];
+            // Python's dict: without the entity, the first holder of a string keeps it
+            let mut dict: Vec<(String, i64)> = vec![];
+            for (n, i) in all.iter().filter(|(_, i)| *i != ex) {
+                if !dict.iter().any(|(k, _)| k == n) {
+                    dict.push((n.clone(), *i));
+                }
+            }
+            assert_eq!(autolink_impl(&text, &all, Some(ex), true).unwrap(), autolink_impl(&text, &dict, None, true).unwrap(), "{text} without {ex}");
+        }
+    }
+
     #[test]
     fn names_with_accents_and_other_scripts_match_like_the_regex() {
         let n = names(&["Éowyn", "Zoë Quinn", "Ünïcode Straße", "Ashen", "Ørsted", "Tōkyō", "Σωκράτης", "Eowyn"]);
@@ -618,7 +675,7 @@ mod autolink_tests {
             "Kelvin K sign and the ſ long s do not confuse Ashen: ASHEN ashen",
             "<p>Éowyn <code>Éowyn</code> <b>Ørsted</b></p>",
         ] {
-            let got = autolink_impl(text, &n, true).unwrap();
+            let got = autolink_impl(text, &n, None, true).unwrap();
             if text.starts_with('<') {
                 assert_eq!(got, r#"<p><a href="/entity/1" class="auto-entity-link">Éowyn</a> <code>Éowyn</code> <b><a href="/entity/5" class="auto-entity-link">Ørsted</a></b></p>"#);
             } else {
@@ -626,7 +683,7 @@ mod autolink_tests {
             }
         }
         // while Python is behind the gateway a non-ASCII name is still Python's to link
-        assert!(autolink_impl("Éowyn", &n, false).is_none());
+        assert!(autolink_impl("Éowyn", &n, None, false).is_none());
     }
 
     #[test]
@@ -651,7 +708,7 @@ mod autolink_tests {
                 }
                 text.push_str(glue[next() % glue.len()]);
             }
-            assert_eq!(autolink_impl(&text, &n, true).unwrap(), reference(&text, &keys), "{text}");
+            assert_eq!(autolink_impl(&text, &n, None, true).unwrap(), reference(&text, &keys), "{text}");
         }
     }
 

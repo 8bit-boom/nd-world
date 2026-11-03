@@ -82,6 +82,24 @@ use std::sync::Arc;
 
 pub use config::Config;
 
+/// Page builds (and the session check in front of every request) run on a small pool of their own: `ND_PAGE_THREADS` threads (default one per core, at least 4).
+/// Every blocking thread has its own allocator heap that keeps the pages it freed, so under a burst of parallel requests the memory held grew with the number of
+/// threads the default pool started, not with the work done (16 clients, 640 entity pages: 281 MB peak; on 4 threads 94 MB, and no slower, the cores being the limit
+/// anyway). The AI, job and upload threads stay on tokio's own pool, so a long generation can never hold up a page.
+pub(crate) async fn page_blocking<T, F>(f: F) -> Result<T, tokio::task::JoinError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    use std::sync::OnceLock;
+    static POOL: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let rt = POOL.get_or_init(|| {
+        let n = std::env::var("ND_PAGE_THREADS").ok().and_then(|s| s.parse::<usize>().ok()).filter(|n| *n > 0).unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(4));
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).max_blocking_threads(n).thread_name("nd-page").build().expect("page pool")
+    });
+    rt.handle().spawn_blocking(f).await
+}
+
 pub fn router(cfg: Arc<Config>) -> Router {
     let proxy = proxy::Proxy::new(cfg.clone());
     let pages = Arc::new(pages::Pages::new(&cfg));
@@ -118,7 +136,7 @@ async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
     let mut fresh_cookie = None;
     if app.cfg.rust_routes.iter().any(|r| r == "auth") && !p.starts_with("/static/") && !p.starts_with("/uploads/") {
         let (cfg, headers) = (app.cfg.clone(), req.headers().clone());
-        if let Ok(Some((value, line))) = tokio::task::spawn_blocking(move || auth::refresh(&cfg, &headers)).await {
+        if let Ok(Some((value, line))) = page_blocking(move || auth::refresh(&cfg, &headers)).await {
             let rewritten = req.headers().get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok()).map(|c| {
                 c.split(';').map(|part| {
                     let t = part.trim();
@@ -136,7 +154,7 @@ async fn handle(State(app): State<App>, mut req: Request<Body>) -> Response {
         && !p.starts_with("/__") && p != "/mcp" && !p.starts_with("/mcp/");
     let refused = if gated {
         let (pages, cfg, method, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.method().to_string(), req.uri().clone(), req.headers().clone());
-        tokio::task::spawn_blocking(move || auth::gate(&pages, &cfg, &method, &uri, &headers)).await.ok().flatten()
+        page_blocking(move || auth::gate(&pages, &cfg, &method, &uri, &headers)).await.ok().flatten()
     } else {
         None
     };
@@ -235,7 +253,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         if let Some(i) = pages::SIMPLE.iter().position(|s| s.path == req.uri().path()) {
             let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-            if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::simple(&pages_, &cfg, &pages::SIMPLE[i], &uri, &headers)).await {
+            if let Ok(Some(resp)) = page_blocking(move || pages::simple(&pages_, &cfg, &pages::SIMPLE[i], &uri, &headers)).await {
                 return resp;
             }
         }
@@ -244,7 +262,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         && req.uri().path().len() > 8 && app.cfg.rust_routes.iter().any(|r| r == "pages")
     {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::entity_detail(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::entity_detail(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -277,13 +295,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             "/calendar/config" => crate::calendar::calendar_config,
             _ => pages::facts_list,
         };
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "pages") && idpages::route(req.uri().path()).is_some() {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || idpages::serve(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || idpages::serve(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -291,7 +309,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         && (req.uri().path() == "/pages" || req.uri().path().starts_with("/pages/albums/"))
     {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || media::pages_library(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || media::pages_library(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -305,7 +323,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         };
         if let Some(lib) = lib {
             let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-            if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || media::clip_library(lib, &pages_, &cfg, &uri, &headers)).await {
+            if let Ok(Some(resp)) = page_blocking(move || media::clip_library(lib, &pages_, &cfg, &uri, &headers)).await {
                 return resp;
             }
         }
@@ -315,7 +333,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = if uri.path() == "/images" { gallery::images_gallery } else { gallery::album_detail };
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -439,13 +457,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = if uri.path() == "/maps" { maps::maps_page } else { maps::map_viewer };
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/media-rename" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::media_rename_page(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::media_rename_page(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -460,7 +478,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             Some(boards::board_view as fn(&pages::Pages, &config::Config, &axum::http::Uri, &axum::http::HeaderMap) -> Option<Response<Body>>)
         };
         if let Some(f) = f {
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
         }
@@ -475,13 +493,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             "/" => home::home,
             _ => idpages::rules_page,
         };
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || f(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/kind/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::kind_list(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::kind_list(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -489,14 +507,14 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         && ((req.uri().path().starts_with("/maps/schematic/") && (req.uri().path().ends_with("/view") || req.uri().path().ends_with("/view.json")))
             || (req.uri().path().starts_with("/display/map/") && req.uri().path().ends_with("/data.json"))) {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::schematic_views(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::schematic_views(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && (req.uri().path().starts_with("/api/combat/") || req.uri().path().starts_with("/api/display/combat/")) && req.uri().path().ends_with("/state") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::combat_state_json(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::combat_state_json(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -555,7 +573,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::GET && pages::notes_path(req.uri().path()).is_some() && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages_, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::private_notes(&pages_, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::private_notes(&pages_, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -571,7 +589,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
         };
         let (pages_, cfg, uri, headers, b) = (app.pages.clone(), app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::handouts_print(&pages_, &cfg, &uri, &headers, &b)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::handouts_print(&pages_, &cfg, &uri, &headers, &b)).await {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
@@ -845,42 +863,42 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && req.uri().path().starts_with("/maps/schematic/") && req.uri().path().ends_with("/bg.webp") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::schematic_masked_background(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::schematic_masked_background(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && req.uri().path().strip_prefix("/characters/").is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::character_sheet(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::character_sheet(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && req.uri().path().strip_prefix("/combat/").is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::combat_tracker(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::combat_tracker(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && app.cfg.rust_routes.iter().any(|r| r == "live")
         && req.uri().path().strip_prefix("/maps/schematic/").is_some_and(|s| !s.is_empty() && !s.contains('/')) {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::schematic_editor(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::schematic_editor(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && (req.uri().path() == "/display" || req.uri().path().starts_with("/display/map/") || req.uri().path().starts_with("/display/combat/"))
         && !req.uri().path().ends_with("/data.json") && app.cfg.rust_routes.iter().any(|r| r == "live") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::display_pages(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::display_pages(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && matches!(req.uri().path(), "/cockpit" | "/player-cockpit") && app.cfg.rust_routes.iter().any(|r| r == "live") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
         let f = if uri.path() == "/cockpit" { pages::cockpit } else { pages::player_cockpit };
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || f(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || f(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
@@ -914,19 +932,19 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
     }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/join/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || share::join_form(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || share::join_form(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/share/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || share::share_page(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || share::share_page(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/dice" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (pages, cfg, uri, headers) = (app.pages.clone(), app.cfg.clone(), req.uri().clone(), req.headers().clone());
-        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || pages::dice(&pages, &cfg, &uri, &headers)).await {
+        if let Ok(Some(resp)) = page_blocking(move || pages::dice(&pages, &cfg, &uri, &headers)).await {
             return resp;
         }
     }

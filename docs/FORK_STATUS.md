@@ -75,3 +75,14 @@ Measured with `scripts/bench_bigworld.py` (700 entities, one request at a time, 
   editor page. Tests: `test_python_free_missing_rows_are_404_and_accented_downloads_work`, `test_home_page_editor_is_pythons`.
 - 2026-11-02  batches 1, 2 and 4 done and pushed (`4402925` `44f40f2` `89a55e9` `5256b68`); local session fixed the real-data gaps; `rust-fork` promoted to `main`; the footer, Settings
   and `/health` now show the build and the run mode (hybrid / Rust / Python). Open: batch 3 only as the `DECLINE` log asks; JavaScript is not minified in the Rust-only image.
+
+### Memory under parallel load (measured with `scripts/bench_bigworld.py` data, 16 clients x 40 entity pages, 4 cores)
+Heap profile (dhat, `--features dhat-heap`, `ND_DHAT_SECS`): the live heap never passed 26 MB for 320 requests, so the 700 MB seen was memory the allocator kept, not data.
+Each blocking thread has its own mimalloc heap that holds the pages it freed, so the memory grew with the number of threads tokio started (up to 512), not with the work.
+| change | peak RSS | after 15 s idle |
+|---|---|---|
+| before | 459 MB (user's run: 774) | 417 MB (631) |
+| `MIMALLOC_PURGE_DELAY=0` (now set in both Dockerfiles) | 307 | 115 |
+| + page builds and the session check on their own pool (`ND_PAGE_THREADS`, default one per core, at least 4) | 97 | 79 |
+| + one auto-link automaton per world (the viewed entity's own names are skipped when linking), not one per entity | 87 | 77 |
+The same 640 entity pages also take 2.7 s instead of 3.0-3.5 s. The AI / job / upload threads stay on tokio's own pool, so a long generation cannot hold up a page.

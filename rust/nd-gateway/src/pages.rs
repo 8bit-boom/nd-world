@@ -730,12 +730,12 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let backlinks = rows(&format!("SELECT e.* FROM entities e JOIN entity_links l ON l.source_id = e.id WHERE l.target_id = ?1 AND {vis} ORDER BY e.kind, e.name"), &[&id]).or_else(|| dtrace(714))?;
     let notes_vis = if p.is_gm { "" } else { " AND visible_to_players IS 1" };
     let mut notes = rows(&format!("SELECT * FROM entity_notes WHERE entity_id = ?1{notes_vis} ORDER BY created_at"), &[&id]).or_else(|| dtrace(716))?;
-    let names = autolink_names(&db, ewid, Some(id), &vis).or_else(|| dtrace(717))?;
+    let names = autolink_names_all(&db, ewid, &vis).or_else(|| dtrace(717))?;
     for n in notes.iter_mut() {
         let content = n.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let content = if is_gm { content } else { strip(&content).or_else(|| dtrace(720))? };
         let html = if truthy_json(n.get("content_is_html")) { content } else { md::render_md(&content) };
-        n.insert("content_html".into(), Value::String(text::autolink_entities(&html, &names).or_else(|| dtrace(722))?));
+        n.insert("content_html".into(), Value::String(text::autolink_entities_excluding(&html, &names, Some(id)).or_else(|| dtrace(722))?));
     }
     // custom fields of a template-made entity
     let mut custom_sections: Vec<(String, Vec<Value>)> = vec![];
@@ -767,7 +767,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     };
     let (mut body_sections, mut toc) = (vec![], vec![]);
     if !safe_body.is_empty() {
-        let html = text::autolink_entities(&md::render_md(&text::strip_legacy_anchors(&safe_body)), &names).or_else(|| dtrace(754))?;
+        let html = text::autolink_entities_excluding(&md::render_md(&text::strip_legacy_anchors(&safe_body)), &names, Some(id)).or_else(|| dtrace(754))?;
         let (h, t) = text::rules_toc(&html, "123");
         toc = t;
         body_sections = text::split_sections_h123(&h);
@@ -2226,6 +2226,32 @@ pub(crate) fn autolink_names(db: &rusqlite::Connection, wid: i64, exclude: Optio
     for (eid, name, _) in &r {
         for v in text::derive_name_variants(name.as_deref().unwrap_or("")) {
             add(v, *eid);
+        }
+    }
+    Some(names)
+}
+
+/// `autolink_names` for the whole world, keeping a name that several entities have once per entity (in the same order): the matcher cache is then keyed by the
+/// world, not by the entity being viewed, and `autolink_entities_excluding` drops the viewed entity's own names when linking
+pub(crate) fn autolink_names_all(db: &rusqlite::Connection, wid: i64, vis: &str) -> Option<Vec<(String, i64)>> {
+    use nd_render::text;
+    let mut names: Vec<(String, i64)> = vec![];
+    let mut st = db.prepare_cached(&format!("SELECT e.id, e.name, e.aliases FROM entities e WHERE e.world_id = ?1 AND {vis} ORDER BY e.id")).ok()?;
+    let r: Vec<(i64, Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    for (eid, name, aliases) in &r {
+        if let Some(n) = name.as_ref().filter(|n| !n.is_empty()) {
+            names.push((n.clone(), *eid));
+        }
+        for a in aliases.as_deref().unwrap_or("").split(',') {
+            let a = text::py_strip(a);
+            if !a.is_empty() {
+                names.push((a.to_string(), *eid));
+            }
+        }
+    }
+    for (eid, name, _) in &r {
+        for v in text::derive_name_variants(name.as_deref().unwrap_or("")) {
+            names.push((v, *eid));
         }
     }
     Some(names)

@@ -57,7 +57,8 @@ ENV ND_BUILD=${GIT_SHA} \
     ND_MODE=hybrid
 
 VOLUME ["/data"]
-ENV DB_PATH=/data/world.db
+ENV DB_PATH=/data/world.db \
+    MIMALLOC_PURGE_DELAY=0
 EXPOSE 8000
 
 # --timeout-graceful-shutdown bounds how long uvicorn waits for open

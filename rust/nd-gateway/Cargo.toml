@@ -35,6 +35,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 brotli = "9"
 mimalloc = { version = "0.1", default-features = false }
+dhat = { version = "0.3", optional = true }
 lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
 
 rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
@@ -49,3 +50,7 @@ webp = { version = "0.3", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
 tempfile = "3"
 flate2 = "1"
+
+[features]
+# heap profile for a hunt for big allocations: cargo build --release --features dhat-heap; run with ND_DHAT_SECS=<n>, it writes dhat-heap.json after n seconds and exits
+dhat-heap = ["dep:dhat"]
