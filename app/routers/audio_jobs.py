@@ -148,6 +148,9 @@ def _job_to_dict(job: AudioJob) -> dict:
         # condense_strictness and app.audio_jobs._run_job.
         "strictness": job.condense_strictness or "guideline",
         "use_rag": bool(job.use_rag),
+        "min_tokens": job.min_tokens, "max_tokens": job.max_tokens,
+        # True for a session recording started with "choose the summary settings after transcribing" (status "transcribed" = waiting for them)
+        "review_before_summary": bool(job.review_before_summary),
         "rag_entity_limit": job.rag_entity_limit,
         "rag_notes_limit": job.rag_notes_limit,
         # Whether the ▶ Resume button should show — see app.audio_jobs.
@@ -353,7 +356,9 @@ def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(ge
 @router.post("/api/audio-jobs/{job_id}/resummarize")
 async def api_audio_job_resummarize(
     job_id: int, request: Request, model: str = Form(""), extra_instructions: str = Form(""),
-    think: bool = Form(True),
+    think: bool = Form(True), min_tokens: Optional[str] = Form(None), max_tokens: Optional[str] = Form(None),
+    strictness: Optional[str] = Form(None), use_rag: Optional[bool] = Form(None),
+    rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Kick off re-running the summarization step against a job's already-
@@ -376,8 +381,22 @@ async def api_audio_job_resummarize(
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
     if not job:
         raise HTTPException(404)
+    def _int(label: str, raw: Optional[str]) -> Optional[int]:
+        if raw is None or not raw.strip():
+            return None
+        if not raw.strip().isdigit():
+            raise HTTPException(400, f"{label} must be a whole number.")
+        return int(raw.strip())
+
+    # The summary settings panel always sends the min/max pair (blank = no bound); the old Retry-summary row sends neither, which keeps what is stored.
+    sets_length = min_tokens is not None or max_tokens is not None
     try:
-        job = _audio_jobs.start_resummarize_job(job_id, model=model.strip(), extra_instructions=extra_instructions, think=think)
+        job = _audio_jobs.start_resummarize_job(
+            job_id, model=model.strip(), extra_instructions=extra_instructions, think=think,
+            min_tokens=_int("Min tokens", min_tokens), max_tokens=_int("Max tokens", max_tokens), set_length=sets_length,
+            strictness=(strictness or None), use_rag=(bool(use_rag) and bool(getattr(request.state, "user", None) and request.state.user.is_gm)) if use_rag is not None else None,
+            rag_entity_limit=_int("Entity limit", rag_entity_limit), rag_notes_limit=_int("Notes limit", rag_notes_limit),
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _job_to_dict(job)

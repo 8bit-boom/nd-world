@@ -30,6 +30,9 @@ _log = logging.getLogger("nd.audio_jobs")
 _running_tasks: dict[int, asyncio.Task] = {}
 
 IN_PROGRESS_STATUSES = ("pending", "transcribing", "summarizing")
+# A session-recap job created with review_before_summary stops here after transcribing: finished (not in progress, never swept), transcript saved,
+# waiting for the GM to choose the summarizing model and settings (start_resummarize_job).
+AWAITING_SUMMARY_STATUS = "transcribed"
 
 
 def _interrupted_note(chunk_current: Optional[int] = None, chunk_total: Optional[int] = None) -> str:
@@ -147,6 +150,7 @@ def create_job(
     created_by_user_id: Optional[int] = None, attachment_url: str = "",
     model: str = "", extra_instructions: str = "", think: bool = True,
     use_rag: bool = False, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+    review_before_summary: bool = False,
 ) -> int:
     """Create the job row and start its background task immediately —
     returns the job id right away, well before transcription (let alone
@@ -172,6 +176,11 @@ def create_job(
     AudioJob.think's own docstring for why NULL (a pre-migration row) and
     the default here both mean "on."
 
+    `review_before_summary` (purpose="session_recap" only): transcribe right
+    away, then stop at status "transcribed" so the GM can choose the model
+    and the summary settings before anything is summarized (see
+    start_resummarize_job).
+
     `use_rag`/`rag_entity_limit`/`rag_notes_limit` (purpose="session_recap"
     only — ignored for "attachment", which has no summarization step to feed
     context into) opt this run into retrieving relevant World entities/notes
@@ -193,6 +202,7 @@ def create_job(
             extra_instructions=extra_instructions.strip() or None, think=think,
             use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             audio_path=str(audio_path), delete_after=delete_after,
+            review_before_summary=bool(review_before_summary and purpose == "session_recap"),
         )
         db.add(job)
         db.commit()
@@ -985,6 +995,7 @@ async def _run_job(job_id: int) -> None:
         use_rag = bool(job.use_rag)
         rag_entity_limit = job.rag_entity_limit
         rag_notes_limit = job.rag_notes_limit
+        review_first = bool(job.review_before_summary) and job.purpose == "session_recap"
         existing_transcript = job.transcript or ""
         # purpose="session_log_recap" only — which fact-visibility filter
         # this job's recap must be built from (see AudioJob.audience). NULL
@@ -1097,6 +1108,10 @@ async def _run_job(job_id: int) -> None:
                 ))
                 return
             _set(transcript=transcript, chunk_current=None, chunk_total=None, checkpoint_json="")
+            if review_first:
+                # transcribed; the summary waits for the GM's choice of model and settings (the recording is deleted below, as after any run)
+                _set(status=AWAITING_SUMMARY_STATUS, finished_at=datetime.utcnow())
+                return
         else:
             transcript = existing_transcript
 
@@ -1316,6 +1331,8 @@ async def _run_job(job_id: int) -> None:
                         on_progress=_on_progress, on_checkpoint=_summarize_checkpoint,
                         should_stop=_job_shutdown.stopping, resume=resume_for_attempt, think=attempt_think,
                         world_context=world_context, expanded_thinking=attempt_expanded,
+                        min_tokens=min_tokens, max_tokens=max_tokens,
+                        strictness=strictness if strictness in ("guideline", "firm", "strict") else "guideline",
                     )
                 if not _ai_module.is_thinking_starved_sentinel(recap):
                     break
@@ -1687,6 +1704,9 @@ def delete_job(job_id: int) -> bool:
 
 def start_resummarize_job(
     job_id: int, model: str = "", extra_instructions: Optional[str] = None, think: Optional[bool] = None,
+    min_tokens: Optional[int] = None, max_tokens: Optional[int] = None, strictness: Optional[str] = None,
+    use_rag: Optional[bool] = None, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+    set_length: bool = False,
 ) -> AudioJob:
     """Kick off re-running just the summarization step against a job's
     already-saved transcript, optionally with a different model — for when
@@ -1713,6 +1733,13 @@ def start_resummarize_job(
     about (it's already a real Optional[bool]), so None alone means "keep
     whatever this job was created/last resummarized with."
 
+    `min_tokens`/`max_tokens`/`strictness` ("guideline"|"firm") and `use_rag`/
+    `rag_entity_limit`/`rag_notes_limit` are the summary settings the GM picks
+    after a "review before summarizing" transcription (status "transcribed").
+    `set_length=True` means the min/max pair is the caller's choice as it
+    stands, so blank (None) CLEARS a bound; with False the stored bounds are
+    kept. A None strictness/use_rag keeps the stored value.
+
     Deliberately always a FRESH pass, not a resume of some prior
     interrupted attempt: checkpoint_json is cleared and resumed_count reset
     before starting, even if this job happened to be sitting on a
@@ -1734,8 +1761,24 @@ def start_resummarize_job(
             raise ValueError("This job has no transcript yet to summarize.")
         if job.status in IN_PROGRESS_STATUSES:
             raise ValueError("This job is already in progress.")
+        if strictness is not None and strictness not in ("guideline", "firm"):
+            raise ValueError("strictness must be guideline or firm for a session summary.")
+        for label, v in (("Min tokens", min_tokens), ("Max tokens", max_tokens)):
+            if v is not None and not (1 <= v <= 200000):
+                raise ValueError(f"{label} must be between 1 and 200000.")
+        if min_tokens and max_tokens and min_tokens > max_tokens:
+            raise ValueError("Min tokens can't be greater than max tokens.")
         chosen_model = model or job.model or ""
         chosen_instructions = (extra_instructions or "").strip() or (job.extra_instructions or "")
+        if set_length:
+            job.min_tokens = min_tokens
+            job.max_tokens = max_tokens
+        if strictness is not None:
+            job.condense_strictness = strictness
+        if use_rag is not None:
+            job.use_rag = use_rag
+            job.rag_entity_limit = rag_entity_limit
+            job.rag_notes_limit = rag_notes_limit
         job.status = "summarizing"
         job.error = ""
         job.chunk_current = None

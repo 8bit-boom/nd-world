@@ -1654,6 +1654,14 @@ class AudioJob(Base):
     # installs get the column via database._migrate's _heal_table_from_model
     # pass, same as every other late-added audio_jobs column.
     condense_strictness = Column(String, default="guideline")
+    # purpose="session_recap" only: when set, the job transcribes and then STOPS
+    # at status "transcribed" instead of summarizing straight away, so the GM
+    # can pick the summarizing model and its settings (min/max tokens,
+    # strictness, Thinking, RAG, extra instructions) over the saved transcript —
+    # the panel's Summarize button then runs the ordinary re-summarize route
+    # (app.audio_jobs.start_resummarize_job). NULL/False = the old one-shot
+    # transcribe-then-summarize run.
+    review_before_summary = Column(Boolean, default=False)
     # purpose="condense"/"session_recap" only: opt this run into RAG —
     # retrieving relevant World entities/notes and prepending them to the
     # summarize/condense system prompt for accuracy (spelling names,

@@ -86,3 +86,13 @@ Each blocking thread has its own mimalloc heap that holds the pages it freed, so
 | + page builds and the session check on their own pool (`ND_PAGE_THREADS`, default one per core, at least 4) | 97 | 79 |
 | + one auto-link automaton per world (the viewed entity's own names are skipped when linking), not one per entity | 87 | 77 |
 The same 640 entity pages also take 2.7 s instead of 3.0-3.5 s. The AI / job / upload threads stay on tokio's own pool, so a long generation cannot hold up a page.
+
+### Session recordings: choose the summary model and settings after transcribing
+The Sessions page's recording box (drop / browse / record / from Audio Library) has a checkbox, on by default: the job transcribes right away and stops at status `transcribed`
+(`AudioJob.review_before_summary`); the jobs panel then shows a form - model, min / max tokens, strictness (guideline / firm), Thinking, world lore (RAG) and its limits, extra
+instructions - and Summarize runs `POST /api/audio-jobs/<id>/resummarize` over the saved transcript. The length settings reach the summary prompt as in Condense and the Session Log recap
+(`_length_target_addendum`, `_strictness_base_system`); a transcript split in parts gives each part its share (total / parts); with Thinking off, max tokens is also the hard output cap.
+Unticked = the old one-go run. The Background Jobs page lists `transcribed` jobs and its Retry summary row works on them. The gateway had no `/resummarize` route (Python-free: Retry summary
+answered 501) - it is served now, with Python's 400s. Python and the gateway are compared in `tests/test_gateway_ai.py::test_summary_settings_after_transcribing_are_pythons`.
+Still Python's only: `POST /api/audio-jobs/<id>/resume` (the manual Resume of an interrupted job).
+

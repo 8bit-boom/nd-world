@@ -1012,6 +1012,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         "status": job.status, "error": job.error,
         "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
         "extra_instructions": job.extra_instructions or "",
+        # what the "choose the summary settings" panel (status "transcribed") starts from
+        "think": job.think if job.think is not None else True, "use_rag": bool(job.use_rag),
+        "rag_entity_limit": job.rag_entity_limit, "rag_notes_limit": job.rag_notes_limit,
+        "min_tokens": job.min_tokens, "max_tokens": job.max_tokens, "strictness": job.condense_strictness or "guideline",
+        "review_before_summary": bool(job.review_before_summary),
         "game_session_id": job.game_session_id,
         "chunk_current": job.chunk_current, "chunk_total": job.chunk_total,
         "run_started_at": job.run_started_at.isoformat() if job.run_started_at else None,
@@ -1026,6 +1031,7 @@ async def api_audio_job_create(
     request: Request, file: UploadFile = File(...), game_session_id: str = Form(""),
     model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
     use_rag: bool = Form(False), rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
+    review_before_summary: bool = Form(False),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Start a durable background transcribe+summarize job for a session
@@ -1049,7 +1055,7 @@ async def api_audio_job_create(
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
-        use_rag=_rag_gm_only(request, use_rag),
+        use_rag=_rag_gm_only(request, use_rag), review_before_summary=review_before_summary,
         rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
         rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
@@ -1073,6 +1079,7 @@ async def api_audio_job_complete(
     total_chunks: int = Form(...), game_session_id: str = Form(""),
     model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
     use_rag: bool = Form(False), rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
+    review_before_summary: bool = Form(False),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
@@ -1095,7 +1102,7 @@ async def api_audio_job_complete(
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
-        use_rag=_rag_gm_only(request, use_rag),
+        use_rag=_rag_gm_only(request, use_rag), review_before_summary=review_before_summary,
         rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
         rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
@@ -1123,6 +1130,7 @@ async def api_audio_job_create_from_clip(
     request: Request, clip_id: int = Form(...), game_session_id: str = Form(""),
     model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
     use_rag: bool = Form(False), rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
+    review_before_summary: bool = Form(False),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Same background transcribe+summarize job as api_audio_job_create, but
@@ -1152,7 +1160,7 @@ async def api_audio_job_create_from_clip(
         audio_path=path, delete_after=False, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
-        use_rag=_rag_gm_only(request, use_rag),
+        use_rag=_rag_gm_only(request, use_rag), review_before_summary=review_before_summary,
         rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
         rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )

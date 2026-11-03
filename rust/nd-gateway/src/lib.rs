@@ -817,6 +817,16 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && req.uri().path().starts_with("/api/audio-jobs/") && req.uri().path().ends_with("/resummarize") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = ai::audio_job_resummarize(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
     if req.method() == axum::http::Method::POST && (matches!(req.uri().path(), "/api/chronicler/ask" | "/api/ai/assist-job" | "/api/ai/chat/jobs" | "/api/ai/world-summary" | "/api/sessions/ai/condense-job" | "/api/facts/parse-job" | "/api/sessions/ai/audio-jobs/from-clip" | "/api/sessions/ai/audio-jobs/complete" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/player/generate" | "/api/ai/entity-context" | "/api/video-jobs/start" | "/api/ai/stream" | "/api/ai/assist") || (req.uri().path().starts_with("/api/npc-talk/") && req.uri().path().ends_with("/stream")) || (req.uri().path().starts_with("/api/session-log/") && req.uri().path().ends_with("/recap")) || (req.uri().path().starts_with("/api/sessions/") && req.uri().path().ends_with("/ai/summarize-live-transcript-job"))) && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {

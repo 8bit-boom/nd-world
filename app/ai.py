@@ -3775,7 +3775,8 @@ def _with_world_context(system: str, world_context: str) -> str:
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None,
                                 on_checkpoint=None, should_stop=None, resume: dict | None = None,
                                 think: bool = True, world_context: str = "",
-                                expanded_thinking: bool = False) -> str:
+                                expanded_thinking: bool = False, min_tokens: int | None = None,
+                                max_tokens: int | None = None, strictness: str = "guideline") -> str:
     """Turn a raw speech-to-text transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before.
@@ -3855,12 +3856,29 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
+    # `min_tokens`/`max_tokens`/`strictness`: the same length-target and steering wording Condense and the Session Log recap use
+    # (_strictness_base_system / _length_target_addendum), aimed at the WHOLE recap. A chunked transcript is summarized part by part,
+    # so each part gets its share (total / parts); with Thinking off, max_tokens also sets Ollama's real num_predict cap (with it on, the
+    # thinking widening must stay in charge of the budget, as in the siblings). All unset = byte-identical to before.
+    _validate_strictness(strictness)
+
+    def _length_note(parts: int) -> str:
+        share = lambda n: max(1, -(-n // parts)) if n else None  # noqa: E731
+        return _length_target_addendum(share(min_tokens), share(max_tokens), strictness, _chars_per_token_estimate(transcript),
+                                       noun="session recap" if parts == 1 else "part of a session recap", source_noun="transcript")
+
+    def _with_length(options, parts: int):
+        if max_tokens and not think and not expanded_thinking:
+            options = dict(options or {})
+            options["num_predict"] = max(1, -(-max_tokens // parts))
+        return options
+
     # Budgeted against the PART system prompt (used once chunking is
     # decided) since that's the one whose length actually matters here —
     # extra_instructions is free text the GM controls and can be long, and
     # world_context (RAG lore/notes) can be too — both must be included
     # here so chunk sizing accounts for the system prompt's real length.
-    part_system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions), world_context)
+    part_system = _with_world_context(_with_instructions(_strictness_base_system(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, strictness, extra_instructions), extra_instructions), world_context)
     chunk_chars = _transcript_chunk_char_budget(transcript, part_system, think)
     # See _thinking_num_predict_override's own docstring — widens a
     # GM-configured num_predict cap so hidden thinking tokens don't compete
@@ -3884,10 +3902,11 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
         predict_override = _guarded_predict or None
     chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
-        system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions), world_context)
+        system = _with_world_context(_with_instructions(_strictness_base_system(_SUMMARIZE_TRANSCRIPT_SYSTEM, strictness, extra_instructions), extra_instructions), world_context)
+        system += _length_note(1)
         return await generate_chat(
             [{"role": "user", "content": transcript}], system=system, model=model,
-            options=predict_override, think=think,
+            options=_with_length(predict_override, 1), think=think,
         )
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
@@ -3901,7 +3920,8 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     # "this is part 3 of 7") to this system prompt — it would defeat that
     # reuse for a token-visibility gain the model doesn't need (chunk order
     # is already implicit in how the part summaries get joined).
-    system = part_system
+    system = part_system + _length_note(len(chunks))
+    predict_override = _with_length(predict_override, len(chunks))
 
     start = 0
     part_summaries = []

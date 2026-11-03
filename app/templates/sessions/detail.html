@@ -226,9 +226,14 @@
             </select>
             <button type="button" class="ai-recap-btn" onclick="aiStartAudioJobFromClip()">Transcribe in Background</button>
           </div>
+          <label style="display:flex;align-items:center;justify-content:center;gap:.35rem;margin-top:.5rem;font-size:.78rem;color:var(--text)"
+                 title="The recording is transcribed right away; then you pick the model that summarizes it and its settings (min/max tokens, strictness, Thinking, world lore, instructions) before anything is summarized. Untick to transcribe and summarize in one go with the model and notes chosen here.">
+            <input type="checkbox" id="audio-review-before-summary" checked>
+            Choose the model &amp; summary settings after transcribing
+          </label>
           <div style="margin-top:.4rem">
             <input type="text" id="audio-recap-instructions" placeholder="Extra instructions for this summary (optional)…"
-                   title="One-off notes for this summary, e.g. &quot;focus on combat tactics&quot; — added to (not replacing) the world's standing recap instructions"
+                   title="Starting notes for this summary (editable again once it is transcribed), e.g. &quot;focus on combat tactics&quot; — added to (not replacing) the world's standing recap instructions"
                    style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
           </div>
           <div style="font-size:.72rem;margin-top:.3rem">Transcribed by Unsloth Studio, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording). "Process in Background" survives closing this tab; check the jobs list below to see it finish and load the result later.</div>

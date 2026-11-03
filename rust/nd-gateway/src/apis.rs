@@ -331,6 +331,11 @@ fn session_job_value(j: &Map<String, Value>) -> Option<Value> {
         "status": v("status"), "error": v("error"),
         "transcript": v("transcript"), "recap": v("recap"), "model": s("model").unwrap_or_default(),
         "extra_instructions": s("extra_instructions").unwrap_or_default(),
+        "think": j.get("think").and_then(|t| t.as_i64()).map_or(json!(true), |t| json!(t != 0)), "use_rag": j.get("use_rag").and_then(|t| t.as_i64()).unwrap_or(0) != 0,
+        "rag_entity_limit": v("rag_entity_limit"), "rag_notes_limit": v("rag_notes_limit"),
+        "min_tokens": v("min_tokens"), "max_tokens": v("max_tokens"),
+        "strictness": s("condense_strictness").filter(|t| !t.is_empty()).unwrap_or_else(|| "guideline".into()),
+        "review_before_summary": j.get("review_before_summary").and_then(|t| t.as_i64()).unwrap_or(0) != 0,
         "game_session_id": v("game_session_id"),
         "chunk_current": v("chunk_current"), "chunk_total": v("chunk_total"),
         "run_started_at": dt_iso(&j, "run_started_at")?, "finished_at": dt_iso(&j, "finished_at")?,
@@ -780,6 +785,11 @@ fn world_switch(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response
 }
 
 
+/// `_job_to_dict(job)` for a row another module just wrote (the re-summarize answer)
+pub(crate) fn job_dict_pub(j: &Map<String, Value>) -> Option<Value> {
+    job_dict(j)
+}
+
 /// `_job_to_dict(job)` (app/routers/audio_jobs.py)
 fn job_dict(j: &Map<String, Value>) -> Option<Value> {
     let s = |k: &str| j.get(k).and_then(|v| v.as_str()).map(str::to_string);
@@ -816,7 +826,8 @@ fn job_dict(j: &Map<String, Value>) -> Option<Value> {
         "resumed_count": v("resumed_count"),
         "think": j.get("think").and_then(|t| t.as_i64()).map_or(json!(true), |t| json!(t != 0)),
         "fit_context": flag("fit_context"), "strictness": s("condense_strictness").filter(|t| !t.is_empty()).unwrap_or_else(|| "guideline".into()),
-        "use_rag": flag("use_rag"), "rag_entity_limit": v("rag_entity_limit"), "rag_notes_limit": v("rag_notes_limit"),
+        "use_rag": flag("use_rag"), "min_tokens": v("min_tokens"), "max_tokens": v("max_tokens"), "review_before_summary": flag("review_before_summary"),
+        "rag_entity_limit": v("rag_entity_limit"), "rag_notes_limit": v("rag_notes_limit"),
         "resumable": s("status").as_deref() == Some("interrupted"),
         "think_fallback": flag("think_fallback"), "think_rejected": flag("think_rejected"), "think_token_fallback": flag("think_token_fallback"),
         "expanded_thinking": flag("expanded_thinking"),

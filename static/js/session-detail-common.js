@@ -131,6 +131,12 @@ function aiExpandNotes() {
 // jobs alongside session_recap ones, see api_audio_job_list's purpose
 // filter) — "Use this" on a finished job loads it into the AI-draft
 // preview exactly like every other recap source on this page.
+// "Choose the model and summary settings after transcribing" (the dropzone's checkbox, on by default): the job transcribes right away and then waits
+function _reviewBeforeSummary() {
+  const el = document.getElementById('audio-review-before-summary');
+  return !el || el.checked;
+}
+
 function _condenseTokenBound(elId) {
   const el = document.getElementById(elId);
   if (!el || !el.value.trim()) return null;
@@ -283,10 +289,13 @@ async function aiSummarizeFromAudio(file) {
         use_rag: rag.use_rag,
         rag_entity_limit: rag.rag_entity_limit === null ? '' : rag.rag_entity_limit,
         rag_notes_limit: rag.rag_notes_limit === null ? '' : rag.rag_notes_limit,
+        review_before_summary: _reviewBeforeSummary() ? 'true' : 'false',
       },
-      (e) => ndProgressFromUpload(bar, e, 'Job started — transcribing & summarizing in background…'),
+      (e) => ndProgressFromUpload(bar, e, _reviewBeforeSummary() ? 'Job started — transcribing in background…' : 'Job started — transcribing & summarizing in background…'),
     );
-    status.textContent = 'Background job started — results land in the jobs list below when ready (safe to close this page).';
+    status.textContent = _reviewBeforeSummary()
+      ? 'Transcribing in the background — when it finishes, choose the model and summary settings in the jobs list below (safe to close this page).'
+      : 'Background job started — results land in the jobs list below when ready (safe to close this page).';
   } catch (e) {
     status.textContent = 'Failed to start background job: ' + e.message;
   } finally {
@@ -342,6 +351,7 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   // (with purpose/status filters) stays one "All jobs →" click away.
   listUrl: '/api/sessions/ai/audio-jobs' + (ND_SESSION.id ? '?game_session_id=' + ND_SESSION.id : ''),
   allJobsUrl: '/background-jobs',
+  summaryModelSelect: () => document.getElementById('audio-bgjob-model'),
   onUse: (job) => {
     // A background job's own failure/retry story already lives on the
     // Background Jobs page (auto-retry + one-click "Retry without
@@ -439,6 +449,7 @@ async function aiStartAudioJobFromClip() {
       use_rag: rag.use_rag,
       rag_entity_limit: rag.rag_entity_limit === null ? '' : rag.rag_entity_limit,
       rag_notes_limit: rag.rag_notes_limit === null ? '' : rag.rag_notes_limit,
+      review_before_summary: _reviewBeforeSummary() ? 'true' : 'false',
     });
     status.textContent = 'Background job started — see the jobs list below.';
   } catch (e) {

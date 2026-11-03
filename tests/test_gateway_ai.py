@@ -987,6 +987,109 @@ def test_session_recording_jobs_are_pythons(client, seed, studio, tmp_path):
     studio.stt_texts, studio.reply_seq = [], None
 
 
+def test_summary_settings_after_transcribing_are_pythons(client, seed, studio):
+    """A recording started with review_before_summary stops at "transcribed" (nothing summarized, the library clip kept), and POST
+    /api/audio-jobs/<id>/resummarize then runs the summary with the chosen model, min/max tokens, strictness, Thinking and instructions:
+    the same row, the same request to Studio (a long transcript split in parts gets each part's share of the length), the same 400s."""
+    import os
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AudioClip, AudioJob
+    base = str(client.base_url)
+    w = seed.world_a.id
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    (uploads / "audio").mkdir(parents=True, exist_ok=True)
+    if __import__("shutil").which("ffmpeg"):
+        _tone(uploads / "audio" / "nd-test-review.mp3", 20)
+    else:
+        (uploads / "audio" / "nd-test-review.mp3").write_bytes(b"x")
+    long_t = "\n".join(f"GM: Scene {i}. The party moves deeper into the ruins and finds carving number {i}. Player: We copy it down." for i in range(120))
+    db = SessionLocal()
+    try:
+        clip = AudioClip(world_id=w, name="Table talk", file_url="/uploads/audio/nd-test-review.mp3")
+        db.add(clip)
+        db.commit()
+        cid = clip.id
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    _settings(gm, llm_url=studio.url, llm_model="studio", llm_api_key="sk-test", ollama_temperature="0.4", ollama_num_predict="300",
+              ollama_num_ctx="8192", llm_context_tokens="2048")
+    facts = _reply(json.dumps({"facts": []}))
+    cols = ("status", "error", "transcript", "recap", "model", "extra_instructions", "think", "min_tokens", "max_tokens", "condense_strictness", "use_rag",
+            "rag_entity_limit", "rag_notes_limit", "chunk_current", "chunk_total", "checkpoint_json", "pending_facts_json", "review_before_summary")
+
+    def row(job_id):
+        s = SessionLocal()
+        try:
+            j = s.get(AudioJob, job_id)
+            return {k: getattr(j, k) for k in cols}
+        finally:
+            s.close()
+
+    def wait(job_id, busy=("pending", "transcribing", "summarizing")):
+        end = time.time() + 60
+        while time.time() < end and row(job_id)["status"] in busy:
+            time.sleep(0.15)
+        return row(job_id)
+
+    def seeded(transcript):
+        s = SessionLocal()
+        try:
+            j = AudioJob(world_id=w, purpose="session_recap", status="transcribed", filename="x.mp3", transcript=transcript, review_before_summary=True)
+            s.add(j)
+            s.commit()
+            return j.id
+        finally:
+            s.close()
+
+    try:
+        # 1. the recording is transcribed and then waits
+        out = []
+        for side in (gm, _via(gm, base)):
+            studio.requests.clear()
+            studio.stt_texts, studio.reply_seq = ["Hello there.\nHello there."], []
+            r = side.post("/api/sessions/ai/audio-jobs/from-clip", data={"clip_id": str(cid), "think": "false", "review_before_summary": "true", "model": "m1"})
+            assert r.status_code == 200, r.text
+            out.append((wait(r.json()["job_id"]), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][:2] == out[1][:2], (out[0][0], out[1][0])
+        assert out[1][2] == "gateway" and out[0][0]["status"] == "transcribed" and out[0][0]["transcript"] and not out[0][0]["recap"], out
+        assert all("messages" not in b and "stt" in b for b in out[0][1]), out[0][1]   # only the speech-to-text ran
+        # 2. the summary with the chosen settings: a short transcript (one call) and a long one (a share of the length per part)
+        settings = {"model": "m2", "extra_instructions": "Be brief.", "think": "false", "min_tokens": "300", "max_tokens": "900", "strictness": "firm",
+                    "use_rag": "false", "rag_entity_limit": "", "rag_notes_limit": ""}
+        cases = [("Hello there.\nHello there.", settings, [_reply("A short recap."), facts]),
+                 (long_t, settings, [_reply(f"Part {k}.") for k in range(1, 13)] + [facts] * 12),
+                 (long_t, {**settings, "strictness": "guideline", "min_tokens": "", "max_tokens": "", "think": "true"}, [_reply("Whole.")] * 40),
+                 ("Hello there.", {"think": "false"}, [_reply("Plain."), facts])]        # a bare retry keeps what the job has
+        for i, (transcript, form, replies) in enumerate(cases):
+            out = []
+            for side in (gm, _via(gm, base)):
+                studio.requests.clear()
+                studio.reply_seq = list(replies)
+                jid = seeded(transcript)
+                r = side.post(f"/api/audio-jobs/{jid}/resummarize", data=form)
+                assert r.status_code == 200, (i, r.text)
+                started = r.json()
+                done = wait(jid)
+                out.append((done, [q["body"] for q in studio.requests], started["status"], started["min_tokens"], started["max_tokens"], r.headers.get("x-nd-served-by")))
+            assert out[0][:5] == out[1][:5], (i, out[0][0], out[1][0], json.dumps(out[0][1])[:1500], json.dumps(out[1][1])[:1500])
+            assert out[1][5] == "gateway", i
+        # 3. refused settings change nothing
+        for form in ({"min_tokens": "900", "max_tokens": "300"}, {"max_tokens": "lots"}, {"min_tokens": "0"}, {"strictness": "strict"}, {"rag_notes_limit": "x"}):
+            answers = []
+            for side in (gm, _via(gm, base)):
+                jid = seeded("Hello there.")
+                r = side.post(f"/api/audio-jobs/{jid}/resummarize", data=form)
+                answers.append((r.status_code, r.json(), row(jid)["status"], r.headers.get("x-nd-served-by")))
+            assert answers[0][:3] == answers[1][:3] and answers[0][0] == 400 and answers[0][2] == "transcribed", (form, answers)
+            assert answers[1][3] == "gateway", (form, answers)
+    finally:
+        studio.stt_texts, studio.reply_seq = [], None
+        _settings(gm, llm_url=studio.url, llm_model="studio", llm_api_key="sk-test", ollama_temperature="0.4", ollama_num_predict="300", ollama_num_ctx="8192")
+
+
 
 def test_image_jobs_on_studio_are_pythons(client, seed, studio):
     """POST /api/ai/imagegen/jobs with an Unsloth Studio image model (UNSLOTH_IMAGE_MODEL): the same image_jobs row (every parameter, the

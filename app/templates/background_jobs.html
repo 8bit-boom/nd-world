@@ -37,6 +37,7 @@
     <option value="running">Running</option>
     <option value="done">✓ Done</option>
     <option value="error">✗ Error</option>
+    <option value="transcribed">✓ Transcribed (not summarized yet)</option>
     <option value="interrupted">⏸ Interrupted</option>
   </select>
 </div>
@@ -85,6 +86,7 @@ const JOB_TYPE_LABEL = { audio: null, chat: 'Chat', image: 'Image Gen', video: '
 const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing', 'generating', 'fetching']);
 const STATUS_LABEL = {
   pending: 'Queued…', transcribing: 'Transcribing…', summarizing: 'Summarizing…', generating: 'Generating…',
+  transcribed: '✓ Transcribed — waiting for summary settings',
   fetching: 'Downloading video…',
   done: '✓ Done', error: '✗ Failed', cancelled: '○ Cancelled',
   interrupted: '⏸ Interrupted',
