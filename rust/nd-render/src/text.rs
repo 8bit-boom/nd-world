@@ -275,11 +275,10 @@ fn python_free_env() -> bool {
     matches!(std::env::var("ND_PYTHON_FREE").unwrap_or_default().trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
-/// `rendering.autolink_entities(html, names)`; `names` in the dict's insertion order. `None` = the names hold something this port does not
-/// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently).
-/// Plain-text names turned into links, for ASCII names (nearly all of them): an Aho-Corasick automaton over the lower-cased names, built once per distinct list of
-/// names and kept (a page asks for the same list again and again). Same answer as the alternation regex of app/rendering.py: at the leftmost place a name matches
-/// (letters in any case, not touching a letter / digit / underscore on either side) the longest name that fits wins, and the search goes on after it.
+/// Plain-text names turned into links: an Aho-Corasick automaton over the lower-cased names, built once per distinct list of names and kept (a page asks for the
+/// same list again and again). Same answer as the alternation regex of app/rendering.py: at the leftmost place a name matches (letters in any case, not touching
+/// an ASCII letter / digit / underscore on either side) the longest name that fits wins, and the search goes on after it. Text and names with other letters
+/// (accents, other scripts) are matched on a copy folded one character at a time (`fold`), the matches mapped back to the original text.
 struct Matcher {
     ac: aho_corasick::AhoCorasick,
     ids: Vec<i64>,
@@ -289,12 +288,60 @@ fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// simple case folding: a character with a one-character lower case becomes it, any other stays (the multi-character cases such as "İ" are left as they are)
+fn fold_char(c: char) -> char {
+    let mut l = c.to_lowercase();
+    let lower = match (l.next(), l.next()) {
+        (Some(one), None) => one,
+        _ => c,
+    };
+    // the letters that are a lower case of their own but fold together with another (Unicode's simple case folding; `re` and the regex crate treat them as equal)
+    match lower {
+        '\u{3c2}' => '\u{3c3}',            // final sigma -> sigma
+        '\u{17f}' => 's',                  // long s
+        '\u{b5}' => '\u{3bc}',             // micro sign -> mu
+        '\u{3d0}' => '\u{3b2}',            // beta symbol
+        '\u{3d1}' => '\u{3b8}',            // theta symbol
+        '\u{3d5}' => '\u{3c6}',            // phi symbol
+        '\u{3d6}' => '\u{3c0}',            // pi symbol
+        '\u{3f0}' => '\u{3ba}',            // kappa symbol
+        '\u{3f1}' => '\u{3c1}',            // rho symbol
+        '\u{3f5}' => '\u{3b5}',            // lunate epsilon
+        '\u{1e9b}' => '\u{1e61}',          // long s with dot above
+        '\u{1fbe}' => '\u{3b9}',           // prosgegrammeni
+        other => other,
+    }
+}
+
+fn fold(s: &str) -> String {
+    s.chars().map(fold_char).collect()
+}
+
 impl Matcher {
     /// `chunk` (a text node) with every name linked
     fn link(&self, chunk: &str) -> String {
         let bytes = chunk.as_bytes();
+        // the text the names are looked for in: the chunk itself when it is ASCII (the automaton ignores ASCII case), else a folded copy and, for every byte offset of it
+        // that starts a character, where that character starts in the original
+        let (folded, back): (Option<String>, Vec<usize>) = if chunk.is_ascii() {
+            (None, vec![])
+        } else {
+            let mut f = String::with_capacity(chunk.len());
+            let mut back = Vec::with_capacity(chunk.len() + 1);
+            for (i, c) in chunk.char_indices() {
+                let fc = fold_char(c);
+                back.resize(f.len(), usize::MAX);
+                back.push(i);
+                f.push(fc);
+            }
+            back.resize(f.len(), usize::MAX);
+            back.push(chunk.len());
+            (Some(f), back)
+        };
+        let hay: &str = folded.as_deref().unwrap_or(chunk);
+        let at_orig = |o: usize| if folded.is_some() { back[o] } else { o };
         // every occurrence of every name, then the same walk the regex makes: by start, the longest first, the first one whose edges are clear, on past it
-        let mut found: Vec<(usize, usize, usize)> = self.ac.find_overlapping_iter(chunk).map(|m| (m.start(), m.end(), m.pattern().as_usize())).collect();
+        let mut found: Vec<(usize, usize, usize)> = self.ac.find_overlapping_iter(hay).map(|m| (at_orig(m.start()), at_orig(m.end()), m.pattern().as_usize())).collect();
         if found.is_empty() {
             return chunk.to_string();
         }
@@ -333,7 +380,8 @@ fn matcher_for(keys: &[(String, i64)]) -> Option<std::sync::Arc<Matcher>> {
     if let Some(m) = cache.lock().ok()?.get(&key) {
         return Some(m.clone());
     }
-    let ac = aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).match_kind(aho_corasick::MatchKind::Standard).build(keys.iter().map(|(k, _)| k.as_str())).ok()?;
+    let folded: Vec<String> = keys.iter().map(|(k, _)| fold(k)).collect();
+    let ac = aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).match_kind(aho_corasick::MatchKind::Standard).build(folded.iter().map(String::as_str)).ok()?;
     let m = Arc::new(Matcher { ac, ids: keys.iter().map(|(_, i)| *i).collect() });
     let mut c = cache.lock().ok()?;
     if c.len() >= 16 {
@@ -344,8 +392,13 @@ fn matcher_for(keys: &[(String, i64)]) -> Option<std::sync::Arc<Matcher>> {
 }
 
 /// `rendering.autolink_entities(html, names)`; `names` in the dict's insertion order. `None` = the names hold something this port does not
-/// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently).
+/// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently) while Python is there to answer.
 pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> {
+    autolink_impl(html, names, python_free_env())
+}
+
+/// the same, `unicode_names` saying whether names with non-ASCII letters may be linked here
+fn autolink_impl(html: &str, names: &[(String, i64)], unicode_names: bool) -> Option<String> {
     if html.is_empty() || names.is_empty() {
         return Some(html.to_string());
     }
@@ -356,7 +409,7 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
         if key.chars().count() < 3 {
             continue;
         }
-        if !key.is_ascii() && !python_free_env() {
+        if !key.is_ascii() && !unicode_names {
             return None; // next to Python: its case folding is the reference; without it the page must open (accented names are ordinary)
         }
         if seen.insert(key.clone()) {
@@ -366,20 +419,7 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
     if lower_to_id.is_empty() {
         return Some(html.to_string());
     }
-    // all-ASCII names (the normal case): the cached automaton. Names with other letters: the regex, built for this call (Unicode case folding)
-    enum Engine {
-        Ac(std::sync::Arc<Matcher>),
-        Rx(fancy_regex::Regex),
-    }
-    let engine = if lower_to_id.iter().all(|(k, _)| k.is_ascii()) {
-        Engine::Ac(matcher_for(&lower_to_id)?)
-    } else {
-        let mut ordered: Vec<&String> = lower_to_id.iter().map(|(k, _)| k).collect();
-        ordered.sort_by(|a, b| b.chars().count().cmp(&a.chars().count())); // stable, longest first (Python's sorted(key=len, reverse=True))
-        let alt = ordered.iter().map(|n| fancy_regex::escape(n).into_owned()).collect::<Vec<_>>().join("|");
-        // fancy-regex's default backtrack limit (1M) is hit on ordinary non-ASCII text (Python's re has no limit), so raise it - and decline instead of panicking
-        Engine::Rx(fancy_regex::RegexBuilder::new(&format!(r"(?i)(?<![A-Za-z0-9_])({alt})(?![A-Za-z0-9_])")).backtrack_limit(200_000_000).build().ok()?)
-    };
+    let matcher = matcher_for(&lower_to_id)?;
     let tag_name = re!(r"^</?\s*([a-zA-Z0-9]+)");
     let mut skip_depth: i64 = 0;
     let mut out = String::new();
@@ -414,17 +454,7 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
             out.push_str(chunk);
             continue;
         }
-        match &engine {
-            Engine::Ac(m) => out.push_str(&m.link(chunk)),
-            Engine::Rx(pattern) => {
-                let replaced = pattern.try_replacen(chunk, 0, |c: &fancy_regex::Captures| {
-                    let found = &c[0];
-                    let id = lower_to_id.iter().find(|(k, _)| *k == found.to_lowercase()).map(|(_, i)| *i).unwrap_or(0);
-                    format!(r#"<a href="/entity/{id}" class="auto-entity-link">{found}</a>"#)
-                }).ok()?;
-                out.push_str(&replaced);
-            }
-        }
+        out.push_str(&matcher.link(chunk));
     }
     Some(out)
 }
@@ -573,6 +603,55 @@ mod autolink_tests {
                 text.push_str(glue[next() % glue.len()]);
             }
             assert_eq!(autolink_entities(&text, &n).unwrap(), reference(&text, &keys), "{text}");
+        }
+    }
+
+    #[test]
+    fn names_with_accents_and_other_scripts_match_like_the_regex() {
+        let n = names(&["Éowyn", "Zoë Quinn", "Ünïcode Straße", "Ashen", "Ørsted", "Tōkyō", "Σωκράτης", "Eowyn"]);
+        let keys: Vec<(String, i64)> = n.iter().map(|(k, i)| (k.to_lowercase(), *i)).collect();
+        for text in [
+            "Éowyn rode; ÉOWYN and éowyn and Eowyn and EOWYN. Éowyns hat. xÉowyn, Éowyn_, 7Éowyn.",
+            "Zoë Quinn met zoë quinn and ZOË QUINN near Ørsted and ørsted, ØRSTED.",
+            "ÜNÏCODE STRASSE is not Ünïcode Straße but ünïcode straße is.",
+            "Tōkyō, TŌKYŌ and tōkyō; Σωκράτης and σωκράτης and ΣΩΚΡΆΤΗΣ.",
+            "Kelvin K sign and the ſ long s do not confuse Ashen: ASHEN ashen",
+            "<p>Éowyn <code>Éowyn</code> <b>Ørsted</b></p>",
+        ] {
+            let got = autolink_impl(text, &n, true).unwrap();
+            if text.starts_with('<') {
+                assert_eq!(got, r#"<p><a href="/entity/1" class="auto-entity-link">Éowyn</a> <code>Éowyn</code> <b><a href="/entity/5" class="auto-entity-link">Ørsted</a></b></p>"#);
+            } else {
+                assert_eq!(got, reference(text, &keys), "{text}");
+            }
+        }
+        // while Python is behind the gateway a non-ASCII name is still Python's to link
+        assert!(autolink_impl("Éowyn", &n, false).is_none());
+    }
+
+    #[test]
+    fn many_random_unicode_texts_agree() {
+        let pool = ["Éowyn", "Éowyn Fëanor", "Ashen", "ashé", "Zoë", "Zoë Quinn", "Ørsted", "Tōkyō", "Hali", "Ünïcode", "Straße", "Σωκράτης"];
+        let n = names(&pool);
+        let keys: Vec<(String, i64)> = n.iter().filter(|(k, _)| k.chars().count() >= 3).map(|(k, i)| (k.to_lowercase(), *i)).collect();
+        let glue = [" ", " ", ", ", ". ", "-", "_", "x", "7", "'s ", "é", "\n"];
+        let mut seed = 777u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..400 {
+            let mut text = String::new();
+            for _ in 0..(5 + next() % 30) {
+                let w = pool[next() % pool.len()];
+                match next() % 4 {
+                    0 => text.push_str(&w.to_uppercase()),
+                    1 => text.push_str(&w.to_lowercase()),
+                    _ => text.push_str(w),
+                }
+                text.push_str(glue[next() % glue.len()]);
+            }
+            assert_eq!(autolink_impl(&text, &n, true).unwrap(), reference(&text, &keys), "{text}");
         }
     }
 
