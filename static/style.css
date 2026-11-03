@@ -3026,3 +3026,5 @@ body.home-night-on .home-edit-link { display: none; }
 .grp-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
 .grp-table th, .grp-table td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--border); }
 .grp-empty { color: var(--text-dim); font-size: .85rem; }
+
+.group-switch select { background: var(--bg3); border: 1px solid var(--border); color: var(--neon); padding: .3rem .4rem; font-family: var(--font); font-size: .78rem; border-radius: 3px; max-width: 11rem; }

@@ -65,6 +65,9 @@ def _upload_home_background(file: Optional[UploadFile], db: Session) -> Optional
 _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 
 
+from .. import scope as _scope
+
+
 def _world_maps(world_id: int) -> list[tuple[str, str]]:
     out = []
     if not _MAPS_DIR.exists():
@@ -74,7 +77,7 @@ def _world_maps(world_id: int) -> list[tuple[str, str]]:
             data = json.loads(jf.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if data.get("world_id", 1) == world_id:
+        if data.get("world_id", 1) == world_id and _scope.map_visible(data):
             out.append((jf.stem, data.get("name", jf.stem)))
     return out
 

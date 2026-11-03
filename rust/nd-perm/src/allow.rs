@@ -190,6 +190,9 @@ pub fn is_assistant_safe(method: &str, path: &str) -> bool {
     if path == "/new" && matches!(method, "GET" | "POST") {
         return true;
     }
+    if post && path == "/groups/switch" {
+        return true;
+    }
     if post && (path == "/api/upload-image" || path == "/api/upload-media") {
         return true;
     }

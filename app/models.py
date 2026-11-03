@@ -679,6 +679,9 @@ class WorldHandout(Base):
     __tablename__ = "world_handouts"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     url = Column(String(512), nullable=False)
     label = Column(String(256), default="")
@@ -833,6 +836,9 @@ class DiceRoll(Base):
     __tablename__ = "dice_rolls"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     user_name = Column(String(120), nullable=False, default="")
@@ -852,6 +858,9 @@ class PlayerCharacter(Base):
     __tablename__ = "player_characters"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, default=1, index=True)
     # The player account that owns/manages this character (NULL = GM-managed, e.g. NPCs
     # or characters created before player accounts existed). One character per player per world.
@@ -1041,6 +1050,9 @@ class InvestBoard(Base):
     __tablename__ = "invest_boards"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, default=1, index=True)
     name = Column(String(256), nullable=False)
     slug = Column(String(64), unique=True, nullable=False)
@@ -1081,6 +1093,9 @@ class CombatSession(Base):
     __tablename__ = "combat_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     name = Column(String(256), nullable=False)
     # [{id, name, source:"pc"|"entity"|"manual", pc_id, entity_id, initiative,
@@ -1116,6 +1131,9 @@ class Party(Base):
     __tablename__ = "parties"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     name = Column(String(256), nullable=False)
     member_pc_ids_json = Column(Text, default="[]")      # [PlayerCharacter.id, ...]
@@ -1145,6 +1163,9 @@ class Quest(Base):
     __tablename__ = "quests"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     title = Column(String(256), nullable=False)
     status = Column(String(32), default="active")   # active/complete/failed/secret (freeform)
@@ -1377,6 +1398,9 @@ class GameSession(Base):
     __tablename__ = "game_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     title = Column(String(256), nullable=False)
     session_num = Column(Integer, default=1)
@@ -1900,6 +1924,9 @@ class Fact(Base):
     __tablename__ = "facts"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
     content = Column(Text, nullable=False)
@@ -1988,6 +2015,9 @@ class CalendarEvent(Base):
     __tablename__ = "calendar_events"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     # Range-queried on every /calendar render (day BETWEEN month_start AND
     # month_end) — indexed for the same reason CalendarDayIcon.day already is.
@@ -2161,6 +2191,9 @@ class Schematic(Base):
     __tablename__ = "schematics"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Which player group's table this belongs to (PlayerGroup.id); NULL = shared with every group. A player sees only the shared rows and the rows of their own
+    # group, whatever page asks: app/scope.py filters every query. 0 = kept hidden from every group (a deleted group's content). New rows take the active group.
+    group_id = Column(Integer, nullable=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, default=1, index=True)
     name = Column(String(256), nullable=False)
     slug = Column(String(64), unique=True, nullable=False)

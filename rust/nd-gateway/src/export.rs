@@ -193,7 +193,7 @@ pub fn book_zip(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, headers: &
     }
     // maps: the name (else the slug) and the marker count (a dict counts its keys, as Python's len)
     let mut maps = vec![];
-    for (slug, d) in crate::maps::world_maps(cfg, wid)? {
+    for (slug, d) in crate::maps::world_maps(&db, cfg, wid)? {
         let name = d.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or(slug);
         let markers = match d.get("markers") {
             None => 0,

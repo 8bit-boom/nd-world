@@ -171,8 +171,10 @@ pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &H
         saved.insert(section, cleaned);
     }
 
+    let world_id = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64());
+    let group_switch = crate::grp::install(db, user_id, is_gm, is_assistant, world_id, session::cookie(cookie_header, crate::grp::ACTIVE_GROUP_COOKIE), &path)?;
     let user_v = json!({"id": user_id, "is_gm": is_gm, "display_name": user.get("display_name").cloned().unwrap_or(Value::Null)});
-    let request = json!({"state": {"user": user_v, "is_assistant": is_assistant}, "url": {"path": path}, "query_params": qmap});
+    let request = json!({"state": {"user": user_v, "is_assistant": is_assistant, "group_switch": group_switch}, "url": {"path": path}, "query_params": qmap});
     let mut ctx = Map::new();
     ctx.insert("request".into(), request);
     ctx.insert("world".into(), world.clone().map(Value::Object).unwrap_or(Value::Null));

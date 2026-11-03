@@ -213,7 +213,7 @@ pub const SIMPLE: &[Simple] = &[
     Simple { path: "/tools/bulk-edit", template: "bulk_edit.html", section: Some("bulk_edit"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: None },
     Simple { path: "/system", template: "system_monitor.html", section: None, needs_world: false, gm_only: true, edit: false, lists: &[], extra: None },
     Simple { path: "/boards", template: "boards.html", section: Some("boards"), needs_world: true, gm_only: false, edit: false,
-             lists: &[("boards", "SELECT * FROM invest_boards WHERE world_id = ?1 ORDER BY rowid")], extra: None },
+             lists: &[("boards", "SELECT * FROM invest_boards WHERE world_id = ?1 ORDER BY id")], extra: None },
     Simple { path: "/androidapp", template: "androidapp.html", section: Some("androidapp"), needs_world: false, gm_only: false, edit: false, lists: &[], extra: Some(android_url) },
     Simple { path: "/professions/new", template: "profession_new.html", section: None, needs_world: true, gm_only: false, edit: false, lists: &[], extra: None },
     Simple { path: "/races/new", template: "race_new.html", section: None, needs_world: true, gm_only: false, edit: false, lists: &[], extra: None },
@@ -1283,7 +1283,19 @@ pub fn groups_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
             }
         }
     }
+    // groups.content_counts: {table: {group key: rows}}; "shared" = NULL, "hidden" = 0, else the group id
+    let mut content = vec![];
+    for t in crate::grp::SCOPED {
+        let mut counts = Map::new();
+        let mut st = db.prepare_cached(&format!("SELECT group_id, count(*) FROM main.{t} WHERE world_id = ?1 GROUP BY group_id")).ok()?;
+        for row in st.query_map([wid], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?))).ok()? {
+            let (g, n) = row.ok()?;
+            counts.insert(match g { None => "shared".to_string(), Some(0) => "hidden".to_string(), Some(g) => g.to_string() }, json!(n));
+        }
+        content.push(json!([t, crate::grp::label(t), Value::Object(counts)]));
+    }
     let c = &mut p.ctx;
+    c.insert("content".into(), Value::Array(content));
     c.insert("groups".into(), Value::Array(groups.into_iter().map(Value::Object).collect()));
     c.insert("members".into(), Value::Array(members));
     c.insert("limited".into(), json!({"__intkeys__": Value::Object(limited)}));
@@ -1339,7 +1351,7 @@ pub fn facts_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
         r
     };
     // the dict {id: session} in the database's own order (no ORDER BY in Python: rowid order)
-    let sessions = rows("SELECT * FROM game_sessions WHERE world_id = ?1")?;
+    let sessions = rows("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY id")?;
     let vis = if p.is_gm { "" } else { " AND visible_to_players IS NOT 0" };
     let mut facts = rows(&format!("SELECT * FROM facts WHERE world_id = ?1{vis} ORDER BY created_at ASC, id ASC"))?;
     // GET /facts/fragment?keys=3,7,none: just those groups ("none" = no session, or a session that is gone)
@@ -1593,7 +1605,7 @@ fn cockpit_pickers(db: &rusqlite::Connection, cfg: &Config, wid: i64, ctx: &mut 
     }
     // _world_maps
     let mut world_maps = vec![];
-    for (slug, data) in crate::maps::world_maps(cfg, wid)? {
+    for (slug, data) in crate::maps::world_maps(&db, cfg, wid)? {
         let name = match data.get("name") {
             Some(Value::String(t)) if !t.is_empty() => t.clone(),
             None | Some(Value::Null) | Some(Value::String(_)) => slug.clone(),
@@ -2211,7 +2223,7 @@ pub fn import_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     let mut st = db.prepare_cached("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name, id").ok()?;
     let schematics: Vec<Value> = st.query_map([wid], |r| Ok(json!({"slug": r.get::<_, Option<String>>(0)?, "name": r.get::<_, Option<String>>(1)?})))
         .ok()?.collect::<Result<_, _>>().ok()?;
-    let maps: Vec<Value> = crate::maps::world_maps(cfg, wid)?.into_iter()
+    let maps: Vec<Value> = crate::maps::world_maps(&db, cfg, wid)?.into_iter()
         .map(|(slug, d)| { let name = d.get("name").cloned().unwrap_or_else(|| json!(slug)); json!({"slug": slug, "name": name}) }).collect();
     let mut st = db.prepare_cached("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY kind, name, id").ok()?;
     let entities: Vec<Value> = st.query_map([wid], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, Option<String>>(1)?,

@@ -743,7 +743,7 @@ fn delete_fact(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResul
     let Some(f) = f else { return Err(format!("Fact {fid} not found")) };
     let wid = f["world_id"].as_i64().unwrap_or(0);
     try_some!(load_world(db, wid, user));
-    if db.execute("DELETE FROM facts WHERE id = ?1", [fid]).is_err() {
+    if db.execute("DELETE FROM main.facts WHERE id = ?1", [fid]).is_err() {
         return Ok(None);
     }
     // no Fact row survives to carry a timestamp: the world's recap watermark records the removal

@@ -58,8 +58,15 @@ pub fn insert(db: &Connection, table: &str, values: &[(&str, Sql)]) -> Option<i6
             }
         }
     }
+    if crate::grp::is_scoped(table) && !cols.iter().any(|c| c == "group_id") {
+        let world = values.iter().find(|(c, _)| *c == "world_id").and_then(|(_, v)| if let Sql::Integer(i) = v { Some(*i) } else { None });
+        if let Some(g) = crate::grp::new_row_group(db, world) {
+            cols.push("group_id".into());
+            vals.push(Sql::Integer(g));
+        }
+    }
     let marks: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
-    let sql = format!("INSERT INTO {table} ({}) VALUES ({})", cols.join(", "), marks.join(", "));
+    let sql = format!("INSERT INTO main.{table} ({}) VALUES ({})", cols.join(", "), marks.join(", "));
     db.execute(&sql, rusqlite::params_from_iter(vals.iter())).ok()?;
     Some(db.last_insert_rowid())
 }
@@ -70,7 +77,7 @@ pub fn update(db: &Connection, table: &str, id: i64, values: &[(&str, Sql)]) -> 
     // SQLAlchemy writes only the columns whose value changed; no change at all = no UPDATE (and no updated_at bump)
     let mut changed: Vec<(String, Sql)> = vec![];
     for (col, v) in values {
-        let cur: Sql = db.query_row(&format!("SELECT {col} FROM {table} WHERE id = ?1"), [id], |r| r.get(0)).ok()?;
+        let cur: Sql = db.query_row(&format!("SELECT {col} FROM main.{table} WHERE id = ?1"), [id], |r| r.get(0)).ok()?;
         if !same(&cur, v) {
             changed.push((col.to_string(), v.clone()));
         }
@@ -89,7 +96,7 @@ pub fn update(db: &Connection, table: &str, id: i64, values: &[(&str, Sql)]) -> 
     let sets: Vec<String> = changed.iter().enumerate().map(|(i, (c, _))| format!("{c} = ?{}", i + 1)).collect();
     let mut vals: Vec<Sql> = changed.into_iter().map(|(_, v)| v).collect();
     vals.push(Sql::Integer(id));
-    let sql = format!("UPDATE {table} SET {} WHERE id = ?{}", sets.join(", "), vals.len());
+    let sql = format!("UPDATE main.{table} SET {} WHERE id = ?{}", sets.join(", "), vals.len());
     db.execute(&sql, rusqlite::params_from_iter(vals.iter())).ok()?;
     Some(true)
 }
@@ -133,5 +140,5 @@ pub fn bulk_update(db: &Connection, table: &str, set: &[(&str, Sql)], where_sql:
     let mut vals: Vec<Sql> = cols.into_iter().map(|(_, v)| v).collect();
     vals.extend(where_params.iter().cloned());
     // where_sql uses anonymous `?`: SQLite numbers those after the highest ?N of the SET list
-    db.execute(&format!("UPDATE {table} SET {} WHERE {where_sql}", sets.join(", ")), rusqlite::params_from_iter(vals.iter())).ok()
+    db.execute(&format!("UPDATE main.{table} SET {} WHERE {where_sql}", sets.join(", ")), rusqlite::params_from_iter(vals.iter())).ok()
 }

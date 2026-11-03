@@ -78,7 +78,7 @@ fn link_href(db: &Connection, cfg: &Config, wid: i64, kinds: &[Value], link: &Ma
                     Ok((n > 0).then(|| if is_gm { format!("/maps/schematic/{r}") } else { format!("/maps/schematic/{r}/view") }))
                 }
                 Some("map") => {
-                    let maps = crate::maps::world_maps(cfg, wid).ok_or(())?;
+                    let maps = crate::maps::world_maps(&db, cfg, wid).ok_or(())?;
                     Ok(maps.iter().any(|(slug, _)| slug == r).then(|| format!("/maps/{r}")))
                 }
                 Some("kind") => Ok(kinds.iter().any(|k| k.as_str() == Some(r)).then(|| format!("/kind/{r}"))),
@@ -122,7 +122,7 @@ pub fn home(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
     }
     let recent = rows(&db, &format!("SELECT * FROM entities WHERE entities.world_id = ?1{vis} ORDER BY entities.updated_at DESC LIMIT 8"), &[&wid, &uid])?;
     let mut preview_maps = vec![];
-    for (s, d) in crate::maps::world_maps(cfg, wid)?.into_iter().take(6) {
+    for (s, d) in crate::maps::world_maps(&db, cfg, wid)?.into_iter().take(6) {
         preview_maps.push(json!({"slug": s, "name": d.get("name").cloned().unwrap_or_else(|| json!(s)), "image_url": crate::maps::map_image(cfg, &s)?}));
     }
     let mut most_linked = vec![];

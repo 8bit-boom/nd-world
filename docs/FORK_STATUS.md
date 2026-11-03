@@ -110,6 +110,19 @@ Quick Links ("From your GM"), and the lore kinds with entries. Python and the ga
 `entity_player_access` holds the groups' players - so every place that already honours "specific players only" (lists, search, the entity page, links, the AI's lookups, MCP, export)
 applies the limit with no change of its own. Moving a player to another group, or deleting a group, re-syncs every group-limited entity (a group's last entity access never falls back to
 "everyone": it becomes GM-only). A player with no group sees only what is open to everyone. The bulk-visibility API takes `visibility_mode: "groups"` + `group_ids`.
-**Not yet separated by group** (a group's players still share these): session recaps and the session log, quests, facts, characters and parties, pages and media, maps, boards, the calendar. The
-restriction control is offered only on entities, so nothing looks protected that is not. Python and the gateway are compared in `tests/test_player_groups.py`.
+### Player groups - the table layer (one shared setting, one table per group)
+A world is one **shared setting** (lore, rules, races, professions, pages, shared maps ...) plus a **table** per player group: sessions, quests, facts, parties, characters, calendar events,
+combats, boards, handouts, schematics, dice rolls (the tables of `app/scope.py::SCOPED`) and map files. Each such row has `group_id`: NULL = shared with every group (everything that existed before
+groups), a group id = that group's, 0 = kept hidden from every group. A player sees the shared rows and their own group's (no group: shared only). A GM / GM-Assistant sees everything, or - after
+choosing "Playing: <group>" in the top bar (`POST /groups/switch`, the `active_group` cookie) - the shared rows and that group's; new content then joins that group. A player's new content, and
+their characters, join their group (a character follows its owner when the GM moves them).
+**One place enforces it** - nothing is filtered page by page. Python: `app/scope.py` sets a request-scoped limit in the auth middleware and one `do_orm_execute` hook adds `with_loader_criteria`
+for every scoped model, so a feature written next year is separated without knowing about groups. Gateway: `rust/nd-gateway/src/grp.rs::install` (called by `layout::build`) shadows each scoped
+table with a per-request TEMP VIEW of the same name, so every unqualified `FROM quests` reads the limited view; writes are written `main.<table>` (a view is not writable - the row was read through
+the view first), a new row takes the group from the temp `nd_scope` table, and `Pooled`'s drop clears the views. Map files carry an optional `group_id` key (`scope.map_visible`,
+`grp::map_visible`); another group's map is as good as missing. Neither the GM's export/backups/groups/settings pages (`GM_UNSCOPED_PREFIXES`) nor an unscoped (GM, no group chosen) request is limited.
+Deleting a group never publishes its table: it goes to hidden (default), shared or another group (`move_to`); `/groups` shows who has what and re-files content in bulk (`/groups/move-content`).
+Tests: `tests/test_group_tables.py` crawls the site as each player and the GM looking for the secret rows of another table; `tests/test_player_groups.py`.
+**Not separated yet**: session plans, random tables, pages and media files (still shared, as is the Obsidian/wiki content), and map tile images fetched by URL. Per-map group assignment has no screen yet
+(a map takes the group of whoever made it; older maps are shared).
 

@@ -354,6 +354,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/members/{}/remove", member_remove),
     ("/worlds/{}/members/{}/role", member_role),
     ("/groups/new", groups_new),
+    ("/groups/switch", groups_switch),
+    ("/groups/move-content", groups_move_content),
     ("/groups/{}/rename", groups_rename),
     ("/groups/{}/delete", groups_delete),
     ("/groups/members/{}", groups_assign),
@@ -845,7 +847,7 @@ fn quest_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         return Some(r);
     }
     orm::bulk_update(&c.db, "quests", &[("parent_id", Sql::Null)], "quests.parent_id = ?", &[Sql::Integer(id)])?;
-    c.db.execute("DELETE FROM quests WHERE id = ?1", [id]).ok()?;
+    c.db.execute("DELETE FROM main.quests WHERE id = ?1", [id]).ok()?;
     redirect("/quests")
 }
 
@@ -953,7 +955,7 @@ fn fact_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let next = facts_next(&c.form()?)?;
     editable_fact(c, id)?;
     let wid = c.world_id()?;
-    c.db.execute("DELETE FROM facts WHERE id = ?1", [id]).ok()?;
+    c.db.execute("DELETE FROM main.facts WHERE id = ?1", [id]).ok()?;
     // _bump_recap_content_touch: the world's recap-staleness watermark (a deleted fact leaves no row to timestamp)
     orm::update(&c.db, "worlds", wid, &[("recap_content_touch", s(&orm::now_stamp()))])?;
     redirect(&next)
@@ -1253,7 +1255,7 @@ fn calendar_event_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     if ev.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_row("calendar", ev.get("created_by_user_id").and_then(|v| v.as_i64()))? {
         return None;
     }
-    c.db.execute("DELETE FROM calendar_events WHERE id = ?1", [ids[0]]).ok()?;
+    c.db.execute("DELETE FROM main.calendar_events WHERE id = ?1", [ids[0]]).ok()?;
     json_response(&json!({"ok": true}))
 }
 
@@ -1392,7 +1394,7 @@ fn board_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
         Ok(b) => b,
         Err(r) => return Some(r),
     };
-    c.db.execute("DELETE FROM invest_boards WHERE id = ?1", [b.get("id")?.as_i64()?]).ok()?;
+    c.db.execute("DELETE FROM main.invest_boards WHERE id = ?1", [b.get("id")?.as_i64()?]).ok()?;
     redirect("/boards")
 }
 
@@ -1892,13 +1894,111 @@ fn groups_rename(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     redirect("/groups")
 }
 
+/// a "move to" choice: "shared" -> NULL, "hidden" (or blank) -> 0, a group id of this world -> that id (None = not a valid choice)
+fn group_target(c: &Ctx, wid: i64, raw: &str) -> Option<Sql> {
+    let raw = raw.trim();
+    if raw == "shared" {
+        return Some(Sql::Null);
+    }
+    if !raw.is_empty() && raw.len() <= 15 && raw.bytes().all(|b| b.is_ascii_digit()) && raw.parse::<i64>().ok()? != 0 {
+        let g: i64 = raw.parse().ok()?;
+        group_of_world(c, wid, g)?;
+        return Some(Sql::Integer(g));
+    }
+    Some(Sql::Integer(0))
+}
+
+/// groups.move_content: every row of the world whose group is `src` (NULL = shared) goes to `target`, in one table or all
+fn move_group_content(db: &Connection, wid: i64, src: &Sql, target: &Sql, table: &str) -> Option<()> {
+    for t in crate::grp::SCOPED {
+        if table != "all" && table != t {
+            continue;
+        }
+        let (cond, mut p): (&str, Vec<Sql>) = match src {
+            Sql::Null => ("group_id IS NULL", vec![]),
+            v => ("group_id = ?", vec![v.clone()]),
+        };
+        let mut vals = vec![target.clone(), Sql::Integer(wid)];
+        vals.append(&mut p);
+        db.execute(&format!("UPDATE main.{t} SET group_id = ? WHERE world_id = ? AND {cond}"), rusqlite::params_from_iter(vals.iter())).ok()?;
+    }
+    Some(())
+}
+
 fn groups_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let wid = groups_gm_world(c)?;
+    let f = c.form()?;
     group_of_world(c, wid, ids[0])?;
+    let target = group_target(c, wid, opt(&f, "move_to", "hidden"))?;
+    if matches!(target, Sql::Integer(t) if t == ids[0]) {
+        return None; // the 400 is Python's
+    }
+    move_group_content(&c.db, wid, &Sql::Integer(ids[0]), &target, "all")?;
     c.db.execute("UPDATE world_memberships SET group_id = NULL WHERE world_id = ?1 AND group_id = ?2", [wid, ids[0]]).ok()?;
     c.db.execute("DELETE FROM player_groups WHERE id = ?1", [ids[0]]).ok()?;
     resync_groups(&c.db, wid)?;
     redirect("/groups")
+}
+
+fn groups_move_content(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let wid = groups_gm_world(c)?;
+    let f = c.form()?;
+    let table = opt(&f, "table", "all");
+    if table != "all" && !crate::grp::is_scoped(table) {
+        return None;
+    }
+    let source = opt(&f, "source", "");
+    let src = match source {
+        "shared" => Sql::Null,
+        "hidden" => Sql::Integer(0),
+        v if !v.is_empty() && v.len() <= 15 && v.bytes().all(|b| b.is_ascii_digit()) => {
+            let g: i64 = v.parse().ok()?;
+            if g != 0 {
+                group_of_world(c, wid, g)?;
+            }
+            Sql::Integer(g)
+        }
+        _ => return None,
+    };
+    let traw = opt(&f, "target", "");
+    if traw.trim().is_empty() {
+        return None;
+    }
+    let target = group_target(c, wid, traw)?;
+    if same_group(&src, &target) {
+        return None;
+    }
+    move_group_content(&c.db, wid, &src, &target, table)?;
+    redirect("/groups")
+}
+
+fn same_group(a: &Sql, b: &Sql) -> bool {
+    match (a, b) {
+        (Sql::Null, Sql::Null) => true,
+        (Sql::Integer(x), Sql::Integer(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// the top bar's "Playing: <group>" chooser (a GM or GM-Assistant)
+fn groups_switch(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !c.p.is_gm && c.p.role.as_deref() != Some("assistant") {
+        return None;
+    }
+    let wid = c.world_id()?;
+    let f = c.form()?;
+    let next = opt(&f, "next", "/");
+    let dest = if next.starts_with('/') && !next.starts_with("//") { next } else { "/" };
+    let g = strip(opt(&f, "group_id", ""));
+    let valid = !g.is_empty() && g.len() <= 15 && g.bytes().all(|b| b.is_ascii_digit()) && g.parse::<i64>().ok().map_or(false, |gid| group_of_world(c, wid, gid).is_some());
+    let mut r = redirect(dest)?;
+    let cookie = if valid {
+        format!("active_group={g}; Max-Age=31536000; Path=/; SameSite=lax")
+    } else {
+        "active_group=\"\"; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/; SameSite=lax".to_string()
+    };
+    r.headers_mut().append(header::SET_COOKIE, cookie.parse().ok()?);
+    Some(r)
 }
 
 fn groups_assign(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
@@ -1916,7 +2016,9 @@ fn groups_assign(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         group_of_world(c, wid, gid)?;
         Sql::Integer(gid)
     };
-    orm::update(&c.db, "world_memberships", m, &[("group_id", gid)])?;
+    orm::update(&c.db, "world_memberships", m, &[("group_id", gid.clone())])?;
+    // groups.follow_member: a player's characters move with them
+    c.db.execute("UPDATE main.player_characters SET group_id = ?1 WHERE world_id = ?2 AND owner_user_id = ?3", rusqlite::params![gid, wid, ids[0]]).ok()?;
     resync_groups(&c.db, wid)?;
     redirect("/groups")
 }
@@ -2264,7 +2366,7 @@ fn party_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         return None;
     }
     orm::bulk_update(&c.db, "quests", &[("assigned_party_id", Sql::Null)], "assigned_party_id = ?", &[Sql::Integer(ids[0])])?;
-    c.db.execute("DELETE FROM parties WHERE id = ?1", [ids[0]]).ok()?;
+    c.db.execute("DELETE FROM main.parties WHERE id = ?1", [ids[0]]).ok()?;
     orm::touch(&c.db, p.get("world_id")?.as_i64()?)?;
     redirect("/parties")
 }
@@ -3487,8 +3589,8 @@ fn save_roll(c: &Ctx, world: &Map<String, Value>, notation: &str, breakdown: &Va
     let user_name: Option<String> = c.db.query_row("SELECT display_name FROM users WHERE id = ?1", [c.p.user_id], |r| r.get(0)).ok()?;
     let user_name = user_name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Someone".into());
     let (stored, iso) = crate::writes::timestamps(std::time::SystemTime::now());
-    c.db.execute("INSERT INTO dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        rusqlite::params![wid, c.p.user_id, user_name, notation, label, nd_render::py_dumps(breakdown), total, stored]).ok()?;
+    c.db.execute("INSERT INTO main.dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at, group_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![wid, c.p.user_id, user_name, notation, label, nd_render::py_dumps(breakdown), total, stored, crate::grp::new_row_group(&c.db, Some(wid))]).ok()?;
     let roll_id = c.db.last_insert_rowid();
     orm::signal(&c.db, wid, "dice")?;
     Some((json!({"id": roll_id, "user_name": user_name, "notation": notation, "label": label, "breakdown": breakdown,
@@ -4074,7 +4176,7 @@ fn drop_pc(c: &Ctx, id: i64, world: i64) -> Option<()> {
         orm::update(&c.db, "parties", pid, &set)?;
     }
     orm::bulk_update(&c.db, "calendar_events", &[("character_id", Sql::Null)], "character_id = ?", &[Sql::Integer(id)])?;
-    c.db.execute("DELETE FROM player_characters WHERE id = ?1", [id]).ok()?;
+    c.db.execute("DELETE FROM main.player_characters WHERE id = ?1", [id]).ok()?;
     Some(())
 }
 
@@ -4756,7 +4858,7 @@ fn session_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let id = ids[0];
     orm::bulk_update(&c.db, "combat_sessions", &[("game_session_id", Sql::Null)], "game_session_id = ?", &[Sql::Integer(id)])?;
     orm::bulk_update(&c.db, "facts", &[("game_session_id", Sql::Null)], "game_session_id = ?", &[Sql::Integer(id)])?;
-    c.db.execute("DELETE FROM game_sessions WHERE id = ?1", [id]).ok()?;
+    c.db.execute("DELETE FROM main.game_sessions WHERE id = ?1", [id]).ok()?;
     // the raw-recording archive, <DB_PATH dir>/uploads/live/<id> (shutil.rmtree(..., ignore_errors=True))
     let live = uploads_root(c)?.join("live").join(id.to_string());
     c.removals.push(live);
@@ -9134,7 +9236,7 @@ fn own_map(c: &Ctx, slug: &str) -> Option<(std::path::PathBuf, Map<String, Value
         Some(Value::Number(n)) => n.as_i64()?,
         _ => return None,
     };
-    if Some(owner) != c.world_id() || !c.can_edit_section("maps")? {
+    if Some(owner) != c.world_id() || !c.can_edit_section("maps")? || !crate::grp::map_visible(&c.db, &data) {
         return None;
     }
     Some((jf, data))
@@ -9607,7 +9709,10 @@ fn map_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         }
     }
     let jf = dir.join(format!("{slug}.json"));
-    let doc = json!({"name": name, "world_id": wid, "width": width, "height": height, "markers": []});
+    let mut doc = json!({"name": name, "world_id": wid, "width": width, "height": height, "markers": []});
+    if let Some(g) = crate::grp::new_map_group(&c.db) {
+        doc["group_id"] = json!(g); // a group's table: the map belongs to the group that made it
+    }
     std::fs::write(&jf, nd_render::py_dumps(&doc)).ok()?;
     c.created.push(jf);
     if let Some((dest, src)) = copy {
@@ -11013,7 +11118,7 @@ fn combat_save_state(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 
 fn combat_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     combat_scoped(c, ids[0])?;
-    c.db.execute("DELETE FROM combat_sessions WHERE id = ?1", [ids[0]]).ok()?;
+    c.db.execute("DELETE FROM main.combat_sessions WHERE id = ?1", [ids[0]]).ok()?;
     redirect("/combat")
 }
 
@@ -12126,7 +12231,7 @@ fn sc_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             }
         }
     }
-    c.db.execute("DELETE FROM schematics WHERE id = ?1", [sc.get("id")?.as_i64()?]).ok()?;
+    c.db.execute("DELETE FROM main.schematics WHERE id = ?1", [sc.get("id")?.as_i64()?]).ok()?;
     redirect("/maps")
 }
 
@@ -13039,8 +13144,8 @@ fn hub_roll_initiative(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let user_name = user_name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Someone".into());
     let wid = pc.get("world_id")?.as_i64()?;
     let (stored, iso) = crate::writes::timestamps(std::time::SystemTime::now());
-    c.db.execute("INSERT INTO dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        rusqlite::params![wid, c.p.user_id, user_name, notation, label, rolled.breakdown_json, rolled.total, stored]).ok()?;
+    c.db.execute("INSERT INTO main.dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at, group_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![wid, c.p.user_id, user_name, notation, label, rolled.breakdown_json, rolled.total, stored, crate::grp::new_row_group(&c.db, Some(wid))]).ok()?;
     let roll_id = c.db.last_insert_rowid();
     orm::signal(&c.db, wid, "dice")?;
     // combat_turns.set_initiative: the same combatant stays active after the re-sort
@@ -14510,7 +14615,7 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
         // strict secrecy (app/map_strict.py): only what the party has seen; the view records newly explored squares
         let (view, record) = crate::strict::compute(sc, &elements, &fog)?;
         if let Some(rec) = record {
-            let _ = db.execute("UPDATE schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
+            let _ = db.execute("UPDATE main.schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
         }
         visible = crate::strict::filter_elements(visible, &view);
         walls = crate::strict::filter_walls(walls, &view)?;
@@ -15061,7 +15166,7 @@ pub fn strict_view(db: &Connection, sc: &Map<String, Value>) -> Option<Option<cr
     };
     let (view, record) = crate::strict::compute(sc, &elements, &fog)?;
     if let Some(rec) = record {
-        let _ = db.execute("UPDATE schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
+        let _ = db.execute("UPDATE main.schematics SET explored_json = ?1 WHERE id = ?2", rusqlite::params![rec, sc.get("id")?.as_i64()?]);
     }
     Some(Some(view))
 }

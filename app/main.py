@@ -58,6 +58,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
 from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
 from . import groups as _groups_mod
+from . import scope as _scope_mod
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
@@ -857,6 +858,9 @@ def _is_player_safe(method: str, path: str) -> bool:
 # _is_owner_safe, for an Owner) is GM-only, so new routes stay safe by
 # default.
 def _is_assistant_safe(method: str, path: str) -> bool:
+    # "Playing: <group>" in the top bar (app/scope.py): a cookie that only narrows what this person sees
+    if method == "POST" and path == "/groups/switch":
+        return True
     # Entities — every POST under /entity/* is content mutation (edit,
     # duplicate, delete, link/unlink, notes add/import/toggle/delete); the
     # only GET that isn't already player-safe is the edit form itself.
@@ -1234,6 +1238,40 @@ async def _auth_gate_rest(request: Request, call_next, path: str, user, is_assis
     request.state.is_world_owner = is_world_owner
     request.state.owner_world_id = active_world_id if is_world_owner else None
 
+    # Player groups: which rows of a group's table content this request may see (app/scope.py); applied to every query it makes
+    scope_token = None
+    if user is not None:
+        scope = await run_in_threadpool(_scope_lookup, request, user, is_assistant, active_world_id, path)
+        if scope is not None:
+            scope_token = _scope_mod.set_scope(scope)
+            request.state.group_scope = scope
+    try:
+        return await _auth_gate_checked(request, call_next, path, user, is_assistant, is_world_owner, active_world_id)
+    finally:
+        if scope_token is not None:
+            _scope_mod.reset_scope(scope_token)
+
+
+def _scope_lookup(request: Request, user, is_assistant: bool, active_world_id, path: str):
+    db = SessionLocal()
+    try:
+        world_id = active_world_id
+        if world_id is None and user.is_gm:                       # a GM has no membership: the active world is the cookie's / the first
+            slug = resolve_world_slug(request, request.cookies.get(DEFAULT_WORLD_COOKIE))
+            w = db.query(World).filter(World.slug == slug).first() if slug else db.query(World).order_by(World.id).first()
+            world_id = w.id if w else None
+        scope = _scope_mod.compute(db, user, is_assistant, world_id, request.cookies.get(_scope_mod.ACTIVE_GROUP_COOKIE), path)
+        # the "Playing: ..." chooser of the top bar: a GM / assistant of a world with groups
+        if scope is not None and (user.is_gm or is_assistant):
+            groups = db.query(PlayerGroup).filter(PlayerGroup.world_id == world_id).order_by(PlayerGroup.name, PlayerGroup.id).all()
+            request.state.group_switch = ({"choices": [{"id": g.id, "name": g.name} for g in groups], "active": scope.gid if scope.filtered or scope.gid else None}
+                                          if groups else None)
+        return scope
+    finally:
+        db.close()
+
+
+async def _auth_gate_checked(request: Request, call_next, path: str, user, is_assistant: bool, is_world_owner: bool, active_world_id):
     if not user.is_gm and not _is_player_safe(request.method, path):
         assistant_ok = is_assistant and _is_assistant_safe(request.method, path)
         owner_ok = is_world_owner and _is_owner_safe(request.method, path, active_world_id)
@@ -2680,7 +2718,8 @@ def _map_data(jf: Path) -> Optional[dict]:
     # memoized parse keyed by (path, mtime_ns, size) — /maps and the map
     # viewer re-read every map JSON per request otherwise (app/http_perf.py)
     from .http_perf import map_json_cached
-    return map_json_cached(jf)
+    data = map_json_cached(jf)
+    return data if _scope_mod.map_visible(data) else None       # another group's map is as good as missing
 
 
 def _iter_world_maps(world_id: int):
@@ -2775,9 +2814,10 @@ def map_new(
     _MAPS_DIR.mkdir(parents=True, exist_ok=True)
     while (_MAPS_DIR / f"{slug}.json").exists():
         slug = f"{base}-{i}"; i += 1
-    (_MAPS_DIR / f"{slug}.json").write_text(json.dumps({
-        "name": name, "world_id": world.id, "width": width, "height": height, "markers": [],
-    }), encoding="utf-8")
+    new_map = {"name": name, "world_id": world.id, "width": width, "height": height, "markers": []}
+    if _scope_mod.new_map_group() is not None:                  # a group's table: the map belongs to the group that made it
+        new_map["group_id"] = _scope_mod.new_map_group()
+    (_MAPS_DIR / f"{slug}.json").write_text(json.dumps(new_map), encoding="utf-8")
     if image_file and image_file.filename:
         ext = Path(image_file.filename).suffix.lower()
         if ext in ALLOWED_EXTS:

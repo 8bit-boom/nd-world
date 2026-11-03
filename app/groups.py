@@ -10,7 +10,7 @@ from typing import Iterable, List
 
 from sqlalchemy.orm import Session
 
-from .models import Entity, PlayerGroup, WorldMembership, entity_player_access
+from .models import Entity, PlayerCharacter, PlayerGroup, WorldMembership, entity_player_access
 
 MAX_GROUPS_PER_WORLD = 50
 MAX_NAME = 120
@@ -61,3 +61,49 @@ def resync(db: Session, world_id: int) -> int:
         n += 1
     db.commit()
     return n
+
+
+# ── the table layer (app/scope.py) ───────────────────────────────────────────────────────────────────────────────────────────────────────
+HIDDEN = 0          # group_id of content kept from every group (what a deleted group leaves behind): only a GM who is not playing a group sees it
+
+TABLE_LABELS = {
+    "game_sessions": "Sessions", "quests": "Quests", "facts": "Facts", "parties": "Parties", "player_characters": "Characters", "calendar_events": "Calendar events",
+    "combat_sessions": "Combats", "invest_boards": "Boards", "world_handouts": "Handouts", "schematics": "Schematics", "dice_rolls": "Dice rolls",
+}
+
+
+def _scoped_models():
+    from .scope import SCOPED
+    return SCOPED
+
+
+def content_counts(db: Session, world_id: int) -> dict:
+    """{table: {group key: rows}} for the groups page; key "shared" = group_id NULL, "hidden" = 0, else the group id as str."""
+    from sqlalchemy import func
+    out = {}
+    for m in _scoped_models():
+        counts = {}
+        for gid, n in db.query(m.group_id, func.count()).filter(m.world_id == world_id).group_by(m.group_id).all():
+            counts["shared" if gid is None else ("hidden" if gid == HIDDEN else str(gid))] = n
+        out[m.__tablename__] = counts
+    return out
+
+
+def move_content(db: Session, world_id: int, source, target, table: str = "all") -> int:
+    """Re-file the world's table content: every row whose group is `source` (None = shared, an int = that group, HIDDEN = hidden) goes to `target` (same coding).
+    `table` = one table name or "all". Returns the number of rows moved. Commits."""
+    moved = 0
+    for m in _scoped_models():
+        if table != "all" and m.__tablename__ != table:
+            continue
+        q = db.query(m).filter(m.world_id == world_id)
+        q = q.filter(m.group_id.is_(None)) if source is None else q.filter(m.group_id == source)
+        moved += q.update({m.group_id: target}, synchronize_session=False)
+    db.commit()
+    return moved
+
+
+def follow_member(db: Session, world_id: int, user_id: int, group_id) -> None:
+    """A player moved to another group: their characters move with them (shared again when they have no group). Does not commit."""
+    db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id, PlayerCharacter.owner_user_id == user_id).update(
+        {PlayerCharacter.group_id: group_id}, synchronize_session=False)

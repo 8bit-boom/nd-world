@@ -4,6 +4,7 @@
 //! itself of an `/uploads/` request - after Python has decided that the request may have it. Everything else is passed on, streamed in both
 //! directions, to the Python server. See `docs/RUST_GATEWAY.md`.
 pub mod boards;
+pub mod grp;
 pub mod calendar;
 pub mod misc_apis;
 pub mod tiles;

@@ -806,6 +806,20 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | POST | `/images/spotlight/clear` | GM / Assistant | Stops the current spotlight broadcast. Returns `{ok, version}` (the lightbox button turns into **⏹ Stop showing to players** while the image on screen is the one being broadcast). |
 | GET | `/api/gallery/browse` | GM / Assistant | JSON album/image listing for picker UIs. |
 
+## Player groups
+
+Several tables in one world (see docs/FORK_STATUS.md). GM only; plain form POSTs that redirect back to `/groups`.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/groups` | GM | The groups of the active world and which group each member plays in. |
+| POST | `/groups/new` | GM | Adds a group (`name`). |
+| POST | `/groups/{id}/rename` | GM | Renames a group (`name`). |
+| POST | `/groups/{id}/delete` | GM | Deletes a group (`move_to` = hidden (default) / shared / another group id: where its table content goes): its players become unassigned, entities limited only to it become GM-only. |
+| POST | `/groups/switch` | GM / Assistant | The top bar's "Playing: <group>" chooser (`group_id`, blank = every group, `next` = where to go back to): sets/clears the `active_group` cookie. |
+| POST | `/groups/move-content` | GM | Re-files table content in bulk (`source`, `target` = shared / hidden / group id; `table` = one kind or `all`). |
+| POST | `/groups/members/{id}` | GM | Puts a member (user id) in a group (`group_id`, blank = no group); group-limited entities follow. |
+
 ## Pages
 
 `app/routers/pages.py` — GM-authored static document pages (house rules summaries, player guides, custom handouts) organized into albums, rendered from their source file. Player-readable once published.

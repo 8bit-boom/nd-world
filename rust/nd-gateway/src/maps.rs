@@ -19,7 +19,7 @@ pub fn maps_dir(cfg: &Config) -> Option<PathBuf> {
 
 /// `_iter_world_maps`: (slug, data) of the world's map files, by file name. A file Python reads differently (JSON with NaN, a
 /// world id that is not a plain integer, a document that is not an object) makes the whole page Python's.
-pub fn world_maps(cfg: &Config, wid: i64) -> Option<Vec<(String, Map<String, Value>)>> {
+pub fn world_maps(db: &rusqlite::Connection, cfg: &Config, wid: i64) -> Option<Vec<(String, Map<String, Value>)>> {
     let dir = maps_dir(cfg)?;
     let Ok(entries) = std::fs::read_dir(&dir) else { return Some(vec![]) };
     let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map_or(false, |x| x == "json")).collect();
@@ -39,7 +39,7 @@ pub fn world_maps(cfg: &Config, wid: i64) -> Option<Vec<(String, Map<String, Val
             Some(Value::String(_)) | Some(Value::Null) | Some(Value::Array(_)) | Some(Value::Object(_)) => continue,
             _ => return None,
         };
-        if owner == wid {
+        if owner == wid && crate::grp::map_visible(db, &data) {
             out.push((stem, data));
         }
     }
@@ -82,7 +82,7 @@ pub fn maps_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
     }
     let wid = world.get("id")?.as_i64()?;
     let mut maps = vec![];
-    for (slug, data) in world_maps(cfg, wid)? {
+    for (slug, data) in world_maps(&db, cfg, wid)? {
         let markers = match data.get("markers") {
             None => 0,
             Some(v) => py_len(v)?,
@@ -140,7 +140,7 @@ pub fn map_viewer(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
         None => 1,
         Some(v) => v.as_i64()?,
     };
-    if owner != wid || !section_ok(&p, Some(&world), "maps")? {
+    if owner != wid || !section_ok(&p, Some(&world), "maps")? || !crate::grp::map_visible(&db, &data) {
         return None;
     }
     let image_url = map_image(cfg, slug)?;

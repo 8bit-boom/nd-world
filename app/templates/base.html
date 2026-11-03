@@ -140,6 +140,16 @@
     </div>
   </div>
 
+  {% if request.state.group_switch %}
+  <form class="group-switch" method="post" action="/groups/switch" title="Which player group's table you are playing: its sessions, quests, characters ... (new content joins it)">
+    <input type="hidden" name="next" value="{{ request.url.path }}"/>
+    <select name="group_id" aria-label="Playing group" onchange="this.form.submit()">
+      <option value="">👥 All groups</option>
+      {% for g in request.state.group_switch.choices %}<option value="{{ g.id }}" {% if request.state.group_switch.active == g.id %}selected{% endif %}>👥 {{ g.name }}</option>{% endfor %}
+    </select>
+  </form>
+  {% endif %}
+
   <form class="search-form" action="/search" method="get">
     <input name="q" placeholder="Search world…" value="{{ request.query_params.get('q','') }}"/>
     <input type="hidden" name="w" value="{{ world.slug if world else '' }}"/>

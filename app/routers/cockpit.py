@@ -249,6 +249,9 @@ def _maps_dir() -> Path:
     return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 
 
+from .. import scope as _scope
+
+
 def _world_maps(world_id: int) -> list:
     """The world's file-based (Leaflet) maps for the cockpit's world-map
     picker: [{slug, name, markers}]. Mirrors main.py's _iter_world_maps
@@ -263,7 +266,7 @@ def _world_maps(world_id: int) -> list:
             data = json.loads(jf.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(data, dict) or data.get("world_id", 1) != world_id:
+        if not isinstance(data, dict) or data.get("world_id", 1) != world_id or not _scope.map_visible(data):
             continue
         markers = data.get("markers")
         out.append({

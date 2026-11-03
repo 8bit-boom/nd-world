@@ -3,7 +3,7 @@
 {% block content %}
 <div class="grp-page">
   <h1 class="grp-title">👥 Player groups</h1>
-  <p class="grp-intro">Several tables can play the same world. Put each player in a group, then limit an entity to some groups (its <em>Visibility</em> → “Only for these groups”): only the players of those groups see it. A player without a group sees only what is open to everyone.</p>
+  <p class="grp-intro">Several tables can play the same world. The <strong>setting</strong> (lore, rules, races, professions, shared maps) is common to everyone; each group also has its own <strong>table</strong>: its sessions, quests, facts, parties, characters, calendar events, combats, boards, handouts and dice rolls. A player sees the setting and their own group's table. Choose <em>👥 Playing</em> in the top bar to work in one group's table - what you create there joins it. A player without a group sees only what is shared. A single entity can also be limited to some groups (its <em>Visibility</em>).</p>
 
   <section class="grp-section">
     <h2>Groups</h2>
@@ -16,7 +16,12 @@
           <button type="submit" class="btn-cancel">Rename</button>
         </form>
         <span class="grp-count">{{ limited.get(g.id, 0) }} limited entit{{ 'y' if limited.get(g.id, 0) == 1 else 'ies' }}</span>
-        <form method="post" action="/groups/{{ g.id }}/delete" class="grp-inline" onsubmit="return confirm('Delete this group? Its players become unassigned, and entities limited only to it become GM-only.')">
+        <form method="post" action="/groups/{{ g.id }}/delete" class="grp-inline" onsubmit="return confirm('Delete this group? Its players become unassigned; its sessions, quests, characters ... go where you chose, and entities limited only to it become GM-only.')">
+          <select name="move_to" aria-label="Where this group's content goes">
+            <option value="hidden">content: keep hidden</option>
+            <option value="shared">content: share with all</option>
+            {% for o in groups if o.id != g.id %}<option value="{{ o.id }}">content: give to {{ o.name }}</option>{% endfor %}
+          </select>
           <button type="submit" class="btn-cancel">🗑 Delete</button>
         </form>
       </li>
@@ -28,6 +33,27 @@
     <form method="post" action="/groups/new" class="grp-inline grp-new">
       <input type="text" name="name" placeholder="New group, e.g. The Tuesday table" maxlength="120" required/>
       <button type="submit" class="btn-save">＋ Add group</button>
+    </form>
+  </section>
+
+  <section class="grp-section">
+    <h2>Whose table is what</h2>
+    <table class="grp-table">
+      <thead><tr><th></th><th>Shared</th>{% for g in groups %}<th>{{ g.name }}</th>{% endfor %}<th>Hidden</th></tr></thead>
+      <tbody>
+      {% for t, label, c in content %}
+      <tr><td>{{ label }}</td><td>{{ c.get('shared', 0) }}</td>{% for g in groups %}<td>{{ c.get(g.id|string, 0) }}</td>{% endfor %}<td>{{ c.get('hidden', 0) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="grp-intro">Content made before groups existed is shared. Move it to a group (a whole kind, or everything) here:</p>
+    <form method="post" action="/groups/move-content" class="grp-inline grp-new" onsubmit="return confirm('Move this content?')">
+      <select name="table" aria-label="Kind of content"><option value="all">everything</option>{% for t, label, c in content %}<option value="{{ t }}">{{ label }}</option>{% endfor %}</select>
+      from
+      <select name="source" aria-label="From"><option value="shared">shared</option><option value="hidden">hidden</option>{% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}</select>
+      to
+      <select name="target" aria-label="To"><option value="shared">shared</option>{% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}<option value="hidden">hidden</option></select>
+      <button type="submit" class="btn-save">Move</button>
     </form>
   </section>
 

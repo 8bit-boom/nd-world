@@ -152,6 +152,9 @@ pub fn actor_for(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers
             return None;
         }
     }
+    // the group limit (src/grp.rs) applies to every signed-in request, whichever way it was authenticated
+    let assistant = matches!(chosen.3.as_deref(), Some("assistant") | Some("owner"));
+    crate::grp::install(db, user_id, is_gm, assistant, Some(chosen.0), session::cookie(cookie_header, crate::grp::ACTIVE_GROUP_COOKIE), uri.path())?;
     Some(Actor { user_id, display_name: display_name.unwrap_or_default(), world_id: chosen.0 })
 }
 
@@ -221,6 +224,9 @@ impl Drop for Pooled {
         let Some(conn) = self.conn.take() else { return };
         if !conn.is_autocommit() && conn.execute_batch("ROLLBACK").is_err() {
             return; // not usable again: closed
+        }
+        if !crate::grp::clear(&conn) {
+            return; // the request's group views could not be dropped: closed
         }
         if let Ok(mut pool) = pool().lock() {
             if pool.len() < 16 {
@@ -317,8 +323,8 @@ fn store_roll(cfg: &Config, uri: &Uri, headers: &HeaderMap, notation: &str, labe
 
     let tx = db.unchecked_transaction().ok()?;
     tx.execute(
-        "INSERT INTO dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![actor.world_id, actor.user_id, user_name, notation_stored, label_stored, rolled.breakdown_json, rolled.total, stored_at],
+        "INSERT INTO main.dice_rolls (world_id, user_id, user_name, notation, label, breakdown, total, created_at, group_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![actor.world_id, actor.user_id, user_name, notation_stored, label_stored, rolled.breakdown_json, rolled.total, stored_at, crate::grp::new_row_group(&tx, Some(actor.world_id))],
     )
     .ok()?;
     let id = tx.last_insert_rowid();
