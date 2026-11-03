@@ -996,7 +996,7 @@ def test_columns_foreign_keys_indexes_derived_from_model():
     }
 
     indexes, unique_indexes = database_module._indexes_from_model("quests")
-    assert set(indexes) == {"world_id", "parent_id", "assigned_party_id", "created_by_user_id"}
+    assert set(indexes) == {"world_id", "parent_id", "assigned_party_id", "created_by_user_id", "group_id"}
     assert unique_indexes == []
 
     # world_calendars.world_id is unique=True + index=True on the model —

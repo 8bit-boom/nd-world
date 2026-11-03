@@ -153,7 +153,7 @@ def test_audio_library_query_count_does_not_scale_with_album_count(client, seed)
     with _QueryCounter() as counter:
         r = client.get("/audio")
     assert r.status_code == 200
-    assert counter.count <= 10, f"expected O(1) queries, got {counter.count}"
+    assert counter.count <= 12, f"expected O(1) queries, got {counter.count}"  # 10 + the two lookups of the group scope (world, groups), the same for any album count
 
 
 def _seed_video_albums(world_id, n):
@@ -177,7 +177,7 @@ def test_video_library_query_count_does_not_scale_with_album_count(client, seed)
     with _QueryCounter() as counter:
         r = client.get("/video")
     assert r.status_code == 200
-    assert counter.count <= 10, f"expected O(1) queries, got {counter.count}"
+    assert counter.count <= 12, f"expected O(1) queries, got {counter.count}"
 
 
 def _seed_page_albums(world_id, n):
@@ -201,4 +201,4 @@ def test_pages_library_query_count_does_not_scale_with_album_count(client, seed)
     with _QueryCounter() as counter:
         r = client.get("/pages")
     assert r.status_code == 200
-    assert counter.count <= 10, f"expected O(1) queries, got {counter.count}"
+    assert counter.count <= 12, f"expected O(1) queries, got {counter.count}"
