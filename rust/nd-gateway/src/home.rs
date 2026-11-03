@@ -219,5 +219,69 @@ pub fn home(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
     c.insert("world_is_empty".into(), json!(empty));
     c.insert("pinned_tiles".into(), Value::Array(tiles));
     c.insert("hidden_kinds".into(), Value::Array(hidden));
+    // A plain player gets their own start page; a GM or GM-Assistant keeps the dashboard and may look at the player's with /?as=player
+    // (app/player_start.py builds the same `start`).
+    let staff = is_gm || p.role.as_deref() == Some("assistant");
+    let preview = staff && crate::pages::query_param(uri, "as").as_deref() == Some("player");
+    if uid > 0 && (!staff || preview) {
+        let start = player_start(&db, &world, wid, uid, preview, &p.ctx)?;
+        p.ctx.insert("start".into(), start);
+        return render_with(pages, "index_player.html", p.ctx, headers);
+    }
     render_with(pages, "index.html", p.ctx, headers)
+}
+
+/// The sections the start page links to (app/player_start.py `SECTIONS`)
+const START_SECTIONS: &[&str] = &["rules", "characters", "races", "professions", "pages", "dice", "quests", "sessions", "session_log", "parties", "combat", "maps",
+    "calendar", "boards", "audio", "video", "chronicler"];
+
+/// `player_start.build`: what the players' start page needs beyond the home context
+fn player_start(db: &Connection, world: &Map<String, Value>, wid: i64, uid: i64, preview: bool, ctx: &Map<String, Value>) -> Option<Value> {
+    let ws = |k: &str| world.get(k).and_then(|v| v.as_str());
+    // the PLAYER column of the section matrix: what a player gets, and what a GM sees when previewing
+    let level_ok = |sec: &str| -> Option<bool> { Some(nd_perm::sections::section_level(false, Some("player"), ws("section_access_json"), ws("custom_kinds_json"), sec)? != "none") };
+    let mut can = Map::new();
+    for s in START_SECTIONS {
+        can.insert((*s).into(), json!(level_ok(s)?));
+    }
+    let on_map = can.clone();
+    let on = |k: &str| on_map.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    let flag = |m: &Map<String, Value>, k: &str| m.get(k).map_or(false, truthy);
+    let docs = rows(db, "SELECT * FROM page_docs WHERE page_docs.world_id = ?1 AND page_docs.visible_to_players = 1 ORDER BY page_docs.name, page_docs.id", &[&wid])?;
+    let brief = |d: &Map<String, Value>| json!({"id": d.get("id"), "name": d.get("name"), "description": d.get("description").filter(|v| truthy(v)).cloned().unwrap_or(json!(""))});
+    let intro: Vec<Value> = if on("pages") { docs.iter().filter(|d| flag(d, "is_setting_intro")).map(brief).collect() } else { vec![] };
+    let sheet_templates: Vec<Value> = docs.iter().filter(|d| flag(d, "is_character_sheet_template")).map(brief).collect();
+    let (mut my_sheets, mut my_chars) = (vec![], vec![]);
+    if !preview {
+        for s in rows(db, "SELECT * FROM character_sheets WHERE character_sheets.world_id = ?1 AND character_sheets.owner_user_id = ?2 ORDER BY character_sheets.updated_at DESC", &[&wid, &uid])? {
+            my_sheets.push(json!({"id": s.get("id"), "name": s.get("name").filter(|v| truthy(v)).cloned().unwrap_or(json!(""))}));
+        }
+        for c in rows(db, "SELECT * FROM player_characters WHERE player_characters.world_id = ?1 AND player_characters.owner_user_id = ?2 ORDER BY player_characters.id", &[&wid, &uid])? {
+            let t = |k: &str| c.get(k).filter(|v| truthy(v)).cloned().unwrap_or(json!(""));
+            my_chars.push(json!({"id": c.get("id"), "name": c.get("name"), "race": t("race"), "char_class": t("char_class"), "level": c.get("level")}));
+        }
+    }
+    let limit = world.get("max_characters_per_player").and_then(|v| v.as_i64()).filter(|n| *n != 0).unwrap_or(1).max(1);
+    let counts = ctx.get("counts").and_then(|v| v.as_object());
+    let mut explore = vec![];
+    for k in ctx.get("kinds")?.as_array()? {
+        let k = k.as_str()?;
+        if counts.and_then(|c| c.get(k)).map_or(false, truthy) && level_ok(&format!("kind_{k}"))? {
+            explore.push(json!(k));
+        }
+    }
+    let (mut n, mut nums) = (0, Map::new());
+    for (key, shown) in [("intro", !intro.is_empty()), ("rules", on("rules")), ("character", on("characters") || on("races") || on("professions")),
+                         ("sheet", !sheet_templates.is_empty() || !my_sheets.is_empty())] {
+        if shown {
+            n += 1;
+            nums.insert(key.into(), json!(n));
+        }
+    }
+    Some(json!({
+        "can": Value::Object(can), "intro_pages": intro, "sheet_templates": sheet_templates, "my_sheets": my_sheets,
+        "can_create_character": on("characters") && (my_chars.len() as i64) < limit, "my_characters": my_chars,
+        "ai_chat": flag(world, "players_can_use_ai_chat"), "npc_talk": flag(world, "players_can_ask_ai"), "image_gen": flag(world, "players_can_use_image_gen"),
+        "explore_kinds": explore, "nums": Value::Object(nums), "preview": preview,
+    }))
 }

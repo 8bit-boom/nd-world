@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Welcome — {{ world.name }}{% endblock %}
+{% block content %}
+{# The home page a PLAYER sees (a GM and a GM-Assistant keep index.html): the first things a newcomer needs, in the order they need them.
+   Everything is a plain link; a card shows only what this player may open (start.can.<section>). #}
+{% set st = start %}
+{% set can = st.can %}
+<div class="ps-page">
+{% if st.preview %}
+<div class="ps-preview">👁 This is the start page your players see. <a href="{{ '/'|wq }}">Back to your home page</a></div>
+{% endif %}
+{% if (world.hero_style if world else 'home') not in ('everywhere', 'off') %}
+<div data-hb="hero">{% include "_hero.html" %}</div>
+{% endif %}
+{% if world.home_welcome_md %}
+<section class="home-welcome" data-hb="welcome">{{ world.home_welcome_md | md | safe }}</section>
+{% endif %}
+
+<section class="ps-section" aria-labelledby="ps-start-h">
+  <h2 id="ps-start-h" class="ps-heading">🧭 Start here</h2>
+  <ol class="ps-steps">
+    {% if st.intro_pages and can.pages %}
+    <li class="ps-step ps-step-intro">
+      <div class="ps-step-title"><span class="ps-num">{{ st.nums.intro }}</span> 📖 Read the setting introduction</div>
+      <p class="ps-step-text">What the world is, where the story begins and what your character may know.</p>
+      <div class="ps-actions">
+        {% for d in st.intro_pages %}<a class="ps-btn ps-btn-main" href="{{ ('/pages/' + d.id|string)|wq }}" title="{{ d.description }}">📖 {{ d.name }}</a>{% endfor %}
+      </div>
+    </li>
+    {% endif %}
+    {% if can.rules %}
+    <li class="ps-step">
+      <div class="ps-step-title"><span class="ps-num">{{ st.nums.rules }}</span> 📜 Learn the rules</div>
+      <p class="ps-step-text">How the game works: checks, combat, magic and everything your character can do.</p>
+      <div class="ps-actions"><a class="ps-btn ps-btn-main" href="{{ '/rules'|wq }}">📜 Open the rules</a></div>
+    </li>
+    {% endif %}
+    {% if can.characters or can.races or can.professions %}
+    <li class="ps-step">
+      <div class="ps-step-title"><span class="ps-num">{{ st.nums.character }}</span> 🧬 Create your character{% if st.my_characters %} <span class="ps-done">✓ done</span>{% endif %}</div>
+      <p class="ps-step-text">{% if st.my_characters %}You have {{ st.my_characters|length }} character{{ 's' if st.my_characters|length != 1 else '' }} in this world.{% else %}Look through the races and professions, then build your character.{% endif %}</p>
+      <div class="ps-actions">
+        {% if can.characters and st.can_create_character %}<a class="ps-btn ps-btn-main" href="{{ '/characters/new'|wq }}">✨ Create a character</a>{% endif %}
+        {% if can.races %}<a class="ps-btn" href="{{ '/races'|wq }}">🧬 Races</a>{% endif %}
+        {% if can.professions %}<a class="ps-btn" href="{{ '/professions'|wq }}">🎭 Professions</a>{% endif %}
+        {% if can.characters %}<a class="ps-btn" href="{{ '/characters'|wq }}">🎲 Player characters</a>{% endif %}
+      </div>
+    </li>
+    {% endif %}
+    {% if st.sheet_templates or st.my_sheets %}
+    <li class="ps-step">
+      <div class="ps-step-title"><span class="ps-num">{{ st.nums.sheet }}</span> 🗒 Fill in your character sheet{% if st.my_sheets %} <span class="ps-done">✓ started</span>{% endif %}</div>
+      <p class="ps-step-text">{% if st.my_sheets %}Your sheets are saved as you type.{% else %}Start a sheet from one of the templates your GM prepared.{% endif %}</p>
+      <div class="ps-actions">
+        {% for s in st.my_sheets %}<a class="ps-btn ps-btn-main" href="{{ ('/pages/sheets/' + s.id|string)|wq }}">🗒 {{ s.name or 'My sheet' }}</a>{% endfor %}
+        {% for d in st.sheet_templates %}
+        <form method="post" action="{{ '/pages/sheets/new'|wq }}" style="display:inline">
+          <input type="hidden" name="template_id" value="{{ d.id }}"/>
+          <button type="submit" class="ps-btn" title="{{ d.description }}">＋ New sheet: {{ d.name }}</button>
+        </form>
+        {% endfor %}
+        <a class="ps-btn" href="{{ '/pages/sheets'|wq }}">All my sheets</a>
+      </div>
+    </li>
+    {% endif %}
+  </ol>
+</section>
+
+{% if st.my_characters %}
+<section class="ps-section" aria-labelledby="ps-chars-h">
+  <h2 id="ps-chars-h" class="ps-heading">🎲 Your characters</h2>
+  <div class="ps-cards">
+    {% for c in st.my_characters %}
+    <a class="ps-card" href="{{ ('/characters/' + c.id|string)|wq }}">
+      <span class="ps-card-name">{{ c.name }}</span>
+      <span class="ps-card-sub">{{ [c.race, c.char_class]|select|join(' · ') }}{% if c.level %} · level {{ c.level }}{% endif %}</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="ps-section" aria-labelledby="ps-table-h">
+  <h2 id="ps-table-h" class="ps-heading">🎲 At the table</h2>
+  <div class="ps-tiles">
+    {% if can.dice %}<a class="ps-tile" href="{{ '/dice'|wq }}"><span class="ps-tile-i">🎲</span><span>Dice</span></a>{% endif %}
+    {% if can.quests %}<a class="ps-tile" href="{{ '/quests'|wq }}"><span class="ps-tile-i">📜</span><span>Quests</span></a>{% endif %}
+    {% if can.sessions %}<a class="ps-tile" href="{{ '/sessions'|wq }}"><span class="ps-tile-i">📓</span><span>Session recaps</span></a>{% endif %}
+    {% if can.session_log %}<a class="ps-tile" href="{{ '/session-log'|wq }}"><span class="ps-tile-i">📓</span><span>Session log</span></a>{% endif %}
+    {% if can.parties %}<a class="ps-tile" href="{{ '/parties'|wq }}"><span class="ps-tile-i">🛡</span><span>Party</span></a>{% endif %}
+    {% if can.combat %}<a class="ps-tile" href="{{ '/combat'|wq }}"><span class="ps-tile-i">⚔</span><span>Combat</span></a>{% endif %}
+    {% if can.maps %}<a class="ps-tile" href="{{ '/maps'|wq }}"><span class="ps-tile-i">🗺</span><span>Maps</span></a>{% endif %}
+    {% if can.calendar %}<a class="ps-tile" href="{{ '/calendar'|wq }}"><span class="ps-tile-i">🗓</span><span>Calendar</span></a>{% endif %}
+    <a class="ps-tile" href="{{ '/schedule'|wq }}"><span class="ps-tile-i">📅</span><span>Session schedule</span></a>
+    {% if can.boards %}<a class="ps-tile" href="{{ '/boards'|wq }}"><span class="ps-tile-i">📌</span><span>Boards</span></a>{% endif %}
+    {% if can.pages %}<a class="ps-tile" href="{{ '/pages'|wq }}"><span class="ps-tile-i">📄</span><span>Pages &amp; handouts</span></a>{% endif %}
+    {% if can.audio %}<a class="ps-tile" href="{{ '/audio'|wq }}"><span class="ps-tile-i">🎵</span><span>Audio</span></a>{% endif %}
+    {% if can.video %}<a class="ps-tile" href="{{ '/video'|wq }}"><span class="ps-tile-i">🎬</span><span>Video</span></a>{% endif %}
+    {% if can.chronicler %}<a class="ps-tile" href="{{ '/chronicler'|wq }}"><span class="ps-tile-i">📜</span><span>Chronicler</span></a>{% endif %}
+    {% if st.ai_chat %}<a class="ps-tile" href="{{ '/ai-chat'|wq }}"><span class="ps-tile-i">🤖</span><span>Chat with AI</span></a>{% endif %}
+    {% if st.npc_talk %}<a class="ps-tile" href="{{ '/npc-talk'|wq }}"><span class="ps-tile-i">💬</span><span>Talk to NPCs</span></a>{% endif %}
+    {% if st.image_gen %}<a class="ps-tile" href="{{ '/image-gen'|wq }}"><span class="ps-tile-i">🎨</span><span>Create art</span></a>{% endif %}
+    <a class="ps-tile" href="{{ '/search'|wq }}"><span class="ps-tile-i">🔎</span><span>Search</span></a>
+  </div>
+</section>
+
+{% if recent_sessions and can.sessions or active_quests and can.quests %}
+<section class="ps-section" aria-labelledby="ps-latest-h">
+  <h2 id="ps-latest-h" class="ps-heading">🕯 Latest from the table</h2>
+  <div class="ps-latest">
+    {% if recent_sessions and can.sessions %}
+    <div>
+      <div class="tool-label">📓 Sessions</div>
+      {% for s in recent_sessions %}<a href="{{ ('/sessions/' + s.id|string)|wq }}" class="tool-item">#{{ s.session_num }} {{ s.title }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>{% endfor %}
+    </div>
+    {% endif %}
+    {% if active_quests and can.quests %}
+    <div>
+      <div class="tool-label">📜 Active quests</div>
+      {% for q in active_quests %}<a href="{{ ('/quests/' + q.id|string)|wq }}" class="tool-item">{{ q.title }}<span class="tool-date">{{ q.updated_at.strftime('%b %d') if q.updated_at }}</span></a>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if home_sections %}
+<section class="ps-section" aria-labelledby="ps-gm-h">
+  <h2 id="ps-gm-h" class="ps-heading">📌 From your GM</h2>
+  {% for sec in home_sections %}
+  <div class="ps-gm-group">
+    {% if home_sections|length > 1 %}<div class="tool-label">{{ sec.name }}</div>{% endif %}
+    <div class="ps-tiles">
+      {% for l in sec.links %}<a class="ps-tile" href="{{ l.href }}">{% if l.icon %}<span class="ps-tile-i">{{ l.icon }}</span>{% endif %}<span>{{ l.label }}</span></a>{% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if st.explore_kinds %}
+<section class="ps-section" aria-labelledby="ps-world-h">
+  <h2 id="ps-world-h" class="ps-heading">🌍 Explore the world</h2>
+  <div class="dashboard">
+    {% for k in st.explore_kinds %}
+    <a href="{{ ('/kind/' + k)|wq }}" class="dash-card kind-{{ k }}">
+      <span class="dash-icon">{{ kind_icons[k] }}</span>
+      <span class="dash-count">{{ counts[k] }}</span>
+      <span class="dash-label">{{ k|capitalize }}s</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+</div>
+{% endblock %}

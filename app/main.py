@@ -2643,7 +2643,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     hidden_kinds = _resolve_hidden_kinds(world) if world else set()
     world_is_empty = sum(counts.values()) == 0
 
-    return templates.TemplateResponse("index.html", {
+    ctx = {
         "request": request, "counts": counts, "recent": recent,
         "world": world, "worlds": worlds, "preview_maps": preview_maps,
         "most_linked": most_linked, "top_tags": top_tags,
@@ -2651,7 +2651,18 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
         "recent_sessions": recent_sessions, "active_quests": active_quests,
         "home_sections": home_sections, "world_is_empty": world_is_empty,
         "pinned_tiles": pinned_tiles, "hidden_kinds": hidden_kinds,
-    })
+    }
+    # A plain player gets their own start page (rules, character creation, setting introduction, ...); a GM or GM-Assistant keeps the dashboard above,
+    # and may look at the player's with /?as=player.
+    user = getattr(request.state, "user", None)
+    if user is not None and world:
+        staff = bool(user.is_gm or getattr(request.state, "is_assistant", False))
+        preview = staff and request.query_params.get("as") == "player"
+        if not staff or preview:
+            from . import player_start
+            ctx["start"] = player_start.build(db, world, user, counts, preview)
+            return templates.TemplateResponse("index_player.html", ctx)
+    return templates.TemplateResponse("index.html", ctx)
 
 def _map_data(jf: Path) -> Optional[dict]:
     # memoized parse keyed by (path, mtime_ns, size) — /maps and the map

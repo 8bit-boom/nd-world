@@ -1313,6 +1313,9 @@ class PageDoc(Base):
     # by default; only templates opted into this show the "+ New sheet
     # from this template" action to players on the Pages library page.
     is_character_sheet_template = Column(Boolean, default=False)
+    # GM-marked: this page introduces the setting. The players' start page (the home page for a player) lists every visible
+    # page with this mark under "Setting introduction", so a newcomer's first read is one click away.
+    is_setting_intro = Column(Boolean, default=False)
 
 
 class CharacterSheet(Base):

@@ -74,6 +74,10 @@
             <input type="checkbox" name="is_character_sheet_template" value="1" style="width:auto"/>
             🧬 Character sheet template
           </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)" title="Shown to new players under &quot;Setting introduction&quot; on their start page">
+            <input type="checkbox" name="is_setting_intro" value="1" style="width:auto"/>
+            📖 Setting introduction
+          </label>
         </div>
         <button type="submit" class="btn-save" id="pages-upload-submit">⬆ Upload{{ ' to ' + album.name if album else '' }}</button>
       </div>
@@ -110,6 +114,7 @@
           <div class="pages-doc-name">
             {{ d.name }}
             {% if d.is_character_sheet_template %}<span class="pages-doc-sheet-tag">🧬 sheet template{% if sheet_counts.get(d.id) %} · {{ sheet_counts[d.id] }} sheet{{ 's' if sheet_counts[d.id] != 1 else '' }} built from this{% endif %}</span>{% endif %}
+            {% if d.is_setting_intro %}<span class="pages-doc-sheet-tag">📖 setting introduction</span>{% endif %}
             {% if can_edit(request) and not d.visible_to_players %}<span class="pages-doc-hidden-tag">hidden from players</span>{% endif %}
           </div>
           {% if d.description %}<div class="pages-doc-desc">{{ d.description }}</div>{% endif %}
@@ -151,6 +156,10 @@
               <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
                 <input type="checkbox" name="is_character_sheet_template" value="1" {% if d.is_character_sheet_template %}checked{% endif %} style="width:auto"/>
                 🧬 Character sheet template
+              </label>
+              <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)" title="Shown to new players under &quot;Setting introduction&quot; on their start page">
+                <input type="checkbox" name="is_setting_intro" value="1" {% if d.is_setting_intro %}checked{% endif %} style="width:auto"/>
+                📖 Setting introduction
               </label>
             </div>
             <button type="submit" class="btn-save" style="font-size:.78rem;padding:.3rem .7rem">Save</button>
@@ -250,6 +259,7 @@ async function pagesUploadAll(form, files) {
   const description = form.querySelector('[name=description]').value;
   const visible = form.querySelector('[name=visible_to_players]').checked;
   const isSheetTemplate = form.querySelector('[name=is_character_sheet_template]').checked;
+  const isSettingIntro = form.querySelector('[name=is_setting_intro]').checked;
   // The custom "Name" field only makes sense for a single file — for a
   // multi-file selection every page defaults to its own filename instead.
   const singleName = files.length === 1 ? form.querySelector('[name=name]').value.trim() : '';
@@ -266,7 +276,7 @@ async function pagesUploadAll(form, files) {
     try {
       if (file.size > PAGES_CHUNK_UPLOAD_THRESHOLD) {
         await pagesUploadChunked(file, {
-          description, visible, isSheetTemplate, albumIdInput, name: singleName,
+          description, visible, isSheetTemplate, isSettingIntro, albumIdInput, name: singleName,
           line, index: i, total: files.length,
         });
       } else {
@@ -276,6 +286,7 @@ async function pagesUploadAll(form, files) {
         fd.append('description', description);
         if (visible) fd.append('visible_to_players', '1');
         if (isSheetTemplate) fd.append('is_character_sheet_template', '1');
+        if (isSettingIntro) fd.append('is_setting_intro', '1');
         if (albumIdInput) fd.append('album_id', albumIdInput.value);
         if (singleName) fd.append('name', singleName);
         const res = await fetch(form.action, { method: 'POST', body: fd });
@@ -323,6 +334,7 @@ async function pagesUploadChunked(file, opts) {
   fd.append('description', opts.description);
   if (opts.visible) fd.append('visible_to_players', '1');
   if (opts.isSheetTemplate) fd.append('is_character_sheet_template', '1');
+  if (opts.isSettingIntro) fd.append('is_setting_intro', '1');
   if (opts.albumIdInput) fd.append('album_id', opts.albumIdInput.value);
   if (opts.name) fd.append('name', opts.name);
   const res = await fetch('/pages/upload/complete', { method: 'POST', body: fd });

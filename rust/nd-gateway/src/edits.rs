@@ -5634,6 +5634,7 @@ fn lib_item_edit(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body>> 
     set.push(("visible_to_players", Sql::Integer(visible)));
     if lib.sheets {
         set.push(("is_character_sheet_template", Sql::Integer(flag_param(&f, "is_character_sheet_template"))));
+        set.push(("is_setting_intro", Sql::Integer(flag_param(&f, "is_setting_intro"))));
     }
     if lib.entity {
         let ent = match digit_field(f.get("entity_id").unwrap_or("")).ok()? {
@@ -6412,6 +6413,7 @@ fn add_library_item_with(c: &mut Ctx, lib: &Lib, wid: i64, f: &Form, filename: &
     cols.extend(extra);
     if lib.sheets {
         cols.push(("is_character_sheet_template", Sql::Integer(flag_param(f, "is_character_sheet_template"))));
+        cols.push(("is_setting_intro", Sql::Integer(flag_param(f, "is_setting_intro"))));
     }
     if with_entity {
         let ent = match digit_field(f.get("entity_id").unwrap_or("")).ok()? {

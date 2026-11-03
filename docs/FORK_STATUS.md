@@ -96,3 +96,11 @@ Unticked = the old one-go run. The Background Jobs page lists `transcribed` jobs
 answered 501) - it is served now, with Python's 400s. Python and the gateway are compared in `tests/test_gateway_ai.py::test_summary_settings_after_transcribing_are_pythons`.
 Still Python's only: `POST /api/audio-jobs/<id>/resume` (the manual Resume of an interrupted job).
 
+### The players' start page
+A plain player's home page (`/`) is `index_player.html`; a GM and a GM-Assistant keep the dashboard (and can look at the player's with `/?as=player`). Numbered steps, each shown only when the
+player may open it (the PLAYER column of Settings -> Navigation, `app/player_start.py` / `home.rs`): 1 read the setting introduction (Pages marked "📖 Setting introduction" - new
+`PageDoc.is_setting_intro`, set on the Pages upload / edit forms), 2 learn the rules, 3 create your character (Create a character while under the world's limit, Races, Professions, Player
+characters; "done" once they own one), 4 fill in your character sheet (new sheet from each sheet template, their own sheets). Then their characters, "At the table" tiles (dice, quests,
+session recaps / log, party, combat, maps, calendar, schedule, boards, pages, audio, video, Chronicler, the AI tools the GM switched on, search), the latest sessions and quests, the GM's own
+Quick Links ("From your GM"), and the lore kinds with entries. Python and the gateway are compared page by page in `tests/test_player_start.py`.
+
