@@ -102,6 +102,8 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if id_between(path, "/sessions/", "/summary.md").is_some() => session_summary_md(&cfg, uri, headers, id_between(path, "/sessions/", "/summary.md")?),
         path if id_between(path, "/sessions/", "/transcript.md").is_some() => session_transcript_md(&cfg, uri, headers, id_between(path, "/sessions/", "/transcript.md")?),
         path if id_between(path, "/api/ai/assist-job/", "").is_some() => assist_job(&cfg, uri, headers, id_between(path, "/api/ai/assist-job/", "")?),
+        path if id_between(path, "/api/audio-jobs/", "/transcript.md").is_some() => audio_job_md(&cfg, uri, headers, id_between(path, "/api/audio-jobs/", "/transcript.md")?, "transcript"),
+        path if id_between(path, "/api/audio-jobs/", "/recap.md").is_some() => audio_job_md(&cfg, uri, headers, id_between(path, "/api/audio-jobs/", "/recap.md")?, "recap"),
         path if audio_job_id(path).is_some() => audio_job_status(&cfg, uri, headers, audio_job_id(path)?),
         path if media_run_id(path).is_some() => media_rename_run(&cfg, uri, headers, media_run_id(path)?),
         path if session_audio_job_id(path).is_some() => session_audio_job_status(&cfg, uri, headers, session_audio_job_id(path)?),
@@ -119,6 +121,7 @@ pub fn is_get(path: &str) -> bool {
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
         || id_between(path, "/sessions/", "/npc-candidates").is_some() || id_between(path, "/sessions/", "/summary.md").is_some() || id_between(path, "/sessions/", "/transcript.md").is_some()
+        || id_between(path, "/api/audio-jobs/", "/transcript.md").is_some() || id_between(path, "/api/audio-jobs/", "/recap.md").is_some()
         || id_between(path, "/api/characters/", "/vitals").is_some() || id_between(path, "/api/characters/", "/sync").is_some() || id_between(path, "/api/characters/", "/advance").is_some() || id_between(path, "/api/characters/", "/ability-cards").is_some() || id_between(path, "/characters/templates/", "/export.json").is_some() || id_between(path, "/characters/", "/export.json").is_some() || id_between(path, "/characters/", "/export.md").is_some() || id_between(path, "/characters/", "/export.pdf").is_some() || id_between(path, "/characters/", "/export.foundry.json").is_some() || id_between(path, "/characters/", "/export.ndc").is_some() || saved_views_section(path).is_some()
         || id_between(path, "/api/sessions/", "/live-transcript/check").is_some() || matches!(path, "/api/ai/imagegen/player/jobs" | "/api/ai/chat/jobs" | "/api/quests/board" | "/api/backups" | "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models" | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" | "/api/ai/imagegen/starred" | "/api/ai/imagegen/tags/sources" | "/api/ai/imagegen/tags/status" | "/api/ai/imagegen/tags" | "/api/perf/summary" | "/api/perf/recent" | "/api/system/stats" | "/api/orgs/graph" | "/api/ai/context-info" | "/api/ai/ping" | "/api/ai/sessions" | "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/audio-models" | "/api/ai/unsloth/version" | "/api/ai/unsloth/probe" | "/api/ai/unsloth/hub/download-progress" | "/api/ai/unsloth/gguf-variants" | "/api/ai/recap-instructions" | "/api/ai/defaults" | "/api/ai/prompt-presets" | "/api/media-rename/history" | "/api/sessions/ai/audio-jobs" | "/api/kiy/plays" | "/api/media-rename/runs" | "/api/media-rename/summary" | "/api/media-rename/items" | "/api/gallery/browse" | "/admin/diagnostics/events" | "/api/maps/props" | "/api/facts/last-parse" | "/tables/export" | "/api/characters/catalog" | "/api/characters/templates" | "/api/combat/recent" | "/api/audio/clips" | "/api/world-players" | "/api/tables/options" | "/api/video-jobs") || trailing_id(path, "/api/ai/chat/jobs/").is_some() || trailing_id(path, "/api/ai/sessions/").is_some()
 }
@@ -198,6 +201,10 @@ fn player_image_job_id(path: &str) -> Option<i64> {
 
 /// `api_audio_job_status` (app/routers/audio_jobs.py): one background job of the active world as `_job_to_dict` writes it; a GM or an
 /// assistant, who does not see a GM-tier World Summary or a Code Assist job
+pub fn audio_job_status_pub(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
+    audio_job_status(cfg, uri, headers, id)
+}
+
 fn audio_job_status(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option<Response<Body>> {
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
@@ -2328,6 +2335,31 @@ fn session_md_download(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64, su
     let fname = session_md_name(gs.get("title").and_then(|v| v.as_str()), suffix)?;
     let mut r = crate::edits::json_response_raw(&body, "text/markdown; charset=utf-8")?;
     if let Ok(v) = format!("attachment; filename=\"{fname}\"").parse() {
+        r.headers_mut().insert("content-disposition", v);
+    }
+    Some(r)
+}
+
+/// `GET /api/audio-jobs/<id>/transcript.md` and `/recap.md` (app/routers/audio_jobs.py): the job's text as a download; a GM's, in the active world
+fn audio_job_md(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64, what: &str) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None; // an assistant's view of which jobs exist is Python's rule
+    }
+    let wid = world_id_of(&p)?;
+    let job = db.query_row("SELECT filename, transcript, recap FROM audio_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+        |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get::<_, Option<String>>(2)?.unwrap_or_default()))).ok();
+    let Some((filename, transcript, recap)) = job else { return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Not Found")) };
+    let text = if what == "transcript" { transcript } else { recap };
+    if text.is_empty() {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, format!("This job has no {what} yet")));
+    }
+    // `_audio_job_download_filename`: the uploaded file's stem with only letters, digits, spaces, - and _ kept
+    let stem = if filename.is_empty() { format!("job-{id}") } else { std::path::Path::new(&filename).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() };
+    let base: String = stem.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).collect();
+    let base = if base.is_empty() { format!("job-{id}") } else { base };
+    let mut r = crate::edits::json_response_raw(&text, "text/markdown; charset=utf-8")?;
+    if let Ok(v) = format!("attachment; filename=\"{base}-{what}.md\"").parse() {
         r.headers_mut().insert("content-disposition", v);
     }
     Some(r)

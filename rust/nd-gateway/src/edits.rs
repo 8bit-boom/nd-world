@@ -199,6 +199,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/tables/import", tables_import),
     ("/api/quests/apply", quests_apply),
     ("/api/facts/bulk", facts_bulk),
+    ("/api/facts/from-job/{}", facts_from_job),
     ("/facts/{}/edit", fact_edit),
     ("/facts/{}/delete", fact_delete),
     ("/tables/new", table_create),
@@ -424,6 +425,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/admin/backup/restore", crate::restore::stage),
     ("/api/ai/attachments/audio-jobs", attach_audio_job_create),
     ("/api/ai/attachments/audio-jobs/chunk", attach_audio_job_chunk),
+    ("/api/sessions/ai/audio-jobs/chunk", session_audio_job_chunk),
     ("/api/ai/attachments/upload", attach_upload),
     ("/api/ai/attachments/upload/chunk", attach_chunk),
 ];
@@ -1436,6 +1438,11 @@ fn session_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 /// The session by id, of the viewer's active world, with session edit rights there (`_require_edit_section` by membership)
 fn editable_session(c: &Ctx, id: i64) -> Option<Map<String, Value>> {
     let gs = row(&c.db, "SELECT * FROM game_sessions WHERE id = ?1", id)?;
+    // Python checks the SESSION'S own world (`_require_edit_section(request, db.get(World, gs.world_id))`), not the active one: a GM saving a recap from a page
+    // opened with ?w=<world> (the save request carries no ?w=, so the active world falls back to the cookie's) must not be refused
+    if c.p.is_gm {
+        return Some(gs);
+    }
     if gs.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_section("sessions")? {
         return None;
     }
@@ -5514,17 +5521,8 @@ fn json_tags(v: Option<&Value>) -> Option<Sql> {
     })
 }
 
-fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
-    let b = c.json()?;
-    let wid = c.world_id()?;
-    if !c.can_edit_section("facts")? {
-        return None;
-    }
-    let items = b.get("facts")?.as_array().filter(|a| !a.is_empty())?.clone();
-    let session = match b.get("game_session_id") {
-        Some(v) if py_truthy(Some(v)) => Sql::Integer(py_int_value(v).ok()?),
-        _ => Sql::Null,
-    };
+/// `_create_facts_from_items`: the drafted facts written (a repeat of an existing fact is skipped); (created, skipped duplicates)
+fn create_facts_from_items(c: &Ctx, wid: i64, session: &Sql, items: &[Value]) -> Option<(i64, i64)> {
     let mut seen: Vec<String> = vec![];
     let mut stmt = c.db.prepare_cached("SELECT content FROM facts WHERE world_id = ?1").ok()?;
     let existing: Vec<Option<String>> = stmt.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
@@ -5533,7 +5531,7 @@ fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         seen.push(fact_key(&e?)?);
     }
     let (mut created, mut skipped) = (0, 0);
-    for it in &items {
+    for it in items {
         let Some(m) = it.as_object() else { continue };
         let content = match m.get("content") {
             None => String::new(),
@@ -5565,6 +5563,42 @@ fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         )?;
         created += 1;
     }
+    Some((created, skipped))
+}
+
+/// `POST /api/facts/from-job/<id>` (app/routers/facts.py): confirm (or dismiss) the facts a recording job drafted; the job's pending draft is cleared either way
+fn facts_from_job(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    let job = row(&c.db, "SELECT * FROM audio_jobs WHERE id = ?1", ids[0]);
+    let Some(job) = job else { return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Not Found")) };
+    let wid = c.world_id()?;
+    if job.get("world_id")?.as_i64() != Some(wid) {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Not Found"));
+    }
+    if !c.can_edit_section("facts")? {
+        return None;
+    }
+    let b = c.json()?;
+    let Some(Value::Array(items)) = b.get("facts") else {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "\"facts\" must be a list (possibly empty, to dismiss)"));
+    };
+    let session = match job.get("game_session_id").and_then(|v| v.as_i64()) { Some(g) => Sql::Integer(g), None => Sql::Null };
+    let (created, skipped) = create_facts_from_items(c, wid, &session, items)?;
+    orm::update(&c.db, "audio_jobs", ids[0], &[("pending_facts_json", s("[]"))])?;
+    json_response(&json!({"created": created, "skipped_duplicates": skipped}))
+}
+
+fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let b = c.json()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("facts")? {
+        return None;
+    }
+    let items = b.get("facts")?.as_array().filter(|a| !a.is_empty())?.clone();
+    let session = match b.get("game_session_id") {
+        Some(v) if py_truthy(Some(v)) => Sql::Integer(py_int_value(v).ok()?),
+        _ => Sql::Null,
+    };
+    let (created, skipped) = create_facts_from_items(c, wid, &session, &items)?;
     // job_id: `str(job_id).isdigit()` - an int or digit text
     let job = match b.get("job_id") {
         Some(v) if py_truthy(Some(v)) => match v {
@@ -15547,6 +15581,37 @@ pub(crate) fn attach_audio_job_chunk(c: &mut Ctx, _ids: &[i64]) -> Option<Respon
         return None;
     }
     let dir = uploads_root(c)?.join("ai_attachments").join("_chunks").join(&upload_id);
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{chunk:06}.part"));
+    c.created.push(dest.clone());
+    let part = one_file(c, "file")?;
+    c.upload.as_ref()?.copy_part(part, &dest)?;
+    json_response(&json!({"ok": true}))
+}
+
+/// `POST /api/sessions/ai/audio-jobs/chunk` (app/routers/sessions.py): one part of a session recording the GM dropped into Sessions; `/complete` reassembles them
+pub(crate) fn session_audio_job_chunk(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    if !(c.p.is_gm || c.can_edit_section("sessions")?) {
+        return None;
+    }
+    let f = c.form()?;
+    let upload_id = f.get("upload_id")?.to_string();
+    let chunk = crate::form::py_int(f.get("chunk_index")?)?;
+    if upload_id.is_empty() || upload_id.len() > 64 || !upload_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') || !(0..=2000).contains(&chunk) {
+        return None;
+    }
+    let (fname, flen) = { let part = one_file(c, "file")?; (part.filename.clone(), part.len) };
+    if fname.is_empty() {
+        return None;
+    }
+    let cap = match std::env::var("MAX_SESSION_AUDIO_BYTES") {
+        Ok(v) => py_int_text(&v).ok()?,
+        Err(_) => env_bytes("MAX_AUDIO_UPLOAD_BYTES", 3 * 1024 * 1024 * 1024)?,
+    };
+    if flen as i64 > cap {
+        return None;
+    }
+    let dir = uploads_root(c)?.join("session_audio").join("_chunks").join(&upload_id);
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(format!("{chunk:06}.part"));
     c.created.push(dest.clone());

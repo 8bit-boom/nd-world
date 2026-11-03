@@ -819,6 +819,11 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
+    if req.method() == axum::http::Method::POST && req.uri().path().starts_with("/api/audio-jobs/") && req.uri().path().ends_with("/resume") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
+        if let Some(resp) = ai::audio_job_resume(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::POST && req.uri().path().starts_with("/api/audio-jobs/") && req.uri().path().ends_with("/resummarize") && app.cfg.rust_routes.iter().any(|r| r == "ai") {
         let (parts, body) = req.into_parts();
         let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {

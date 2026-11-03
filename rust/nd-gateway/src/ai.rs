@@ -1486,6 +1486,43 @@ pub async fn audio_job_cancel(cfg: std::sync::Arc<Config>, uri: Uri, headers: He
 }
 
 
+/// `POST /api/audio-jobs/<id>/resume` (app/routers/audio_jobs.py `api_audio_job_resume` + `start_resume_job`): a job a restart left "interrupted" continues from its checkpoint
+pub async fn audio_job_resume(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
+    let id: i64 = uri.path().strip_prefix("/api/audio-jobs/")?.strip_suffix("/resume")?.parse().ok()?;
+    let c2 = cfg.clone();
+    let (u2, h2) = (uri.clone(), headers.clone());
+    let started = tokio::task::spawn_blocking(move || -> Option<Result<(), Response<Body>>> {
+        let db = crate::writes::open(&c2)?;
+        let (p, wid) = assist_caller(&db, &c2, &u2, &h2)?;
+        if !p.is_gm && crate::pages::edit_level(&p, p.world.as_ref()?, "background_jobs") != Some(true) {
+            return None;
+        }
+        let job = db.query_row("SELECT status, purpose, audio_path, transcript, checkpoint_json FROM audio_jobs WHERE id = ?1 AND world_id = ?2", rusqlite::params![id, wid],
+            |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(), r.get::<_, Option<String>>(4)?.unwrap_or_default()))).ok();
+        let Some((status, purpose, audio, transcript, checkpoint)) = job else { return Some(Err(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "Not Found"))) };
+        let bad = |m: &str| Some(Err(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, m)));
+        if status != "interrupted" {
+            return bad("Only a job paused by a server restart can be resumed this way.");
+        }
+        let single = matches!(purpose.as_str(), "session_log_recap" | "ai_assist" | "world_summary");
+        if !single && audio.is_empty() && transcript.is_empty() {
+            return bad("This job's audio is gone and it has no transcript to resume from \u{2014} please re-upload.");
+        }
+        let phase = serde_json::from_str::<Value>(&checkpoint).ok().and_then(|c| c.get("phase").and_then(|p| p.as_str()).map(str::to_string));
+        let summarizing = phase.as_deref() == Some("summarize") || (phase.is_none() && !transcript.is_empty()) || single;
+        if !summarizing && (audio.is_empty() || !std::path::Path::new(&audio).is_file()) {
+            return bad("This job's audio file is gone \u{2014} please re-upload to redo the recording.");
+        }
+        resume_assist_job(&db, id, true)?;
+        Some(Ok(()))
+    }).await.ok()??;
+    match started {
+        Err(r) => Some(r),
+        Ok(()) => crate::apis::audio_job_status_pub(&cfg, &uri, &headers, id),
+    }
+}
+
 /// `POST /api/audio-jobs/<id>/resummarize` (app/routers/audio_jobs.py `api_audio_job_resummarize` + `start_resummarize_job`): the summary run again over
 /// the job's saved transcript with the model and settings the form carries - the step after "choose the model and summary settings after transcribing"
 /// (status "transcribed"), and the Retry summary of a failed one. Python's 400s are answered here too; a value this parser cannot read exactly declines.
