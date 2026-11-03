@@ -72,6 +72,6 @@ def test_the_home_page_tags_its_blocks_and_remembers_each_persons_choice(client,
     assert r.status_code == 200 and r.json()["order"] == ["recent", "links"]
     page = client.get("/").text
     assert 'data-ep-view="widgets"' in page and 'data-ep-order="recent,links"' in page and 'data-ep-hidden="maps"' in page
-    _as(client, seed, False)                                                                      # a player: their own page, on the default
+    _as(client, seed, False)                                                                      # a player: their own start page, not the GM's dashboard
     pl = client.get("/").text
-    assert 'data-ep-view=""' in pl and 'data-ep-order=""' in pl
+    assert 'class="ps-page"' in pl and 'id="home-stack"' not in pl and 'data-ep-order="recent,links"' not in pl
