@@ -344,3 +344,66 @@ mod avif_speed {
         println!("webp q74     : {:6.0} ms  {:7} bytes", t.elapsed().as_secs_f64() * 1000.0, enc.len());
     }
 }
+
+
+// ── the lightbox's display-size copy (app/imaging.py make_display) ──
+
+const DISPLAY_MAX_DIM: u32 = 2560;
+const DISPLAY_MIN_SAVING: f64 = 0.3;
+
+/// an animated PNG / WebP / AVIF (Pillow's `is_animated`): shown as it is, never as a still copy
+fn is_animated(path: &Path) -> bool {
+    let mut head = vec![0u8; 64 * 1024];
+    let Some(n) = std::fs::File::open(path).ok().and_then(|mut f| f.read(&mut head).ok()) else { return false };
+    let head = &head[..n];
+    head.windows(4).any(|w| w == b"acTL") || (head.starts_with(b"RIFF") && head.windows(4).any(|w| w == b"ANIM")) || head.windows(8).any(|w| w == b"ftypavis")
+}
+
+/// The display copy of `path` (made now when missing, older than the original, or made smaller than today's size), or None when the setting is
+/// "original", the picture is small enough as it is, animated, unreadable, or the copy would barely be smaller - the original is then served.
+pub fn make_display(preview_format: &str, path: &Path) -> Option<PathBuf> {
+    if preview_format == "original" {
+        return None;
+    }
+    let ext = suffix_lower(path);
+    let stem = path.file_stem()?.to_string_lossy().to_string();
+    if !CONVERTIBLE.contains(&ext.as_str()) || ext == ".gif" || stem.ends_with("_thumb") || stem.ends_with("_display") {
+        return None;
+    }
+    let (pil, suffix, q) = if preview_format == "webp" { ("webp", "_display.webp", 90u8) } else { ("avif", "_display.avif", 80u8) };
+    let dest = path.with_file_name(format!("{stem}{suffix}"));
+    let (orig_meta, dest_meta) = (std::fs::metadata(path).ok()?, std::fs::metadata(&dest).ok());
+    if let Some(dm) = &dest_meta {
+        if dm.modified().ok()? >= orig_meta.modified().ok()? {
+            if let Some((w, h)) = image::ImageReader::open(&dest).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok()) {
+                if w.max(h) >= DISPLAY_MAX_DIM {
+                    return Some(dest);
+                }
+            } else if dm.len() > 0 {
+                return Some(dest);
+            }
+            // a copy from an older, smaller version: made again below
+        }
+    }
+    if is_animated(path) {
+        let _ = std::fs::remove_file(&dest);
+        return None;
+    }
+    let made = (|| -> Option<()> {
+        let img = readable_or_frame(path)?;
+        if img.width().max(img.height()) <= DISPLAY_MAX_DIM {
+            return None;
+        }
+        let framed = frame(&img, false);
+        let (w, h) = thumbnail_size(framed.width(), framed.height(), DISPLAY_MAX_DIM)?;
+        let small = framed.resize_exact(w, h, image::imageops::FilterType::Lanczos3);
+        encode(&small, pil, q, &dest)?;
+        let saved = std::fs::metadata(&dest).ok()?.len() as f64;
+        (saved <= orig_meta.len() as f64 * (1.0 - DISPLAY_MIN_SAVING)).then_some(())
+    })();
+    if made.is_none() {
+        let _ = std::fs::remove_file(&dest);
+        return None;
+    }
+    Some(dest)
+}

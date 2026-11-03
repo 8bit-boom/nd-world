@@ -1,7 +1,7 @@
 //! `GET /uploads/<path>` (app/main.py `serve_upload`): the access decision and the headers, answered here instead of Python deciding
 //! and the gateway only streaming the file. A signed-in viewer (the auth gate's rule for the path); the file inside the uploads folder
 //! (a thumbnail asked for in the other format found), never the live-recording archive, a strict map's original picture only for
-//! those who edit Maps. The lightbox's display copy (`?display=`), which may have to be made first, stays Python's for now.
+//! those who edit Maps. The lightbox's display copy (`?display=`) is made here only where there is no Python (ND_PYTHON_FREE); next to Python it stays Python's.
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,8 +20,9 @@ pub struct Decision {
 /// Some(Ok(file to send)), Some(Err(404)), or None for Python
 pub fn decide(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Result<Decision, ()>> {
     let raw = uri.path().strip_prefix("/uploads/")?;
-    if crate::pages::query_param(uri, "display").is_some_and(|d| !d.is_empty()) && !raw.starts_with("maps/") {
-        return None;
+    let want_display = crate::pages::query_param(uri, "display").is_some_and(|d| !d.is_empty()) && !raw.starts_with("maps/");
+    if want_display && !crate::config::python_free() {
+        return None; // next to Python the copy is made by Pillow (its bytes, its encoder): the gateway only does it where there is no Python
     }
     let filepath = percent_decode_str(raw).decode_utf8().ok()?.to_string();
     if filepath.contains('\0') {
@@ -83,7 +84,16 @@ pub fn decide(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Result<Dec
         out.push((header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN")));
     }
     out.push((header::CACHE_CONTROL, HeaderValue::from_static(if filepath.starts_with("maps/") { "private, no-cache" } else { "private, max-age=31536000, immutable" })));
-    let content_type = (ext == "html" || ext == "htm").then(|| "text/html; charset=utf-8".to_string());
+    let mut content_type = (ext == "html" || ext == "htm").then(|| "text/html; charset=utf-8".to_string());
+    let mut path = path;
+    if want_display {
+        // the lightbox's display-size copy (app/imaging.py make_display): made on the first request, kept beside the original; the original when it is small
+        let preview: Option<String> = db.query_row("SELECT preview_format FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok().flatten();
+        if let Some(shown) = crate::imaging::make_display(preview.as_deref().unwrap_or("avif"), &path) {
+            content_type = Some(if shown.extension().is_some_and(|e| e == "avif") { "image/avif" } else { "image/webp" }.to_string());
+            path = shown;
+        }
+    }
     Some(Ok(Decision { path, headers: out, content_type }))
 }
 
