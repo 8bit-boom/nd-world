@@ -89,12 +89,20 @@ fn frame(img: &DynamicImage, jpeg: bool) -> DynamicImage {
     }
 }
 
+/// rav1e's speed (0 slowest .. 10 fastest). Measured on a 6 MP photograph: speeds 4, 6 and 8 all took ~12 s, speed 10 took 3.9 s for a file 5% bigger, so a
+/// running server (uploads, thumbnails) uses 10; the image build (`nd-assets`) sets 6 for the bundled maps, where the time is spent once.
+static AVIF_SPEED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(10);
+
+pub fn set_avif_speed(speed: u8) {
+    AVIF_SPEED.store(speed.min(10), std::sync::atomic::Ordering::Relaxed);
+}
+
 fn encode(img: &DynamicImage, format: &str, quality: u8, dest: &Path) -> Option<()> {
     let (w, h) = (img.width(), img.height());
     let bytes: Vec<u8> = match format {
         "avif" => {
             let mut out = vec![];
-            let enc = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut out, 6, quality);
+            let enc = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut out, AVIF_SPEED.load(std::sync::atomic::Ordering::Relaxed), quality);
             enc.write_image(img.as_bytes(), w, h, img.color().into()).ok()?;
             out
         }
@@ -307,4 +315,32 @@ fn thumbnail_as(src: &Path, pil: &str, suffix: &str, q: u8) -> Option<()> {
     let other = src.with_file_name(format!("{stem}{}", if suffix == "_thumb.avif" { "_thumb.webp" } else { "_thumb.avif" }));
     let _ = std::fs::remove_file(other);
     Some(())
+}
+
+#[cfg(test)]
+mod avif_speed {
+    use super::*;
+
+    /// not a test of behaviour: times the AVIF encoder at several speeds on a photo-like picture (`cargo test --release avif_speed -- --ignored --nocapture`)
+    #[test]
+    #[ignore]
+    fn time_the_encoder_speeds() {
+        let (w, h) = (3000u32, 2000u32);
+        let mut seed = 99u64;
+        let img = DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let n = (seed >> 60) as u8; // a little noise on smooth gradients and shapes, like a photograph
+            let base = ((x as f32 / w as f32) * 180.0 + ((y as f32 / 90.0).sin() * 30.0)) as u8;
+            image::Rgb([base.saturating_add(n), (y as f32 / h as f32 * 200.0) as u8 ^ n, ((x ^ y) & 0x7f) as u8 + n])
+        }));
+        for speed in [4u8, 6, 8, 10] {
+            let mut out = vec![];
+            let t = std::time::Instant::now();
+            image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut out, speed, 60).write_image(img.as_bytes(), w, h, img.color().into()).unwrap();
+            println!("avif speed {speed:2}: {:6.0} ms  {:7} bytes", t.elapsed().as_secs_f64() * 1000.0, out.len());
+        }
+        let t = std::time::Instant::now();
+        let enc = webp::Encoder::from_rgb(img.as_rgb8().unwrap().as_raw(), w, h).encode_simple(false, 74.0).unwrap();
+        println!("webp q74     : {:6.0} ms  {:7} bytes", t.elapsed().as_secs_f64() * 1000.0, enc.len());
+    }
 }

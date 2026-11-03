@@ -818,6 +818,10 @@ def _migrate():
         # folder has only a single-column index (usable, but this resolves
         # both filters as one index scan like the kind composite does).
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_world_folder ON entities (world_id, folder)"))
+        # "What links here" (an entity page's backlinks) looks links up by their TARGET; the table's only index starts with the source, so every entity page
+        # scanned the whole links table. And a player's visible entities are looked up by user (the table's key starts with the entity).
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entity_links_target ON entity_links (target_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entity_player_access_user ON entity_player_access (user_id)"))
 
         note_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_notes)")).fetchall()]
         if note_cols and "content_is_html" not in note_cols:

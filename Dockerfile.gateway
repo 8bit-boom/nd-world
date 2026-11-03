@@ -1,8 +1,8 @@
 # The Python-free image (docs/RUST_SWITCH_OFF.md): the Rust gateway answers every route itself - no Python, no uvicorn, no second process.
 # The gateway boots the database on a fresh volume (startup.rs), heals an existing one (ND_PYTHON_FREE=1) and runs the job sweeps, backups and fan
 # control itself. Nothing in this build needs Python any more: the static files' thumbnails, AVIF maps, tile pyramids, minified CSS and pre-compressed
-# copies are made by the Rust nd-assets program (rust/nd-gateway/src/assets.rs) in the gateway stage. Differences from the normal image: JavaScript is
-# not minified (only compressed), and the encoders are Rust's (the pictures are equivalent, not byte-identical).
+# copies are made by the Rust nd-assets program (rust/nd-gateway/src/assets.rs) in the gateway stage; the JavaScript is minified by esbuild in its own throw-away stage
+# (white space and comments only). The encoders are Rust's (the pictures are equivalent, not byte-identical).
 #
 # Served here since the first draft: an https:// Studio (rustls; the system CA store, SSL_CERT_FILE honoured), video uploads' ffmpeg conversions and
 # posters, GIF / AVIF / animated pictures (ffmpeg's first frame) and PDF text (lopdf; spacing can differ from pypdf's), TZ-aware local times.
@@ -10,6 +10,14 @@
 # /docs and /openapi.json, and the refusals of rarely used routes - see docs/FORK_STATUS.md. (The character .pdf export, the world Foundry export and
 # the King in Yellow routes are served by the gateway.)
 FROM mwader/static-ffmpeg:8.0.1@sha256:252705ff88532fa338e7065c21792756552f8fe7c212f84bc503d3c340689594 AS ffmpeg
+
+# JavaScript with its white space and comments removed (nothing is renamed or rewritten, so behaviour is the same; esbuild, in this throw-away stage only). The repository
+# keeps the readable files. Checked: every file passes `node --check` and the Node-run tests pass on the minified copies. About 38% smaller before compression.
+FROM node:22-slim AS minify
+WORKDIR /w
+RUN npm install --no-audit --no-fund --prefix /opt/esb esbuild@0.25.4
+COPY static/ /w/static/
+RUN set -e; find /w/static -name '*.js' ! -name '*.min.js' ! -path '*/vendor/*' | while read -r f; do /opt/esb/node_modules/.bin/esbuild "$f" --minify-whitespace --allow-overwrite --outfile="$f" --log-level=error; done
 
 FROM rust:1-slim AS gateway
 WORKDIR /src
@@ -32,8 +40,8 @@ RUN touch nd-gateway/src/main.rs nd-gateway/src/lib.rs nd-render/src/lib.rs nd-p
     && cp "target/$(uname -m)-unknown-linux-musl/release/nd-gateway" /nd-gateway \
     && cp "target/$(uname -m)-unknown-linux-musl/release/nd-assets" /nd-assets
 
-# the build-time pictures, tile pyramids, minified CSS and compressed twins of the static files, made by the Rust nd-assets (src/assets.rs): no Python
-COPY static/ /assets/static/
+# the build-time pictures, tile pyramids, minified CSS and compressed twins of the static files (the JavaScript arrives minified from the stage above), made by the Rust nd-assets (src/assets.rs): no Python
+COPY --from=minify /w/static/ /assets/static/
 COPY app/maps/ /assets/maps/
 RUN /nd-assets /assets/static /assets/maps
 

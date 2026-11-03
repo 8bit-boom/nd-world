@@ -7,6 +7,7 @@ fn main() {
         eprintln!("usage: nd-assets <static dir> <app/maps dir>");
         std::process::exit(2);
     };
+    nd_gateway::imaging::set_avif_speed(6); // the build pays once: the smaller files of the slower setting
     let (n, before, after) = nd_gateway::assets::compact_maps(&static_dir.join("maps"));
     println!("bundled maps as avif (files, bytes before, after): ({n}, {before}, {after})");
     println!("static thumbnails written: {}", nd_gateway::assets::thumbnails(&[static_dir.join("maps"), static_dir.join("races")]));
