@@ -10590,3 +10590,54 @@ def test_imagegen_models_from_studio_are_pythons(client, seed):
         finally:
             studio.close()
     assert seen == ["gateway", "gateway"], seen
+
+
+def test_board_generators_are_pythons(client, seed):
+    """POST /boards/generate-orgs and /boards/generate-dreamlands from the gateway: the same board Python builds (nodes_json / edges_json byte for byte, name, slug,
+    redirect). Python makes the board, the gateway then regenerates it in place (?replace=<slug>), so both wrote the same row."""
+    from app.database import SessionLocal
+    from app.models import Entity, InvestBoard
+    base = str(client.base_url)
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        a = Entity(world_id=w, kind="organization", subtype="megacorp", name="Hughes Industries", summary="Rival of Zenith Group. Allied with the Tuesday Syndicate.",
+                   body="A megacorp.", visible_to_players=True)
+        b = Entity(world_id=w, kind="organization", subtype="syndicate", name="Zenith Group", summary="At war with Hughes Industries.", visible_to_players=True)
+        c = Entity(world_id=w, kind="organization", subtype="syndicate", name="Tuesday Syndicate", summary="Smugglers from Ulthar é.", visible_to_players=True)
+        db.add_all([a, b, c])
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+
+    def board(slug):
+        db = SessionLocal()
+        try:
+            x = db.query(InvestBoard).filter(InvestBoard.world_id == w, InvestBoard.slug == slug).first()
+            return (x.name, x.slug, x.description, x.canvas_bg, x.nodes_json, x.edges_json) if x else None
+        finally:
+            db.close()
+
+    served = 0
+    for path in ("/boards/generate-orgs", "/boards/generate-dreamlands"):
+        r1 = d.post(path, follow_redirects=False)
+        assert r1.status_code == 303, (path, r1.status_code, r1.text[:200])
+        slug = r1.headers["location"].rsplit("/", 1)[-1]
+        first = board(slug)
+        db = SessionLocal()
+        try:
+            db.query(InvestBoard).filter(InvestBoard.world_id == w, InvestBoard.slug == slug).update({"nodes_json": "[]", "edges_json": "[]"})
+            db.commit()
+        finally:
+            db.close()
+        r2 = v.post(f"{path}?replace={slug}", follow_redirects=False)
+        assert r2.status_code == 303 and r2.headers["location"] == r1.headers["location"], (path, r2.status_code, r2.headers.get("location"), r1.headers["location"])
+        assert board(slug) == first, path
+        served += r2.headers.get("x-nd-served-by") == "gateway"
+    assert served == 2, served
+    # a second Python-made board and a gateway-made one get the same slug sequence
+    p1, g1 = d.post("/boards/generate-dreamlands", follow_redirects=False), v.post("/boards/generate-dreamlands", follow_redirects=False)
+    assert p1.status_code == g1.status_code == 303 and p1.headers["location"] != g1.headers["location"]
+    assert g1.headers["location"].endswith("atlas-of-dreams-3"), (p1.headers["location"], g1.headers["location"])

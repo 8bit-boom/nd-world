@@ -353,6 +353,8 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/worlds/{}/invites/{}/revoke", invite_revoke),
     ("/worlds/{}/members/{}/remove", member_remove),
     ("/worlds/{}/members/{}/role", member_role),
+    ("/boards/generate-orgs", boards_generate_orgs),
+    ("/boards/generate-dreamlands", boards_generate_dreamlands),
     ("/groups/new", groups_new),
     ("/groups/switch", groups_switch),
     ("/groups/move-content", groups_move_content),
@@ -2021,6 +2023,68 @@ fn groups_assign(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     c.db.execute("UPDATE main.player_characters SET group_id = ?1 WHERE world_id = ?2 AND owner_user_id = ?3", rusqlite::params![gid, wid, ids[0]]).ok()?;
     resync_groups(&c.db, wid)?;
     redirect("/groups")
+}
+
+// ── the two deterministic board generators (app/routers/boards_generate.py) ──
+
+/// `_upsert_board`: the board `replace` names (this world's), else a new one under a free slug; its slug
+fn upsert_generated_board(c: &Ctx, wid: i64, replace: Option<&str>, name: &str, base_slug: &str, description: &str, nodes: &Value, edges: &Value) -> Option<String> {
+    let find = |slug: &str| c.db.query_row("SELECT id FROM invest_boards WHERE slug = ?1 AND world_id = ?2 ORDER BY id LIMIT 1", rusqlite::params![slug, wid], |r| r.get::<_, i64>(0)).ok();
+    let (nodes_json, edges_json) = (nd_render::py_dumps(nodes), nd_render::py_dumps(edges));
+    if let Some(id) = replace.filter(|r| !r.is_empty()).and_then(|r| find(r)) {
+        orm::update(&c.db, "invest_boards", id, &[("nodes_json", s(&nodes_json)), ("edges_json", s(&edges_json))])?;
+        return c.db.query_row("SELECT slug FROM invest_boards WHERE id = ?1", [id], |r| r.get(0)).ok();
+    }
+    let mut slug = base_slug.to_string();
+    let mut i = 2;
+    while find(&slug).is_some() {
+        slug = format!("{base_slug}-{i}");
+        i += 1;
+    }
+    orm::insert(&c.db, "invest_boards", &[("world_id", Sql::Integer(wid)), ("name", s(name)), ("slug", s(&slug)), ("description", s(description)),
+        ("canvas_bg", s("dark")), ("nodes_json", s(&nodes_json)), ("edges_json", s(&edges_json))])?;
+    Some(slug)
+}
+
+fn generated_board_gate(c: &Ctx) -> Option<(i64, Option<String>)> {
+    if !c.p.is_gm {
+        return None; // another role's refusal is Python's
+    }
+    let wid = c.world_id()?;
+    let replace = crate::pages::query_param(c.uri, "replace");
+    Some((wid, replace))
+}
+
+/// `POST /boards/generate-orgs`: the faction / organization relationship board, built from the world's organizations
+fn boards_generate_orgs(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let (wid, replace) = generated_board_gate(c)?;
+    let world_name = c.p.world.as_ref()?.get("name")?.as_str()?.to_string();
+    if !world_name.is_ascii() {
+        return None; // the slug of a name with other letters is Python's regex
+    }
+    let (nodes, edges) = crate::apis::faction_graph(&c.db, wid)?;
+    let name = format!("Factions \u{2014} {world_name}");
+    let mut base = String::new();
+    for ch in format!("factions-{}", world_name.to_ascii_lowercase()).chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            base.push(ch);
+        } else if !base.ends_with('-') {
+            base.push('-');
+        }
+    }
+    let base = base.trim_matches('-').to_string();
+    let slug = upsert_generated_board(c, wid, replace.as_deref(), &name, &base, "Auto-generated faction & organization relationship board.",
+        &json!({"nodes": nodes, "groups": []}), &Value::Array(edges))?;
+    redirect(&format!("/boards/{slug}"))
+}
+
+/// `POST /boards/generate-dreamlands`: the fixed 50-location Dreamlands atlas
+fn boards_generate_dreamlands(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
+    let (wid, replace) = generated_board_gate(c)?;
+    let atlas: Value = serde_json::from_str(include_str!("../../nd-render/data/dreamlands.json")).ok()?;
+    let slug = upsert_generated_board(c, wid, replace.as_deref(), "Atlas of Dreams \u{2014} Dreamlands Map", "atlas-of-dreams",
+        "Geographic map of the 50 canonical Dreamlands locations, colour-coded by region.", atlas.get("payload")?, atlas.get("edges")?)?;
+    redirect(&format!("/boards/{slug}"))
 }
 
 fn entity_new(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {

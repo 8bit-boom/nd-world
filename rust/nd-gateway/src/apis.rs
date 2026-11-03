@@ -3508,9 +3508,15 @@ fn orgs_graph(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
         return None;
     }
     let wid = world_id_of(&p).unwrap_or(1);
-    let orgs = rows_of(&db, "SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('organization') ORDER BY subtype, name", &[&wid])?;
+    let (nodes, edges) = faction_graph(&db, wid)?;
+    crate::edits::json_response(&json!({"nodes": nodes, "edges": edges}))
+}
+
+/// `_build_faction_graph` for the GM's full view: (nodes, edges) of the world's organizations
+pub fn faction_graph(db: &rusqlite::Connection, wid: i64) -> Option<(Vec<Value>, Vec<Value>)> {
+    let orgs = rows_of(db, "SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('organization') ORDER BY subtype, name", &[&wid])?;
     if orgs.is_empty() {
-        return crate::edits::json_response(&json!({"nodes": [], "edges": []}));
+        return Some((vec![], vec![]));
     }
     let text = |e: &Map<String, Value>, k: &str| -> Option<String> {
         match e.get(k) {
@@ -3610,7 +3616,7 @@ fn orgs_graph(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
                 "style": if kind == "subsidiary" || kind == "neutral" { "dashed" } else { "solid" }, "kind": kind, "direction": "fwd"}));
         }
     }
-    crate::edits::json_response(&json!({"nodes": nodes, "edges": edges}))
+    Some((nodes, edges))
 }
 
 /// Python truthiness of a text column (`x or ""`)

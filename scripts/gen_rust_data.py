@@ -255,8 +255,21 @@ def text() -> str:
     return json.dumps(make(), indent=1, ensure_ascii=False, sort_keys=True) + "\n"
 
 
+DREAMLANDS_OUT = OUT.parent / "dreamlands.json"
+
+
+def dreamlands_text() -> str:
+    """The Dreamlands atlas board (app/routers/boards_generate.py): bundled content, key order kept (it is stored with json.dumps)"""
+    from app.routers.boards_generate import _build_dreamlands_map
+    payload, edges = _build_dreamlands_map()
+    return json.dumps({"payload": payload, "edges": edges}, indent=1, ensure_ascii=False) + "\n"
+
+
 if __name__ == "__main__":
     if "--check" in sys.argv:
-        sys.exit(0 if OUT.read_text() == text() else "rust/nd-render/data/app_data.json is stale: run scripts/gen_rust_data.py")
+        if OUT.read_text() != text():
+            sys.exit("rust/nd-render/data/app_data.json is stale: run scripts/gen_rust_data.py")
+        sys.exit(0 if DREAMLANDS_OUT.read_text() == dreamlands_text() else "rust/nd-render/data/dreamlands.json is stale: run scripts/gen_rust_data.py")
     OUT.write_text(text())
-    print("wrote", OUT)
+    DREAMLANDS_OUT.write_text(dreamlands_text())
+    print("wrote", OUT, DREAMLANDS_OUT)
