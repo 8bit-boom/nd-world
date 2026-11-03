@@ -50,6 +50,7 @@ pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
 pub mod kiy;
+pub mod perf;
 pub mod minipdf;
 pub mod assets;
 pub mod tags;
@@ -86,7 +87,19 @@ pub fn router(cfg: Arc<Config>) -> Router {
     let pages = Arc::new(pages::Pages::new(&cfg));
     jobs::init(cfg.clone());
     let state = App { cfg, proxy, pages };
-    Router::new().fallback(handle).with_state(state)
+    Router::new().fallback(handle).with_state(state).layer(axum::middleware::from_fn(time_request))
+}
+
+/// Every page / API request timed for /api/perf/* and the slow-request log (perf.rs)
+async fn time_request(req: Request<Body>, next: axum::middleware::Next) -> Response {
+    let (m, p) = (req.method().to_string(), req.uri().path().to_string());
+    if perf::skip(&p) {
+        return next.run(req).await;
+    }
+    let t0 = std::time::Instant::now();
+    let resp = next.run(req).await;
+    perf::record(&m, &p, resp.status().as_u16(), t0.elapsed().as_secs_f64() * 1000.0);
+    resp
 }
 
 #[derive(Clone)]

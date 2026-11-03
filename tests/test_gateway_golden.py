@@ -8138,7 +8138,10 @@ def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
         assert len(mine(a)) >= 3 and mine(a) == mine(b)
         t = free.get("/api/ai/tasks")
         assert (t.status_code, t.json()) == (200, {"tasks": []})
-        assert free.get("/api/perf/summary").json() == {"slow_ms": 800.0, "routes": []} and free.get("/api/perf/recent").json() == {"requests": []}
+        # without Python the timings are the gateway's own (perf.rs): the requests above are in them, as route templates
+        sm, rc = free.get("/api/perf/summary").json(), free.get("/api/perf/recent").json()
+        assert sm["slow_ms"] == 800.0 and {"/api/live-jobs", "/api/ai/tasks"} <= {r["route"] for r in sm["routes"]}
+        assert {"/api/live-jobs", "/api/ai/tasks"} <= {r["route"] for r in rc["requests"]}
         # a route only Python serves: a clear 501 (JSON for the API, a page otherwise), not a "starting" loop
         j = free.get("/api/definitely-not-ported-here")
         assert j.status_code == 501 and "Python app" in j.json()["detail"], (j.status_code, j.text)
@@ -10511,3 +10514,29 @@ def test_python_free_footer_and_health_name_the_build_and_mode(client, seed):
     d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
     a, b = d.get("/"), _via(d, base).get("/")
     assert a.status_code == b.status_code == 200 and 'id="nd-build"' in b.text and a.text.split("<footer>")[1][:300] == b.text.split("<footer>")[1][:300]
+
+
+def test_python_free_perf_timings_are_route_templates_and_slow_ones_are_logged(client, seed):
+    """Without Python (perf.rs): /api/perf/recent and /summary list the page and API requests as route templates (no real ids, no query strings), oldest first, the
+    limit clamped to 1..1000; a request over ND_SLOW_MS is written to stderr as one line; /static and the live stream are not timed; a player is refused."""
+    import subprocess
+    from pathlib import Path
+    proc, url, g = _python_free_gateway(seed, {"ND_SLOW_MS": "0.001"})
+    try:
+        for path in ("/dice", "/entity/99999999?q=secret", "/kind/character?folder=a", "/static/style.css"):
+            g.get(path)
+        rc = g.get("/api/perf/recent?limit=1000").json()["requests"]
+        routes = [r["route"] for r in rc]
+        assert "/entity/{id}" in routes and "/kind/character" in routes and "/dice" in routes, routes
+        assert not any("99999999" in r or "secret" in r or "/static/" in r for r in routes), routes
+        assert all(set(r) == {"t", "method", "route", "status", "ms", "queries", "db_ms"} for r in rc)
+        assert [r["t"] for r in rc] == sorted(r["t"] for r in rc)
+        assert len(g.get("/api/perf/recent?limit=2").json()["requests"]) == 2 and len(g.get("/api/perf/recent?limit=0").json()["requests"]) == 1
+        top = g.get("/api/perf/summary").json()["routes"]
+        assert top == sorted(top, key=lambda r: -r["p95_ms"]) and all(r["calls"] >= 1 for r in top)
+        from .conftest import PLAYER_PASSWORD
+        p = httpx.Client(base_url=url, follow_redirects=False)
+        p.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"})
+        assert p.get("/api/perf/summary").status_code == 403
+    finally:
+        proc.terminate()

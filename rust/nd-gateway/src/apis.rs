@@ -3658,8 +3658,8 @@ fn imagegen_tags_empty(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
     crate::edits::json_response(&body)
 }
 
-/// `GET /api/perf/summary` and `/api/perf/recent`: the request timings Python keeps in memory. Without Python (`ND_PYTHON_FREE=1`) there are none to show -
-/// the page's empty shape; next to Python they are Python's. GM only.
+/// `GET /api/perf/summary` and `/api/perf/recent`: the request timings. Without Python (`ND_PYTHON_FREE=1`) they are the gateway's own (perf.rs, no SQL counts);
+/// next to Python they are Python's. GM only.
 fn perf_empty(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
     if !crate::config::python_free() {
         return None;
@@ -3668,11 +3668,17 @@ fn perf_empty(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
     if !p.is_gm {
         return None;
     }
-    let slow = match std::env::var("ND_SLOW_MS") {
-        Ok(v) if !v.trim().is_empty() => nd_render::text::py_strip(&v).parse::<f64>().ok()?,
-        _ => 800.0,
+    let body = if uri.path().ends_with("/summary") {
+        crate::perf::summary()
+    } else {
+        // `limit: int = 200`, clamped to 1..1000; a value that is not a whole number is FastAPI's 422
+        let limit = match crate::pages::query_param(uri, "limit") {
+            None => 200,
+            Some(l) if !l.is_empty() && l.trim_start_matches('-').bytes().all(|c| c.is_ascii_digit()) && l.len() < 10 => l.parse::<i64>().ok()?.clamp(1, 1000) as usize,
+            Some(_) => return None,
+        };
+        crate::perf::recent(limit)
     };
-    let body = if uri.path().ends_with("/summary") { json!({"slow_ms": slow, "routes": []}) } else { json!({"requests": []}) };
     let mut r = crate::edits::json_response(&body)?;
     r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
     Some(r)
