@@ -597,7 +597,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::POST
-        && matches!(req.uri().path(), "/api/ai/unsloth/hub/download" | "/api/ai/unsloth/image/load" | "/api/ai/unsloth/image/unload" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/update")
+        && matches!(req.uri().path(), "/api/ai/unsloth/hub/download" | "/api/ai/unsloth/image/load" | "/api/ai/unsloth/image/unload" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/context-overrides" | "/api/ai/unsloth/update" | "/api/ai/unsloth/stt-check" | "/api/ai/unsloth/tts-check")
         && app.cfg.rust_routes.iter().any(|r| r == "pages")
     {
         // Unsloth Studio's actions: sent on to Studio with Python's wording for what it answers
@@ -708,7 +708,7 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
     }
-    if req.method() == axum::http::Method::GET && req.uri().path().starts_with("/api/ai/unsloth/") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+    if req.method() == axum::http::Method::GET && (req.uri().path().starts_with("/api/ai/unsloth/") || req.uri().path() == "/api/ai/imagegen/models") && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         // Unsloth Studio's status routes: what Studio answers, with Python's wording for its errors (no key: apis.rs's 400)
         if let Some(resp) = studio::route(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;

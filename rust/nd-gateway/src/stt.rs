@@ -148,6 +148,10 @@ fn studio_message(bytes: &[u8], status: u16) -> String {
 }
 
 /// `unsloth_extras.stt`: one file to /v1/audio/transcriptions (multipart), its text; Err((status, message))
+pub async fn stt_call_pub(b: &Backend, audio: Vec<u8>, filename: &str, model: &str) -> Result<String, (u16, String, bool)> {
+    stt_call(b, audio, filename, model).await
+}
+
 async fn stt_call(b: &Backend, audio: Vec<u8>, filename: &str, model: &str) -> Result<String, (u16, String, bool)> {
     if audio.is_empty() {
         return Err((400, "No audio to transcribe".into(), false));

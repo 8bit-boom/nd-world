@@ -5789,16 +5789,17 @@ class _FakeStudio:
     """A stand-in Unsloth Studio: /api/hub/cached-gguf answers 200 only for
     'Bearer good-key-1234', 401 (FastAPI's {"detail": ...}) for anything else."""
 
-    def __init__(self):
+    def __init__(self, body=b'{"models": []}'):
         import threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         outer = self
+        good_body = body
 
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.headers.get("Authorization", "") == "Bearer good-key-1234":
-                    body = b'{"models": []}'
+                    body = good_body
                     code = 200
                 else:
                     body = b'{"detail": "Not authenticated"}'
@@ -10561,3 +10562,31 @@ def test_autolinks_are_the_same_when_entities_share_names_and_aliases(client, se
     direct = _login(httpx.Client(base_url=DIRECT, timeout=120), seed)
     res = golden.compare(direct, via, [f"/entity/{i}" for i in ids])
     assert not res["differ"], {k: v[:4] for k, v in list(res["differ"].items())[:3]}
+
+
+def test_imagegen_models_from_studio_are_pythons(client, seed):
+    """GET /api/ai/imagegen/models with Studio as the image backend: the cached checkpoints whose task is an image one
+    (not "unsupported", not chat, not unclassified) - Python's list, the same on the gateway; nothing cached: the configured default."""
+    from tests.test_gateway_writes import _row_by  # noqa: F401
+    base = str(client.base_url)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    cached = {"cached": [{"repo_id": "a/chat-GGUF", "task": "text-generation"}, {"repo_id": "a/krea", "task": "text-to-image"},
+                         {"repo_id": "a/sdxl", "task": "image-diffusion-unsupported"}, {"repo_id": "a/new", "task": None},
+                         {"repo_id": "a/flux", "task": "image-diffusion"}]}
+    seen = []
+    for body, expect in ((json.dumps(cached).encode(), ["a/krea", "a/flux"]), (b'{"cached": []}', ["nd-test/image-GGUF"])):
+        studio = _FakeStudio(body)
+        try:
+            for side in (d, v):
+                r = side.post("/settings/system", data={"ollama_model": "", "ollama_url": "", "llm_url": studio.url(), "llm_model": "", "llm_api_key": ""},
+                              follow_redirects=False)
+                assert r.status_code == 303
+                r = side.post("/settings/system/studio-key", json={"api_key": "good-key-1234"})
+                assert r.status_code == 200, r.text[:200]
+            a, b = d.get("/api/ai/imagegen/models"), v.get("/api/ai/imagegen/models")
+            assert a.status_code == b.status_code == 200 and a.json() == b.json() == {"models": expect}, (a.text[:200], b.text[:200])
+            seen.append(b.headers.get("x-nd-served-by"))
+        finally:
+            studio.close()
+    assert seen == ["gateway", "gateway"], seen

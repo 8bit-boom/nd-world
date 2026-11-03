@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Response, StatusCode, Uri};
@@ -160,11 +160,15 @@ struct Gate {
 
 /// `GET /api/ai/unsloth/...` for a signed-in GM; None = Python's (anyone else, a Studio over https, ...)
 pub async fn route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
-    let path = uri.path().strip_prefix("/api/ai/unsloth/")?.to_string();
+    // GET /api/ai/imagegen/models with Studio as the image backend (app/ai.py imagegen_models): the image models Studio has cached
+    if let Some(token) = uri.path().strip_prefix("/api/ai/unsloth/check/") {
+        return if crate::config::python_free() { poll_check(&cfg, &uri, &headers, token).await } else { None };
+    }
+    let path = if uri.path() == "/api/ai/imagegen/models" { "imagegen-models".to_string() } else { uri.path().strip_prefix("/api/ai/unsloth/")?.to_string() };
     if !matches!(
         path.as_str(),
         "models" | "image/status" | "image/load-progress" | "auto-switch" | "status" | "context-overrides" | "audio-models" | "version" | "probe"
-            | "hub/download-progress" | "gguf-variants" | "key-check" | "auth-status"
+            | "hub/download-progress" | "gguf-variants" | "key-check" | "auth-status" | "imagegen-models"
     ) {
         return None;
     }
@@ -229,6 +233,13 @@ pub async fn route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Res
 
     let b = gate.backend.as_ref()?; // no key is apis.rs's 400; https is Python's
     match path.as_str() {
+        "imagegen-models" => {
+            let default = std::env::var("UNSLOTH_IMAGE_MODEL").unwrap_or_default();
+            if effective_key.is_empty() || default.is_empty() {
+                return None; // Studio is not the image backend: apis.rs answers
+            }
+            image_models(b, &default).await
+        }
         "models" => models(b).await,
         "image/status" => passthrough(b, "/api/inference/images/status", &[]).await,
         "image/load-progress" => passthrough(b, "/api/inference/images/load-progress", &[]).await,
@@ -262,7 +273,8 @@ fn text_field(body: &Map<String, Value>, key: &str) -> Option<String> {
 /// overrides. None: Python's (anyone else, a body that is not a JSON object, a Studio over https, ...).
 pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -> Option<Response<Body>> {
     let path = uri.path().strip_prefix("/api/ai/unsloth/")?.to_string();
-    if !matches!(path.as_str(), "hub/download" | "image/load" | "image/unload" | "auto-switch" | "context-overrides" | "update") {
+    let check = matches!(path.as_str(), "stt-check" | "tts-check") && crate::config::python_free();
+    if !check && !matches!(path.as_str(), "hub/download" | "image/load" | "image/unload" | "auto-switch" | "context-overrides" | "update") {
         return None;
     }
     let (c, u, h) = (cfg.clone(), uri.clone(), headers.clone());
@@ -277,6 +289,10 @@ pub async fn post(cfg: Arc<Config>, uri: Uri, headers: HeaderMap, body: &[u8]) -
     })
     .await
     .ok()??;
+    if check {
+        let obj = serde_json::from_slice::<Value>(body).ok()?.as_object()?.clone();
+        return health_check(&cfg, b, path == "tts-check", &obj).await;
+    }
     if path == "image/unload" {
         return match send(&b, "POST", "/api/inference/images/unload", None).await {
             Ok(v) => ok(&v),
@@ -561,6 +577,27 @@ async fn hub_cached(b: &Backend) -> Result<Option<Vec<Value>>, Failure> {
     }
 }
 
+/// `imagegen_models()` for Studio: the cached image checkpoints Studio can run (a task that mentions "image" and does not end in "unsupported"); none cached
+/// (or Studio did not answer) = the configured default, so the picker is never left empty
+async fn image_models(b: &Backend, default: &str) -> Option<Response<Body>> {
+    let mut out: Vec<Value> = vec![];
+    if let Ok(Some(cached)) = hub_cached(b).await {
+        for m in &cached {
+            let Some(m) = m.as_object() else { continue };
+            let task = m.get("task").and_then(|t| t.as_str()).unwrap_or("").to_lowercase();
+            if let Some(Value::String(repo)) = m.get("repo_id") {
+                if !repo.is_empty() && task.contains("image") && !task.ends_with("unsupported") {
+                    out.push(json!(repo));
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(json!(default));
+    }
+    ok(&json!({"models": out}))
+}
+
 /// `GET /api/ai/unsloth/models`: every cached hub model with its task, size and whether it is loaded
 async fn models(b: &Backend) -> Option<Response<Body>> {
     let cached = match hub_cached(b).await {
@@ -802,4 +839,143 @@ async fn status(b: &Backend) -> Option<Response<Body>> {
         }
     }
     ok(&Value::Object(out))
+}
+
+
+// ── the "does this speech model work" checks (app/unsloth_extras.py run_check / stt_health / tts_health) ──
+// A cold Studio can spend minutes loading the speech model, longer than one request may wait: the answer is {pending, token} after ~20 s and the page polls
+// GET /api/ai/unsloth/check/<token> (which waits up to ~25 s) until the check is done. Only in a Python-free image; with Python it keeps its own.
+
+type CheckSlot = Arc<std::sync::Mutex<Option<Value>>>;
+
+struct Check {
+    key: String,
+    started: std::time::Instant,
+    result: CheckSlot,
+}
+
+fn checks() -> &'static std::sync::Mutex<std::collections::HashMap<String, Check>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Check>>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// a second of a soft 220 Hz tone, 16 kHz mono 16-bit WAV: the HTTP status is the signal, never the transcript
+fn tone_wav() -> Vec<u8> {
+    let n = 16000usize;
+    let mut out = Vec::with_capacity(44 + n * 2);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((36 + n * 2) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&16000u32.to_le_bytes());
+    out.extend_from_slice(&32000u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&((n * 2) as u32).to_le_bytes());
+    for i in 0..n {
+        let v = (3000.0 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 16000.0).sin()) as i16;
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+async fn run_one_check(cfg: Arc<Config>, b: Backend, tts: bool, model: String, voice: String, instructions: String, language: String) -> Value {
+    let budget = std::env::var("UNSLOTH_SLOW_CHECK_TIMEOUT_SECONDS").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| *v > 0.0).unwrap_or(600.0);
+    let work = async {
+        if tts {
+            let (d_model, _, d_instr, d_lang) = crate::tts::prefs(&cfg);
+            let model = if model.is_empty() { d_model } else { model };
+            let instructions = if instructions.is_empty() { d_instr } else { instructions };
+            let language = if language.is_empty() { d_lang } else { language };
+            match crate::tts::speech(&b, "Ready.", &model, &voice, &instructions, &language).await {
+                Ok((audio, ctype)) => json!({"ok": true, "message": format!("Studio synthesized {} bytes \u{2014} model is ready. Studio's audio: {}.", audio.len(), ctype)}),
+                Err((status, msg)) => json!({"ok": false, "status": status, "message": msg}),
+            }
+        } else {
+            let model = if model.is_empty() { "small".to_string() } else { model };
+            match crate::stt::stt_call_pub(&b, tone_wav(), "nd-health-check.wav", &model).await {
+                Ok(_) => json!({"ok": true, "message": "Studio accepted the audio \u{2014} model is ready.", "format": "wav"}),
+                Err((status, mut msg, _)) => {
+                    if status == 409 && msg.to_lowercase().contains("not downloaded") {
+                        msg = format!("{msg} Download it in Studio first (Settings \u{2192} Voice), then test again.");
+                    }
+                    json!({"ok": false, "status": status, "message": msg})
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs_f64(budget), work).await {
+        Ok(v) => v,
+        Err(_) => json!({"ok": false, "message": format!("Studio did not answer within {budget} s. The first request after Studio starts has to load the speech model, which can take minutes on a slow or CPU-only box - try again in a minute, or watch it load with `docker logs -f nd-world-unsloth`.")}),
+    }
+}
+
+fn pending_answer(token: &str, started: std::time::Instant) -> Value {
+    json!({"ok": Value::Null, "pending": true, "token": token, "elapsed": started.elapsed().as_secs(),
+        "message": "Studio is still working - the first request after it starts is loading the speech model, which can take a few minutes. Waiting for it..."})
+}
+
+async fn wait_slot(slot: &CheckSlot, secs: u64) -> Option<Value> {
+    let end = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        if let Some(v) = slot.lock().ok().and_then(|g| g.clone()) {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= end {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn health_check(cfg: &Arc<Config>, b: Backend, tts: bool, obj: &Map<String, Value>) -> Option<Response<Body>> {
+    let model = text_field(obj, "model")?;
+    let (voice, instructions, language) = if tts { (text_field(obj, "voice")?, text_field(obj, "instructions")?, text_field(obj, "language")?) } else { Default::default() };
+    let key = format!("{}|{model}|{voice}|{instructions}|{language}", if tts { "tts" } else { "stt" });
+    let (token, slot, started) = {
+        let mut map = checks().lock().ok()?;
+        map.retain(|_, c| c.started.elapsed() < Duration::from_secs(600) || c.result.lock().map_or(true, |g| g.is_none()));
+        if let Some((t, c)) = map.iter().find(|(_, c)| c.key == key && c.result.lock().map_or(false, |g| g.is_none())) {
+            (t.clone(), c.result.clone(), c.started)
+        } else {
+            let token = format!("{:024x}", rand::random::<u128>() >> 32);
+            let slot: CheckSlot = Arc::new(std::sync::Mutex::new(None));
+            let started = std::time::Instant::now();
+            map.insert(token.clone(), Check { key, started, result: slot.clone() });
+            let (cfg2, slot2) = (cfg.clone(), slot.clone());
+            tokio::spawn(async move {
+                let v = run_one_check(cfg2, b, tts, model, voice, instructions, language).await;
+                if let Ok(mut g) = slot2.lock() {
+                    *g = Some(v);
+                }
+            });
+            (token, slot, started)
+        }
+    };
+    let answer = wait_slot(&slot, 20).await.unwrap_or_else(|| pending_answer(&token, started));
+    ok(&answer)
+}
+
+/// `GET /api/ai/unsloth/check/<token>` (a GM): the finished result, or pending again; 404 once it is gone
+async fn poll_check(cfg: &Arc<Config>, uri: &Uri, headers: &HeaderMap, token: &str) -> Option<Response<Body>> {
+    let (c, u, h) = (cfg.clone(), uri.clone(), headers.clone());
+    let gm = tokio::task::spawn_blocking(move || -> Option<bool> {
+        let db = crate::writes::open(&c)?;
+        let n = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        Some(crate::layout::build(&db, &c, "GET", &u, &h, n)?.is_gm)
+    })
+    .await
+    .ok()??;
+    if !gm {
+        return None;
+    }
+    let found = checks().lock().ok()?.get(token).map(|c| (c.result.clone(), c.started));
+    let Some((slot, started)) = found else {
+        return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "That check is gone (nd-world restarted, or it finished a while ago) - press the test button again."));
+    };
+    let answer = wait_slot(&slot, 25).await.unwrap_or_else(|| pending_answer(token, started));
+    ok(&answer)
 }
