@@ -1,0 +1,9 @@
+{# "Load more" under a card grid: shown only when the list is longer than what the page shows (card_limit; 0 = all). Needs load_total. A real link too, for no JavaScript. #}
+{% if card_limit and load_total > card_limit %}
+{% set next_limit = card_limit + card_page %}
+<div class="load-more-wrap" id="load-more-wrap" data-shown="{{ card_limit }}" data-total="{{ load_total }}">
+  <span class="load-more-count">Showing {{ card_limit }} of {{ load_total }}</span>
+  <a class="load-more-btn" id="load-more-btn" href="{{ ('?' + ('folder=' + active_folder|urlencode + '&' if active_folder is not none else '') + ('q=' + q|urlencode + '&' if q else '') + ('view=' + view + '&' if active_folder is not none else '') + 'limit=' + next_limit|string)|wq }}">Load more</a>
+  <a class="load-more-all" id="load-more-all" href="{{ ('?' + ('folder=' + active_folder|urlencode + '&' if active_folder is not none else '') + ('q=' + q|urlencode + '&' if q else '') + 'limit=all')|wq }}">Show all {{ load_total }}</a>
+</div>
+{% endif %}

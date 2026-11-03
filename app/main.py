@@ -49,6 +49,7 @@ from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
+CARD_PAGE = 120      # entity cards shown before "Load more" (templates/entities/list.html; the gateway's kind_list uses the same number)
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_edit_section, world_can_view_section, world_row_visible, world_section_access
 from .imaging import convert_image, make_display, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants, strip_gm_only
@@ -5920,7 +5921,7 @@ _COL_PRIORITY_IDX = {c.lower(): i for i, c in enumerate(_COL_PRIORITY)}
 
 @app.get("/kind/{kind}", response_class=HTMLResponse)
 def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str] = None,
-                  view: str = "", page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+                  view: str = "", page: int = 1, limit: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
@@ -6039,8 +6040,17 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
         table_page = min(max(1, page), table_total_pages)
         table_page_entities = entities[(table_page - 1) * PAGE_SIZE: table_page * PAGE_SIZE]
 
+    # The card grids show the first CARD_PAGE cards and a "Load more" button (a list of 700 is 445 KB of HTML); ?limit=<n> shows n, ?limit=all shows every one.
+    # 0 = no limit. Tables are paginated above and unaffected.
+    card_limit = CARD_PAGE
+    if limit.strip().lower() == "all":
+        card_limit = 0
+    elif limit.strip().isascii() and limit.strip().isdigit() and 0 < int(limit.strip()) < 10_000_000:
+        card_limit = max(CARD_PAGE, int(limit.strip()))
+
     worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("entities/list.html", {
+        "card_limit": card_limit, "card_page": CARD_PAGE,
         "request": request, "kind": kind, "entities": entities,
         "grouped": grouped, "folders": folders, "active_folder": folder,
         "folder_counts": folder_counts, "total_count": total_count,

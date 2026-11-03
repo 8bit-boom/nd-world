@@ -56,14 +56,14 @@ Measured with `scripts/bench_bigworld.py` (700 entities, one request at a time, 
 | 8 concurrent clients, musl, home | 97 req/s | **377 req/s** (glibc 450) |
 - [x] 0 `perf.rs`: request timings (route templates only) for `/api/perf/*` and the `ND_SLOW_MS` log without Python; `scripts/bench_bigworld.py`.
 - [x] 1 Entity auto-linker: one Aho-Corasick automaton per distinct list of names (cached), same answer as Python's alternation regex (random-text test against the regex;
-      the 700-entity pages are byte-identical to Python's). Names with non-ASCII letters keep the regex path.
+      the 700-entity pages are byte-identical to Python's). Names and text with accents or other scripts use the same automaton on a case-folded copy (offset map; tests against the regex, incl. random Unicode). Behind Python (hybrid) a non-ASCII name still declines to Python.
 - [x] 2 `writes::open` lends pooled connections (identity-checked against a replaced file, rolled back on return, 16 idle at most) with cached statements. Not done on purpose:
       the live counters stay in SQLite - a poll with a reused connection costs ~0.1 ms, and an in-memory copy would need a commit hook for no visible gain.
 - [x] 3 `row_map` reads the column list once per row (was once per column).
 - [x] 4 mimalloc as the global allocator. The static musl build used musl's malloc, which serialises on one lock: under load it was 3-12x slower than the same code on glibc.
       Fat LTO + one codegen unit measured only +5% for 2.7x the build time: not adopted.
-- [ ] 5 Big entity lists (445 KB for 700 cards) - NOT done: it changes what the page shows (a "Show all" limit; bulk select and the layout engine work on the rendered cards)
-      and needs the owner's decision.
+- [x] 5 Big entity card lists: the first 120 cards, then a "Load more" link (`?limit=N`, `?limit=all`) that nd-load-more.js turns into an in-place append (bulk select and layouts refreshed);
+      works without JavaScript as a normal link. Tables keep their own paging. Python and the gateway render it identically (`tests/test_entity_load_more.py`).
 - [x] 6 Indexes `entity_links(target_id)` (backlinks) and `entity_player_access(user_id)`; `tests/test_query_plans.py` fails on a full scan of the hot queries.
 - [x] 7 AVIF encoder speed 10 on the running server (6 MP photo: 3.9 s against ~12 s at speeds 4-8, 5% bigger); the image build keeps speed 6.
 - [x] 8 JavaScript minified in the Rust-only image by esbuild (white space and comments only, in its own build stage): 1.26 MB -> 0.78 MB, `node --check` on every file, the Node-run tests pass

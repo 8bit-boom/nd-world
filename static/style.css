@@ -2958,3 +2958,11 @@ body.home-night-on .home-edit-link { display: none; }
 .list-layout[data-view="drawer"].fn-open .fn-backdrop { display: block; position: fixed; z-index: 1001; inset: 0; background: rgba(0, 0, 0, .5); }
 @media (prefers-reduced-motion: reduce) { .list-layout[data-view="drawer"] .folder-sidebar, .fn-tile { transition: none; } }
 @media (max-width: 700px) { .fn-col { flex-basis: 11rem; min-width: 11rem; } .fn-tiles { grid-template-columns: repeat(2, 1fr); } }
+
+/* "Load more" under an entity list's card grid (static/js/nd-load-more.js) */
+.load-more-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; margin: 1rem 0 1.5rem; }
+.load-more-count { color: var(--text-dim); font-size: .82rem; }
+.load-more-btn { display: inline-flex; align-items: center; min-height: 38px; padding: .4rem 1.2rem; background: var(--bg2); border: 1px solid var(--neon); border-radius: 6px; color: var(--neon); font-size: .85rem; text-decoration: none; }
+.load-more-btn:hover { background: rgba(0, 240, 255, .1); }
+.load-more-btn[aria-busy="true"] { opacity: .6; pointer-events: none; }
+.load-more-all { color: var(--text-dim); font-size: .8rem; }

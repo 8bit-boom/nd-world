@@ -616,6 +616,14 @@ pub fn kind_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
     c.insert("total_count".into(), json!(total_count));
     c.insert("q".into(), json!(q));
     c.insert("view".into(), json!(view));
+    // the card grids show the first 120 cards and a "Load more" (app/main.py list_entities: CARD_PAGE; ?limit=<n> or ?limit=all)
+    let card_limit: i64 = match qp("limit").unwrap_or_default().trim().to_lowercase().as_str() {
+        "all" => 0,
+        n if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n.len() < 9 && n.parse::<i64>().map_or(false, |v| v > 0) && n.parse::<i64>().unwrap_or(0) < 10_000_000 => n.parse::<i64>().unwrap_or(120).max(120),
+        _ => 120,
+    };
+    c.insert("card_limit".into(), json!(card_limit));
+    c.insert("card_page".into(), json!(120));
     c.insert("entity_stats".into(), json!({"__intkeys__": Value::Object(entity_stats)}));
     c.insert("table_cols".into(), json!(table_cols));
     c.insert("is_parent_folder".into(), json!(is_parent));
