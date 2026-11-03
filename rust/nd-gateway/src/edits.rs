@@ -2949,6 +2949,17 @@ pub(crate) fn stat_values(pc: &Map<String, Value>) -> Option<Vec<(String, i64)>>
 /// `pc_digest_line(pc, tpl, detail=..., viewer_is_gm=...)`: the character as one system-aware line for an AI prompt (None: a value this
 /// port would print differently - a float, odd JSON - so the request is Python's)
 pub(crate) fn pc_digest_line(db: &Connection, pc: &Map<String, Value>, detail: bool, viewer_is_gm: bool) -> Option<String> {
+    pc_digest_inner(db, pc, detail, viewer_is_gm, &mut None)
+}
+
+/// (native, system label, identity) of `pc_digest(pc)`: what `_format_pc_line` reads
+pub(crate) fn pc_digest_parts(db: &Connection, pc: &Map<String, Value>) -> Option<(bool, String, String)> {
+    let mut parts = None;
+    pc_digest_inner(db, pc, false, true, &mut parts)?;
+    parts
+}
+
+fn pc_digest_inner(db: &Connection, pc: &Map<String, Value>, detail: bool, viewer_is_gm: bool, parts: &mut Option<(bool, String, String)>) -> Option<String> {
     let text = |v: Option<&Value>| -> Option<String> {
         match v {
             None | Some(Value::Null) => Some(String::new()),
@@ -3018,6 +3029,7 @@ pub(crate) fn pc_digest_line(db: &Connection, pc: &Map<String, Value>, detail: b
         Ok(v) => clean_conditions(&v)?,
         Err(_) => vec![],
     };
+    *parts = Some((native, system.clone(), identity.clone()));
     let mut who = if native { vec![] } else { vec![system] };
     if !identity.is_empty() {
         who.push(identity);

@@ -17,10 +17,12 @@ const STUDIO_CHUNK_SECONDS: f64 = 600.0;
 pub struct SttError {
     pub message: String,
     pub partial: String,
+    /// the same audio may succeed later (Studio unreachable, overloaded, restarting): the live recording waits and retries instead of stopping
+    pub retryable: bool,
 }
 
 fn err(message: impl Into<String>) -> SttError {
-    SttError { message: message.into(), partial: String::new() }
+    SttError { message: message.into(), partial: String::new(), retryable: false }
 }
 
 /// STT_CHUNK_SECONDS (or WHISPER_CHUNK_SECONDS), at least 60, default 10 minutes
@@ -188,7 +190,11 @@ async fn send_parts(b: &Backend, parts: &[PathBuf], opus: bool, model: &str) -> 
         match stt_call(b, audio, &name, model).await {
             Ok(t) => texts.push(crate::edits::py_strip_pub(&t)),
             Err((status, _, _)) if opus && [400, 415, 422, 500].contains(&status) => return Err(Failure::OpusUnusable),
-            Err((_, message, _)) => return Err(Failure::Stt(err(format!("Unsloth Studio STT: {message}")))),
+            Err((status, message, unreachable)) => {
+                let mut e = err(format!("Unsloth Studio STT: {message}"));
+                e.retryable = unreachable || [408, 425, 429].contains(&status) || status >= 500;
+                return Err(Failure::Stt(e));
+            }
         }
     }
     Ok(texts.into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n"))
@@ -265,7 +271,7 @@ pub async fn transcribe(b: &Backend, path: &Path, model: &str, resume: Option<&V
             Ok(t) => parts.push(t),
             Err(e) if !parts.is_empty() => {
                 return Err(SttError { message: format!("Speech-to-text failed on part {} of {}: {}. The first {i} part(s) were transcribed and have been saved — you can re-summarize from the partial transcript, or re-upload to redo the whole recording.",
-                    i + 1, chunks.len(), e.message), partial: joined(&parts) });
+                    i + 1, chunks.len(), e.message), partial: joined(&parts), retryable: e.retryable });
             }
             Err(e) => return Err(e),
         }

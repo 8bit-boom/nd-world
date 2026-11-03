@@ -415,6 +415,31 @@ pub fn instructions_text(db: &Connection, wid: i64, for_players: bool) -> Option
 /// and the last 20 facts oldest first. Pinned player characters (`_format_pc_line`, app/pc_digest.py) are not here: a caller with
 /// any leaves the job to Python.
 pub fn build_rag_context(db: &Connection, wid: i64, query: &str, entity_limit: i64, notes_limit: i64, pinned: &[i64]) -> Option<String> {
+    build_rag_context_pcs(db, wid, query, entity_limit, notes_limit, pinned, &[])
+}
+
+/// `_format_pc_line`: one reference line for a pinned player character
+fn pc_rag_line(db: &Connection, pc: &Map<String, Value>) -> Option<String> {
+    let s = |k: &str| match pc.get(k) { Some(Value::String(t)) => t.clone(), _ => String::new() };
+    let (native, system, identity) = crate::edits::pc_digest_parts(db, pc)?;
+    let detail = if native {
+        [s("char_class"), s("race")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
+    } else {
+        [system, identity].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", ")
+    };
+    let mut line = format!("- [player character] {}", s("name"));
+    if !detail.is_empty() {
+        line.push_str(&format!(" ({detail})"));
+    }
+    let bg = s("background");
+    if !bg.is_empty() {
+        line.push_str(&format!(": {bg}"));
+    }
+    Some(line)
+}
+
+/// `_build_rag_context` with the session's pinned player characters too (listed first, never counted against the limits)
+pub fn build_rag_context_pcs(db: &Connection, wid: i64, query: &str, entity_limit: i64, notes_limit: i64, pinned: &[i64], pinned_pcs: &[i64]) -> Option<String> {
     let rows = |sql: &str, params: Vec<rusqlite::types::Value>| -> Option<Vec<Map<String, Value>>> {
         let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params_from_iter(params), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
@@ -452,13 +477,18 @@ pub fn build_rag_context(db: &Connection, wid: i64, query: &str, entity_limit: i
     all.extend(pinned_rows.iter().filter(|e| is_note(e)).cloned());
     all.extend(notes);
     let entity_context = format_context(db, &all, false, &q)?;
+    let pc_context = if pinned_pcs.is_empty() { String::new() } else {
+        let marks = pinned_pcs.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let pcs = rows(&format!("SELECT * FROM player_characters WHERE world_id = ?1 AND id IN ({marks}) ORDER BY name"), vec![V::Integer(wid)])?;
+        pcs.iter().map(|pc| pc_rag_line(db, pc)).collect::<Option<Vec<_>>>()?.join("\n")
+    };
     let mut st = db.prepare_cached("SELECT content FROM facts WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 20").ok()?;
     let mut facts: Vec<String> = st.query_map([wid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_else(|| "None".into())).collect();
     facts.reverse();
     let fact_context = if facts.is_empty() { String::new() } else {
         format!("Established facts from past sessions:\n{}", facts.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n"))
     };
-    Some([entity_context, fact_context].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n"))
+    Some([pc_context, entity_context, fact_context].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n"))
 }
 
 /// `_session_featured_picks(session)`: (entity ids, player character ids) the session's NPC picks pin

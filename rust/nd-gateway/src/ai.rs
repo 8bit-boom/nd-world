@@ -1845,9 +1845,6 @@ fn session_log_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -
     if !gm && use_rag {
         (use_rag, rag_e, rag_n) = (false, None, None);
     }
-    if use_rag && !crate::retrieval::session_picks(&db, sid).1.is_empty() {
-        return None; // lore with the session's player characters pinned (pc_digest): Python's
-    }
     let requested = if model.is_empty() { surface_default(cfg, "recap")? } else { model.clone() };
     let force = crate::edits::py_truthy_pub(b.get("force")) && gm;
     let newest: Option<String> = db.query_row("SELECT max(coalesce(updated_at, created_at)) FROM facts WHERE game_session_id = ?1", [sid], |r| r.get(0)).ok().flatten();
@@ -2059,8 +2056,10 @@ async fn run_log_recap_job(id: i64) {
         let Some(backend) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
         let model = if model.is_empty() { backend.model.clone() } else { model };
         let lore = match (use_rag.unwrap_or(0) != 0, job_world.filter(|w| *w != 0), facts.is_empty()) {
-            (true, Some(w), false) => crate::retrieval::build_rag_context(&db, w, &facts.join("\n"), rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT),
-                &gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default()).unwrap_or_default(),
+            (true, Some(w), false) => {
+                let (pins, pc_pins) = gsid.map(|g| crate::retrieval::session_picks(&db, g)).unwrap_or_default();
+                crate::retrieval::build_rag_context_pcs(&db, w, &facts.join("\n"), rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins, &pc_pins).unwrap_or_default()
+            }
             _ => String::new(),
         };
         Some(Ok((backend, model, think.map_or(true, |t| t != 0), facts, instructions, min_t, max_t, strictness.unwrap_or_else(|| "guideline".into()), xp.unwrap_or(0), loot, lore)))
@@ -2343,9 +2342,6 @@ fn condense_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> O
         Some(Value::String(s)) if !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) => s.parse().ok(),
         _ => return None,
     };
-    if use_rag && gs_id.is_some_and(|g| !crate::retrieval::session_picks(&db, g).1.is_empty()) {
-        return None; // lore with the session's player characters pinned (pc_digest): Python's
-    }
     let model = text("model")?;
     let think = match b.get("think") { None => true, v => crate::edits::py_truthy_pub(v) };
     backend(&db)?;
@@ -2421,8 +2417,8 @@ async fn run_condense_job(id: i64) {
         let (wid, model, think, text, extra, min_t, max_t, strictness, use_rag, rag_e, rag_n, gsid) = row;
         let text = text.unwrap_or_default();
         let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
-            let pins = gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default();
-            crate::retrieval::build_rag_context(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins).unwrap_or_default()
+            let (pins, pc_pins) = gsid.map(|g| crate::retrieval::session_picks(&db, g)).unwrap_or_default();
+            crate::retrieval::build_rag_context_pcs(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins, &pc_pins).unwrap_or_default()
         } else { String::new() };
         crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
         let world_instr: Option<String> = db.query_row("SELECT recap_instructions FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok().flatten();
@@ -2709,9 +2705,6 @@ fn facts_parse_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -
     if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) {
         return None;
     }
-    if use_rag && gs_id.is_some_and(|g| !crate::retrieval::session_picks(&db, g).1.is_empty()) {
-        return None;
-    }
     let (model, extra) = (text("model")?, text("extra_instructions")?);
     backend(&db)?;
     use rusqlite::types::Value as Sql;
@@ -2752,8 +2745,8 @@ async fn run_facts_parse_job(id: i64) {
         let (wid, model, think, text, extra, use_rag, rag_e, rag_n, gsid) = row;
         let text = text.unwrap_or_default();
         let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
-            let pins = gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default();
-            crate::retrieval::build_rag_context(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins).unwrap_or_default()
+            let (pins, pc_pins) = gsid.map(|g| crate::retrieval::session_picks(&db, g)).unwrap_or_default();
+            crate::retrieval::build_rag_context_pcs(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins, &pc_pins).unwrap_or_default()
         } else { String::new() };
         crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
         let Some(b) = backend(&db) else { return Some(Err("AI unavailable: no Unsloth Studio backend is configured".into())) };
@@ -2907,9 +2900,6 @@ fn text_recap_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) ->
     if rag_e.is_some_and(|v| v < 0) || rag_n.is_some_and(|v| v < 0) {
         return None;
     }
-    if use_rag && !crate::retrieval::session_picks(&db, sid).1.is_empty() {
-        return None;
-    }
     let (model, extra) = (text("model")?, text("extra_instructions")?);
     let think = match b.get("think") { None => true, v => crate::edits::py_truthy_pub(v) };
     backend(&db)?;
@@ -2960,8 +2950,8 @@ pub(crate) async fn text_recap_body(id: i64) {
         let text = text.unwrap_or_default();
         let resume = checkpoint.filter(|c| !c.is_empty()).and_then(|c| serde_json::from_str::<Value>(&c).ok()).filter(|c| c.get("phase").and_then(|p| p.as_str()) == Some("summarize"));
         let lore = if use_rag.unwrap_or(0) != 0 && wid != 0 {
-            let pins = gsid.map(|g| crate::retrieval::session_picks(&db, g).0).unwrap_or_default();
-            crate::retrieval::build_rag_context(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins).unwrap_or_default()
+            let (pins, pc_pins) = gsid.map(|g| crate::retrieval::session_picks(&db, g)).unwrap_or_default();
+            crate::retrieval::build_rag_context_pcs(&db, wid, &text, rag_e.unwrap_or(DEFAULT_RAG_ENTITY_LIMIT), rag_n.unwrap_or(DEFAULT_RAG_NOTES_LIMIT), &pins, &pc_pins).unwrap_or_default()
         } else { String::new() };
         crate::orm::update(&db, "audio_jobs", id, &[("status", Sql::Text("summarizing".into()))]);
         let world_instr: Option<String> = db.query_row("SELECT recap_instructions FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok().flatten();
@@ -3076,9 +3066,6 @@ fn audio_job_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> 
     let f = small_form(headers, body)?;
     let (gs_id, model, extra, think, use_rag, rag_e, rag_n) = audio_job_fields(&f, p.is_gm)?;
     let review = form_bool(&f, "review_before_summary", false)?;
-    if use_rag && gs_id.is_some_and(|g| !crate::retrieval::session_picks(&db, g).1.is_empty()) {
-        return None;
-    }
     backend(&db)?;
     let uploads = cfg.db_path.parent()?.join("uploads");
     let (filename, path, delete_after) = if uri.path().ends_with("/from-clip") {
@@ -5189,4 +5176,189 @@ pub async fn kiy_generate(cfg: std::sync::Arc<Config>, uri: Uri, headers: Header
         let _ = tx.send("data: [DONE]\n\n".into()).await;
     });
     Some(stream_response(rx))
+}
+
+
+// ── the live recording: POST /api/sessions/<id>/live-transcript/append (app/routers/sessions.py api_live_transcript_append) ──
+// One recorded chunk: its raw audio is kept first (when "Save raw audio" is ticked), then it is transcribed and the text appended to the session's live
+// transcript, once per (recording id, segment) - a retry of a chunk the server already committed adds nothing. Python-free image only.
+
+const LIVE_AUDIO_EXTS: &[&str] = &[".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"];
+
+fn live_inflight() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+fn live_stt_lock() -> &'static tokio::sync::Mutex<()> {
+    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+struct LiveChunk {
+    sid: i64,
+    seg_key: String,
+    already: bool,
+    tmp: std::path::PathBuf,
+    b: Backend,
+    model: String,
+    inflight_key: String,
+}
+
+enum LivePlan {
+    Answer(Response<Body>),
+    Go(Box<LiveChunk>),
+}
+
+fn live_keys(gs: &Map<String, Value>) -> Vec<String> {
+    match gs.get("live_transcript_segments_json").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(serde_json::from_str::<Value>) {
+        Some(Ok(Value::Array(a))) => a.iter().map(|k| match k { Value::String(s) => s.clone(), other => other.to_string() }).collect(),
+        _ => vec![],
+    }
+}
+
+fn live_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<LivePlan> {
+    use axum::http::StatusCode as S;
+    let max_chunk: usize = std::env::var("MAX_LIVE_CHUNK_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(25 * 1024 * 1024);
+    let max_saved: usize = std::env::var("MAX_LIVE_SAVED_SEGMENT_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(200 * 1024 * 1024);
+    let sid: i64 = uri.path().strip_prefix("/api/sessions/")?.strip_suffix("/live-transcript/append")?.parse().ok()?;
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "POST", uri, headers, now)?;
+    let gs = db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [sid], |r| crate::layout::row_map(r)).ok();
+    let Some(gs) = gs else { return Some(LivePlan::Answer(crate::ai_more::detail(S::NOT_FOUND, "Not Found"))) };
+    let wid = gs.get("world_id").and_then(|v| v.as_i64())?;
+    let world = db.query_row("SELECT * FROM worlds WHERE id = ?1", [wid], |r| crate::layout::row_map(r)).ok()?;
+    if p.user_id <= 0 || crate::pages::edit_level(&p, &world, "sessions") != Some(true) {
+        return None; // the 403 / 404 wording is Python's
+    }
+    let (f, files) = crate::form::parse_multipart(headers, body)?;
+    let file = files.iter().find(|x| x.name == "file")?;
+    let save_audio = f.get("save_audio").unwrap_or("").to_string();
+    let recording_id = f.get("recording_id").unwrap_or("").to_string();
+    let segment_index: i64 = match f.get("segment_index") { None => -1, Some(v) if v.trim().is_empty() => return None, Some(v) => crate::form::py_int(v)? };
+    let is_id = recording_id.len() == 32 && recording_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let (mut seg_key, mut already) = (String::new(), false);
+    if is_id && segment_index >= 0 {
+        seg_key = format!("{recording_id}:{segment_index}");
+        already = live_keys(&gs).contains(&seg_key);
+    }
+    let bad = |m: &str| Some(LivePlan::Answer(crate::ai_more::detail(S::BAD_REQUEST, m)));
+    if !save_audio.is_empty() {
+        if !is_id {
+            return bad("Invalid recording id");
+        }
+        if segment_index < 0 {
+            return bad("Invalid segment index");
+        }
+    }
+    let ext = std::path::Path::new(&file.filename).extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_else(|| ".webm".into());
+    if !LIVE_AUDIO_EXTS.contains(&ext.as_str()) {
+        let mut allowed: Vec<&str> = LIVE_AUDIO_EXTS.to_vec();
+        allowed.sort();
+        return bad(&format!("Unsupported audio type '{ext}' \u{2014} allowed: {}", allowed.join(", ")));
+    }
+    let mut inflight_key = String::new();
+    if !already {
+        inflight_key = if seg_key.is_empty() { String::new() } else { format!("{sid}:{seg_key}") };
+        let ttl = std::env::var("LIVE_STT_INFLIGHT_TTL_SECONDS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(45.0 * 60.0);
+        if !inflight_key.is_empty() {
+            if let Some(t) = live_inflight().lock().ok()?.get(&inflight_key) {
+                if t.elapsed().as_secs_f64() < ttl {
+                    return Some(LivePlan::Answer(crate::ai_more::detail(S::CONFLICT,
+                        "Still transcribing this segment \u{2014} the server is working on the first upload; retry this request in a few seconds.")));
+                }
+            }
+        }
+    }
+    if !save_audio.is_empty() {
+        if file.data.len() > max_saved {
+            return Some(LivePlan::Answer(crate::ai_more::detail(S::PAYLOAD_TOO_LARGE, "File too large")));
+        }
+        let uploads = cfg.db_path.parent()?.join("uploads");
+        let dir = uploads.join("live").join(sid.to_string()).join(&recording_id);
+        let dest = dir.join(format!("{segment_index:06}{ext}"));
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&dest, &file.data)) {
+            return Some(LivePlan::Answer(crate::ai_more::detail(S::from_u16(507).ok()?, format!(
+                "Couldn't save this segment's raw audio ({e}) \u{2014} the server's disk may be full. Nothing was transcribed, so retrying costs nothing once there is room."))));
+        }
+        let rel = format!("live/{sid}/{recording_id}/{segment_index:06}{ext}");
+        let mut list = crate::edits::live_audio_files(&gs)?;
+        if !list.contains(&rel) {
+            list.push(rel);
+            crate::orm::update(&db, "game_sessions", sid, &[("live_audio_files_json", rusqlite::types::Value::Text(nd_render::py_dumps(&json!(list))))])?;
+        }
+    }
+    let tmp = std::env::temp_dir().join(format!("nd-live-{:032x}{ext}", rand::random::<u128>()));
+    let b = backend(&db);
+    if !already {
+        if file.data.len() > max_chunk {
+            return Some(LivePlan::Answer(crate::ai_more::detail(S::PAYLOAD_TOO_LARGE, "File too large")));
+        }
+        if b.is_none() {
+            return Some(LivePlan::Answer(crate::ai_more::detail(S::BAD_REQUEST, "Unsloth Studio STT: no Studio API key is set (Settings \u{2192} System).")));
+        }
+        std::fs::write(&tmp, &file.data).ok()?;
+        if !inflight_key.is_empty() {
+            live_inflight().lock().ok()?.insert(inflight_key.clone(), std::time::Instant::now());
+        }
+    }
+    let model = crate::stt::stt_model(cfg);
+    Some(LivePlan::Go(Box::new(LiveChunk { sid, seg_key, already, tmp, b: b?, model, inflight_key })))
+}
+
+fn live_commit(cfg: &Config, c: &LiveChunk, chunk_text: &str) -> Option<Value> {
+    let db = crate::writes::open(cfg)?;
+    let gs = db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [c.sid], |r| crate::layout::row_map(r)).ok()?;
+    let mut transcript = gs.get("live_transcript").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut keys = live_keys(&gs);
+    let duplicate_now = !c.seg_key.is_empty() && keys.contains(&c.seg_key);
+    let mut sets: Vec<(&str, rusqlite::types::Value)> = vec![];
+    if !chunk_text.is_empty() || (!c.seg_key.is_empty() && !c.already) {
+        if !chunk_text.is_empty() && !duplicate_now {
+            if !transcript.is_empty() {
+                transcript.push(' ');
+            }
+            transcript.push_str(chunk_text);
+            sets.push(("live_transcript", rusqlite::types::Value::Text(transcript.clone())));
+        }
+        if !c.seg_key.is_empty() && !c.already && !duplicate_now && !keys.contains(&c.seg_key) {
+            keys.push(c.seg_key.clone());
+            sets.push(("live_transcript_segments_json", rusqlite::types::Value::Text(nd_render::py_dumps(&json!(keys)))));
+        }
+    }
+    if !sets.is_empty() {
+        let refs: Vec<(&str, rusqlite::types::Value)> = sets;
+        crate::orm::update(&db, "game_sessions", c.sid, &refs)?;
+    }
+    Some(json!({"chunk_text": chunk_text, "transcript": transcript}))
+}
+
+/// `POST /api/sessions/<id>/live-transcript/append`
+pub async fn live_transcript_append(cfg: std::sync::Arc<Config>, uri: Uri, headers: HeaderMap, body: bytes::Bytes) -> Option<Response<Body>> {
+    use axum::http::StatusCode as S;
+    let c2 = cfg.clone();
+    let plan = tokio::task::spawn_blocking(move || live_plan(&c2, &uri, &headers, &body)).await.ok()??;
+    let chunk = match plan {
+        LivePlan::Answer(r) => return Some(r),
+        LivePlan::Go(c) => c,
+    };
+    let mut chunk_text = String::new();
+    if !chunk.already {
+        let _one_at_a_time = live_stt_lock().lock().await;
+        let result = crate::stt::one_file(&chunk.b, &chunk.tmp, &chunk.model).await;
+        let _ = std::fs::remove_file(&chunk.tmp);
+        if !chunk.inflight_key.is_empty() {
+            if let Ok(mut m) = live_inflight().lock() {
+                m.remove(&chunk.inflight_key);
+            }
+        }
+        match result {
+            Ok(t) => chunk_text = crate::edits::py_strip_pub(&crate::stt::collapse_repeats(&t)),
+            Err(e) => return Some(crate::ai_more::detail(if e.retryable { S::SERVICE_UNAVAILABLE } else { S::BAD_REQUEST }, e.message)),
+        }
+    }
+    let c3 = cfg.clone();
+    let answer = tokio::task::spawn_blocking(move || live_commit(&c3, &chunk, &chunk_text)).await.ok()??;
+    crate::edits::json_response(&answer)
 }

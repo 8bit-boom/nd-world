@@ -753,15 +753,16 @@ def test_condense_job_is_pythons(client, seed, studio):
     the Thinking ladder for a starved answer, the strict-length retry, a model that refuses Thinking - ending in the same row."""
     import time
     from app.database import SessionLocal
-    from app.models import AudioJob, Entity, GameSession
+    from app.models import AudioJob, Entity, GameSession, PlayerCharacter
     base = str(client.base_url)
     w = seed.world_a.id
     db = SessionLocal()
     try:
         inn = Entity(world_id=w, kind="location", name="Prancing Pony", summary="An inn.")
-        db.add(inn)
+        hero = PlayerCharacter(world_id=w, name="Frodo Baggins", char_class="Rogue", race="Halfling", background="A gardener's son from the Shire.")
+        db.add_all([inn, hero])
         db.flush()
-        gs = GameSession(world_id=w, title="Bree", npcs_json=json.dumps([{"entity_id": inn.id, "kind": "location"}]))
+        gs = GameSession(world_id=w, title="Bree", npcs_json=json.dumps([{"entity_id": inn.id, "kind": "location"}, {"entity_id": hero.id, "kind": "player_character"}]))
         db.add(gs)
         db.commit()
         sid = gs.id

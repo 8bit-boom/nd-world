@@ -33,6 +33,10 @@ fn starting_page() -> Response<Body> {
 }
 
 /// The answer for a request only the Python app can serve, when there is none (`ND_PYTHON_FREE=1`): 501 with the reason, in JSON for the API and a page otherwise
+pub fn not_in_this_image_pub(method: &Method, path: &str, headers: &HeaderMap) -> Response<Body> {
+    not_in_this_image(method, path, headers)
+}
+
 fn not_in_this_image(method: &Method, path: &str, headers: &HeaderMap) -> Response<Body> {
     let wants_json = path.starts_with("/api/") || path.starts_with("/mcp") || headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("json") && !a.contains("html"));
     // a write the gateway declined is almost always input it could not accept (a refusal Python words in detail): a generic 400, not a 501
