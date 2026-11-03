@@ -66,6 +66,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         path if trailing_id(path, "/api/ai/sessions/").is_some() => ai_chat_session_get(&cfg, uri, headers, trailing_id(path, "/api/ai/sessions/")?),
         path if trailing_id(path, "/api/ai/chat/jobs/").is_some() => chat_job_status(&cfg, uri, headers, trailing_id(path, "/api/ai/chat/jobs/")?),
         "/api/ai/imagegen/model-templates" => imagegen_model_templates(&cfg, uri, headers),
+        "/api/ai/world-summary" => world_summary_get(&cfg, uri, headers),
         path if id_between(path, "/api/ai/imagegen/jobs/", "").is_some() => imagegen_job_status_gm(&cfg, uri, headers, id_between(path, "/api/ai/imagegen/jobs/", "")?),
         path if tpl_export_path(path).is_some() => {
             let (wid, tid) = tpl_export_path(path)?;
@@ -113,7 +114,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
 }
 
 pub fn is_get(path: &str) -> bool {
-    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates")
+    matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates" | "/api/ai/world-summary")
         || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
         || id_between(path, "/api/ai/imagegen/jobs/", "").is_some()
@@ -4066,4 +4067,45 @@ fn export_pcs_json(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64) -> Op
     }
     let wslug = w.get("slug").and_then(|v| v.as_str()).unwrap_or("world");
     Some(json_download(&Value::Array(out), &format!("{wslug}-player-characters.json")))
+}
+
+/// `GET /api/ai/world-summary` (app/routers/ai.py `api_world_summary_get`): the newest done job's
+/// recap for the CALLER's own audience tier (a GM sees audience "gm" or blank; anyone else only
+/// "players"), {"pending": true} while one runs, the error text, or {"recap": ""} when there has
+/// never been one. Read access: GM/assistant always, a player only with the world's
+/// players_can_view_world_summary flag.
+fn world_summary_get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let (db, p) = page(cfg, uri, headers)?;
+    let Some(w) = p.world.as_ref() else {
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "No active world"));
+    };
+    let is_assistant = p.role.as_deref() == Some("assistant");
+    if !p.is_gm && !is_assistant
+        && !crate::edits::py_truthy_pub(w.get("players_can_view_world_summary")) {
+        return Some(crate::idpages::refusal(403));
+    }
+    let wid = w.get("id")?.as_i64()?;
+    let rows = rows_of(&db, "SELECT * FROM audio_jobs WHERE world_id = ?1 AND purpose = 'world_summary' ORDER BY id DESC", &[&wid])?;
+    let job = rows.into_iter().find(|j| {
+        let audience = j.get("audience").and_then(|v| v.as_str()).unwrap_or("");
+        if p.is_gm {
+            audience == "gm" || audience.is_empty()
+        } else {
+            audience == "players"
+        }
+    });
+    let Some(job) = job else { return crate::edits::json_response(&json!({"recap": ""})) };
+    let status = job.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if matches!(status, "pending" | "transcribing" | "summarizing") {
+        return crate::edits::json_response(&json!({"pending": true}));
+    }
+    if status == "error" {
+        let err = job.get("error").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or("generation failed");
+        return crate::edits::json_response(&json!({"recap": "", "error": err}));
+    }
+    let finished = match job.get("finished_at").and_then(|v| v.get("__dt__").or(Some(v))).and_then(|v| v.as_str()).and_then(nd_render::pyvalue::PyDateTime::parse) {
+        Some(d) => json!(d.isoformat()),
+        None => Value::Null,
+    };
+    crate::edits::json_response(&json!({"recap": job.get("recap").cloned().unwrap_or(json!("")), "generated_at": finished}))
 }
