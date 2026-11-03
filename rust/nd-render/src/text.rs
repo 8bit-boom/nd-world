@@ -277,11 +277,80 @@ fn python_free_env() -> bool {
 
 /// `rendering.autolink_entities(html, names)`; `names` in the dict's insertion order. `None` = the names hold something this port does not
 /// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently).
+/// Plain-text names turned into links, for ASCII names (nearly all of them): an Aho-Corasick automaton over the lower-cased names, built once per distinct list of
+/// names and kept (a page asks for the same list again and again). Same answer as the alternation regex of app/rendering.py: at the leftmost place a name matches
+/// (letters in any case, not touching a letter / digit / underscore on either side) the longest name that fits wins, and the search goes on after it.
+struct Matcher {
+    ac: aho_corasick::AhoCorasick,
+    ids: Vec<i64>,
+}
+
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+impl Matcher {
+    /// `chunk` (a text node) with every name linked
+    fn link(&self, chunk: &str) -> String {
+        let bytes = chunk.as_bytes();
+        // every occurrence of every name, then the same walk the regex makes: by start, the longest first, the first one whose edges are clear, on past it
+        let mut found: Vec<(usize, usize, usize)> = self.ac.find_overlapping_iter(chunk).map(|m| (m.start(), m.end(), m.pattern().as_usize())).collect();
+        if found.is_empty() {
+            return chunk.to_string();
+        }
+        found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        let mut out = String::with_capacity(chunk.len() + found.len() * 48);
+        let (mut at, mut i) = (0usize, 0usize);
+        while i < found.len() {
+            let (s, e, pid) = found[i];
+            if s < at {
+                i += 1;
+                continue;
+            }
+            let clear = (s == 0 || !is_word(bytes[s - 1])) && (e == bytes.len() || !is_word(bytes[e]));
+            if clear {
+                out.push_str(&chunk[at..s]);
+                out.push_str(&format!(r#"<a href="/entity/{}" class="auto-entity-link">{}</a>"#, self.ids[pid], &chunk[s..e]));
+                at = e;
+            }
+            i += 1;
+        }
+        out.push_str(&chunk[at..]);
+        out
+    }
+}
+
+/// the automata made so far, by the list of names they were made from (a hash of names and ids; a few worlds at most, so the whole table is dropped when it grows)
+fn matcher_for(keys: &[(String, i64)]) -> Option<std::sync::Arc<Matcher>> {
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex};
+    static CACHE: OnceLock<Mutex<HashMap<u64, Arc<Matcher>>>> = OnceLock::new();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    keys.hash(&mut h);
+    let key = h.finish();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(m) = cache.lock().ok()?.get(&key) {
+        return Some(m.clone());
+    }
+    let ac = aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).match_kind(aho_corasick::MatchKind::Standard).build(keys.iter().map(|(k, _)| k.as_str())).ok()?;
+    let m = Arc::new(Matcher { ac, ids: keys.iter().map(|(_, i)| *i).collect() });
+    let mut c = cache.lock().ok()?;
+    if c.len() >= 16 {
+        c.clear();
+    }
+    c.insert(key, m.clone());
+    Some(m)
+}
+
+/// `rendering.autolink_entities(html, names)`; `names` in the dict's insertion order. `None` = the names hold something this port does not
+/// promise to match the same way (non-ASCII letters, whose case folding Python and Rust may treat differently).
 pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> {
     if html.is_empty() || names.is_empty() {
         return Some(html.to_string());
     }
     let mut lower_to_id: Vec<(String, i64)> = vec![];
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (name, id) in names {
         let key = py_strip(name).to_lowercase();
         if key.chars().count() < 3 {
@@ -290,19 +359,27 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
         if !key.is_ascii() && !python_free_env() {
             return None; // next to Python: its case folding is the reference; without it the page must open (accented names are ordinary)
         }
-        if !lower_to_id.iter().any(|(k, _)| *k == key) {
+        if seen.insert(key.clone()) {
             lower_to_id.push((key, *id));
         }
     }
     if lower_to_id.is_empty() {
         return Some(html.to_string());
     }
-    let mut ordered: Vec<&String> = lower_to_id.iter().map(|(k, _)| k).collect();
-    ordered.sort_by(|a, b| b.chars().count().cmp(&a.chars().count())); // stable, longest first (Python's sorted(key=len, reverse=True))
-    let alt = ordered.iter().map(|n| fancy_regex::escape(n).into_owned()).collect::<Vec<_>>().join("|");
-    // a world with thousands of names makes this one big alternation; fancy-regex's default backtrack limit (1M) is hit on ordinary
-    // non-ASCII text (Python's re has no limit), so raise it - and decline instead of panicking if even that is not enough
-    let pattern = fancy_regex::RegexBuilder::new(&format!(r"(?i)(?<![A-Za-z0-9_])({alt})(?![A-Za-z0-9_])")).backtrack_limit(200_000_000).build().ok()?;
+    // all-ASCII names (the normal case): the cached automaton. Names with other letters: the regex, built for this call (Unicode case folding)
+    enum Engine {
+        Ac(std::sync::Arc<Matcher>),
+        Rx(fancy_regex::Regex),
+    }
+    let engine = if lower_to_id.iter().all(|(k, _)| k.is_ascii()) {
+        Engine::Ac(matcher_for(&lower_to_id)?)
+    } else {
+        let mut ordered: Vec<&String> = lower_to_id.iter().map(|(k, _)| k).collect();
+        ordered.sort_by(|a, b| b.chars().count().cmp(&a.chars().count())); // stable, longest first (Python's sorted(key=len, reverse=True))
+        let alt = ordered.iter().map(|n| fancy_regex::escape(n).into_owned()).collect::<Vec<_>>().join("|");
+        // fancy-regex's default backtrack limit (1M) is hit on ordinary non-ASCII text (Python's re has no limit), so raise it - and decline instead of panicking
+        Engine::Rx(fancy_regex::RegexBuilder::new(&format!(r"(?i)(?<![A-Za-z0-9_])({alt})(?![A-Za-z0-9_])")).backtrack_limit(200_000_000).build().ok()?)
+    };
     let tag_name = re!(r"^</?\s*([a-zA-Z0-9]+)");
     let mut skip_depth: i64 = 0;
     let mut out = String::new();
@@ -337,12 +414,17 @@ pub fn autolink_entities(html: &str, names: &[(String, i64)]) -> Option<String> 
             out.push_str(chunk);
             continue;
         }
-        let replaced = pattern.try_replacen(chunk, 0, |c: &fancy_regex::Captures| {
-            let found = &c[0];
-            let id = lower_to_id.iter().find(|(k, _)| *k == found.to_lowercase()).map(|(_, i)| *i).unwrap_or(0);
-            format!(r#"<a href="/entity/{id}" class="auto-entity-link">{found}</a>"#)
-        }).ok()?;
-        out.push_str(&replaced);
+        match &engine {
+            Engine::Ac(m) => out.push_str(&m.link(chunk)),
+            Engine::Rx(pattern) => {
+                let replaced = pattern.try_replacen(chunk, 0, |c: &fancy_regex::Captures| {
+                    let found = &c[0];
+                    let id = lower_to_id.iter().find(|(k, _)| *k == found.to_lowercase()).map(|(_, i)| *i).unwrap_or(0);
+                    format!(r#"<a href="/entity/{id}" class="auto-entity-link">{found}</a>"#)
+                }).ok()?;
+                out.push_str(&replaced);
+            }
+        }
     }
     Some(out)
 }
@@ -428,4 +510,78 @@ pub fn strip_md(text: &str) -> String {
     let t = re!(r"(?m)^\*\s*").replace_all(&t, "");
     let t = re!(r"(?m)^-{3,}$").replace_all(&t, "");
     py_strip(&collapse_ws(&t)).to_string()
+}
+
+#[cfg(test)]
+mod autolink_tests {
+    use super::*;
+
+    /// the alternation regex of app/rendering.py, on one text node: the reference the automaton must agree with
+    fn reference(chunk: &str, keys: &[(String, i64)]) -> String {
+        let mut ordered: Vec<&(String, i64)> = keys.iter().collect();
+        ordered.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
+        let alt = ordered.iter().map(|(n, _)| fancy_regex::escape(n).into_owned()).collect::<Vec<_>>().join("|");
+        let rx = fancy_regex::Regex::new(&format!(r"(?i)(?<![A-Za-z0-9_])({alt})(?![A-Za-z0-9_])")).unwrap();
+        rx.replace_all(chunk, |c: &fancy_regex::Captures| {
+            let found = &c[0];
+            let id = keys.iter().find(|(k, _)| *k == found.to_lowercase()).map(|(_, i)| *i).unwrap();
+            format!(r#"<a href="/entity/{id}" class="auto-entity-link">{found}</a>"#)
+        })
+        .into_owned()
+    }
+
+    fn names(list: &[&str]) -> Vec<(String, i64)> {
+        list.iter().enumerate().map(|(i, n)| (n.to_string(), i as i64 + 1)).collect()
+    }
+
+    #[test]
+    fn the_automaton_links_like_the_regex() {
+        let n = names(&["Bob", "Bob Smith", "Rusty Anchor", "anchor", "ash court", "Ash", "a_b_c", "x-ray"]);
+        let keys: Vec<(String, i64)> = n.iter().map(|(k, i)| (k.to_lowercase(), *i)).collect();
+        for text in [
+            "Bob went to the Rusty Anchor with Bob Smith.",
+            "bobby is not bob; BOB is. Bob's hat, bob_x, xbob, 2bob, bob2, (Bob)",
+            "ash court and Ash and ashes and Ash-Court and ASH COURT.",
+            "anchor, Anchor, ANCHORS, the Rusty Anchors, Rusty Anchor.",
+            "a_b_c and a_b_cd and xa_b_c and X-Ray and x-rays and x-ray",
+            "BobBob Bob Bob Smithson Bob Smith's Bob  Smith",
+            "",
+            "no names here at all",
+        ] {
+            assert_eq!(autolink_entities(text, &n).unwrap(), reference(text, &keys), "{text}");
+        }
+    }
+
+    #[test]
+    fn many_random_texts_agree() {
+        let pool = ["Bob", "Bob Smith", "Ash Court", "Ashen", "ash", "Tide", "Tidewater", "Raven", "Ravenna", "Lantern Street", "lan", "Hali"];
+        let n = names(&pool);
+        let keys: Vec<(String, i64)> = n.iter().filter(|(k, _)| k.len() >= 3).map(|(k, i)| (k.to_lowercase(), *i)).collect();
+        let glue = [" ", " ", ", ", ". ", "-", "_", "x", "7", "'s ", "\n"];
+        let mut seed = 12345u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..400 {
+            let mut text = String::new();
+            for _ in 0..(5 + next() % 30) {
+                text.push_str(pool[next() % pool.len()]);
+                if next() % 3 == 0 {
+                    text = text.to_uppercase();
+                }
+                text.push_str(glue[next() % glue.len()]);
+            }
+            assert_eq!(autolink_entities(&text, &n).unwrap(), reference(&text, &keys), "{text}");
+        }
+    }
+
+    #[test]
+    fn tags_and_links_are_left_alone_and_the_automaton_is_reused() {
+        let n = names(&["Bob", "Ash Court"]);
+        let html = r#"<p>Bob in <code>Bob</code> and <a href="/x">Bob</a> and <b>Ash Court</b></p><pre>Bob</pre>"#;
+        let out = autolink_entities(html, &n).unwrap();
+        assert_eq!(out, r#"<p><a href="/entity/1" class="auto-entity-link">Bob</a> in <code>Bob</code> and <a href="/x">Bob</a> and <b><a href="/entity/2" class="auto-entity-link">Ash Court</a></b></p><pre>Bob</pre>"#);
+        assert_eq!(autolink_entities(html, &n).unwrap(), out);
+    }
 }

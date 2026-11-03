@@ -1305,6 +1305,7 @@ dependencies = [
 name = "nd-render"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "fancy-regex",
  "html-escape",
  "libc",
