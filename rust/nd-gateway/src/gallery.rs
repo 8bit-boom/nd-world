@@ -41,7 +41,7 @@ pub fn display_name(url: &str, uses: &[Value]) -> Option<String> {
 
 /// `title_overrides`: {url: title} given by hand or by the AI renamer
 pub fn title_overrides(db: &Connection, wid: i64) -> Option<Map<String, Value>> {
-    let mut st = db.prepare("SELECT url, title FROM media_titles WHERE world_id = ?1 ORDER BY id").ok()?;
+    let mut st = db.prepare_cached("SELECT url, title FROM media_titles WHERE world_id = ?1 ORDER BY id").ok()?;
     let mut m = Map::new();
     for r in st.query_map([wid], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
         let (u, t) = r.ok()?;
@@ -51,7 +51,7 @@ pub fn title_overrides(db: &Connection, wid: i64) -> Option<Map<String, Value>> 
 }
 
 fn text_cols(db: &Connection, sql: &str, wid: i64, n: usize) -> Option<Vec<Vec<Option<String>>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let rows = st
         .query_map([wid], |r| (0..n).map(|i| r.get::<_, Option<String>>(i)).collect::<rusqlite::Result<Vec<_>>>())
         .ok()?
@@ -231,7 +231,7 @@ pub fn images_gallery(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
         img.insert("thumb_url".into(), json!(thumb));
         remaining.push(Value::Object(img));
     }
-    let mut st = db.prepare("SELECT * FROM image_albums WHERE world_id = ?1 AND parent_id IS NULL ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM image_albums WHERE world_id = ?1 AND parent_id IS NULL ORDER BY name, id").ok()?;
     let albums = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let (mut urls, mut subs) = (Map::new(), Map::new());
     for a in &albums {
@@ -261,7 +261,7 @@ pub fn album_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap)
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
     let wid = p.world.as_ref()?.get("id")?.as_i64()?;
-    let mut st = db.prepare("SELECT * FROM image_albums WHERE world_id = ?1 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM image_albums WHERE world_id = ?1 ORDER BY name, id").ok()?;
     let all = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let id_of = |a: &Map<String, Value>| a.get("id").and_then(|v| v.as_i64());
     let parent_of = |a: &Map<String, Value>| a.get("parent_id").and_then(|v| v.as_i64());
@@ -286,7 +286,7 @@ pub fn album_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap)
         let (size, mtime) = crate::media::file_facts(&uploads, Some(u));
         facts.insert(u.clone(), json!({"size": size, "mtime": mtime}));
     }
-    let mut st = db.prepare("SELECT * FROM image_albums WHERE parent_id = ?1 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM image_albums WHERE parent_id = ?1 ORDER BY name, id").ok()?;
     let children = st.query_map([aid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut child_urls = Map::new();
     for c in &children {
@@ -343,7 +343,7 @@ pub fn all_world_image_urls(db: &Connection, wid: i64) -> Option<Vec<Value>> {
         names.insert(e["url"].as_str()?.to_string(), e["name"].clone());
     }
     let overrides = title_overrides(db, wid)?;
-    let mut st = db.prepare("SELECT image_urls_json FROM image_albums WHERE world_id = ?1 ORDER BY id").ok()?;
+    let mut st = db.prepare_cached("SELECT image_urls_json FROM image_albums WHERE world_id = ?1 ORDER BY id").ok()?;
     let raws = st.query_map([wid], |r| r.get::<_, Option<String>>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     for raw in raws {
         let Ok(Value::Array(list)) = serde_json::from_str::<Value>(raw.as_deref().filter(|s| !s.is_empty()).unwrap_or("[]")) else { continue };

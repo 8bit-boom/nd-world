@@ -65,7 +65,7 @@ fn row(db: &Connection, sql: &str, id: i64) -> Option<Map<String, Value>> {
 }
 
 fn rows(db: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r)
 }

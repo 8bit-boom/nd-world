@@ -96,7 +96,7 @@ pub fn maps_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
             "image_url": map_image(cfg, &slug)?,
         }));
     }
-    let mut st = db.prepare("SELECT * FROM schematics WHERE world_id = ?1 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM schematics WHERE world_id = ?1 ORDER BY name, id").ok()?;
     let schematics = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let gallery = if p.is_gm { crate::gallery::all_world_image_urls(&db, wid)? } else { vec![] };
     p.ctx.insert("maps".into(), Value::Array(maps));
@@ -159,7 +159,7 @@ pub fn map_viewer(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     let overlay = db.query_row("SELECT * FROM map_overlays WHERE slug = ?1 ORDER BY id LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
     // {lowercased name: id} of the entities the viewer may see
     let vis = if p.is_gm { "" } else { " AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))" };
-    let mut st = db.prepare(&format!("SELECT name, id FROM entities WHERE world_id = ?1{vis} ORDER BY id")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT name, id FROM entities WHERE world_id = ?1{vis} ORDER BY id")).ok()?;
     let mut names = Map::new();
     let rows: Vec<(String, i64)> = if p.is_gm {
         st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?
@@ -169,13 +169,13 @@ pub fn map_viewer(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     for (n, id) in rows {
         names.insert(n.to_lowercase(), json!(id));
     }
-    let mut st = db.prepare("SELECT slug, name FROM schematics WHERE world_id = ?1 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT slug, name FROM schematics WHERE world_id = ?1 ORDER BY name, id").ok()?;
     let schematics: Vec<Value> = st
         .query_map([wid], |r| Ok(json!({"slug": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?})))
         .ok()?
         .collect::<Result<_, _>>()
         .ok()?;
-    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id").ok()?;
     let parties = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut payload = vec![];
     for party in &parties {

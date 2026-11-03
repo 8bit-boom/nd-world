@@ -402,7 +402,7 @@ fn world_context(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respons
         format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
     };
     let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };

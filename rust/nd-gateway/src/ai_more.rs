@@ -423,7 +423,7 @@ fn insights_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<F
             return Some(vec![]);
         }
         let marks = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let mut st = db.prepare(&format!("SELECT * FROM {table} WHERE id IN ({marks}) ORDER BY id")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT * FROM {table} WHERE id IN ({marks}) ORDER BY id")).ok()?;
         let out: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         Some(out)
     };
@@ -573,14 +573,14 @@ fn prep_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<Fut> 
             if crate::edits::py_truthy_pub(prior.get("summary")) {
                 parts.push(format!("Recap of the last session (#{} {}):\n{}", text(prior.get("session_num"))?, text(prior.get("title"))?, text(prior.get("summary"))?));
             }
-            let mut st = db.prepare("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").ok()?;
+            let mut st = db.prepare_cached("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").ok()?;
             let facts: Vec<Option<String>> = st.query_map([prior.get("id")?.as_i64()?], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
             if !facts.is_empty() {
                 parts.push(format!("Facts from the last session:\n{}", facts.iter().map(|f| format!("- {}", f.as_deref().unwrap_or("None"))).collect::<Vec<_>>().join("\n")));
             }
         }
     }
-    let mut st = db.prepare("SELECT title, summary FROM quests WHERE world_id = ?1 AND status = 'active' ORDER BY title").ok()?;
+    let mut st = db.prepare_cached("SELECT title, summary FROM quests WHERE world_id = ?1 AND status = 'active' ORDER BY title").ok()?;
     let quests: Vec<(Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     if !quests.is_empty() {
         let lines: Vec<String> = quests.iter().map(|(t, s)| {
@@ -594,7 +594,7 @@ fn prep_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str) -> Option<Fut> 
         let pc_ids = match party { Some(raw) => id_list(Some(&json!(raw.unwrap_or_default())))?, None => vec![] };
         if !pc_ids.is_empty() {
             let marks = pc_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-            let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({marks}) ORDER BY id")).ok()?;
+            let mut st = db.prepare_cached(&format!("SELECT * FROM player_characters WHERE id IN ({marks}) ORDER BY id")).ok()?;
             let pcs: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
             if !pcs.is_empty() {
                 let lines: Option<Vec<String>> = pcs.iter().map(|pc| crate::edits::pc_digest_line(db, pc, false, true).map(|l| format!("- {l}"))).collect();

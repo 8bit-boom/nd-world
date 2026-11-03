@@ -55,7 +55,7 @@ pub fn decide(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Result<Dec
     if first == "schematics" {
         // _guard_strict_map_picture: the original picture of a strict map goes to those who edit Maps only
         let url = format!("/uploads/{}", rel.to_str()?);
-        let mut st = db.prepare("SELECT * FROM schematics WHERE image_url = ?1").ok()?;
+        let mut st = db.prepare_cached("SELECT * FROM schematics WHERE image_url = ?1").ok()?;
         let rows = st.query_map([&url], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         for sc in rows {
             if !crate::edits::map_is_strict(&sc)? {

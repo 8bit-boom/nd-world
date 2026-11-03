@@ -14,7 +14,7 @@ use crate::pages::{render_with, section_ok, Pages};
 const ALLOWED_EXTS: [&str; 6] = ["py", "html", "js", "css", "md", "txt"];
 const MAX_LISTED_FILES: usize = 2000;
 
-fn build(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(rusqlite::Connection, crate::layout::PageCtx)> {
+fn build(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(crate::writes::Pooled, crate::layout::PageCtx)> {
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
@@ -32,7 +32,7 @@ pub fn image_gen(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
         return Some(crate::idpages::refusal(403));
     }
     let wid = world.get("id")?.as_i64()?;
-    let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY name").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY name").ok()?;
     let own: Vec<Value> = st.query_map(rusqlite::params![wid, p.user_id], |r| crate::layout::row_map(r)).ok()?
         .collect::<Result<Vec<_>, _>>().ok()?.into_iter().map(Value::Object).collect();
     p.ctx.insert("own_pcs".into(), Value::Array(own));

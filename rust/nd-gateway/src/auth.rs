@@ -821,7 +821,7 @@ pub fn gate(pages: &Pages, cfg: &Config, method: &str, uri: &Uri, headers: &Head
     let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("");
     let wanted = crate::pages::query_param(uri, "w").filter(|s| !s.is_empty())
         .or_else(|| crate::session::cookie(cookie, "active_world").map(|c| percent_encoding::percent_decode_str(c).decode_utf8_lossy().to_string()));
-    let mut st = db.prepare("SELECT m.role, m.world_id, w.slug FROM world_memberships m JOIN worlds w ON w.id = m.world_id WHERE m.user_id = ?1 ORDER BY w.id").ok()?;
+    let mut st = db.prepare_cached("SELECT m.role, m.world_id, w.slug FROM world_memberships m JOIN worlds w ON w.id = m.world_id WHERE m.user_id = ?1 ORDER BY w.id").ok()?;
     let rows: Vec<(Option<String>, i64, String)> = st.query_map([uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let chosen = rows.iter().find(|r| Some(&r.2) == wanted.as_ref()).or_else(|| rows.first());
     let viewer = nd_perm::allow::Viewer { is_gm: false, active_role: chosen.and_then(|c| c.0.clone()), active_world_id: chosen.map(|c| c.1) };

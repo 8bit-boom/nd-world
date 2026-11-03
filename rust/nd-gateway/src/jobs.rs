@@ -261,7 +261,7 @@ pub fn adopt() {
     let Some(db) = crate::writes::open(&st.cfg) else { return };
     use rusqlite::types::Value as Sql;
     for (table, in_progress) in TABLES {
-        let keys: Vec<String> = db.prepare(&format!("SELECT key FROM shared_state WHERE key LIKE 'jobowner:{table}:%'")).ok()
+        let keys: Vec<String> = db.prepare_cached(&format!("SELECT key FROM shared_state WHERE key LIKE 'jobowner:{table}:%'")).ok()
             .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0)).ok().map(|rows| rows.filter_map(Result::ok).collect())).unwrap_or_default();
         for key in keys {
             let Some(id) = key.rsplit(':').next().and_then(|i| i.parse::<i64>().ok()) else { continue };

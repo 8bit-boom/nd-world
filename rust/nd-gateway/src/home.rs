@@ -15,7 +15,7 @@ use crate::layout::PageCtx;
 use crate::pages::{render_with, Pages};
 
 fn rows(db: &Connection, sql: &str, params: &[&dyn ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
     r
 }
@@ -114,7 +114,7 @@ pub fn home(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
         counts.insert(k.as_str()?.to_string(), json!(0));
     }
     {
-        let mut st = db.prepare(&format!("SELECT entities.kind, count(entities.id) FROM entities WHERE entities.world_id = ?1{vis} GROUP BY entities.kind")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT entities.kind, count(entities.id) FROM entities WHERE entities.world_id = ?1{vis} GROUP BY entities.kind")).ok()?;
         for r in st.query_map(rusqlite::params![wid, uid], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?))).ok()? {
             let (k, n) = r.ok()?;
             counts.insert(k?, json!(n));
@@ -139,7 +139,7 @@ pub fn home(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
     }
     let mut tags: Vec<(String, i64)> = vec![];
     {
-        let mut st = db.prepare(&format!("SELECT entities.tags FROM entities WHERE entities.world_id = ?1 AND entities.tags IS NOT NULL{vis}")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT entities.tags FROM entities WHERE entities.world_id = ?1 AND entities.tags IS NOT NULL{vis}")).ok()?;
         for r in st.query_map(rusqlite::params![wid, uid], |r| r.get::<_, Option<String>>(0)).ok()? {
             for t in r.ok()?.unwrap_or_default().split(',') {
                 let t = nd_render::text::py_strip(t);

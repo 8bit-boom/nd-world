@@ -179,15 +179,15 @@ pub(crate) fn load_custom_kinds(world: &Map<String, Value>) -> Vec<Value> {
 fn world_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
     let Some(w) = row(db, "SELECT * FROM worlds WHERE id = ?1", id) else { return Some(refusal(404)) };
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let out = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(out)
     };
     let invites = rows("SELECT * FROM invite_codes WHERE world_id = ?1 ORDER BY created_at DESC")?;
     let instructions = rows("SELECT * FROM ai_instructions WHERE world_id = ?1 ORDER BY created_at")?;
     // (membership, user) pairs, by the person's name
-    let mut st = db.prepare("SELECT m.*, u.* FROM world_memberships m JOIN users u ON u.id = m.user_id WHERE m.world_id = ?1 ORDER BY u.display_name").ok()?;
-    let ncols = db.prepare("SELECT * FROM world_memberships LIMIT 0").ok()?.column_count();
+    let mut st = db.prepare_cached("SELECT m.*, u.* FROM world_memberships m JOIN users u ON u.id = m.user_id WHERE m.world_id = ?1 ORDER BY u.display_name").ok()?;
+    let ncols = db.prepare_cached("SELECT * FROM world_memberships LIMIT 0").ok()?.column_count();
     let members: Vec<Value> = st.query_map([id], |r| {
         let (mut m, mut u) = (Map::new(), Map::new());
         let stmt = r.as_ref();
@@ -254,7 +254,7 @@ fn home_edit_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, heade
     let hidden = crate::edits::home_hidden(&text("home_hidden_kinds_json"), &kinds)?;
     let (_, icons, _) = nd_render::app::effective_kind_tables(Some(&w))?;
     let list = |sql: &str| -> Option<Vec<Value>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let out = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(out.into_iter().map(Value::Object).collect())
     };
@@ -332,7 +332,7 @@ fn page_viewer(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers:
 }
 
 pub(crate) fn rows(db: &Connection, sql: &str, id: i64) -> Option<Vec<Value>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r.into_iter().map(Value::Object).collect())
 }
@@ -374,7 +374,7 @@ fn quest_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers
     let can_edit = edit && (p.is_gm || p.role.as_deref() == Some("assistant") || q.get("created_by_user_id").and_then(|v| v.as_i64()) == Some(p.user_id));
     let d = nd_render::app::data();
     p.ctx.insert("parties".into(), Value::Array(rows(db, "SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id", wid)?));
-    let mut st = db.prepare("SELECT * FROM quests WHERE world_id = ?1 AND id != ?2 ORDER BY title, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM quests WHERE world_id = ?1 AND id != ?2 ORDER BY title, id").ok()?;
     let others = st.query_map([wid, id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     p.ctx.insert("quests".into(), Value::Array(others.into_iter().map(Value::Object).collect()));
     p.ctx.insert("entities".into(), Value::Array(rows(db, "SELECT * FROM entities WHERE world_id = ?1 ORDER BY name, id", wid)?));
@@ -412,7 +412,7 @@ pub fn new_entity_form(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
          ORDER BY users.display_name, world_memberships.id",
         wid,
     )?;
-    let mut st = db.prepare("SELECT DISTINCT folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND folder IS NOT NULL").ok()?;
+    let mut st = db.prepare_cached("SELECT DISTINCT folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND folder IS NOT NULL").ok()?;
     let mut folders = st
         .query_map(rusqlite::params![wid, kind], |r| r.get::<_, String>(0))
         .ok()?
@@ -452,9 +452,9 @@ fn entity_edit(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers:
          ORDER BY users.display_name, world_memberships.id",
         wid,
     )?;
-    let mut st = db.prepare("SELECT DISTINCT user_id FROM entity_player_access WHERE entity_id = ?1 ORDER BY user_id").ok()?;
+    let mut st = db.prepare_cached("SELECT DISTINCT user_id FROM entity_player_access WHERE entity_id = ?1 ORDER BY user_id").ok()?;
     let allowed = st.query_map([id], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-    let mut st = db.prepare("SELECT DISTINCT folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND folder IS NOT NULL").ok()?;
+    let mut st = db.prepare_cached("SELECT DISTINCT folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND folder IS NOT NULL").ok()?;
     let mut folders: Vec<String> =
         st.query_map(rusqlite::params![wid, kind], |r| r.get::<_, String>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?.into_iter().filter(|f| !f.is_empty()).collect();
     folders.sort();
@@ -573,7 +573,7 @@ fn session_detail(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, heade
                 let ids: Vec<i64> = ids.as_array()?.iter().map(|v| v.as_i64()).collect::<Option<_>>()?;
                 if ids.is_empty() { vec![] } else {
                     let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-                    let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list})")).ok()?;
+                    let mut st = db.prepare_cached(&format!("SELECT * FROM player_characters WHERE id IN ({list})")).ok()?;
                     let got: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
                     got.into_iter().map(Value::Object).collect()
                 }

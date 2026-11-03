@@ -67,7 +67,7 @@ fn s<'a>(m: &'a Map<String, Value>, k: &str) -> &'a str {
 }
 
 fn rows(db: &Connection, sql: &str, params: &[&dyn ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
     r
 }
@@ -103,7 +103,7 @@ pub fn search_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
             }
             sql.push_str("ORDER BY bm25(entity_fts, 10.0, 2.0, 1.0, 5.0, 8.0) LIMIT ?4");
             // an FTS index that fails here makes Python fall back to its own scan: that page is Python's
-            let mut st = db.prepare(&sql).ok()?;
+            let mut st = db.prepare_cached(&sql).ok()?;
             let ids: Vec<i64> = st.query_map(rusqlite::params![fts, wid, kind, fetch], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
             for id in ids {
                 let found = if is_gm {

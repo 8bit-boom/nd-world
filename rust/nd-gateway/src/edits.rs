@@ -29,7 +29,7 @@ pub struct Ctx<'a> {
     pub created: Vec<std::path::PathBuf>,
     /// files / folders to remove once the answer is committed (an original replaced by its converted copy, a chunk folder)
     pub removals: Vec<std::path::PathBuf>,
-    pub db: Connection,
+    pub db: crate::writes::Pooled,
     pub p: PageCtx,
     pub uri: &'a Uri,
     pub headers: &'a HeaderMap,
@@ -2093,7 +2093,7 @@ fn party_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
                 let vis = if c.p.is_gm { "" } else {
                     " AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?))"
                 };
-                let mut stmt = c.db.prepare(&format!("SELECT id FROM entities WHERE id IN ({marks}) AND world_id = ?{vis}")).ok()?;
+                let mut stmt = c.db.prepare_cached(&format!("SELECT id FROM entities WHERE id IN ({marks}) AND world_id = ?{vis}")).ok()?;
                 let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = ids.iter().map(|i| Box::new(*i) as _).collect();
                 params.push(Box::new(world));
                 if !c.p.is_gm {
@@ -3840,7 +3840,7 @@ fn pc_owner(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "That player isn't invited to this world"));
         }
         let others: Vec<String> = {
-            let mut st = c.db.prepare("SELECT name FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 AND id != ?3 ORDER BY id").ok()?;
+            let mut st = c.db.prepare_cached("SELECT name FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 AND id != ?3 ORDER BY id").ok()?;
             let rows = st.query_map([world, uid, ids[0]], |r| r.get::<_, Option<String>>(0)).ok()?;
             let mut names = vec![];
             for r in rows {
@@ -3883,7 +3883,7 @@ fn pc_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 fn drop_pc(c: &Ctx, id: i64, world: i64) -> Option<()> {
     // detach_pc first, read-only, so anything it would rewrite that serde cannot (non-canonical JSON) sends the whole request to Python
     let mut party_writes: Vec<(i64, Vec<(&str, Sql)>)> = vec![];
-    let mut stmt = c.db.prepare("SELECT id, member_pc_ids_json, loot_json FROM parties WHERE world_id = ?1").ok()?;
+    let mut stmt = c.db.prepare_cached("SELECT id, member_pc_ids_json, loot_json FROM parties WHERE world_id = ?1").ok()?;
     let parties: Vec<(i64, Option<String>, Option<String>)> =
         stmt.query_map([world], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<_, _>>().ok()?;
     drop(stmt);
@@ -5213,7 +5213,7 @@ fn facts_bulk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         _ => Sql::Null,
     };
     let mut seen: Vec<String> = vec![];
-    let mut stmt = c.db.prepare("SELECT content FROM facts WHERE world_id = ?1").ok()?;
+    let mut stmt = c.db.prepare_cached("SELECT content FROM facts WHERE world_id = ?1").ok()?;
     let existing: Vec<Option<String>> = stmt.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
     drop(stmt);
     for e in existing {
@@ -5387,7 +5387,7 @@ fn quests_apply(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         updated += 1;
     }
     let mut parties: Vec<i64> = vec![];
-    let mut stmt = c.db.prepare("SELECT id FROM parties WHERE world_id = ?1").ok()?;
+    let mut stmt = c.db.prepare_cached("SELECT id FROM parties WHERE world_id = ?1").ok()?;
     for r in stmt.query_map([wid], |r| r.get(0)).ok()? {
         parties.push(r.ok()?);
     }
@@ -5573,7 +5573,7 @@ fn lib_album_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body
     while !frontier.is_empty() {
         let mut next = vec![];
         for pid in &frontier {
-            let mut stmt = c.db.prepare(&format!("SELECT id FROM {} WHERE parent_id = ?1", lib.albums)).ok()?;
+            let mut stmt = c.db.prepare_cached(&format!("SELECT id FROM {} WHERE parent_id = ?1", lib.albums)).ok()?;
             for r in stmt.query_map([pid], |r| r.get::<_, i64>(0)).ok()? {
                 next.push(r.ok()?);
             }
@@ -5583,7 +5583,7 @@ fn lib_album_delete(c: &mut Ctx, lib: &Lib, ids: &[i64]) -> Option<Response<Body
     }
     let mut items = vec![];
     for aid in &all {
-        let mut stmt = c.db.prepare(&format!("SELECT * FROM {} WHERE album_id = ?1", lib.items)).ok()?;
+        let mut stmt = c.db.prepare_cached(&format!("SELECT * FROM {} WHERE album_id = ?1", lib.items)).ok()?;
         let rows: Vec<Map<String, Value>> = stmt.query_map([aid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         items.extend(rows);
     }
@@ -5696,7 +5696,7 @@ fn album_descendants(c: &Ctx, table: &str, root: i64) -> Option<Vec<i64>> {
     while !frontier.is_empty() {
         let mut next = vec![];
         for pid in &frontier {
-            let mut stmt = c.db.prepare(&format!("SELECT id FROM {table} WHERE parent_id = ?1")).ok()?;
+            let mut stmt = c.db.prepare_cached(&format!("SELECT id FROM {table} WHERE parent_id = ?1")).ok()?;
             for r in stmt.query_map([pid], |r| r.get::<_, i64>(0)).ok()? {
                 next.push(r.ok()?);
             }
@@ -5945,7 +5945,7 @@ pub(crate) fn sm_panel_db(db: &Connection, gs_id: i64) -> Option<Value> {
         .collect();
     let video_ids: Vec<i64> = items.iter().filter_map(|i| (i.get("kind").and_then(|k| k.as_str()) == Some("video")).then(|| i.get("clip_id")?.as_i64()).flatten()).collect();
     let lib = |table: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(&format!("SELECT * FROM {table} WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 200")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT * FROM {table} WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 200")).ok()?;
         let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         Some(rows)
     };
@@ -6952,7 +6952,7 @@ fn folder_rename(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         return None;
     }
     // the same SQL filter as Python's (LIKE: its wildcards and ASCII case-folding included)
-    let mut st = c.db.prepare("SELECT id, folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND (folder = ?3 OR folder LIKE ?4)").ok()?;
+    let mut st = c.db.prepare_cached("SELECT id, folder FROM entities WHERE world_id = ?1 AND kind = ?2 AND (folder = ?3 OR folder LIKE ?4)").ok()?;
     let rows: Vec<(i64, Option<String>)> =
         st.query_map(rusqlite::params![wid, kind, old, format!("{old}/%")], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     drop(st);
@@ -7791,7 +7791,7 @@ fn view_pref_reset_all(c: &mut Ctx, _unused: &str) -> Option<Response<Body>> {
 
 /// `_named(db, user_id, section)`: the person's saved views of a section, by name
 fn named_views(c: &Ctx, section: &str) -> Option<Value> {
-    let mut st = c.db.prepare("SELECT id, name, prefs_json FROM saved_views WHERE user_id = ?1 AND section = ?2 ORDER BY name").ok()?;
+    let mut st = c.db.prepare_cached("SELECT id, name, prefs_json FROM saved_views WHERE user_id = ?1 AND section = ?2 ORDER BY name").ok()?;
     let rows: Vec<(i64, Option<String>, Option<String>)> =
         st.query_map(rusqlite::params![c.p.user_id, section], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let mut out = vec![];
@@ -8839,7 +8839,7 @@ fn profession_add_all_builtin(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> 
 
 /// The world's player accounts (`_world_player_list` without the GMs): (id, display name), by name
 fn world_players(c: &Ctx, wid: i64) -> Option<Vec<(i64, String)>> {
-    let mut st = c.db.prepare("SELECT u.id, u.display_name, u.is_gm FROM users u JOIN world_memberships m ON m.user_id = u.id WHERE m.world_id = ?1 ORDER BY u.display_name").ok()?;
+    let mut st = c.db.prepare_cached("SELECT u.id, u.display_name, u.is_gm FROM users u JOIN world_memberships m ON m.user_id = u.id WHERE m.world_id = ?1 ORDER BY u.display_name").ok()?;
     let rows = st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<i64>>(2)?))).ok()?;
     let mut out = vec![];
     for r in rows {
@@ -9240,7 +9240,7 @@ fn known_image_names(db: &Connection, wid: i64) -> Option<Vec<(String, String)>>
         names.insert(u, match e.get("name") { Some(Value::String(s)) => s.clone(), _ => return None });
     }
     let overrides = crate::gallery::title_overrides(db, wid)?;
-    let mut st = db.prepare("SELECT image_urls_json FROM image_albums WHERE world_id = ?1").ok()?;
+    let mut st = db.prepare_cached("SELECT image_urls_json FROM image_albums WHERE world_id = ?1").ok()?;
     let albums: Vec<Option<String>> = st.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
     for raw in albums {
         let urls = match serde_json::from_str::<Value>(raw.as_deref().filter(|r| !r.is_empty()).unwrap_or("[]")) { Ok(Value::Array(a)) => a, _ => vec![] };
@@ -9322,7 +9322,7 @@ fn media_rename_undo(c: &mut Ctx, _ids: &[i64]) -> Option<Response<Body>> {
     if batch.is_empty() {
         return Some(bad400("Say which batch to undo."));
     }
-    let mut st = c.db.prepare("SELECT id, kind, ref_id, ref_url, old_name, new_name FROM media_rename_log WHERE world_id = ?1 AND batch_id = ?2 AND undone_at IS NULL").ok()?;
+    let mut st = c.db.prepare_cached("SELECT id, kind, ref_id, ref_url, old_name, new_name FROM media_rename_log WHERE world_id = ?1 AND batch_id = ?2 AND undone_at IS NULL").ok()?;
     type LogRow = (i64, String, Option<i64>, Option<String>, Option<String>, Option<String>);
     let logs: Vec<LogRow> = st.query_map(rusqlite::params![wid, batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).ok()?.collect::<Result<_, _>>().ok()?;
     drop(st);
@@ -10824,7 +10824,7 @@ fn combat_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     } else {
         // default_ruleset: what the world's characters play (Hunt / Asterion before anything else), else Neon & Dragons
         let by_slug = nd_render::app::data().get("combat_template_rulesets")?.as_object()?;
-        let mut st = c.db.prepare("SELECT t.slug FROM player_characters p LEFT JOIN sheet_templates t ON t.id = p.sheet_template_id WHERE p.world_id = ?1 ORDER BY p.id").ok()?;
+        let mut st = c.db.prepare_cached("SELECT t.slug FROM player_characters p LEFT JOIN sheet_templates t ON t.id = p.sheet_template_id WHERE p.world_id = ?1 ORDER BY p.id").ok()?;
         let slugs: Vec<Option<String>> = st.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
         let hit = slugs.iter().flatten().find_map(|s| by_slug.get(s).and_then(|r| r.as_str()).filter(|r| *r == "hunt" || *r == "asterion"));
         match hit {
@@ -11155,7 +11155,7 @@ fn party_launch_combat(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
             continue;
         }
         let marks: Vec<String> = ids_in.iter().map(|i| i.to_string()).collect();
-        let mut st = c.db.prepare(&format!("SELECT * FROM {table} WHERE id IN ({}) ORDER BY id", marks.join(","))).ok()?;
+        let mut st = c.db.prepare_cached(&format!("SELECT * FROM {table} WHERE id IN ({}) ORDER BY id", marks.join(","))).ok()?;
         let rows: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         for r in &rows {
             combatants.push(if table == "entities" { entity_combatant(r)? } else { pc_combatant(c, r)? });
@@ -11182,7 +11182,7 @@ fn combat_copy_with(c: &Ctx, src: &Map<String, Value>, name: &str, npcs_only: bo
     if with_party {
         let have: Vec<Value> = fresh.iter().filter_map(|f| f.get("pc_id").filter(|v| py_truthy(Some(v))).cloned()).collect();
         let wid = src.get("world_id")?.as_i64()?;
-        let mut st = c.db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
+        let mut st = c.db.prepare_cached("SELECT * FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
         let pcs: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         for pc in &pcs {
             if !have.iter().any(|h| Some(h) == pc.get("id")) {
@@ -12268,7 +12268,7 @@ fn sc_door(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
 
 /// The viewer's characters in the map's world, oldest first
 fn sc_own_pcs(c: &Ctx, wid: i64) -> Option<Vec<Map<String, Value>>> {
-    let mut st = c.db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
+    let mut st = c.db.prepare_cached("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map([wid, c.p.user_id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     Some(rows)
 }
@@ -12839,7 +12839,7 @@ fn hub_encounter(c: &Ctx, pc: &Map<String, Value>) -> Option<Option<(Fight, usiz
 /// `_pc_encounter`: the live encounter (touched in the last 12 hours, newest first) this character is in, and its place there
 pub(crate) fn hub_encounter_db(db: &Connection, pc: &Map<String, Value>) -> Option<Option<(Fight, usize)>> {
     let since = orm::stamp_after(-12 * 3600);
-    let mut st = db.prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND updated_at >= ?2 ORDER BY updated_at DESC LIMIT 8").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM combat_sessions WHERE world_id = ?1 AND updated_at >= ?2 ORDER BY updated_at DESC LIMIT 8").ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map(rusqlite::params![pc.get("world_id")?.as_i64()?, since], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     let pid = pc.get("id")?.as_i64()?;
     for cs in rows {
@@ -13327,7 +13327,7 @@ fn party_rest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let (mut applied, mut snapshot) = (vec![], vec![]);
     if !ids_list.is_empty() {
         let list = ids_list.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let mut st = c.db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list}) ORDER BY id")).ok()?;
+        let mut st = c.db.prepare_cached(&format!("SELECT * FROM player_characters WHERE id IN ({list}) ORDER BY id")).ok()?;
         let pcs: Vec<Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         drop(st);
         for pc in pcs {
@@ -13568,7 +13568,7 @@ fn hub_log_undo(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
     let spec = log_undo_spec(&e);
     let key = log_undo_key(&spec)?;
     // can_undo: nothing later (and not undone) changed the same thing
-    let mut st = c.db.prepare("SELECT undo_json FROM character_log WHERE character_id = ?1 AND id > ?2 AND undone = 0").ok()?;
+    let mut st = c.db.prepare_cached("SELECT undo_json FROM character_log WHERE character_id = ?1 AND id > ?2 AND undone = 0").ok()?;
     let later: Vec<Option<String>> = st.query_map([ids[0], ids[1]], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
     for raw in later {
         let mut m = Map::new();
@@ -13838,7 +13838,7 @@ fn hub_keepsake_delete(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
 }
 
 fn hub_companions_json(c: &Ctx, pc_id: i64) -> Option<Value> {
-    let mut st = c.db.prepare("SELECT * FROM character_companions WHERE character_id = ?1 ORDER BY id").ok()?;
+    let mut st = c.db.prepare_cached("SELECT * FROM character_companions WHERE character_id = ?1 ORDER BY id").ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map([pc_id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     let list: Vec<Value> = rows.iter().map(|r| json!({"id": r.get("id"), "name": r.get("name"), "kind": r.get("kind"),
         "hp": r.get("hp").and_then(|v| v.as_i64()).unwrap_or(0), "hp_max": r.get("hp_max").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -13967,7 +13967,7 @@ fn hub_party_sessions(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Map<String
         return Some(vec![]);
     }
     let marks: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
-    let mut st = c.db.prepare(&format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({}) ORDER BY session_num DESC LIMIT 60", marks.join(","))).ok()?;
+    let mut st = c.db.prepare_cached(&format!("SELECT * FROM game_sessions WHERE world_id = ?1 AND party_id IN ({}) ORDER BY session_num DESC LIMIT 60", marks.join(","))).ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     Some(rows)
 }
@@ -13976,7 +13976,7 @@ fn hub_party_sessions(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<Map<String
 fn pc_party_ids(c: &Ctx, pc: &Map<String, Value>) -> Option<Vec<i64>> {
     let wid = pc.get("world_id")?.as_i64()?;
     let pid = pc.get("id")?.as_i64()?;
-    let mut st = c.db.prepare("SELECT id, member_pc_ids_json FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
+    let mut st = c.db.prepare_cached("SELECT id, member_pc_ids_json FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
     let parties: Vec<(i64, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let mut ids = vec![];
     for (id, raw) in parties {
@@ -14254,7 +14254,7 @@ pub(crate) fn member_vitals(db: &Connection, pcs: &[Map<String, Value>], limit: 
 /// `GET /player-cockpit`'s data: (parties with member vitals, the viewer's characters with vitals and XP, focus, view_as)
 pub fn player_cockpit_data(db: &Connection, world_id: i64, user_id: i64, is_gm: bool, as_pc: i64) -> Option<(Vec<Value>, Vec<Value>, Option<i64>, bool)> {
     let rows = |sql: &str, params: &[i64]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -14398,7 +14398,7 @@ pub fn player_scene(db: &Connection, sc: &Map<String, Value>, viewer: Option<(i6
             return None; // _active_own_pc's e.get on a non-object: Python's error
         }
         let wid = sc.get("world_id")?.as_i64()?;
-        let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
+        let mut st = db.prepare_cached("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
         let own: Vec<Map<String, Value>> = st.query_map([wid, uid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         own_pc_ids = own.iter().filter_map(|p| p.get("id").and_then(|v| v.as_i64())).collect();
         let on_map: Vec<i64> = elements.iter().filter_map(|e| e.as_object())
@@ -14432,7 +14432,7 @@ pub fn safe_image(url: &str) -> String {
 /// track) makes it Python's
 pub fn combat_candidates(db: &Connection, wid: i64) -> Option<(Vec<Value>, Vec<Value>)> {
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -14780,7 +14780,7 @@ fn sheet_hub_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &Map<String, V
     let wid = pc.get("world_id")?.as_i64()?;
     let owner = pc.get("owner_user_id").and_then(|v| v.as_i64());
     let rows = |sql: &str, params: &[i64]| -> Option<Vec<Value>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r.into_iter().map(Value::Object).collect())
     };
@@ -14897,7 +14897,7 @@ fn character_custom_sheet_ctx(db: &Connection, p: &crate::layout::PageCtx, pc: &
 /// The GM's owner picker (`_assignable_members`) and the linked fillable sheets
 fn sheet_people_ctx(db: &Connection, p: &crate::layout::PageCtx, pid: i64, wid: i64, ctx: &mut Map<String, Value>) -> Option<()> {
     let rows = |sql: &str, params: &[i64]| -> Option<Vec<Value>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r.into_iter().map(Value::Object).collect())
     };
@@ -15253,7 +15253,7 @@ pub(crate) fn attach_audio_job_status(c: &mut Ctx, ids: &[i64]) -> Option<Respon
     } else {
         "SELECT * FROM audio_jobs WHERE id = ?1 AND world_id = ?2 AND purpose = 'attachment' AND created_by_user_id = ?3"
     };
-    let mut st = c.db.prepare(sql).ok()?;
+    let mut st = c.db.prepare_cached(sql).ok()?;
     let j: Option<Map<String, Value>> = if c.p.is_gm {
         st.query_row(rusqlite::params![ids[0], wid], |r| crate::layout::row_map(r)).ok()
     } else {
@@ -15272,7 +15272,7 @@ pub(crate) fn attach_audio_job_list(c: &mut Ctx, _ids: &[i64]) -> Option<Respons
     } else {
         "SELECT * FROM audio_jobs WHERE world_id = ?1 AND purpose = 'attachment' AND created_by_user_id = ?2 ORDER BY created_at DESC, id DESC LIMIT 20"
     };
-    let mut st = c.db.prepare(sql).ok()?;
+    let mut st = c.db.prepare_cached(sql).ok()?;
     let jobs: Vec<Map<String, Value>> = if c.p.is_gm {
         st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?
     } else {
@@ -15477,7 +15477,7 @@ fn cfg_uploads(c: &Ctx) -> Option<std::path::PathBuf> {
 }
 
 fn db_query_one(db: &rusqlite::Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Option<i64>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     st.query_row(params, |r| r.get::<_, i64>(0)).ok().map(Some).or(Some(None))
 }
 

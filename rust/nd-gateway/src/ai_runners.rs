@@ -418,7 +418,7 @@ async fn cockpit_find_task(cfg: Arc<Config>, b: Backend, wid: i64, query: &str, 
         }
         let rag = take(&crate::retrieval::smart_world_context(&db, wid, &take(&material, 1500), 10, 4).unwrap_or_default(), 4000);
         let ex = exclude.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let mut st = db.prepare(&format!("SELECT id, kind, name, summary FROM entities WHERE world_id = ?1 AND id NOT IN ({ex}) ORDER BY name LIMIT 200")).map_err(|e| e.to_string())?;
+        let mut st = db.prepare_cached(&format!("SELECT id, kind, name, summary FROM entities WHERE world_id = ?1 AND id NOT IN ({ex}) ORDER BY name LIMIT 200")).map_err(|e| e.to_string())?;
         let rows: Vec<(i64, Option<String>, Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
         let board: Vec<String> = rows.iter().map(|(id, k, n, sm)| {
@@ -505,7 +505,7 @@ async fn quest_sync_task(cfg: Arc<Config>, b: Backend, wid: i64, session_id: Opt
                 let n = transcript.chars().count();
                 parts.push(format!("Session transcript (tail):\n{}", transcript.chars().skip(n.saturating_sub(6000)).collect::<String>()));
             }
-            let mut st = db.prepare("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+            let mut st = db.prepare_cached("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").map_err(|e| e.to_string())?;
             let facts: Vec<Option<String>> = st.query_map([gs.get("id").and_then(|v| v.as_i64()).unwrap_or(0)], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
             if !facts.is_empty() {
                 let tail = &facts[facts.len().saturating_sub(30)..];
@@ -520,7 +520,7 @@ async fn quest_sync_task(cfg: Arc<Config>, b: Backend, wid: i64, session_id: Opt
             let num = gs.get("session_num").map(|v| match v { Value::Null => "None".to_string(), other => py_str(&other) }).unwrap_or_else(|| "None".into());
             material = format!("Session #{num}: {}", gs.get("title").and_then(|v| v.as_str()).unwrap_or(""));
         }
-        let mut st = db.prepare("SELECT id, status, category, title, summary FROM quests WHERE world_id = ?1 ORDER BY title").map_err(|e| e.to_string())?;
+        let mut st = db.prepare_cached("SELECT id, status, category, title, summary FROM quests WHERE world_id = ?1 ORDER BY title").map_err(|e| e.to_string())?;
         let quests: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
             .map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
         let board: Vec<String> = quests.iter().map(|(id, st, cat, title, sm)| {
@@ -600,7 +600,7 @@ fn auto_tag_start(cfg: Arc<Config>, db: &rusqlite::Connection, p: &PageCtx, body
     let (overwrite, think) = (flag(&b, "overwrite", false), flag(&b, "think", true));
     let marks = nums.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let only_empty = if overwrite { "" } else { " AND (tags IS NULL OR tags = '')" };
-    let mut st = db.prepare(&format!("SELECT id FROM entities WHERE world_id = ?1 AND id IN ({marks}){only_empty} ORDER BY id")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT id FROM entities WHERE world_id = ?1 AND id IN ({marks}){only_empty} ORDER BY id")).ok()?;
     let ents: Vec<i64> = st.query_map([wid], |r| r.get(0)).ok()?.filter_map(Result::ok).collect();
     if ents.is_empty() {
         return Some(detail(StatusCode::BAD_REQUEST, "Nothing to tag — the selected entities already have tags."));
@@ -1684,11 +1684,11 @@ async fn map_plan_task(cfg: Arc<Config>, b: Backend, slug: &str, wid: i64, desc:
         let had = serde_json::from_str::<Value>(els.as_deref().filter(|x| !x.is_empty()).unwrap_or("[]")).is_ok_and(|v| truthy(Some(&v)));
         let rooms_empty = rooms.as_deref().unwrap_or("").trim_matches(|c| c == '{' || c == '}' || c == ' ').is_empty();
         let want_state = replace || (!had && rooms_empty);
-        let mut st = db.prepare("SELECT id, name, tags, file_url, cells_w, cells_h FROM map_props WHERE world_id = ?1").map_err(|_| "database")?;
+        let mut st = db.prepare_cached("SELECT id, name, tags, file_url, cells_w, cells_h FROM map_props WHERE world_id = ?1").map_err(|_| "database")?;
         let props: Vec<ml::Prop> = st.query_map([wid], |r| Ok(ml::Prop { id: r.get(0)?, name: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "None".into()),
             tags: r.get::<_, Option<String>>(2)?.unwrap_or_default(), url: r.get::<_, Option<String>>(3)?.map_or(Value::Null, |u| json!(u)),
             cells_w: r.get(4)?, cells_h: r.get(5)? })).map_err(|_| "database")?.filter_map(Result::ok).collect();
-        let mut st = db.prepare("SELECT id, name FROM entities WHERE world_id = ?1 LIMIT 5000").map_err(|_| "database")?;
+        let mut st = db.prepare_cached("SELECT id, name FROM entities WHERE world_id = ?1 LIMIT 5000").map_err(|_| "database")?;
         let mut entity_ids = HashMap::new();
         for row in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).map_err(|_| "database")?.flatten() {
             entity_ids.insert(crate::edits::py_strip_pub(&row.1.unwrap_or_default()).to_lowercase(), row.0);

@@ -16,7 +16,7 @@ use crate::layout::PageCtx;
 use crate::pages::{render_with, section_ok, Pages};
 
 /// The board named by `/boards/<slug>[/rest]` of the viewer's active world, with the page context
-fn board(cfg: &Config, uri: &Uri, headers: &HeaderMap, rest: &str, check_section: bool) -> Option<Result<(Connection, PageCtx, Map<String, Value>, String), ()>> {
+fn board(cfg: &Config, uri: &Uri, headers: &HeaderMap, rest: &str, check_section: bool) -> Option<Result<(crate::writes::Pooled, PageCtx, Map<String, Value>, String), ()>> {
     let tail = uri.path().strip_prefix("/boards/")?;
     let slug = tail.strip_suffix(rest)?;
     if slug.is_empty() || slug == "new" || !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
@@ -61,7 +61,7 @@ pub fn board_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
         Err(()) => return Some(crate::idpages::refusal(404)),
     };
     let wid = b.get("world_id")?.as_i64()?;
-    let mut st = db.prepare("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY id").ok()?;
+    let mut st = db.prepare_cached("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY id").ok()?;
     let ents = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let (nodes, groups) = nodes_and_groups(&b)?;
     let edges = loads(&b, "edges_json", "[]")?;

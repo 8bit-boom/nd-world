@@ -220,7 +220,7 @@ pub(crate) fn heal_schema(db: &rusqlite::Connection) -> Result<Vec<String>, Stri
             }
             let (Some(open), Some(close)) = (st.find('('), st.rfind(')')) else { continue };
             let existing: Vec<String> = {
-                let mut q = db.prepare(&format!("PRAGMA table_info({table})")).map_err(|e| e.to_string())?;
+                let mut q = db.prepare_cached(&format!("PRAGMA table_info({table})")).map_err(|e| e.to_string())?;
                 let rows = q.query_map([], |r| r.get::<_, String>(1)).map_err(|e| e.to_string())?;
                 rows.filter_map(|r| r.ok()).collect()
             };
@@ -383,7 +383,7 @@ pub fn sweep_interrupted(cfg: &Config) {
         } else {
             format!("SELECT id, NULL, NULL FROM {table} WHERE status IN ({})", in_list.join(", "))
         };
-        let Ok(mut st) = db.prepare(&sql) else { continue };
+        let Ok(mut st) = db.prepare_cached(&sql) else { continue };
         let rows: Vec<(i64, Option<i64>, Option<i64>)> =
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
                 .map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default();

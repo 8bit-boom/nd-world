@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::pages::{render_with, section_ok, Pages};
 
 fn rows(db: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
     r
 }
@@ -46,7 +46,7 @@ fn grouped_counts(db: &Connection, table: &str, key: &str, album_ids: &[i64], ex
     let mut m = Map::new();
     if !album_ids.is_empty() {
         let sql = format!("SELECT {key}, count(id) FROM {table} WHERE {key} IN ({}){extra} GROUP BY {key}", in_list(album_ids));
-        let mut st = db.prepare(&sql).ok()?;
+        let mut st = db.prepare_cached(&sql).ok()?;
         for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).ok()? {
             let (k, n) = r.ok()?;
             m.insert(k.to_string(), json!(n));

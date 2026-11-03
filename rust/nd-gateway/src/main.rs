@@ -1,3 +1,8 @@
+// musl's own allocator serializes on a global lock: under 8 concurrent clients the static (musl) build served an entity list at 8 req/s where the same code on glibc
+// did 99. mimalloc has per-thread heaps (measured in docs/FORK_STATUS.md).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use nd_gateway::{router, Config};
 use std::net::SocketAddr;
 use std::sync::Arc;

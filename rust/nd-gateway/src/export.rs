@@ -88,7 +88,7 @@ pub fn get(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body
     };
     let uploads = cfg.db_path.parent()?.join("uploads");
     let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -131,7 +131,7 @@ pub fn book_zip(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, headers: &
     let wid = world.get("id")?.as_i64()?;
     let uploads = cfg.db_path.parent()?.join("uploads");
     // entities by kind, in the query's kind/name order; the template's own attrs (image_rel, body_html) built here
-    let mut st = db.prepare("SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name").ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     drop(st);
     let h1_re = regex::Regex::new(r"(?s)^<h1[^>]*>.*?</h1>\s*").ok()?;
@@ -173,7 +173,7 @@ pub fn book_zip(pages: &crate::pages::Pages, cfg: &Config, uri: &Uri, headers: &
         }
     }
     // boards
-    let mut st = db.prepare("SELECT * FROM invest_boards WHERE world_id = ?1").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM invest_boards WHERE world_id = ?1").ok()?;
     let boards_rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     drop(st);
     let mut boards = vec![];
@@ -378,7 +378,7 @@ pub fn rules_and_notes(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
     parts.push(nd_render::text::py_strip(&rules).to_string());
     parts.push(String::new());
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -459,7 +459,7 @@ pub fn foundry_world(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
         return None;
     }
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -475,7 +475,7 @@ pub fn foundry_world(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
     let entities = rows("SELECT * FROM entities WHERE world_id = ?1 ORDER BY kind, name")?;
     let mut notes: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
     if !entities.is_empty() {
-        let mut st = db.prepare("SELECT n.entity_id, n.content FROM entity_notes n JOIN entities e ON e.id = n.entity_id WHERE e.world_id = ?1 ORDER BY n.entity_id, n.created_at").ok()?;
+        let mut st = db.prepare_cached("SELECT n.entity_id, n.content FROM entity_notes n JOIN entities e ON e.id = n.entity_id WHERE e.world_id = ?1 ORDER BY n.entity_id, n.created_at").ok()?;
         let r = st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         for (eid, c) in r {
             notes.entry(eid).or_default().push(c?);

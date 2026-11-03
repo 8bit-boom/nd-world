@@ -26,7 +26,7 @@ fn counters(cfg: &Arc<Config>) -> Counters {
                 let cfg2 = cfg.clone();
                 let rows = tokio::task::spawn_blocking(move || -> Option<Vec<(String, i64)>> {
                     let db = writes::open(&cfg2)?;
-                    let mut st = db.prepare("SELECT key, n FROM shared_state WHERE key NOT LIKE 'stage:%'").ok()?;
+                    let mut st = db.prepare_cached("SELECT key, n FROM shared_state WHERE key NOT LIKE 'stage:%'").ok()?;
                     let r = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0)))).ok()?.collect::<Result<Vec<_>, _>>().ok();
                     r
                 })

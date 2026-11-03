@@ -27,7 +27,7 @@ pub fn serves(path: &str) -> bool {
 }
 
 fn rows(db: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r)
 }
@@ -101,7 +101,7 @@ fn change_log(db: &Connection, pc: &Map<String, Value>, is_owner: bool) -> Optio
                 false
             } else {
                 let key = crate::edits::log_undo_key(&spec)?;
-                let mut st = db.prepare("SELECT undo_json FROM character_log WHERE character_id = ?1 AND id > ?2 AND undone = 0").ok()?;
+                let mut st = db.prepare_cached("SELECT undo_json FROM character_log WHERE character_id = ?1 AND id > ?2 AND undone = 0").ok()?;
                 let later: Vec<Option<String>> = st.query_map([pid, int(e, "id")?], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
                 let mut clash = false;
                 for raw in later {
@@ -137,7 +137,7 @@ fn sessions_tab(db: &Connection, pc: &Map<String, Value>, world: &Map<String, Va
     let mut with_facts: Vec<i64> = vec![];
     if !rows_.is_empty() {
         let list = rows_.iter().filter_map(|r| int(r, "id")).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let mut st = db.prepare(&format!("SELECT DISTINCT game_session_id FROM facts WHERE world_id = ?1 AND game_session_id IN ({list})")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT DISTINCT game_session_id FROM facts WHERE world_id = ?1 AND game_session_id IN ({list})")).ok()?;
         with_facts = st.query_map([wid], |r| r.get::<_, Option<i64>>(0)).ok()?.filter_map(|r| r.ok().flatten()).collect();
     }
     let mut out = vec![];

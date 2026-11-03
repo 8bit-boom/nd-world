@@ -162,7 +162,7 @@ pub fn dice(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Opti
     }
     let mut rolls = vec![];
     if let Some(wid) = world_id {
-        let mut st = db.prepare("SELECT id, user_name, notation, label, breakdown, total FROM dice_rolls WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 50").ok()?;
+        let mut st = db.prepare_cached("SELECT id, user_name, notation, label, breakdown, total FROM dice_rolls WHERE world_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 50").ok()?;
         let rows = st
             .query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<i64>>(5)?)))
             .ok()?
@@ -286,7 +286,7 @@ fn worlds_page(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_
     for w in c.get_mut("worlds")?.as_array_mut()? {
         let w = w.as_object_mut()?;
         let id = w.get("id")?.as_i64()?;
-        let mut st = db.prepare("SELECT id FROM entities WHERE world_id = ?1").ok()?;
+        let mut st = db.prepare_cached("SELECT id FROM entities WHERE world_id = ?1").ok()?;
         let ids = st.query_map([id], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         w.insert("entities".into(), serde_json::json!(ids));
     }
@@ -342,7 +342,7 @@ fn world_id_of(c: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
 
 fn session_new(db: &rusqlite::Connection, c: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
     let wid = world_id_of(c).unwrap_or(1);
-    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name, id").ok()?;
     let parties = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let last: Option<i64> = db.query_row("SELECT session_num FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 1", [wid], |r| r.get(0)).ok().flatten();
     let next = match db.query_row("SELECT count(*) FROM game_sessions WHERE world_id = ?1", [wid], |r| r.get::<_, i64>(0)).ok()? {
@@ -409,7 +409,7 @@ pub fn simple(pages: &Pages, cfg: &Config, page: &Simple, uri: &Uri, headers: &H
     }
     let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(0);
     for (name, sql) in page.lists {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let rows = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         p.ctx.insert(name.to_string(), serde_json::Value::Array(rows.into_iter().map(serde_json::Value::Object).collect()));
     }
@@ -453,7 +453,7 @@ pub fn kind_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
         }
     }
     let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
@@ -477,7 +477,7 @@ pub fn kind_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
     let args: [&dyn rusqlite::ToSql; 4] = [&kind, &wid, &p.user_id, &like];
     let mut folder_counts: Vec<(String, i64)> = vec![];
     {
-        let mut st = db.prepare(&format!("SELECT entities.folder, count(entities.id) {base} GROUP BY entities.folder")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT entities.folder, count(entities.id) {base} GROUP BY entities.folder")).ok()?;
         let r = st.query_map(&args[..], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, i64>(1)?))).ok()?;
         for x in r {
             let (f, n) = x.ok()?;
@@ -673,7 +673,7 @@ pub fn entity_detail(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         db.query_row(sql, params, |r| crate::layout::row_map(r)).optional().ok()
     };
     let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok().or_else(|| dtrace(668))?;
+        let mut st = db.prepare_cached(sql).ok().or_else(|| dtrace(668))?;
         let r = st.query_map(params, |r| crate::layout::row_map(r)).ok().or_else(|| dtrace(669))?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
@@ -901,9 +901,9 @@ pub fn sessions_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let total: i64 = db.query_row("SELECT count(*) FROM game_sessions WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
     let total_pages = std::cmp::max(1, (total + 49) / 50);
     let page = page.max(1).min(total_pages);
-    let mut st = db.prepare("SELECT *, coalesce(live_transcript, '') != '' AS has_live_transcript FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 50 OFFSET ?2").ok()?;
+    let mut st = db.prepare_cached("SELECT *, coalesce(live_transcript, '') != '' AS has_live_transcript FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC LIMIT 50 OFFSET ?2").ok()?;
     let sessions = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-    let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
+    let mut st = db.prepare_cached("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
     let mut names = Map::new();
     for r in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
         let (id, n) = r.ok()?;
@@ -969,13 +969,13 @@ pub fn session_log_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
         return Some(crate::idpages::refusal(403));
     }
     let wid = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
-    let mut st = db.prepare("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC").ok()?;
     let sessions = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let id_of = |s: &Map<String, Value>| s.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let mut fact_ids: Vec<i64> = vec![];
     if !sessions.is_empty() {
         let list = sessions.iter().map(|s| id_of(s).to_string()).collect::<Vec<_>>().join(",");
-        let mut st = db.prepare(&format!("SELECT DISTINCT game_session_id FROM facts WHERE world_id = ?1 AND game_session_id IN ({list})")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT DISTINCT game_session_id FROM facts WHERE world_id = ?1 AND game_session_id IN ({list})")).ok()?;
         fact_ids = st.query_map([wid], |r| r.get::<_, Option<i64>>(0)).ok()?.filter_map(|r| r.ok().flatten()).collect();
     }
     let mut markers = Map::new();
@@ -992,7 +992,7 @@ pub fn session_log_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
         }
         let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let vis = if gm && table == "video_clips" { "" } else { " AND visible_to_players = 1" };
-        let mut st = db.prepare(&format!("SELECT id FROM {table} WHERE id IN ({list}){vis}")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT id FROM {table} WHERE id IN ({list}){vis}")).ok()?;
         let r = st.query_map([], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -1056,7 +1056,7 @@ pub fn npc_talk_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let vis = if p.is_gm { String::new() } else {
         format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
     };
-    let mut st = db.prepare(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character', 'creature', 'organization'){vis}")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('character', 'creature', 'organization'){vis}")).ok()?;
     let mut rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let order = |k: &str| match k { "character" => 0, "creature" => 1, "organization" => 2, _ => 3 };
     rows.sort_by_key(|e| (order(e.get("kind").and_then(|v| v.as_str()).unwrap_or("")), e.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase()));
@@ -1095,7 +1095,7 @@ pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     sql.push_str(if party_id.is_some() { " AND assigned_party_id = ?4" } else { " AND ?4 IS NULL" });
     sql.push_str(" ORDER BY title");
     let like = format!("%{term}%");
-    let mut st = db.prepare(&sql).ok()?;
+    let mut st = db.prepare_cached(&sql).ok()?;
     let quests = st
         .query_map(rusqlite::params![wid, like, category, party_id], |r| crate::layout::row_map(r))
         .ok()?
@@ -1124,7 +1124,7 @@ pub fn quests_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
         }
     }
     let rows = |sql: &str| -> Option<Vec<Value>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r.into_iter().map(Value::Object).collect())
     };
@@ -1254,7 +1254,7 @@ pub fn parties_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap)
     let total: i64 = db.query_row("SELECT count(*) FROM parties WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
     let total_pages = std::cmp::max(1, (total + 49) / 50);
     let page = page.max(1).min(total_pages);
-    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name LIMIT 50 OFFSET ?2").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name LIMIT 50 OFFSET ?2").ok()?;
     let parties = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut counts = Map::new();
     for party in &parties {
@@ -1282,7 +1282,7 @@ pub fn facts_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -
     }
     let wid = p.world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
@@ -1385,7 +1385,7 @@ pub fn tables_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
         return None;
     }
     let wid = world.get("id")?.as_i64()?;
-    let mut st = db.prepare("SELECT * FROM random_tables WHERE world_id IS NULL OR world_id = ?1 ORDER BY category, name").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM random_tables WHERE world_id IS NULL OR world_id = ?1 ORDER BY category, name").ok()?;
     let tables = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut grouped: Vec<(String, Vec<Value>)> = vec![];
     for mut t in tables {
@@ -1425,7 +1425,7 @@ pub fn combat_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     let total_pages = std::cmp::max(1, (total + 49) / 50);
     let page = page.max(1).min(total_pages);
     let mut st = db
-        .prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS NOT 1 ORDER BY finished_at IS NOT NULL, updated_at DESC LIMIT 50 OFFSET ?2")
+        .prepare_cached("SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS NOT 1 ORDER BY finished_at IS NOT NULL, updated_at DESC LIMIT 50 OFFSET ?2")
         .ok()?;
     let sessions = st.query_map([wid, (page - 1) * 50], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut counts = Map::new();
@@ -1435,7 +1435,7 @@ pub fn combat_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
     let mut tpl = vec![];
     let mut tcounts = Map::new();
     if p.is_gm {
-        let mut st = db.prepare("SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS 1 ORDER BY name").ok()?;
+        let mut st = db.prepare_cached("SELECT * FROM combat_sessions WHERE world_id = ?1 AND is_template IS 1 ORDER BY name").ok()?;
         tpl = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         for t in &tpl {
             tcounts.insert(t.get("id")?.as_i64()?.to_string(), json!(count(t)));
@@ -1520,7 +1520,7 @@ pub fn cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> O
     let mut p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
     let wid = p.world.as_ref()?.get("id")?.as_i64()?; // no world: Python's 404
     cockpit_pickers(&db, cfg, wid, &mut p.ctx)?;
-    let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
+    let mut st = db.prepare_cached("SELECT id, name FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
     let mut parties = vec![];
     for r in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
         let (id, name) = r.ok()?;
@@ -1534,7 +1534,7 @@ pub fn cockpit(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> O
 fn cockpit_pickers(db: &rusqlite::Connection, cfg: &Config, wid: i64, ctx: &mut serde_json::Map<String, serde_json::Value>) -> Option<()> {
     use serde_json::{json, Value};
     let mut maps = vec![];
-    let mut st = db.prepare("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name").ok()?;
+    let mut st = db.prepare_cached("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name").ok()?;
     for r in st.query_map([wid], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
         let (slug, name) = r.ok()?;
         maps.push(json!({"slug": slug, "name": name}));
@@ -1674,7 +1674,7 @@ pub fn schematic_views(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         return crate::edits::json_response(&Value::Object(out));
     }
     // _party_pins_for(world, "schematic", slug)
-    let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM parties WHERE world_id = ?1 ORDER BY id").ok()?;
     let parties = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut pins = vec![];
     for party in &parties {
@@ -1743,7 +1743,7 @@ pub fn schematic_editor(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
     }
     let (pcs, ents) = crate::edits::combat_candidates(&db, wid)?;
     let rows = |sql: &str| -> Option<Vec<serde_json::Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -1830,7 +1830,7 @@ pub fn combat_tracker(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
     }
     let state = crate::edits::combat_full_state(&cs)?;
     let (pcs, ents) = crate::edits::combat_candidates(&db, wid)?;
-    let mut st = db.prepare("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM game_sessions WHERE world_id = ?1 ORDER BY session_num DESC").ok()?;
     let sessions: Vec<serde_json::Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     let linked = match cs.get("game_session_id").and_then(|v| v.as_i64()).filter(|i| *i != 0) {
         Some(g) => db.query_row("SELECT * FROM game_sessions WHERE id = ?1", [g], |r| crate::layout::row_map(r)).ok().map_or(Value::Null, Value::Object),
@@ -1976,7 +1976,7 @@ pub fn characters_list(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     let term = nd_render::text::py_strip(&query_param(uri, "q").unwrap_or_default()).to_string();
     let sort = query_param(uri, "sort").unwrap_or_else(|| "name".into());
     let rows = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -2124,7 +2124,7 @@ pub fn ai_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) -> O
         let vis = if p.is_gm { " AND ?2 IS NOT NULL" } else {
             " AND (entities.visible_to_players IS NOT 0 OR entities.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))"
         };
-        let mut st = db.prepare(&format!("SELECT kind, count(id) FROM entities WHERE world_id = ?1{vis} GROUP BY kind")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT kind, count(id) FROM entities WHERE world_id = ?1{vis} GROUP BY kind")).ok()?;
         for r in st.query_map(rusqlite::params![wid, p.user_id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?))).ok()? {
             let (k, n) = r.ok()?;
             counts.insert(k?, json!(n));
@@ -2156,12 +2156,12 @@ pub fn import_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) 
         return Some(crate::idpages::refusal(403));
     }
     let wid = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()).unwrap_or(1);
-    let mut st = db.prepare("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT slug, name FROM schematics WHERE world_id = ?1 AND is_html = 0 ORDER BY name, id").ok()?;
     let schematics: Vec<Value> = st.query_map([wid], |r| Ok(json!({"slug": r.get::<_, Option<String>>(0)?, "name": r.get::<_, Option<String>>(1)?})))
         .ok()?.collect::<Result<_, _>>().ok()?;
     let maps: Vec<Value> = crate::maps::world_maps(cfg, wid)?.into_iter()
         .map(|(slug, d)| { let name = d.get("name").cloned().unwrap_or_else(|| json!(slug)); json!({"slug": slug, "name": name}) }).collect();
-    let mut st = db.prepare("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY kind, name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT id, name, kind, image_url FROM entities WHERE world_id = ?1 ORDER BY kind, name, id").ok()?;
     let entities: Vec<Value> = st.query_map([wid], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, Option<String>>(1)?,
         "kind": r.get::<_, Option<String>>(2)?, "has_image": r.get::<_, Option<String>>(3)?.map_or(false, |s| !s.is_empty())})))
         .ok()?.collect::<Result<_, _>>().ok()?;
@@ -2197,7 +2197,7 @@ pub fn ai_chat_player(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
 pub(crate) fn autolink_names(db: &rusqlite::Connection, wid: i64, exclude: Option<i64>, vis: &str) -> Option<Vec<(String, i64)>> {
     use nd_render::text;
     let mut names: Vec<(String, i64)> = vec![];
-    let mut st = db.prepare(&format!("SELECT e.id, e.name, e.aliases FROM entities e WHERE e.world_id = ?1 AND e.id != ?2 AND {vis} ORDER BY e.id")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT e.id, e.name, e.aliases FROM entities e WHERE e.world_id = ?1 AND e.id != ?2 AND {vis} ORDER BY e.id")).ok()?;
     let r: Vec<(i64, Option<String>, Option<String>)> = st.query_map([wid, exclude.unwrap_or(-1)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut add = |n: String, i: i64| {
         if !names.iter().any(|(k, _)| *k == n) {
@@ -2248,7 +2248,7 @@ pub fn private_notes(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         }
     }
     let Ok(target) = db.query_row("SELECT * FROM users WHERE id = ?1", [uid], |r| crate::layout::row_map(r)) else { return Some(crate::idpages::refusal(404)) };
-    let mut st = db.prepare("SELECT * FROM private_notes WHERE world_id = ?1 AND player_user_id = ?2 ORDER BY created_at DESC, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM private_notes WHERE world_id = ?1 AND player_user_id = ?2 ORDER BY created_at DESC, id").ok()?;
     let mut notes = st.query_map([wid, uid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let vis = if gm { "1".to_string() } else {
         format!("(e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
@@ -2284,7 +2284,7 @@ pub fn private_notes(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
 /// `_templates_for_world`: the world's sheet templates plus the global ones, built-ins first, then by name
 fn sheet_templates_for(db: &rusqlite::Connection, wid: Option<i64>) -> Option<Vec<Map<String, Value>>> {
     let sql = "SELECT * FROM sheet_templates WHERE world_id IS NULL OR world_id = ?1 ORDER BY is_builtin DESC, name";
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map([wid.unwrap_or(-1)], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r)
 }
@@ -2318,7 +2318,7 @@ pub fn characters_new(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMa
         _ => sheet_tpl_by(&db, "slug", "nd-default")?,
     };
     if !p.is_gm {
-        let mut st = db.prepare("SELECT id FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
+        let mut st = db.prepare_cached("SELECT id FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
         let mine: Vec<i64> = st.query_map([world.get("id")?.as_i64()?, p.user_id], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
         drop(st);
         let limit = character_limit(world);
@@ -2407,7 +2407,7 @@ pub fn characters_ai_new(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Heade
     if let Some(u) = &user {
         if !crate::edits::py_truthy_pub(u.get("is_gm")) {
             let wid = world.get("id")?.as_i64()?;
-            let mut st = db.prepare("SELECT id FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
+            let mut st = db.prepare_cached("SELECT id FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY id").ok()?;
             let mine: Vec<i64> = st.query_map([wid, p.user_id], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
             drop(st);
             let limit = character_limit(world);
@@ -2418,7 +2418,7 @@ pub fn characters_ai_new(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Heade
         }
     }
     let wid = world.get("id")?.as_i64()?;
-    let mut st = db.prepare("SELECT * FROM sheet_templates WHERE sheet_mode = 'custom' AND (world_id IS NULL OR world_id = ?1) ORDER BY name").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM sheet_templates WHERE sheet_mode = 'custom' AND (world_id IS NULL OR world_id = ?1) ORDER BY name").ok()?;
     let systems: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     drop(st);
     let display_name = user.as_ref()

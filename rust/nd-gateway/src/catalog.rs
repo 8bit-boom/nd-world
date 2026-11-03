@@ -124,7 +124,7 @@ fn page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap, kind: &str,
     let mut world_rows: Vec<Map<String, Value>> = vec![];
     let mut names: Vec<String> = vec![];
     if let Some(wid) = world.as_ref().and_then(|w| w.get("id")).and_then(|v| v.as_i64()) {
-        let mut st = db.prepare("SELECT name FROM entities WHERE world_id = ?1 AND kind = ?2").ok()?;
+        let mut st = db.prepare_cached("SELECT name FROM entities WHERE world_id = ?1 AND kind = ?2").ok()?;
         for n in st.query_map(rusqlite::params![wid, entity_kind], |r| r.get::<_, Option<String>>(0)).ok()? {
             if let Some(n) = n.ok()?.filter(|n| !n.is_empty()) {
                 names.push(n);
@@ -133,7 +133,7 @@ fn page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap, kind: &str,
         let vis = if p.is_gm { " AND ?3 IS NOT NULL" } else {
             " AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))"
         };
-        let mut st = db.prepare(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = ?2{vis} ORDER BY subtype, name")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT * FROM entities WHERE world_id = ?1 AND kind = ?2{vis} ORDER BY subtype, name")).ok()?;
         world_rows = st.query_map(rusqlite::params![wid, entity_kind, p.user_id], |r| crate::layout::row_map(r)).ok()?
             .collect::<Result<Vec<_>, _>>().ok()?;
     }

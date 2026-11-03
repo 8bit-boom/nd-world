@@ -73,14 +73,14 @@ pub fn render(pages: &Pages, cfg: &Config, db: &Connection, method: &str, uri: &
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let mut p = crate::layout::build(db, cfg, method, uri, headers, now)?;
     let rows = |sql: &str, arg: &dyn rusqlite::ToSql| -> Option<Vec<Value>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map([arg], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r.into_iter().map(Value::Object).collect())
     };
     let user = db.query_row("SELECT * FROM users WHERE id = ?1", [p.user_id], |r| crate::layout::row_map(r)).ok()?;
     let tokens = rows("SELECT * FROM api_tokens WHERE user_id = ?1 ORDER BY created_at DESC", &p.user_id)?;
     let stamp = crate::orm::now_stamp();
-    let mut st = db.prepare("SELECT * FROM trusted_devices WHERE user_id = ?1 AND expires_at > ?2 ORDER BY created_at DESC").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM trusted_devices WHERE user_id = ?1 AND expires_at > ?2 ORDER BY created_at DESC").ok()?;
     let devices = st.query_map(rusqlite::params![p.user_id, stamp], |r| crate::layout::row_map(r)).ok()?
         .collect::<Result<Vec<_>, _>>().ok()?;
     for (k, v) in [("name_error", Value::Null), ("password_error", Value::Null), ("new_token", Value::Null), ("totp_error", Value::Null),

@@ -11,13 +11,15 @@ use serde_json::{json, Map, Value};
 pub fn row_map(r: &Row) -> rusqlite::Result<Map<String, Value>> {
     let mut m = Map::new();
     let stmt = r.as_ref();
+    // the column list is built once per row (and only when a text column needs its declared type), not once per column
+    let mut cols: Option<Vec<rusqlite::Column<'_>>> = None;
     for i in 0..stmt.column_count() {
         let name = stmt.column_name(i)?.to_string();
         let v = match r.get_ref(i)? {
             ValueRef::Null => Value::Null,
             ValueRef::Integer(n) => json!(n),
             ValueRef::Real(f) => json!(f),
-            ValueRef::Text(t) if stmt.columns()[i].decl_type().map_or(false, |d| d.eq_ignore_ascii_case("DATETIME")) => {
+            ValueRef::Text(t) if cols.get_or_insert_with(|| stmt.columns()).get(i).and_then(|c| c.decl_type()).map_or(false, |d| d.eq_ignore_ascii_case("DATETIME")) => {
                 json!({"__dt__": String::from_utf8_lossy(t)})
             }
             ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).into_owned()),
@@ -101,11 +103,11 @@ pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &H
         return None;
     }
     let worlds: Vec<(Map<String, Value>, Option<String>)> = if is_gm {
-        let mut st = db.prepare("SELECT * FROM worlds ORDER BY id").ok()?;
+        let mut st = db.prepare_cached("SELECT * FROM worlds ORDER BY id").ok()?;
         let r = st.query_map([], |r| Ok((row_map(r)?, None))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         r
     } else {
-        let mut st = db.prepare("SELECT w.*, m.role AS __role FROM world_memberships m JOIN worlds w ON w.id = m.world_id WHERE m.user_id = ?1 ORDER BY w.id").ok()?;
+        let mut st = db.prepare_cached("SELECT w.*, m.role AS __role FROM world_memberships m JOIN worlds w ON w.id = m.world_id WHERE m.user_id = ?1 ORDER BY w.id").ok()?;
         let r = st
             .query_map([user_id], |r| {
                 let mut m = row_map(r)?;
@@ -159,7 +161,7 @@ pub fn build(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers: &H
 
     // every saved layout of this person, cleaned (templating._saved_view)
     let mut saved = Map::new();
-    let mut st = db.prepare("SELECT section, prefs_json FROM user_view_prefs WHERE user_id = ?1").ok()?;
+    let mut st = db.prepare_cached("SELECT section, prefs_json FROM user_view_prefs WHERE user_id = ?1").ok()?;
     let rows = st.query_map([user_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     for (section, raw) in rows {
         let cleaned = match raw.as_deref().map(serde_json::from_str::<Value>) {

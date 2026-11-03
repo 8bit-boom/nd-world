@@ -124,12 +124,12 @@ pub fn actor_for(db: &Connection, cfg: &Config, method: &str, uri: &Uri, headers
     }
     // (world id, slug, section_access_json, membership role)
     let rows: Vec<(i64, String, Option<String>, Option<String>)> = if is_gm {
-        let mut st = db.prepare("SELECT id, slug, section_access_json, NULL FROM worlds ORDER BY id").ok()?;
+        let mut st = db.prepare_cached("SELECT id, slug, section_access_json, NULL FROM worlds ORDER BY id").ok()?;
         let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         r
     } else {
         let mut st = db
-            .prepare(
+            .prepare_cached(
                 "SELECT w.id, w.slug, w.section_access_json, m.role FROM world_memberships m JOIN worlds w ON w.id = m.world_id \
                  WHERE m.user_id = ?1 ORDER BY w.id",
             )
@@ -194,11 +194,75 @@ fn label_printable(s: &str) -> bool {
     s.chars().all(crate::edits::py_printable)
 }
 
-pub fn open(cfg: &Config) -> Option<Connection> {
-    let db = Connection::open_with_flags(&cfg.db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+/// A connection to the world's database, lent from a small pool and returned when it is dropped. Opening one costs about 2.4 ms (SQLite parses the whole schema
+/// the first time); a reused one answers its first query in microseconds, and keeps its prepared statements (`prepare_cached`). Everything a request leaves behind
+/// is undone on return (an open transaction is rolled back), the file is checked by identity on every checkout (a restored / replaced database file is never
+/// read through an old handle), and at most 16 idle connections are kept.
+pub struct Pooled {
+    conn: Option<Connection>,
+    key: (std::path::PathBuf, u64, u64),
+}
+
+impl std::ops::Deref for Pooled {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("connection present until drop")
+    }
+}
+
+impl std::ops::DerefMut for Pooled {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn.as_mut().expect("connection present until drop")
+    }
+}
+
+impl Drop for Pooled {
+    fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else { return };
+        if !conn.is_autocommit() && conn.execute_batch("ROLLBACK").is_err() {
+            return; // not usable again: closed
+        }
+        if let Ok(mut pool) = pool().lock() {
+            if pool.len() < 16 {
+                pool.push((self.key.clone(), conn));
+            }
+        }
+    }
+}
+
+type PoolEntry = ((std::path::PathBuf, u64, u64), Connection);
+
+fn pool() -> &'static std::sync::Mutex<Vec<PoolEntry>> {
+    static P: OnceLock<std::sync::Mutex<Vec<PoolEntry>>> = OnceLock::new();
+    P.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// the database file's identity: a replaced file (a restore) is a different one, whatever its name
+fn file_key(path: &std::path::Path) -> Option<(std::path::PathBuf, u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((path.to_path_buf(), m.dev(), m.ino()))
+}
+
+pub fn open(cfg: &Config) -> Option<Pooled> {
+    open_at(&cfg.db_path)
+}
+
+fn open_at(path: &std::path::Path) -> Option<Pooled> {
+    let key = file_key(path)?;
+    if let Ok(mut p) = pool().lock() {
+        // a pooled connection to a file that is gone or replaced is dropped (closed) here
+        p.retain(|(k, _)| k.0 != key.0 || k == &key);
+        if let Some(i) = p.iter().rposition(|(k, _)| k == &key) {
+            let (_, conn) = p.swap_remove(i);
+            return Some(Pooled { conn: Some(conn), key });
+        }
+    }
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
     db.busy_timeout(std::time::Duration::from_millis(30_000)).ok()?;
-    db.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=OFF;").ok()?;
-    Some(db)
+    db.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=OFF; PRAGMA cache_size=-4000; PRAGMA temp_store=MEMORY; PRAGMA mmap_size=67108864;").ok()?;
+    db.set_prepared_statement_cache_capacity(128);
+    Some(Pooled { conn: Some(db), key })
 }
 
 /// `POST /api/dice/roll`. Returns the answer, or `None` to hand the request to Python.
@@ -291,5 +355,68 @@ pub async fn dice_roll(cfg: std::sync::Arc<Config>, proxy: &Proxy, req: Request<
     match answer {
         Some(r) => r,
         None => proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await,
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("nd-pool-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("world.db")
+    }
+
+    fn make(path: &std::path::Path, value: i64) {
+        let c = Connection::open(path).unwrap();
+        c.execute_batch(&format!("CREATE TABLE t(v INTEGER); INSERT INTO t VALUES ({value});")).unwrap();
+    }
+
+    fn value(db: &Connection) -> i64 {
+        db.query_row("SELECT v FROM t ORDER BY v LIMIT 1", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_connection_comes_back_clean_and_is_reused() {
+        let path = scratch("reuse");
+        make(&path, 1);
+        {
+            let mut db = open_at(&path).unwrap();
+            let tx = db.transaction().unwrap();
+            tx.execute("INSERT INTO t VALUES (0)", []).unwrap();
+            // dropped with the transaction open: rolled back, not committed and not left open for the next borrower
+            std::mem::forget(tx);
+        }
+        let db = open_at(&path).unwrap();
+        assert!(db.is_autocommit());
+        assert_eq!(value(&db), 1, "the unfinished transaction must be gone");
+        // a statement cached on this connection works again on the next borrow
+        let n = |db: &Connection| db.prepare_cached("SELECT count(*) FROM t").unwrap().query_row([], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(n(&db), 1);
+        drop(db);
+        assert_eq!(n(&open_at(&path).unwrap()), 1);
+    }
+
+    #[test]
+    fn a_replaced_database_file_is_never_read_through_an_old_connection() {
+        let path = scratch("replace");
+        make(&path, 1);
+        drop(open_at(&path).unwrap()); // pooled, pointing at the first file
+        let other = path.with_file_name("restored.db");
+        make(&other, 2);
+        std::fs::rename(&other, &path).unwrap(); // what a restore does: a different file under the same name
+        assert_eq!(value(&open_at(&path).unwrap()), 2);
+    }
+
+    #[test]
+    fn at_most_sixteen_idle_connections_are_kept() {
+        let path = scratch("cap");
+        make(&path, 1);
+        let held: Vec<Pooled> = (0..20).map(|_| open_at(&path).unwrap()).collect();
+        drop(held);
+        let idle = pool().lock().unwrap().iter().filter(|(k, _)| k.0 == path).count();
+        assert!(idle <= 16, "{idle}");
     }
 }

@@ -272,7 +272,7 @@ pub fn find_relevant_entities(db: &Connection, wid: i64, query: &str, limit: usi
     let (uid, gm) = viewer;
     let visible = if gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))" };
     let rows = |sql: &str, params: Vec<rusqlite::types::Value>| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params_from_iter(params), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         Some(r)
     };
@@ -290,7 +290,7 @@ pub fn find_relevant_entities(db: &Connection, wid: i64, query: &str, limit: usi
     };
     let fts = words.iter().map(|w| term(w)).collect::<Vec<_>>().join(" OR ");
     let fetch = if gm { limit } else { (limit * 5).max(20).min(250) };
-    let mut st = db.prepare("SELECT entities.id FROM entity_fts JOIN entities ON entities.id = entity_fts.rowid WHERE entity_fts MATCH ?1 AND entities.world_id = ?2 ORDER BY bm25(entity_fts, 10.0, 2.0, 1.0, 5.0, 8.0) LIMIT ?3").ok()?;
+    let mut st = db.prepare_cached("SELECT entities.id FROM entity_fts JOIN entities ON entities.id = entity_fts.rowid WHERE entity_fts MATCH ?1 AND entities.world_id = ?2 ORDER BY bm25(entity_fts, 10.0, 2.0, 1.0, 5.0, 8.0) LIMIT ?3").ok()?;
     let ids: Vec<i64> = st.query_map(rusqlite::params![fts, wid, fetch as i64], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
     if ids.is_empty() {
         return Some(vec![]);
@@ -334,7 +334,7 @@ pub fn format_context_eligible(db: &Connection, entities: &[Map<String, Value>],
     let ids: Vec<String> = entities.iter().filter_map(|e| e.get("id").and_then(|v| v.as_i64())).map(|i| i.to_string()).collect();
     let mut notes: Vec<Map<String, Value>> = vec![];
     if !ids.is_empty() {
-        let mut st = db.prepare(&format!("SELECT * FROM entity_notes WHERE entity_id IN ({}) ORDER BY entity_id, created_at", ids.join(","))).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT * FROM entity_notes WHERE entity_id IN ({}) ORDER BY entity_id, created_at", ids.join(","))).ok()?;
         notes = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     }
     for e in entities {
@@ -397,7 +397,7 @@ pub fn format_context_eligible(db: &Connection, entities: &[Map<String, Value>],
 pub fn instructions_text(db: &Connection, wid: i64, for_players: bool) -> Option<String> {
     let sql = format!("SELECT title, content FROM ai_instructions WHERE world_id = ?1 AND enabled = 1{} ORDER BY created_at",
         if for_players { " AND applies_to_players = 1" } else { "" });
-    let mut st = db.prepare(&sql).ok()?;
+    let mut st = db.prepare_cached(&sql).ok()?;
     let rows: Vec<(Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let parts: Vec<String> = rows.into_iter().filter_map(|(t, c)| {
         let c = c.unwrap_or_default();
@@ -416,7 +416,7 @@ pub fn instructions_text(db: &Connection, wid: i64, for_players: bool) -> Option
 /// any leaves the job to Python.
 pub fn build_rag_context(db: &Connection, wid: i64, query: &str, entity_limit: i64, notes_limit: i64, pinned: &[i64]) -> Option<String> {
     let rows = |sql: &str, params: Vec<rusqlite::types::Value>| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params_from_iter(params), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
@@ -452,7 +452,7 @@ pub fn build_rag_context(db: &Connection, wid: i64, query: &str, entity_limit: i
     all.extend(pinned_rows.iter().filter(|e| is_note(e)).cloned());
     all.extend(notes);
     let entity_context = format_context(db, &all, false, &q)?;
-    let mut st = db.prepare("SELECT content FROM facts WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 20").ok()?;
+    let mut st = db.prepare_cached("SELECT content FROM facts WHERE world_id = ?1 ORDER BY created_at DESC LIMIT 20").ok()?;
     let mut facts: Vec<String> = st.query_map([wid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_else(|| "None".into())).collect();
     facts.reverse();
     let fact_context = if facts.is_empty() { String::new() } else {
@@ -527,7 +527,7 @@ fn priority_entities_context_as(db: &Connection, wid: i64, query: &str, exclude:
         Some(uid) => format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {uid}))"),
         None => String::new(),
     };
-    let mut st = db.prepare(&format!("SELECT * FROM entities WHERE world_id = ?1 AND rag_priority = 1{visible}")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT * FROM entities WHERE world_id = ?1 AND rag_priority = 1{visible}")).ok()?;
     let rows: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     let mut scored: Vec<(i64, Map<String, Value>, String, String)> = vec![];
     for e in rows {
@@ -584,7 +584,7 @@ fn characters_context_as(db: &Connection, world: &Map<String, Value>, query: &st
         Some(_) if crate::edits::py_truthy_pub(world.get("players_see_party")) => " AND owner_user_id IS NOT NULL".into(),
         Some(uid) => format!(" AND owner_user_id = {uid}"),
     };
-    let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE world_id = ?1{who} ORDER BY name")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT * FROM player_characters WHERE world_id = ?1{who} ORDER BY name")).ok()?;
     let pcs: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     if pcs.is_empty() {
         return Some(String::new());
@@ -673,7 +673,7 @@ pub fn smart_world_context_as(db: &Connection, wid: i64, query: &str, entity_lim
     let mut non_notes: Vec<Map<String, Value>> = entities.iter().filter(|e| !is_note(e)).cloned().collect();
     let matched: std::collections::HashSet<i64> = entities.iter().map(id_of).collect();
     let rows = |sql: String| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(&sql).ok()?;
+        let mut st = db.prepare_cached(&sql).ok()?;
         let r: Vec<Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         Some(r)
     };

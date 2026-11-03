@@ -34,6 +34,7 @@ libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 brotli = "9"
+mimalloc = { version = "0.1", default-features = false }
 lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
 
 rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }

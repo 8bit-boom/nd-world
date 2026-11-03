@@ -287,7 +287,7 @@ fn visibility_rows(db: &Connection, wid: i64) -> Option<(Value, Value)> {
     let mut allowed = Map::new();
     if !ents.is_empty() {
         let mut st = db
-            .prepare("SELECT epa.entity_id, epa.user_id FROM entity_player_access epa JOIN entities e ON e.id = epa.entity_id WHERE e.world_id = ?1")
+            .prepare_cached("SELECT epa.entity_id, epa.user_id FROM entity_player_access epa JOIN entities e ON e.id = epa.entity_id WHERE e.world_id = ?1")
             .ok()?;
         let pairs = st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         for (eid, uid) in pairs {

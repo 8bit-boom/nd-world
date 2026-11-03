@@ -114,7 +114,7 @@ fn stage_zip(c: &Ctx, part: &crate::uploads::FileRef, scratch: &Path, tmp_db: &P
     let verdict = (|| -> Result<bool, rusqlite::Error> {
         let t = rusqlite::Connection::open(tmp_db)?;
         t.query_row("SELECT COUNT(*) FROM worlds", [], |r| r.get::<_, i64>(0))?;
-        let mut st = t.prepare("PRAGMA table_info(entities)")?;
+        let mut st = t.prepare_cached("PRAGMA table_info(entities)")?;
         let cols: Vec<String> = st.query_map([], |r| r.get::<_, String>(1))?.collect::<Result<_, _>>()?;
         Ok(cols.iter().any(|n| n == "aliases"))
     })();

@@ -377,7 +377,7 @@ fn require_view(user: User, w: &World, section: &str) -> Result<Option<()>, Fail
 }
 
 fn rows(db: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql], f: impl Fn(&rusqlite::Row) -> rusqlite::Result<Value>) -> Option<Vec<Value>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| f(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r)
 }
@@ -917,7 +917,7 @@ fn update_quest(db: &Connection, user: User, a: &Map<String, Value>) -> ToolResu
 
 /// Rows of a query as maps (the shape the shared sheet helpers read)
 fn maps(db: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r)
 }

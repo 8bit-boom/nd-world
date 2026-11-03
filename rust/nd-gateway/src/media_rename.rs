@@ -359,7 +359,7 @@ pub(crate) fn image_usage(db: &rusqlite::Connection, wid: i64) -> Option<Vec<Ima
         names.retain(|n| n.0 != url);
         names.push((url, entry.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string()));
     }
-    let mut st = db.prepare("SELECT name, image_urls_json FROM image_albums WHERE world_id = ?1").ok()?;
+    let mut st = db.prepare_cached("SELECT name, image_urls_json FROM image_albums WHERE world_id = ?1").ok()?;
     let albums: Vec<(Option<String>, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     for (name, raw) in albums {
         let urls = match serde_json::from_str::<Value>(raw.as_deref().filter(|r| !r.is_empty()).unwrap_or("[]")) { Ok(Value::Array(a)) => a, _ => vec![] };

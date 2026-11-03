@@ -387,7 +387,7 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let end = start + months[idx].days - 1;
 
     let mut st = db
-        .prepare(
+        .prepare_cached(
             "SELECT e.id, e.title, e.notes, e.color, e.entity_id, en.name AS entity_label, e.session_id, gs.id AS gs_id, gs.session_num, \
              gs.title AS gs_title, e.character_id, pc.name AS character_label, e.party_id, pa.name AS party_label, e.created_by_user_id, e.day \
              FROM calendar_events e LEFT JOIN entities en ON en.id = e.entity_id LEFT JOIN game_sessions gs ON gs.id = e.session_id \
@@ -416,7 +416,7 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         events.entry(day).or_default().push(Value::Object(e));
     }
     let mut st = db
-        .prepare("SELECT id, image_url, label, day FROM calendar_day_icons WHERE world_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY created_at, id")
+        .prepare_cached("SELECT id, image_url, label, day FROM calendar_day_icons WHERE world_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY created_at, id")
         .ok()?;
     let mut icons: std::collections::HashMap<i64, Vec<Value>> = Default::default();
     for f in st.query_map(rusqlite::params![wid, start, end], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()? {
@@ -471,7 +471,7 @@ pub fn calendar_view(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
         _ => Value::Null,
     };
     let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(sql).ok()?;
+        let mut st = db.prepare_cached(sql).ok()?;
         let r = st.query_map(rusqlite::params![wid, PICKER_ROWS], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
@@ -554,7 +554,7 @@ pub fn calendar_agenda(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
     let Cal { config, months, .. } = load(&db, wid)?;
     let c = config.as_object()?;
     let mut st = db
-        .prepare(
+        .prepare_cached(
             "SELECT e.id, e.title, e.notes, e.color, en.name AS entity_label, gs.id AS gs_id, gs.session_num, gs.title AS gs_title, \
              pc.name AS character_label, pa.name AS party_label, e.day FROM calendar_events e LEFT JOIN entities en ON en.id = e.entity_id \
              LEFT JOIN game_sessions gs ON gs.id = e.session_id LEFT JOIN player_characters pc ON pc.id = e.character_id \
@@ -562,7 +562,7 @@ pub fn calendar_agenda(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderM
         )
         .ok()?;
     let events = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
-    let mut st = db.prepare("SELECT image_url, label, day FROM calendar_day_icons WHERE world_id = ?1 ORDER BY day, id LIMIT 1000").ok()?;
+    let mut st = db.prepare_cached("SELECT image_url, label, day FROM calendar_day_icons WHERE world_id = ?1 ORDER BY day, id LIMIT 1000").ok()?;
     let icons = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut by_day: std::collections::BTreeMap<i64, (Vec<Value>, Vec<Value>)> = Default::default();
     for f in &events {
@@ -609,13 +609,13 @@ pub fn calendar_year(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap
     let year_end = year_start + year_len(&months) - 1;
     let mut titles: std::collections::HashMap<i64, Vec<String>> = Default::default();
     let mut st = db
-        .prepare("SELECT day, title FROM calendar_events WHERE world_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day, id LIMIT 5000")
+        .prepare_cached("SELECT day, title FROM calendar_events WHERE world_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day, id LIMIT 5000")
         .ok()?;
     for r in st.query_map(rusqlite::params![wid, year_start, year_end], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).ok()? {
         let (d, t) = r.ok()?;
         titles.entry(d).or_default().push(t);
     }
-    let mut st = db.prepare("SELECT DISTINCT day FROM calendar_day_icons WHERE world_id = ?1 AND day >= ?2 AND day <= ?3").ok()?;
+    let mut st = db.prepare_cached("SELECT DISTINCT day FROM calendar_day_icons WHERE world_id = ?1 AND day >= ?2 AND day <= ?3").ok()?;
     let icon_days = st.query_map(rusqlite::params![wid, year_start, year_end], |r| r.get::<_, i64>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let dpw = days_per_week(c)?;
     let hols = holidays(c, &months)?;
@@ -794,7 +794,7 @@ pub fn search_api(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
          OR EXISTS (SELECT 1 FROM game_sessions s WHERE s.id = ev.session_id AND {})) \
          ORDER BY abs(ev.day - ?3), ev.day, ev.id LIMIT ?4",
         like("ev.title"), like("ev.notes"), like("c.name"), like("pa.name"), like("s.title"));
-    let mut st = db.prepare(&sql).ok()?;
+    let mut st = db.prepare_cached(&sql).ok()?;
     let rows = st.query_map(rusqlite::params![wid, pattern, near, limit + 1], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let c = cal.config.as_object()?;
     let year_days = year_len(&cal.months);

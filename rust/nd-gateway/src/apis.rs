@@ -144,7 +144,7 @@ fn party_vitals(cfg: &Config, uri: &Uri, headers: &HeaderMap, id: i64) -> Option
     let ids = crate::idpages::party_ids(party.get("member_pc_ids_json"))?;
     let pcs: Vec<serde_json::Map<String, Value>> = if ids.is_empty() { vec![] } else {
         let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list}) ORDER BY id")).ok()?;
+        let mut st = db.prepare_cached(&format!("SELECT * FROM player_characters WHERE id IN ({list}) ORDER BY id")).ok()?;
         let r = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
         r
     };
@@ -473,7 +473,7 @@ fn content_pack(cfg: &Config, uri: &Uri, headers: &HeaderMap, wid: i64) -> Optio
     if !exists || !(p.is_gm || member) {
         return Some(crate::idpages::refusal(404));
     }
-    let mut st = db.prepare("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('race', 'profession', 'feat', 'item') ORDER BY name, id").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM entities WHERE world_id = ?1 AND kind IN ('race', 'profession', 'feat', 'item') ORDER BY name, id").ok()?;
     let ents = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut pack = json!({"races": [], "professions": [], "feats": [], "items": []});
     static RACE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -543,7 +543,7 @@ fn session_media_id(path: &str) -> Option<i64> {
     id_between(path, "/api/sessions/", "/media")
 }
 
-fn page(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(rusqlite::Connection, crate::layout::PageCtx)> {
+fn page(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(crate::writes::Pooled, crate::layout::PageCtx)> {
     let db = crate::writes::open(cfg)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
@@ -551,7 +551,7 @@ fn page(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<(rusqlite::Conne
 }
 
 fn rows_of(db: &rusqlite::Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Option<Vec<Map<String, Value>>> {
-    let mut st = db.prepare(sql).ok()?;
+    let mut st = db.prepare_cached(sql).ok()?;
     let r = st.query_map(params, |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     Some(r)
 }
@@ -869,7 +869,7 @@ fn audio_job_list(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
     let total: i64 = db.query_row(&format!("SELECT count(*) {sql}"), rusqlite::params_from_iter(params.iter()), |r| r.get(0)).ok()?;
     let total_pages = ((total + 49) / 50).max(1);
     let page_no = page_no.min(total_pages);
-    let mut st = db.prepare(&format!("SELECT * {sql} ORDER BY created_at DESC, id LIMIT 50 OFFSET {}", (page_no - 1) * 50)).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT * {sql} ORDER BY created_at DESC, id LIMIT 50 OFFSET {}", (page_no - 1) * 50)).ok()?;
     let jobs = st.query_map(rusqlite::params_from_iter(params.iter()), |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     let mut out = vec![];
     for j in jobs {
@@ -943,7 +943,7 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
         format!(" AND (visible_to_players IS NOT 0 OR id IN (SELECT entity_id FROM entity_player_access WHERE user_id = {}))", p.user_id)
     };
     let ex = exclude.map(|e| format!(" AND id != {e}")).unwrap_or_default();
-    let mut st = db.prepare(&format!("SELECT id, name, kind, folder FROM entities WHERE world_id = ?1{ex}{vis} ORDER BY kind, folder, name, id")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT id, name, kind, folder FROM entities WHERE world_id = ?1{ex}{vis} ORDER BY kind, folder, name, id")).ok()?;
     let rows: Vec<Value> = st.query_map([wid], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, Option<String>>(1)?,
         "kind": r.get::<_, Option<String>>(2)?, "folder": r.get::<_, Option<String>>(3)?.unwrap_or_default()}))).ok()?.collect::<Result<_, _>>().ok()?;
     let payload = dumps_ascii_compact(&json!({"entities": rows}));
@@ -1214,7 +1214,7 @@ fn viewer_pcs(db: &rusqlite::Connection, p: &crate::layout::PageCtx, wid: i64, a
             }
         }
     }
-    let mut st = db.prepare("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY name").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM player_characters WHERE world_id = ?1 AND owner_user_id = ?2 ORDER BY name").ok()?;
     let rows: Vec<serde_json::Map<String, Value>> = st.query_map([wid, owner], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     Some(rows)
 }
@@ -1236,7 +1236,7 @@ fn cockpit_player_board(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
     let my_pc_ids: Vec<i64> = pcs.iter().filter_map(|pc| pc.get("id").and_then(|v| v.as_i64())).collect();
     let mut parties = vec![];
     if !my_pc_ids.is_empty() {
-        let mut st = db.prepare("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
+        let mut st = db.prepare_cached("SELECT * FROM parties WHERE world_id = ?1 ORDER BY name").ok()?;
         let rows: Vec<serde_json::Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
         drop(st);
         for party in rows {
@@ -1246,7 +1246,7 @@ fn cockpit_player_board(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
             }
             let members: Vec<serde_json::Map<String, Value>> = if ids.is_empty() { vec![] } else {
                 let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-                let mut st = db.prepare(&format!("SELECT * FROM player_characters WHERE id IN ({list})")).ok()?;
+                let mut st = db.prepare_cached(&format!("SELECT * FROM player_characters WHERE id IN ({list})")).ok()?;
                 let r: Vec<serde_json::Map<String, Value>> = st.query_map([], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
                 r
             };
@@ -1255,11 +1255,11 @@ fn cockpit_player_board(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<
         }
     }
     // _player_quests: active top-level quests the world shows players, party names attached
-    let mut st = db.prepare("SELECT * FROM quests WHERE world_id = ?1 AND status = 'active' AND parent_id IS NULL AND visible_to_players = 1 ORDER BY category, title LIMIT 12").ok()?;
+    let mut st = db.prepare_cached("SELECT * FROM quests WHERE world_id = ?1 AND status = 'active' AND parent_id IS NULL AND visible_to_players = 1 ORDER BY category, title LIMIT 12").ok()?;
     let quests: Vec<serde_json::Map<String, Value>> = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<_, _>>().ok()?;
     drop(st);
     let mut party_names = serde_json::Map::new();
-    let mut st = db.prepare("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
+    let mut st = db.prepare_cached("SELECT id, name FROM parties WHERE world_id = ?1").ok()?;
     for r in st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()? {
         let (id, name) = r.ok()?;
         party_names.insert(id.to_string(), json!(name));
@@ -2225,7 +2225,7 @@ fn featured_entity_candidates(db: &rusqlite::Connection, wid: i64) -> Option<Vec
     for (kind, label, pcs_only) in GROUPS {
         let filter = if *pcs_only { " AND subtype = 'PC'" } else { " AND (subtype != 'PC' OR subtype IS NULL)" };
         let sql = format!("SELECT id, name, folder FROM entities WHERE world_id = ?1 AND kind = '{kind}'{filter} ORDER BY folder, name");
-        let mut st = db.prepare(&sql).ok()?;
+        let mut st = db.prepare_cached(&sql).ok()?;
         let r = st.query_map([wid], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
         }).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
@@ -2239,7 +2239,7 @@ fn featured_entity_candidates(db: &rusqlite::Connection, wid: i64) -> Option<Vec
             candidates.push(json!({"id": id, "name": name, "folder": full}));
         }
     }
-    let mut st = db.prepare("SELECT id, name FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
+    let mut st = db.prepare_cached("SELECT id, name FROM player_characters WHERE world_id = ?1 ORDER BY name").ok()?;
     let pcs = st.query_map([wid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
     drop(st);
     for (id, name) in pcs {
@@ -2953,7 +2953,7 @@ fn gallery_browse(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respon
 }
 
 /// The media-rename routes' gate: the active world (404 without) and the sections the viewer may edit, in `SECTION` order (audio, video, image)
-fn media_rename_gate(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Result<(rusqlite::Connection, i64, Vec<&'static str>), Response<Body>>> {
+fn media_rename_gate(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Result<(crate::writes::Pooled, i64, Vec<&'static str>), Response<Body>>> {
     let (db, p) = page(cfg, uri, headers)?;
     let Some(w) = p.world.as_ref() else { return Some(Err(crate::idpages::refusal(404))) };
     let wid = w.get("id")?.as_i64()?;
@@ -3546,7 +3546,7 @@ fn orgs_graph(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<B
     let node_of = |id: i64| node_ids.iter().find(|n| n.0 == id).map(|n| n.1.clone());
     // stored links between organizations (table order)
     let in_list = node_ids.iter().map(|n| n.0.to_string()).collect::<Vec<_>>().join(",");
-    let mut st = db.prepare(&format!("SELECT source_id, target_id FROM entity_links WHERE source_id IN ({in_list}) AND target_id IN ({in_list})")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT source_id, target_id FROM entity_links WHERE source_id IN ({in_list}) AND target_id IN ({in_list})")).ok()?;
     let links: Vec<(i64, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let mut edges = vec![];
     let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();

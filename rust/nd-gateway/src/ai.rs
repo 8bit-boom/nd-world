@@ -278,7 +278,7 @@ fn plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Pla
     }
     // build_chronicler_system_prompt
     let viewer = (p.user_id, p.is_gm);
-    let mut st = db.prepare(&format!("SELECT content FROM facts WHERE world_id = ?1{} ORDER BY created_at DESC LIMIT 60",
+    let mut st = db.prepare_cached(&format!("SELECT content FROM facts WHERE world_id = ?1{} ORDER BY created_at DESC LIMIT 60",
         if p.is_gm { "" } else { " AND visible_to_players IS NOT 0" })).ok()?;
     let facts: Vec<Option<String>> = st.query_map([wid], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
     let entities = crate::retrieval::find_relevant_entities(&db, wid, &question, 15, viewer)?;
@@ -861,7 +861,7 @@ fn identity_context(db: &rusqlite::Connection, e: &Map<String, Value>, viewer: (
     // entity_extra_context(notes, related, strip_gm_only=not gm)
     let eid = e.get("id")?.as_i64()?;
     let mut extra = vec![];
-    let mut st = db.prepare(&format!("SELECT content, content_is_html, visible_to_players FROM entity_notes WHERE entity_id = ?1{} ORDER BY created_at DESC LIMIT 10",
+    let mut st = db.prepare_cached(&format!("SELECT content, content_is_html, visible_to_players FROM entity_notes WHERE entity_id = ?1{} ORDER BY created_at DESC LIMIT 10",
         if gm { "" } else { " AND visible_to_players = 1" })).ok()?;
     let notes: Vec<(Option<String>, Option<i64>)> = st.query_map([eid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
     let mut note_lines = vec![];
@@ -881,7 +881,7 @@ fn identity_context(db: &rusqlite::Connection, e: &Map<String, Value>, viewer: (
         extra.push(format!("Notes:\n{}", note_lines.join("\n")));
     }
     let visible = if gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?2))" };
-    let mut st = db.prepare(&format!("SELECT DISTINCT e.name FROM entities e JOIN entity_links l ON l.target_id = e.id WHERE l.source_id = ?1{visible}")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT DISTINCT e.name FROM entities e JOIN entity_links l ON l.target_id = e.id WHERE l.source_id = ?1{visible}")).ok()?;
     let mut names: Vec<String> = if gm {
         st.query_map([eid], |r| r.get::<_, Option<String>>(0)).ok()?.collect::<Result<Vec<_>, _>>().ok()?
     } else {
@@ -924,7 +924,7 @@ fn npc_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option
         return None; // the GM's lore retrieval (smart_world_context): Python's
     }
     let visible = if p.is_gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))" };
-    let mut st = db.prepare(&format!("SELECT e.* FROM entities e WHERE e.id = ?1 AND e.world_id = ?2{visible}")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT e.* FROM entities e WHERE e.id = ?1 AND e.world_id = ?2{visible}")).ok()?;
     let npc = if p.is_gm { st.query_row(rusqlite::params![eid, wid], |r| crate::layout::row_map(r)) } else { st.query_row(rusqlite::params![eid, wid, p.user_id], |r| crate::layout::row_map(r)) }.ok()?;
     if !matches!(npc.get("kind").and_then(|k| k.as_str()), Some("character" | "creature" | "organization")) {
         return None;
@@ -1952,7 +1952,7 @@ async fn run_log_recap_job(id: i64) {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok());
         let Some((wid, xp, loot)) = gs else { return Some(Err("This session no longer exists.".into())) };
         let audience = audience.unwrap_or_else(|| "players".into());
-        let mut st = db.prepare(&format!("SELECT content FROM facts WHERE game_session_id = ?1{} ORDER BY created_at",
+        let mut st = db.prepare_cached(&format!("SELECT content FROM facts WHERE game_session_id = ?1{} ORDER BY created_at",
             if audience == "gm" { "" } else { " AND visible_to_players IS NOT 0" })).ok()?;
         let facts: Vec<String> = st.query_map([gsid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_default()).collect();
         let world_instr: Option<String> = db.query_row("SELECT recap_instructions FROM worlds WHERE id = ?1", [wid], |r| r.get(0)).ok().flatten();
@@ -2085,7 +2085,7 @@ fn world_state_text(db: &rusqlite::Connection, wid: i64, audience: &str) -> Opti
     };
     let vis = if audience == "gm" { "" } else { " AND visible_to_players IS NOT 0" };
     let rows = |sql: String| -> Option<Vec<Map<String, Value>>> {
-        let mut st = db.prepare(&sql).ok()?;
+        let mut st = db.prepare_cached(&sql).ok()?;
         let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok();
         r
     };
@@ -3934,7 +3934,7 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 let bk = backend(&db)?;
                 SyncAi::Transcript { b: bk, model: recap_model()?, transcript: live, think: think_default_true, instr: world_instr(w), echo: false }
             } else {
-                let mut st = db.prepare("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").ok()?;
+                let mut st = db.prepare_cached("SELECT content FROM facts WHERE game_session_id = ?1 ORDER BY created_at").ok()?;
                 let facts: Vec<String> = st.query_map([sid], |r| r.get::<_, Option<String>>(0)).ok()?.filter_map(Result::ok).map(|f| f.unwrap_or_default()).collect();
                 if facts.is_empty() || !section_ok(w, "sessions") { return None; }
                 let bk = backend(&db)?;
@@ -4179,7 +4179,7 @@ fn sync_ai_plan(cfg: &Config, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
                 _ => return None,
             };
             let sql = format!("SELECT content FROM facts WHERE world_id = ?1{} ORDER BY created_at", if gs.is_some() { " AND game_session_id = ?2" } else { "" });
-            let mut st = db.prepare(&sql).ok()?;
+            let mut st = db.prepare_cached(&sql).ok()?;
             let rows: Vec<Option<String>> = match gs {
                 Some(g) => st.query_map(rusqlite::params![wid, g], |r| r.get(0)).ok()?.filter_map(Result::ok).collect(),
                 None => st.query_map([wid], |r| r.get(0)).ok()?.filter_map(Result::ok).collect(),
@@ -4457,7 +4457,7 @@ fn npc_speak_plan(cfg: &Config, db: &rusqlite::Connection, p: &crate::layout::Pa
     let index = n.as_i64()?;
     let regenerate = match b.get("regenerate") { None => false, Some(Value::Bool(t)) => *t, _ => return None };
     let visible = if p.is_gm { "" } else { " AND (e.visible_to_players IS NOT 0 OR e.id IN (SELECT entity_id FROM entity_player_access WHERE user_id = ?3))" };
-    let mut st = db.prepare(&format!("SELECT e.* FROM entities e WHERE e.id = ?1 AND e.world_id = ?2{visible}")).ok()?;
+    let mut st = db.prepare_cached(&format!("SELECT e.* FROM entities e WHERE e.id = ?1 AND e.world_id = ?2{visible}")).ok()?;
     let npc = if p.is_gm { st.query_row(rusqlite::params![eid, wid], |r| crate::layout::row_map(r)) } else { st.query_row(rusqlite::params![eid, wid, p.user_id], |r| crate::layout::row_map(r)) }.ok()?;
     if !matches!(npc.get("kind").and_then(|k| k.as_str()), Some("character" | "creature" | "organization")) {
         return None;
