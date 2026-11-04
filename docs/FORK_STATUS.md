@@ -140,3 +140,7 @@ default: `ND_ROUTES_JSON=routes.json cargo test --release -p nd-gateway --test r
   map props upload, UVTT import, the importer's `/api/import/{images,convert-images}`, `/api/media-rename/select`, `POST /api/live-jobs/<key>/restart`, deleting a prompt preset.
 * **Ollama / SwarmUI / ComfyUI only** (not used with Unsloth): pull, benchmark, unload, model upload, imagegen restart / free-memory / generate.
 Ported after this probe: gallery delete (single and many), "Back up now", "Play for players" and stop (and hiding / deleting the clip being played now stops it), video conversion settings.
+
+## Map folders
+
+The Maps page browses one folder at a time (`/maps?folder=A/B`): maps keep it in their JSON (`folder`), schematics in `schematics.folder`. `app/map_folders.py` and `rust/nd-gateway/src/map_folders.rs` are the same logic; routes `/maps/{slug}/folder`, `/maps/schematic/{slug}/folder`, `/map-folders/rename` are ported.

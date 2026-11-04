@@ -64,6 +64,7 @@ pub mod imaging;
 pub mod markup;
 pub mod layout;
 pub mod live;
+pub mod map_folders;
 pub mod maps;
 pub mod orm;
 pub mod media;

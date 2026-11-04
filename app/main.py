@@ -59,6 +59,7 @@ from .templating import templates, thumb_url
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
 from . import groups as _groups_mod
 from . import scope as _scope_mod
+from . import map_folders as _map_folders
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, EntityVoiceHint, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, VideoJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction, CharacterJournalEntry, CharacterPref, CharacterLog, CharacterShare, WorldHandout, CharacterCompanion, CharacterKeepsake, SessionPlan, SessionPlanSlot, SessionPlanVote, MediaTitle, MediaRenameLog, MediaRenameRun, MapProp, PlayerGroup
 from .routers.ai import router as ai_router
 from .routers.ai_tasks import router as ai_tasks_router
@@ -952,7 +953,9 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     # map named "schematic-x" can't slip into these prefixes.
     if path in ("/maps/new",) and method in ("GET", "POST"):
         return True
-    if method == "POST" and re.match(r"^/maps/[^/]+/(rename|delete|upload)$", path):
+    if method == "POST" and re.match(r"^/maps/[^/]+/(rename|delete|upload|folder)$", path):
+        return True
+    if method == "POST" and path == "/map-folders/rename":
         return True
     if method == "POST" and re.match(r"^/api/maps/[^/]+/overlay$", path):
         return True
@@ -2760,8 +2763,13 @@ def maps_page(request: Request, db: Session = Depends(get_db), active_world: str
             "height": data.get("height", 0),
             "markers": len(data.get("markers", [])),
             "image_url": image_url,
+            "folder": _map_folders.norm(data.get("folder")),
         })
     schematics = db.query(Schematic).filter(Schematic.world_id == world.id).order_by(Schematic.name).all()
+    # folders: the page shows one at a time (?folder=Cities/Hue) - its subfolders, then the items that sit directly in it
+    fold = _map_folders.view(request.query_params.get("folder", ""), [m["folder"] for m in maps] + [s.folder or "" for s in schematics])
+    maps = [m for m in maps if m["folder"] == fold["current"]]
+    schematics = [s for s in schematics if _map_folders.norm(s.folder) == fold["current"]]
     # /maps is player-safe (read-only) unlike the entity form's picker, which
     # only GM-only routes ever reach — all_world_image_urls() returns every
     # image used anywhere in the world, including on GM-only/hidden entities,
@@ -2771,7 +2779,7 @@ def maps_page(request: Request, db: Session = Depends(get_db), active_world: str
     gallery_images = _gallery_module.all_world_image_urls(db, world) if is_gm else []
     return templates.TemplateResponse("maps.html", {
         "request": request, "world": world, "worlds": worlds, "maps": maps,
-        "schematics": schematics, "gallery_images": gallery_images,
+        "schematics": schematics, "gallery_images": gallery_images, "fold": fold,
     })
 
 @app.get("/maps/new", response_class=HTMLResponse)
@@ -2795,6 +2803,7 @@ def map_new(
     height: int = Form(3072),
     image_file: UploadFile = File(None),
     image_url: str = Form(""),
+    folder: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2815,6 +2824,8 @@ def map_new(
     while (_MAPS_DIR / f"{slug}.json").exists():
         slug = f"{base}-{i}"; i += 1
     new_map = {"name": name, "world_id": world.id, "width": width, "height": height, "markers": []}
+    if _map_folders.norm(folder):
+        new_map["folder"] = _map_folders.norm(folder)
     if _scope_mod.new_map_group() is not None:                  # a group's table: the map belongs to the group that made it
         new_map["group_id"] = _scope_mod.new_map_group()
     (_MAPS_DIR / f"{slug}.json").write_text(json.dumps(new_map), encoding="utf-8")
@@ -2839,6 +2850,78 @@ def map_new(
                 maps_upload_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(candidate, maps_upload_dir / (slug + candidate.suffix.lower()))
     return RedirectResponse(f"/maps/{slug}", status_code=303)
+
+def _back_to_folder(folder: str) -> RedirectResponse:
+    f = _map_folders.norm(folder)
+    return RedirectResponse(f"/maps?folder={quote(f)}" if f else "/maps", status_code=303)
+
+
+@app.post("/maps/{slug}/folder")
+def map_set_folder(slug: str, request: Request, folder: str = Form(""), back: str = Form(""),
+                   db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """File a map in a folder (blank = the top level). `back` = the folder the page was showing, so the GM lands where they were."""
+    jf = _MAPS_DIR / f"{slug}.json"
+    map_data = _map_data(jf) if jf.exists() else None
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
+    new = _map_folders.norm(folder)
+    if new:
+        map_data["folder"] = new
+    else:
+        map_data.pop("folder", None)
+    jf.write_text(json.dumps(map_data), encoding="utf-8")
+    return _back_to_folder(back)
+
+
+@app.post("/maps/schematic/{slug}/folder")
+def schematic_set_folder(slug: str, request: Request, folder: str = Form(""), back: str = Form(""),
+                         db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    world = get_active_world(request, db, active_world)
+    if not s or not world or s.world_id != world.id:
+        raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
+    s.folder = _map_folders.norm(folder) or None
+    db.commit()
+    return _back_to_folder(back)
+
+
+@app.post("/map-folders/rename")
+def map_folder_rename(request: Request, old: str = Form(""), new: str = Form(""),
+                      db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Rename (or move) a folder of the Maps page: every map and schematic under it follows; an empty `new` empties the folder into its parent."""
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
+    old_f, new_f = _map_folders.norm(old), _map_folders.norm(new)
+    if not old_f:
+        raise HTTPException(400, "Choose a folder to rename")
+    if new_f == old_f or new_f.startswith(old_f + "/"):
+        raise HTTPException(400, "A folder cannot be moved into itself")
+    for slug, data in list(_iter_world_maps(world.id)):
+        to = _map_folders.moved(data.get("folder"), old_f, new_f)
+        if to is not None:
+            nd = dict(data)
+            if to:
+                nd["folder"] = to
+            else:
+                nd.pop("folder", None)
+            (_MAPS_DIR / f"{slug}.json").write_text(json.dumps(nd), encoding="utf-8")
+    for s in db.query(Schematic).filter(Schematic.world_id == world.id).all():
+        to = _map_folders.moved(s.folder, old_f, new_f)
+        if to is not None:
+            s.folder = to or None
+    db.commit()
+    return _back_to_folder(new_f)
+
 
 @app.post("/maps/{slug}/rename")
 def map_rename(slug: str, request: Request, name: str = Form(...),
@@ -3467,6 +3550,7 @@ async def schematic_new(
     canvas_width: int = Form(2000),
     canvas_height: int = Form(1500),
     canvas_bg: str = Form("dark"),
+    folder: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -3493,7 +3577,7 @@ async def schematic_new(
     s = Schematic(world_id=world.id, name=name, slug=slug,
                   description=description or None, is_html=False,
                   canvas_width=canvas_width, canvas_height=canvas_height,
-                  canvas_bg=canvas_bg, elements_json="[]")
+                  canvas_bg=canvas_bg, elements_json="[]", folder=_map_folders.norm(folder) or None)
     db.add(s); db.commit(); db.refresh(s)
     return RedirectResponse(f"/maps/schematic/{s.slug}", status_code=303)
 

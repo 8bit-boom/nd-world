@@ -62,6 +62,15 @@ pub fn map_image(cfg: &Config, slug: &str) -> Option<Option<String>> {
 }
 
 /// `len()` of a JSON value the way Python counts it (None for a type len() refuses)
+/// `str(x)` for the folder value: a string as is, a missing/null one is empty (Python's `str(raw or "")`).
+fn py_str(v: &Value) -> String {
+    match v {
+        Value::Null | Value::Bool(false) => String::new(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 fn py_len(v: &Value) -> Option<usize> {
     match v {
         Value::Array(a) => Some(a.len()),
@@ -94,11 +103,20 @@ pub fn maps_page(pages: &Pages, cfg: &Config, uri: &Uri, headers: &HeaderMap) ->
             "height": data.get("height").cloned().unwrap_or(json!(0)),
             "markers": markers,
             "image_url": map_image(cfg, &slug)?,
+            "folder": crate::map_folders::norm(data.get("folder").map_or(String::new(), |v| py_str(v)).as_str()),
         }));
     }
     let mut st = db.prepare_cached("SELECT * FROM schematics WHERE world_id = ?1 ORDER BY name, id").ok()?;
     let schematics = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+    let sfold = |s: &Map<String, Value>| crate::map_folders::norm(s.get("folder").and_then(|v| v.as_str()).unwrap_or(""));
+    let mfold = |m: &Value| m["folder"].as_str().unwrap_or("").to_string();
+    let all_folders: Vec<String> = maps.iter().map(mfold).chain(schematics.iter().map(sfold)).collect();
+    let fold = crate::map_folders::view(&crate::pages::query_param(uri, "folder").unwrap_or_default(), &all_folders);
+    let cur = fold["current"].as_str().unwrap_or("").to_string();
+    let maps: Vec<Value> = maps.into_iter().filter(|m| mfold(m) == cur).collect();
+    let schematics: Vec<Map<String, Value>> = schematics.into_iter().filter(|s| sfold(s) == cur).collect();
     let gallery = if p.is_gm { crate::gallery::all_world_image_urls(&db, wid)? } else { vec![] };
+    p.ctx.insert("fold".into(), fold);
     p.ctx.insert("maps".into(), Value::Array(maps));
     p.ctx.insert("schematics".into(), Value::Array(schematics.into_iter().map(Value::Object).collect()));
     p.ctx.insert("gallery_images".into(), Value::Array(gallery));

@@ -13,10 +13,30 @@
 <div class="list-header">
   <h1>🗺 MAPS</h1>
   {% if _can_edit %}
-  <a href="{{ '/maps/new'|wq }}" class="btn-new">+ New Map</a>
+  <a href="{{ ('/maps/new' ~ ('?folder=' ~ (fold.current|urlencode) if fold.current else ''))|wq }}" class="btn-new">+ New Map</a>
   {% endif %}
 </div>
 
+
+<div class="folder-bar" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.4rem 0 .8rem">
+  <a href="{{ '/maps'|wq }}" class="pill">📁 All</a>
+  {% for c in fold.crumbs %}
+  <span>›</span><a href="{{ ('/maps?folder=' ~ (c.path|urlencode))|wq }}" class="pill">{{ c.name }}</a>
+  {% endfor %}
+  {% for f in fold.subfolders %}
+  <a href="{{ ('/maps?folder=' ~ (f.path|urlencode))|wq }}" class="pill" style="border-style:dashed">📂 {{ f.name }} ({{ f.count }})</a>
+  {% endfor %}
+  {% if _can_edit and fold.current %}
+  <form action="/map-folders/rename" method="post" style="display:inline">
+    <input type="hidden" name="old" value="{{ fold.current }}"><input type="hidden" name="new" value="">
+    <button type="button" class="btn-edit-sm" data-path="{{ fold.current }}"
+            onclick="var n=prompt('Rename folder (use / to nest):', this.dataset.path); if(n===null) return; this.form.new.value=n; this.form.submit()">✏ Rename folder</button>
+  </form>
+  {% endif %}
+</div>
+{% if _can_edit %}
+<datalist id="folder-list">{% for f in fold.all %}<option value="{{ f }}"></option>{% endfor %}</datalist>
+{% endif %}
 {{ pl_bar("maps") }}
 <div class="maps-grid" {{ pl_attrs("maps", request) }}>
   {% for m in maps %}
@@ -50,6 +70,11 @@
         {% endif %}
       </div>
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
+        <form action="/maps/{{ m.slug }}/folder" method="post" style="display:inline">
+          <input type="hidden" name="folder" value=""><input type="hidden" name="back" value="{{ fold.current }}">
+          <button type="button" class="btn-edit-sm" data-folder="{{ m.folder }}"
+                  onclick="var n=prompt('Move to folder (blank = top level, / to nest):', this.dataset.folder); if(n===null) return; this.form.folder.value=n; this.form.submit()">📁 Move</button>
+        </form>
         <form action="/maps/{{ m.slug }}/rename" method="post" style="display:inline">
           <input type="hidden" name="name" value="">
           <button type="button" class="btn-edit-sm" data-name="{{ m.name }}"
@@ -63,7 +88,7 @@
     </div>
   </div>
   {% else %}
-  <p class="empty">No maps found.</p>
+  <p class="empty">{% if fold.current %}No maps in this folder.{% else %}No maps found.{% endif %}</p>
   {% endfor %}
 </div>
 
@@ -74,7 +99,7 @@
   <span>
     <button type="button" class="btn-new" id="uvtt-btn" style="cursor:pointer" title="Make a schematic from a Dungeondraft, Dungeon Alchemist or other Universal VTT file: the picture, the grid, the walls and doors come with it">⬆ Import Universal VTT</button>
     <input type="file" id="uvtt-file" accept=".dd2vtt,.uvtt,.df2vtt,.json" style="display:none"/>
-    <a href="{{ '/maps/schematic/new'|wq }}" class="btn-new">+ New Schematic</a>
+    <a href="{{ ('/maps/schematic/new' ~ ('?folder=' ~ (fold.current|urlencode) if fold.current else ''))|wq }}" class="btn-new">+ New Schematic</a>
   </span>
   {% endif %}
 </div>
@@ -150,6 +175,11 @@
       </div>
       {% endif %}
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
+        <form action="/maps/schematic/{{ s.slug }}/folder" method="post" style="display:inline">
+          <input type="hidden" name="folder" value=""><input type="hidden" name="back" value="{{ fold.current }}">
+          <button type="button" class="btn-edit-sm" data-folder="{{ s.folder }}"
+                  onclick="var n=prompt('Move to folder (blank = top level, / to nest):', this.dataset.folder); if(n===null) return; this.form.folder.value=n; this.form.submit()">📁 Move</button>
+        </form>
         <form action="/maps/schematic/{{ s.slug }}/rename" method="post" style="display:inline">
           <input type="hidden" name="name" value="">
           <button type="button" class="btn-edit-sm" data-name="{{ s.name }}"

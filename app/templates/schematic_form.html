@@ -9,6 +9,10 @@
       <input name="name" required placeholder="e.g. Hughes Station, City District…" autocomplete="off"/>
     </div>
     <div class="form-group">
+      <label>Folder</label>
+      <input name="folder" list="folder-list" value="{{ request.query_params.get('folder','') }}" placeholder="optional, e.g. Hue/Districts" autocomplete="off"/>
+    </div>
+    <div class="form-group">
       <label>Description</label>
       <input name="description" placeholder="Short description"/>
     </div>

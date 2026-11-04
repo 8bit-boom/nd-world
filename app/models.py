@@ -2198,6 +2198,8 @@ class Schematic(Base):
     name = Column(String(256), nullable=False)
     slug = Column(String(64), unique=True, nullable=False)
     description = Column(String(512), nullable=True)
+    # The folder it is filed in on the Maps page ("Cities/Hue"; blank = the top level) - app/map_folders.py
+    folder = Column(String(256), nullable=True, index=True)
     is_html = Column(Boolean, default=False)
     html_file = Column(String(128), nullable=True)
     image_url = Column(String(512), nullable=True)

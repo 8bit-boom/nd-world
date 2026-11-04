@@ -235,7 +235,7 @@ pub fn is_assistant_safe(method: &str, path: &str) -> bool {
     if path == "/maps/new" && matches!(method, "GET" | "POST") {
         return true;
     }
-    if post && (m(re!(r"^/maps/[^/]+/(rename|delete|upload)$"), path) || m(re!(r"^/api/maps/[^/]+/overlay$"), path)) {
+    if post && (path == "/map-folders/rename" || m(re!(r"^/maps/[^/]+/(rename|delete|upload|folder)$"), path) || m(re!(r"^/api/maps/[^/]+/overlay$"), path)) {
         return true;
     }
     if path == "/maps/schematic/new" && matches!(method, "GET" | "POST") {

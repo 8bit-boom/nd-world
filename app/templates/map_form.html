@@ -9,6 +9,10 @@
       <input name="name" required placeholder="e.g. City of Hue, Hughes Station…" autocomplete="off"/>
     </div>
     <div class="form-group">
+      <label>Folder</label>
+      <input name="folder" list="folder-list" value="{{ request.query_params.get('folder','') }}" placeholder="optional, e.g. Hue/Districts" autocomplete="off"/>
+    </div>
+    <div class="form-group">
       <label>Size (pixels)</label>
       <div style="display:flex;gap:.5rem;align-items:center">
         <input type="number" name="width" value="3072" min="200" max="8000" style="width:100px"/>

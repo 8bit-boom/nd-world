@@ -635,8 +635,11 @@ The next confirmed session also shows on the in-world calendar page and in each 
 |---|---|---|---|
 | GET | `/maps` | Player* | Map list for the active world. *On by default (`World.player_section_access_json` includes `"maps"` for every world unless the GM explicitly removes it) — the only one of the "Player World Access" toggles that starts opted-in, preserving Maps' original always-open behavior from before this toggle existed. |
 | GET | `/maps/new` | GM / Assistant | New map form. |
-| POST | `/maps/new` | GM / Assistant | Creates a map. |
+| POST | `/maps/new` | GM / Assistant | Creates a map (optional `folder` form field files it in a folder). |
 | POST | `/maps/{slug}/rename` | GM / Assistant | Renames a map. |
+| POST | `/maps/{slug}/folder` | GM / Assistant | Files a map in a folder (`folder`, blank = top level; `back` = folder to return to). |
+| POST | `/maps/schematic/{slug}/folder` | GM / Assistant | Files a schematic in a folder (`folder`, `back`). |
+| POST | `/map-folders/rename` | GM / Assistant | Renames/moves a folder of the Maps page (`old`, `new`); everything under it follows. |
 | POST | `/maps/{slug}/delete` | GM / Assistant | Deletes a map. |
 | POST | `/maps/{slug}/upload` | GM / Assistant | Uploads/replaces the map's background image. |
 | GET | `/maps/{slug}` | Player* | Map viewer with markers/regions. *Same "maps" opt-in as the list above (on by default). |
@@ -651,7 +654,7 @@ The next confirmed session also shows on the in-world calendar page and in each 
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/maps/schematic/new` | GM / Assistant | New schematic form. |
-| POST | `/maps/schematic/new` | GM / Assistant | Creates a schematic. |
+| POST | `/maps/schematic/new` | GM / Assistant | Creates a schematic (optional `folder`). |
 | GET | `/maps/schematic/{slug}`
 | GET | `/maps/schematic/{slug}` | GM / Assistant | GM editor canvas. |
 | GET | `/maps/schematic/{}/preview.svg` | GM / Player* | Server-side SVG rendering of the schematic's elements (rooms, walls, tokens) for list-card previews; an uploaded background image is inlined as a data URI. Gated like the schematics list (maps section view). |

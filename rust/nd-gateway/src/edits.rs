@@ -325,6 +325,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/entity/{}/image", entity_set_image),
     ("/races/new", race_new),
     ("/maps/new", map_new),
+    ("/map-folders/rename", map_folder_rename),
     ("/combat/new", combat_new),
     ("/api/display/show", display_show),
     ("/api/display/clear", display_clear),
@@ -526,7 +527,7 @@ const SLUG_ROUTES: &[(&str, &str, SlugHandler)] = &[("/api/maps/schematic/", "/m
     ("/maps/schematic/", "/rooms", sc_rooms), ("/maps/schematic/", "/rooms/detect", sc_rooms_detect), ("/maps/schematic/", "/lights", sc_lights), ("/maps/schematic/", "/walls", sc_walls),
     ("/maps/schematic/", "/elements", sc_elements), ("/maps/schematic/", "/rename", sc_rename), ("/maps/schematic/", "/delete", sc_delete),
     ("/maps/schematic/", "/grid", sc_grid), ("/maps/schematic/", "/link-combat", sc_link_combat), ("/maps/schematic/", "/unlink-combat", sc_unlink_combat),
-    ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/delete", map_delete),
+    ("/maps/schematic/", "/pull-combat", sc_pull_combat), ("/maps/schematic/", "/push-combat", sc_push_combat), ("/maps/schematic/", "/light", sc_light), ("/boards/", "/save", board_save), ("/boards/", "/delete", board_delete), ("/kind/", "/bulk-delete", bulk_delete), ("/maps/", "/rename", map_rename), ("/maps/", "/folder", map_set_folder), ("/maps/schematic/", "/folder", sc_set_folder), ("/maps/", "/delete", map_delete),
     ("/api/maps/", "/overlay", map_overlay_save)];
 
 fn slug_route(path: &str) -> Option<(SlugHandler, String)> {
@@ -9885,6 +9886,86 @@ fn map_rename(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     redirect("/maps")
 }
 
+/// Where `back` sends the GM after a folder change (app/main.py `_back_to_folder`): `/maps?folder=<quote(f)>` or `/maps`
+fn back_to_folder(back: &str) -> Option<Response<Body>> {
+    let f = crate::map_folders::norm(back);
+    if f.is_empty() {
+        return redirect("/maps");
+    }
+    let mut q = String::new();
+    for b in f.bytes() {
+        if b.is_ascii_alphanumeric() || b"_.-~/".contains(&b) {
+            q.push(b as char);
+        } else {
+            q.push_str(&format!("%{b:02X}"));
+        }
+    }
+    redirect(&format!("/maps?folder={q}"))
+}
+
+/// `POST /maps/<slug>/folder` (app/main.py `map_set_folder`): file an image map in a folder (blank = the top level)
+fn map_set_folder(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let (folder, back) = (f.get("folder").unwrap_or("").to_string(), f.get("back").unwrap_or("").to_string());
+    let (jf, mut data) = own_map(c, slug)?;
+    let new = crate::map_folders::norm(&folder);
+    if new.is_empty() {
+        data.remove("folder");
+    } else {
+        data.insert("folder".into(), Value::String(new));
+    }
+    std::fs::write(&jf, nd_render::py_dumps(&Value::Object(data))).ok()?;
+    back_to_folder(&back)
+}
+
+/// `POST /maps/schematic/<slug>/folder` (app/main.py `schematic_set_folder`)
+fn sc_set_folder(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let (folder, back) = (f.get("folder").unwrap_or("").to_string(), f.get("back").unwrap_or("").to_string());
+    let sc = c.db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
+    if sc.get("world_id")?.as_i64() != c.world_id() || !c.can_edit_section("maps")? {
+        return None;
+    }
+    let new = crate::map_folders::norm(&folder);
+    orm::update(&c.db, "schematics", sc.get("id")?.as_i64()?, &[("folder", if new.is_empty() { Sql::Null } else { s(&new) })])?;
+    back_to_folder(&back)
+}
+
+/// `POST /map-folders/rename` (app/main.py `map_folder_rename`): every map and schematic under folder `old` follows it to `new`
+fn map_folder_rename(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let f = c.form()?;
+    let wid = c.world_id()?;
+    if !c.can_edit_section("maps")? {
+        return None;
+    }
+    let old = crate::map_folders::norm(f.get("old").unwrap_or(""));
+    let new = crate::map_folders::norm(f.get("new").unwrap_or(""));
+    if old.is_empty() || new == old || new.starts_with(&format!("{old}/")) {
+        return None; // the 400s: Python's
+    }
+    for (slug, mut data) in crate::maps::world_maps(&c.db, c.cfg, wid)? {
+        let cur = data.get("folder").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(to) = crate::map_folders::moved(cur, &old, &new) {
+            if to.is_empty() {
+                data.remove("folder");
+            } else {
+                data.insert("folder".into(), Value::String(to));
+            }
+            let jf = crate::maps::maps_dir(c.cfg)?.join(format!("{slug}.json"));
+            std::fs::write(&jf, nd_render::py_dumps(&Value::Object(data))).ok()?;
+        }
+    }
+    let mut st = c.db.prepare_cached("SELECT id, folder FROM schematics WHERE world_id = ?1").ok()?;
+    let rows: Vec<(i64, Option<String>)> = st.query_map([wid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?.collect::<Result<_, _>>().ok()?;
+    drop(st);
+    for (id, cur) in rows {
+        if let Some(to) = crate::map_folders::moved(cur.as_deref().unwrap_or(""), &old, &new) {
+            orm::update(&c.db, "schematics", id, &[("folder", if to.is_empty() { Sql::Null } else { s(&to) })])?;
+        }
+    }
+    back_to_folder(&new)
+}
+
 fn map_delete(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
     let (jf, _) = own_map(c, slug)?;
     c.db.execute("DELETE FROM map_overlays WHERE id = (SELECT id FROM map_overlays WHERE slug = ?1 ORDER BY id LIMIT 1)", [slug]).ok()?;
@@ -9982,6 +10063,10 @@ fn map_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
     }
     let jf = dir.join(format!("{slug}.json"));
     let mut doc = json!({"name": name, "world_id": wid, "width": width, "height": height, "markers": []});
+    let folder = crate::map_folders::norm(f.get("folder").unwrap_or(""));
+    if !folder.is_empty() {
+        doc["folder"] = json!(folder);
+    }
     if let Some(g) = crate::grp::new_map_group(&c.db) {
         doc["group_id"] = json!(g); // a group's table: the map belongs to the group that made it
     }
@@ -15887,6 +15972,7 @@ fn schematic_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         ("canvas_height", Sql::Integer(height)),
         ("canvas_bg", s(&bg)),
         ("elements_json", s("[]")),
+        ("folder", { let fo = crate::map_folders::norm(f.get("folder").unwrap_or("")); if fo.is_empty() { Sql::Null } else { s(&fo) } }),
     ])?;
     let _ = id;
     redirect(&format!("/maps/schematic/{unique}"))
