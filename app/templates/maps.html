@@ -63,6 +63,9 @@
             📎 {% if m.image_url %}Replace{% else %}Upload{% endif %} image
             <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
           </label>
+          <label class="map-fit" style="font-size:.72rem;color:var(--text-dim);display:block;margin-top:.2rem" title="Set the map's size to the picture's size (longest side up to 8000)">
+            <input type="checkbox" name="match_size" value="1"/> match map size to image
+          </label>
         </form>
         {% if _is_gm %}
         <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"

@@ -635,13 +635,13 @@ The next confirmed session also shows on the in-world calendar page and in each 
 |---|---|---|---|
 | GET | `/maps` | Player* | Map list for the active world. *On by default (`World.player_section_access_json` includes `"maps"` for every world unless the GM explicitly removes it) — the only one of the "Player World Access" toggles that starts opted-in, preserving Maps' original always-open behavior from before this toggle existed. |
 | GET | `/maps/new` | GM / Assistant | New map form. |
-| POST | `/maps/new` | GM / Assistant | Creates a map (optional `folder` form field files it in a folder). |
+| POST | `/maps/new` | GM / Assistant | Creates a map (optional `folder` form field files it in a folder; `match_size=1` sets the map to the uploaded picture's size). |
 | POST | `/maps/{slug}/rename` | GM / Assistant | Renames a map. |
 | POST | `/maps/{slug}/folder` | GM / Assistant | Files a map in a folder (`folder`, blank = top level; `back` = folder to return to). |
 | POST | `/maps/schematic/{slug}/folder` | GM / Assistant | Files a schematic in a folder (`folder`, `back`). |
 | POST | `/map-folders/rename` | GM / Assistant | Renames/moves a folder of the Maps page (`old`, `new`); everything under it follows. |
 | POST | `/maps/{slug}/delete` | GM / Assistant | Deletes a map. |
-| POST | `/maps/{slug}/upload` | GM / Assistant | Uploads/replaces the map's background image. |
+| POST | `/maps/{slug}/upload` | GM / Assistant | Uploads/replaces the map's background image (`match_size=1` also sets the map to the picture's size, longest side up to 8000). |
 | GET | `/maps/{slug}` | Player* | Map viewer with markers/regions. *Same "maps" opt-in as the list above (on by default). |
 | POST | `/api/maps/{slug}/ai-markers/start` | GM | Starts AI marker generation for a Leaflet map — thinking + world-RAG on by default; the local model proposes `{label, note, lat, lng, color}` within the map bounds, deduplicated against existing markers. Returns `{job_id}`. |
 | GET | `/api/maps/{slug}/ai-markers/{job_id}` | GM | Polls the job: running (elapsed), done (review-ready markers), or error. The viewer merges selected markers into the overlay via the existing `/overlay` route. |

@@ -2795,6 +2795,27 @@ def map_new_form(request: Request, db: Session = Depends(get_db), active_world: 
         "request": request, "world": world, "worlds": worlds, "gallery_images": gallery_images,
     })
 
+def _fit_map_size(path):
+    """(width, height) a map should get to match its picture: the picture's own size, the longer side cut to 8000, each side at least 200.
+    None when the file can't be read as a picture. rust/nd-gateway/src/edits.rs `fit_map_size` does the same."""
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(path) as im:
+            w, h = im.size
+    except Exception:
+        return None
+    if w < 1 or h < 1:
+        return None
+    m = max(w, h)
+    if m > 8000:
+        w, h = w * 8000 // m, h * 8000 // m
+    return max(200, w), max(200, h)
+
+
+def _want(v) -> bool:
+    return str(v or "").strip().lower() in ("1", "on", "true", "yes")
+
+
 @app.post("/maps/new")
 def map_new(
     request: Request,
@@ -2804,6 +2825,7 @@ def map_new(
     image_file: UploadFile = File(None),
     image_url: str = Form(""),
     folder: str = Form(""),
+    match_size: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2836,6 +2858,9 @@ def map_new(
             maps_upload_dir.mkdir(parents=True, exist_ok=True)
             copy_upload_bounded(image_file, maps_upload_dir / (slug + ext),
                                 max_bytes=_effective_general_upload_bytes(db))
+            if _want(match_size) and (fit := _fit_map_size(maps_upload_dir / (slug + ext))):
+                new_map["width"], new_map["height"] = fit
+                (_MAPS_DIR / f"{slug}.json").write_text(json.dumps(new_map), encoding="utf-8")
     elif image_url.strip():
         # A generated battlemap: the AI pipeline already wrote the PNG under
         # /uploads/ai-images — copy it into the maps folder under this map's
@@ -2976,7 +3001,7 @@ def map_delete(slug: str, request: Request, db: Session = Depends(get_db), activ
     return RedirectResponse("/maps", status_code=303)
 
 @app.post("/maps/{slug}/upload")
-def map_upload_image(slug: str, request: Request, file: UploadFile = File(...),
+def map_upload_image(slug: str, request: Request, file: UploadFile = File(...), match_size: str = Form(""),
                             db: Session = Depends(get_db), active_world: str = Cookie(None)):
     # Unlike its rename/delete siblings, this route previously took no db/world
     # params at all — it would happily write to any slug, map or no map,
@@ -3006,6 +3031,9 @@ def map_upload_image(slug: str, request: Request, file: UploadFile = File(...),
             old.unlink()
     dest = maps_upload_dir / (slug + ext)
     copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
+    if _want(match_size) and (fit := _fit_map_size(dest)):
+        map_data["width"], map_data["height"] = fit
+        jf.write_text(json.dumps(map_data), encoding="utf-8")
     return RedirectResponse("/maps", status_code=303)
 
 def _world_parties_payload(db: Session, world_id: int, request: Request):

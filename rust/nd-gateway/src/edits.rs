@@ -10071,7 +10071,7 @@ fn map_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
         doc["group_id"] = json!(g); // a group's table: the map belongs to the group that made it
     }
     std::fs::write(&jf, nd_render::py_dumps(&doc)).ok()?;
-    c.created.push(jf);
+    c.created.push(jf.clone());
     if let Some((dest, src)) = copy {
         match src {
             Some(src) => {
@@ -10082,19 +10082,47 @@ fn map_new(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
             }
             None => file.as_ref()?.write_to(c, &dest)?,
         }
+        if want(f.get("match_size")) {
+            if let Some((w, h)) = fit_map_size(&dest) {
+                doc["width"] = json!(w);
+                doc["height"] = json!(h);
+                std::fs::write(&jf, nd_render::py_dumps(&doc)).ok()?;
+            }
+        }
         c.created.push(dest);
     }
     redirect(&format!("/maps/{slug}"))
 }
 
-fn map_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
-    let up = c.upload.as_ref()?;
-    if !up.form.0.is_empty() || up.files.len() != 1 || up.files[0].name != "file" {
+/// `_fit_map_size` (app/main.py): the picture's own size, the longer side cut to 8000, each side at least 200; None when it can't be read
+fn fit_map_size(path: &std::path::Path) -> Option<(i64, i64)> {
+    let (w, h) = image::image_dimensions(path).ok()?;
+    let (mut w, mut h) = (w as i64, h as i64);
+    if w < 1 || h < 1 {
         return None;
     }
+    let m = w.max(h);
+    if m > 8000 {
+        w = w * 8000 / m;
+        h = h * 8000 / m;
+    }
+    Some((w.max(200), h.max(200)))
+}
+
+/// Python's `_want`: a checkbox value that means yes
+fn want(v: Option<&str>) -> bool {
+    matches!(v.unwrap_or("").trim().to_lowercase().as_str(), "1" | "on" | "true" | "yes")
+}
+
+fn map_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
+    let up = c.upload.as_ref()?;
+    if up.form.0.iter().any(|(k, _)| k != "match_size") || up.form.0.len() > 1 || up.files.len() != 1 || up.files[0].name != "file" {
+        return None;
+    }
+    let fit = want(up.form.get("match_size"));
     let fname = up.files[0].filename.clone();
     let len = up.files[0].len;
-    own_map(c, slug)?;
+    let (jf, mut data) = own_map(c, slug)?;
     let ext = py_suffix_lower(&fname)?;
     if !MAP_EXTS.contains(&ext.as_str()) || len as i64 > general_cap(c)? {
         return None;
@@ -10110,7 +10138,15 @@ fn map_upload(c: &mut Ctx, slug: &str) -> Option<Response<Body>> {
             c.removals.push(p);
         }
     }
-    std::fs::rename(&tmp, dir.join(format!("{slug}{ext}"))).ok()?;
+    let dest = dir.join(format!("{slug}{ext}"));
+    std::fs::rename(&tmp, &dest).ok()?;
+    if fit {
+        if let Some((w, h)) = fit_map_size(&dest) {
+            data.insert("width".into(), json!(w));
+            data.insert("height".into(), json!(h));
+            std::fs::write(&jf, nd_render::py_dumps(&Value::Object(data))).ok()?;
+        }
+    }
     redirect("/maps")
 }
 
