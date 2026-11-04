@@ -411,12 +411,18 @@ async fn v1_models(b: &Backend) -> Option<Vec<(String, bool)>> {
 /// lists, or "unavailable" when it fails or says something unreadable (Python's `except Exception`). The legacy Ollama back end stays Python's.
 pub async fn ai_status_route(cfg: Arc<Config>) -> Option<Response<Body>> {
     let c = cfg.clone();
-    let b = tokio::task::spawn_blocking(move || -> Option<Backend> {
+    let got = tokio::task::spawn_blocking(move || -> Option<Result<Backend, String>> {
         let db = crate::writes::open(&c)?;
-        crate::ai::backend(&db)
+        Some(crate::ai::backend(&db).ok_or_else(|| legacy_model(&db)))
     })
     .await
     .ok()??;
+    let b = match got {
+        Ok(b) => b,
+        // no Studio key: Python asks the legacy Ollama client, which is not there in this image - "unavailable"
+        Err(model) if crate::config::python_free() => return ok(&json!({"status": "unavailable", "model": model, "backend": "ollama"})),
+        Err(_) => return None,
+    };
     let down = || ok(&json!({"status": "unavailable", "model": b.model, "backend": "unsloth"}));
     let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;
     let got = tokio::time::timeout(std::time::Duration::from_secs(15), crate::studio_key::studio_get(uri, &b.key)).await;
@@ -443,21 +449,66 @@ pub async fn ai_status_route(cfg: Arc<Config>) -> Option<Response<Body>> {
     ok(&json!({"status": "ok", "model": b.model, "loaded_models": ids, "backend": "unsloth"}))
 }
 
+/// `GET /api/ai/models` with no Studio key (Python's `ai_models` with an empty `loaded`): the legacy catalogue plus the saved models, none loaded
+fn legacy_models(cfg: &Config, default: &str) -> Option<Response<Body>> {
+    let data: Value = std::fs::read_to_string(cfg.db_path.parent()?.join("ai_models.json")).ok()
+        .and_then(|t| if crate::edits::plain_numbers(t.as_bytes()) && !t.contains("NaN") && !t.contains("Infinity") { serde_json::from_str(&t).ok() } else { None })
+        .unwrap_or_else(|| json!({"custom": [], "hidden": []}));
+    let list = |k: &str| data.get(k).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let (hidden, custom) = (list("hidden"), list("custom"));
+    let builtins = [
+        json!({"id": "gemma4:26b", "label": "Gemma 4 26B"}),
+        json!({"id": "hf.co/noctrex/gemma-4-26B-A4B-it-MXFP4_MOE-GGUF:gemma-4-26B-A4B-it-MXFP4_MOE.gguf", "label": "Gemma 4 26B MXFP4"}),
+        json!({"id": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf", "label": "Gemma 4 26B IQ4_NL (Unsloth)", "thinking": true}),
+    ];
+    let mut models: Vec<Value> = vec![];
+    for m in builtins.iter().filter(|m| !hidden.contains(&m["id"])) {
+        let mut e = m.as_object()?.clone();
+        e.insert("loaded".into(), json!(false));
+        e.insert("builtin".into(), json!(true));
+        models.push(Value::Object(e));
+    }
+    for m in &custom {
+        let o = m.as_object()?;
+        let id = o.get("id")?;
+        if builtins.iter().any(|b| b["id"] == *id) || hidden.contains(id) {
+            continue;
+        }
+        let mut e = o.clone();
+        e.insert("loaded".into(), json!(false));
+        e.insert("builtin".into(), json!(false));
+        models.push(Value::Object(e));
+    }
+    ok(&json!({"models": models, "default": default, "available": [], "defaults": crate::apis::model_defaults(cfg)?}))
+}
+
+/// `effective_ollama_model()` with no Studio key: the Settings override, else OLLAMA_MODEL, else gemma4:26b
+fn legacy_model(db: &rusqlite::Connection) -> String {
+    let saved: Option<String> = db.query_row("SELECT llm_model FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get(0)).ok().flatten();
+    saved.filter(|m| !m.is_empty()).or_else(|| std::env::var("OLLAMA_MODEL").ok().filter(|m| !m.is_empty())).unwrap_or_else(|| "gemma4:26b".into())
+}
+
 /// `GET /api/ai/models` and `/api/ai/resident` on a Studio backend (the legacy Ollama backend is Python's). GM only.
 pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> Option<Response<Body>> {
     let path = uri.path().to_string();
     let (c, u, h) = (cfg.clone(), uri.clone(), headers.clone());
-    let b = tokio::task::spawn_blocking(move || -> Option<Backend> {
+    let got = tokio::task::spawn_blocking(move || -> Option<Result<Backend, String>> {
         let db = crate::writes::open(&c)?;
         let n = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let p = crate::layout::build(&db, &c, "GET", &u, &h, n)?;
         if !p.is_gm {
             return None;
         }
-        crate::ai::backend(&db)
+        Some(crate::ai::backend(&db).ok_or_else(|| legacy_model(&db)))
     })
     .await
     .ok()??;
+    let b = match got {
+        Ok(b) => b,
+        // no Studio key: the legacy Ollama client is not in this image, so nothing is loaded - the catalogue still lists
+        Err(model) if crate::config::python_free() && path == "/api/ai/models" => return legacy_models(&cfg, &model),
+        Err(_) => return None,
+    };
     if path == "/api/ai/debug" {
         // `debug_info()` when Studio answers both probes; the failure texts are the HTTP library's, so they stay Python's
         let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;

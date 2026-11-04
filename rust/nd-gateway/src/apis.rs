@@ -3393,9 +3393,20 @@ fn ai_prompt_presets(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
         return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, "scope must be 'chat' or 'image'"));
     }
     let Some(wid) = world_id_of(&p) else { return Some(crate::idpages::refusal(404)) };
-    let rows = rows_of(&db, "SELECT * FROM prompt_presets WHERE world_id = ?1 AND scope = ?2 ORDER BY sort_order, id", &[&wid, &scope])?;
+    let mut rows = rows_of(&db, "SELECT * FROM prompt_presets WHERE world_id = ?1 AND scope = ?2 ORDER BY sort_order, id", &[&wid, &scope])?;
     if rows.is_empty() && scope == "chat" {
-        return None;
+        // a brand-new world's Quick Prompts start seeded with the defaults, as real rows the GM can edit or delete (api_prompt_presets_list)
+        if !crate::config::python_free() {
+            return None;
+        }
+        let defaults: Vec<Value> = serde_json::from_str(include_str!("../../nd-render/data/default_chat_presets.json")).ok()?;
+        for (i, d) in defaults.iter().enumerate() {
+            use rusqlite::types::Value as Sql;
+            let t = |k: &str| Sql::Text(d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string());
+            crate::orm::insert(&db, "prompt_presets", &[("world_id", Sql::Integer(wid)), ("scope", Sql::Text("chat".into())), ("label", t("label")), ("icon", t("icon")),
+                ("text", t("text")), ("sort_order", Sql::Integer(i as i64))])?;
+        }
+        rows = rows_of(&db, "SELECT * FROM prompt_presets WHERE world_id = ?1 AND scope = ?2 ORDER BY sort_order, id", &[&wid, &scope])?;
     }
     let text = |r: &Map<String, Value>, k: &str| {
         let v = r.get(k).cloned().unwrap_or(Value::Null);

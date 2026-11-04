@@ -256,6 +256,7 @@ def text() -> str:
 
 
 DREAMLANDS_OUT = OUT.parent / "dreamlands.json"
+CHAT_PRESETS_OUT = OUT.parent / "default_chat_presets.json"
 
 
 def dreamlands_text() -> str:
@@ -265,11 +266,19 @@ def dreamlands_text() -> str:
     return json.dumps({"payload": payload, "edges": edges}, indent=1, ensure_ascii=False) + "\n"
 
 
+def chat_presets_text() -> str:
+    from app.routers.ai import _DEFAULT_CHAT_PRESETS
+    return json.dumps(_DEFAULT_CHAT_PRESETS, indent=1, ensure_ascii=False) + "\n"
+
+
 if __name__ == "__main__":
     if "--check" in sys.argv:
         if OUT.read_text() != text():
             sys.exit("rust/nd-render/data/app_data.json is stale: run scripts/gen_rust_data.py")
-        sys.exit(0 if DREAMLANDS_OUT.read_text() == dreamlands_text() else "rust/nd-render/data/dreamlands.json is stale: run scripts/gen_rust_data.py")
+        if DREAMLANDS_OUT.read_text() != dreamlands_text():
+            sys.exit("rust/nd-render/data/dreamlands.json is stale: run scripts/gen_rust_data.py")
+        sys.exit(0 if CHAT_PRESETS_OUT.read_text() == chat_presets_text() else "rust/nd-render/data/default_chat_presets.json is stale: run scripts/gen_rust_data.py")
     OUT.write_text(text())
     DREAMLANDS_OUT.write_text(dreamlands_text())
-    print("wrote", OUT, DREAMLANDS_OUT)
+    CHAT_PRESETS_OUT.write_text(chat_presets_text())
+    print("wrote", OUT, DREAMLANDS_OUT, CHAT_PRESETS_OUT)

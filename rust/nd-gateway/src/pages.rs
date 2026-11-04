@@ -1797,6 +1797,25 @@ pub fn schematic_editor(pages: &Pages, cfg: &Config, uri: &Uri, headers: &Header
     let wid = p.world.as_ref()?.get("id")?.as_i64()?;
     let sc = db.query_row("SELECT * FROM schematics WHERE slug = ?1 LIMIT 1", [slug], |r| crate::layout::row_map(r)).ok()?;
     let truthy = |v: Option<&Value>| v.is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)) && v != &json!(0) && v != &json!(""));
+    if truthy(sc.get("is_html")) && truthy(sc.get("html_file")) {
+        // a bundled / uploaded HTML map: its file is the page (static/schematics/<file>); no file is Python's 404
+        if !crate::config::python_free() {
+            return None;
+        }
+        let name = sc.get("html_file").and_then(|v| v.as_str())?;
+        if name.contains("..") || name.starts_with('/') {
+            return Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "HTML schematic file not found"));
+        }
+        return match std::fs::read(cfg.static_dir.join("schematics").join(name)) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let mut r = crate::edits::json_response_raw(&text, "text/html; charset=utf-8")?;
+                r.headers_mut().insert("x-nd-served-by", axum::http::HeaderValue::from_static("gateway"));
+                Some(r)
+            }
+            Err(_) => Some(crate::ai_more::detail(axum::http::StatusCode::NOT_FOUND, "HTML schematic file not found")),
+        };
+    }
     if sc.get("world_id")?.as_i64()? != wid || truthy(sc.get("is_html")) {
         return None;
     }

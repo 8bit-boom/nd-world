@@ -1,0 +1,42 @@
+[
+ {
+  "icon": "👤",
+  "label": "Random NPC",
+  "text": "Create a detailed NPC with a dark secret and a memorable quirk"
+ },
+ {
+  "icon": "⚡",
+  "label": "Quest hook",
+  "text": "Write a compelling quest hook for a party of adventurers"
+ },
+ {
+  "icon": "🗺",
+  "label": "Location",
+  "text": "Describe a location that feels dangerous but intriguing — something the players will remember"
+ },
+ {
+  "icon": "💬",
+  "label": "Rumors",
+  "text": "Generate 5 rumors the players might overhear in a bar or marketplace"
+ },
+ {
+  "icon": "🏢",
+  "label": "Faction",
+  "text": "Design a secretive organization or faction with goals, methods, and internal tensions"
+ },
+ {
+  "icon": "⚙",
+  "label": "Loot table",
+  "text": "Generate a loot table with 6 interesting and flavourful items"
+ },
+ {
+  "icon": "☠",
+  "label": "Villain",
+  "text": "Create a memorable villain with a believable motivation"
+ },
+ {
+  "icon": "📄",
+  "label": "Lore snippet",
+  "text": "Write a short piece of in-world lore or legend"
+ }
+]
