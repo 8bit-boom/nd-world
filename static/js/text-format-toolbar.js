@@ -319,7 +319,7 @@ function ndFmtSetupPaste(ta) {
     const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
     const all = items.filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter(Boolean);
     // A copied .md / .markdown / .txt file (Ctrl+C on it in the file manager): its text goes in at the cursor
-    const docs = all.filter((f) => /\.(md|markdown|txt)$/i.test(f.name || "") || f.type === "text/markdown");
+    const docs = all.filter((f) => [".md", ".markdown", ".txt"].some((x) => (f.name || "").toLowerCase().endsWith(x)) || f.type === "text/markdown");
     if (docs.length) {
       e.preventDefault();
       Promise.all(docs.map((f) => f.text())).then((texts) => {
@@ -330,7 +330,7 @@ function ndFmtSetupPaste(ta) {
       }).catch(() => alert("Couldn't read that file."));
       return;
     }
-    const files = all.filter((f) => /^(image|audio|video)\//.test(f.type));
+    const files = all.filter((f) => ["image/", "audio/", "video/"].some((p) => (f.type || "").startsWith(p)));
     if (!files.length) return;
     e.preventDefault();
     (async () => {

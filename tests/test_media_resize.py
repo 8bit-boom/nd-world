@@ -210,7 +210,9 @@ def test_toolbar_js_paste_only_intercepts_actual_files(client, seed):
     fn_end = js.index("\n}", fn_start)
     fn_body = js[fn_start:fn_end]
     assert "if (!files.length) return;" in fn_body
-    assert fn_body.index("if (!files.length) return;") < fn_body.index("e.preventDefault();")
+    # the media branch only prevents the default once a File was found; the copied-document branch likewise (inside `if (docs.length)`)
+    assert fn_body.index("if (!files.length) return;") < fn_body.rindex("e.preventDefault();")
+    assert fn_body.index("if (docs.length) {") < fn_body.index("e.preventDefault();")
 
 
 def test_toolbar_js_upload_uses_media_endpoint_and_tags_av_kind(client, seed):
