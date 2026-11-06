@@ -317,10 +317,20 @@ async function ndFmtHandleDroppedFiles(ta, fileList) {
 function ndFmtSetupPaste(ta) {
   ta.addEventListener("paste", (e) => {
     const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
-    const files = items
-      .filter((it) => it.kind === "file")
-      .map((it) => it.getAsFile())
-      .filter((f) => f && /^(image|audio|video)\//.test(f.type));
+    const all = items.filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter(Boolean);
+    // A copied .md / .markdown / .txt file (Ctrl+C on it in the file manager): its text goes in at the cursor
+    const docs = all.filter((f) => /\.(md|markdown|txt)$/i.test(f.name || "") || f.type === "text/markdown");
+    if (docs.length) {
+      e.preventDefault();
+      Promise.all(docs.map((f) => f.text())).then((texts) => {
+        const text = texts.join("\n\n");
+        ta.focus();
+        ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }).catch(() => alert("Couldn't read that file."));
+      return;
+    }
+    const files = all.filter((f) => /^(image|audio|video)\//.test(f.type));
     if (!files.length) return;
     e.preventDefault();
     (async () => {

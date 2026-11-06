@@ -113,3 +113,9 @@ def test_rename_folder_moves_everything_under_it(client, seed):
     assert client.post("/map-folders/rename", data={"old": "", "new": "X"}).status_code == 400
     r = client.post("/map-folders/rename", data={"old": "New/Place", "new": ""}, follow_redirects=False)
     assert (f("m1"), f("m2")) == (None, "Sub")
+
+
+def test_toolbar_pastes_a_copied_markdown_file(client, seed):
+    """Ctrl+V of a copied .md/.txt file into a note/entity field inserts its text (the field had only image paste before)."""
+    js = client.get("/static/js/text-format-toolbar.js").text
+    assert "md|markdown|txt" in js and "setRangeText(text" in js
