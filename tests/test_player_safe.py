@@ -52,6 +52,7 @@ CASES = [
     # default) but exposes no actual download/restore action on its own.
     ("GET", "/export/rules-and-notes.md", False),
     ("GET", "/export/foundry.json", False),
+    ("GET", "/export/training.ndtrain", False),
     ("POST", "/admin/backup/restore", False),
     ("POST", "/admin/backup/restore/cancel", False),
     ("POST", "/audio/upload", False),

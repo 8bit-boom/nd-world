@@ -10641,3 +10641,77 @@ def test_board_generators_are_pythons(client, seed):
     p1, g1 = d.post("/boards/generate-dreamlands", follow_redirects=False), v.post("/boards/generate-dreamlands", follow_redirects=False)
     assert p1.status_code == g1.status_code == 303 and p1.headers["location"] != g1.headers["location"]
     assert g1.headers["location"].endswith("atlas-of-dreams-3"), (p1.headers["location"], g1.headers["location"])
+
+
+def _training_members(response):
+    import io
+    import zipfile
+    z = zipfile.ZipFile(io.BytesIO(response.content))
+    out = {n: z.read(n) for n in z.namelist()}
+    man = json.loads(out["manifest.json"])
+    man.pop("created")                       # the moment of the export
+    return z.namelist(), out, man, [(i.date_time, i.external_attr >> 16) for i in z.infolist()]
+
+
+def test_training_bundle_is_pythons(client, seed):
+    """GET /export/training.ndtrain from the gateway (export.rs `training_bundle`): every member the same bytes as Python's
+    (manifest compared without its `created` moment), the same member order, fixed timestamps, the same filename; a player
+    refused as Python refuses; a world with nothing in it still gives a valid bundle."""
+    from .conftest import PLAYER_PASSWORD
+    from .training_bundle_seed import seed_rich_world
+    base = str(client.base_url)
+    seed_rich_world(seed.world_a.id)
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    v = _via(d, base)
+    a, b = d.get("/export/training.ndtrain"), v.get("/export/training.ndtrain")
+    assert a.status_code == b.status_code == 200, (a.status_code, b.status_code, b.text[:200])
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert a.headers["content-type"] == b.headers["content-type"] == "application/zip"
+    assert a.headers["content-disposition"] == b.headers["content-disposition"] == 'attachment; filename="world-a.ndtrain"'
+    names_a, mem_a, man_a, meta_a = _training_members(a)
+    names_b, mem_b, man_b, meta_b = _training_members(b)
+    assert names_a == names_b and names_a[0] == "manifest.json" and len(names_a) == 13, (names_a, names_b)
+    assert meta_a == meta_b
+    for n in names_a:
+        if n != "manifest.json":
+            assert mem_a[n] == mem_b[n], (n, mem_a[n][:300], mem_b[n][:300])
+    assert man_a == man_b, (man_a, man_b)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    a2, b2 = pl.get("/export/training.ndtrain"), _via(pl, base).get("/export/training.ndtrain")
+    assert (a2.status_code, a2.text) == (b2.status_code, b2.text) and a2.status_code == 403, a2.status_code
+    d2 = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_b.slug)      # an empty world
+    a3, b3 = d2.get("/export/training.ndtrain"), _via(d2, base).get("/export/training.ndtrain")
+    assert a3.status_code == b3.status_code == 200
+    n3a, m3a, man3a, _ = _training_members(a3)
+    n3b, m3b, man3b, _ = _training_members(b3)
+    assert n3a == n3b and all(m3a[n] == m3b[n] for n in n3a if n != "manifest.json") and man3a == man3b
+
+
+def test_training_bundle_without_python(client, seed):
+    """The Python-free gateway answers the Training Bundle itself, with many entities, accented names, rich text and the odd
+    stored value (unreadable JSON, NULL texts): the same members as Python's answer next to it."""
+    from app.database import SessionLocal
+    from app.models import Entity
+    from .training_bundle_seed import seed_rich_world
+    seed_rich_world(seed.world_a.id)
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=seed.world_a.id, kind="character", name=f"Émile Ünïcode {i}", body="# T\n**bold** <b>x</b> “q” 日本語 " * 20,
+                           tags="é, ü,,", custom_fields_json="[1,2]" if i % 2 else '{"a": null, "b": [1, {"c": 2}]}') for i in range(700)])
+        db.commit()
+    finally:
+        db.close()
+    d = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    expected = d.get("/export/training.ndtrain")
+    assert expected.status_code == 200
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        r = g.get("/export/training.ndtrain")
+        assert r.status_code == 200 and r.headers.get("x-nd-served-by") == "gateway", (r.status_code, r.text[:300])
+        _, mem_a, man_a, _ = _training_members(expected)
+        _, mem_b, man_b, _ = _training_members(r)
+        assert set(mem_a) == set(mem_b) and all(mem_a[n] == mem_b[n] for n in mem_a if n != "manifest.json")
+        assert man_a == man_b and man_b["files"]["entities.jsonl"]["records"] == 703
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
