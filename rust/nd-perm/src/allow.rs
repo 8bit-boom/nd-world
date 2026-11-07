@@ -93,6 +93,10 @@ pub fn is_player_safe(method: &str, path: &str) -> bool {
     if method == "POST" && m(re!(r"^/api/tables/\d+/roll$"), path) {
         return true;
     }
+    // the studio's tier-1 read route (app/main.py `_is_player_safe`): world-scoped table listing, the tables page's own visibility
+    if path == "/api/tables.json" {
+        return true;
+    }
     if path == "/quests/new" && matches!(method, "GET" | "POST") {
         return true;
     }
