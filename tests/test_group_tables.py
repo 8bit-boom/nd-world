@@ -223,3 +223,34 @@ def _gid(name):
         return db.query(PlayerGroup).filter_by(name=name).first().id
     finally:
         db.close()
+
+
+def test_tables_json_serves_builtin_and_world_tables(client, seed):
+    """Tier-1 read route for nd-cartographer (plan 21.4): builtin + world
+    tables with entries; requires a session and the active world."""
+    from app.models import RandomTable
+    db = SessionLocal()
+    try:
+        db.add(RandomTable(name="Ambushes", slug=f"ambushes-{seed.world_a.id}", category="encounters",
+                           world_id=seed.world_a.id,
+                           entries_json=json.dumps([{"label": "Goblins", "weight": 3}, {"label": "Wolves", "weight": 1}])))
+        db.commit()
+    finally:
+        db.close()
+    c = _login(client, seed, seed.gm.email, GM_PASSWORD)
+    c.cookies.set("active_world", seed.world_a.slug)
+    r = c.get("/api/tables.json")
+    assert r.status_code == 200
+    tables = r.json()["tables"]
+    names = [t["name"] for t in tables]
+    assert "Ambushes" in names
+    ambush = next(t for t in tables if t["name"] == "Ambushes")
+    assert ambush["category"] == "encounters"
+    assert {"label": "Goblins", "weight": 3} in ambush["entries"]
+    # A player of another world sees only builtin tables (world B has none of
+    # the world-A ones) - the same scoping as the tables page.
+    other = _login(client, seed, seed.player_b.email)
+    other.cookies.set("active_world", seed.world_b.slug)
+    r = other.get("/api/tables.json")
+    assert r.status_code == 200
+    assert all(t["name"] != "Ambushes" for t in r.json()["tables"])

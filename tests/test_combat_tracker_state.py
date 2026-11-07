@@ -453,3 +453,32 @@ def test_the_ai_tactics_prompt_knows_the_rules_conditions_and_whose_turn_it_is(c
     assert r.status_code == 200, r.text
     assert "Game of Gods (Asterion)" in seen["system"] and "FLUID" in seen["system"]
     assert "Spark Shield 1/3" in seen["user"] and "Burning x2" in seen["user"] and "ACTING NOW" in seen["user"] and "OUT (cannot act)" in seen["user"]
+
+
+def test_api_combat_template_create_gm_only_and_shapes(client, seed):
+    """Tier-1 route for nd-cartographer (plan 21.3): a GM creates a reusable
+    template from creature lines ("goblin x2" -> two combatants); players are
+    refused (templates are GM information)."""
+    from app.models import CombatSession
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/combat/templates", json={
+        "name": "Goblin Ambush", "creatures": ["Goblin x2", "Ogre"],
+    })
+    assert r.status_code == 200
+    out = r.json()
+    assert out["combatants"] == 3
+    db = SessionLocal()
+    try:
+        cs = db.get(CombatSession, out["id"])
+        assert cs.is_template is True
+        assert cs.world_id == seed.world_a.id
+        names = [c["name"] for c in json.loads(cs.combatants_json)]
+        assert names == ["Goblin", "Goblin", "Ogre"]
+        assert all(c["source"] == "manual" for c in json.loads(cs.combatants_json))
+    finally:
+        db.close()
+    # Players are refused.
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post("/api/combat/templates", json={"name": "x", "creatures": ["rat"]}).status_code == 403

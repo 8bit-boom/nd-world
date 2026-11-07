@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from .. import ai as _ai
 from ..database import get_db
+import json
+
 from ..deps import can_edit_content, get_world_ctx, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import RandomTable, World
 from ..templating import templates
@@ -64,6 +66,34 @@ def tables_list(request: Request, db: Session = Depends(get_db), active_world: s
         "can_edit_table": lambda t: _can_edit_table_row(request, db, t),
     })
 
+
+@router.get("/api/tables.json")
+def tables_json(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Tier-1 read route for the nd-cartographer studio (plan §21.4): every
+    table visible in this world with its entries, so the studio can roll a
+    room's contents from the world's own tables. Read-only; the same
+    visibility rule as the tables page (builtin + this world's)."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404, "No world selected")
+    tables = db.query(RandomTable).filter(
+        (RandomTable.world_id.is_(None)) | (RandomTable.world_id == world.id)
+    ).order_by(RandomTable.category, RandomTable.name).all()
+    out = []
+    for tbl in tables:
+        try:
+            entries = json.loads(tbl.entries_json or "[]")
+        except ValueError:
+            entries = []
+        entries = [e for e in entries if isinstance(e, dict) and e.get("label")]
+        out.append({
+            "id": tbl.id,
+            "name": tbl.name,
+            "slug": tbl.slug,
+            "category": tbl.category or "general",
+            "entries": [{"label": e["label"], "weight": e.get("weight", 1)} for e in entries],
+        })
+    return {"tables": out}
 
 @router.get("/tables/new", response_class=HTMLResponse)
 def table_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):

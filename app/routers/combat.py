@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from datetime import datetime
 
@@ -244,6 +245,56 @@ def combat_list(request: Request, page: int = 1, db: Session = Depends(get_db), 
         "rule_labels": {k: v["label"] for k, v in combat_rules.RULESETS.items()},
     })
 
+
+@router.post("/api/combat/templates")
+def api_combat_template_create(request: Request, _body: bytes = Depends(read_body),
+                               db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Tier-1 route for the nd-cartographer studio (plan 21.3): create a
+    reusable encounter template from a room's creature list. Body:
+    {"name", "creatures": ["goblin x2", "ogre"], "ruleset"?} — each creature
+    line is "name" or "name xN" (N copies as separate combatants). GM-only:
+    templates are GM information. Returns {"id", "name"}."""
+    if not _is_gm(request):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404, "No world selected")
+    try:
+        body = json.loads(_body or b"{}")
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Invalid JSON")
+    name = str(body.get("name") or "").strip()[:256]
+    if not name:
+        raise HTTPException(400, "name required")
+    creatures = body.get("creatures")
+    if not isinstance(creatures, list) or not creatures or len(creatures) > 20:
+        raise HTTPException(400, "creatures must be a list of 1-20 lines")
+    lines = []
+    for c in creatures[:20]:
+        if not isinstance(c, str) or not c.strip() or len(c) > 80:
+            raise HTTPException(400, "each creature line is 1-80 chars")
+        lines.append(c.strip())
+    ruleset = str(body.get("ruleset") or "")
+    if ruleset not in combat_rules.RULESET_IDS:
+        ruleset = default_ruleset(db, world.id)
+    combatants = []
+    for line in lines:
+        m = re.match(r"^(.*?)\s+x(\d+)$", line, re.IGNORECASE)
+        count = 1
+        if m:
+            line, count = m.group(1).strip(), min(int(m.group(2)), 20)
+        for _ in range(max(count, 1)):
+            combatants.append(manual_combatant(line[:80]))
+    cs = CombatSession(
+        world_id=world.id, name=name[:256], ruleset=ruleset,
+        combatants_json=json.dumps(combatants), is_template=True,
+    )
+    db.add(cs)
+    db.commit()
+    db.refresh(cs)
+    return {"id": cs.id, "name": cs.name, "combatants": len(combatants)}
 
 @router.post("/combat/new")
 def combat_create(request: Request, name: str = Form("New Encounter"), ruleset: str = Form(""),

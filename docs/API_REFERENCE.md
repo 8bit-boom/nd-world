@@ -477,6 +477,7 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/combat` | GM | Combat encounter list. |
 | POST | `/combat/new` | GM | Creates a `CombatSession` (`name`, optional `ruleset`: nd / worm / hunt / asterion / nd_asterion / worm_asterion / generic; default the party's system). |
+| POST | `/api/combat/templates` | GM | Tier-1 route for the nd-cartographer studio: create a reusable encounter **template** from creature lines (`"goblin x2"` → two manual combatants). Body `{name, creatures, ruleset?}`. Returns `{id, name, combatants}`. |
 | GET | `/combat/{combat_id}` | GM / Player (when Combat is open to players) | The GM gets the tracker (rules-aware, with undo, a save indicator and live merging); a player gets a READ-ONLY page built from the sanitized state: enemies as "Enemy A" (the real name only when the GM marked it known) with a word for their health (Unhurt / Hurt / Bloodied / Down), no HP numbers, armor, conditions or notes, and GM-hidden combatants not mentioned at all. |
 | GET | `/api/combat/recent` | GM | Recent combat sessions as JSON for the GM Cockpit's combat panel picker (`running` is false once the encounter was ended; the cockpit offers the Combat scene on a new running one). |
 | GET | `/api/combat/{combat_id}/state` | GM / Player | GM: the full state `{combatants, round_num, active_idx, active_id, rev, name, ruleset, turn, log}`. Player: the sanitized view `{rows, active_id, picker, round_num, rev, fluid, combatants:[{id, initiative}]}` - never names, numbers or notes of enemies. |
@@ -854,6 +855,7 @@ Several tables in one world (see docs/FORK_STATUS.md). GM only; plain form POSTs
 | POST | `/pages/sheets/{sheet_id}/delete` | Owner / GM | Deletes the sheet (the template file itself is untouched). |
 | GET | `/pages/sheets/{sheet_id}/download` | Owner / GM | Downloads the filled sheet as a standalone `.html` file (`Content-Disposition: attachment`). |
 
+| GET | `/api/tables.json` | Member of the world (session) | Tier-1 read route for the nd-cartographer studio: every table visible in this world with its entries `{id, name, slug, category, entries:[{label, weight}]}`. Read-only. |
 ## Random Tables
 
 `app/routers/tables.py` — GM-authored roll tables (loot, encounters, NPC names, etc.).

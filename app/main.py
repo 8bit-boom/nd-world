@@ -689,11 +689,11 @@ def _is_player_safe(method: str, path: str) -> bool:
     # from_job in app/routers/characters.py) needs no separate entry here —
     # it's already covered by the blanket "/api/characters/" prefix rule
     # near the top of this function; _can_manage_character is its real gate.
-    if method == "POST" and re.match(r"^/api/tables/\d+/roll$", path):
-        # Rolling IS the point of opening Random Tables to players — see
-        # World.section_access_json. Handler-level gate (app/routers/
-        # tables.py) still requires deps.world_can_view_section(..., "tables"),
-        # off by default; this allowlist only decides "reachable at all".
+    # The studio's tier-1 read route (nd-cartographer, plan 21.4): world-scoped
+    # table listing, the same visibility rule as the tables page itself.
+    if path == "/api/tables.json":
+        # The studio's read route scopes tables to the active world itself
+        # (builtin + that world's), the same visibility as the tables page.
         return True
     # Own-item create/edit/delete for a player with "edit" level on quests/
     # calendar/tables (see World.section_access_json/deps.world_can_edit_
