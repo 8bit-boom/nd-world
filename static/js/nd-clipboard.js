@@ -101,6 +101,43 @@
     var box = input.closest('form') || input.parentElement;
     return box && (box.querySelector('button[type=submit], input[type=submit]') || box.querySelector('button[id*="upload" i], button.btn-save'));
   }
+  // ---- text documents into plain text fields ----
+  // A .md / .markdown / .txt file dropped on (or pasted into) a text field puts its text in at the cursor. Fields with the formatting toolbar
+  // (textarea[data-fmt]) do this themselves (text-format-toolbar.js), so they are left alone here.
+  function isDocFile(f) {
+    var n = String((f && f.name) || '').toLowerCase();
+    return n.slice(-3) === '.md' || n.slice(-9) === '.markdown' || n.slice(-4) === '.txt' || (f && f.type === 'text/markdown');
+  }
+  function plainTextField(el) {
+    return !!el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text')) && !el.readOnly && !el.disabled && !el.hasAttribute('data-fmt');
+  }
+  function insertDocs(field, files) {
+    Promise.all(files.map(function (f) { return f.text(); })).then(function (texts) {
+      var text = texts.join('\n\n');
+      field.focus();
+      field.setRangeText(text, field.selectionStart, field.selectionEnd, 'end');
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }).catch(function () { toast('Could not read that file.'); });
+  }
+  function hasFiles(dt) { return !!dt && Array.prototype.indexOf.call(dt.types || [], 'Files') >= 0; }
+  document.addEventListener('dragover', function (e) {
+    if (plainTextField(e.target) && hasFiles(e.dataTransfer)) e.preventDefault();      // else the browser would open the dropped file
+  }, true);
+  document.addEventListener('drop', function (e) {
+    if (!plainTextField(e.target) || !hasFiles(e.dataTransfer)) return;
+    var docs = Array.prototype.filter.call(e.dataTransfer.files || [], isDocFile);
+    if (!docs.length) return;
+    e.preventDefault();
+    insertDocs(e.target, docs);
+  }, true);
+  document.addEventListener('paste', function (e) {
+    if (!plainTextField(e.target) || !e.clipboardData) return;
+    var docs = Array.prototype.filter.call(e.clipboardData.files || [], isDocFile);
+    if (!docs.length) return;
+    e.preventDefault();
+    insertDocs(e.target, docs);
+  }, true);
+
   // ---- paste ----
   function candidates(files) {
     return Array.prototype.filter.call(document.querySelectorAll('input[type=file]'), function (inp) {
