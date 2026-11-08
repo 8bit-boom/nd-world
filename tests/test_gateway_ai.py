@@ -2757,3 +2757,266 @@ def test_python_free_kiy_generate_streams_the_play(client, seed, studio):
         proc.terminate()
         proc.wait(timeout=10)
         lib.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Teacher examples (docs/TEACHER_EXAMPLES.md): the world's own AI model writes training examples for ND Lore Forge; only without Python.
+
+class _Teacher:
+    """A stand-in OpenAI-compatible model that answers like a teacher and like its own fact-checker, and records every request."""
+
+    def __init__(self):
+        self.calls = []
+        self.delay = 0.0
+        parent = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                self._send({"data": [{"id": "teach", "loaded": True}]})
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                req = json.loads(self.rfile.read(n))
+                msgs = req.get("messages") or []
+                system = msgs[0]["content"] if msgs else ""
+                user = msgs[-1]["content"] if msgs else ""
+                parent.calls.append((system, user))
+                if parent.delay:
+                    __import__("time").sleep(parent.delay)
+                self._send({"choices": [{"message": {"role": "assistant", "content": parent.answer(system, user)}, "finish_reason": "stop"}]})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    @staticmethod
+    def answer(system, user):
+        if "fact-checker" in system:
+            a = user.split("ANSWER:\n")[-1]
+            verdict = "unsupported" if "ZZUNSUPPORTED" in a else "partly" if "ZZPARTLY" in a else "supported"
+            return f"<think>comparing</think>\n```json\n{{\"verdict\":\"{verdict}\",\"reason\":\"checked\"}}\n```"
+        title = user.split("SOURCE TEXT:\n# ")[1].splitlines()[0] if "SOURCE TEXT:\n# " in user else ""
+
+        def flavour(i):
+            return " ZZUNSUPPORTED invented." if "Bad" in title and i == 1 else " ZZPARTLY extra." if "Partly" in title and i == 0 else ""
+        if "practice items" in user:
+            items = [{"question": f"Rules situation {i} in {title}?", "answer": f"Under {title}, roll and count sixes.{flavour(i)}"} for i in range(2)]
+        elif "short conversations" in user:
+            items = [{"turns": [{"player": f"Greetings {i}", "npc": f"Hmph. State your business {i}."}, {"player": "Where is the harbour?", "npc": "Dockside. Go."}]} for i in range(2)]
+        elif "does NOT exist" in user:
+            items = [{"question": "What is Zorblax Prime?", "invented_name": "Zorblax Prime"}, {"question": "Who runs the Dockside?", "invented_name": "Dockside"}]
+        elif user.startswith("Topic:"):
+            items = [{"question": f"{user.splitlines()[0]} question {i}?", "answer": f"A general tip number {i}."} for i in range(5)]
+        elif "STANDING INSTRUCTION" in user:
+            items = [{"question": f"Style question {i}?", "answer": f"Short and dry answer {i}."} for i in range(2)]
+        else:
+            items = [{"question": f"Why does {title} matter ({i})?", "answer": f"{title} matters because of its role.{flavour(i)}"} for i in range(2)]
+        return json.dumps({"items": items})
+
+
+def _wait_teacher(g, want=("done", "stopped", "error"), timeout=90):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        st = g.get("/export/teacher/status").json()
+        if st["state"]["status"] in want:
+            return st
+        time.sleep(0.5)
+    raise AssertionError("the teacher run did not finish: " + json.dumps(st)[:500])
+
+
+def _bundle_members(g):
+    import io
+    import zipfile
+    r = g.get("/export/training.ndtrain")
+    assert r.status_code == 200, r.status_code
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    return z, json.loads(z.read("manifest.json"))
+
+
+def test_python_free_teacher_examples_are_made_checked_and_ride_in_the_training_bundle(client, seed):
+    """Without Python: POST /export/teacher/start makes examples of every kind with the world's AI model, a second pass drops the unsupported ones,
+    NPC prompts carry no GM secret, the invented names of "not in the lore" questions exist nowhere in the world, a second run costs no model call,
+    and the examples are a member of the next Training Bundle. A player and a visitor are refused; the hybrid server has no such route."""
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import AiInstruction, Entity, World
+    from .test_gateway_golden import _python_free_gateway
+    import httpx
+    long = lambda t: f"# {t}\n\n" + "\n\n".join(f"{t} has a long history, part {i}, with many details about how it works and who it affects in the town." for i in range(8))
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="character", name="Gruff Captain", summary="Gruff Captain in short.", visible_to_players=True,
+                           roleplay_personality="gruff, terse", body=long("Captain") + "\n\n[gmonly]He fears fire.[/gmonly]"),
+                    Entity(world_id=w, kind="location", name="Dockside", summary="Dockside in short.", visible_to_players=True, body=long("Dockside")),
+                    Entity(world_id=w, kind="item", name="The Bad Rumour", summary="Bad.", visible_to_players=True, body=long("Bad rumour")),
+                    Entity(world_id=w, kind="item", name="The Partly Ring", summary="Partly.", visible_to_players=True, body=long("Partly ring")),
+                    Entity(world_id=w, kind="character", name="Hidden Duke", summary="Oily.", visible_to_players=False, roleplay_personality="oily", body=long("Duke")),
+                    AiInstruction(world_id=w, title="Be brief", content="Answer in at most two sentences.", enabled=True, applies_to_players=False)])
+        world = db.query(World).get(w)
+        world.rules_md = "# Rules\n\n## Dice pool\n\n" + "\n\n".join(f"Dice pool rule {i}: roll d6s equal to the skill and count the sixes as successes." for i in range(8))
+        db.commit()
+    finally:
+        db.close()
+    teacher = _Teacher()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    _settings(gm, llm_url=teacher.url, llm_model="teach", llm_api_key="sk-test")
+    data_dir = Path(__import__("os").environ["DB_PATH"]).parent / "teacher" / str(w)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        # the hybrid server (Python behind the gateway) has no such route; a visitor and a player are refused
+        assert gm.get("/export/teacher/status").status_code in (404, 405, 501)
+        visitor = httpx.Client(base_url=url, timeout=30, follow_redirects=False)
+        assert visitor.get("/export/teacher/status").status_code != 200 and visitor.post("/export/teacher/start", json={}).status_code != 202
+        player = httpx.Client(base_url=url, timeout=30, follow_redirects=False)
+        assert player.post("/login", data={"email": seed.player_a.email, "password": PLAYER_PASSWORD, "next": "/"}).status_code in (302, 303)
+        player.cookies.set("active_world", seed.world_a.slug)
+        assert player.get("/export/teacher/status").status_code != 200 and player.post("/export/teacher/start", json={}).status_code != 202
+        # before any run: nothing in the bundle
+        z, manifest = _bundle_members(g)
+        assert "teacher_examples.jsonl" not in manifest["files"]
+        st = g.get("/export/teacher/status").json()
+        assert st["state"]["status"] == "idle" and st["ai_ready"] is True and st["model"] and st["counts"]["total"] == 0 and len(st["kinds"]) == 8
+        # bad options are refused; a run starts
+        assert g.post("/export/teacher/start", json={"kinds": "nope"}).status_code == 422
+        assert g.post("/export/teacher/start", json={}).status_code == 202
+        assert g.post("/export/teacher/start", json={}).status_code in (409, 202)   # already running (or already finished on a fast machine)
+        st = _wait_teacher(g)
+        assert st["state"]["status"] == "done", st
+        rep = st["state"]["report"]
+        assert rep["added"] > 20 and rep["unsupported"] >= 1 and rep["partly"] >= 1 and rep["supported"] >= 5 and rep["jobs_done"] == rep["jobs"], rep
+        assert rep["rejected"] >= 1       # the invented name that exists in the world was refused
+        examples = [json.loads(l) for l in (data_dir / "examples.jsonl").read_text(encoding="utf-8").splitlines()]
+        by = {}
+        for e in examples:
+            by.setdefault(e["builder"], []).append(e)
+        for kind in ("t_deeper", "t_rules", "t_history", "t_npc", "t_lore", "t_missing", "t_general", "t_style"):
+            if kind == "t_history":
+                continue      # the seed world may have no session long enough
+            assert by.get(kind), (kind, sorted(by))
+        bad = next(e for e in by["t_deeper"] if "ZZUNSUPPORTED" in e["messages"][-1]["content"])
+        assert (bad["status"], bad["check"], bad["note"]) == ("drop", "unsupported", "checked")
+        partly = next(e for e in examples if "ZZPARTLY" in e["messages"][-1]["content"])
+        assert (partly["status"], partly["check"]) == ("keep", "partly")
+        # the NPC prompt: nd-world's shape with the speaking style; no secret reached the teacher; only the visible NPC
+        npc = by["t_npc"]
+        assert all(e["source"] == f"entity:{npc[0]['source'].split(':')[1]}" for e in npc) and "Hidden Duke" not in json.dumps(npc)
+        assert "How you speak and behave (standing direction from the GM" in npc[0]["messages"][0]["content"] and "gruff, terse" in npc[0]["messages"][0]["content"]
+        asked = [u for _, u in teacher.calls if "short conversations" in u]
+        assert asked and not any("fears fire" in u or "(GM secret:" in u for u in asked)
+        # lore search carries nd-world's context block; "not in the lore" answers name only invented things
+        assert any(e["messages"][0]["content"].startswith("Relevant world lore and notes (for accuracy only") for e in by["t_lore"])
+        assert all("Zorblax Prime" in e["messages"][-1]["content"] for e in by["t_missing"])
+        g_n = len(by["t_general"])
+        assert g_n >= 2 and g_n * 100 <= len(examples) * 15, (g_n, len(examples))
+        # the bundle has them: listed in the manifest with a checksum and a record count, one example per line
+        z, manifest = _bundle_members(g)
+        info = manifest["files"]["teacher_examples.jsonl"]
+        if __import__("os").environ.get("ND_SAVE_TEST_BUNDLE"):     # for checking the file with ND Lore Forge's reader (docs/TEACHER_EXAMPLES.md)
+            Path(__import__("os").environ["ND_SAVE_TEST_BUNDLE"]).write_bytes(g.get("/export/training.ndtrain").content)
+        lines = z.read("teacher_examples.jsonl").decode("utf-8").splitlines()
+        assert info["records"] == len(lines) == len(examples) and info["sha256"] == __import__("hashlib").sha256(z.read("teacher_examples.jsonl")).hexdigest()
+        assert all(json.loads(l)["messages"][-1]["role"] == "assistant" for l in lines)
+        # a second run: every answer comes from the cache, nothing new is made
+        n_calls = len(teacher.calls)
+        assert g.post("/export/teacher/start", json={}).status_code == 202
+        st2 = _wait_teacher(g)
+        assert len(teacher.calls) == n_calls and st2["state"]["report"]["added"] == 0, (len(teacher.calls), n_calls, st2["state"]["report"])
+        # clear removes the examples (not the remembered answers)
+        assert g.post("/export/teacher/clear", json={}).status_code == 200
+        assert g.get("/export/teacher/status").json()["counts"]["total"] == 0
+        assert "teacher_examples.jsonl" not in _bundle_members(g)[1]["files"]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        teacher.server.shutdown()
+        import shutil
+        shutil.rmtree(data_dir, ignore_errors=True)
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.world_id == w, Entity.name.in_(["Gruff Captain", "Dockside", "The Bad Rumour", "The Partly Ring", "Hidden Duke"])).delete(synchronize_session=False)
+            db.query(AiInstruction).filter(AiInstruction.world_id == w, AiInstruction.title == "Be brief").delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+
+def test_python_free_teacher_examples_stop_resume_failures_and_a_restart(client, seed):
+    """Stop ends the run between two model calls and keeps what was made; a dead model stops the run with its message after three failures; a state left
+    'running' by a restart is reported as interrupted and Start continues (the cache makes that cheap); with no AI model set up Start says so."""
+    import time
+    from pathlib import Path
+    from app.database import SessionLocal
+    from app.models import Entity
+    from .test_gateway_golden import _python_free_gateway
+    w = seed.world_a.id
+    long = lambda t: f"# {t}\n\n" + "\n\n".join(f"{t} has a long history, part {i}, with many details." for i in range(10))
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="item", name=f"Relic {i}", summary="r", visible_to_players=True, body=long(f"Relic {i}")) for i in range(6)])
+        db.commit()
+    finally:
+        db.close()
+    teacher = _Teacher()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    data_dir = Path(__import__("os").environ["DB_PATH"]).parent / "teacher" / str(w)
+    proc, url, g = _python_free_gateway(seed)
+    try:
+        # no AI model set up: Start says so
+        _settings(gm, llm_api_key_clear="1", llm_url="", llm_model="", ollama_url="", ollama_model="")
+        r = g.post("/export/teacher/start", json={})
+        assert r.status_code == 409 and "AI model" in r.json()["detail"], (r.status_code, r.text)
+        _settings(gm, llm_url=teacher.url, llm_model="teach", llm_api_key="sk-test")
+        # stop: slow answers, then Stop; the examples made so far stay
+        teacher.delay = 0.4
+        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"], "judge": False}).status_code == 202
+        time.sleep(1.5)
+        assert g.post("/export/teacher/stop", json={}).status_code == 200
+        st = _wait_teacher(g)
+        assert st["state"]["status"] == "stopped" and st["state"]["report"]["stopped"] is True and 0 < st["counts"]["total"], st
+        stopped_total = st["counts"]["total"]
+        # a restart in the middle: the state says running but nothing runs
+        import json as _json
+        (data_dir / "state.json").write_text(_json.dumps({"status": "running", "text": "Relic 3"}))
+        assert g.get("/export/teacher/status").json()["state"]["status"] == "interrupted"
+        # Start continues: the answers already given come from the cache
+        teacher.delay = 0
+        before = len(teacher.calls)
+        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"], "judge": False}).status_code == 202
+        st = _wait_teacher(g)
+        assert st["state"]["status"] == "done" and st["counts"]["total"] > stopped_total
+        assert len(teacher.calls) - before < sum(1 for _, u in teacher.calls if "SOURCE TEXT" in u), "the stopped part came from the cache"
+        # a dead model: three failures in a row stop the run, saying why, and keep what exists
+        teacher.server.shutdown()
+        teacher.server.server_close()
+        g.post("/export/teacher/clear", json={})
+        import shutil
+        shutil.rmtree(data_dir / "cache", ignore_errors=True)
+        assert g.post("/export/teacher/start", json={"kinds": ["t_deeper"]}).status_code == 202
+        st = _wait_teacher(g, timeout=120)
+        assert st["state"]["status"] == "error" and "keeps failing" in st["state"]["text"], st
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+        _settings(gm, llm_api_key_clear="1")
+        import shutil
+        shutil.rmtree(data_dir, ignore_errors=True)
+        db = SessionLocal()
+        try:
+            db.query(Entity).filter(Entity.world_id == w, Entity.name.like("Relic %")).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()

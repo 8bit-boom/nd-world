@@ -405,6 +405,8 @@ them after each batch; the phase is done when both are empty and the steps below
   same order with fixed timestamps; the zips' own bytes can differ (deflate implementations), so the parity rule compares member by
   member with the manifest's `created` moment left out. Nothing in it makes the gateway decline: unreadable JSON columns are the
   empty list / object on both sides, accented and rich text is plain UTF-8.
+- **Teacher examples** (`GET /export/teacher/status`, `POST /export/teacher/start|stop|clear`, `teacher/` module): a Python-free-only feature with no Python counterpart (like the King in Yellow generator): the hybrid image answers "Not available here". The AI calls use the Settings backend through `generate_chat`; results are files next to the database. See `docs/TEACHER_EXAMPLES.md`.
+
 - **The instance backup zip** (`GET /admin/backup.zip`, export.rs `admin_backup`): a VACUUM INTO snapshot of the database
   (taken next to the database, never inside the walked uploads tree), the manifest with the table counts, every uploaded
   file and map json under its prefix. The filename and the manifest's created_at are the build moment; the parity rule

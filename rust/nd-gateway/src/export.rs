@@ -678,6 +678,12 @@ pub fn training_members(db: &Connection, world: &Map<String, Value>) -> Option<V
     if !chars.is_empty() {
         out.push(("characters.jsonl", jsonl(chars)?));
     }
+    // examples written by this world's own AI model (teacher/mod.rs), when there are any (Python-free image only: nothing writes them elsewhere)
+    if let Some(dir) = db.path().and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf())) {
+        if let Some(t) = crate::teacher::gen::bundle_member(&dir, wid) {
+            out.push(("teacher_examples.jsonl", t));
+        }
+    }
     Some(out)
 }
 

@@ -47,6 +47,7 @@ pub mod hub;
 pub mod importer;
 pub mod settings_overrides;
 pub mod studio;
+pub mod teacher;
 pub mod sysstats;
 pub mod studio_key;
 pub mod settings_system;
@@ -442,6 +443,24 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || export::training_bundle(&cfg, &uri, &headers)).await {
             return resp;
         }
+    }
+    if req.method() == axum::http::Method::GET && config::python_free() && req.uri().path() == "/export/teacher/status" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || teacher::routes::status(&cfg, &uri, &headers)).await {
+            return resp;
+        }
+    }
+    if req.method() == axum::http::Method::POST && config::python_free() && matches!(req.uri().path(), "/export/teacher/start" | "/export/teacher/stop" | "/export/teacher/clear")
+        && app.cfg.rust_routes.iter().any(|r| r == "pages")
+    {
+        let (parts, body) = req.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, 1 << 16).await else {
+            return Response::builder().status(axum::http::StatusCode::PAYLOAD_TOO_LARGE).body(Body::empty()).unwrap();
+        };
+        if let Some(resp) = teacher::routes::post(app.cfg.clone(), parts.uri.clone(), parts.headers.clone(), bytes.clone()).await {
+            return resp;
+        }
+        return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/export/foundry.json" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         let (cfg, uri, headers) = (app.cfg.clone(), req.uri().clone(), req.headers().clone());
