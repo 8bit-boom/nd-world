@@ -112,6 +112,40 @@
     <a href="/export/training.ndtrain" class="btn-primary">⬇ Download training bundle</a>
   </div>
 
+  <div class="export-option" id="teacher-card" data-world="{{ world.slug if world else '' }}">
+    <h2>🧪 Better training examples <span class="export-tag">optional, for ND Lore Forge</span></h2>
+    <p>
+      Your world's own AI model reads <strong>{{ world.name }}</strong> and writes extra practice for the training bundle: deeper questions,
+      rules practice, NPC role-play, session history, lore search, "not in the lore" answers, a little general chat and house-style answers.
+      A second pass checks every answer against the lore and marks (or drops) what the lore does not support. The next
+      <em>Download training bundle</em> then contains them, and ND Lore Forge shows them for review. It runs in the background, can be stopped,
+      and every answer is remembered, so running it again only does what is new. It uses the AI model chosen in Settings.
+    </p>
+    <div id="teacher-unavailable" style="display:none;font-size:.85rem;color:var(--text-dim)">
+      Not available here: this works only in the Python-free image.
+    </div>
+    <div id="teacher-body" style="display:none">
+      <div id="teacher-model" style="font-size:.85rem;color:var(--text-dim);margin-bottom:.5rem"></div>
+      <details id="teacher-options"><summary>Choose what to make</summary>
+        <div id="teacher-kinds" style="margin:.5rem 0"></div>
+        <label style="display:inline-block;margin-right:1rem">Examples per piece of text
+          <select id="teacher-per"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+        <label style="display:inline-block">General chat
+          <select id="teacher-gen"><option>0</option><option>5</option><option selected>10</option><option>20</option><option>30</option></select> %</label><br>
+        <label><input type="checkbox" id="teacher-judge" checked> Check every answer against the lore (recommended)</label><br>
+        <label><input type="checkbox" id="teacher-partly"> Also drop answers that are only partly supported</label>
+      </details>
+      <div style="margin-top:.6rem">
+        <button type="button" class="btn-primary" id="teacher-start">Make the examples</button>
+        <button type="button" class="btn-export" id="teacher-trial">Try on 5 pieces first</button>
+        <button type="button" class="btn-cancel" id="teacher-stop" style="display:none">Stop</button>
+        <button type="button" class="btn-cancel" id="teacher-clear">Remove them</button>
+      </div>
+      <div id="teacher-progress" style="margin-top:.6rem;font-size:.85rem"></div>
+      <div id="teacher-counts" style="margin-top:.3rem;font-size:.85rem;color:var(--text-dim)"></div>
+    </div>
+  </div>
+
   <div class="export-option">
     <h2>🎲 FoundryVTT Export</h2>
     <p>
@@ -156,4 +190,5 @@
 .export-tag { font-size: .68rem; font-weight: normal; color: var(--neon); border: 1px solid var(--neon); border-radius: 10px; padding: .1rem .5rem; }
 </style>
 <script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
+<script src="/static/js/teacher-examples.js?v={{ asset_v('js/teacher-examples.js') }}" defer></script>
 {% endblock %}

@@ -31,6 +31,7 @@
 - [x] Character `.pdf` export: `minipdf.rs` (Helvetica, US Letter, wrapped, multi-page); same content and order as reportlab's, bytes differ. Text outside Latin-1/WinAnsi prints as `?`.
 - [x] World Foundry export `GET /export/foundry.json` (`export.rs::foundry_world`): accepted pulldown-cmark's HTML (blank lines between blocks differ from markdown2; the test compares with that whitespace collapsed). Every character uses the N&D layout, as Python's call with no session does.
 - [x] Training Bundle `GET /export/training.ndtrain` (`export.rs::training_bundle`, Python `app/training_bundle.py`): one world's text for ND Lore Forge (the LLM-training repository), GM only, Python-free too; parity and Python-free tests in `tests/test_gateway_golden.py`, format in `docs/TRAINING_BUNDLE_FORMAT.md`.
+- [x] Teacher examples (Python-free only, no Python counterpart): Export & Backup card + `GET /export/teacher/status`, `POST /export/teacher/{start,stop,clear}` (`rust/nd-gateway/src/teacher/`): the world's own AI model writes training examples for ND Lore Forge, a second pass checks them, and the next Training Bundle carries them as `teacher_examples.jsonl`; Python-free tests with a stand-in model in `tests/test_gateway_ai.py`; `docs/TEACHER_EXAMPLES.md`.
 - [ ] FastAPI `/docs`, `/redoc`, `/openapi.json`: leave (not used in production).
 
 ## Batch 3: refusals of rare input (about 445 mixed routes)

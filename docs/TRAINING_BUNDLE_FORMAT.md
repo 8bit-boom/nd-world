@@ -31,6 +31,7 @@ left out when they would be empty.
 | `quests.jsonl` | no | `{"id","title","status","category","summary","body","linked_entities":[…],"parent_id"}` |
 | `tables.jsonl` | no | `{"id","name","category","description","entries":[…]}` (the world's own tables) |
 | `ai_instructions.jsonl` | no | enabled standing AI instructions: `{"id","title","content","applies_to_players"}` |
+| `teacher_examples.jsonl` | no | examples written by the world's own AI model (docs/TEACHER_EXAMPLES.md), one per line: `{"id","builder":"t_deeper"\|…,"source","source_title","messages":[{"role","content"}…],"status":"keep"\|"drop","edited":false,"check":"supported"\|"partly"\|"unsupported"\|"unchecked","note"}`; the messages are `system`, then `user` / `assistant` turns ending with `assistant`. Present only in the Python-free image, after a run of the Export & Backup card |
 | `characters.jsonl` | no | `{"id","name","race","char_class","level","backstory","notes","equipment":[…],"feats":[…]}` — no owner or account fields |
 
 Normalisation (so Python and Rust agree): `aliases` / `tags` are the comma-separated text split, each part stripped, empty parts
