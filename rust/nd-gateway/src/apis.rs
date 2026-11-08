@@ -977,7 +977,7 @@ fn entities_picker(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Respo
 
 /// POST routes served here (small JSON reads that take a body)
 pub fn is_post(path: &str) -> bool {
-    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset")
+    matches!(path, "/api/ai/world-context-smart" | "/api/ai/world-context-player" | "/api/ai/unsloth/prefs" | "/api/ai/defaults" | "/api/system/gpu-power" | "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset")
 }
 
 pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Option<Response<Body>> {
@@ -985,6 +985,7 @@ pub fn post(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Op
         "/api/ai/world-context-smart" => world_context_smart(&cfg, uri, headers, body),
         "/api/ai/world-context-player" => world_context_player(&cfg, uri, headers, body),
         "/api/ai/unsloth/prefs" => unsloth_prefs(&cfg, uri, headers, body),
+        "/api/ai/defaults" => ai_defaults_set(&cfg, uri, headers, body),
         "/api/system/gpu-power" => gpu_power(&cfg, uri, headers, body),
         "/api/ai/models/add" | "/api/ai/models/remove" | "/api/ai/models/reset" => models_edit(&cfg, uri, headers, body),
         _ => None,
@@ -1075,6 +1076,44 @@ fn models_edit(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Opti
     }
     std::fs::write(&path, nd_render::py_dumps_indent(&Value::Object(data), 2)).ok()?;
     crate::edits::json_response(&json!({"ok": true}))
+}
+
+/// `POST /api/ai/defaults` (app/routers/ai.py `ai_set_default`, GM-only by the auth gate): the model chosen for one surface, kept in ai_models.json
+fn ai_defaults_set(cfg: &Config, uri: &Uri, headers: &HeaderMap, raw: &[u8]) -> Option<Response<Body>> {
+    let (_db, p) = page(cfg, uri, headers)?;
+    if !p.is_gm {
+        return None;
+    }
+    let b = match serde_json::from_slice::<Value>(raw).ok()? {
+        Value::Object(o) if crate::edits::plain_numbers(raw) => o,
+        _ => return None, // a pydantic 422: Python's
+    };
+    let surface = b.get("surface")?.as_str()?.to_string();
+    let model_id = match b.get("model_id") {
+        None => String::new(),
+        Some(Value::String(s)) => crate::edits::py_strip_pub(s),
+        _ => return None,
+    };
+    if !["chat", "ask_ai", "image", "recap", "assist"].contains(&surface.as_str()) {
+        if surface.bytes().any(|c| !(0x20..0x7f).contains(&c) || c == b'\'' || c == b'\\') {
+            return None; // Python's repr() of it
+        }
+        return Some(crate::ai_more::detail(axum::http::StatusCode::BAD_REQUEST, &format!("unknown surface '{surface}'")));
+    }
+    let path = cfg.db_path.parent()?.join("ai_models.json");
+    let mut data = match std::fs::read_to_string(&path) {
+        Ok(t) => match serde_json::from_str::<Value>(&t) {
+            Ok(Value::Object(o)) => o,
+            Ok(_) => return None,
+            Err(_) if t.contains("NaN") || t.contains("Infinity") => return None,
+            Err(_) => serde_json::from_value(json!({"custom": [], "hidden": []})).ok()?,
+        },
+        Err(_) => serde_json::from_value(json!({"custom": [], "hidden": []})).ok()?,
+    };
+    let defaults = data.entry("defaults").or_insert_with(|| json!({}));
+    defaults.as_object_mut()?.insert(surface, json!(model_id));
+    std::fs::write(&path, nd_render::py_dumps_indent(&Value::Object(data), 2)).ok()?;
+    crate::edits::json_response(&json!({"ok": true, "defaults": model_defaults(cfg)?}))
 }
 
 /// `unsloth_prefs_set` (app/routers/ai.py, GM-only by the auth gate): the TTS / STT choices and the Studio console URL in ai_models.json
