@@ -24,6 +24,7 @@ const ROUTES: &[(&str, &str, Handler)] = &[
     ("/characters/templates/", "/edit", sheet_template_edit),
     ("/display/combat/", "", display_combat),
     ("/worlds/", "/edit", world_edit_page),
+    ("/worlds/", "/export/split", export_split_page),
     ("/worlds/", "/kinds/edit", kinds_edit),
     ("/worlds/", "/rules/edit", rules_edit),
     ("/worlds/", "/home/edit", home_edit_page),
@@ -66,6 +67,33 @@ fn row(db: &Connection, sql: &str, id: i64) -> Option<Map<String, Value>> {
 fn json_or_empty_list(v: Option<&Value>) -> Option<Value> {
     let t = v.and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("[]");
     serde_json::from_str(t).ok()
+}
+
+/// `GET /worlds/<id>/export/split` (app/routers/export.py `export_split_page`): the separate JSON downloads of one world - rules, player characters, the
+/// world's sheet templates and one file per built-in kind. The world named in the path (any world: a GM page), the page chrome of the active one.
+fn export_split_page(pages: &Pages, db: &Connection, mut p: PageCtx, id: i64, headers: &HeaderMap) -> Option<Response<Body>> {
+    if !p.is_gm {
+        return None;
+    }
+    let Some(w) = row(db, "SELECT * FROM worlds WHERE id = ?1", id) else { return Some(refusal(404)) };
+    let count = |sql: &str, args: &[&dyn rusqlite::ToSql]| -> Option<i64> { db.query_row(sql, args, |r| r.get(0)).ok() };
+    let data = nd_render::app::data();
+    let mut kind_counts = Map::new();
+    for k in data["kinds"].as_array()? {
+        let k = k.as_str()?;
+        kind_counts.insert(k.to_string(), json!(count("SELECT COUNT(*) FROM entities WHERE world_id = ?1 AND kind = ?2", &[&id, &k])?));
+    }
+    let pc_count = count("SELECT COUNT(*) FROM player_characters WHERE world_id = ?1", &[&id])?;
+    let mut st = db.prepare_cached("SELECT * FROM sheet_templates WHERE world_id = ?1 ORDER BY name").ok()?;
+    let templates: Vec<Value> = st.query_map([id], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?.into_iter().map(Value::Object).collect();
+    let rules = w.get("rules_md").and_then(|v| v.as_str()).unwrap_or("");
+    p.ctx.insert("export_world".into(), Value::Object(w.clone()));
+    p.ctx.insert("kind_counts".into(), Value::Object(kind_counts));
+    p.ctx.insert("kind_icons".into(), data["kind_icons"].clone());
+    p.ctx.insert("pc_count".into(), json!(pc_count));
+    p.ctx.insert("custom_templates".into(), Value::Array(templates));
+    p.ctx.insert("has_rules".into(), json!(!nd_render::text::py_strip(rules).is_empty()));
+    render_with(pages, "world_export_split.html", p.ctx, headers)
 }
 
 /// `GET /tables/<id>/edit` (app/routers/tables.py `table_edit_form`)

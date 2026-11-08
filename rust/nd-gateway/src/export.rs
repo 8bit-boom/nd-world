@@ -485,8 +485,8 @@ pub fn foundry_world(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
         let id = e.get("id")?.as_i64()?;
         let kind = text(e, "kind")?;
         let subtype = text(e, "subtype")?;
-        if !kind.is_ascii() || !subtype.is_ascii() || kind.is_empty() {
-            return None; // str.capitalize beyond ASCII: Python's
+        if !kind.is_ascii() || kind.is_empty() {
+            return None; // str.capitalize of a kind beyond ASCII: Python's (the subtype is only interpolated)
         }
         let kind_label = format!("{}{}{}", kind[..1].to_uppercase(), kind[1..].to_lowercase(), if subtype.is_empty() { String::new() } else { format!(" \u{2014} {subtype}") });
         let (summary, body) = (text(e, "summary")?, text(e, "body")?);

@@ -3527,6 +3527,31 @@ def test_world_json_exports_are_pythons(client, seed):
         img.unlink(missing_ok=True)
 
 
+def test_world_export_split_page_is_pythons(client, seed):
+    """GET /worlds/<id>/export/split from the gateway: the same page as Python's (counts, rules, player characters, sheet templates, kinds)."""
+    from app.database import SessionLocal
+    from app.models import Entity, PlayerCharacter, SheetTemplate, World
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        db.add_all([Entity(world_id=w, kind="location", name="Café"), Entity(world_id=w, kind="note", name="N1"), Entity(world_id=w, kind="note", name="N2"),
+                    SheetTemplate(world_id=w, name="Zed", slug="zed"), SheetTemplate(world_id=w, name="Alpha", slug="alpha")])
+        db.get(World, w).rules_md = "# House"
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    for url in (f"/worlds/{w}/export/split", f"/worlds/{seed.world_b.id}/export/split", "/worlds/999999/export/split"):
+        a, b = gm.get(url), _via(gm, base).get(url)
+        assert (a.status_code, a.text) == (b.status_code, b.text), url
+    a, b = gm.get(f"/worlds/{w}/export/split"), _via(gm, base).get(f"/worlds/{w}/export/split")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+
+
 def test_character_sheets_are_pythons(client, seed):
     """The character sheets from the gateway: the list (GM grouped by player, a player their own), a sheet's page, its sandboxed render
     and download (saved data and the bridge put in before </body>), and the writes - new (a missing / hidden / non-template page, a
