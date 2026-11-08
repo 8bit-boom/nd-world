@@ -48,6 +48,7 @@ from . import uvtt_import as _uvtt_import
 from . import schematic_payload as _schematic_payload
 from . import session_media as _session_media
 from . import streaming_export as _streaming_export
+from . import training_bundle as _training_bundle
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 CARD_PAGE = 120      # entity cards shown before "Load more" (templates/entities/list.html; the gateway's kind_list uses the same number)
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_edit_section, world_can_view_section, world_row_visible, world_section_access
@@ -5802,6 +5803,27 @@ def export_rules_and_notes(request: Request, db: Session = Depends(get_db), acti
         io.BytesIO(content.encode()), media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/export/training.ndtrain")
+def export_training_bundle(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The Training Bundle of the active world (app/training_bundle.py): its text, secrets included, for ND Lore Forge. GM only
+    through the auth gate, like everything under /export."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world_id, slug = world.id, world.slug
+    build_id = _build_id()
+
+    def _build(writer):
+        bdb = SessionLocal()   # the request's session is closed once this handler returns (see streaming_export.stream_download)
+        try:
+            w = bdb.get(World, world_id)
+            _training_bundle.write_zip(writer, w, _training_bundle.build_members(bdb, w), build_id)
+        finally:
+            bdb.close()
+
+    return _streaming_export.stream_download(_build, media_type="application/zip", filename=f"{slug}.ndtrain")
 
 
 def _entity_to_foundry_journal(notes: list, entity: Entity) -> dict:

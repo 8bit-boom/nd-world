@@ -916,6 +916,7 @@ Several tables in one world (see docs/FORK_STATUS.md). GM only; plain form POSTs
 | GET | `/worlds/{world_id}/export/templates/{template_id}.json` | GM | One Sheet Template as JSON. |
 | GET | `/export/foundry.json` | GM | Foundry VTT import pack for the whole active world. |
 | GET | `/export/rules-and-notes.md` | GM | Downloads the world's rules plus all its notes as one Markdown file: the world's Notes (entities of kind `note` — lore, session notes, rumors…) in full under `## Notes`, then every note pinned to an entity under `## Entity notes`. Everything is included unfiltered, hidden-from-players notes too. |
+| GET | `/export/training.ndtrain` | GM | Downloads the active world's **Training Bundle**: a zip of JSON/JSONL/Markdown members holding all of its text (entities with raw `[gmonly]` tags, notes, relations, rules, sessions, facts, quests, tables, enabled AI instructions, characters) for ND Lore Forge, the program that fine-tunes a small model on the world. Includes GM secrets; no accounts, images or private notes. Format: [TRAINING_BUNDLE_FORMAT.md](TRAINING_BUNDLE_FORMAT.md). |
 
 ## AI — Chat & World-Building
 

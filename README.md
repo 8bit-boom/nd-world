@@ -680,6 +680,13 @@ this — Full Backup, World Book, World JSON, and Import to World JSON, each
 with a one-line explanation of when to use it, instead of guessing between
 similarly-named buttons scattered across the nav bar and the Worlds page.
 
+### Training bundle (for ND Lore Forge)
+
+**Tools → 📦 Export & Backup → Training bundle** downloads `<world-slug>.ndtrain`: all of the world's text (entities, rules, sessions, facts,
+quests, tables, characters) in one zip, **GM secrets included**, no pictures, accounts or private notes. It is the input of **ND Lore Forge**
+(repository `Llm-training`), a desktop program that fine-tunes a small model (Qwen3.5, Gemma 4) on one world. Format:
+[docs/TRAINING_BUNDLE_FORMAT.md](docs/TRAINING_BUNDLE_FORMAT.md).
+
 ### Export a world
 
 From the hub, download **World JSON** (single file, or split into separate

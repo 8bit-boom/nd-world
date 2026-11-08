@@ -518,3 +518,224 @@ pub fn foundry_world(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Res
     r.headers_mut().insert("content-disposition", format!("attachment; filename=\"{slug}-foundry.json\"").parse().ok()?);
     Some(r)
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The Training Bundle: `GET /export/training.ndtrain` (app/training_bundle.py is the oracle; docs/TRAINING_BUNDLE_FORMAT.md)
+
+/// `training_bundle._iso`: a stored timestamp (the gateway reads DATETIME columns as {"__dt__": text}) with its first space turned into a T
+fn tb_iso(v: Option<&Value>) -> Value {
+    let s = match v {
+        Some(Value::String(s)) => s.as_str(),
+        Some(Value::Object(o)) => match o.get("__dt__").and_then(|x| x.as_str()) {
+            Some(s) => s,
+            None => return Value::Null,
+        },
+        _ => return v.cloned().unwrap_or(Value::Null),
+    };
+    Value::String(s.replacen(' ', "T", 1))
+}
+
+/// `training_bundle._loads`: the *_json column parsed; anything unreadable or of the other type is the empty list / object
+fn tb_loads(v: Option<&Value>, want_list: bool) -> Value {
+    let empty = || if want_list { json!([]) } else { json!({}) };
+    let Some(Value::String(raw)) = v else { return empty() };
+    if raw.is_empty() {
+        return empty();
+    }
+    match serde_json::from_str::<Value>(raw) {
+        Ok(p) if (want_list && p.is_array()) || (!want_list && p.is_object()) => p,
+        _ => empty(),
+    }
+}
+
+/// `training_bundle._csv`: the comma-separated text split, every part stripped, empty parts dropped
+fn tb_csv(v: Option<&Value>) -> Value {
+    let s = v.and_then(|x| x.as_str()).unwrap_or("");
+    Value::Array(s.split(',').map(nd_render::text::py_strip).filter(|p| !p.is_empty()).map(|p| Value::String(p.to_string())).collect())
+}
+
+fn tb_bool(v: Option<&Value>) -> Value {
+    json!(crate::edits::py_truthy_pub(v))
+}
+
+fn tb_line(rec: &Value) -> Option<Vec<u8>> {
+    let mut s = serde_json::to_string(rec).ok()?;
+    s.push('\n');
+    Some(s.into_bytes())
+}
+
+/// The members of a world's bundle (without manifest.json), in the order the format lists them; absent = empty
+pub fn training_members(db: &Connection, world: &Map<String, Value>) -> Option<Vec<(&'static str, Vec<u8>)>> {
+    let wid = world.get("id")?.as_i64()?;
+    let rows = |sql: &str| -> Option<Vec<Map<String, Value>>> {
+        let mut st = db.prepare_cached(sql).ok()?;
+        let r = st.query_map([wid], |r| crate::layout::row_map(r)).ok()?.collect::<Result<Vec<_>, _>>().ok()?;
+        Some(r)
+    };
+    let pick = |m: &Map<String, Value>, k: &str| m.get(k).cloned().unwrap_or(Value::Null);
+    let jsonl = |recs: Vec<Value>| -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        for r in &recs {
+            out.extend(tb_line(r)?);
+        }
+        Some(out)
+    };
+    let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+
+    let templates: Vec<Value> = rows("SELECT id, slug, name, kind, fields_json FROM entity_templates WHERE world_id = ?1 OR world_id IS NULL ORDER BY id")?
+        .iter().map(|t| json!({"id": pick(t, "id"), "slug": pick(t, "slug"), "name": pick(t, "name"), "kind": pick(t, "kind"),
+                               "fields": tb_loads(t.get("fields_json"), true)})).collect();
+    let world_doc = json!({"id": wid, "name": pick(world, "name"), "slug": pick(world, "slug"), "description": pick(world, "description"), "templates": templates});
+    out.push(("world.json", format!("{}\n", nd_render::py_dumps_indent_as(&world_doc, 2, false)).into_bytes()));
+
+    let ents: Vec<Value> = rows("SELECT e.id, e.kind, e.subtype, e.name, e.aliases, e.folder, e.tags, e.summary, e.body, t.slug AS template, \
+                                 e.custom_fields_json, e.roleplay_personality, e.visible_to_players, e.group_ids_json, e.rag_priority, e.updated_at \
+                                 FROM entities e LEFT JOIN entity_templates t ON t.id = e.template_id WHERE e.world_id = ?1 ORDER BY e.id")?
+        .iter().map(|e| json!({"id": pick(e, "id"), "kind": pick(e, "kind"), "subtype": pick(e, "subtype"), "name": pick(e, "name"),
+            "aliases": tb_csv(e.get("aliases")), "folder": pick(e, "folder"), "tags": tb_csv(e.get("tags")), "summary": pick(e, "summary"),
+            "body": pick(e, "body"), "template": pick(e, "template"), "custom_fields": tb_loads(e.get("custom_fields_json"), false),
+            "roleplay_personality": pick(e, "roleplay_personality"), "visible_to_players": tb_bool(e.get("visible_to_players")),
+            "group_ids": tb_loads(e.get("group_ids_json"), true), "rag_priority": tb_bool(e.get("rag_priority")),
+            "updated_at": tb_iso(e.get("updated_at"))})).collect();
+    out.push(("entities.jsonl", jsonl(ents)?));
+
+    let notes: Vec<Value> = rows("SELECT n.id, n.entity_id, n.content, n.visible_to_players, n.updated_at FROM entity_notes n \
+                                  JOIN entities e ON e.id = n.entity_id WHERE e.world_id = ?1 ORDER BY n.id")?
+        .iter().map(|n| json!({"id": pick(n, "id"), "entity_id": pick(n, "entity_id"), "content": pick(n, "content"),
+                               "visible_to_players": tb_bool(n.get("visible_to_players")), "updated_at": tb_iso(n.get("updated_at"))})).collect();
+    if !notes.is_empty() {
+        out.push(("entity_notes.jsonl", jsonl(notes)?));
+    }
+
+    let mut rels: Vec<Value> = Vec::new();
+    for r in rows("SELECT r.source_id, s.name AS sn, r.target_id, t.name AS tn, r.relation FROM entity_relations r \
+                   JOIN entities s ON s.id = r.source_id JOIN entities t ON t.id = r.target_id WHERE r.world_id = ?1 ORDER BY r.id")? {
+        let rel = match r.get("relation").and_then(|v| v.as_str()) { Some(s) if !s.is_empty() => s.to_string(), _ => "related".to_string() };
+        rels.push(json!({"id": rels.len() + 1, "source_id": pick(&r, "source_id"), "source_name": pick(&r, "sn"), "target_id": pick(&r, "target_id"),
+                         "target_name": pick(&r, "tn"), "relation": rel}));
+    }
+    for r in rows("SELECT l.source_id, s.name AS sn, l.target_id, t.name AS tn FROM entity_links l \
+                   JOIN entities s ON s.id = l.source_id JOIN entities t ON t.id = l.target_id \
+                   WHERE s.world_id = ?1 AND t.world_id = ?1 ORDER BY l.source_id, l.target_id")? {
+        rels.push(json!({"id": rels.len() + 1, "source_id": pick(&r, "source_id"), "source_name": pick(&r, "sn"), "target_id": pick(&r, "target_id"),
+                         "target_name": pick(&r, "tn"), "relation": "related"}));
+    }
+    if !rels.is_empty() {
+        out.push(("relations.jsonl", jsonl(rels)?));
+    }
+
+    let rules = crate::retrieval::world_rules_markdown(world);
+    if !nd_render::text::py_strip(&rules).is_empty() {
+        out.push(("rules.md", format!("{}\n", rules.trim_end_matches('\n')).into_bytes()));
+    }
+
+    let sheets: Vec<Value> = rows("SELECT id, name, rules_md FROM sheet_templates WHERE world_id = ?1 AND TRIM(COALESCE(rules_md, '')) <> '' ORDER BY id")?
+        .iter().map(|s| json!({"id": pick(s, "id"), "template": pick(s, "name"), "rules_md": pick(s, "rules_md")})).collect();
+    if !sheets.is_empty() {
+        out.push(("rules_sheets.jsonl", jsonl(sheets)?));
+    }
+
+    let sessions: Vec<Value> = rows("SELECT id, session_num, session_date, title, summary, npcs_json, loot_json FROM game_sessions WHERE world_id = ?1 ORDER BY id")?
+        .iter().map(|s| json!({"id": pick(s, "id"), "session_num": pick(s, "session_num"), "session_date": pick(s, "session_date"), "title": pick(s, "title"),
+            "summary": pick(s, "summary"), "npcs": tb_loads(s.get("npcs_json"), true), "loot": tb_loads(s.get("loot_json"), true)})).collect();
+    if !sessions.is_empty() {
+        out.push(("sessions.jsonl", jsonl(sessions)?));
+    }
+
+    let facts: Vec<Value> = rows("SELECT id, game_session_id, content, visible_to_players, tags FROM facts WHERE world_id = ?1 ORDER BY id")?
+        .iter().map(|f| json!({"id": pick(f, "id"), "game_session_id": pick(f, "game_session_id"), "content": pick(f, "content"),
+                               "visible_to_players": tb_bool(f.get("visible_to_players")), "tags": pick(f, "tags")})).collect();
+    if !facts.is_empty() {
+        out.push(("facts.jsonl", jsonl(facts)?));
+    }
+
+    let quests: Vec<Value> = rows("SELECT id, title, status, category, summary, body, linked_entities_json, parent_id FROM quests WHERE world_id = ?1 ORDER BY id")?
+        .iter().map(|q| json!({"id": pick(q, "id"), "title": pick(q, "title"), "status": pick(q, "status"), "category": pick(q, "category"),
+            "summary": pick(q, "summary"), "body": pick(q, "body"), "linked_entities": tb_loads(q.get("linked_entities_json"), true),
+            "parent_id": pick(q, "parent_id")})).collect();
+    if !quests.is_empty() {
+        out.push(("quests.jsonl", jsonl(quests)?));
+    }
+
+    let tables: Vec<Value> = rows("SELECT id, name, category, description, entries_json FROM random_tables WHERE world_id = ?1 ORDER BY id")?
+        .iter().map(|t| json!({"id": pick(t, "id"), "name": pick(t, "name"), "category": pick(t, "category"), "description": pick(t, "description"),
+                               "entries": tb_loads(t.get("entries_json"), true)})).collect();
+    if !tables.is_empty() {
+        out.push(("tables.jsonl", jsonl(tables)?));
+    }
+
+    let instr: Vec<Value> = rows("SELECT id, title, content, applies_to_players FROM ai_instructions WHERE world_id = ?1 AND enabled = 1 ORDER BY id")?
+        .iter().map(|i| json!({"id": pick(i, "id"), "title": pick(i, "title"), "content": pick(i, "content"),
+                               "applies_to_players": tb_bool(i.get("applies_to_players"))})).collect();
+    if !instr.is_empty() {
+        out.push(("ai_instructions.jsonl", jsonl(instr)?));
+    }
+
+    let chars: Vec<Value> = rows("SELECT id, name, race, char_class, level, backstory, notes, equipment_json, feats_json FROM player_characters WHERE world_id = ?1 ORDER BY id")?
+        .iter().map(|c| json!({"id": pick(c, "id"), "name": pick(c, "name"), "race": pick(c, "race"), "char_class": pick(c, "char_class"),
+            "level": pick(c, "level"), "backstory": pick(c, "backstory"), "notes": pick(c, "notes"),
+            "equipment": tb_loads(c.get("equipment_json"), true), "feats": tb_loads(c.get("feats_json"), true)})).collect();
+    if !chars.is_empty() {
+        out.push(("characters.jsonl", jsonl(chars)?));
+    }
+    Some(out)
+}
+
+/// The finished zip: manifest first (it lists every other member's SHA-256), fixed timestamps, deflate level 6
+pub fn training_zip(world: &Map<String, Value>, members: Vec<(&'static str, Vec<u8>)>, build: &str, created: &str) -> Option<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    let mut files = Map::new();
+    for (name, data) in &members {
+        let mut info = Map::new();
+        info.insert("sha256".into(), json!(format!("{:x}", Sha256::digest(data))));
+        info.insert("bytes".into(), json!(data.len()));
+        if name.ends_with(".jsonl") {
+            info.insert("records".into(), json!(data.split(|b| *b == b'\n').filter(|l| !l.iter().all(|c| c.is_ascii_whitespace())).count()));
+        }
+        files.insert((*name).to_string(), Value::Object(info));
+    }
+    let manifest = json!({"format": "nd-training-bundle", "version": 1, "created": created, "nd_build": build,
+        "world": {"id": world.get("id")?, "name": world.get("name")?, "slug": world.get("slug")?, "description": world.get("description").cloned().unwrap_or(Value::Null)},
+        "files": files});
+    let manifest_bytes = format!("{}\n", nd_render::py_dumps_indent_as(&manifest, 2, false)).into_bytes();
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(6))
+        .last_modified_time(zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).ok()?)
+        .unix_permissions(0o644);
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    w.start_file("manifest.json", opts).ok()?;
+    w.write_all(&manifest_bytes).ok()?;
+    for (name, data) in &members {
+        w.start_file(*name, opts).ok()?;
+        w.write_all(data).ok()?;
+    }
+    Some(w.finish().ok()?.into_inner())
+}
+
+/// `GET /export/training.ndtrain` (app/main.py `export_training_bundle`): the active world's Training Bundle. GM only (the auth gate's
+/// refusal for anyone else is Python's); a world-less session is Python's 404.
+pub fn training_bundle(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !p.is_gm {
+        return None;
+    }
+    let world = p.world.clone()?;
+    let slug = world.get("slug").and_then(|v| v.as_str())?.to_string();
+    let members = training_members(&db, &world)?;
+    let (y, m, d) = civil_from_days((now / 86400) as i64);
+    let secs = now % 86400;
+    let created = format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, (secs % 3600) / 60, secs % 60);
+    let build = nd_render::build_info();
+    let build = build.get_attr("build").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "dev".to_string());
+    let zip = training_zip(&world, members, &build, &created)?;
+    Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{slug}.ndtrain\""))
+        .header("x-nd-served-by", "gateway")
+        .body(Body::from(zip))
+        .ok()
+}

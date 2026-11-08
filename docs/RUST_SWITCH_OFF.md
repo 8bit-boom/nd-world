@@ -398,6 +398,13 @@ them after each batch; the phase is done when both are empty and the steps below
   anchors stripped), its note entities (full text, hidden included, subtype tags) and every entity note grouped under its
   entity - the same markdown Python writes, byte for byte, the final rstrip included; a kind or name beyond the ASCII this
   plain-text writer promises stays Python's.
+- **The Training Bundle** (`GET /export/training.ndtrain`, export.rs `training_bundle`, oracle `app/training_bundle.py`, format
+  `docs/TRAINING_BUNDLE_FORMAT.md`): the active world's text as a zip for ND Lore Forge (entities with aliases, tags, custom fields and raw
+  access tags, entity notes, relations, rules, sheet rules, sessions, facts, quests, tables, enabled AI instructions, characters
+  without accounts), GM only. Members are the same bytes as Python's (plain SQL on both sides, no ORM, compact JSON), stored in the
+  same order with fixed timestamps; the zips' own bytes can differ (deflate implementations), so the parity rule compares member by
+  member with the manifest's `created` moment left out. Nothing in it makes the gateway decline: unreadable JSON columns are the
+  empty list / object on both sides, accented and rich text is plain UTF-8.
 - **The instance backup zip** (`GET /admin/backup.zip`, export.rs `admin_backup`): a VACUUM INTO snapshot of the database
   (taken next to the database, never inside the walked uploads tree), the manifest with the table counts, every uploaded
   file and map json under its prefix. The filename and the manifest's created_at are the build moment; the parity rule
