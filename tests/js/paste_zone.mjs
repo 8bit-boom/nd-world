@@ -91,6 +91,13 @@ took = await paste(null, [png("c.png")]);
 const got = await page.evaluate(() => window.got);
 check("custom zone gets an array of Files", took && JSON.stringify(got) === JSON.stringify(["c.png:true"]), got);
 
+// 10. a copied .webp file with no MIME type (Windows has none registered for it): the extension makes it a picture
+await page.evaluate(() => { window.got = null; });
+await page.hover("#custom");
+took = await paste(null, [{ name: "photo.webp", type: "" }]);
+const got2 = await page.evaluate(() => window.got);
+check("an untyped .webp is a picture", took && JSON.stringify(got2) === JSON.stringify(["photo.webp:true"]), got2);
+
 await browser.close();
 if (fails.length) { console.error("FAILED:\n" + fails.join("\n")); process.exit(1); }
 console.log("paste ok");

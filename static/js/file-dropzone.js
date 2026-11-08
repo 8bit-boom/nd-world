@@ -62,7 +62,14 @@ document.addEventListener("DOMContentLoaded", () => {
 // its own hand-rolled zone (the gallery album, the map upload, the schematic background) joins with one line: ndRegisterPasteZone(zone, files => ...).
 const ndPasteZones = [];
 let ndPasteHover = null;
-const ndImageExts = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
+const ndImageExts = /\.(png|jpe?g|jfif|gif|webp|avif|bmp|svg)$/i;
+// a copied file can arrive with no MIME type (Windows has none registered for .webp / .avif / .jfif): the extension says what it is
+const ndExtTypes = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", jfif: "image/jpeg", gif: "image/gif", webp: "image/webp", avif: "image/avif", bmp: "image/bmp", svg: "image/svg+xml" };
+function ndPastedImageType(f) {
+  if ((f.type || "").startsWith("image/")) return f.type;
+  const m = ndImageExts.test(f.name || "") ? /\.([a-z0-9]+)$/i.exec(f.name) : null;
+  return m ? ndExtTypes[m[1].toLowerCase()] || "" : "";
+}
 
 function ndInputTakesImages(input) {
   const accept = (input.getAttribute("accept") || "").trim();
@@ -109,13 +116,13 @@ function ndPastedName(file, i) {
 document.addEventListener("paste", (e) => {
   const cd = e.clipboardData;
   if (!cd || !cd.files || !cd.files.length || !ndPasteZones.length) return;
-  const images = Array.from(cd.files).filter((f) => (f.type || "").startsWith("image/"));
+  const images = Array.from(cd.files).filter((f) => ndPastedImageType(f));
   if (!images.length) return;
   if (ndPasteEditable(e.target) && Array.from(cd.types || []).includes("text/plain")) return; // text into a text field: an ordinary paste
   const target = ndPasteTarget(e);
   if (!target) return;
   e.preventDefault();
-  const files = images.map((f, i) => new File([f], ndPastedName(f, i), { type: f.type, lastModified: Date.now() }));
+  const files = images.map((f, i) => new File([f], ndPastedName(f, i), { type: ndPastedImageType(f), lastModified: Date.now() }));
   target.zone.classList.add("drag-over");
   setTimeout(() => target.zone.classList.remove("drag-over"), 700);
   target.handler(files);
