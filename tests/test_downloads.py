@@ -397,3 +397,16 @@ def test_rules_and_notes_omits_notes_section_when_no_notes_exist(client, seed):
     r = client.get("/export/rules-and-notes.md")
     assert r.status_code == 200
     assert "## Notes" not in r.text
+
+
+def test_rules_and_notes_handles_accented_names_and_custom_kinds(client, seed):
+    """Non-ASCII names and kinds with an underscore (a custom kind) export like any other - the gateway used to hand these to Python."""
+    _add_entity(seed.world_a.id, kind="note", subtype="récit", name="Café — Ñandú", body="Naïve lore: “quoted”.")
+    eid = _add_entity(seed.world_a.id, kind="side_quest", name="Œuvre du Chasseur", body="x")
+    _add_note(eid, "Pinned — note", True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/export/rules-and-notes.md")
+    assert r.status_code == 200
+    assert "### Café — Ñandú [récit]" in r.text and "Naïve lore: “quoted”." in r.text
+    assert "### Œuvre du Chasseur (Side_quest)" in r.text and "Pinned — note" in r.text

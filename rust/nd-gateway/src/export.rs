@@ -392,9 +392,6 @@ pub fn rules_and_notes(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
         for doc in &note_docs {
             let dname = doc.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let sub = doc.get("subtype").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
-            if dname.chars().any(|c| !c.is_ascii()) || sub.map_or(false, |s| s.chars().any(|c| !c.is_ascii())) {
-                return None; // beyond the ASCII names this export's plain-text writer promises: Python's
-            }
             parts.push(format!("### {dname}{}", sub.map(|s| format!(" [{s}]")).unwrap_or_default()));
             parts.push(String::new());
             let body = doc.get("body").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
@@ -420,12 +417,15 @@ pub fn rules_and_notes(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
             if last_entity != Some(eid) {
                 let ename = note.get("__ename").and_then(|v| v.as_str()).unwrap_or("");
                 let ekind = note.get("__ekind").and_then(|v| v.as_str()).unwrap_or("");
-                if ename.chars().any(|c| !c.is_ascii()) || !ekind.bytes().all(|b| b.is_ascii_lowercase()) {
-                    return None; // a non-ASCII name or a kind Python's capitalize() would read differently: Python's
+                if !ekind.is_ascii() {
+                    return None; // a kind Python's capitalize() could read differently from ASCII: Python's
                 }
-                // str.capitalize() of an already-lowercase ASCII kind: first letter up, the rest as they are
-                parts.push(format!("### {ename} ({}{})", ekind.chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or_default(),
-                                   ekind.get(1..).unwrap_or("")));
+                // str.capitalize() of an ASCII kind: first letter up, the rest down (kinds like "side_quest" keep their underscore)
+                let mut cap = ekind.to_ascii_lowercase();
+                if let Some(f) = cap.get_mut(0..1) {
+                    f.make_ascii_uppercase();
+                }
+                parts.push(format!("### {ename} ({cap})"));
                 parts.push(String::new());
                 last_entity = Some(eid);
             }
