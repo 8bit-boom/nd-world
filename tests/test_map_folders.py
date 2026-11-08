@@ -119,3 +119,9 @@ def test_toolbar_pastes_a_copied_markdown_file(client, seed):
     """Ctrl+V of a copied .md/.txt file into a note/entity field inserts its text (the field had only image paste before)."""
     js = client.get("/static/js/text-format-toolbar.js").text
     assert "\".markdown\"" in js and "setRangeText(text" in js
+
+
+def test_plain_text_fields_take_a_dropped_or_pasted_md_file(client, seed):
+    """nd-clipboard.js (on every page) inserts a dropped/pasted .md/.txt file into textareas without the formatting toolbar."""
+    js = client.get("/static/js/nd-clipboard.js").text
+    assert "plainTextField" in js and "'.markdown'" in js and "addEventListener('drop'" in js
