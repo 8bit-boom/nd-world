@@ -11387,3 +11387,24 @@ def test_bulk_edit_preview_and_apply_are_pythons(client, seed):
             d.commit()
         finally:
             d.close()
+
+
+def test_rules_overlay_suggest_is_pythons(client, seed):
+    """POST /worlds/<id>/rules/overlay/suggest from Python and from the gateway: the same tabs for headings of several levels, blocks, entities, an
+    empty text and a document without headings."""
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    url = f"/worlds/{seed.world_a.id}/rules/overlay/suggest"
+    docs = ["", "   ", "just text, no headings", "## One\ntext\n### One A\n#### deep\n## Two &amp; Co\n### Two A\n",
+            "# Top\n## Part I — Stuff\n### Chapter 1\n### Chapter 2\n## Part II\n:::gm\n## Secret\n:::\n## Last <b>one</b>\n",
+            "<a name=\"x\"></a>\n### Only level three\n#### four\n### Another\n", "intro para\n\n## A\n## A\n## A\n", "## Ünï — Çafé\n### Ωmega\n"]
+    for md in docs:
+        a, b = gm.post(url, data={"rules_md": md}), g.post(url, data={"rules_md": md})
+        assert (a.status_code, a.text) == (b.status_code, b.text), (md, a.text[:300], b.text[:300])
+    a, b = gm.post(url, data={}), g.post(url, data={})
+    assert (a.status_code, a.text) == (b.status_code, b.text)
+    assert g.post(url, data={"rules_md": "## A"}).headers.get("x-nd-served-by") == "gateway"

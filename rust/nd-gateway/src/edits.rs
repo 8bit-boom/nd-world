@@ -378,6 +378,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/worlds", api_world_create),
     ("/worlds/{}/rules/edit", rules_edit),
     ("/worlds/{}/rules/import", rules_import),
+    ("/worlds/{}/rules/overlay/suggest", rules_overlay_suggest),
     ("/worlds/{}/kinds/new", kinds_new),
     ("/worlds/{}/kinds/edit", kinds_save),
     ("/worlds/{}/nav-menus/edit", nav_menus_save),
@@ -8947,6 +8948,35 @@ fn world_create(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
 /// A parsed overlay whose every `order` is an integer (a float is written by Python's repr: Python's)
 fn overlay_plain(v: &Value) -> bool {
     v.get("sections").and_then(|x| x.as_object()).is_none_or(|m| m.values().all(|e| e.get("order").is_none_or(|o| o.is_i64())))
+}
+
+/// `POST /worlds/<id>/rules/overlay/suggest` (app/main.py `world_rules_overlay_suggest`): a starting tabs overlay from the rules text in the
+/// editor (not the stored one) - one tab per top-level heading with every heading beneath it
+fn rules_overlay_suggest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
+    use nd_render::rules;
+    let f = c.form()?;
+    row(&c.db, "SELECT id FROM worlds WHERE id = ?1", ids[0])?;
+    let md = nd_render::text::strip_legacy_anchors(&rules::strict_unescape(f.get("rules_md").unwrap_or(""))?);
+    if strip(&md).is_empty() {
+        return Some(crate::ai_more::detail(StatusCode::BAD_REQUEST, "Markdown is empty — nothing to build tabs from"));
+    }
+    let sections = rules::split_sections_h23(&rules::render_rules_content(&md, true));
+    let body: Vec<&Value> = sections.iter().filter(|s| s.get("id").and_then(|v| v.as_str()).is_some_and(|x| !x.is_empty())).collect();
+    if body.is_empty() {
+        return json_response(&json!({"tabs": []}));
+    }
+    let top = body.iter().filter_map(|s| s["level"].as_i64()).min()?;
+    let mut tabs: Vec<Value> = vec![];
+    for s in body {
+        let id = s["id"].as_str()?;
+        if tabs.is_empty() || s["level"].as_i64()? <= top {
+            let title = s["title"].as_str().unwrap_or("");
+            tabs.push(json!({"label": if title.is_empty() { id } else { title }, "sections": [id]}));
+        } else {
+            tabs.last_mut()?["sections"].as_array_mut()?.push(json!(id));
+        }
+    }
+    json_response(&json!({"tabs": tabs}))
 }
 
 fn rules_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
