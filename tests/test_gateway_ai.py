@@ -3151,6 +3151,14 @@ def test_ollama_and_swarmui_routes_without_those_backends_are_pythons(client, se
     g = _via(gm, base)
     studio.reply = {"choices": [{"message": {"role": "assistant", "content": "A street."}}], "usage": {"completion_tokens": 12, "prompt_tokens": 9}}
 
+    def settled(side, iid, with_code=False):
+        for _ in range(100):             # Python's import runs as a background task: wait until it has finished
+            r = side.get(f"/api/ai/ollama/upload/status/{iid}")
+            if r.status_code != 200 or r.json().get("status") not in ("queued", "reassembling"):
+                break
+            __import__("time").sleep(0.05)
+        return (r.status_code, r.json()) if with_code else r.json()
+
     def both(method, url, **kw):
         a, b = getattr(gm, method)(url, **kw), getattr(g, method)(url, **kw)
         return a, b
@@ -3178,9 +3186,9 @@ def test_ollama_and_swarmui_routes_without_those_backends_are_pythons(client, se
             r = side.post("/api/ai/ollama/upload/direct", files={"file": (name, b"GGUFxxxx", "application/octet-stream")}, data={"model_name": model})
             body = r.json()
             iid = body.pop("import_id", None)
-            st = side.get(f"/api/ai/ollama/upload/status/{iid}") if iid else None
+            st = settled(side, iid, True) if iid else None
             again = side.get(f"/api/ai/ollama/upload/status/{iid}") if iid else None
-            outs.append((r.status_code, body, st and (st.status_code, st.json()), again and (again.status_code, again.json())))
+            outs.append((r.status_code, body, st, again and (again.status_code, again.json())))
         assert outs[0] == outs[1], (name, model, outs)
     for side in (gm, g):
         assert side.get("/api/ai/ollama/upload/status/nope").status_code == 404
@@ -3194,7 +3202,7 @@ def test_ollama_and_swarmui_routes_without_those_backends_are_pythons(client, se
         wrong = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.txt", "total_chunks": "2", "model_name": "mm"})
         done = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.gguf", "total_chunks": "2", "model_name": "mm"})
         iid = done.json().pop("import_id", None)
-        res.append((out, bad.status_code, bad.json(), wrong.status_code, wrong.json(), done.status_code, done.json().get("status", done.text), side.get(f"/api/ai/ollama/upload/status/{iid}").json()))
+        res.append((out, bad.status_code, bad.json(), wrong.status_code, wrong.json(), done.status_code, done.json().get("status", done.text), settled(side, iid)))
     assert res[0] == res[1], res
     assert res[0][6] == "queued", res[0]
     # SwarmUI is not configured here
