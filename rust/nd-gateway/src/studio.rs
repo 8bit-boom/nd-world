@@ -510,10 +510,23 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
         Err(_) => return None,
     };
     if path == "/api/ai/debug" {
-        // `debug_info()` when Studio answers both probes; the failure texts are the HTTP library's, so they stay Python's
+        // `debug_info()` when Studio answers both probes; with no Python the failure is answered here too (the page's status line waits on it)
+        let unreachable = |why: String| {
+            ok(&json!({"ollama_url": base_url(&b), "ollama_reachable": false, "backend": "unsloth", "error": why, "default_model": b.model,
+                "stt": {"ok": false, "reason": "Unsloth Studio unreachable", "backend": "unsloth", "url": base_url(&b)}}))
+        };
         let uri: hyper::Uri = format!("{}/v1/models", base_url(&b)).parse().ok()?;
-        let (status, body) = crate::studio_key::studio_get(uri, &b.key).await.ok()?;
-        if status >= 400 || !crate::edits::plain_numbers(&body) {
+        let probe = tokio::time::timeout(std::time::Duration::from_secs(10), crate::studio_key::studio_get(uri, &b.key)).await;
+        let (status, body) = match probe {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) if crate::config::python_free() => return unreachable(format!("ConnectError: {e}")),
+            Err(_) if crate::config::python_free() => return unreachable("ReadTimeout: timed out".into()),
+            _ => return None,
+        };
+        if status >= 400 {
+            return if crate::config::python_free() { unreachable(format!("HTTP {status}")) } else { None };
+        }
+        if !crate::edits::plain_numbers(&body) {
             return None;
         }
         let Value::Object(o) = serde_json::from_slice::<Value>(&body).ok()? else { return None };
@@ -529,9 +542,12 @@ pub async fn ai_models_route(cfg: Arc<Config>, uri: Uri, headers: HeaderMap) -> 
         } else if o.get("data").is_some_and(|d| py_truthy(Some(d))) {
             return None;
         }
-        get(&b, "/api/hub/cached-gguf", &[]).await.ok()?;
-        return ok(&json!({"ollama_url": base_url(&b), "ollama_reachable": true, "backend": "unsloth", "loaded_models": ids, "default_model": b.model,
-            "stt": {"ok": true, "backend": "unsloth", "url": base_url(&b)}}));
+        let stt = match tokio::time::timeout(std::time::Duration::from_secs(10), get(&b, "/api/hub/cached-gguf", &[])).await {
+            Ok(Ok(_)) => json!({"ok": true, "backend": "unsloth", "url": base_url(&b)}),
+            _ if crate::config::python_free() => json!({"ok": false, "reason": "Unsloth Studio did not answer in time", "backend": "unsloth", "url": base_url(&b)}),
+            _ => return None,
+        };
+        return ok(&json!({"ollama_url": base_url(&b), "ollama_reachable": true, "backend": "unsloth", "loaded_models": ids, "default_model": b.model, "stt": stt}));
     }
     let listed = v1_models(&b).await?;
     if path == "/api/ai/resident" {
