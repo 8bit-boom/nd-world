@@ -342,10 +342,9 @@ def test_ai_stream_is_pythons(client, seed, studio):
             assert out[0][0] == 200, (i, out[0][:2])
             assert out[0][:3] == out[1][:3], (i, out[0][1], out[1][1], json.dumps(out[0][2])[:2000], json.dumps(out[1][2])[:2000])
             assert out[1][3] == "gateway", i
-        # what stays Python's: a refused player, a picture, a string option
+        # what stays Python's: a refused player, a string option (a picture is the gateway's now)
         _set_world(seed.world_a.id, players_can_use_ai_chat=False)
-        for d, body in ((player, {"messages": msgs}), (gm, {"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/uploads/a.png"}]}]}),
-                        (gm, {"messages": msgs, "options": {"temperature": "0.5"}})):
+        for d, body in ((player, {"messages": msgs}), (gm, {"messages": msgs, "options": {"temperature": "0.5"}})):
             assert _stream(_via(d, base), body)[2] != "gateway", body
     finally:
         _set_world(seed.world_a.id, players_can_use_ai_chat=False)
@@ -615,8 +614,7 @@ def test_background_chat_job_is_pythons(client, seed, studio):
     player = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
     r, d = _via(player, base).post("/api/ai/chat/jobs", json={"messages": msgs}), player.post("/api/ai/chat/jobs", json={"messages": msgs})
     assert (r.status_code, r.text) == (d.status_code, d.text)
-    for body in ({"messages": [{"role": "user", "content": "x", "attachments": [{"kind": "image", "url": "/u/a.png"}]}]},
-                 {"messages": msgs, "options": {"temperature": "0.2"}}):
+    for body in ({"messages": msgs, "options": {"temperature": "0.2"}},):
         assert _via(gm, base).post("/api/ai/chat/jobs", json=body).headers.get("x-nd-served-by") != "gateway", body
 
 
