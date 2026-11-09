@@ -436,6 +436,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/ai/attachments/upload", attach_upload),
     ("/api/ai/attachments/upload/chunk", attach_chunk),
     ("/api/maps/props/upload", props_upload),
+    ("/maps/schematic/import-uvtt", import_uvtt),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -12206,7 +12207,7 @@ fn wall_num(v: Option<&Value>) -> Option<f64> {
 }
 
 /// `map_walls.clean_fog`; None when Python's rounding is not certain
-fn clean_fog(d: &Map<String, Value>) -> Option<Map<String, Value>> {
+pub(crate) fn clean_fog(d: &Map<String, Value>) -> Option<Map<String, Value>> {
     let rng = wall_num(d.get("range"));
     let dark = wall_num(d.get("darkness"));
     let pers = wall_num(d.get("personal"));
@@ -12247,7 +12248,7 @@ fn sc_load(sc: &Map<String, Value>, col: &str, want_list: bool) -> Option<Value>
 }
 
 /// `map_walls.clean_lights` -> (lights, warnings); None for what Python spells or rounds its own way
-fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
+pub(crate) fn clean_lights(data: &[Value], sc: &Map<String, Value>) -> Option<(Vec<Value>, Vec<String>)> {
     let dim = |k: &str, d: f64| sc.get(k).and_then(|v| v.as_i64()).filter(|v| *v != 0).map_or(d, |v| v as f64).max(1.0);
     let (cw, ch) = (dim("canvas_width", 2000.0), dim("canvas_height", 1500.0));
     let (mut out, mut warnings, mut seen, mut dropped) = (vec![], vec![], Vec::<String>::new(), 0);
@@ -16591,6 +16592,73 @@ fn prop_clean_name(v: Option<&Value>, fallback: &str) -> String {
     let joined = nd_render::text::py_split_join(&raw);
     let cut: String = joined.chars().take(128).collect();
     if cut.is_empty() { fallback.to_string() } else { cut }
+}
+
+/// `POST /maps/schematic/import-uvtt` (app/main.py `schematic_import_uvtt`): a new schematic from a Universal VTT file - the picture as its background, the grid set
+/// to the file's squares, walls / outlines / doors as wall data, lights and the ambient brightness as lights and darkness. -> {slug, url, warnings, stats}
+fn import_uvtt(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let up = c.upload.as_ref()?;
+    if up.form.0.iter().any(|(k, _)| k != "name") || up.form.0.len() > 1 || up.files.len() != 1 || up.files[0].name != "file" || up.files[0].filename.is_empty() {
+        return None;
+    }
+    let name_field = up.form.get("name").unwrap_or("").to_string();
+    let filename = up.files[0].filename.clone();
+    let Some(wid) = c.world_id() else { return Some(bad400("No world selected")) };
+    if !c.can_edit_section("maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    let raw = { let up = c.upload.as_ref()?; up.read_part(&up.files[0], 80 * 1024 * 1024 + 1)? };
+    let parsed = match crate::uvtt::parse_uvtt(&raw) {
+        Ok(Some(p)) => p,
+        Ok(None) => return None,
+        Err(msg) => return Some(bad400(&msg)),
+    };
+    let had_alpha = parsed.image.color().has_alpha();
+    let webp = crate::uvtt::encode_webp(&parsed.image, had_alpha)?;
+    // title: the name, else the file's stem with _ and - as spaces; white space folded, 120 characters at most
+    let base_title = if !name_field.is_empty() { name_field } else { let (stem, _) = py_path_parts(&filename)?; stem.replace('_', " ").replace('-', " ") };
+    let title: String = nd_render::text::py_split_join(&base_title).chars().take(120).collect();
+    let title = if title.is_empty() { "Imported map".to_string() } else { title };
+    let slug = py_slug(&title, usize::MAX)?;
+    let slug = if slug.is_empty() { "imported-map".to_string() } else { slug };
+    let mut unique = slug.clone();
+    let mut i = 2;
+    loop {
+        let taken: bool = c.db.query_row("SELECT 1 FROM schematics WHERE slug = ?1", [&unique], |r| r.get::<_, i64>(0)).map(|_| true).unwrap_or(false);
+        if !taken {
+            break;
+        }
+        unique = format!("{slug}-{i}");
+        i += 1;
+    }
+    let dir = uploads_root(c)?.join("schematics");
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{unique}.webp"));
+    c.created.push(dest.clone());
+    std::fs::write(&dest, &webp).ok()?;
+    let mut dims = Map::new();
+    dims.insert("canvas_width".into(), json!(parsed.width));
+    dims.insert("canvas_height".into(), json!(parsed.height));
+    let (walls, wwarn) = clean_walls(&parsed.walls, &dims)?;
+    let (lights, lwarn) = clean_lights(&parsed.lights, &dims)?;
+    let mut fog_in = Map::new();
+    fog_in.insert("darkness".into(), json!(parsed.darkness));
+    let fog = clean_fog(&fog_in)?;
+    let grid = json!({"cell_size": parsed.cell, "offset_x": 0, "offset_y": 0, "unit_per_cell": 5, "unit_label": "ft"});
+    orm::insert(&c.db, "schematics", &[
+        ("world_id", Sql::Integer(wid)), ("name", s(&title)), ("slug", s(&unique)), ("is_html", Sql::Integer(0)),
+        ("canvas_width", Sql::Integer(parsed.width)), ("canvas_height", Sql::Integer(parsed.height)), ("canvas_bg", s("dark")), ("elements_json", s("[]")),
+        ("image_url", s(&format!("/uploads/schematics/{unique}.webp"))), ("grid_type", s("square")), ("grid_config_json", s(&nd_render::py_dumps(&grid))),
+        ("walls_json", s(&nd_render::py_dumps(&Value::Array(walls.clone())))), ("lights_json", s(&nd_render::py_dumps(&Value::Array(lights)))),
+        ("fog_json", s(&nd_render::py_dumps(&Value::Object(fog)))),
+    ])?;
+    orm::touch(&c.db, wid)?;
+    let mut warnings: Vec<String> = parsed.warnings.clone();
+    warnings.extend(wwarn);
+    warnings.extend(lwarn);
+    let mut stats = parsed.stats.clone();
+    stats.insert("wall_lines".into(), json!(walls.len()));
+    json_response(&json!({"slug": unique, "url": format!("/maps/schematic/{unique}"), "warnings": warnings, "stats": stats}))
 }
 
 /// `POST /api/maps/props/upload` (app/routers/map_props.py `props_upload`): several pictures at once, each processed on its own - the answer lists what

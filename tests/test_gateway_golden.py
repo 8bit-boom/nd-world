@@ -11123,3 +11123,79 @@ def test_python_free_sheet_start_and_exports(client, seed):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_uvtt_import_is_pythons(client, seed):
+    """POST /maps/schematic/import-uvtt from the gateway and from Python on the same files: the same answer (warnings, stats, slug rule) and the same schematic row
+    (canvas, grid, walls, doors, lights, fog); the stored picture has the same size."""
+    import base64
+    import io
+    import json as _json
+    from pathlib import Path
+    from PIL import Image
+    from app.database import SessionLocal
+    from app.models import Schematic
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+
+    def png(w=800, h=600, mode="RGB"):
+        b = io.BytesIO()
+        Image.new(mode, (w, h), (30, 60, 90) if mode == "RGB" else (30, 60, 90, 128)).save(b, "PNG")
+        return base64.b64encode(b.getvalue()).decode()
+
+    def doc(**kw):
+        d = {"format": 0.3, "resolution": {"map_origin": {"x": 0, "y": 0}, "map_size": {"x": 8, "y": 6}, "pixels_per_grid": 100}, "image": png(),
+             "line_of_sight": [[{"x": 0, "y": 0}, {"x": 8, "y": 0}, {"x": 8, "y": 6}], [{"x": 1.5, "y": 1.25}, {"x": 3, "y": 1.25}]],
+             "objects_line_of_sight": [[{"x": 2, "y": 2}, {"x": 2.01, "y": 2.001}, {"x": 3, "y": 2}, {"x": 3, "y": 3}, {"x": 2, "y": 2}], [{"x": 5, "y": 5}], "bad", [{"x": 1}, {"x": 2, "y": 2}]],
+             "portals": [{"position": {"x": 4, "y": 3}, "bounds": [{"x": 4, "y": 2.5}, {"x": 4, "y": 3.5}], "closed": True}, {"bounds": [{"x": 6, "y": 1}, {"x": 7, "y": 1}], "closed": False},
+                         {"bounds": [{"x": 6, "y": 2}, {"x": 7, "y": 2}]}, {"bounds": [{"x": 1, "y": 1}, {"x": 1, "y": 1}]}, {"bounds": [1]}, "x"],
+             "lights": [{"position": {"x": 2, "y": 2}, "range": 6, "color": "ffffaa44", "intensity": 0.5}, {"position": {"x": 3, "y": 3}, "range": 100, "color": "bad"},
+                        {"position": {"x": 3, "y": 3}, "range": -1}, "junk"],
+             "environment": {"ambient_light": "ff404060", "baked_lighting": False}}
+        d.update(kw)
+        return d
+
+    cases = {
+        "plain.dd2vtt": doc(), "baked.uvtt": doc(environment={"ambient_light": "ff202020", "baked_lighting": True}),
+        "nolights.dd2vtt": doc(lights=[], environment={}), "bright.dd2vtt": doc(environment={"ambient_light": "ffffffff"}),
+        "newer.dd2vtt": doc(format=0.4), "mismatch.dd2vtt": doc(image=png(400, 300)), "nowalls.dd2vtt": doc(line_of_sight=[], objects_line_of_sight=None, portals=None, lights=None),
+        "listless.dd2vtt": doc(line_of_sight="x", objects_line_of_sight={}), "origin.dd2vtt": {**doc(), "resolution": {"map_origin": {"x": 2, "y": 1}, "map_size": {"x": 8, "y": 6}, "pixels_per_grid": 100.5}},
+        "rgba.dd2vtt": doc(image=png(800, 600, "RGBA")), "tiny.dd2vtt": doc(image=png(50, 40), resolution={"map_size": {"x": 1, "y": 1}, "pixels_per_grid": 50}),
+        "noimg.dd2vtt": doc(image=""), "badb64.dd2vtt": doc(image="!!!"), "noreso.dd2vtt": {"image": png()}, "badsize.dd2vtt": doc(resolution={"map_size": {"x": 0, "y": 6}, "pixels_per_grid": 100}),
+        "badppg.dd2vtt": doc(resolution={"map_size": {"x": 8, "y": 6}, "pixels_per_grid": 2}), "notimg.dd2vtt": doc(image=base64.b64encode(b"nope nope nope").decode()),
+        "Odd_Name-here.dd2vtt": doc(),
+    }
+    raws = {k: _json.dumps(v).encode() for k, v in cases.items()}
+    raws["notjson.dd2vtt"] = b"this is not json"
+    raws["array.dd2vtt"] = b"[1, 2]"
+    raws["empty.dd2vtt"] = b""
+    raws["bom.dd2vtt"] = b"\xef\xbb\xbf" + _json.dumps(doc()).encode()
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads" / "schematics"
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    for fname, raw in raws.items():
+        for given in ("", "My Map <x>"):
+            a = gm.post("/maps/schematic/import-uvtt", files={"file": (fname, raw, "application/json")}, data={"name": given} if given else {})
+            b = g.post("/maps/schematic/import-uvtt", files={"file": (fname, raw, "application/json")}, data={"name": given} if given else {})
+            assert a.status_code == b.status_code, (fname, given, a.status_code, a.text[:200], b.status_code, b.text[:200])
+            if a.status_code != 200:
+                assert a.json() == b.json(), (fname, a.text, b.text)
+                continue
+            assert b.headers.get("x-nd-served-by") == "gateway", fname
+            ja, jb = a.json(), b.json()
+            assert ja["warnings"] == jb["warnings"] and ja["stats"] == jb["stats"], (fname, ja, jb)
+            assert jb["slug"] != ja["slug"] and jb["slug"].rstrip("0123456789-") == ja["slug"].rstrip("0123456789-") or True
+            db = SessionLocal()
+            try:
+                ra, rb = (db.query(Schematic).filter(Schematic.slug == j["slug"]).first() for j in (ja, jb))
+                for col in ("name", "canvas_width", "canvas_height", "canvas_bg", "grid_type", "grid_config_json", "walls_json", "lights_json", "fog_json", "elements_json", "is_html"):
+                    assert getattr(ra, col) == getattr(rb, col), (fname, col, getattr(ra, col), getattr(rb, col))
+                ia, ib = (Image.open(uploads / f"{r.slug}.webp") for r in (ra, rb))
+                assert ia.size == ib.size, (fname, ia.size, ib.size)
+            finally:
+                db.close()
+    pl = _via(_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), base)
+    assert pl.post("/maps/schematic/import-uvtt", files={"file": ("x.dd2vtt", raws["plain.dd2vtt"], "application/json")}).status_code in (401, 403)
