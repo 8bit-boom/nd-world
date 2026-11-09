@@ -3080,6 +3080,8 @@ def test_knowledge_sync_suggest_and_test_chat_are_pythons(client, seed, studio, 
     try:
         gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
         g = _via(gm, base)
+        for c in (gm, g):          # a fresh connection each time: a kept-alive one the server dropped while a slow sync ran would reset
+            c.headers["Connection"] = "close"
         out = []
         for side in (gm, g):
             studio.requests.clear()
