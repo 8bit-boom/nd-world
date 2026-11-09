@@ -149,6 +149,11 @@ fn sections_full(markdown: &str) -> Vec<Section> {
     out
 }
 
+/// `_rules_sections`: (heading, body) pairs
+pub(crate) fn rules_sections(markdown: &str) -> Vec<(String, String)> {
+    sections_full(markdown).into_iter().map(|s| (s.heading, s.body)).collect()
+}
+
 fn has_markdown_table(t: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?m)^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$").unwrap()).is_match(t)

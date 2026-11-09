@@ -26,6 +26,7 @@ pub mod stt;
 pub mod tasks;
 pub mod tts;
 pub mod ai_more;
+pub mod knowledge;
 pub mod runners;
 pub mod map_layout;
 pub mod mcp;
@@ -773,6 +774,11 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
             return resp;
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
+    }
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/api/ai/test-chat" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        if let Some(resp) = knowledge::test_chat(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
+            return resp;
+        }
     }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/kiy/inspirations" && config::python_free() {
         // public web fetches, random and live: answered here only where there is no Python to do it

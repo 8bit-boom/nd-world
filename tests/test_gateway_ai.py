@@ -33,6 +33,7 @@ class _Fake:
         self.speech = (200, self.wav, "audio/wav")   # the text-to-speech answer: (status, body, content type)
         self.delay = 0                  # seconds before that answer
         self.reply_seq = None           # answers to give in turn first (then `reply`)
+        self.embed_fail = False
         self.reject_thinking = None     # an error message: a 400 for any request asking for Thinking
         fake = self
 
@@ -123,6 +124,21 @@ class _Fake:
                     else:
                         status, reply = 200, {"ok": True}
                     body = json.dumps(reply).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/v1/embeddings":
+                    if fake.embed_fail:
+                        body = json.dumps({"error": {"message": "embed exploded"}}).encode()
+                        status = 500
+                    else:
+                        import hashlib as _h
+                        seed_bytes = _h.sha256(json.dumps(req["input"]).encode()).digest()
+                        body = json.dumps({"model": req.get("model"), "data": [{"index": 0, "embedding": [b / 255.0 - 0.3 for b in seed_bytes[:6]]}]}).encode()
+                        status = 200
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -3020,3 +3036,107 @@ def test_python_free_teacher_examples_stop_resume_failures_and_a_restart(client,
             db.commit()
         finally:
             db.close()
+
+
+def test_knowledge_sync_suggest_and_test_chat_are_pythons(client, seed, studio, tmp_path):
+    """POST /api/knowledge/sync, /suggest-relations and GET /api/ai/test-chat from Python and from the gateway on the same vault: the same summary,
+    the same chunks (with their embeddings) and edges, the same requests to the backend, the same suggestions."""
+    from app.database import SessionLocal
+    from app.models import Entity, EntityRelation, VaultChunk, World
+    base = str(client.base_url)
+    w = seed.world_a.id
+    vault = tmp_path / "vault"
+    (vault / "sub").mkdir(parents=True)
+    (vault / ".obsidian").mkdir()
+    (vault / "node_modules").mkdir()
+    (vault / "Dockside.md").write_text("---\ntitle: Dockside\ntags: [port, rough]\nlocated_in: [[Vane's Reach]]\nowner:\n  - [[Rusty Anchor]]\n  - \"[[Vane]]\"\nkind: place\n---\n"
+                                       "Intro text about the docks, see [[Vane|the builder]].\n\n## Tides\nThey rise. [[Rusty Anchor#Rooms]]\n\n### Deep\nDark water.\n", encoding="utf-8")
+    (vault / "bob.md").write_text("# Rusty Anchor\nA tavern in [[Dockside]]. Run by [[Nobody Known]].\n", encoding="utf-8")
+    (vault / "orphan.md").write_text("No headings, no entity. [[Dockside]]\n", encoding="utf-8")
+    (vault / "sub" / "Vane.MD").write_text("---\naliases: [The Builder]\nally_of: [[Dockside]]\n---\n# Vane\nBuilds. Hates [[Rusty Anchor]].\n\n\n", encoding="utf-8")
+    (vault / "sub" / "bad.md").write_bytes(b"# Caf\xc3\xa9 \xff\xfe note\nSome text\n")
+    (vault / "sub" / "empty.md").write_text("\n", encoding="utf-8")
+    (vault / ".obsidian" / "skip.md").write_text("# no\n")
+    (vault / "node_modules" / "skip.md").write_text("# no\n")
+    (vault / "readme.txt").write_text("not a note")
+    db = SessionLocal()
+    try:
+        for n in ("Dockside", "Rusty Anchor", "Vane", "Vane's Reach"):
+            db.add(Entity(world_id=w, kind="location", name=n, summary="x", visible_to_players=True))
+        db.get(World, w).obsidian_vault_path = str(vault)
+        db.commit()
+    finally:
+        db.close()
+
+    def state():
+        d = SessionLocal()
+        try:
+            return ([(c.source_path, c.heading, c.text, c.embedding) for c in d.query(VaultChunk).filter(VaultChunk.world_id == w).order_by(VaultChunk.id)],
+                    [(r.source_id, r.target_id, r.relation, r.source_path) for r in d.query(EntityRelation).filter(EntityRelation.world_id == w).order_by(EntityRelation.id)])
+        finally:
+            d.close()
+
+    try:
+        gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        g = _via(gm, base)
+        out = []
+        for side in (gm, g):
+            studio.requests.clear()
+            r = side.post("/api/knowledge/sync")
+            out.append((r.status_code, r.json() if r.status_code == 200 else r.text, state(), [q["body"] for q in studio.requests], r.headers.get("x-nd-served-by")))
+        assert out[0][0] == 200, out[0]
+        assert out[0][:4] == out[1][:4], (out[0], out[1])
+        assert out[1][4] == "gateway"
+        assert out[0][2][0] and out[0][2][1]
+        # a backend that is down: every chunk failing is an error and the index stays
+        studio.embed_fail = True
+        for side in (gm, g):
+            before = state()
+            r = side.post("/api/knowledge/sync")
+            assert r.status_code == 500 and state() == before
+        studio.embed_fail = False
+        # suggestions
+        names = [("Dockside", "Rusty Anchor", "contains"), ("Vane", "Dockside", "works_at"), ("Vane", "Vane", "self"), ("Nobody", "Vane", "x"), ("Rusty Anchor", "Vane's Reach", "near")]
+        studio.reply = {"choices": [{"message": {"role": "assistant", "content": json.dumps({"relations": [{"source": a, "target": b, "relation": c} for a, b, c in names]})}}]}
+        res = []
+        for side in (gm, g):
+            studio.requests.clear()
+            r = side.post("/api/knowledge/suggest-relations", json={"model": "  studio "})
+            res.append((r.status_code, r.text, [q["body"] for q in studio.requests]))
+        assert res[0][0] == 200 and res[0] == res[1], (res[0][:2], res[1][:2])
+        studio.reply = {"choices": [{"message": {"role": "assistant", "content": "not json"}}]}
+        res = [(side.post("/api/knowledge/suggest-relations", content=b"junk").text) for side in (gm, g)]
+        assert res[0] == res[1]
+        # the probe
+        studio.reply = {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+        for q in ("", "?model=stud"):
+            a, b = gm.get("/api/ai/test-chat" + q), g.get("/api/ai/test-chat" + q)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()), (a.text, b.text)
+            assert b.headers.get("x-nd-served-by") == "gateway"
+        # no vault path / a missing directory
+        d = SessionLocal()
+        try:
+            d.get(World, w).obsidian_vault_path = ""
+            d.commit()
+        finally:
+            d.close()
+        a, b = gm.post("/api/knowledge/sync"), g.post("/api/knowledge/sync")
+        assert (a.status_code, a.json()) == (b.status_code, b.json()) and a.status_code == 400
+        d = SessionLocal()
+        try:
+            d.get(World, w).obsidian_vault_path = str(tmp_path / "nope")
+            d.commit()
+        finally:
+            d.close()
+        for path in ("/api/knowledge/sync", "/api/knowledge/suggest-relations"):
+            a, b = gm.post(path), g.post(path)
+            assert (a.status_code, a.json()) == (b.status_code, b.json()) and a.status_code == 400
+    finally:
+        d = SessionLocal()
+        try:
+            d.get(World, w).obsidian_vault_path = None
+            d.query(VaultChunk).filter(VaultChunk.world_id == w).delete()
+            d.query(EntityRelation).filter(EntityRelation.world_id == w).delete()
+            d.commit()
+        finally:
+            d.close()
