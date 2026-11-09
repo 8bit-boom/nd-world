@@ -460,3 +460,227 @@ pub async fn test_chat(cfg: std::sync::Arc<Config>, uri: axum::http::Uri, header
     let result = crate::ai::generate_chat(&b, &resolved, "", &[json!({"role": "user", "content": "Say only the word OK."})], false, &extra).await;
     crate::edits::json_response(&json!({"requested": requested, "resolved": resolved, "note": note, "result": result}))
 }
+
+/// `POST /api/ai/unload`, `/api/ai/pull`, `/api/ai/benchmark` on the Unsloth backend (Ollama's own calls have no equivalent there)
+pub(crate) fn ollama_plan(db: &rusqlite::Connection, p: &PageCtx, path: &str, body: &[u8]) -> Option<Fut> {
+    if !p.is_gm {
+        return None;
+    }
+    let b = backend(db)?;
+    let Value::Object(o) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    match path {
+        "/api/ai/unload" => {
+            let Value::String(id) = o.get("model_id")? else { return None };
+            let id = strip(id);
+            if id.is_empty() {
+                return refusal(StatusCode::BAD_REQUEST, "model_id is required".into());
+            }
+            refusal(StatusCode::BAD_GATEWAY, format!("Could not unload {id} — is Ollama reachable?"))
+        }
+        "/api/ai/pull" => {
+            let Value::String(id) = o.get("model_id")? else { return None };
+            let msg = format!("Model pull needs the Ollama backend. With Unsloth, download the model in Studio Model Hub instead (the id to use there: {id})");
+            let text = format!("data: {}\n\ndata: [DONE]\n\n", nd_render::py_dumps(&json!({"error": msg})));
+            Some(Box::pin(async move {
+                Response::builder().status(StatusCode::OK).header("content-type", "text/event-stream; charset=utf-8").header("x-accel-buffering", "no")
+                    .header("cache-control", "no-cache").header("x-nd-served-by", "gateway").body(Body::from(text)).unwrap()
+            }))
+        }
+        _ => {
+            let model = match o.get("model") { None => String::new(), Some(Value::String(s)) => s.clone(), _ => return None };
+            Some(Box::pin(async move {
+                let m = if model.is_empty() { b.model.clone() } else { model };
+                let mut extra = Map::new();
+                extra.insert("num_predict".into(), json!(128));
+                let msgs = [json!({"role": "user", "content": "Write a two-sentence description of a rainy city street at night."})];
+                match crate::ai::chat_timed(&b, &m, &msgs, &extra).await {
+                    Err(e) => crate::ai_more::detail(StatusCode::BAD_GATEWAY, e),
+                    Ok((eval_count, prompt_count, elapsed)) => {
+                        let r1 = |x: f64| (x * 10.0).round() / 10.0;
+                        let tps = if elapsed != 0 { eval_count as f64 / (elapsed as f64 / 1e9) } else { 0.0 };
+                        answer(json!({"model": m, "tokens_per_sec": r1(tps), "prompt_tokens_per_sec": 0.0, "eval_count": eval_count, "eval_duration_ms": r1(elapsed as f64 / 1e6),
+                            "prompt_eval_count": prompt_count, "prompt_eval_duration_ms": 0.0, "load_duration_ms": 0.0, "total_duration_ms": r1(elapsed as f64 / 1e6)}))
+                    }
+                }
+            }))
+        }
+    }
+}
+
+/// the Ollama GGUF imports the page polls (`_model_imports`): id -> progress
+pub(crate) fn imports() -> &'static Mutex<HashMap<String, Value>> {
+    static I: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+    I.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `GET /api/ai/ollama/upload/status/<id>`: a finished (or failed) import is served once and forgotten
+pub fn import_status(cfg: &Config, uri: &axum::http::Uri, headers: &axum::http::HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, "GET", uri, headers, now)?;
+    if !p.is_gm || backend(&db).is_none() {
+        return None;
+    }
+    let id = uri.path().strip_prefix("/api/ai/ollama/upload/status/")?;
+    let mut map = imports().lock().ok()?;
+    let Some(progress) = map.get(id).cloned() else { return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "Unknown import_id")) };
+    if progress.get("status") == Some(&json!("done")) || progress.get("error").is_some() {
+        map.remove(id);
+    }
+    answer_opt(progress)
+}
+
+fn answer_opt(v: Value) -> Option<Response<Body>> {
+    crate::edits::json_response(&v)
+}
+
+/// SWARMUI_MODELS_DIR / subfolder / filename, None for anything that could leave it (`_swarmui_model_path`)
+pub(crate) fn swarm_model_path(subfolder: &str, filename: &str) -> Option<std::path::PathBuf> {
+    let root = std::path::PathBuf::from(std::env::var("SWARMUI_MODELS_DIR").unwrap_or_else(|_| "/data/swarmui-models".into()));
+    let rel = Path::new(subfolder).join(filename);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return None;
+    }
+    Some(root.join(rel))
+}
+
+/// whether SwarmUI is the configured image back end (`_get_type() == "swarmui"` with a URL)
+pub(crate) fn swarm_configured(db: &rusqlite::Connection) -> bool {
+    let key = db.query_row("SELECT llm_api_key FROM app_settings ORDER BY id LIMIT 1", [], |r| r.get::<_, Option<String>>(0)).ok().flatten().filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("UNSLOTH_API_KEY").ok().filter(|k| !k.is_empty()));
+    if key.is_some() && std::env::var("UNSLOTH_IMAGE_MODEL").map(|m| !m.is_empty()).unwrap_or(false) {
+        return false;
+    }
+    std::env::var("IMAGEGEN_TYPE").unwrap_or_default().to_ascii_lowercase() == "swarmui" && !std::env::var("IMAGEGEN_URL").unwrap_or_default().trim_end_matches('/').is_empty()
+}
+
+/// `POST /api/ai/imagegen/{restart,update,free-memory}` and `DELETE /api/ai/imagegen/models/downloaded` with no SwarmUI to talk to
+pub fn swarm_local(cfg: &Config, method: &axum::http::Method, uri: &axum::http::Uri, headers: &axum::http::HeaderMap) -> Option<Response<Body>> {
+    let db = crate::writes::open(cfg)?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let p = crate::layout::build(&db, cfg, method.as_str(), uri, headers, now)?;
+    if !p.is_gm || swarm_configured(&db) {
+        return None;
+    }
+    if *method == axum::http::Method::POST {
+        return answer_opt(json!({"ok": false}));
+    }
+    let q = |n: &str| crate::pages::query_param(uri, n).unwrap_or_default();
+    let (sub, name) = (q("subfolder"), q("filename"));
+    let path = if name.is_empty() { None } else { swarm_model_path(&sub, &name) };
+    match path {
+        Some(f) if f.is_file() => {
+            std::fs::remove_file(&f).ok()?;
+            answer_opt(json!({"ok": true, "model_list_refreshed": false}))
+        }
+        _ => Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "File not found")),
+    }
+}
+
+/// `POST /api/ai/imagegen/models/download`: a model file streamed into SWARMUI_MODELS_DIR, progress as SSE
+pub(crate) fn swarm_download_plan(db: &rusqlite::Connection, p: &PageCtx, body: &[u8]) -> Option<Fut> {
+    if !p.is_gm || swarm_configured(db) {
+        return None;
+    }
+    let Value::Object(o) = serde_json::from_slice::<Value>(body).ok()? else { return None };
+    let Value::String(url) = o.get("url")? else { return None };
+    let text = |k: &str| match o.get(k) { None => Some(String::new()), Some(Value::String(s)) => Some(s.clone()), _ => None };
+    let (sub, mut filename) = (text("subfolder")?, text("filename")?);
+    let url = strip(url);
+    Some(Box::pin(async move {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        tokio::spawn(async move {
+            let send = |v: Value| crate::ai::sse(&v);
+            let finish = |tx: &tokio::sync::mpsc::Sender<String>, v: Value| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(crate::ai::sse(&v)).await;
+                    let _ = tx.send("data: [DONE]\n\n".to_string()).await;
+                }
+            };
+            let _ = &send;
+            if url.is_empty() {
+                return finish(&tx, json!({"error": "No URL given"})).await;
+            }
+            if filename.is_empty() {
+                let no_q = url.split(['?', '#']).next().unwrap_or("");
+                let after = no_q.split_once("://").map_or(no_q, |(_, r)| r);
+                let path = after.find('/').map_or("", |i| &after[i..]);
+                filename = path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
+            }
+            if filename.is_empty() || filename.contains('/') || filename.contains('\\') {
+                return finish(&tx, json!({"error": "Could not determine a safe filename from that URL — provide one explicitly"})).await;
+            }
+            let Some(dest) = swarm_model_path(&sub, &filename) else { return finish(&tx, json!({"error": "Invalid subfolder/filename"})).await };
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let tmp = dest.with_file_name(format!("{}.part", dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+            let result = swarm_fetch(&url, &tmp, &tx).await;
+            match result {
+                Ok(()) => {
+                    if std::fs::rename(&tmp, &dest).is_err() {
+                        let _ = std::fs::remove_file(&tmp);
+                        return finish(&tx, json!({"error": "OSError: could not move the file into place"})).await;
+                    }
+                    let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                    finish(&tx, json!({"status": "done", "subfolder": sub, "filename": filename, "bytes": bytes, "model_list_refreshed": false})).await;
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    finish(&tx, json!({"error": e})).await;
+                }
+            }
+        });
+        crate::ai::stream_response(rx)
+    }))
+}
+
+async fn swarm_fetch(url: &str, tmp: &Path, tx: &tokio::sync::mpsc::Sender<String>) -> Result<(), String> {
+    use http_body_util::BodyExt;
+    use tokio::io::AsyncWriteExt;
+    let mut current: hyper::Uri = url.parse().map_err(|e| format!("InvalidURL: {e}"))?;
+    let mut resp = None;
+    for _ in 0..20 {
+        let req = hyper::Request::builder().method("GET").uri(current.clone()).header("user-agent", "python-httpx/0.27").body(http_body_util::Full::new(bytes::Bytes::new())).map_err(|e| format!("InvalidURL: {e}"))?;
+        let r = tokio::time::timeout(Duration::from_secs(60), client().request(req)).await.map_err(|_| "ConnectTimeout: timed out".to_string())?.map_err(|e| format!("ConnectError: {e}"))?;
+        let status = r.status().as_u16();
+        if matches!(status, 301 | 302 | 303 | 307 | 308) {
+            if let Some(loc) = r.headers().get("location").and_then(|v| v.to_str().ok()) {
+                current = crate::studio_key::resolve_location(&current, loc)?;
+                continue;
+            }
+        }
+        resp = Some(r);
+        break;
+    }
+    let resp = resp.ok_or_else(|| "TooManyRedirects: Exceeded maximum allowed redirects.".to_string())?;
+    if resp.status().as_u16() >= 400 {
+        return Err(format!("HTTP {} fetching model file", resp.status().as_u16()));
+    }
+    let total: u64 = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut file = tokio::fs::File::create(tmp).await.map_err(|e| format!("OSError: {e}"))?;
+    let (mut completed, mut pending) = (0u64, 0usize);
+    let mut body = resp.into_body();
+    loop {
+        let frame = match tokio::time::timeout(Duration::from_secs(60), body.frame()).await {
+            Err(_) => return Err("ReadTimeout: timed out".into()),
+            Ok(None) => break,
+            Ok(Some(Err(e))) => return Err(format!("ReadError: {e}")),
+            Ok(Some(Ok(f))) => f,
+        };
+        if let Some(data) = frame.data_ref() {
+            file.write_all(data).await.map_err(|e| format!("OSError: {e}"))?;
+            completed += data.len() as u64;
+            pending += data.len();
+            if pending >= 1024 * 1024 {
+                pending = 0;
+                if tx.send(crate::ai::sse(&json!({"total": total, "completed": completed}))).await.is_err() {
+                    return Err("client went away".into());
+                }
+            }
+        }
+    }
+    file.flush().await.map_err(|e| format!("OSError: {e}"))?;
+    Ok(())
+}

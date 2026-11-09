@@ -187,6 +187,7 @@ const ROUTES: &[(&str, Handler)] = &[
     ("/api/media-rename/undo", media_rename_undo),
     ("/api/ai/attachments/audio-jobs/complete", attach_audio_job_complete),
     ("/api/ai/attachments/upload/complete", attach_complete),
+    ("/api/ai/ollama/upload/complete", ollama_complete),
     ("/maps/schematic/new", schematic_new),
     ("/settings/resources", settings_resources_save),
     ("/settings", settings_save),
@@ -438,6 +439,8 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/ai/attachments/upload/chunk", attach_chunk),
     ("/api/maps/props/upload", props_upload),
     ("/maps/schematic/import-uvtt", import_uvtt),
+    ("/api/ai/ollama/upload/direct", ollama_direct),
+    ("/api/ai/ollama/upload/chunk", ollama_chunk),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -8977,6 +8980,60 @@ fn rules_overlay_suggest(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {
         }
     }
     json_response(&json!({"tabs": tabs}))
+}
+
+
+const OLLAMA_UNSLOTH: &str = "Upload-from-PC needs the Ollama backend. With Unsloth, add the GGUF via Studio's Model Hub instead.";
+
+/// The Ollama upload routes on the Unsloth backend (app/ai.py `import_local_gguf_model`): the file is taken and dropped again, and the import the
+/// page polls ends in Studio's advice - Ollama's blob push has no equivalent there. Anything else (a real Ollama) is Python's.
+fn ollama_gate(c: &Ctx) -> Option<()> {
+    (c.p.is_gm && crate::ai::backend(&c.db).is_some()).then_some(())
+}
+
+fn ollama_import_start(name: &str) -> Option<Response<Body>> {
+    let id: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    let err = if strip(name).is_empty() { "No model name given" } else { OLLAMA_UNSLOTH };
+    crate::knowledge::imports().lock().ok()?.insert(id.clone(), json!({"error": err}));
+    json_response(&json!({"import_id": id, "status": "queued"}))
+}
+
+fn ollama_direct(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    ollama_gate(c)?;
+    let up = c.upload.as_ref()?;
+    if up.form.0.iter().any(|(k, _)| k != "model_name") || !up.form.has("model_name") || up.files.len() != 1 || up.files[0].name != "file" {
+        return None;
+    }
+    let name = up.form.get("model_name").unwrap_or("").to_string();
+    let file = up.files[0].filename.clone();
+    if py_suffix_lower(&file)? != ".gguf" {
+        return Some(bad400("Only .gguf files are supported"));
+    }
+    if up.files[0].len as i64 > env_bytes("MAX_MODEL_UPLOAD_BYTES", 80 * 1024 * 1024 * 1024)? {
+        return None;
+    }
+    ollama_import_start(&name)
+}
+
+fn ollama_chunk(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    ollama_gate(c)?;
+    let cap = env_bytes("MAX_MODEL_UPLOAD_BYTES", 80 * 1024 * 1024 * 1024)?;
+    save_chunk_in(c, "ollama_models", cap)
+}
+
+fn ollama_complete(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    ollama_gate(c)?;
+    let f = c.form()?;
+    let id = f.get("upload_id").filter(|v| !v.is_empty())?.to_string();
+    let name = f.get("filename")?.to_string();
+    let total = form_int_required(&f, "total_chunks")?;
+    let model = f.get("model_name")?.to_string();
+    if py_suffix_lower(&name)? != ".gguf" {
+        return Some(bad400("Only .gguf files are supported"));
+    }
+    let (dir, _parts, _size) = chunk_parts(c, "ollama_models", &id, total)?;
+    c.removals.push(dir);
+    ollama_import_start(&model)
 }
 
 fn rules_edit(c: &mut Ctx, ids: &[i64]) -> Option<Response<Body>> {

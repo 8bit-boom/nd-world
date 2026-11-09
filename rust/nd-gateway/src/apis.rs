@@ -39,6 +39,7 @@ pub fn get(cfg: Arc<Config>, uri: &Uri, headers: &HeaderMap) -> Option<Response<
         "/api/ai/imagegen/status" | "/api/ai/imagegen/models" | "/api/ai/imagegen/loras" | "/api/ai/imagegen/upscalers" | "/api/ai/imagegen/refiners" | "/api/ai/imagegen/ipadapter-models"
         | "/api/ai/imagegen/progress" | "/api/ai/imagegen/updates" | "/api/ai/imagegen/backends" | "/api/ai/imagegen/samplers-schedulers" => imagegen_unbacked(&cfg, uri, headers),
         "/api/ai/imagegen/starred" => imagegen_starred(&cfg, uri, headers),
+        path if path.starts_with("/api/ai/ollama/upload/status/") => crate::knowledge::import_status(&cfg, uri, headers),
         "/openapi.json" | "/docs" | "/docs/oauth2-redirect" | "/redoc" => api_docs(&cfg, uri, headers),
         "/api/ai/ollama/hf-search" | "/api/ai/ollama/hf-files" | "/api/ai/imagegen/models/hf-files" => hf_discovery(&cfg, uri, headers),
         "/api/ai/unsloth/models" | "/api/ai/unsloth/image/status" | "/api/ai/unsloth/image/load-progress" | "/api/ai/unsloth/auto-switch" | "/api/ai/unsloth/status"
@@ -122,7 +123,7 @@ pub fn is_get(path: &str) -> bool {
     matches!(path, "/api/hover-preview/config" | "/api/audio-jobs" | "/api/entities/picker" | "/api/cockpit/workspace" | "/api/cockpit/player-board" | "/api/calendar/search" | "/calendar/event-jump" | "/api/me" | "/api/view-prefs" | "/api/dice/history" | "/api/display/state" | "/rules/download.md" | "/api/ai/imagegen/jobs" | "/api/ai/imagegen/model-templates" | "/api/ai/world-summary")
         || id_between(path, "/pages/", "/download").is_some() || tpl_export_path(path).is_some() || export_json_path(path).is_some()
         || session_media_id(path).is_some() || id_between(path, "/api/ai/assist-job/", "").is_some() || id_between(path, "/api/entity/", "/preview").is_some() || id_between(path, "/entity/", "/download.md").is_some()
-        || id_between(path, "/api/ai/imagegen/jobs/", "").is_some()
+        || id_between(path, "/api/ai/imagegen/jobs/", "").is_some() || path.starts_with("/api/ai/ollama/upload/status/")
         || (path.starts_with("/worlds/switch/") && path.len() > "/worlds/switch/".len() && !path["/worlds/switch/".len()..].contains('/')) || vitals_id(path).is_some() || audio_job_id(path).is_some() || pack_world(path).is_some()
         || media_run_id(path).is_some() || session_audio_job_id(path).is_some() || player_image_job_id(path).is_some()
         || kind_zip_path(path).is_some()
@@ -3964,10 +3965,26 @@ fn imagegen_downloaded(cfg: &Config, uri: &Uri, headers: &HeaderMap) -> Option<R
         return None;
     }
     let dir = std::path::PathBuf::from(std::env::var("SWARMUI_MODELS_DIR").unwrap_or_else(|_| "/data/swarmui-models".into()));
-    if dir.is_dir() && std::fs::read_dir(&dir).ok()?.next().is_some() {
-        return None;
+    let mut models: Vec<Value> = vec![];
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Value>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let path = e.path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if path.is_file() && !e.file_name().to_string_lossy().ends_with(".part") {
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                let sub = rel.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                out.push(json!({"subfolder": sub, "filename": e.file_name().to_string_lossy(), "bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)}));
+            }
+        }
     }
-    crate::edits::json_response(&json!({"models": [], "folder_suggestions": ["", "LoRA", "VAE", "clip", "diffusion_models", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding"]}))
+    if dir.is_dir() {
+        walk(&dir, &dir, &mut models);
+    }
+    crate::edits::json_response(&json!({"models": models, "folder_suggestions": ["", "LoRA", "VAE", "clip", "diffusion_models", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding"]}))
 }
 
 /// `GET /api/quests/board`: the active world's top-level active quests for the cockpit (GM; 400 without a world)

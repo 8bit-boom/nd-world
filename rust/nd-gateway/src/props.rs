@@ -35,7 +35,7 @@ pub fn process_prop(raw: &[u8], ext: &str) -> Outcome {
             Ok(Some(Prop { data: clean.bytes, ext: ".svg", width: w, height: h }))
         }
         ".png" | ".jpg" | ".jpeg" | ".webp" | ".gif" | ".bmp" | ".tif" | ".tiff" => process_raster(raw),
-        ".avif" => Ok(None),
+        ".avif" => process_raster(raw),
         _ => Err("Use PNG, JPG, WebP, GIF, AVIF, BMP, TIFF or SVG".into()),
     }
 }
@@ -48,17 +48,28 @@ fn process_raster(raw: &[u8]) -> Outcome {
     }
     let unreadable = || "That file is not a picture this app can read".to_string();
     let reader = image::ImageReader::new(Cursor::new(raw)).with_guessed_format().map_err(|_| unreadable())?;
-    if reader.format() == Some(image::ImageFormat::Avif) {
-        return Ok(None);
-    }
-    let mut decoder = reader.into_decoder().map_err(|_| unreadable())?;
-    let (w0, h0) = decoder.dimensions();
-    if (w0 as u64) * (h0 as u64) > MAX_PIXELS {
-        return Err("That picture has too many pixels".into());
-    }
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = DynamicImage::from_decoder(decoder).map_err(|_| unreadable())?;
-    img.apply_orientation(orientation);
+    let mut img = if reader.format() == Some(image::ImageFormat::Avif) {
+        // no AVIF decoder in this build: without Python ffmpeg reads it (its colour conversion is its own); next to Python it is Python's
+        if !crate::config::python_free() {
+            return Ok(None);
+        }
+        let img = crate::imaging::decode_bytes_ffmpeg(raw).ok_or_else(unreadable)?;
+        if (img.width() as u64) * (img.height() as u64) > MAX_PIXELS {
+            return Err("That picture has too many pixels".into());
+        }
+        img
+    } else {
+        let mut decoder = reader.into_decoder().map_err(|_| unreadable())?;
+        let (w0, h0) = decoder.dimensions();
+        if (w0 as u64) * (h0 as u64) > MAX_PIXELS {
+            return Err("That picture has too many pixels".into());
+        }
+        let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+        let mut img = DynamicImage::from_decoder(decoder).map_err(|_| unreadable())?;
+        img.apply_orientation(orientation);
+        img
+    };
+    let _ = &mut img;
     let mut rgba = img.to_rgba8();
     // trim: the box of the pixels whose alpha is above 8
     let (w, h) = rgba.dimensions();

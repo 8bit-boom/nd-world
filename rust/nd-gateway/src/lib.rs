@@ -775,6 +775,13 @@ async fn handle_inner(State(app): State<App>, req: Request<Body>) -> Response {
         }
         return app.proxy.forward(Request::from_parts(parts, Body::from(bytes)), peer).await;
     }
+    if matches!((req.method(), req.uri().path()), (&axum::http::Method::POST, "/api/ai/imagegen/restart" | "/api/ai/imagegen/update" | "/api/ai/imagegen/free-memory") | (&axum::http::Method::DELETE, "/api/ai/imagegen/models/downloaded"))
+        && app.cfg.rust_routes.iter().any(|r| r == "pages") {
+        let (cfg, m, uri, headers) = (app.cfg.clone(), req.method().clone(), req.uri().clone(), req.headers().clone());
+        if let Ok(Some(resp)) = tokio::task::spawn_blocking(move || knowledge::swarm_local(&cfg, &m, &uri, &headers)).await {
+            return resp;
+        }
+    }
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/ai/test-chat" && app.cfg.rust_routes.iter().any(|r| r == "pages") {
         if let Some(resp) = knowledge::test_chat(app.cfg.clone(), req.uri().clone(), req.headers().clone()).await {
             return resp;

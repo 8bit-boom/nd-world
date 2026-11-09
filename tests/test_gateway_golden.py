@@ -11449,3 +11449,26 @@ def test_api_docs_are_pythons(client, seed):
                 assert (a.status_code, a.headers["content-type"], a.content) == (b.status_code, b.headers["content-type"], b.content), (email, url, a.status_code, b.status_code)
             if email == seed.gm.email:
                 assert b.headers.get("x-nd-served-by") == "gateway", url
+
+
+def test_avif_prop_upload_without_python(client, seed):
+    """An AVIF picture in the prop library: next to Python it is Python's; in the image with no Python ffmpeg decodes it, and the prop is trimmed and stored as WebP."""
+    import io
+    import shutil
+    from PIL import Image, features
+    import pytest
+    if not shutil.which("ffmpeg") or not features.check("avif"):
+        pytest.skip("needs ffmpeg and an AVIF-capable Pillow")
+    im = Image.new("RGBA", (200, 120), (0, 0, 0, 0))
+    im.paste((200, 40, 40, 255), (30, 20, 170, 100))
+    b = io.BytesIO()
+    im.save(b, "AVIF", quality=90)
+    proc, base, g = _python_free_gateway(seed)
+    try:
+        r = g.post("/api/maps/props/upload", files=[("files", ("sofa.avif", b.getvalue(), "image/avif"))])
+        assert r.status_code == 200, r.text[:300]
+        added = r.json()["added"]
+        assert len(added) == 1 and added[0]["kind"] != "svg" and not r.json()["refused"], r.json()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

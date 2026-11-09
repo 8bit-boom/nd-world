@@ -1,6 +1,7 @@
 """The Chronicler through the gateway (rust/nd-gateway/src/ai.rs) against Python's, with a fake Unsloth Studio backend both talk to:
 the same system prompt and request reach the backend, and the same SSE stream comes back."""
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -3140,3 +3141,67 @@ def test_knowledge_sync_suggest_and_test_chat_are_pythons(client, seed, studio, 
             d.commit()
         finally:
             d.close()
+
+
+def test_ollama_and_swarmui_routes_without_those_backends_are_pythons(client, seed, studio):
+    """On the Unsloth backend: unload / pull / benchmark, the GGUF upload trio and its status poll, and (with no SwarmUI configured) restart / update /
+    free-memory / deleting a downloaded model answer as Python does."""
+    base = str(client.base_url)
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    g = _via(gm, base)
+    studio.reply = {"choices": [{"message": {"role": "assistant", "content": "A street."}}], "usage": {"completion_tokens": 12, "prompt_tokens": 9}}
+
+    def both(method, url, **kw):
+        a, b = getattr(gm, method)(url, **kw), getattr(g, method)(url, **kw)
+        return a, b
+
+    for body in ({"model_id": "m"}, {"model_id": "  "}, {"model_id": ""}, {}):
+        a, b = both("post", "/api/ai/unload", json=body)
+        assert (a.status_code, a.text) == (b.status_code, b.text), body
+    a, b = both("post", "/api/ai/pull", json={"model_id": "hf.co/x/y:z"})
+    assert (a.status_code, a.text, a.headers["content-type"]) == (b.status_code, b.text, b.headers["content-type"])
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    studio.requests.clear()
+    a, b = both("post", "/api/ai/benchmark", json={})
+    assert a.status_code == b.status_code == 200
+    ja, jb = a.json(), b.json()
+    assert set(ja) == set(jb) and ja["model"] == jb["model"] and ja["eval_count"] == jb["eval_count"] == 12 and ja["prompt_eval_count"] == jb["prompt_eval_count"] == 9
+    assert studio.requests[0]["body"] == studio.requests[1]["body"]
+    studio.status = 500
+    a, b = both("post", "/api/ai/benchmark", json={"model": "other"})
+    studio.status = 200
+    assert (a.status_code, a.text) == (b.status_code, b.text)
+    # the GGUF upload on Studio: taken, then an import that ends in Studio's advice
+    for name, model in (("m.gguf", "mine"), ("m.gguf", " "), ("m.bin", "mine")):
+        outs = []
+        for side in (gm, g):
+            r = side.post("/api/ai/ollama/upload/direct", files={"file": (name, b"GGUFxxxx", "application/octet-stream")}, data={"model_name": model})
+            body = r.json()
+            iid = body.pop("import_id", None)
+            st = side.get(f"/api/ai/ollama/upload/status/{iid}") if iid else None
+            again = side.get(f"/api/ai/ollama/upload/status/{iid}") if iid else None
+            outs.append((r.status_code, body, st and (st.status_code, st.json()), again and (again.status_code, again.json())))
+        assert outs[0] == outs[1], (name, model, outs)
+    for side in (gm, g):
+        assert side.get("/api/ai/ollama/upload/status/nope").status_code == 404
+    res = []
+    for side in (gm, g):
+        uid = os.urandom(16).hex()
+        out = []
+        for i in range(2):
+            out.append(side.post("/api/ai/ollama/upload/chunk", files={"file": ("c", b"abc", "application/octet-stream")}, data={"upload_id": uid, "chunk_index": str(i)}).json())
+        bad = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.gguf", "total_chunks": "3", "model_name": "mm"})
+        wrong = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.txt", "total_chunks": "2", "model_name": "mm"})
+        done = side.post("/api/ai/ollama/upload/complete", data={"upload_id": uid, "filename": "m.gguf", "total_chunks": "2", "model_name": "mm"})
+        iid = done.json().pop("import_id", None)
+        res.append((out, bad.status_code, bad.json(), wrong.status_code, wrong.json(), done.status_code, done.json().get("status", done.text), side.get(f"/api/ai/ollama/upload/status/{iid}").json()))
+    assert res[0] == res[1], res
+    assert res[0][6] == "queued", res[0]
+    # SwarmUI is not configured here
+    for url in ("/api/ai/imagegen/restart", "/api/ai/imagegen/update", "/api/ai/imagegen/free-memory"):
+        a, b = both("post", url)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()) == (200, {"ok": False}), url
+        assert b.headers.get("x-nd-served-by") == "gateway"
+    for q in ("", "?filename=", "?filename=nothing-here.safetensors", "?subfolder=..&filename=x", "?subfolder=%2Fetc&filename=passwd"):
+        a, b = both("delete", "/api/ai/imagegen/models/downloaded" + q)
+        assert (a.status_code, a.json()) == (b.status_code, b.json()), q

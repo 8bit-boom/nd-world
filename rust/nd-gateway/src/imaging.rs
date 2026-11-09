@@ -450,3 +450,22 @@ pub fn convert_to(path: &Path, target: &str, quality: u8) -> Convert {
     }
     Convert::Done(dest)
 }
+
+/// A still picture in memory (an AVIF upload) decoded by ffmpeg into RGBA; only without Python
+pub fn decode_bytes_ffmpeg(raw: &[u8]) -> Option<DynamicImage> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("ffmpeg").args(["-v", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let data = raw.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&data);
+    });
+    let out = child.wait_with_output().ok()?;
+    let _ = writer.join();
+    if !out.status.success() || out.stdout.is_empty() {
+        return None;
+    }
+    Some(DynamicImage::ImageRgba8(image::load_from_memory_with_format(&out.stdout, image::ImageFormat::Png).ok()?.to_rgba8()))
+}

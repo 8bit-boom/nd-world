@@ -185,11 +185,11 @@ fn translate_options(o: &Map<String, Value>) -> Map<String, Value> {
     out
 }
 
-fn sse(v: &Value) -> String {
+pub(crate) fn sse(v: &Value) -> String {
     format!("data: {}\n\n", nd_render::py_dumps(v))
 }
 
-fn stream_response(rx: tokio::sync::mpsc::Receiver<String>) -> Response<Body> {
+pub(crate) fn stream_response(rx: tokio::sync::mpsc::Receiver<String>) -> Response<Body> {
     let stream = tokio_stream_from(rx);
     Response::builder()
         .status(StatusCode::OK)
@@ -2654,6 +2654,42 @@ pub(crate) async fn chat_with_schema(b: &Backend, model: &str, messages: &[Value
         return Err(format!("Ollama error {status}: {}", error_text(&bytes, status)));
     }
     content(&bytes)
+}
+
+
+/// `benchmark_model`'s one call: (completion tokens, prompt tokens, wall-clock nanoseconds) of a non-streamed chat, or the ValueError text Python raises
+pub(crate) async fn chat_timed(b: &Backend, model: &str, messages: &[Value], extra: &Map<String, Value>) -> Result<(i64, i64, i64), String> {
+    let mut opts = b.options_for(model);
+    for (k, v) in extra {
+        opts.insert(k.clone(), v.clone());
+    }
+    opts.remove("num_ctx");
+    let mut body = Map::new();
+    body.insert("model".into(), json!(model));
+    body.insert("messages".into(), Value::Array(messages.to_vec()));
+    body.insert("stream".into(), json!(false));
+    body.extend(translate_options(&opts));
+    body.insert("chat_template_kwargs".into(), json!({"enable_thinking": false}));
+    let req = backend_request(b, "POST", "/v1/chat/completions", Some(&Value::Object(body))).ok_or_else(|| "AI unavailable: request".to_string())?;
+    let started = std::time::Instant::now();
+    let resp = client().request(req).await.map_err(|e| format!("AI unavailable: ConnectError: {e}"))?;
+    let status = resp.status().as_u16();
+    let bytes = resp.into_body().collect().await.map_err(|e| format!("AI unavailable: ReadError: {e}"))?.to_bytes();
+    if status >= 400 {
+        let m = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(o)) => match o.get("error") {
+                Some(Value::Object(e)) => e.get("message").map(|m| match m { Value::String(s) => s.clone(), other => other.to_string() }).unwrap_or_default(),
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+        };
+        return Err(format!("Ollama error {status}: {}", if m.is_empty() { format!("HTTP {status}") } else { m }));
+    }
+    let elapsed = started.elapsed().as_nanos() as i64;
+    let v: Value = serde_json::from_slice(&bytes).map_err(|_| "AI unavailable: JSONDecodeError: the backend's answer is not JSON".to_string())?;
+    let n = |k: &str| v.pointer(&format!("/usage/{k}")).and_then(|x| x.as_i64()).unwrap_or(0);
+    Ok((n("completion_tokens"), n("prompt_tokens"), elapsed))
 }
 
 /// `_normalized_fact_key`
