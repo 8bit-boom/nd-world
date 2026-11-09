@@ -128,7 +128,10 @@ fn encode(img: &DynamicImage, format: &str, quality: u8, dest: &Path) -> Option<
         }
         _ => return None,
     };
-    std::fs::write(dest, bytes).ok()
+    // written beside the target and renamed into place: a request that arrives while it is being made (or a stop in the middle) never meets half a file
+    let tmp = dest.with_file_name(format!(".{}.tmp{}", dest.file_name()?.to_string_lossy(), std::process::id()));
+    std::fs::write(&tmp, bytes).ok()?;
+    std::fs::rename(&tmp, dest).ok().or_else(|| { let _ = std::fs::remove_file(&tmp); None })
 }
 
 /// What a picture upload leaves behind: the picture's final path, and every file written (to remove them all if the request
@@ -361,10 +364,46 @@ fn is_animated(path: &Path) -> bool {
 
 /// The display copy of `path` (made now when missing, older than the original, or made smaller than today's size), or None when the setting is
 /// "original", the picture is small enough as it is, animated, unreadable, or the copy would barely be smaller - the original is then served.
+/// Whether an AVIF / WebP file is all there: the box sizes of an AVIF add up to the file's length, a WebP's RIFF size matches (a copy cut short by a
+/// stop in the middle of writing it was served for good, and cached by the browser as "immutable")
+fn complete(p: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(p) else { return false };
+    match suffix_lower(p).as_str() {
+        ".webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize + 8 <= bytes.len(),
+        ".avif" => {
+            let (mut at, mut boxes) = (0usize, 0);
+            while at + 8 <= bytes.len() {
+                let size = u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize;
+                let size = if size == 0 { bytes.len() - at } else { size };
+                if size < 8 || at + size > bytes.len() {
+                    return false;
+                }
+                at += size;
+                boxes += 1;
+            }
+            boxes >= 2 && at == bytes.len()
+        }
+        _ => true,
+    }
+}
+
+fn display_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
+    let mut m = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    m.entry(path.to_path_buf()).or_default().clone()
+}
+
 pub fn make_display(preview_format: &str, path: &Path) -> Option<PathBuf> {
     if preview_format == "original" {
         return None;
     }
+    // one maker per picture: a second request for the same copy waits for the first and then finds it
+    let lock = display_lock(path);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    make_display_locked(preview_format, path)
+}
+
+fn make_display_locked(preview_format: &str, path: &Path) -> Option<PathBuf> {
     let ext = suffix_lower(path);
     let stem = path.file_stem()?.to_string_lossy().to_string();
     if !CONVERTIBLE.contains(&ext.as_str()) || ext == ".gif" || stem.ends_with("_thumb") || stem.ends_with("_display") {
@@ -374,7 +413,7 @@ pub fn make_display(preview_format: &str, path: &Path) -> Option<PathBuf> {
     let dest = path.with_file_name(format!("{stem}{suffix}"));
     let (orig_meta, dest_meta) = (std::fs::metadata(path).ok()?, std::fs::metadata(&dest).ok());
     if let Some(dm) = &dest_meta {
-        if dm.modified().ok()? >= orig_meta.modified().ok()? {
+        if dm.modified().ok()? >= orig_meta.modified().ok()? && complete(&dest) {
             if let Some((w, h)) = image::ImageReader::open(&dest).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok()) {
                 if w.max(h) >= DISPLAY_MAX_DIM {
                     return Some(dest);
