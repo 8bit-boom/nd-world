@@ -8181,7 +8181,7 @@ def test_python_free_live_jobs_list_reads_the_rename_runs(client, seed):
         assert j.status_code == 501 and "Python app" in j.json()["detail"], (j.status_code, j.text)
         w = free.post("/api/definitely-not-ported-here", json={})
         assert w.status_code == 400 and "could not be completed" in w.json()["detail"], (w.status_code, w.text)
-        h = free.get("/docs", headers={"Accept": "text/html"})
+        h = free.get("/definitely-not-ported-page", headers={"Accept": "text/html"})
         assert h.status_code == 501 and "Not available here" in h.text, (h.status_code, h.text[:200])
     finally:
         proc.terminate()
