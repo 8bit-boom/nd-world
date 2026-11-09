@@ -185,12 +185,19 @@ PromptPresets), `GET /rules/download.md` and `GET /pages/<id>/download` (visibil
 Content-Disposition spelling), `GET /worlds/<id>/export/rules.json` and `/player-characters.json`, the sheet-template
 JSON export, `POST /api/sessions/<id>/recap-audio/upload` (the extension allowlist, the caps, the clip created and
 attached), and `POST /api/ai/entity-context` (the ask-ai gate, `entity_gate`, gmonly stripped, the ported
-`best_matching_excerpt` at 4000 chars). Still Python's, in batch order:
+`best_matching_excerpt` at 4000 chars), and the schematic editor's data files (`/maps/schematic/<slug>/{walls,rooms}.json`
+and the `/maps` card `preview.svg` — ported on main at d2b325c, byte-identical answers for every shape type for the GM
+and for a player, strict fog included). Still Python's, in batch order:
 1. `POST /api/maps/props/upload` and the maps pages (`GET /maps/<slug>`) that wait on Python's thumbnail queue
    (`_remake_thumbnails`' fresh small copy — the startup-warming batch moves with it).
 2. The AI attachments upload family (`/api/ai/attachments/upload|chunk|complete|audio-jobs*`) — needs
    `_extract_document_text`'s PDF/HTML readers, the documented sidecar candidate.
 3. The dev-tools pages (`/tools/code-assist*`, `/imagestudio`, `/image-gen`) — small page renders.
+4. `bg.webp` — the masked background a player sees on a strict-fog map (needs the image-masking code ported).
+5. `/api/tables.json` — no page uses it; lowest priority.
+The schematic VIEWER page itself (`GET /maps/schematic/<slug>`) renders on the gateway (an earlier probe's 501 was an
+older image; current main opens City of Hue, Hughes Station and newly drawn schematics). Python-free refusals now log
+`DECLINE … (not in this image)` — so a test run's gateway log names each route the image is missing.
 
 **Build caveat learned the hard way**: after Windows-side source edits the 9p mount can make cargo skip recompilation
 entirely ("Finished in 0.2s" with none of the new code). Use `.zcode/dev/force_build.sh` (touches sources, waits, builds,
