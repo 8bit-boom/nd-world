@@ -35,6 +35,15 @@ pub struct Upload {
 }
 
 impl Upload {
+    /// The bytes of a file part, at most `max` of them (a longer part is cut: the caller compares the length it asked for)
+    pub fn read_part(&self, part: &FileRef, max: usize) -> Option<Vec<u8>> {
+        let mut src = std::fs::File::open(&self.path).ok()?;
+        src.seek(SeekFrom::Start(part.offset)).ok()?;
+        let mut buf = Vec::new();
+        src.take(part.len.min(max as u64)).read_to_end(&mut buf).ok()?;
+        Some(buf)
+    }
+
     /// Copy a file part to `dest` (created; an existing file is replaced)
     pub fn copy_part(&self, part: &FileRef, dest: &Path) -> Option<()> {
         let mut src = std::fs::File::open(&self.path).ok()?;

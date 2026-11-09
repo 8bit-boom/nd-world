@@ -10785,3 +10785,117 @@ def test_schematic_editor_reads_and_preview_are_pythons(client, seed):
                 assert a.headers.get("content-type") == b.headers.get("content-type"), url
     b = _via(gm, base).get("/maps/schematic/gw-prev-a/preview.svg")
     assert b.headers.get("x-nd-served-by") == "gateway"
+
+
+def test_tables_json_and_masked_background_404s_are_pythons(client, seed):
+    """GET /api/tables.json from the gateway (every odd entries_json: unreadable, a dict, a string, labels missing / empty, a float weight; a table with no
+    category) and GET /maps/schematic/<slug>/bg.webp for a map that has no strict secrecy / no picture / does not exist (Python's 404s)."""
+    import json as _json
+    from app.database import SessionLocal
+    from app.models import RandomTable, Schematic
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+    w = seed.world_a.id
+    db = SessionLocal()
+    try:
+        for i, (cat, raw) in enumerate([("encounters", _json.dumps([{"label": "Goblins", "weight": 3}, {"label": "", "weight": 2}, {"weight": 1}, "str", {"label": "W", "weight": 1.5}, {"label": "N"}])),
+                                        (None, "not json"), ("odd", _json.dumps({"a": 1})), ("odd", _json.dumps("text")), ("", "[]"), ("ünï", _json.dumps([{"label": "Ž", "weight": 2}]))]):
+            db.add(RandomTable(name=f"GwT {i}", slug=f"gw-t-{i}-{w}", category=cat, world_id=w, entries_json=raw))
+        db.add(Schematic(world_id=w, name="Plain", slug="gw-plain-bg", is_html=False, canvas_width=400, canvas_height=300, elements_json="[]", image_url="/uploads/nope.png"))
+        db.add(Schematic(world_id=w, name="NoPic", slug="gw-nopic-bg", is_html=False, canvas_width=400, canvas_height=300, elements_json="[]"))
+        db.commit()
+    finally:
+        db.close()
+    gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+    pl = _signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug)
+    for who in (gm, pl):
+        for url in ("/api/tables.json", "/maps/schematic/gw-plain-bg/bg.webp", "/maps/schematic/gw-nopic-bg/bg.webp", "/maps/schematic/nope-nope/bg.webp"):
+            a, b = who.get(url), _via(who, base).get(url)
+            assert (a.status_code, a.text) == (b.status_code, b.text), (url, a.status_code, b.status_code, a.text[:200], b.text[:200])
+    b = _via(gm, base).get("/api/tables.json")
+    assert b.headers.get("x-nd-served-by") == "gateway"
+    assert _via(gm, base).get("/maps/schematic/gw-plain-bg/bg.webp").headers.get("x-nd-served-by") == "gateway"
+
+
+def test_prop_library_upload_is_pythons(client, seed):
+    """POST /api/maps/props/upload from the gateway and from Python on the same files: the same objects (name, kind, size, footprint) and the same
+    refusals; a stored SVG is byte-identical, a stored raster has the same pixel size and (nearly) the same pixels - the WebP encoder is not Pillow's."""
+    import io
+    import re as _re
+    from pathlib import Path
+    from PIL import Image
+    from .conftest import PLAYER_PASSWORD
+    base = os.environ.get("ND_TEST_BASE_URL")
+    if not base:
+        import pytest
+        pytest.skip("needs the gateway")
+
+    def png(size, box=None, colour=(180, 30, 30, 255), fmt="PNG", mode="RGBA"):
+        im = Image.new(mode, size, (0, 0, 0, 0) if mode == "RGBA" else colour)
+        if box:
+            im.paste(colour if mode == "RGBA" else colour[:3], box)
+        b = io.BytesIO()
+        im.save(b, fmt)
+        return b.getvalue()
+
+    svg_ok = (b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 120.5 60" data-x="1" aria-label="a">'
+              b'<defs><linearGradient id="g"><stop offset="0" stop-color="#fff" style="STOP-OPACITY: 0.5 ; fill:url(#g)"/></linearGradient></defs>'
+              b'<g inkscape:label="L" transform="rotate(5)"><rect x="1" y="2" width="30" height="20" fill="url(#g)" stroke="#000"/>'
+              b'<text x="5" y="9" font-size="9">Caf\xc3\xa9 &amp; &lt;b&gt; "q"</text><path d="M0 0 L10 10 z"/><circle cx="5" cy="5" r="2"/></g></svg>')
+    svg_wh = b'<svg xmlns="http://www.w3.org/2000/svg" width="64px" height="32"><title>T</title><line x1="0" y1="0" x2="5" y2="5"/></svg>'
+    svg_bare = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0,0 40,40"></svg>'
+    svg_novb = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+    cases = [
+        ("Big_Bed-Frame.png", png((300, 200), (50, 40, 250, 160)), "image/png"),
+        ("wide.png", png((2400, 600), (0, 0, 2400, 600)), "image/png"),
+        ("tall.png", png((300, 1700), (10, 10, 290, 1690)), "image/png"),
+        ("tiny.png", png((20, 20), (8, 8, 10, 10)), "image/png"),
+        ("empty.png", png((50, 50)), "image/png"),
+        ("photo.jpg", png((200, 100), colour=(10, 120, 200, 255), fmt="JPEG", mode="RGB"), "image/jpeg"),
+        ("pic.bmp", png((64, 64), colour=(10, 120, 200, 255), fmt="BMP", mode="RGB"), "image/bmp"),
+        ("pic.webp", png((90, 70), (5, 5, 85, 65), fmt="WEBP"), "image/webp"),
+        ("ok.svg", svg_ok, "image/svg+xml"), ("wh.svg", svg_wh, "image/svg+xml"), ("bare.svg", svg_bare, "image/svg+xml"),
+        ("novb.svg", svg_novb, "image/svg+xml"),
+        ("script.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><script>x</script></svg>', "image/svg+xml"),
+        ("href.svg", b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1 1"><g xlink:href="http://x"/></svg>', "image/svg+xml"),
+        ("dt.svg", b'<!DOCTYPE svg [<!ENTITY a "b">]><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>', "image/svg+xml"),
+        ("js.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect fill="javascript:x"/></svg>', "image/svg+xml"),
+        ("url.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect fill="url(http://x/y)"/></svg>', "image/svg+xml"),
+        ("sty.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect style="behavior:url(#a)"/></svg>', "image/svg+xml"),
+        ("attr.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect onclick="x"/></svg>', "image/svg+xml"),
+        ("notsvg.svg", b'<html/>', "image/svg+xml"), ("bad.svg", b'<svg', "image/svg+xml"),
+        ("junk.png", b"not a picture at all", "image/png"), ("note.txt", b"hi", "text/plain"),
+    ]
+    out = {}
+    for who, label in (("direct", None), ("gateway", base)):
+        gm = _signed_in(seed.gm.email, GM_PASSWORD, seed.world_a.slug)
+        c = _via(gm, base) if label else gm
+        for cw in ("", "2.5", "0.1", "99", "abc"):
+            files = [("files", f) for f in cases]
+            r = c.post("/api/maps/props/upload", files=files, data={"cells_w": cw} if cw else {})
+            assert r.status_code == 200, (who, cw, r.status_code, r.text[:300])
+            out[(who, cw)] = r.json()
+            if label:
+                assert r.headers.get("x-nd-served-by") == "gateway"
+    uploads = Path(os.environ["DB_PATH"]).parent / "uploads"
+    for cw in ("", "2.5", "0.1", "99", "abc"):
+        a, b = out[("direct", cw)], out[("gateway", cw)]
+        assert a["refused"] == b["refused"], (cw, a["refused"], b["refused"])
+        assert len(a["added"]) >= 7 and sum(p["kind"] == "svg" for p in a["added"]) >= 2 and len(a["refused"]) >= 10, (len(a["added"]), a["refused"])
+        key = lambda p: {k: v for k, v in p.items() if k not in ("id", "url")}
+        assert [key(p) for p in a["added"]] == [key(p) for p in b["added"]], cw
+        for pa, pb in zip(a["added"], b["added"]):
+            fa, fb = uploads / pa["url"].split("/uploads/", 1)[1], uploads / pb["url"].split("/uploads/", 1)[1]
+            if pa["kind"] == "svg":
+                assert fa.read_bytes() == fb.read_bytes(), (cw, pa["name"], fa.read_bytes()[:300], fb.read_bytes()[:300])
+            else:
+                ia, ib = Image.open(fa).convert("RGBA"), Image.open(fb).convert("RGBA")
+                assert ia.size == ib.size, (pa["name"], ia.size, ib.size)
+                diff = sum(abs(x - y) for pxa, pxb in zip(ia.getdata(), ib.getdata()) for x, y in zip(pxa[:3] if pxa[3] > 40 else (0, 0, 0), pxb[:3] if pxb[3] > 40 else (0, 0, 0))) / max(1, ia.size[0] * ia.size[1] * 3)
+                assert diff < 6, (pa["name"], diff)
+    # the rules around it: a player, no files, no world
+    pl = _via(_signed_in(seed.player_a.email, PLAYER_PASSWORD, seed.world_a.slug), base)
+    assert pl.post("/api/maps/props/upload", files=[("files", ("a.png", png((20, 20), (0, 0, 20, 20)), "image/png"))]).status_code == 403

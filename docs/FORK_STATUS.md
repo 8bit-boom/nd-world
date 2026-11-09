@@ -134,12 +134,12 @@ Tests: `tests/test_group_tables.py` crawls the site as each player and the GM lo
 `ND_PYTHON_FREE=1` answers a route only Python serves with 501 (a GET) or a generic 400 "could not be completed" (a write). Found by listing every route of the Python app
 (`app.main._fastapi_app.routes`), calling each on a Python-free gateway, and asking the gateway's own write dispatcher (`edits::handles`, `rust/nd-gateway/tests/route_probe.rs`, ignored by
 default: `ND_ROUTES_JSON=routes.json cargo test --release -p nd-gateway --test route_probe -- --ignored --nocapture`) which write routes it takes. Still missing here:
-* **Reads**: `GET /api/combat/<id>/pc-state`, `/parties/<id>/export.ndc`, `/boards/<slug>/export`, `/maps/schematic/<slug>/bg.webp` (a strict map's masked picture for players),
-  `/api/ai/imagegen/models/hf-files`, `/api/ai/ollama/hf-{search,files}`, `/api/ai/test-chat`, `/docs` `/redoc` `/openapi.json`.
+* **Reads**: `GET /api/combat/<id>/pc-state`, `/parties/<id>/export.ndc`, `/boards/<slug>/export`,
+  `/api/ai/imagegen/models/hf-files`, `/api/ai/ollama/hf-{search,files}`, `/api/ai/test-chat`, `/docs` `/redoc` `/openapi.json`. (`/api/tables.json`, the masked `bg.webp` of a strict-fog map - a 404 on any other map, like Python - and the prop library's upload are served by the gateway now; a prop upload of an AVIF picture stays Python's: no AVIF decoder here.)
 * **AI jobs started from a button**: characters (`/api/characters/ai/start`), sheet templates, quest suggestions, the cockpit's find, auto-tag, knowledge sync / relation suggestions,
   map AI markers / AI build (not re-verified), the rules overlay suggestion.
 * **Other writes**: a member's password reset (`/worlds/<id>/members/<id>/reset-password`), the 3D dice tray's `/api/dice/record`, `/pages/sheets/new`, `/api/bulk-edit/{preview,apply}`,
-  map props upload, UVTT import, the importer's `/api/import/{images,convert-images}`, `/api/media-rename/select`, `POST /api/live-jobs/<key>/restart`, deleting a prompt preset.
+  UVTT import, the importer's `/api/import/{images,convert-images}`, `/api/media-rename/select`, `POST /api/live-jobs/<key>/restart`, deleting a prompt preset.
 * **Ollama / SwarmUI / ComfyUI only** (not used with Unsloth): pull, benchmark, unload, model upload, imagegen restart / free-memory / generate.
 Ported after this probe: the schematic editor's `walls.json` / `rooms.json` and the list card's `preview.svg`; gallery delete (single and many), "Back up now", "Play for players" and stop (and hiding / deleting the clip being played now stops it), video conversion settings.
 

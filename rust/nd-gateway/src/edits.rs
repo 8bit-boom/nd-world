@@ -435,6 +435,7 @@ const UPLOAD_ROUTES: &[(&str, Handler)] = &[
     ("/api/sessions/ai/audio-jobs/chunk", session_audio_job_chunk),
     ("/api/ai/attachments/upload", attach_upload),
     ("/api/ai/attachments/upload/chunk", attach_chunk),
+    ("/api/maps/props/upload", props_upload),
 ];
 
 /// Form routes that carry an optional picture: streamed like an upload when the body is too big to hold in memory
@@ -16570,7 +16571,7 @@ fn prop_cells(b: &Map<String, Value>, k: &str, fallback: f64) -> Option<f64> {
     if !v.is_finite() {
         return Some(fallback);
     }
-    Some((v * 4.0).round() / 4.0).map(|v| v.clamp(0.25, 40.0))
+    Some((v * 4.0).round_ties_even() / 4.0).map(|v| v.clamp(0.25, 40.0))
 }
 
 /// `_clean_name`: str(value or ""), whitespace-collapsed, capped at 128, "Object" when nothing is left
@@ -16585,6 +16586,69 @@ fn prop_clean_name(v: Option<&Value>, fallback: &str) -> String {
     let joined = nd_render::text::py_split_join(&raw);
     let cut: String = joined.chars().take(128).collect();
     if cut.is_empty() { fallback.to_string() } else { cut }
+}
+
+/// `POST /api/maps/props/upload` (app/routers/map_props.py `props_upload`): several pictures at once, each processed on its own - the answer lists what
+/// was added and, for the files that could not be used, why. `cells_w` (optional) is the width in squares for every file of the batch.
+fn props_upload(c: &mut Ctx, _: &[i64]) -> Option<Response<Body>> {
+    let up = c.upload.as_ref()?;
+    // the form: `files` parts (each with a file name) and at most a `cells_w` text field; anything else is Python's
+    if up.form.0.iter().any(|(k, _)| k != "cells_w") || up.form.0.len() > 1 || up.files.is_empty() || up.files.iter().any(|f| f.name != "files" || f.filename.is_empty()) {
+        return None;
+    }
+    let cells_w = up.form.get("cells_w").unwrap_or("").to_string();
+    let n_files = up.files.len();
+    let Some(wid) = c.world_id() else { return Some(crate::ai_more::detail(StatusCode::NOT_FOUND, "No world selected")) };
+    if c.p.user_id <= 0 || !c.can_edit_section("maps")? {
+        return Some(crate::idpages::refusal(403));
+    }
+    if n_files > 25 {
+        return Some(bad400("At most 25 pictures at a time"));
+    }
+    let have: i64 = c.db.query_row("SELECT COUNT(*) FROM map_props WHERE world_id = ?1", [wid], |r| r.get(0)).ok()?;
+    let dir = uploads_root(c)?.join("props");
+    std::fs::create_dir_all(&dir).ok()?;
+    let (mut added, mut refused) = (vec![], vec![]);
+    for i in 0..n_files {
+        let (name, len) = { let f = &c.upload.as_ref()?.files[i]; (f.filename.clone(), f.len) };
+        if have + added.len() as i64 >= 500 {
+            refused.push(json!({"file": name, "reason": "The library is full (500 objects)"}));
+            continue;
+        }
+        let ext = py_suffix_lower(&name)?;
+        let raw = { let up = c.upload.as_ref()?; up.read_part(&up.files[i], crate::props::MAX_RAW_BYTES + 1)? };
+        let _ = len;
+        let out = match crate::props::process_prop(&raw, &ext) {
+            Ok(Some(o)) => o,
+            Ok(None) => return None,
+            Err(reason) => {
+                refused.push(json!({"file": name, "reason": reason}));
+                continue;
+            }
+        };
+        let stored = unique_upload_filename(&name, out.ext)?;
+        let dest = dir.join(&stored);
+        c.created.push(dest.clone());
+        std::fs::write(&dest, &out.data).ok()?;
+        let (mut cw, mut ch) = crate::props::default_cells(out.width, out.height);
+        if !cells_w.trim().is_empty() {
+            let mut b = Map::new();
+            b.insert("cells_w".into(), Value::String(cells_w.clone()));
+            let want = prop_cells(&b, "cells_w", cw)?;
+            ch = ((want * (out.height / out.width) * 4.0).round_ties_even() / 4.0).max(0.25);
+            cw = want;
+        }
+        let ch = ch.min(40.0);
+        let stem = { let (stem, _) = py_path_parts(&name)?; stem };
+        let pname = prop_clean_name(Some(&Value::String(stem.replace('_', " ").replace('-', " "))), "Object");
+        let (px_w, px_h) = (out.width as i64, out.height as i64);
+        let kind = if out.ext == ".svg" { "svg" } else { "raster" };
+        let url = format!("/uploads/props/{stored}");
+        let id = orm::insert(&c.db, "map_props", &[("world_id", Sql::Integer(wid)), ("name", s(&pname)), ("file_url", s(&url)), ("kind", s(kind)),
+            ("px_w", Sql::Integer(px_w)), ("px_h", Sql::Integer(px_h)), ("cells_w", Sql::Real(cw)), ("cells_h", Sql::Real(ch))])?;
+        added.push(json!({"id": id, "name": pname, "tags": "", "url": url, "kind": kind, "px_w": px_w, "px_h": px_h, "cells_w": cw, "cells_h": ch}));
+    }
+    json_response(&json!({"added": added, "refused": refused}))
 }
 
 /// `POST /api/maps/props/{prop_id}/update` (app/routers/map_props.py `props_update`): name / tags /
